@@ -1,5 +1,9 @@
 // @vitest-environment node
 import path from "node:path";
+import type http from "node:http";
+import { serve } from "@hono/node-server";
+import { WebSocket } from "ws";
+import type { EventFeedFrame } from "../../../shared/events.ts";
 import fs from "node:fs/promises";
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { ROUTE_TEMPLATES } from "../../../shared/diagnostics.ts";
@@ -28,7 +32,7 @@ import { createResourceStore } from "../data/resourceStore.ts";
 import { reconcileEvents } from "../prompt/memory/structured/reconcile.ts";
 import { changeSection, type PageChanges } from "../prompt/memory/structured/pages.ts";
 import { memoryKinds, projectionHistory, writeMemory } from "./memoryFixtures.ts";
-import { createResourceTestClient, type TestServerOptions } from "./testSupport.ts";
+import { allowListenerOrigin, createResourceTestClient, type TestServerOptions } from "./testSupport.ts";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 beforeEach(() => {
@@ -499,6 +503,7 @@ it("lists only this chat's metadata and reads every record kind exactly as store
         events: [{ id: e.id, title: e.title, status: e.status, bytes: bytes(e) }],
         threads: [{ id: thread.id, title: thread.title, state: thread.state, bytes: bytes(thread) }],
         runs: [{ id: run.id, result: run.result, bytes: bytes(run) }],
+        adoption: { adoptable: 0, declined: false, resettable: false },
     });
     for (const [kind, record] of [
         ["pages", p],
@@ -1755,4 +1760,194 @@ it("refuses projection event bytes over the round cap before reading any message
     } finally {
         spies.forEach((spy) => spy.mockRestore());
     }
+});
+
+it("declines once, stops offering adoption, refuses later adoption and preserves real summaries and projection reads", async () => {
+    const s = await server();
+    const ui = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("ui")!;
+    const current = s.store.get(ui, "main")!;
+    s.store.put(ui, "main", { ...(current.data as object), memoryAlgorithmType: "structuredMemory" }, current.revision);
+    const summaries = { summaries: [{ text: "Keep this old memory.", chatMemos: ["m0", "m1"], isImportant: false }] };
+    storeAdoptionChat(s, summaries);
+    const before = memorySnapshot(s, chatId);
+    const chatBefore = s.store.readChatSource(characterId, chatId);
+    expect((await answer(await s.request(base))).adoption).toEqual({
+        adoptable: 1,
+        declined: false,
+        resettable: false,
+    });
+    const declined = await answer(await s.request(`${base}/decline`, { method: "POST" }));
+    const revision = before.contents.revision.replace(/:0$/, ":1");
+    expect(declined).toEqual({ revision, declined: true });
+    expect((await answer(await s.request(base))).adoption).toEqual({ adoptable: 0, declined: true, resettable: false });
+    const after = memorySnapshot(s, chatId);
+    expect(after.records).toEqual(before.records);
+    expect(await answer(await s.request(`${base}/decline`, { method: "POST" }))).toEqual({ revision, declined: false });
+    expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }))).toEqual({
+        revision,
+        adopted: 0,
+        stale: 0,
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(after);
+    expect(s.store.readChatSource(characterId, chatId)).toEqual(chatBefore);
+    expect(
+        await answer(await s.json("/api/memory/structured/revisions", { chats: [{ characterId, chatId }] })),
+    ).toEqual({ revisions: [null] });
+    expect(await answer(await s.request(`${base}/projection`))).toEqual({ revision, hypaV3Data: null });
+    const read = await answer(await s.json("/api/resources/read", { chats: [{ characterId, id: chatId }] }));
+    expect(read.chats[0].data.hypaV3Data).toEqual(summaries);
+});
+
+it("carries a decline through copies and branches even without crossing records, once only", async () => {
+    for (const mode of ["copy", "branch", "no source records", "no supported records"] as const) {
+        const s = mode === "no source records" ? await server() : await inheritanceServer(mode !== "copy");
+        writeMemory(s.store, characterId, "other", { adoptionDeclined: true });
+        if (mode === "no supported records")
+            writeMemory(s.store, characterId, "other", { remove: { pages: ["gate"], threads: ["promise"] } });
+        storeAdoptionChat(s, { summaries: [{ text: "Old memory", chatMemos: [], isImportant: false }] });
+        if (mode === "copy" || mode === "branch") {
+            const source = s.store.readChatSource(characterId, "other").data as Chat;
+            s.store.applyChanges({
+                chats: [
+                    {
+                        characterId,
+                        chatId,
+                        baseRevision: s.store.chatRevision(characterId, chatId),
+                        ops: [
+                            {
+                                op: "replace",
+                                chat: {
+                                    ...source,
+                                    id: chatId,
+                                    message: mode === "copy" ? source.message : source.message.slice(0, 1),
+                                },
+                            },
+                        ],
+                    },
+                ],
+            });
+        }
+        const before = memorySnapshot(s, "other");
+        const start = s.store.memory.readContents(characterId, chatId)!.revision;
+        const result = await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }));
+        expect(result).toEqual({
+            revision: start.replace(/:0$/, ":1"),
+            inherited: mode === "copy" || mode === "branch",
+        });
+        expect((await answer(await s.request(base))).adoption).toMatchObject({ adoptable: 0, declined: true });
+        const inherited = memorySnapshot(s, chatId);
+        expect(inherited.contents.events.map(({ id }) => id)).toEqual(
+            mode === "copy" ? ["early", "late"] : mode === "branch" ? ["early"] : [],
+        );
+        expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }))).toEqual({
+            revision: result.revision,
+            inherited: false,
+        });
+        expect(memorySnapshot(s, chatId)).toEqual(inherited);
+        expect(memorySnapshot(s, "other")).toEqual(before);
+    }
+});
+
+it("leaves decline out of chat files while restoring records leaves an existing decline in place", async () => {
+    const source = await server();
+    storeAdoptionChat(source, { summaries: [{ text: "Old memory", chatMemos: ["m0"], isImportant: false }] });
+    await answer(await source.request(`${base}/decline`, { method: "POST" }));
+    const packed = await answer(await source.request(`${base}/package`));
+    const threaded = await answer(await source.request(`${base}/threads`));
+    const file = JSON.parse(
+        JSON.stringify({
+            type: "risuChat",
+            ver: 2,
+            data: source.store.readChatSource(characterId, chatId).data,
+            structuredMemory: { pages: packed.pages, events: packed.events, threads: threaded.threads },
+        }),
+    );
+    expect(file.data).not.toHaveProperty("adoptionDeclined");
+    expect(file.structuredMemory).toEqual({ pages: [], events: [], threads: [] });
+    const imported = await server();
+    storeAdoptionChat(imported, file.data.hypaV3Data);
+    await answer(await imported.json(`${base}/restore`, file.structuredMemory));
+    expect((await answer(await imported.request(base))).adoption).toEqual({
+        adoptable: 1,
+        declined: false,
+        resettable: false,
+    });
+    const restored = await answer(
+        await source.json(`${base}/restore`, { pages: [page("imported")], events: [], threads: [] }),
+    );
+    expect(restored.restored).toBe(true);
+    expect(source.store.memory.readContents(characterId, chatId)?.adoptionDeclined).toBe(true);
+    expect((await answer(await source.request(base))).adoption).toMatchObject({ adoptable: 0, declined: true });
+});
+
+it("resets only adopted real summaries, publishes the chat revision and preserves a later summary", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const s = await server();
+    const ui = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("ui")!;
+    const current = s.store.get(ui, "main")!;
+    s.store.put(ui, "main", { ...(current.data as object), memoryAlgorithmType: "structuredMemory" }, current.revision);
+    const node = serve({ fetch: s.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
+    await new Promise<void>((resolve) => node.once("listening", resolve));
+    allowListenerOrigin(node);
+    s.context.attachWebSocket(node);
+    const ws = new WebSocket(
+        `ws://127.0.0.1:${(node.address() as { port: number }).port}/api/events/ws?risu-auth=${await s.signer.jwt()}`,
+    );
+    const frames: EventFeedFrame[] = [];
+    ws.on("message", (data) => frames.push(JSON.parse(String(data))));
+    cleanups.push(async () => {
+        ws.terminate();
+        node.closeAllConnections();
+        await new Promise<void>((resolve) => node.close(() => resolve()));
+    });
+    await new Promise<void>((resolve) => ws.once("message", () => resolve()));
+    const summaries = { summaries: [{ text: "Adopted memory.", chatMemos: ["m0", "m1"], isImportant: false }] };
+    storeAdoptionChat(s, summaries);
+    const refuse = async () => {
+        const before = s.store.readChatSource(characterId, chatId);
+        const memory = memorySnapshot(s, chatId);
+        expect((await answer(await s.request(base))).adoption.resettable).toBe(false);
+        expect(await answer(await s.request(`${base}/reset-summaries`, { method: "POST" }))).toEqual({
+            chatRevision: before.revision,
+            reset: false,
+        });
+        expect(s.store.readChatSource(characterId, chatId)).toEqual(before);
+        expect(memorySnapshot(s, chatId)).toEqual(memory);
+    };
+    await refuse();
+    s.write({ events: [event("ordinary")] });
+    await refuse();
+    s.write({ remove: { events: ["ordinary"] } });
+    await answer(await s.request(`${base}/adopt`, { method: "POST" }));
+    expect((await answer(await s.request(base))).adoption.resettable).toBe(true);
+    const memory = memorySnapshot(s, chatId);
+    const beforeRevision = s.store.chatRevision(characterId, chatId)!;
+    const result = await answer(await s.request(`${base}/reset-summaries`, { method: "POST" }));
+    expect(result.reset).toBe(true);
+    expect(result.chatRevision).not.toBe(beforeRevision);
+    expect(s.store.readChatSource(characterId, chatId).data).not.toHaveProperty("hypaV3Data");
+    expect(memorySnapshot(s, chatId)).toEqual(memory);
+    await new Promise<void>((resolve) => {
+        ws.once("pong", () => resolve());
+        ws.ping();
+    });
+    expect(frames.filter((frame) => frame.type === "change")).toEqual([
+        expect.objectContaining({
+            changes: expect.objectContaining({
+                chats: [expect.objectContaining({ characterId, id: chatId, revision: result.chatRevision })],
+            }),
+        }),
+    ]);
+    const read = await answer(await s.json("/api/resources/read", { chats: [{ characterId, id: chatId }] }));
+    expect(isSealedHypaV3Data(read.chats[0].data.hypaV3Data)).toBe(true);
+    expect(read.chats[0].data.hypaV3Data.summaries.map((summary: { text: string }) => summary.text)).toEqual([
+        "Adopted memory.",
+    ]);
+    await refuse();
+    const newer = { summaries: [{ text: "New summary after reset", chatMemos: ["m1"], isImportant: true }] };
+    storeAdoptionChat(s, newer);
+    expect((await answer(await s.request(`${base}/projection`))).hypaV3Data).toBeNull();
+    expect(s.store.readChatSource(characterId, chatId).data?.hypaV3Data).toEqual(newer);
+    s.write({ adoptionDeclined: true });
+    await refuse();
 });

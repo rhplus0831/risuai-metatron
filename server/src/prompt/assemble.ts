@@ -485,12 +485,20 @@ function rethrowHypaV3(memory: MemoryHost, error: unknown): never {
 
 /**
  * What a reply's receipt says when no writer run will reach it on its own: why recording is not
- * automatic (the slot or trigger that needs the tab, a local model), else that it is paused. Only the
- * send can say so: a task is handed off only when a window is due, so under `everyK`, `tokens`, or
- * `manual` its word would come late or never. A run that records the reply replaces this.
+ * automatic (a person's adoption choice, which goes first because only that person can end it, the
+ * slot or trigger that needs the tab, a local model), else that it is paused. Only the send can say
+ * so: a task is handed off only when a window is due, and never for a chat that waits for that choice,
+ * so under `everyK`, `tokens`, or `manual` its word would come late or never. A run that records the
+ * reply replaces this.
  */
-function writerNotice(db: Database, job: AssemblyMemoryJob, paused: boolean): MemoryReceipt | undefined {
-    const reason = job.blockingReason() ?? (summarizesLocally(db) ? "localSummarization" : null);
+function writerNotice(
+    db: Database,
+    job: AssemblyMemoryJob,
+    { paused, adoptionHeld }: Pick<MemoryRecords, "paused" | "adoptionHeld">,
+): MemoryReceipt | undefined {
+    const reason = adoptionHeld
+        ? "awaitingAdoption"
+        : (job.blockingReason() ?? (summarizesLocally(db) ? "localSummarization" : null));
     if (!reason && !paused) {
         return undefined;
     }
@@ -536,6 +544,10 @@ type StructuredMemoryStepResult =
  * recording, which runs in a job of its own or on the gap's yes. An event an edit marked for a re-record
  * counts as due (`automaticRerecords`), or a send with nothing else due would never hand it off; the gap
  * asks about the history a send lost, so its count and its run take no marks.
+ *
+ * A chat that waits for a person to adopt or decline its HypaV3 summaries (`adoptionHeld`) gets neither
+ * the gap's question, which a yes could not answer, nor a hand-off, not even a not-due one, which would
+ * spend a waiting manual start on a run that records nothing. Its reply's receipt says why.
  *
  * `messages` and `sourceGeneration` are the snapshot the job's history was built from, and `ms` the
  * eligible messages that built `chats`.
@@ -594,7 +606,12 @@ async function structuredMemoryStep(
         return selected;
     }
     let gap: string | undefined = selected.gapTokens > 0 ? "unasked" : undefined;
-    if (input && selected.gapTokens > settings.gapConfirmTokens && !summarizesLocally(host.db)) {
+    if (
+        input &&
+        !records.adoptionHeld &&
+        selected.gapTokens > settings.gapConfirmTokens &&
+        !summarizesLocally(host.db)
+    ) {
         const planned = await confirmedWindows({
             messages,
             confirmedBefore: input.confirmedBefore,
@@ -623,10 +640,10 @@ async function structuredMemoryStep(
     }
 
     const recorded = recordedMessages(records.events);
-    const notice = writerNotice(host.db, job, records.paused);
+    const notice = writerNotice(host.db, job, records);
     const handsOff = job.tasks && job.input;
     let memoryTask: { input: StructuredMemoryTaskInput; due: boolean } | undefined;
-    if (handsOff && input) {
+    if (handsOff && input && !records.adoptionHeld) {
         const windows = await confirmedWindows({
             messages,
             confirmedBefore: input.confirmedBefore,

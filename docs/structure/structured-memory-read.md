@@ -131,10 +131,10 @@ Lane rules:
   assistant message of the window, each keeping its other generation info. So every turn of an `everyK` or `tokens`
   window carries the same receipt. Two transactions, not one: a receipt that conflicts anyway is logged, the commit
   stands, and `MemoryRun.receipt` keeps it.
-- `notAutomatic` (`pluginModel`, `requestTrigger`, `localSummarization`) and `skipped` (`writerPaused`): the send's job,
-  on its own reply's generation info (`structuredMemoryStep`), so no extra chat write. It cannot be left to the task,
-  which is handed off only when a window is due. A run that records the turn replaces it, because the patch sets the
-  whole `memory` field.
+- `notAutomatic` (`awaitingAdoption`, `pluginModel`, `requestTrigger`, `localSummarization`) and `skipped`
+  (`writerPaused`): the send's job, on its own reply's generation info (`structuredMemoryStep`), so no extra chat write.
+  It cannot be left to the task, which is handed off only when a window is due. A run that records the turn replaces it,
+  because the patch sets the whole `memory` field.
 - `pending` is never stored. On the newest assistant message with no receipt the line reads as the writer working while
   the chat's task is live (about the chat, not that row), else as having no receipt yet. Older rows without one show
   nothing: no receipt proves nothing, see `Invariants`.
@@ -154,10 +154,11 @@ read.
   its `verified` items of one kind. A newer report of another kind means none, and no older report is reached. Coverage
   badges a row by `eventId` and a closed group by any of its rows, Log a run by the event it committed, Timeline an
   event, and Pages a page.
-- A chat whose held `hypaV3Data` is unsealed and holds summaries, and whose contents list no page, event, or thread, is
-  offered [adoption](structured-memory-lifecycle.md#adopting-hypav3-summaries) under the writer line. A chat with only
-  runs is offered it too. The contents read the writer line already makes decides, so there is no second request, and
-  the words say no model is called. The route checks again, so a stale panel's press answers `adopted: 0`.
+- The contents route adds `adoption` (`StructuredMemoryAdoption`), as the server sees the chat, so the tab's mirror
+  decides nothing. A [held chat](structured-memory-lifecycle.md#the-adoption-choice), `adoptable` above 0, is offered
+  adoption and decline above the writer line, where it meets them first. An adopted chat that still stores summaries,
+  `resettable`, is offered the reset under it. Decline and reset each ask first. The routes check again, so a stale
+  panel's press answers `adopted: 0`, `declined: false`, or `reset: false`.
 - Preview runs only on its button. A preview is a local send, so it flips `readOnly`, which moves `refresh`: a run on
   `refresh` would never stop. It answers the prompt with no next message, so it says the next send can differ.
 - `memoryBlockEntries` finds the block by `itemTag`, because `editRequest` can rebuild entries without their `memo`. A
@@ -226,10 +227,12 @@ and turns Save off, and the read when it falls applies the same rule.
 ### The writer line
 
 `memoryWriterNotice` decides the line under the status lines from the current state, because a receipt or a report is a
-copy of its moment. The first that holds: memory off, no action, because the command refuses; `writerPaused` over the
-current runs (from the contents) or a newest receipt that reads paused, resume; a newest `notAutomatic` receipt, its
-reason and `memoryReceiptView`'s action; a `manual` cadence, reason `manual`. Past those only the action shows. The
-press is `pressMemoryRecord`, as on the receipt line, off while pressing, read-only, or the task is live.
+copy of its moment. The first that holds: memory off, no action, because the command refuses; a held chat as the
+contents say, `awaitingAdoption`, no action; `writerPaused` over the current runs (from the contents) or a newest
+receipt that reads paused, resume; a newest `notAutomatic` receipt, its reason and `memoryReceiptView`'s action; a
+`manual` cadence, reason `manual`. Past those only the action shows. A newest `awaitingAdoption` receipt on a chat no
+longer held reads as no receipt, or it would hide record now after the choice. The press is `pressMemoryRecord`, as on
+the receipt line, off while pressing, read-only, or the task is live.
 
 ## State
 
@@ -313,6 +316,10 @@ press is `pressMemoryRecord`, as on the receipt line, off while pressing, read-o
 - A preview marks no record and asks nothing, but it runs the start trigger, whose result can be committed, and counts
   in `statics.messages`, so it is not free of side effects. Decision: Structured Memory slice 3c, plan.
 - A tab older than the `structuredMemory` kind reads such a report as none and shows an older one.
+- The receipt line knows nothing of the hold. On a held chat a newest reply with no receipt still offers record now, and
+  the press gets the 409. After the choice an `awaitingAdoption` receipt keeps its words with no button until a run
+  replaces it, and Coverage reads it `skipped`. The panel's writer line is right throughout. Decision: Structured Memory
+  slice 6c, plan.
 - `genInfo` is not rendered in the `mobilechat` and `cardboard` themes, so they show no line.
 - Coverage's gap and leaving rows read stored text, where a send reads processed text and the greeting: a reply a script
   blanks counts as a turn here, and uncovered history that no longer fits also trims at send time. The panel says so,

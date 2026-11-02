@@ -14,6 +14,9 @@ import {
     selectChat,
     setMessageText,
     patchMessage,
+    hasChatWork,
+    takeChatWork,
+    ackChatWork,
 } from "src/ts/storage/chatStore.svelte";
 import { selection, setChatOpen, selectCharacter } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
@@ -1311,6 +1314,7 @@ function serveAdoptionContents() {
         events: [],
         threads: [],
         runs: [{ id: "failed", result: "failed", bytes: 100 }],
+        adoption: { adoptable: 1, declined: false, resettable: false },
     };
     const fetch = io.authFetch.getMockImplementation()!;
     io.authFetch.mockImplementation((url, init, options) =>
@@ -1319,7 +1323,7 @@ function serveAdoptionContents() {
     return contents;
 }
 
-it("offers adoption only after empty record contents are read and only for held unsealed summaries, ignoring runs", async () => {
+it("offers adoption only after the contents are read and only while the server says the chat waits, whatever the tab holds", async () => {
     holdHypaV3Data(heldSummaries());
     const contents = serveAdoptionContents();
     const pending = deferred<Response>();
@@ -1338,25 +1342,18 @@ it("offers adoption only after empty record contents are read and only for held 
     await settle();
     expect(query("[data-memory-adopt]")?.textContent).toContain("No model is called");
     io.authFetch.mockImplementation(fetch);
-    const occupied: Partial<StructuredMemoryContentsAnswer>[] = [
-        { pages: [{ id: "p", title: "Page", type: "note", bytes: 100 }] },
-        { events: [{ id: "e", title: "Event", status: "active", bytes: 100 }] },
-        { threads: [{ id: "t", title: "Thread", state: "open", bytes: 100 }] },
-    ];
-    for (const records of occupied) {
-        Object.assign(contents, { pages: [], events: [], threads: [] }, records);
-        click("[data-memory-panel-refresh]");
-        await settle();
-        expect(query("[data-memory-adopt]")).toBeNull();
-    }
-    Object.assign(contents, { pages: [], events: [], threads: [] });
+    contents.adoption.adoptable = 0;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-adopt]")).toBeNull();
+    contents.adoption.adoptable = 1;
     click("[data-memory-panel-refresh]");
     await settle();
     expect(query("[data-memory-adopt]")).not.toBeNull();
     for (const data of [sealHypaV3Data(heldSummaries()), { summaries: [] }, undefined]) {
         holdHypaV3Data(data);
         await settle();
-        expect(query("[data-memory-adopt]")).toBeNull();
+        expect(query("[data-memory-adopt]")).not.toBeNull();
     }
 });
 
@@ -1394,6 +1391,7 @@ it("disables adoption while read-only, posts once without a body, then toasts an
     const contentsReads = io.authFetch.mock.calls.filter(([url]) => url === "/api/memory/structured/c/k").length;
     contents.events = [{ id: "adopted", title: "The gate opened.", status: "active", bytes: 100 }];
     contents.revision = revision(2);
+    contents.adoption.adoptable = 0;
     response.resolve(Response.json({ revision: revision(2), adopted: 1, stale: 0 }));
     await settle();
     expect(alertToast).toHaveBeenCalledWith(language.structuredMemory.adopt.done(1, 0));
@@ -1443,4 +1441,120 @@ it("shows Originally adopted only in an open event whose writer run is the adopt
     await settle();
     expect(query("[data-memory-event-adopted]")).toBeNull();
     expect(query('[data-memory-event="e"]')?.textContent).toContain("The gate opened");
+});
+
+it("places the adoption choice above the writer line and confirms decline before restoring Record now", async () => {
+    holdHypaV3Data(heldSummaries());
+    const contents = serveAdoptionContents();
+    contents.runs = Array.from({ length: 5 }, (_, index) => ({ id: `failed-${index}`, result: "failed", bytes: 100 }));
+    settings.hypaV3Presets.items[0].settings.structured!.cadence = "manual";
+    patchMessage(ref, "a1", { generationInfo: { memory: { state: "notAutomatic", reason: "awaitingAdoption" } } });
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) => {
+        if (url.endsWith("/decline")) {
+            contents.adoption = { adoptable: 0, declined: true, resettable: false };
+            contents.runs = [];
+            return Promise.resolve(Response.json({ revision: revision(2), declined: true }));
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    expect(
+        query("[data-memory-adopt]")!.compareDocumentPosition(query("[data-memory-writer-line]")!) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(query("[data-memory-writer-line]")?.textContent).toContain(
+        language.structuredMemory.notAutomaticReasons.awaitingAdoption,
+    );
+    expect(query("[data-memory-writer-action]")).toBeNull();
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    press("[data-memory-decline-action]");
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.adopt.declineConfirm);
+    expect(reads("decline")).toHaveLength(0);
+    expect(query("[data-memory-adopt]")).not.toBeNull();
+    vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+    press("[data-memory-decline-action]");
+    await settle();
+    expect(reads("decline")).toHaveLength(1);
+    expect(reads("decline")[0][1]).toMatchObject({ method: "POST" });
+    expect(reads("decline")[0][1]?.body).toBeUndefined();
+    expect(query("[data-memory-adopt]")).toBeNull();
+    expect(query("[data-memory-writer-action]")?.dataset.memoryWriterAction).toBe("record");
+    expect(query("[data-memory-writer-line]")?.textContent).toContain(
+        language.structuredMemory.notAutomaticReasons.manual,
+    );
+    expect(findChat(ref)?.hypaV3Data).toEqual(heldSummaries());
+});
+
+it("shows Reset only on the server's offer, confirms it and refreshes held summaries without a chat write", async () => {
+    for (const newerSummary of [false, true]) {
+        holdHypaV3Data(heldSummaries());
+        // Settle the fixture's previous edits as a completed server save before testing an idle refresh.
+        const pending = takeChatWork(new Set());
+        ackChatWork(
+            pending,
+            pending.groups.map(({ characterId, chatId }) => ({ characterId, id: chatId, revision: revision(1) })),
+            [],
+        );
+        seedChats(
+            [{ characterId: "c", id: "k", revision: revision(1) }],
+            [{ characterId: "c", revision: revision(1), ids: ["k", "other"] }],
+        );
+        const original = JSON.parse(JSON.stringify(findChat(ref))) as Chat;
+        const contents = serveAdoptionContents();
+        contents.adoption = { adoptable: 0, declined: false, resettable: false };
+        const replacement = newerSummary
+            ? { summaries: [{ text: "Written after reset", chatMemos: ["a1"], isImportant: false }] }
+            : sealHypaV3Data(heldSummaries(), revision(1));
+        const fetch = io.authFetch.getMockImplementation()!;
+        io.authFetch.mockImplementation((url, init, options) => {
+            if (url.endsWith("/reset-summaries")) {
+                contents.adoption.resettable = false;
+                return Promise.resolve(Response.json({ chatRevision: revision(2), reset: true }));
+            }
+            if (url === "/api/resources/read")
+                return Promise.resolve(
+                    Response.json({
+                        epoch,
+                        items: [],
+                        chats: [
+                            {
+                                characterId: "c",
+                                id: "k",
+                                revision: revision(newerSummary ? 3 : 2),
+                                data: { ...original, hypaV3Data: replacement },
+                            },
+                        ],
+                    }),
+                );
+            return fetch(url, init, options);
+        });
+        await open();
+        expect(query("[data-memory-reset]")).toBeNull();
+        contents.adoption.resettable = true;
+        click("[data-memory-panel-refresh]");
+        await settle();
+        expect(query("[data-memory-reset]")).not.toBeNull();
+        const requests = reads("reset-summaries").length;
+        vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+        press("[data-memory-reset-action]");
+        await settle();
+        expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.adopt.resetConfirm);
+        expect(reads("reset-summaries")).toHaveLength(requests);
+        expect(findChat(ref)?.hypaV3Data).toEqual(heldSummaries());
+        expect(hasChatWork()).toBe(false);
+        vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+        press("[data-memory-reset-action]");
+        await settle();
+        expect(reads("reset-summaries")).toHaveLength(requests + 1);
+        expect(reads("reset-summaries").at(-1)![1]).toMatchObject({ method: "POST" });
+        expect(reads("reset-summaries").at(-1)![1]?.body).toBeUndefined();
+        expect(findChat(ref)?.hypaV3Data).toEqual(replacement);
+        expect(hasChatWork()).toBe(false);
+        expect(io.authFetch.mock.calls.filter(([url]) => url === "/api/resources/batch")).toEqual([]);
+        expect(query("[data-memory-reset]")).toBeNull();
+        await unmount(instance!);
+        instance = undefined;
+    }
 });

@@ -29,11 +29,13 @@ import {
     type MemoryThread,
     type ReadEntry,
     type StructuredMemoryAdoptAnswer,
+    type StructuredMemoryAdoption,
     type StructuredMemoryCadence,
     type StructuredMemoryContentsAnswer,
     type StructuredMemoryCoverageEvent,
     type StructuredMemoryCoverageRound,
     type StructuredMemoryCoverageRun,
+    type StructuredMemoryDeclineAnswer,
     type StructuredMemoryEdit,
     type StructuredMemoryEditAnswer,
     type StructuredMemoryFileEntry,
@@ -44,6 +46,7 @@ import {
     type StructuredMemoryProjectionAnswer,
     type StructuredMemoryRecordAnswer,
     type StructuredMemoryRecordKind,
+    type StructuredMemoryResetAnswer,
     type StructuredMemoryRestoreAnswer,
     type StructuredMemoryRevisionsAnswer,
     type StructuredMemoryRunsRound,
@@ -59,8 +62,9 @@ import { authFetch } from "../storage/serverAuth";
  * The tab's reads of a chat's structured memory (`server/src/routes/structuredMemory.ts`), a person's
  * edits of it (`editStructuredMemory`), a new chat's inheritance (`inheritStructuredMemory`) or restore
  * from a chat file (`restoreStructuredMemory`), the adoption of a chat's HypaV3 summaries
- * (`adoptStructuredMemory`), and the downloadable package built from the reads: a zip of Markdown with
- * one file per page and one timeline of the events.
+ * (`adoptStructuredMemory`), the decline of it (`declineStructuredMemory`), the reset of the summaries
+ * (`resetStructuredMemorySummaries`), and the downloadable package built from the reads: a zip of
+ * Markdown with one file per page and one timeline of the events.
  *
  * What a chat file takes of the records is read here too (`readStructuredMemoryFile`), and
  * `exportChatMemory` applies that read to the chat copy an export writes. So are the two reads a plugin's
@@ -90,10 +94,10 @@ import { authFetch } from "../storage/serverAuth";
  */
 
 /**
- * Why a read, an edit, an inherit, a restore, or an adoption did not answer: the chat or record is gone,
- * the database was replaced, its memory moved on, or, for a write, something that can write it holds the
- * chat. A restore can also be `tooLarge`, when its records are over the route's body cap, and so can a
- * projection, when the chat's events are over a read round.
+ * Why a read, an edit, an inherit, a restore, an adoption, a decline, or a reset did not answer: the chat
+ * or record is gone, the database was replaced, its memory moved on, or, for a write, something that can
+ * write it holds the chat. A restore can also be `tooLarge`, when its records are over the route's body
+ * cap, and so can a projection, when the chat's events are over a read round.
  */
 export type StructuredMemoryRefusal = "chatGone" | "recordGone" | "epoch" | "changed" | "fenced" | "tooLarge";
 
@@ -317,7 +321,11 @@ export function memoryReceiptView(
         case "failed":
             return { ...stored, kind: "failed", action: "record" };
         case "notAutomatic":
-            return { ...stored, kind: "notAutomatic", action: reason === "localSummarization" ? null : "record" };
+            return {
+                ...stored,
+                kind: "notAutomatic",
+                action: reason === "localSummarization" || reason === "awaitingAdoption" ? null : "record",
+            };
         case "skipped":
             return reason === "writerPaused"
                 ? { ...stored, kind: "paused", action: "resume" }
@@ -362,31 +370,46 @@ export type MemoryWriterNotice = {
     action: MemoryReceiptView["action"];
 };
 
+/** Whether stored `receipt` is one a send left while the chat waited for its adoption choice. */
+function awaitedAdoption(receipt: unknown): boolean {
+    return isPlainObject(receipt) && receipt.state === "notAutomatic" && receipt.reason === "awaitingAdoption";
+}
+
 /**
  * The panel's writer line, decided from the current state: a receipt is a display copy of its moment,
  * so `paused` is the chat's runs as they stand now, and a newest receipt only adds to it. The first of
- * these holds. With memory off the command refuses, so there is no action. Paused, by the runs or by
- * `receipt`, offers resume. A `notAutomatic` receipt gives its reason, and a `manual` cadence its own.
- * Past those, and in the `manual` case, the action is `memoryReceiptView`'s for the newest message.
- * `receipt` is `newestMemoryReceipt`, stored data of any shape.
+ * these holds. With memory off the command refuses, so there is no action. A chat held for its adoption
+ * choice (`adoptionHeld`, as the server last said) says so, and its choice is the only thing to press.
+ * Paused, by the runs or by `receipt`, offers resume. A `notAutomatic` receipt gives its reason, and a
+ * `manual` cadence its own. Past those, and in the `manual` case, the action is `memoryReceiptView`'s for
+ * the newest message. `receipt` is `newestMemoryReceipt`, stored data of any shape; one from while the
+ * chat was held reads as no receipt once it is not, or it would hide record now after the choice.
  */
 export function memoryWriterNotice({
     memoryOn,
     cadence,
     paused,
+    adoptionHeld,
     receipt,
     taskLive,
 }: {
     memoryOn: boolean;
     cadence: StructuredMemoryCadence;
     paused: boolean;
+    adoptionHeld: boolean;
     receipt: unknown;
     taskLive: boolean;
 }): MemoryWriterNotice {
     if (!memoryOn) {
         return { kind: "memoryOff", action: null };
     }
-    const { kind, reason, action } = memoryReceiptView(receipt, { newest: true, taskLive });
+    if (adoptionHeld) {
+        return { kind: "notAutomatic", reason: "awaitingAdoption", action: null };
+    }
+    const { kind, reason, action } = memoryReceiptView(awaitedAdoption(receipt) ? undefined : receipt, {
+        newest: true,
+        taskLive,
+    });
     if (paused || kind === "paused") {
         return { kind: "paused", action: "resume" };
     }
@@ -400,10 +423,25 @@ function chatPath(ref: ChatRef): string {
     return `${STRUCTURED_MEMORY_PATH}/${encodeURIComponent(ref.chaId)}/${encodeURIComponent(ref.chatId)}`;
 }
 
+/** What contents without an `adoption` say: nothing to offer, which every press leaves to the server anyway. */
+const NO_ADOPTION: StructuredMemoryAdoption = { adoptable: 0, declined: false, resettable: false };
+
+function isAdoption(value: unknown): value is StructuredMemoryAdoption {
+    return (
+        isPlainObject(value) &&
+        storedCount(value.adoptable) !== undefined &&
+        typeof value.declined === "boolean" &&
+        typeof value.resettable === "boolean"
+    );
+}
+
+/** A reader of the lists does not fail over `adoption`, which only the panel reads; a malformed one is refused. */
 function parseContents(body: AnswerBody): StructuredMemoryContentsAnswer | null {
-    const { revision, pages, events, threads, runs } = body;
-    return typeof revision === "string" && [pages, events, threads, runs].every((list) => Array.isArray(list))
-        ? (body as StructuredMemoryContentsAnswer)
+    const { revision, pages, events, threads, runs, adoption = NO_ADOPTION } = body;
+    return typeof revision === "string" &&
+        [pages, events, threads, runs].every((list) => Array.isArray(list)) &&
+        isAdoption(adoption)
+        ? ({ ...body, adoption } as StructuredMemoryContentsAnswer)
         : null;
 }
 
@@ -460,6 +498,20 @@ function parseAdoptAnswer(body: AnswerBody): StructuredMemoryAdoptAnswer | null 
     const { revision, adopted, stale } = body;
     return typeof revision === "string" && typeof adopted === "number" && typeof stale === "number"
         ? (body as StructuredMemoryAdoptAnswer)
+        : null;
+}
+
+function parseDeclineAnswer(body: AnswerBody): StructuredMemoryDeclineAnswer | null {
+    const { revision, declined } = body;
+    return typeof revision === "string" && typeof declined === "boolean"
+        ? (body as StructuredMemoryDeclineAnswer)
+        : null;
+}
+
+function parseResetAnswer(body: AnswerBody): StructuredMemoryResetAnswer | null {
+    const { chatRevision, reset } = body;
+    return typeof chatRevision === "string" && typeof reset === "boolean"
+        ? (body as StructuredMemoryResetAnswer)
         : null;
 }
 
@@ -571,6 +623,27 @@ export function restoreStructuredMemory(
  */
 export function adoptStructuredMemory(ref: ChatRef): Promise<StructuredMemoryResult<StructuredMemoryAdoptAnswer>> {
     return readAnswer(`${chatPath(ref)}/adopt`, parseAdoptAnswer, editRefusalOf, { method: "POST" });
+}
+
+/**
+ * Tells the server a person will not adopt the HypaV3 summaries of `ref`, so the writer starts from the
+ * oldest turn and the chat is not offered them again, which cannot be undone. Only a chat that waits for
+ * that choice takes it: any other answers `declined: false`. The caller shows the notice for a refusal.
+ */
+export function declineStructuredMemory(ref: ChatRef): Promise<StructuredMemoryResult<StructuredMemoryDeclineAnswer>> {
+    return readAnswer(`${chatPath(ref)}/decline`, parseDeclineAnswer, editRefusalOf, { method: "POST" });
+}
+
+/**
+ * Asks the server to empty the stored HypaV3 summaries of `ref`, an adopted chat. The server decides from
+ * what it stores, and writes the chat itself: the tab sends no chat write, and takes the change with a
+ * read, because only a whole read replaces what it holds. Any other chat answers `reset: false`. The
+ * caller shows the notice for a refusal, and reads the chat after a reset.
+ */
+export function resetStructuredMemorySummaries(
+    ref: ChatRef,
+): Promise<StructuredMemoryResult<StructuredMemoryResetAnswer>> {
+    return readAnswer(`${chatPath(ref)}/reset-summaries`, parseResetAnswer, editRefusalOf, { method: "POST" });
 }
 
 /**

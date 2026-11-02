@@ -2389,6 +2389,8 @@ export const languageEnglish = {
             writerPaused: "recording is paused after repeated failures",
             windowChanged: "the chat changed during recording",
             revisionConflict: "the memory was changed meanwhile",
+            awaitingAdoption:
+                "nothing records until you adopt or decline this chat's HypaV3 summaries in the memory panel, and the summaries stay stored",
         } as Record<string, string>,
     },
     structuredMemory: {
@@ -2476,6 +2478,8 @@ export const languageEnglish = {
             requestTrigger: "a request trigger applies, which needs this tab",
             localSummarization: "the server cannot run this summarization model",
             manual: "this memory preset records only when asked",
+            awaitingAdoption:
+                "nothing records until you adopt or decline this chat's HypaV3 summaries in the memory panel, and the summaries stay stored",
         } as Record<string, string>,
         failureReasons: {
             requestFailed: "the model request failed",
@@ -2716,7 +2720,7 @@ export const languageEnglish = {
                     summaries === 1
                         ? "This chat has 1 HypaV3 summary and no memory records. Adopting makes it an event, so the turns it covers count as recorded."
                         : `This chat has ${summaries} HypaV3 summaries and no memory records. Adopting makes each summary an event, so the turns they cover count as recorded.`
-                } No model is called, and the HypaV3 data stays as it is.`,
+                } No model is called, and the HypaV3 data stays as it is. Declining leaves the summaries out, and the writer starts from the oldest turn. Nothing records until you choose, and the summaries stay stored either way.`,
             button: "Adopt summaries",
             done: (events: number, stale: number) => {
                 const adopted = `Adopted ${events === 1 ? "1 event" : `${events} events`}, with no model call.`;
@@ -2724,8 +2728,20 @@ export const languageEnglish = {
                     ? `${adopted} ${stale === 1 ? "1 could not be matched to its messages" : `${stale} could not be matched to their messages`}: see Timeline.`
                     : adopted;
             },
-            nothing: "Nothing to adopt: this chat already has memory records or no summaries.",
+            nothing: "Nothing to adopt: this chat already has memory records, has no summaries, or declined them.",
             adoptedEvent: "Originally adopted from HypaV3 data, without a model call.",
+            decline: "Decline",
+            declineConfirm:
+                "Decline this chat's HypaV3 summaries? The writer then records from the oldest turn, and this chat is not offered them again. This cannot be undone. The summaries stay stored.",
+            declined: "Declined. The writer now starts from this chat's oldest turn.",
+            declineNothing: "Nothing to decline: this chat is not waiting for that choice.",
+            resetOffer:
+                "This chat's HypaV3 summaries are still stored, so plugins read them instead of its memory records.",
+            reset: "Reset summaries",
+            resetConfirm:
+                "Empty this chat's stored HypaV3 summaries? Its memory records stay, and plugins read those from now on. This cannot be undone.",
+            resetDone: "The stored HypaV3 summaries are empty. Plugins now read this chat's memory records.",
+            resetNothing: "Nothing to reset: this chat holds no adopted summaries.",
         },
         memoryFile: {
             exportedWithoutRecords:

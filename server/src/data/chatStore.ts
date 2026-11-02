@@ -141,10 +141,17 @@ export const CHAT_SUMMARY_TABLE_SQL = `
 `;
 
 /**
+ * `memory_state`'s column for a person's decline of adopting the chat's HypaV3 summaries, in the table's
+ * `CREATE` and in what `openChatSchema` adds to a table from before it, so the two cannot differ.
+ */
+const MEMORY_DECLINE_COLUMN_SQL = "adoptionDeclined INTEGER NOT NULL DEFAULT 0";
+
+/**
  * Each chat's structured memory (`memoryStore.ts`): a table each for pages, events, threads, and writer
  * runs, one row per record with the whole record as stored JSON in `data`, and `memory_state`, the one
- * revision over all of them, which a chat has no row in until its first memory write. `seq` is storage
- * order, not message order. `data` is the last column, so a table-of-contents read stops before it.
+ * revision over all of them and the chat's decline of adoption, which a chat has no row in until its
+ * first memory write. `seq` is storage order, not message order. `data` is the last column, so a
+ * table-of-contents read stops before it.
  * Keyed by the chat's incarnation (`chats.seq`): deleting the chat drops its rows by cascade, and the
  * prefix of `UNIQUE (chatSeq, id)` keeps that cascade from scanning a table. `memory_pages_scene` holds
  * a chat to one `scene` page; `memoryStore.ts` refuses a second one before it reaches this index. Created
@@ -155,7 +162,8 @@ export const CHAT_SUMMARY_TABLE_SQL = `
 export const MEMORY_TABLES_SQL = `
     CREATE TABLE IF NOT EXISTS memory_state (
         chatSeq INTEGER PRIMARY KEY REFERENCES chats (seq) ON DELETE CASCADE,
-        revision INTEGER NOT NULL
+        revision INTEGER NOT NULL,
+        ${MEMORY_DECLINE_COLUMN_SQL}
     ) STRICT;
     CREATE TABLE IF NOT EXISTS memory_pages (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1017,7 +1025,10 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
  * The chat schema past the tables `initialize` creates, in its own transaction, before any statement
  * of `createChatTables` is prepared: creates `chatGroups`, `chatSummaries`, the memory tables, and the
  * `messages_role` index when missing (on a fresh and an existing file alike; building the index parses
- * every message row once) and rebuilds the stored projections. Every chat's when the `meta` table's
+ * every message row once), adds `memory_state`'s decline column to a table from before it, where every
+ * existing row reads as not declined, and rebuilds the stored projections. `BEGIN IMMEDIATE` holds the
+ * look at that column and its `ALTER` together, so a second start, at once or later, finds the column
+ * and adds nothing. Every chat's projections when the `meta` table's
  * `summaryProjectionVersion` is missing or differs from `SUMMARY_PROJECTION_VERSION`, otherwise only
  * the chats with no row or a row at another revision, so an open with nothing to create or rebuild
  * writes nothing. The seqs come first and each chat's metadata is read alone, so a store with a large
@@ -1028,6 +1039,10 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
 export function openChatSchema(db: DatabaseSync): void {
     db.exec("BEGIN IMMEDIATE");
     db.exec(CHAT_OPEN_SCHEMA_SQL);
+    const stateColumns = db.prepare("PRAGMA table_xinfo(memory_state)").all() as { name: string }[];
+    if (!stateColumns.some(({ name }) => name === "adoptionDeclined")) {
+        db.exec(`ALTER TABLE memory_state ADD COLUMN ${MEMORY_DECLINE_COLUMN_SQL}`);
+    }
     const version = String(SUMMARY_PROJECTION_VERSION);
     const stored = db.prepare("SELECT value FROM meta WHERE key = 'summaryProjectionVersion'").get() as
         { value: string } | undefined;

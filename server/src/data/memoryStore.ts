@@ -20,7 +20,7 @@ import type {
     MemoryPage,
     MemoryRun,
     MemoryThread,
-    StructuredMemoryContentsAnswer,
+    StructuredMemoryContents,
     StructuredMemoryRecordKind,
     StructuredMemoryRecordOf,
 } from "../../../shared/structuredMemory.ts";
@@ -38,8 +38,9 @@ import {
 /**
  * Structured memory's tables in the resource database (`MEMORY_TABLES_SQL` in `chatStore.ts`): a chat's
  * pages, events, threads, and writer runs, and `memory_state` with the one revision that covers them
- * all. Every row belongs to a chat's incarnation and goes with it by cascade. `data` holds the whole
- * record, so a page's sections stay embedded in its row.
+ * all and whether a person declined adopting the chat's HypaV3 summaries. Every row belongs to a chat's
+ * incarnation and goes with it by cascade. `data` holds the whole record, so a page's sections stay
+ * embedded in its row.
  *
  * The resource store owns the connection, the epoch, and the transactions: the writers here join the
  * caller's open transaction and never begin or commit one, so a caller can compose them with its own
@@ -69,20 +70,28 @@ export type MemoryRecordKind = StructuredMemoryRecordKind;
 /** An event as a writer hands it over: the store stamps `createdRevision`. */
 export type MemoryEventWrite = Omit<MemoryEvent, "createdRevision">;
 
-/** What one write changes: records to insert or update by id, and ids to remove. */
+/**
+ * What one write changes: records to insert or update by id, ids to remove, and a person's decline of
+ * adopting the chat's HypaV3 summaries, which is one-way, so nothing here clears it. A decline moves the
+ * revision as a record does, on a chat that has not declined yet; on one that has it names nothing.
+ */
 export type MemoryChanges = {
     pages?: MemoryPage[];
     events?: MemoryEventWrite[];
     threads?: MemoryThread[];
     runs?: MemoryRun[];
     remove?: { pages?: string[]; events?: string[]; threads?: string[]; runs?: string[] };
+    adoptionDeclined?: true;
 };
 
 /** `wrote` is false when the change set named nothing, so the owner counts only real writes. */
 export type MemoryWriteResult = { revision: string; wrote: boolean };
 
-/** A chat's table of contents, with the memory revision a write based on it names. */
-export type MemoryContents = StructuredMemoryContentsAnswer;
+/**
+ * A chat's table of contents, with the memory revision a write based on it names. `adoptionDeclined` is
+ * there only for a chat that declined.
+ */
+export type MemoryContents = StructuredMemoryContents & { adoptionDeclined?: true };
 
 /** A chat as the revision check names it. */
 export type MemoryChatRef = { characterId: string; chatId: string };
@@ -98,7 +107,7 @@ export type MemoryRowTexts = Readonly<Record<MemoryRecordKind, readonly string[]
  * record table by `seq`. `row` is the record's columns after `chatSeq`, as `upsert` binds them.
  */
 export type MemorySnapshotSink = {
-    state(row: { chatSeq: number; revision: number }): void;
+    state(row: { chatSeq: number; revision: number; adoptionDeclined: number }): void;
     record(kind: MemoryRecordKind, chatSeq: number, row: readonly (string | number)[]): void;
 };
 
@@ -151,12 +160,15 @@ const MEMORY_TABLES: Record<MemoryRecordKind, MemoryTable> = {
 
 /** Column names of the memory tables, in `PRAGMA table_xinfo` order (snapshot layout check). */
 const MEMORY_TABLE_COLUMNS: Record<string, readonly string[]> = {
-    memory_state: ["chatSeq", "revision"],
+    memory_state: ["chatSeq", "revision", "adoptionDeclined"],
     memory_pages: ["seq", "chatSeq", "id", "type", "title", "data"],
     memory_events: ["seq", "chatSeq", "id", "title", "status", "createdRevision", "data"],
     memory_threads: ["seq", "chatSeq", "id", "title", "state", "data"],
     memory_runs: ["seq", "chatSeq", "id", "result", "data"],
 };
+
+/** `memory_state` in a snapshot from before `adoptionDeclined`, whose chats read as not declined. */
+const MEMORY_STATE_COLUMNS_BEFORE_DECLINE: readonly string[] = ["chatSeq", "revision"];
 
 /** The columns a table of contents lists. */
 function listedColumns({ titled, statusColumn }: MemoryTable): string[] {
@@ -314,11 +326,13 @@ export function checkMemoryRow(
  */
 export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
     const selectChat = db.prepare("SELECT seq FROM chats WHERE characterId = ? AND id = ?");
-    const selectRevision = db.prepare("SELECT revision FROM memory_state WHERE chatSeq = ?");
+    const selectState = db.prepare("SELECT revision, adoptionDeclined FROM memory_state WHERE chatSeq = ?");
+    // Only the revision: a record's write and a checkpoint load both leave a decline as it is.
     const upsertRevision = db.prepare(
         "INSERT INTO memory_state (chatSeq, revision) VALUES (?, ?) " +
             "ON CONFLICT (chatSeq) DO UPDATE SET revision = excluded.revision",
     );
+    const setDeclined = db.prepare("UPDATE memory_state SET adoptionDeclined = 1 WHERE chatSeq = ?");
     const selectCreatedRevision = db.prepare("SELECT createdRevision FROM memory_events WHERE chatSeq = ? AND id = ?");
     const selectScenePage = db.prepare("SELECT id FROM memory_pages WHERE chatSeq = ? AND type = 'scene'");
     // A budgeted read's charges for the events a projection answers: stored sizes only.
@@ -347,8 +361,18 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
         runs: prepareTable(db, MEMORY_TABLES.runs),
     };
 
+    /** The chat's `memory_state` row, or what a chat with none reads as. */
+    function stateOf(seq: number): { revision: number; adoptionDeclined: number } {
+        return (
+            (selectState.get(seq) as { revision: number; adoptionDeclined: number } | undefined) ?? {
+                revision: 0,
+                adoptionDeclined: 0,
+            }
+        );
+    }
+
     function revisionOf(seq: number): number {
-        return (selectRevision.get(seq) as { revision: number } | undefined)?.revision ?? 0;
+        return stateOf(seq).revision;
     }
 
     /**
@@ -442,18 +466,21 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
         /**
          * The table of contents, read without any record's body. Missing chat: null. Each list is in
          * `seq` order, which is storage order, not message order: an updated record keeps its place.
+         * It says whether the chat declined adoption, and nothing else of its HypaV3 summaries.
          */
         readContents(characterId: string, chatId: string): MemoryContents | null {
             const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
             if (!chat) {
                 return null;
             }
+            const { revision, adoptionDeclined } = stateOf(chat.seq);
             return {
-                revision: tokens.token(chat.seq, revisionOf(chat.seq)),
+                revision: tokens.token(chat.seq, revision),
                 pages: tables.pages.selectContents.all(chat.seq) as MemoryContents["pages"],
                 events: tables.events.selectContents.all(chat.seq) as MemoryContents["events"],
                 threads: tables.threads.selectContents.all(chat.seq) as MemoryContents["threads"],
                 runs: tables.runs.selectContents.all(chat.seq) as MemoryContents["runs"],
+                ...(adoptionDeclined === 1 ? { adoptionDeclined: true as const } : {}),
             };
         },
 
@@ -535,14 +562,15 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
          * so a stale or refused write changes nothing and is never merged. Removing an id that does
          * not exist is no refusal and still moves the revision. A change set that names nothing, once
          * the base is checked, answers the current token and writes nothing, not even a `memory_state`
-         * row.
+         * row; a decline of a chat that already declined names nothing. Any other decline is a real
+         * write, so a chat with no `memory_state` row gets one at revision 1.
          */
         write(characterId: string, chatId: string, baseRevision: string, changes: MemoryChanges): MemoryWriteResult {
             const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
             if (!chat) {
                 throw new ResourceConflictError(null);
             }
-            const current = revisionOf(chat.seq);
+            const { revision: current, adoptionDeclined } = stateOf(chat.seq);
             const currentToken = tokens.token(chat.seq, current);
             const base = tokens.parse(baseRevision);
             if (!base || base.seq !== chat.seq || base.revision !== current) {
@@ -553,7 +581,8 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                 records: changes[kind] ?? [],
                 removed: changes.remove?.[kind] ?? [],
             }));
-            if (lists.every(({ records, removed }) => records.length === 0 && removed.length === 0)) {
+            const declines = changes.adoptionDeclined === true && adoptionDeclined !== 1;
+            if (!declines && lists.every(({ records, removed }) => records.length === 0 && removed.length === 0)) {
                 return { revision: currentToken, wrote: false };
             }
             const revision = nextRevision(current, 1);
@@ -573,6 +602,9 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                 }
             }
             upsertRevision.run(chat.seq, revision);
+            if (declines) {
+                setDeclined.run(chat.seq);
+            }
             return { revision: tokens.token(chat.seq, revision), wrote: true };
         },
 
@@ -583,7 +615,7 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
          * `createdRevision` of its text. Every row is checked before the first statement that writes
          * (`checkMemoryRow`), so a `ResourceValidationError` changes nothing; a `createdRevision` past the
          * new revision is refused too, since a snapshot of such a chat would be. A missing chat is a
-         * `ResourceConflictError` with no current revision.
+         * `ResourceConflictError` with no current revision. A decline is no row of `texts`, so it stays.
          */
         replace(characterId: string, chatId: string, texts: MemoryRowTexts): void {
             const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
@@ -614,13 +646,15 @@ function isPositiveSafeInteger(value: unknown): value is number {
 }
 
 /**
- * Whether the snapshot `source` has the memory tables: all of them, each an ordinary table with this
- * store's exact columns, or none. A partial group, or anything else under one of their names, is a
- * `ResourceValidationError`.
+ * The columns of `memory_state` in the snapshot `source`, null when it has no memory tables: it has all
+ * of them or none, each an ordinary table with this store's exact columns, or `memory_state` with those
+ * of a snapshot from before `adoptionDeclined`. A partial group, or anything else under one of their
+ * names, is a `ResourceValidationError`.
  */
-function hasMemoryTables(source: DatabaseSync): boolean {
+function memoryStateLayout(source: DatabaseSync): readonly string[] | null {
     const tables = Object.entries(MEMORY_TABLE_COLUMNS);
     let present = 0;
+    let stateColumns: readonly string[] | null = null;
     for (const [table, columns] of tables) {
         try {
             const objects = source
@@ -638,11 +672,17 @@ function hasMemoryTables(source: DatabaseSync): boolean {
                 throw new ResourceValidationError(`${table}: not an ordinary memory table`);
             }
             const info = source.prepare(`PRAGMA table_xinfo(${table})`).all() as { name: string; hidden: number }[];
-            if (
-                info.length !== columns.length ||
-                !info.every((column, index) => column.name === columns[index] && column.hidden === 0)
-            ) {
+            const layouts = table === "memory_state" ? [columns, MEMORY_STATE_COLUMNS_BEFORE_DECLINE] : [columns];
+            const layout = layouts.find(
+                (expected) =>
+                    info.length === expected.length &&
+                    info.every((column, index) => column.name === expected[index] && column.hidden === 0),
+            );
+            if (!layout) {
                 throw new ResourceValidationError(`${table}: invalid memory table columns`);
+            }
+            if (table === "memory_state") {
+                stateColumns = layout;
             }
             present += 1;
         } catch (error) {
@@ -655,7 +695,7 @@ function hasMemoryTables(source: DatabaseSync): boolean {
     if (present !== 0 && present !== tables.length) {
         throw new ResourceValidationError("Incomplete memory tables in resource database");
     }
-    return present !== 0;
+    return stateColumns;
 }
 
 /**
@@ -667,7 +707,7 @@ function hasMemoryTables(source: DatabaseSync): boolean {
  * A record passes what a live write checks and what a live write leaves true (`checkMemoryRow`): its
  * chat has a `memory_state` row, though a state row needs no records, an event's `createdRevision` is
  * within that revision, and a chat holds one `scene` page. Its shape past that is unchecked here as
- * there.
+ * there. A state row's decline is exactly 0 or 1, and a snapshot from before that column reads as 0.
  *
  * Only `seq`, `chatSeq`, and `data` are read. The columns a record decides come from the record, as in a
  * live write, and are never compared with the source's: a live write can leave the two unequal (a
@@ -685,27 +725,32 @@ export function walkMemorySnapshot(
     sink: MemorySnapshotSink,
     signal?: AbortSignal,
 ): void {
-    if (!hasMemoryTables(source)) {
+    const stateColumns = memoryStateLayout(source);
+    if (!stateColumns) {
         return;
     }
+    const declined = stateColumns.includes("adoptionDeclined") ? "adoptionDeclined" : "0 AS adoptionDeclined";
 
     const revisions = new Map<number, number>();
     for (const [row, number] of snapshotRows(
         source,
-        "SELECT chatSeq, revision FROM memory_state ORDER BY chatSeq",
+        `SELECT chatSeq, revision, ${declined} FROM memory_state ORDER BY chatSeq`,
         "memory_state: cannot read memory rows",
         signal,
     )) {
         const where = `memory_state row ${number}`;
-        const { chatSeq, revision } = row;
+        const { chatSeq, revision, adoptionDeclined } = row;
         if (typeof chatSeq !== "number" || !chatIds.has(chatSeq) || revisions.has(chatSeq)) {
             throw new ResourceValidationError(`${where}: no such chat or a duplicate state`);
         }
         if (!isPositiveSafeInteger(revision)) {
             throw new ResourceValidationError(`${where}: invalid revision`);
         }
+        if (adoptionDeclined !== 0 && adoptionDeclined !== 1) {
+            throw new ResourceValidationError(`${where}: invalid adoptionDeclined`);
+        }
         revisions.set(chatSeq, revision);
-        sink.state({ chatSeq, revision });
+        sink.state({ chatSeq, revision, adoptionDeclined });
     }
 
     for (const kind of MEMORY_RECORD_KINDS) {
@@ -747,11 +792,11 @@ export function walkMemorySnapshot(
 /**
  * The memory half of a staged store's writer (`writeValidatedStore`). A row keeps the source's numeric
  * `chatSeq`, since a staged chat keeps its seq, and a record takes a seq of the staged table's, in source
- * order. Revisions stay as stored: the new epoch and the new chat seq make every old token stale, and
- * no record holds a token or a chat seq.
+ * order. Revisions and declines stay as stored: the new epoch and the new chat seq make every old token
+ * stale, and no record holds a token or a chat seq.
  */
 export function createMemoryStagingSink(db: DatabaseSync): MemorySnapshotSink {
-    const insertState = db.prepare("INSERT INTO memory_state (chatSeq, revision) VALUES (?, ?)");
+    const insertState = db.prepare("INSERT INTO memory_state (chatSeq, revision, adoptionDeclined) VALUES (?, ?, ?)");
     const insertRecord = {
         pages: db.prepare(insertRecordSql(MEMORY_TABLES.pages)),
         events: db.prepare(insertRecordSql(MEMORY_TABLES.events)),
@@ -760,7 +805,7 @@ export function createMemoryStagingSink(db: DatabaseSync): MemorySnapshotSink {
     };
     return {
         state(row) {
-            insertState.run(row.chatSeq, row.revision);
+            insertState.run(row.chatSeq, row.revision, row.adoptionDeclined);
         },
         record(kind, chatSeq, row) {
             insertRecord[kind].run(chatSeq, ...row);
@@ -785,8 +830,8 @@ export function copyStagedMemory(db: DatabaseSync): void {
                     ORDER BY r.seq;`;
     });
     db.exec(`
-        INSERT INTO main.memory_state (chatSeq, revision)
-            SELECT seqs.liveSeq, s.revision
+        INSERT INTO main.memory_state (chatSeq, revision, adoptionDeclined)
+            SELECT seqs.liveSeq, s.revision, s.adoptionDeclined
                 FROM staged.memory_state s JOIN ${STAGED_CHAT_SEQS} seqs ON seqs.stagedSeq = s.chatSeq;
         ${records.join("")}
     `);

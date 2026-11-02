@@ -44,11 +44,12 @@
 - `server/src/data/resourceStore.ts`, the checkpoint's part: `CheckpointTransaction.restoreMemory`. The rest is in
   [structured memory](structured-memory.md#files).
 - `server/src/routes/structuredMemory.ts`: the inherit route ([Copies and branches](#copies-and-branches)), the restore
-  route ([Chat files](#chat-files)), the adopt route ([Adopting HypaV3 summaries](#adopting-hypav3-summaries)), and the
-  repair half of the edit route. The rest is in [structured memory](structured-memory.md#files).
-- `src/ts/process/structuredMemory.svelte.ts`: `inheritStructuredMemory`, `readStructuredMemoryFile`,
-  `exportChatMemory`, `chatFileMemory`, `restoreStructuredMemory`, `adoptStructuredMemory`. The rest is in
+  route ([Chat files](#chat-files)), the adopt and decline routes
+  ([Adopting HypaV3 summaries](#adopting-hypav3-summaries)), and the repair half of the edit route. The rest is in
   [structured memory](structured-memory.md#files).
+- `src/ts/process/structuredMemory.svelte.ts`: `inheritStructuredMemory`, `readStructuredMemoryFile`,
+  `exportChatMemory`, `chatFileMemory`, `restoreStructuredMemory`, `adoptStructuredMemory`, `declineStructuredMemory`,
+  `resetStructuredMemorySummaries`. The rest is in [structured memory](structured-memory.md#files).
 - `src/ts/process/chatMemoryInherit.svelte.ts`: `createInheritingChat`, `restoreChatMemory`, the wait and the notices.
   Its own file, because they read the chat store and the save loop, and `structuredMemory.svelte.ts` stays free of both.
 - `src/ts/characters.ts`: `exportChat`, `exportAllChats`, and `importChat`'s `addChats` ([Chat files](#chat-files)).
@@ -175,10 +176,11 @@ behind it, one attempt with no retry:
    source chat is not fenced: no writer of it can run inside this step.
 3. The new chat's contents, 404 `chatGone`. A row of any kind, runs included, answers `inherited: false` and writes
    nothing, which is what a repeat finds.
-4. The source chat's contents, 404 `chatGone`. With no page, event, or thread, `inherited: false`.
+4. The source chat's contents, 404 `chatGone`. With no page, event, or thread, `inherited: false`, and only a decline
+   crosses.
 5. Every source page, event, and thread and both chats are read, `inheritedRecords` builds, and `store.memory.write`
-   commits it at the contents' revision. Runs stay out: the Log starts empty, and coverage comes from the events'
-   `sources`.
+   commits it at the contents' revision, with a decline. `inherited` says whether records crossed. Runs stay out: the
+   Log starts empty, and coverage comes from the events' `sources`.
 
 What `inheritedRecords` decides:
 
@@ -303,10 +305,10 @@ The route decides, whatever the tab offered:
 - It reads the chat through `readChatSource`, never an overlaid or tab-sent value, so a projection cannot be adopted,
   and `adoptedEvents` also refuses a sealed value. No body is read, so the checks and the write are one synchronous
   step: the epoch, the fence (409 `fenced`), the contents, the build, then `store.memory.write`.
-- A chat with a page, event, or thread answers `adopted: 0`, which is what a repeat finds, and so does one with nothing
-  to adopt. Neither writes. Runs do not count, unlike [a copy](#copies-and-branches) and [a chat file](#chat-files): a
-  failed writer run leaves a row and no record, so counting one would refuse adoption for good, and the fence holds off
-  a live one.
+- A chat with a page, event, or thread answers `adopted: 0`, which is what a repeat finds, and so does a chat that
+  declined or has nothing to adopt. None writes. Runs do not count, unlike [a copy](#copies-and-branches) and
+  [a chat file](#chat-files): a failed writer run leaves a row and no record, so counting one would refuse adoption for
+  good, and the fence holds off a live one.
 - It writes events only. `hypaV3Data` and the chat row stay as they were, and adopting adds no run to the Log. Failed
   runs already there stay, and so does a pause they caused. `writerRun` is `ADOPTED_WRITER_RUN`, which names no run.
   Timeline's line says "originally": a later run can merge into the last adopted event, which keeps that `writerRun`.
@@ -332,6 +334,26 @@ After it:
   the real `hypaV3Data` until a reset empties it. From then on they read
   [the projection](structured-memory.md#the-hypav3-projection), `pinned` as `isImportant`.
 - The next send can embed the new events, as any send embeds its records. Only adopting is free of model calls.
+
+### The adoption choice
+
+A chat with no page, event, or thread and no decline, whose stored `hypaV3Data` `adoptedEvents` would make an event of,
+is held (`adoptionHold`, runs not counting), so blank summaries hold nothing. Nothing records until a person adopts or
+declines in the panel ([the writer](structured-memory-writer.md#a-writer-run) enforces it), which keeps D11's one owner.
+While held the projection stands aside as for any stored summaries, so a plugin reads the real value.
+
+`POST .../decline`, with no body, answers `StructuredMemoryDeclineAnswer`. Its checks and write are one step, as for
+adopting. Only a held chat writes `adoptionDeclined`, one-way, moving the memory revision; a real value in a tab stays,
+because a plugin read never asks about one and `readProjectionRevisions` answers null for it. Any other chat answers
+`declined: false`. The writer then starts from the oldest turn.
+
+Where a decline goes: a snapshot carries it. A checkpoint load leaves it, because `replace` sets only the revision, so
+it outlives a load from before it. An inherit carries it, with no record or none supported too, since the copy holds the
+same summaries. A chat file drops it, because a file can be passed on, so an imported chat with summaries and no records
+is held. The restore route leaves one in place.
+
+A reset of an adopted chat's stored summaries is [its own step](structured-memory.md#the-reset), because the projection
+takes over from it.
 
 ## State
 
@@ -448,15 +470,14 @@ After it:
   holds them and the import shows the size notice. Decision: Structured Memory slice 5f, plan.
 - HTML, TXT, and jsonl chat files carry no records, so a chat imported from one starts with a coverage gap. Decision:
   Structured Memory slice 5f, plan.
-- [Adoption](#adopting-hypav3-summaries) refuses a chat the writer reached first: one automatic task or Record now
-  leaves a record, and the summaries are then not offered, because nothing merges them with events. Decision: Structured
-  Memory slice 6a, plan.
+- [Adoption](#adopting-hypav3-summaries) refuses a chat that holds a record, such as one recorded before the hold or a
+  summary written after the first record: nothing merges them with events. Decision: Structured Memory slice 6a, plan.
 - Under `doNotSummarizeUserMessage` a summary cites only replies, so an adopted chat's user messages stay uncovered, and
   no window takes them, because a turn whose reply is recorded drops out. No source is invented for them. Decision:
   Structured Memory slice 6a, plan.
-- The panel replaces `HypaV3Modal`, so a reset of the adopted value needs another algorithm selected for a moment. Until
-  then plugins and the upstream export read the old summaries, without any later event. Decision: Structured Memory
-  slice 6a, plan.
+- A declined chat is never reset, since its summaries have no other copy, so its plugins keep reading them without any
+  later event. Selecting HypaV3 and using its modal is the way out. A held chat's send has no summaries or card, so its
+  older history trims until the choice. Decision: Structured Memory slice 6c, plan.
 - An adopted summary over the card's budget is left out whole (`budget`) while its messages leave the prompt and only
   its flow title goes. Retrieval embeds the whole text, so a provider that refuses it fails similarity for that send,
   with no participants to fall back on, and compaction never touches events. Decision: Structured Memory slice 6a, plan.

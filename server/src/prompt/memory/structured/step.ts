@@ -33,7 +33,7 @@ import {
 } from "./lanes.ts";
 import { reconcileEvents } from "./reconcile.ts";
 import { retrieveLanes } from "./retrieve.ts";
-import { writerPaused } from "./writer.ts";
+import { chatAdoptionHold, writerPaused } from "./writer.ts";
 
 /**
  * A send's read of Structured Memory: which stored records it sees, what of its history leaves the
@@ -76,6 +76,8 @@ export type MemoryRecords = {
     runs: MemoryContents["runs"];
     /** Whether automatic recording is paused (`writerPaused`). */
     paused: boolean;
+    /** The chat waits for a person to adopt or decline its HypaV3 summaries (`chatAdoptionHold`). */
+    adoptionHeld?: true;
 };
 
 /** What a selection reads besides the records, which is the same on a second pass. */
@@ -146,7 +148,11 @@ export type MemorySendManifest = {
  * The chat's records in one synchronous read, so a send reads every event and page once. Empty for a
  * missing chat.
  */
-export function readMemoryRecords(store: Pick<ResourceStore, "memory">, chaId: string, chatId: string): MemoryRecords {
+export function readMemoryRecords(
+    store: Pick<ResourceStore, "memory" | "chatMeta">,
+    chaId: string,
+    chatId: string,
+): MemoryRecords {
     const contents = store.memory.readContents(chaId, chatId);
     const runs = contents?.runs ?? [];
     const events = contents?.events ?? [];
@@ -161,6 +167,7 @@ export function readMemoryRecords(store: Pick<ResourceStore, "memory">, chaId: s
         stage: pages.find(({ type }) => type === "scene")?.participants ?? [],
         runs,
         paused: writerPaused(runs),
+        ...(contents && chatAdoptionHold(store, chaId, chatId, contents) > 0 ? { adoptionHeld: true as const } : {}),
     };
 }
 

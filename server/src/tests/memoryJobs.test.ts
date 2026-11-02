@@ -3387,6 +3387,82 @@ describe("structured memory job hand-offs", () => {
             }
         });
 
+        it("refuses Record now from a held chat for server, Plugin and request-trigger writers", async () => {
+            for (const mode of ["server", "plugin", "trigger"] as const) {
+                fake.reset();
+                fake.recordAnswer = {
+                    outcome: "queued",
+                    status: { kind: "structuredMemory", taskId: "record", state: "queued", done: 0, total: 0 },
+                };
+                await pluginSlot(mode === "plugin");
+                const chaId = await seedCharacter({
+                    messages,
+                    extra: mode === "trigger" ? { lowLevelAccess: true, triggerscript: [requestTrigger] } : {},
+                });
+                await setChatMeta(chaId, {
+                    hypaV3Data: { summaries: [{ text: "Old memory", chatMemos: ["u1", "a1"], isImportant: false }] },
+                });
+                const before = (await api(`/api/memory/structured/${chaId}/k`)).body;
+                const callback = vi.fn(() => ({ outcome: "answered", value: { success: true, content: analysis(0) } }));
+                const result = await job(
+                    "command",
+                    chaId,
+                    { mode: "manual" },
+                    {
+                        command: { type: "memoryRecord", messageId: "a2" },
+                        hooks: pluginHooks,
+                        answerCallback: callback,
+                    },
+                );
+                expect(result.terminal).toMatchObject({
+                    type: "error",
+                    message: expect.stringMatching(/adopt or decline/i),
+                });
+                expect(callback).not.toHaveBeenCalled();
+                expect(fake.records).toEqual([]);
+                expect(summaries()).toEqual([]);
+                expect((await api(`/api/memory/structured/${chaId}/k`)).body).toEqual(before);
+            }
+        });
+
+        it("keeps a held send from asking about a gap or handing off a waiting manual start", async () => {
+            await patchPreset("modelProfiles", { maxContext: 900 });
+            await patchHypaV3({
+                gapConfirmTokens: 0,
+                structured: {
+                    cadence: "manual",
+                    windowTurns: 1,
+                    laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 },
+                },
+            });
+            fake.setPendingManual(true);
+            const chaId = await seedCharacter();
+            await setChatMeta(chaId, {
+                hypaV3Data: { summaries: [{ text: "Old memory", chatMemos: ["m0", "m1"], isImportant: false }] },
+            });
+            const before = (await api(`/api/memory/structured/${chaId}/k`)).body;
+            try {
+                const result = await job(
+                    "send",
+                    chaId,
+                    { input: "Continue the story", userMessageId: "next" },
+                    { answer: () => "generate" },
+                );
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(questions(result.events)).toEqual([]);
+                expect(fake.handOffs).toEqual([]);
+                expect(fake.leases).toEqual([]);
+                expect(summaries()).toEqual([]);
+                expect((await readChat(chaId)).data.message.at(-1).generationInfo.memory).toMatchObject({
+                    state: "notAutomatic",
+                    reason: "awaitingAdoption",
+                });
+                expect((await api(`/api/memory/structured/${chaId}/k`)).body).toEqual(before);
+            } finally {
+                await patchPreset("modelProfiles", { maxContext: 5000 });
+            }
+        });
+
         it("validates record commands and hands the pressed message or resume to the memory service", async () => {
             const chaId = await seedCharacter({ messages });
             fake.recordAnswer = {

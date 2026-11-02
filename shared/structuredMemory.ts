@@ -560,14 +560,25 @@ export type StructuredMemoryRecordOf = {
 /** A table-of-contents row: the record's listed fields and the size of its stored text in bytes. */
 type StructuredMemoryContentsRow<T, Field extends keyof T> = Pick<T, Field> & { bytes: number };
 
-/** The contents route's answer: a chat's records without their bodies, each list in storage order. */
-export type StructuredMemoryContentsAnswer = {
+/** A chat's records without their bodies, each list in storage order. */
+export type StructuredMemoryContents = {
     revision: string;
     pages: StructuredMemoryContentsRow<MemoryPage, "id" | "type" | "title">[];
     events: StructuredMemoryContentsRow<MemoryEvent, "id" | "title" | "status">[];
     threads: StructuredMemoryContentsRow<MemoryThread, "id" | "title" | "state">[];
     runs: StructuredMemoryContentsRow<MemoryRun, "id" | "result">[];
 };
+
+/**
+ * What the memory panel offers for a chat's HypaV3 summaries, as the server sees them: the routes decide
+ * from what is stored, so a tab's mirror never does. `adoptable` is the events a chat that waits for a
+ * person's choice would adopt, 0 for one that does not wait. `declined` is that person's lasting no.
+ * `resettable` says a reset would empty the stored summaries of an adopted chat.
+ */
+export type StructuredMemoryAdoption = { adoptable: number; declined: boolean; resettable: boolean };
+
+/** The contents route's answer: a chat's records without their bodies and what the panel offers for its summaries. */
+export type StructuredMemoryContentsAnswer = StructuredMemoryContents & { adoption: StructuredMemoryAdoption };
 
 /** The record route's answer: one record as stored. */
 export type StructuredMemoryRecordAnswer<K extends StructuredMemoryRecordKind = StructuredMemoryRecordKind> = {
@@ -638,18 +649,31 @@ export type StructuredMemoryEditAnswer = { revision: string } & (
 );
 
 /**
- * The inherit route's answer: the new chat's memory revision, and whether this call built its records
- * from the source chat. It did not when the new chat already holds a row, which is what a repeat finds,
- * or when the source chat holds no page, event, or thread.
+ * The inherit route's answer: the new chat's memory revision, and whether records crossed from the source
+ * chat in this call. None did when the new chat already holds a row, which is what a repeat finds, when
+ * the source chat holds no page, event, or thread, or when the new chat's messages support none of them.
+ * A decline can still have crossed.
  */
 export type StructuredMemoryInheritAnswer = { revision: string; inherited: boolean };
 
 /**
  * The adopt route's answer: the chat's memory revision, the events this call wrote, and how many of them
- * it stored stale. Both are 0 when the chat already holds a record, which is what a repeat finds, or when
- * nothing is adoptable.
+ * it stored stale. Both are 0 when the chat already holds a record, which is what a repeat finds, when it
+ * declined, or when nothing is adoptable.
  */
 export type StructuredMemoryAdoptAnswer = { revision: string; adopted: number; stale: number };
+
+/**
+ * The decline route's answer: the chat's memory revision, and whether this call declined. Only a chat that
+ * waits for that choice does, so a repeat answers false.
+ */
+export type StructuredMemoryDeclineAnswer = { revision: string; declined: boolean };
+
+/**
+ * The reset route's answer: the chat's revision, not its memory revision, because a reset writes the chat,
+ * and whether this call emptied its stored summaries.
+ */
+export type StructuredMemoryResetAnswer = { chatRevision: string; reset: boolean };
 
 /**
  * One round of the threads route, which a chat file reads beside the package rounds. `next` is the position

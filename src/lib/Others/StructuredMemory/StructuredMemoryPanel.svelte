@@ -2,34 +2,33 @@
     import { RefreshCcwIcon, XIcon } from "@lucide/svelte";
     import { untrack, type Component } from "svelte";
     import { language } from "src/lang";
-    import { alertError, alertToast } from "src/ts/alert";
+    import { alertConfirm, alertError, alertToast } from "src/ts/alert";
     import { requestMessageJump } from "src/ts/messageSearch.svelte";
     import { chatStatusKey, generatingChatKeys } from "src/ts/process/chatStatus.svelte";
     import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { memoryTaskAwaitingSync, memoryTaskFenced, memoryTaskStatus } from "src/ts/process/memoryTasks.svelte";
     import {
         adoptStructuredMemory,
+        declineStructuredMemory,
         memoryWriterNotice,
         newestAssistantMessageId,
         newestMemoryReceipt,
         readStructuredMemoryContents,
+        resetStructuredMemorySummaries,
         type MemoryPanelTabProps,
         type MemoryPanelTarget,
+        type StructuredMemoryResult,
     } from "src/ts/process/structuredMemory.svelte";
     import { characterList, findCharacter } from "src/ts/storage/characterStore.svelte";
-    import { currentChatRef, findChat } from "src/ts/storage/chatStore.svelte";
+    import { currentChatRef, findChat, markChatStale, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { refreshStaleChat } from "src/ts/storage/resourceSync.svelte";
     import { setChatOpen } from "src/ts/storage/selection.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { hypaV3ModalOpen } from "src/ts/stores.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
     import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
-    import {
-        hypaV3DataHoldsSummaries,
-        isSealedHypaV3Data,
-        normalizeStructuredMemorySettings,
-        writerPaused,
-    } from "../../../../shared/structuredMemory.ts";
+    import { normalizeStructuredMemorySettings, writerPaused } from "../../../../shared/structuredMemory.ts";
     import { memoryTaskStatusLine } from "../HypaV3Modal/taskStatusLine";
     import CoverageTab from "./CoverageTab.svelte";
     import LogTab from "./LogTab.svelte";
@@ -52,8 +51,10 @@
     //
     // Pages, Timeline, and Threads write, each edit checked against the revision it was made on and fenced
     // on the server; read-only here only turns their controls off first. The writer line says when recording
-    // is not automatic and why, from the current state, and holds the buttons that start it. Under it, a
-    // chat with HypaV3 summaries and no records is offered their adoption, which the server checks again.
+    // is not automatic and why, from the current state, and holds the buttons that start it. Above it, a
+    // chat with HypaV3 summaries and no records, which the server holds until a person chooses, offers
+    // adopting or declining them. Under it, an adopted chat that still stores them offers their reset. What
+    // these offer comes from the contents route, and the server checks it again on each press.
 
     const text = language.structuredMemory.panel;
     const receiptText = language.structuredMemory.receipt;
@@ -115,7 +116,12 @@
     });
 
     /** What the chat's contents say and which chat they were read for; a read that failed says nothing. */
-    let contentsFacts = $state.raw<{ chatKey: string | null; paused: boolean; noRecords: boolean } | null>(null);
+    let contentsFacts = $state.raw<{
+        chatKey: string | null;
+        paused: boolean;
+        adoptable: number;
+        resettable: boolean;
+    } | null>(null);
     let contentsRead = 0;
     const heldFacts = $derived(contentsFacts?.chatKey === chatKey ? contentsFacts : null);
 
@@ -130,9 +136,8 @@
                     ? {
                           chatKey: key,
                           paused: writerPaused(result.value.runs),
-                          noRecords: [result.value.pages, result.value.events, result.value.threads].every(
-                              ({ length }) => length === 0,
-                          ),
+                          adoptable: result.value.adoption.adoptable,
+                          resettable: result.value.adoption.resettable,
                       }
                     : null;
         }
@@ -154,11 +159,14 @@
             })?.settings.structured,
         ).cadence,
     );
+    /** The events the held chat's summaries would adopt, 0 for a chat the server does not hold. */
+    const adoptable = $derived(heldFacts?.adoptable ?? 0);
     const notice = $derived(
         memoryWriterNotice({
             memoryOn: chatRef !== null && !!findCharacter(chatRef.chaId)?.supaMemory,
             cadence,
             paused: heldFacts?.paused ?? false,
+            adoptionHeld: adoptable > 0,
             receipt: newestMemoryReceipt(messages),
             taskLive,
         }),
@@ -194,24 +202,28 @@
         }
     }
 
-    /** The held summaries an adoption can take, 0 for none. A projection is never adopted as summaries. */
-    const adoptableSummaries = $derived.by(() => {
-        const data = chatRef ? findChat(chatRef)?.hypaV3Data : undefined;
-        return data && hypaV3DataHoldsSummaries(data) && !isSealedHypaV3Data(data) ? data.summaries.length : 0;
-    });
-
-    /** An `epoch` refusal already raised its own notice, so it adds none, as in Timeline's repairs. */
-    async function pressAdopt() {
+    /**
+     * One press of the adoption choice or the reset: asks `question` first when it has one, because those
+     * cannot be taken back, then sends, shows what came of it, and reads the contents again. An `epoch`
+     * refusal already raised its own notice, so it adds none, as in Timeline's repairs.
+     */
+    async function pressChoice<T>(
+        send: (ref: ChatRef) => Promise<StructuredMemoryResult<T>>,
+        answered: (value: T, ref: ChatRef) => void | Promise<void>,
+        question?: string,
+    ) {
         const ref = chatRef;
         if (!ref || pressing) {
             return;
         }
         pressing = true;
         try {
-            const result = await adoptStructuredMemory(ref);
+            if (question !== undefined && !(await alertConfirm(question))) {
+                return;
+            }
+            const result = await send(ref);
             if (result.outcome === "ok") {
-                const { adopted, stale } = result.value;
-                alertToast(adopted > 0 ? adoptText.done(adopted, stale) : adoptText.nothing);
+                await answered(result.value, ref);
                 refresh += 1;
             } else if (result.outcome === "failed" || result.reason !== "epoch") {
                 alertError(memoryReadFailureText(result));
@@ -219,6 +231,50 @@
         } finally {
             pressing = false;
         }
+    }
+
+    function pressAdopt() {
+        return pressChoice(adoptStructuredMemory, ({ adopted, stale }) => {
+            alertToast(adopted > 0 ? adoptText.done(adopted, stale) : adoptText.nothing);
+        });
+    }
+
+    function pressDecline() {
+        return pressChoice(
+            declineStructuredMemory,
+            ({ declined }) => {
+                alertToast(declined ? adoptText.declined : adoptText.declineNothing);
+            },
+            adoptText.declineConfirm,
+        );
+    }
+
+    /**
+     * The reset is a write of the server's, so the tab's held summaries go with a read and it writes nothing
+     * back. The chat is marked first: the idle refresh then reads it once local work is done, or after a
+     * read that failed, and a whole read brings the projection in their place.
+     */
+    async function readResetChat(ref: ChatRef) {
+        try {
+            if (markChatStale(ref)) {
+                await refreshStaleChat(ref);
+            }
+        } catch (error) {
+            console.error("[Memory]", error);
+        }
+    }
+
+    function pressReset() {
+        return pressChoice(
+            resetStructuredMemorySummaries,
+            async ({ reset }, ref) => {
+                alertToast(reset ? adoptText.resetDone : adoptText.resetNothing);
+                if (reset) {
+                    await readResetChat(ref);
+                }
+            },
+            adoptText.resetConfirm,
+        );
     }
 
     function close() {
@@ -309,6 +365,33 @@
                 </div>
             {/if}
 
+            {#if chatRef && adoptable > 0}
+                <div
+                    class="flex flex-wrap items-center justify-between gap-2 text-sm text-textcolor2"
+                    data-memory-adopt
+                >
+                    <span class="min-w-0">{adoptText.offer(adoptable)}</span>
+                    <div class="flex flex-wrap gap-2">
+                        <Button
+                            size="sm"
+                            styled="outlined"
+                            disabled={pressing || readOnly || taskLive}
+                            onclick={pressAdopt}
+                        >
+                            <span data-memory-adopt-action>{adoptText.button}</span>
+                        </Button>
+                        <Button
+                            size="sm"
+                            styled="outlined"
+                            disabled={pressing || readOnly || taskLive}
+                            onclick={pressDecline}
+                        >
+                            <span data-memory-decline-action>{adoptText.decline}</span>
+                        </Button>
+                    </div>
+                </div>
+            {/if}
+
             {#if chatRef && (writerText !== null || writerAction !== null)}
                 <div
                     class="flex flex-wrap items-center justify-between gap-2 text-sm text-textcolor2"
@@ -332,19 +415,19 @@
                 </div>
             {/if}
 
-            {#if chatRef && adoptableSummaries > 0 && heldFacts?.noRecords}
+            {#if chatRef && heldFacts?.resettable}
                 <div
                     class="flex flex-wrap items-center justify-between gap-2 text-sm text-textcolor2"
-                    data-memory-adopt
+                    data-memory-reset
                 >
-                    <span class="min-w-0">{adoptText.offer(adoptableSummaries)}</span>
+                    <span class="min-w-0">{adoptText.resetOffer}</span>
                     <Button
                         size="sm"
                         styled="outlined"
                         disabled={pressing || readOnly || taskLive}
-                        onclick={pressAdopt}
+                        onclick={pressReset}
                     >
-                        <span data-memory-adopt-action>{adoptText.button}</span>
+                        <span data-memory-reset-action>{adoptText.reset}</span>
                     </Button>
                 </div>
             {/if}

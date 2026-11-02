@@ -28,6 +28,7 @@ import { HypaProcesser } from "../../embeddings.ts";
 import type { MemoryHost } from "../host.ts";
 import { MemoryHostFailure, type MemoryTaskHostDeps } from "../memoryTaskHost.ts";
 import type { StructuredMemoryCommit, StructuredMemoryWriter, StructuredMemoryWriterResult } from "../memoryTasks.ts";
+import { adoptedEvents } from "./adopt.ts";
 import { admitAnalysis, type Admission, parseAnalysis } from "./analysis.ts";
 import { type Compaction, compactionTargets, readCompaction } from "./compact.ts";
 import {
@@ -61,6 +62,10 @@ export { writerPaused };
  * that shows how it went. The rows are the writer's whole state: a restart loses nothing, and pausing
  * needs no table of its own.
  *
+ * - Hold: a chat with HypaV3 summaries and no records waits for a person to adopt or decline them in the
+ *   memory panel (`adoptionHold`), which keeps one owner per chat. No run opens, a manual one included,
+ *   with no call and no row (`awaitingAdoption`), and `commitWindow` refuses a run that met the hold
+ *   later. Nothing is lost by waiting: the summaries stay stored, and so do the turns.
  * - Interrupted runs: one task runs per chat, so a `pending` row found at a start is abandoned (a
  *   cancel, a checkpoint load, maintenance, a restart, a deadline). The write that opens the new run
  *   closes it `skipped` (`interrupted`). It proves nothing about the model, so it is no failure.
@@ -148,6 +153,32 @@ export function writerHostDeps(deps: MemoryTaskHostDeps): MemoryTaskHostDeps {
                 deps.llm.runInJob({ ...spec, loaded: { ...spec.loaded, db: writerRequestDb(spec.loaded.db) } }),
         },
     };
+}
+
+/**
+ * How many events a chat's stored HypaV3 summaries would adopt while the chat waits for a person's
+ * choice, 0 for a chat that does not wait. It waits with no page, event, or thread, a run not counting,
+ * as in the adopt route, while it has not declined, and only when `adoptedEvents` makes an event of the
+ * summaries, so a sealed value, or summaries with no text, hold nothing, and this and the route cannot
+ * drift apart. `hypaV3Data` reads the stored value, and only a chat with no records and no decline
+ * reaches it, so a chat with records costs nothing.
+ */
+export function adoptionHold(contents: MemoryContents, hypaV3Data: () => unknown): number {
+    const { pages, events, threads, adoptionDeclined } = contents;
+    if (adoptionDeclined || [pages, events, threads].some(({ length }) => length > 0)) {
+        return 0;
+    }
+    return adoptedEvents({ data: hypaV3Data(), messages: [], hashOf: () => "", newId: () => "" }).length;
+}
+
+/** `adoptionHold` of the chat `contents` lists, from its stored metadata. */
+export function chatAdoptionHold(
+    store: Pick<ResourceStore, "chatMeta">,
+    chaId: string,
+    chatId: string,
+    contents: MemoryContents,
+): number {
+    return adoptionHold(contents, () => store.chatMeta(chaId, chatId)?.data.hypaV3Data);
 }
 
 const writerSettings = (host: MemoryHost) =>
@@ -269,7 +300,8 @@ function failedRun(run: MemoryRun, reason: string, error: string): MemoryRun {
  * disabled flag, or a continue since the window was read shows only in the chat as stored now, which is
  * checked here under the ceiling the window was computed with. A continue takes its message's lock
  * before it changes the text, so a window holding a message a generation job owns is refused too: its
- * hash still matches, and its receipt could not land.
+ * hash still matches, and its receipt could not land. A chat that waits for its adoption choice is
+ * refused here as well: `openRun` looked before it awaited, and a metadata write can land after that.
  *
  * A run in `changes` with a receipt puts that receipt on the window's assistant messages, each with
  * its other generation info as stored. A receipt moves the chat's revision and no source hash, so it
@@ -298,6 +330,10 @@ export function commitWindow(
         !windowStillConfirmed(window, stored.message, ceiling.id, { inclusive: ceiling.inclusive }) ||
         store.messagesLocked(chaId, chatId, sources)
     ) {
+        return { outcome: "refused", reason: "windowChanged" };
+    }
+    const contents = store.memory.readContents(chaId, chatId);
+    if (contents && adoptionHold(contents, () => stored.hypaV3Data) > 0) {
         return { outcome: "refused", reason: "windowChanged" };
     }
     let revision: string;
@@ -337,7 +373,7 @@ export function commitWindow(
  * awaited here costs a model call, so a moved revision just starts over.
  */
 async function openRun(
-    store: Pick<ResourceStore, "memory">,
+    store: Pick<ResourceStore, "memory" | "chatMeta">,
     arg: WriterArg,
 ): Promise<OpenedRun | StructuredMemoryWriterResult> {
     const { input, tokenizer, commit } = arg;
@@ -348,6 +384,9 @@ async function openRun(
         const contents = store.memory.readContents(chaId, chatId);
         if (!contents) {
             return { outcome: "skipped", reason: "chatGone" };
+        }
+        if (chatAdoptionHold(store, chaId, chatId, contents) > 0) {
+            return { outcome: "skipped", reason: "awaitingAdoption" };
         }
         if (!arg.manual && writerPaused(contents.runs)) {
             return { outcome: "skipped", reason: "writerPaused" };
@@ -547,7 +586,7 @@ async function warmRecords(host: MemoryHost, event: MemoryEventWrite, sectionTex
 
 /** The production writer. `now` times the runs. */
 export function createStructuredWriter(
-    store: Pick<ResourceStore, "memory">,
+    store: Pick<ResourceStore, "memory" | "chatMeta">,
     options: { now?: () => number } = {},
 ): StructuredMemoryWriter {
     const now = options.now ?? Date.now;

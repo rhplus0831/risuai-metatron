@@ -43,7 +43,7 @@ import {
     type WriterCeiling,
     type WriterWindow,
 } from "./window.ts";
-import { commitWindow, createStructuredWriter, writerRequestDb } from "./writer.ts";
+import { chatAdoptionHold, commitWindow, createStructuredWriter, writerRequestDb } from "./writer.ts";
 
 /**
  * A person's start of Structured Memory's writer as a command job (`memoryRecord`): "record now" names
@@ -52,9 +52,11 @@ import { commitWindow, createStructuredWriter, writerRequestDb } from "./writer.
  * tell a slot that needs the tab.
  *
  * - Refused: another algorithm is selected, the owner's memory is off, the summarization model is a
- *   local one, which the writer cannot serve here either, or the named message is not an eligible
- *   assistant message. The chat is this job's, so no generation runs at admission. With nothing
- *   confirmed there is nothing to do: the job ends `done`.
+ *   local one, which the writer cannot serve here either, the chat waits for a person to adopt or
+ *   decline its HypaV3 summaries (`chatAdoptionHold`), so a press from a tab that shows no such choice
+ *   gets an answer, or the named message is not an eligible assistant message. The chat is this job's,
+ *   so no generation runs at admission. With nothing confirmed there is nothing to do: the job ends
+ *   `done`.
  * - With a service and nothing that needs the tab: the input goes to `MemoryTasks.record`. The job ends
  *   at once, and the task starts after its terminal.
  * - A Plugin `memory` slot, a `request` trigger, or no service: the writer runs here on the chat's
@@ -97,6 +99,14 @@ function admitRecord(job: RunningJob, deps: GenerationRunnerDeps, messageId: str
         }
         if (summarizesLocally(db)) {
             throw new GenerationRunnerError(400, "The memory writer cannot run a local summarization model");
+        }
+        const { characterId, chatId } = job.context;
+        const contents = deps.store.memory.readContents(characterId, chatId);
+        if (contents && chatAdoptionHold(deps.store, characterId, chatId, contents) > 0) {
+            throw new GenerationRunnerError(
+                409,
+                "Adopt or decline this chat's HypaV3 summaries in the memory panel before recording",
+            );
         }
         if (messageId !== undefined) {
             const eligible = eligibleHistory(scopeChat(scope)?.message ?? []).messages;

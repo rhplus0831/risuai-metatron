@@ -42,6 +42,7 @@ import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { reconcileSelection, settings } from "src/ts/storage/settingsViews.svelte";
 import * as chats from "src/ts/storage/chatStore.svelte";
 import { executePluginV3 } from "./v3.svelte";
+import { declineStructuredMemory, resetStructuredMemorySummaries } from "src/ts/process/structuredMemory.svelte";
 
 const epoch = "00000000-0000-4000-8000-000000000000";
 const token = (seq: number, revision: number) => `${epoch}:${seq}:${revision}`;
@@ -579,4 +580,31 @@ it("loads a chat added by a collection update during refresh before returning th
     expect(got.characters[0].chats.map((value: Chat) => value.id)).toEqual(["k0", "k1"]);
     expect(got.characters[0].chats[1].message).toEqual(chat("k1").message);
     expect(readRefs).toHaveBeenCalledTimes(1);
+});
+
+it("preserves declined real summaries and refreshes an adopted chat's projection after reset hydration", async () => {
+    const rows = install();
+    const real = { summaries: [{ text: "Real HypaV3 memory", chatMemos: ["m"], isImportant: true }] };
+    for (const row of rows)
+        chats.hydrateChat({ ...row, revision: token(Number(row.id.slice(1)) + 1, 2), data: chat(row.id, real) });
+    const host = await api();
+    const fetch = authFetch.getMockImplementation()!;
+    authFetch.mockImplementation((path: string, init: RequestInit) => {
+        if (path.endsWith("/decline")) return Promise.resolve(Response.json({ revision: token(1, 1), declined: true }));
+        if (path.endsWith("/reset-summaries"))
+            return Promise.resolve(Response.json({ chatRevision: token(2, 3), reset: true }));
+        return fetch(path, init);
+    });
+    expect((await declineStructuredMemory(ref)).outcome).toBe("ok");
+    expect((await host.getChatFromIndex(0, 0)).hypaV3Data).toEqual(real);
+    expect(revisionRequests()).toHaveLength(0);
+    expect(projectionRequests()).toHaveLength(0);
+    expect((await resetStructuredMemorySummaries({ chaId: "c", chatId: "k1" })).outcome).toBe("ok");
+    // The reset's chat notice is hydrated before the next plugin read; its memory revision did not move.
+    chats.hydrateChat({ characterId: "c", id: "k1", revision: token(2, 3), data: chat("k1") });
+    const result = await host.getChar();
+    expect(result.chats.map((value: Chat) => value.hypaV3Data)).toEqual([real, memory(2, 1)]);
+    expect(refsOf(revisionRequests()[0][1])).toEqual([{ characterId: "c", chatId: "k1" }]);
+    expect(projectionRequests().map(([path]) => path)).toEqual([projectionPath("k1")]);
+    expect(chats.findChat(ref)?.hypaV3Data).toEqual(real);
 });

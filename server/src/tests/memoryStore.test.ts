@@ -825,3 +825,77 @@ it("checks ordered projection revisions without messages and skips memory tables
     expect(store.memory.readProjectionRevisions(refs)).toEqual(refs.map(() => null));
     expect(accessed.filter((sql) => /\b(?:memory_\w+|messages)\b/.test(sql))).toEqual([]);
 });
+
+it("persists a one-way decline at revision one and repeats without a write", () => {
+    const { store, db } = fileStore();
+    seed(store);
+    const beforeChat = store.readChatSource("c", "k");
+    const writes = store.writeCount();
+    expect(db.prepare("SELECT * FROM memory_state").all()).toEqual([]);
+    const declined = write(store, contents(store).revision, { adoptionDeclined: true });
+    expect(declined).toBe(token(store, db, 1));
+    expect(contents(store)).toEqual({ ...emptyContents(declined), adoptionDeclined: true });
+    expect(db.prepare("SELECT revision, adoptionDeclined FROM memory_state").all()).toEqual([
+        { revision: 1, adoptionDeclined: 1 },
+    ]);
+    expect(store.writeCount()).toBe(writes + 1);
+    expect(write(store, declined, { adoptionDeclined: true })).toBe(declined);
+    expect(store.writeCount()).toBe(writes + 1);
+    const recorded = write(store, declined, records(["after-decline"]));
+    expect(recorded).toBe(token(store, db, 2));
+    expect(contents(store).adoptionDeclined).toBe(true);
+    write(store, recorded, { remove: removal(["after-decline"]) });
+    expect(contents(store)).toEqual({ ...emptyContents(token(store, db, 3)), adoptionDeclined: true });
+    expect(store.readChatSource("c", "k")).toEqual(beforeChat);
+});
+
+it("opens the two-column memory state in place without changing existing reads or writes and opens again safely", () => {
+    const { store, db, file } = fileStore();
+    seed(store);
+    seed(store, "empty");
+    write(store, contents(store).revision, records(["kept"]));
+    const beforeChat = store.readChatSource("c", "k");
+    const beforeMemory = contents(store);
+    const beforeRecord = store.memory.readRecord("c", "k", "events", "kept");
+    const epoch = store.epoch();
+    store.close();
+    editFile(
+        file,
+        `
+        ALTER TABLE memory_state RENAME TO previous_memory_state;
+        CREATE TABLE memory_state (
+            chatSeq INTEGER PRIMARY KEY REFERENCES chats (seq) ON DELETE CASCADE,
+            revision INTEGER NOT NULL
+        ) STRICT;
+        INSERT INTO memory_state SELECT chatSeq, revision FROM previous_memory_state;
+        DROP TABLE previous_memory_state;
+    `,
+    );
+    expect(
+        db
+            .prepare("PRAGMA table_info(memory_state)")
+            .all()
+            .map((column) => column.name),
+    ).toEqual(["chatSeq", "revision"]);
+    for (let start = 0; start < 2; start++) {
+        const reopened = createResourceStore({ file, kinds });
+        stores.push(reopened);
+        expect(reopened.epoch()).toBe(epoch);
+        expect(reopened.readChatSource("c", "k")).toEqual(beforeChat);
+        expect(contents(reopened)).toEqual(beforeMemory);
+        expect(reopened.memory.readRecord("c", "k", "events", "kept")).toEqual(beforeRecord);
+        expect(contents(reopened, "empty").adoptionDeclined).toBeUndefined();
+        expect(db.prepare("SELECT revision, adoptionDeclined FROM memory_state").all()).toEqual([
+            { revision: 1, adoptionDeclined: 0 },
+        ]);
+        if (start === 1) {
+            expect(write(reopened, beforeMemory.revision, records(["new"]))).toBe(token(reopened, db, 2));
+            expect(reopened.memory.readRecord("c", "k", "events", "kept")?.data).toEqual(beforeRecord?.data);
+            expect(contents(reopened).adoptionDeclined).toBeUndefined();
+            expect(write(reopened, contents(reopened, "empty").revision, records(["first"]), "empty")).toBe(
+                token(reopened, db, 1, "empty"),
+            );
+        }
+        reopened.close();
+    }
+});

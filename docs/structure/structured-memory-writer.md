@@ -40,7 +40,7 @@
   `applyCompactions`.
 - `server/src/prompt/memory/structured/writer.ts`: `createStructuredWriter`, the run lifecycle; `commitWindow`, a
   writer's one write on either path; `writerRequestDb` and `writerHostDeps`, what its requests ignore of the preset;
-  `writerPaused`, re-exported from `shared/`.
+  `adoptionHold` and `chatAdoptionHold`; `writerPaused`, re-exported from `shared/`.
 - `server/src/prompt/memory/structured/recordJob.ts`: `runMemoryRecord`, the `memoryRecord` command; `recordGapInJob`, a
   send's approved gap.
 - `server/src/prompt/memory/memoryTasks.ts`: the task kind inside the shared service: `StructuredMemoryWriter`
@@ -100,6 +100,9 @@ place in the stored list, not the eligible one, and `hash` from `messageSourceHa
      would run as `plannedCalls`. It asks nothing with no such window, since history cited by a stale or retracted event
      counts as recorded, or with a local summarizer. `generate` is [the gap run](#the-gap-run), then the step reads and
      selects again without asking.
+   - A [held chat](structured-memory-lifecycle.md#the-adoption-choice) (`MemoryRecords.adoptionHeld`) is asked no gap
+     and hands off nothing, so a waiting manual start stays for after the choice. Its reply's receipt is `notAutomatic`,
+     `awaitingAdoption`, ahead of every other reason.
 3. Start: the service's shared checks ([memory](memory.md#background-memory-task), `createMemoryTasks`), with
    `notStructuredMemory` when `memoryAlgorithmType` no longer selects it. A Plugin `memory` slot, a `request` trigger,
    or a local summarizer ends the task `skipped` with `pluginModel`, `requestTrigger`, or `localSummarization`. What a
@@ -119,9 +122,10 @@ place in the stored list, not the eligible one, and `hash` from `messageSourceHa
 throws once ended), the gate is open, the service is open with the input's epoch and source generation (else refused
 `staleInput`), then `commitWindow`: the window still reads from the chat as stored under the ceiling it was computed
 with (`windowStillConfirmed`, else `windowChanged`), no generation job owns one of its messages (`messagesLocked`, else
-`windowChanged`), and the memory revision is current (else `revisionConflict`). A refusal writes nothing. Around it,
-`retireRerecorded` turns a repair's closing write into the swap: the new event takes the old one's `pinned`,
-`suppressed`, and `userCorrected`, and the old one is written `retracted` in the same change set, with
+`windowChanged`), the chat is not held (else `windowChanged`, because a `meta` write can land after `openRun`'s look),
+and the memory revision is current (else `revisionConflict`). A refusal writes nothing. Around it, `retireRerecorded`
+turns a repair's closing write into the swap: the new event takes the old one's `pinned`, `suppressed`, and
+`userCorrected`, and the old one is written `retracted` in the same change set, with
 [its sections flagged](structured-memory-lifecycle.md#retraction-and-edits). An old event gone, unmarked, or retracted
 refuses the commit `windowChanged`, because a confirmed delete has no fence to wait for. `recordJob.ts` wraps its commit
 the same way, so a failed run leaves the old event and its mark, and each retry works it out again.
@@ -131,9 +135,10 @@ the same way, so a failed run leaves the old event and its mark, and each retry 
 `createStructuredWriter` makes one analysis call per window, one patch call when a candidate was accepted, and one
 compaction call per section that patch left past its budget. `memory_runs` is its whole state.
 
-1. Pause: `consecutiveFailures` `failed` rows at the end of the runs end an automatic run `skipped` (`writerPaused`),
-   with no call and no row. `skipped` and `pending` rows neither count nor reset, a `recorded` row resets, and a manual
-   start runs past the pause.
+1. Hold and pause: a held chat ends any run `skipped` (`awaitingAdoption`), a manual one too, with no call and no row.
+   This one check covers a task, a job, and the gap run, whatever queued them. `consecutiveFailures` `failed` rows at
+   the end of the runs end an automatic run `skipped` (`writerPaused`), the same way. `skipped` and `pending` rows
+   neither count nor reset, a `recorded` row resets, and a manual start runs past the pause.
 2. Leftovers: one task runs per chat, so a `pending` row found here is abandoned. The write that opens the run closes it
    `skipped` (`interrupted`): a cancel, a checkpoint load, or a restart proves nothing about the model.
 3. Input: only the newest row that did not record is read. Its `input` is sent again as stored when its window has the
@@ -165,9 +170,9 @@ compaction call per section that patch left past its budget. `memory_runs` is it
 service keeps no input across a restart, where `start` would only wait for the next send, and only a job's scope can
 tell a slot that needs the tab. The tab calls `runServerJob` directly, because `runServerCommand` refuses a group chat.
 
-1. Admission: refused when the algorithm is not selected, memory is off, the summarizer is local, or `messageId` is not
-   an eligible char message. The job holds the chat's slot, so nothing generates then. No ceiling and no `messageId`
-   ends `done`.
+1. Admission: refused when the algorithm is not selected, memory is off, the summarizer is local, the chat is held (a
+   409, so a stale tab's press gets an answer), or `messageId` is not an eligible char message. The job holds the chat's
+   slot, so nothing generates then. No ceiling and no `messageId` ends `done`.
 2. With a service and nothing tab-bound: `MemoryTasks.record` queues a fresh input, marked manual, with `through`. The
    latest press wins, one with no message clears it, and a later hand-off keeps both. It answers a refusal where
    `handOff` drops silently. The job ends at once, and the task starts after its terminal.

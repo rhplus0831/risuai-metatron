@@ -11,6 +11,7 @@ import { createKindRegistry, type ResourceKind } from "../data/kinds.ts";
 import {
     createResourceStore,
     NORMALIZATION_VERSION,
+    readSnapshotFile,
     ResourceValidationError,
     type ResourceStore,
 } from "../data/resourceStore.ts";
@@ -746,4 +747,67 @@ it("refuses a snapshot containing two scene pages in one chat", async () => {
     const staging = stageValidatedSnapshot(source, output, kinds);
     await expect(staging).rejects.toThrow(ResourceValidationError);
     await expect(staging).rejects.toThrow(/second scene page/);
+});
+
+it("restores two-column and declined snapshots with their records and loads a checkpoint saved before the decline column", async () => {
+    for (const legacy of [true, false]) {
+        const { dir, source, output } = await memoryFixture();
+        const saved = createResourceStore({ file: source, kinds });
+        const checkpoint = saved.checkpoints.save("z", "z", "Before decline", "manual")!;
+        const before = readMemory(saved);
+        if (!legacy) writeMemory(saved, "z", "z", { adoptionDeclined: true });
+        saved.close();
+        if (legacy) {
+            const db = new DatabaseSync(source);
+            db.exec(`
+                ALTER TABLE memory_state RENAME TO previous_memory_state;
+                CREATE TABLE memory_state (
+                    chatSeq INTEGER PRIMARY KEY REFERENCES chats (seq) ON DELETE CASCADE,
+                    revision INTEGER NOT NULL
+                ) STRICT;
+                INSERT INTO memory_state SELECT chatSeq, revision FROM previous_memory_state;
+                DROP TABLE previous_memory_state;
+            `);
+            db.close();
+            expect(rows(source, "PRAGMA table_info(memory_state)").map((column) => column.name)).toEqual([
+                "chatSeq",
+                "revision",
+            ]);
+        }
+        const originalBytes = readFileSync(source);
+        const snapshot = readSnapshotFile(source, kinds);
+        expect(snapshot.memoryEvents?.map((row) => JSON.parse(row.data).summary)).toEqual([
+            "Updated z",
+            "Saved 한글 😀",
+            "Saved 한글 😀",
+            "Saved 한글 😀",
+        ]);
+        const report = await stageValidatedSnapshot(source, output, kinds);
+        await verifyStagedFile(output, report);
+        expect(readFileSync(source)).toEqual(originalBytes);
+        const restored = createResourceStore({ file: path.join(dir, "restored-decline.sqlite"), kinds });
+        try {
+            seedLiveMemory(restored);
+            restored.replaceAll(output, report);
+            expect(readMemory(restored).records).toEqual(before.records);
+            expect(restored.memory.readContents("z", "z")?.adoptionDeclined).toBe(legacy ? undefined : true);
+            expect(restored.memory.readContents("a", "a")?.adoptionDeclined).toBeUndefined();
+            expect(loadCheckpoint(restored, checkpoint.id).status).toBe(200);
+            expect(readMemory(restored).records).toEqual(before.records);
+            expect(restored.memory.readContents("z", "z")?.adoptionDeclined).toBe(legacy ? undefined : true);
+        } finally {
+            restored.close();
+        }
+    }
+});
+
+it("refuses a snapshot whose decline column is neither zero nor one", async () => {
+    for (const value of [-1, 2]) {
+        const { source, output } = await memoryFixture();
+        const db = new DatabaseSync(source);
+        db.prepare("UPDATE memory_state SET adoptionDeclined = ?").run(value);
+        db.close();
+        expect(readSnapshotFile(source, kinds).memoryEvents).toBeNull();
+        await expect(stageValidatedSnapshot(source, output, kinds)).rejects.toThrow(/invalid adoptionDeclined/);
+    }
 });

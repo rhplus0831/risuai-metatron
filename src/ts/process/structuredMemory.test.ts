@@ -21,6 +21,7 @@ import {
     memoryBlockEntries,
     memoryPagePath,
     memoryReceiptView,
+    memoryWriterNotice,
     newestAssistantMessageId,
     readStructuredMemoryContents,
     readStructuredMemoryRecord,
@@ -771,5 +772,32 @@ it("refuses a changing or vanished chat file without partial records, but treats
         expect(authFetch).toHaveBeenCalledTimes(9);
     } finally {
         vi.useRealTimers();
+    }
+});
+
+it("keeps the adoption reason on a receipt but restores the writer action after the choice", () => {
+    const receipt = { state: "notAutomatic", reason: "awaitingAdoption" };
+    expect(memoryReceiptView(receipt, { newest: true, taskLive: false })).toMatchObject({
+        kind: "notAutomatic",
+        reason: "awaitingAdoption",
+        action: null,
+    });
+    for (const cadence of ["everyTurn", "manual"] as const) {
+        const current = { memoryOn: true, cadence, paused: false, receipt, taskLive: false };
+        expect(memoryWriterNotice({ ...current, adoptionHeld: true })).toEqual({
+            kind: "notAutomatic",
+            reason: "awaitingAdoption",
+            action: null,
+        });
+        expect(memoryWriterNotice({ ...current, adoptionHeld: true, paused: true })).toEqual({
+            kind: "notAutomatic",
+            reason: "awaitingAdoption",
+            action: null,
+        });
+        expect(memoryWriterNotice({ ...current, adoptionHeld: false })).toEqual(
+            cadence === "manual"
+                ? { kind: "notAutomatic", reason: "manual", action: "record" }
+                : { kind: null, action: "record" },
+        );
     }
 });

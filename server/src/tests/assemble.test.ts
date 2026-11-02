@@ -1291,6 +1291,29 @@ describe("the context report", () => {
             }
         });
 
+        it("leaves a held send without a gap question or task and explains the hold in its reply receipt", async () => {
+            const assembly = structuredAssembly({
+                messages: fiveMessages,
+                maxContext: 150,
+                gapConfirmTokens: 0,
+                records: { ...stored([]), adoptionHeld: true },
+                settings: { cadence: "everyTurn" },
+            });
+            const result = await assemblePrompt(assembly.host, {
+                chatAdditonalTokens: 3,
+                continue: false,
+                generationId: "held",
+                stageTimings: { stage1Duration: 0, stage2Duration: 0 },
+            });
+            expect(result.type).toBe("prompt");
+            expect(result).not.toHaveProperty("memoryTask");
+            expect(result).toMatchObject({
+                generationInfo: { memory: { state: "notAutomatic", reason: "awaitingAdoption" } },
+            });
+            expect(assembly.confirmGap).not.toHaveBeenCalled();
+            expect(assembly.recordGap).not.toHaveBeenCalled();
+        });
+
         it("offers a gap only above the threshold with recordable work, and previews select without asking or writing", async () => {
             for (const row of [
                 { threshold: 51, preview: false, status: undefined, asks: true },

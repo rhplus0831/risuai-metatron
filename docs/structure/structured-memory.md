@@ -54,8 +54,10 @@
   `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`, `StructuredMemoryContentsAnswer`,
   `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`, `StructuredMemoryCoverageRound`,
   `StructuredMemoryRunsRound`, `StructuredMemoryThreadsRound`, `StructuredMemoryLogRun`, `StructuredMemoryEdit`,
-  `StructuredMemoryEditAnswer`, `StructuredMemoryInheritAnswer`, `StructuredMemoryRestoreAnswer`,
-  `StructuredMemoryAdoptAnswer`.
+  `StructuredMemoryEditAnswer`.
+- The route answers of a copy, a chat file, adoption, and the reset, shared too: `StructuredMemoryInheritAnswer`,
+  `StructuredMemoryRestoreAnswer`, `StructuredMemoryAdoptAnswer`, `StructuredMemoryDeclineAnswer`,
+  `StructuredMemoryResetAnswer`, `StructuredMemoryAdoption`.
 - `server/src/prompt/memory/structured/edits.ts`: what a person's edit does, pure: `parseMemoryEdit`, `applyPageEdit`,
   `applyThreadEdit`, `MemoryEditRefusal`. The repairs, `applyEventRepair` and `flagUnsupportedSections`:
   [the lifecycle guide](structured-memory-lifecycle.md#files).
@@ -72,8 +74,9 @@
 All are `GET` under `STRUCTURED_MEMORY_PATH/:characterId/:chatId`, authenticated, rate-limited, and epoch-checked (412
 `EpochMismatch`), with the check and every store read in one synchronous step. Ids are checked first (400).
 
-- The chat's path answers the table of contents; `/records/:kind/:id` answers one record of a `MEMORY_RECORD_KINDS` kind
-  as stored. A missing chat or record is 404 with `reason` `chatGone` or `recordGone`.
+- The chat's path answers the table of contents and `adoption`, which
+  [the panel](structured-memory-read.md#the-memory-panel) reads; `/records/:kind/:id` answers one record of a
+  `MEMORY_RECORD_KINDS` kind as stored. A missing chat or record is 404 with `reason` `chatGone` or `recordGone`.
 - `/package?cursor=N&revision=R` answers one round of the chat's pages followed by its events, in contents order, whole
   records as stored. It charges each record's `bytes` from the contents, so it reads no body it will not send. The
   budget is `RouteLimits.memoryPackageRoundBytes`, default `MAX_READ_RESPONSE_BYTES`, and soft as
@@ -158,7 +161,8 @@ own transaction. Nothing async can run inside it.
 1. Another epoch, or none, is a `ResourceEpochError`. A missing chat is a `ResourceConflictError` with `current: null`,
    and a `baseRevision` that is not the current token one naming the current token.
 2. A change set that names nothing stops here: it answers the current token and writes nothing, not even a
-   `memory_state` row. A stale empty write is still refused.
+   `memory_state` row. A stale empty write is still refused. `adoptionDeclined: true` names something once: on a chat
+   that declined already it names nothing.
 3. Every record is checked before anything is written, so a `ResourceValidationError` changes nothing: an id repeated
    within a kind, or both written and removed; an invalid id; a `title` that is not a string; a closed value outside its
    `const` list; a stored text over `MAX_READ_RESPONSE_BYTES`;
@@ -258,6 +262,16 @@ writes the value unsealed: a restore upstream and a re-import here both take pla
 the event rows, and a failed memory walk leaves `memoryEvents` null. A problem in the tables or in one event never stops
 the export; those chats go as stored under `memory-unreadable`, and projected ones count as `memory-projected`.
 
+### The reset
+
+`POST .../reset-summaries`, with no body, answers `StructuredMemoryResetAnswer`. It takes a chat that has not declined,
+holds an event of `ADOPTED_WRITER_RUN`, and stores real summaries, the rule of the contents' `resettable`, and writes a
+`meta` `unset` through `applyChanges`, so the feed publishes it; any other chat answers `reset: false`. The server owns
+it because only it can check all that and the fence in one step. The tab writes nothing back: an echoed `unset` moves
+the chat's revision and, since `meta` applies on a stale revision, deletes a newer value. It takes `markChatStale` and
+`refreshStaleChat`, so a whole read overlays the projection, `hypaV3Owned` falls, and the next plugin read past
+`MEMORY_RECHECK_WINDOW_MS` follows the records. Local work delays that read, and the mark survives it.
+
 ## State
 
 - A chat's records are events, pages, and threads, with the chat's own messages as the evidence. Each writer run leaves
@@ -276,8 +290,15 @@ missing, with no version change, and outside the required snapshot layout: all f
 [checkpoint tables](server-resources.md#checkpoint-tables). A snapshot from before them restores with none, a partial
 group is refused, and a full one is checked and restored.
 
-- `memory_state` (`chatSeq` primary key, `revision`): one revision over all of a chat's records. A chat has no row until
-  its first write, and an existing chat with no row is at revision 0.
+- `memory_state` (`chatSeq` primary key, `revision`, `adoptionDeclined`): one revision over all of a chat's records, and
+  [a person's decline](structured-memory-lifecycle.md#the-adoption-choice), 0 or 1. A chat has no row until its first
+  write, and an existing chat with no row is at revision 0. A decline is a write, so it moves the revision and a state
+  row never sits at 0, which the snapshot walk refuses.
+- `adoptionDeclined` is the first column added to a table that already exists. `SCHEMA_VERSION` stays 3, since the group
+  is optional. `openChatSchema` adds it inside its `BEGIN IMMEDIATE`, so concurrent and repeated starts add it once and
+  every old row reads 0. `MEMORY_TABLES_SQL` has it too, because a restore's staged store runs that `CREATE` and never
+  `openChatSchema`. `memoryStateLayout` takes the two-column and the three-column `memory_state` and nothing else, and
+  the walk reads a two-column snapshot as 0 and refuses any value but 0 or 1.
 - `memory_pages` (`type`, `title`), `memory_events` (`title`, `status`, `createdRevision`), `memory_threads` (`title`,
   `state`), `memory_runs` (`result`): each with `seq` autoincrement, `chatSeq`, `id`, and `data`, the whole record as
   stored JSON, unique `(chatSeq, id)`. Sections stay embedded in the page's row.
@@ -314,8 +335,8 @@ group is refused, and a full one is checked and restored.
 - A route writes a closed edit applied to the record as stored ([the edit route](#the-edit-route)), or on
   [the inherit route](structured-memory-lifecycle.md#copies-and-branches) the records the server builds from the source
   chat, or on [the adopt route](structured-memory-lifecycle.md#adopting-hypav3-summaries) the events it builds from the
-  chat's stored summaries. [The restore route](#the-restore-route) is exactly the one route that writes records the tab
-  sent: for a chat with no rows, after `parseRestoredRecords`.
+  chat's stored summaries, or on the decline route a held chat's decline. [The restore route](#the-restore-route) is
+  exactly the one route that writes records the tab sent: for a chat with no rows, after `parseRestoredRecords`.
 - A snapshot a live write could have left is never refused, and a crafted one is a `ResourceValidationError` (a 400),
   never a constraint failure. A record's chat has a `memory_state` row, but a state row needs no records, and an event's
   `createdRevision` is within that row's revision, without being unique or the latest.
@@ -358,8 +379,9 @@ group is refused, and a full one is checked and restored.
   will have it, give it [a check](structured-memory-lifecycle.md#recipes) in `structured/restore.ts`, and extend this
   guide's contract.
 - A new closed value: append to its `const` list; a validator reads the list, so it follows.
-- A new column: `CREATE TABLE IF NOT EXISTS` never extends a table, so it needs its own migration in `openChatSchema`,
-  and `MEMORY_TABLE_COLUMNS` matches exactly, so the walk must also take a snapshot of the old layout. Read a new listed
+- A new column: `CREATE TABLE IF NOT EXISTS` never extends a table, so it needs its own migration in `openChatSchema`
+  and the `CREATE` too, and `MEMORY_TABLE_COLUMNS` matches exactly, so the walk must also take a snapshot of the old
+  layout. `adoptionDeclined` shows all of it, and [its rollback cost](#limitations) applies again. Read a new listed
   field through `json_extract` over `data` first when that is enough.
 
 ## Tests
@@ -381,6 +403,11 @@ group is refused, and a full one is checked and restored.
   root `tsconfig.json`, where the server routes do not type-check.
 - `structured/edits.test.ts` drives the edit rules with plain records. `structuredMemoryRoutes.test.ts` drives the real
   fence on a real app, holding a task on a tokenizer read and a job on its runner.
+- The adoption choice and the reset: `memoryStore.test.ts` for the decline and a real two-column table opened in place,
+  `restoreStage.test.ts` for two-column snapshots, the column's values, and a checkpoint,
+  `structuredMemoryRoutes.test.ts` for the routes and the feed, `memoryTasks.test.ts` and `memoryJobs.test.ts` for the
+  hold, `assemble.test.ts` for a held send, `StructuredMemoryPanel.test.ts` for the choice and the reset, and
+  `hostApiMemory.test.ts` for a plugin read after them.
 - Focused command: `pnpm --silent test:agent structuredMemory memoryStore restoreStage backups edits`. No `slow` or
   `e2e` membership of its own; `backups.test.ts` holds other slow cases.
 - Not tested: the types and limits themselves, which `pnpm check` covers only for the code that uses them.
@@ -389,6 +416,11 @@ group is refused, and a full one is checked and restored.
 
 ### Limitations
 
+- The `adoptionDeclined` column costs a rollback. A build from before it refuses a snapshot made by a later build whole
+  (`invalid memory table columns`), even with no decline in it. It opens an upgraded live database and writes to it, but
+  its own snapshots then hold the column too, so it refuses those as well. Their upstream export reads no memory events,
+  so a chat that needs the projection goes out as `memory-unreadable`. It ignores a decline, and can record or adopt
+  despite one. Decision: Structured Memory slice 6c, plan.
 - The package holds pages and events only: no threads, runs, or page history. Decision: Structured Memory slice 1d,
   plan.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents

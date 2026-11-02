@@ -2547,6 +2547,73 @@ describe("structured memory tasks", () => {
         return { request, terminal, patchRequest, analysisAnswer };
     };
 
+    it("holds automatic and manual recording on stored summaries despite a failed run, then records the oldest turn after decline", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const t = structuredHarness();
+        const captured = writerInput(t, "m3");
+        const summaries = { summaries: [{ text: "Old HypaV3 memory", chatMemos: ["m1", "m2"], isImportant: false }] };
+        t.write("k1", [{ op: "meta", set: { hypaV3Data: summaries } }]);
+        writeMemory(t.store, "c", "k1", { runs: [{ ...memoryRecords(["failed"]).runs[0], result: "failed" }] });
+        const held = contents(t);
+        const writes = t.store.writeCount();
+        for (const manual of [false, true]) {
+            const terminal = t.nextTerminal("k1");
+            if (manual) expect(t.service.record(captured, { through: "m2" }).outcome).toBe("queued");
+            else t.service.handOff(captured);
+            const ended = await Promise.race([
+                terminal,
+                t.provider.request(0).then(() => {
+                    throw new Error("Held recording called the provider");
+                }),
+            ]);
+            expect(ended.status.done).toBe(0);
+            await t.service.drain();
+            expect(contents(t)).toEqual(held);
+            expect(t.store.writeCount()).toBe(writes);
+        }
+        writeMemory(t.store, "c", "k1", { adoptionDeclined: true });
+        await recordOnly(t, analysis(), writerInput(t, "m3"));
+        expect(eventRecord(t).sources.map(({ messageId }) => messageId)).toEqual(["m1", "m2"]);
+        expect(t.chat("k1")?.hypaV3Data).toEqual(summaries);
+    });
+
+    it("records when blank or malformed summaries would adopt no events", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const t = structuredHarness();
+        t.write("k1", [
+            {
+                op: "meta",
+                set: {
+                    hypaV3Data: { summaries: [null, {}, { text: 42 }, { text: " \n\t", chatMemos: ["m1", "m2"] }] },
+                },
+            },
+        ]);
+        await recordOnly(t, analysis());
+        expect(eventRecord(t).sources.map(({ messageId }) => messageId)).toEqual(["m1", "m2"]);
+    });
+
+    it("refuses a recording commit when real summaries arrive during analysis", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const t = structuredHarness({ invalidations: false });
+        const { request, terminal } = await beginAnalysis(t);
+        t.write("k1", [
+            {
+                op: "meta",
+                set: {
+                    hypaV3Data: {
+                        summaries: [{ text: "Arrived from another tab", chatMemos: ["m1"], isImportant: false }],
+                    },
+                },
+            },
+        ]);
+        const held = contents(t);
+        request.answer(JSON.stringify(analysis()));
+        await terminal;
+        await t.service.drain();
+        expect(contents(t)).toEqual(held);
+        expect(t.chat("k1")?.message[2].generationInfo?.memory).toBeUndefined();
+    });
+
     it("automatically re-records an edited confirmed event at hand-off and retires it only with the replacement", async () => {
         const arrival = deferred<WriterCall>();
         const release = deferred<{ outcome: "recorded" }>();
