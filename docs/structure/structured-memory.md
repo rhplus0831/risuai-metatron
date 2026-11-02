@@ -23,6 +23,8 @@
     [structured memory lifecycle](structured-memory-lifecycle.md).
   - A chat's rebuild and backfill, the staged tables, and the cost preview →
     [structured memory rebuild](structured-memory-rebuild.md).
+  - The trash, merge, split, the lorebook export, and importing a package →
+    [structured memory page tools](structured-memory-pages.md).
   - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](memory.md).
   - `Chat.hypaV3Data` and its write rules → [memory](memory.md), `shared/memory.ts`.
   - The resource store's connection, epoch, and transactions → [server resources](server-resources.md).
@@ -162,7 +164,9 @@ whole shape check of `parseRestoredRecords`, and only when the chat holds no row
 A 409 restarts the read with nothing kept, 3 attempts in all, then refused `changed`. A 412 calls `epochMismatch` and
 ends the read at once.
 
-- The zip holds `timeline.md` and `pages/<type>/<title part> [<id part>].md`, one per page.
+- The zip holds `timeline.md`, `threads.md`, and `pages/<type>/<title part> [<id part>].md`, one per page.
+  [The import route](structured-memory-pages.md#the-import-route) reads it back. Threads come from `/threads` at the
+  package's revision, each a `##` line and a `yaml` fence. Trash stays out.
 - Metadata is the authority and Markdown is display. A metadata line is `key: <JSON>`, which is valid YAML on one line;
   `\u` escapes cover what YAML does not print.
 - A page's frontmatter has every field but `history`, and `sections` without bodies but with `bodyLines`. Each body
@@ -359,10 +363,11 @@ group is refused, and a full one is checked and restored.
   ([Retraction and edits](structured-memory-lifecycle.md#retraction-and-edits)). A rebuild writes
   [staged tables of its own](structured-memory-rebuild.md#a-run), and its swap is one `write`.
 - A route writes a closed edit applied to the record as stored ([the edit route](#the-edit-route)), or on
-  [the inherit route](structured-memory-lifecycle.md#copies-and-branches) the records the server builds from the source
-  chat, or on [the adopt route](structured-memory-lifecycle.md#adopting-hypav3-summaries) the events it builds from the
-  chat's stored summaries, or on the decline route a held chat's decline. [The restore route](#the-restore-route) is
-  exactly the one route that writes records the tab sent: for a chat with no rows, after `parseRestoredRecords`.
+  [the inherit route](structured-memory-lifecycle.md#copies-and-branches) the records it builds from the source chat, or
+  on [the adopt route](structured-memory-lifecycle.md#adopting-hypav3-summaries) the events it builds from the chat's
+  summaries, or on the decline route a held chat's decline. [The restore route](#the-restore-route) and
+  [the import route](structured-memory-pages.md#the-import-route) alone write records the tab sent: for a chat with no
+  rows, after `parseRestoredRecords`.
 - A snapshot a live write could have left is never refused, and a crafted one is a `ResourceValidationError` (a 400),
   never a constraint failure. A record's chat has a `memory_state` row, but a state row needs no records, and an event's
   `createdRevision` is within that row's revision, without being unique or the latest.
@@ -447,8 +452,7 @@ group is refused, and a full one is checked and restored.
   its own snapshots then hold the column too, so it refuses those as well. Their upstream export reads no memory events,
   so a chat that needs the projection goes out as `memory-unreadable`. It ignores a decline, and can record or adopt
   despite one. Decision: Structured Memory slice 6c, plan.
-- The package holds pages and events only: no threads, runs, or page history. Decision: Structured Memory slice 1d,
-  plan.
+- The package holds no runs and no page history. Decision: Structured Memory slice 1d, plan.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
   has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
 - A held projection follows the memory revision, not the messages. A message edit or a send's manifest that changes

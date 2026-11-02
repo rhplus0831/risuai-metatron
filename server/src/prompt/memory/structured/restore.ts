@@ -140,6 +140,8 @@ const isPage = shaped<MemoryPage>({
     retrieval: shaped<MemoryPage["retrieval"]>({ keywords: isTexts, lastUsed: optional(isNumber) }),
     history: listOf(isHistoryEntry),
     participants: optional(isTexts),
+    trashedAt: optional(isNumber),
+    reshaped: optional((value) => value === true),
 });
 
 const isKnowledge = shaped<MemoryKnowledge>({

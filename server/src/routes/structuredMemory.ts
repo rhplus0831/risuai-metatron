@@ -26,9 +26,12 @@ import {
     type StructuredMemoryDefaultPromptsAnswer,
     type StructuredMemoryEdit,
     type StructuredMemoryEditAnswer,
+    type StructuredMemoryImportAnswer,
+    type StructuredMemoryImportFile,
     type StructuredMemoryInheritAnswer,
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
+    type StructuredMemoryPageToolAnswer,
     type StructuredMemoryProjectionAnswer,
     type StructuredMemoryRecordAnswer,
     type StructuredMemoryRecordKind,
@@ -54,8 +57,17 @@ import {
     MemoryEditRefusal,
     parseMemoryEdit,
 } from "../prompt/memory/structured/edits.ts";
+import { parseMemoryPackage } from "../prompt/memory/structured/importPackage.ts";
 import { inheritedRecords } from "../prompt/memory/structured/inherit.ts";
-import { laterEventCount, MemoryRevertRefusal, revertChange } from "../prompt/memory/structured/pages.ts";
+import {
+    applyPageTool,
+    laterEventCount,
+    MemoryPageToolRefusal,
+    MemoryRevertRefusal,
+    pageToolIds,
+    parseMemoryPageTool,
+    revertChange,
+} from "../prompt/memory/structured/pages.ts";
 import { defaultPrompts } from "../prompt/memory/structured/prompts.ts";
 import { memoryWorkCost } from "../prompt/memory/structured/rebuild.ts";
 import { withUnsupportedSections } from "../prompt/memory/structured/reconcile.ts";
@@ -79,7 +91,30 @@ const REFUSAL_TEXT = {
     recordGone: "Record not found",
     fenced: "Something is writing this chat's memory",
     tooLarge: "The chat's memory is too large to project",
+    trashed: "This page is in the trash",
 } as const;
+
+/** The files an import request holds, or null for a body of another shape. */
+function parseImportFiles(value: unknown): StructuredMemoryImportFile[] | null {
+    if (!Array.isArray(value)) {
+        return null;
+    }
+    const files: StructuredMemoryImportFile[] = [];
+    for (const file of value as unknown[]) {
+        if (!isPlainObject(file) || typeof file.path !== "string" || typeof file.text !== "string") {
+            return null;
+        }
+        files.push({ path: file.path, text: file.text });
+    }
+    return files;
+}
+
+/** Whether a chat's contents list a row of any kind, the trash and the runs included. */
+function holdsRows(contents: MemoryContents): boolean {
+    return [contents.pages, contents.trash, contents.events, contents.threads, contents.runs].some(
+        ({ length }) => length > 0,
+    );
+}
 
 function isRecordKind(kind: string): kind is StructuredMemoryRecordKind {
     return (MEMORY_RECORD_KINDS as readonly string[]).includes(kind);
@@ -179,7 +214,9 @@ type RoundRead = {
  * - `GET /api/memory/structured/:characterId/:chatId`: the table of contents, answered
  *   `StructuredMemoryContentsAnswer`, with `adoption`, what the panel offers for the chat's stored HypaV3
  *   summaries as the server sees them, `rebuild`, the chat's rebuild if it holds one, and
- *   `recordedLanguage`, the language of the newest recorded run, one record read; 404 `chatGone`.
+ *   `recordedLanguage`, the language of the newest recorded run, one record read; 404 `chatGone`. Pages
+ *   in the trash are listed apart (`trash`), so every round and route that starts from `pages` leaves
+ *   them out; the record route still reads one by id.
  * - `GET /api/memory/structured/:characterId/:chatId/records/:kind/:id`: one record as stored, answered
  *   `StructuredMemoryRecordAnswer`; 400 for an unknown kind, 404 `chatGone` or `recordGone`.
  * - `GET /api/memory/structured/:characterId/:chatId/package?cursor=N&revision=R`: one round of the
@@ -221,41 +258,65 @@ type RoundRead = {
  *   (`StructuredMemoryEdit`, `structured/edits.ts`), answered `StructuredMemoryEditAnswer`. An edit that
  *   changes nothing still names a revision, so a stale one is refused like any other. An event's repair
  *   reads the chat as stored, a `retract` excepted, which reads none. 400 for a malformed edit or one
- *   the record refuses, 404 `chatGone` or `recordGone` (a heading the page lacks too), 409
- *   `{ error, reason: "fenced" }` while `fenced` holds, 409 `{ error, reason: "changed" }` when a `keep`
- *   names a state the chat has left, and 409 `{ error, revision }` when `revision` is not the current
- *   token. The body is read after authentication and capped at 64 KiB.
+ *   the record refuses, a page in the trash included, 404 `chatGone` or `recordGone` (a heading the page
+ *   lacks too), 409 `{ error, reason: "fenced" }` while `fenced` holds, 409 `{ error, reason: "changed" }`
+ *   when a `keep` names a state the chat has left, and 409 `{ error, revision }` when `revision` is not the
+ *   current token. The body is read after authentication and capped at 64 KiB.
  * - `POST /api/memory/structured/:characterId/:chatId/revert` `{ revision, pageId, historyId }`: a person's
  *   undoing of one writer's change of a section (`revertChange`, `structured/pages.ts`), answered
  *   `StructuredMemoryRevertAnswer`, with the events after the change's own that are not retracted. A change
  *   already undone, which is what a repeat finds, answers `reverted: false` and goes through as an empty
  *   change set, so a stale one is still refused. The restored evidence can leave a section with only
  *   retracted events behind it, which flags it (`flagUnsupportedSections`). 400 for a body of another
- *   shape, an entry that is no writer's change of a section, or a section the page has no room for, 404
- *   `chatGone` or `recordGone` (an entry the bounded history lost too), 409 `{ error, reason: "fenced" }`
- *   while `fenced` holds, 409 `{ error, reason: "superseded" }` when a later change of the section stands
- *   on this one or a compaction's patch left the history, and 409 `{ error, revision }` when `revision` is
- *   not the current token. The body is read after authentication and capped at 64 KiB.
+ *   shape, an entry that is no writer's change of a section, a section the page has no room for, or a
+ *   page in the trash, 404 `chatGone` or `recordGone` (an entry the bounded history lost too), 409
+ *   `{ error, reason: "fenced" }` while `fenced` holds, 409 `{ error, reason: "superseded" }` when a later
+ *   change of the section stands on this one or a compaction's patch left the history, and 409
+ *   `{ error, revision }` when `revision` is not the current token. The body is read after authentication
+ *   and capped at 64 KiB.
+ * - `POST /api/memory/structured/:characterId/:chatId/page-tools` `{ revision, tool }`: one person's tool
+ *   over a page as a whole (`StructuredMemoryPageTool`, `applyPageTool` in `structured/pages.ts`): to the
+ *   trash and back, deleted for good, merged into another page of its type, or split into two, answered
+ *   `StructuredMemoryPageToolAnswer` with the page the tab shows next, null after a purge. A merge moves
+ *   every reference to the source in the same write, which reads the chat's events and threads; a
+ *   restored page is flagged against the events as they stand (`flagUnsupportedSections`). A tool that
+ *   changes nothing, a trash of a trashed page or a restore of a live one, still names a revision. 400 for a
+ *   malformed tool or one the pages refuse (the scene page, a trashed page in any tool but restore and
+ *   purge, two types, a joined section or a page past its limit, a title a live page of the type goes
+ *   by), 404 `chatGone` or `recordGone`, 409 `{ error, reason: "fenced" }` while `fenced` holds, and 409
+ *   `{ error, revision }` when `revision` is not the current token. The body is read after authentication
+ *   and capped at 64 KiB.
+ * - `POST /api/memory/structured/:characterId/:chatId/import` `{ revision, files: { path, text }[] }`:
+ *   gives a chat the records of a Markdown package the tab unzipped, answered
+ *   `StructuredMemoryImportAnswer`. The files are read back by the package's grammar
+ *   (`structured/importPackage.ts`), each record's shape by `parseRestoredRecords`, and what a file gets
+ *   wrong refuses that file, or one event of the timeline, and is listed; what stands goes in one write.
+ *   Like a restore it takes only a chat with no row of any kind, trash and runs included, and not one that
+ *   waits for a choice on its HypaV3 summaries (`chatAdoptionHold`): those, and files with no record,
+ *   answer `imported: false` and write nothing. 400 for a body of another shape or a record the store
+ *   refuses, 404 `chatGone`, 409 `{ error, reason: "fenced" }` while `fenced` holds, and 409
+ *   `{ error, revision }` when `revision` is not the current token. The body is read after authentication
+ *   and capped at `restoreBodyBytes`, 413 past it.
  * - `POST /api/memory/structured/:characterId/:chatId/inherit` `{ sourceChatId }`: gives a copied or
  *   branched chat the records of the character's chat it came from, as far as its messages support them
  *   (`structured/inherit.ts`), answered `StructuredMemoryInheritAnswer`. The server builds them from the
  *   source chat, whose runs stay behind, and the tab sends no record. A new chat that holds a row of any
- *   kind, which is what a repeat finds, answers `inherited: false` and writes nothing. A source's decline
- *   of adoption crosses in the write that takes its records, also with no record to take, so a copy of a
- *   declined chat is not held; a repeat finds it there and writes nothing. `inherited` says whether records
- *   crossed: a source that holds no page, event, or thread answers false, and so does one the new chat's
- *   messages support none of. 400 for a `sourceChatId` that is no id or is the chat itself, 404 `chatGone`
- *   for either chat, and 409 `{ error, reason: "fenced" }` while `fenced` holds for the new chat. The
- *   source chat is not fenced. The body is read after authentication and capped at 64 KiB.
+ *   kind, trash included, which is what a repeat finds, answers `inherited: false` and writes nothing. A
+ *   source's decline of adoption crosses in the write that takes its records, also with no record to take,
+ *   so a copy of a declined chat is not held; a repeat finds it there and writes nothing. `inherited` says
+ *   whether records crossed: a source that holds no page, event, or thread answers false, and so does one
+ *   the new chat's messages support none of. 400 for a `sourceChatId` that is no id or is the chat itself,
+ *   404 `chatGone` for either chat, and 409 `{ error, reason: "fenced" }` while `fenced` holds for the new
+ *   chat. The source chat is not fenced. The body is read after authentication and capped at 64 KiB.
  * - `POST /api/memory/structured/:characterId/:chatId/restore` `{ pages, events, threads }`: gives an
  *   imported chat the records its file held, answered `StructuredMemoryRestoreAnswer`. It is the one route
- *   that writes records the tab sent, so it takes only their whole shape (`structured/restore.ts`) and only
- *   a chat with no rows: a chat that holds a row of any kind, runs included, and a request with no record
- *   answer `restored: false` and write nothing. Sources are not compared with the chat's messages, and a
- *   run never gets through. No decline is in a file, and a decline the chat holds stays. 400 for a body of
- *   another shape or a record the store refuses, 404 `chatGone`, and 409 `{ error, reason: "fenced" }`
- *   while `fenced` holds. The body is read after authentication and capped at `restoreBodyBytes`, 413 past
- *   it.
+ *   beside the import that writes records the tab sent, so it takes only their whole shape
+ *   (`structured/restore.ts`) and only a chat with no rows: a chat that holds a row of any kind, trash and
+ *   runs included, and a request with no record answer `restored: false` and write nothing. Sources are not
+ *   compared with the chat's messages, and a run never gets through. No decline is in a file, and a decline
+ *   the chat holds stays. 400 for a body of another shape or a record the store refuses, 404 `chatGone`, and
+ *   409 `{ error, reason: "fenced" }` while `fenced` holds. The body is read after authentication and capped
+ *   at `restoreBodyBytes`, 413 past it.
  * - `POST /api/memory/structured/:characterId/:chatId/adopt`, with no body: turns the summaries of the
  *   chat's stored `hypaV3Data` into events, with no model call (`structured/adopt.ts`), answered
  *   `StructuredMemoryAdoptAnswer`. The server reads the chat as stored, and the tab sends nothing. It
@@ -295,9 +356,10 @@ type RoundRead = {
  * not a resource id, 503 (`Retry-After`) when the store is closed. The app makes every answer
  * `no-store` and refuses them during shutdown. The epoch check and the store reads run in one
  * synchronous step, so a round is one snapshot; separate rounds are tied together only by `revision`.
- * An edit's, a revert's, an inherit's, a restore's, an adoption's, a decline's, a reset's, or an abandon's
- * checks and its write share one such step too, after any body is read, so nothing can take the chat between
- * the fence and the write, and no writer of the source chat comes between its reads.
+ * An edit's, a revert's, a page tool's, an import's, an inherit's, a restore's, an adoption's, a decline's,
+ * a reset's, or an abandon's checks and its write share one such step too, after any body is read, so
+ * nothing can take the chat between the fence and the write, and no writer of the source chat comes between
+ * its reads. The fence covers a rebuild's run too, also while a stopped one waits.
  */
 export function registerStructuredMemoryRoutes(
     app: Hono<AppEnv>,
@@ -310,8 +372,8 @@ export function registerStructuredMemoryRoutes(
         restoreBodyBytes: number;
         /**
          * Whether something that can write this chat's memory holds the chat, which refuses an edit, a
-         * revert, an inherit, a restore, an adoption, a decline, or a reset: its task, a job, or its rebuild's
-         * run.
+         * revert, a page tool, an import, an inherit, a restore, an adoption, a decline, or a reset: its
+         * task, a job, or its rebuild's run.
          */
         fenced: (characterId: string, chatId: string) => boolean;
         /** Whether a job holds the chat: the one thing that refuses abandoning its rebuild. */
@@ -673,6 +735,9 @@ export function registerStructuredMemoryRoutes(
             if (!stored) {
                 return gone();
             }
+            if (stored.data.trashedAt !== undefined) {
+                return c.json({ error: REFUSAL_TEXT.trashed }, 400);
+            }
             const edited = applyPageEdit(stored.data, edit, { now: Date.now(), newId: randomUUID });
             const written = store.memory.write(characterId, chatId, options, edited ? { pages: [edited] } : {});
             return compressedJson(c, {
@@ -728,6 +793,9 @@ export function registerStructuredMemoryRoutes(
             const stored = store.memory.readRecord(characterId, chatId, "pages", pageId);
             if (!contents || !stored) {
                 return gone();
+            }
+            if (stored.data.trashedAt !== undefined) {
+                return c.json({ error: REFUSAL_TEXT.trashed }, 400);
             }
             const undone = revertChange(stored.data, historyId, { now: Date.now(), newId: randomUUID });
             if (!undone) {
@@ -788,7 +856,7 @@ export function registerStructuredMemoryRoutes(
             }
             const { revision } = contents;
             const nothingToBuild = { revision, inherited: false } satisfies StructuredMemoryInheritAnswer;
-            if ([contents.pages, contents.events, contents.threads, contents.runs].some(({ length }) => length > 0)) {
+            if (holdsRows(contents)) {
                 return compressedJson(c, nothingToBuild);
             }
             const source = store.memory.readContents(characterId, sourceChatId);
@@ -859,12 +927,7 @@ export function registerStructuredMemoryRoutes(
                 }
                 const { revision } = contents;
                 const { pages, events, threads } = records;
-                if (
-                    [contents.pages, contents.events, contents.threads, contents.runs].some(
-                        ({ length }) => length > 0,
-                    ) ||
-                    [pages, events, threads].every(({ length }) => length === 0)
-                ) {
+                if (holdsRows(contents) || [pages, events, threads].every(({ length }) => length === 0)) {
                     return compressedJson(c, { revision, restored: false } satisfies StructuredMemoryRestoreAnswer);
                 }
                 const options = { epoch, baseRevision: revision };
@@ -872,6 +935,148 @@ export function registerStructuredMemoryRoutes(
                     revision: store.memory.write(characterId, chatId, options, { pages, events, threads }),
                     restored: true,
                 } satisfies StructuredMemoryRestoreAnswer);
+            } catch (error) {
+                return storeErrorResponse(c, error);
+            }
+        },
+    );
+
+    app.post(
+        `${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/page-tools`,
+        limiter,
+        authenticated,
+        limitBody,
+        async (c) => {
+            const characterId = c.req.param("characterId");
+            const chatId = c.req.param("chatId");
+            if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+                return c.json({ error: "characterId and chatId must be ids" }, 400);
+            }
+            const read = await readJsonBody(c);
+            if (!read.ok) {
+                return read.response;
+            }
+            if (!isPlainObject(read.body)) {
+                return c.json({ error: "The body must be an object" }, 400);
+            }
+            const { revision } = read.body;
+            if (typeof revision !== "string") {
+                return c.json({ error: "revision must be a string" }, 400);
+            }
+            const tool = parseMemoryPageTool(read.body.tool);
+            if (!tool || !pageToolIds(tool).every(isValidResourceId)) {
+                return c.json({ error: "tool is not a valid page tool" }, 400);
+            }
+            const epoch = c.req.header(RESOURCE_EPOCH_HEADER);
+            if (epoch !== store.epoch()) {
+                return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+            }
+            if (fenced(characterId, chatId)) {
+                return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
+            }
+            const gone = () => {
+                const reason = store.chatRevision(characterId, chatId) === null ? "chatGone" : "recordGone";
+                return c.json({ error: REFUSAL_TEXT[reason], reason }, 404);
+            };
+            try {
+                const contents = store.memory.readContents(characterId, chatId);
+                if (!contents) {
+                    return gone();
+                }
+                const { changes, shown, flag } = applyPageTool(
+                    {
+                        page: (id) => store.memory.readRecord(characterId, chatId, "pages", id)?.data,
+                        pages: () => contents.pages.map(({ id }) => listedRecord(characterId, chatId, "pages", id)),
+                        events: () => contents.events.map(({ id }) => listedRecord(characterId, chatId, "events", id)),
+                        threads: () =>
+                            contents.threads.map(({ id }) => listedRecord(characterId, chatId, "threads", id)),
+                    },
+                    tool,
+                    { now: Date.now(), newId: randomUUID },
+                );
+                // A page's standing evidence is checked against the events as they are now.
+                const flagged = new Map(
+                    flagUnsupportedSections(
+                        (changes.pages ?? []).filter(({ id }) => flag.includes(id)),
+                        contents.events,
+                    ).map((page) => [page.id, page]),
+                );
+                const pages = changes.pages?.map((page) => flagged.get(page.id) ?? page);
+                const written = store.memory.write(
+                    characterId,
+                    chatId,
+                    { epoch, baseRevision: revision },
+                    { ...changes, ...(pages ? { pages } : {}) },
+                );
+                return compressedJson(c, {
+                    revision: written,
+                    data: shown && (flagged.get(shown.id) ?? shown),
+                } satisfies StructuredMemoryPageToolAnswer);
+            } catch (error) {
+                if (error instanceof MemoryPageToolRefusal) {
+                    return error.reason === "gone" ? gone() : c.json({ error: error.message }, 400);
+                }
+                return storeErrorResponse(c, error);
+            }
+        },
+    );
+
+    app.post(
+        `${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/import`,
+        limiter,
+        authenticated,
+        limitRestoreBody,
+        async (c) => {
+            const characterId = c.req.param("characterId");
+            const chatId = c.req.param("chatId");
+            if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+                return c.json({ error: "characterId and chatId must be ids" }, 400);
+            }
+            const read = await readJsonBody(c);
+            if (!read.ok) {
+                return read.response;
+            }
+            if (!isPlainObject(read.body)) {
+                return c.json({ error: "The body must be an object" }, 400);
+            }
+            const { revision } = read.body;
+            if (typeof revision !== "string") {
+                return c.json({ error: "revision must be a string" }, 400);
+            }
+            const files = parseImportFiles(read.body.files);
+            if (!files) {
+                return c.json({ error: "files must be a list of { path, text }" }, 400);
+            }
+            const { refusals, ...records } = parseMemoryPackage(files);
+            const epoch = c.req.header(RESOURCE_EPOCH_HEADER);
+            if (epoch !== store.epoch()) {
+                return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+            }
+            if (fenced(characterId, chatId)) {
+                return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
+            }
+            try {
+                const contents = store.memory.readContents(characterId, chatId);
+                if (!contents) {
+                    return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+                }
+                const { pages, events, threads } = records;
+                if (
+                    holdsRows(contents) ||
+                    chatAdoptionHold(store, characterId, chatId, contents) > 0 ||
+                    [pages, events, threads].every(({ length }) => length === 0)
+                ) {
+                    return compressedJson(c, {
+                        revision: contents.revision,
+                        imported: false,
+                        refusals,
+                    } satisfies StructuredMemoryImportAnswer);
+                }
+                return compressedJson(c, {
+                    revision: store.memory.write(characterId, chatId, { epoch, baseRevision: revision }, records),
+                    imported: { pages: pages.length, events: events.length, threads: threads.length },
+                    refusals,
+                } satisfies StructuredMemoryImportAnswer);
             } catch (error) {
                 return storeErrorResponse(c, error);
             }

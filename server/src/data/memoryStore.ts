@@ -42,7 +42,8 @@ import {
  * pages, events, threads, and writer runs, and `memory_state` with the one revision that covers them
  * all and whether a person declined adopting the chat's HypaV3 summaries. Every row belongs to a chat's
  * incarnation and goes with it by cascade. `data` holds the whole record, so a page's sections stay
- * embedded in its row.
+ * embedded in its row. A page in the trash (`trashedAt`) keeps its record and takes `trashed` as its
+ * `type` column, which is what lists it apart from the chat's pages without a statement reading `data`.
  *
  * The resource store owns the connection, the epoch, and the transactions: the writers here join the
  * caller's open transaction and never begin or commit one, so a caller can compose them with its own
@@ -235,10 +236,18 @@ function refusal(kind: MemoryRecordKind, id: unknown, reason: string) {
 type RecordRow = [id: string, ...columns: (string | number)[]];
 
 /**
+ * The `type` column of a page in the trash. The record keeps its true type; the column is what takes the
+ * page out of every listing of the chat's pages, with no statement reading `data`.
+ */
+const TRASHED_PAGE_COLUMN = "trashed";
+
+/**
  * Checks the fields a record gives its columns and returns the row up to its status column, every value
  * taken from `stored`, the record as stored. A live write and a snapshot's walk both come through here,
  * so one code path decides what a row's columns hold. `claimId` takes the id once it is valid, before
- * any other field is looked at, so the caller can refuse one it already saw.
+ * any other field is looked at, so the caller can refuse one it already saw. A page with `trashedAt`
+ * takes `TRASHED_PAGE_COLUMN` as its `type` column; the scene page is refused one, so a trashed row is
+ * never the chat's scene.
  */
 function recordRow(kind: MemoryRecordKind, stored: Record<string, unknown>, claimId: (id: string) => void): RecordRow {
     const { titled, statusColumn, statusValues } = MEMORY_TABLES[kind];
@@ -257,6 +266,16 @@ function recordRow(kind: MemoryRecordKind, stored: Record<string, unknown>, clai
     const status = stored[statusColumn];
     if (typeof status !== "string" || !statusValues.includes(status)) {
         throw refusal(kind, id, `${statusColumn} must be one of ${statusValues.join(", ")}`);
+    }
+    if (kind === "pages" && stored.trashedAt !== undefined) {
+        if (typeof stored.trashedAt !== "number") {
+            throw refusal(kind, id, "trashedAt must be a number");
+        }
+        if (status === "scene") {
+            throw refusal(kind, id, "the scene page cannot be trashed");
+        }
+        row.push(TRASHED_PAGE_COLUMN);
+        return row;
     }
     row.push(status);
     return row;
@@ -458,10 +477,29 @@ function createRecordSet(db: DatabaseSync, descriptions: Record<MemoryRecordKind
     return {
         tables,
 
-        /** Each kind's table of contents, with no record's body. */
+        /**
+         * Each kind's table of contents, with no record's body. A page row whose column says trashed is
+         * listed in `trash`, by id and title alone, so every reader that starts from `pages` leaves it out.
+         */
         listing(seq: number): Omit<MemoryContents, "revision" | "adoptionDeclined"> {
+            const pages: MemoryContents["pages"] = [];
+            const trash: MemoryContents["trash"] = [];
+            const rows = tables.pages.selectContents.all(seq) as {
+                id: string;
+                title: string;
+                type: string;
+                bytes: number;
+            }[];
+            for (const row of rows) {
+                if (row.type === TRASHED_PAGE_COLUMN) {
+                    trash.push({ id: row.id, title: row.title, bytes: row.bytes });
+                } else {
+                    pages.push(row as MemoryContents["pages"][number]);
+                }
+            }
             return {
-                pages: tables.pages.selectContents.all(seq) as MemoryContents["pages"],
+                pages,
+                trash,
                 events: tables.events.selectContents.all(seq) as MemoryContents["events"],
                 threads: tables.threads.selectContents.all(seq) as MemoryContents["threads"],
                 runs: tables.runs.selectContents.all(seq) as MemoryContents["runs"],

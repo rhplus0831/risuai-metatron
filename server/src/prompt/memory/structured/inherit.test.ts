@@ -298,3 +298,29 @@ it("drops later threads and restores moved threads from crossing events in recor
         threads[4],
     ]);
 });
+
+it("keeps a reshaped page's text and later creation across a branch while ordinary pages rewind", () => {
+    const sourceMessages = [message("early", "Before branch"), message("late", "After branch")];
+    const early = event("early", [anchor(sourceMessages[0], 0)]);
+    const late = event("late", [anchor(sourceMessages[1], 1)]);
+    const original = change(change(page("ordinary"), "Facts", "Before", early, 1), "Facts", "After", late, 2);
+    const created = change(addPage(new Map(), page("created"), stamp(late, 3)), "Facts", "New page", late, 4);
+    const reshaped = [
+        { ...original, id: "merged", reshaped: true as const },
+        { ...created, id: "split", reshaped: true as const },
+    ];
+    const inherited = inheritedRecords({
+        pages: [original, created, ...reshaped],
+        events: [early, late],
+        threads: [],
+        sourceMessages,
+        messages: sourceMessages.slice(0, 1),
+        hashOf,
+    });
+    expect(inherited.pages?.map(({ id }) => id)).toEqual(["ordinary", "merged", "split"]);
+    expect(inherited.pages?.[0].sections[0].body).toBe("Before");
+    expect(inherited.pages?.slice(1).map(({ sections }) => sections)).toEqual([
+        [{ ...original.sections[0], provenance: ["early"], sources: early.sources, unsupported: true }],
+        [{ ...created.sections[0], provenance: [], sources: [], unsupported: true }],
+    ]);
+});

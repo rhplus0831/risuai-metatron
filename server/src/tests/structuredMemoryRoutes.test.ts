@@ -502,6 +502,7 @@ it("lists only this chat's metadata and reads every record kind exactly as store
     expect(await answer(await s.request(base))).toEqual({
         revision,
         pages: [{ id: p.id, type: p.type, title: p.title, bytes: bytes(p) }],
+        trash: [],
         events: [{ id: e.id, title: e.title, status: e.status, bytes: bytes(e) }],
         threads: [{ id: thread.id, title: thread.title, state: thread.state, bytes: bytes(thread) }],
         runs: [{ id: run.id, result: run.result, bytes: bytes(run) }],
@@ -2494,5 +2495,399 @@ it("serves default frames and format and rules only to authenticated requests in
         expect(body[call].rules).toBe(slots[call].rules);
         expect(body[call].format).toContain("JSON");
         expect(body[call].rules).toContain("Rules:");
+    }
+});
+
+it("merges aliases, evidence, marks and every page reference in one revision", async () => {
+    const s = await server();
+    const source = page("source", "Source facts");
+    source.aliases = ["Quay", "Harbor"];
+    source.sections[0] = {
+        ...source.sections[0],
+        provenance: ["source-event"],
+        sources: [{ messageId: "s", index: 1, hash: "s" }],
+        unsupported: true,
+        pinned: true,
+        locked: true,
+    };
+    source.sections.push({ ...source.sections[0], heading: "Access", body: "By boat" });
+    const target = page("target", "Target facts");
+    target.aliases = ["Harbor"];
+    target.links = ["source", "other-page"];
+    target.sections[0] = {
+        ...target.sections[0],
+        provenance: ["target-event"],
+        sources: [{ messageId: "t", index: 0, hash: "t" }],
+        updatedAt: 0,
+        disputed: true,
+        suppressed: true,
+        userCorrected: true,
+    };
+    const e: MemoryEvent = {
+        ...event("source-event"),
+        participants: ["source", "target"],
+        speakerId: "source",
+        stateChanges: [{ pageId: "source", section: "Facts", before: "closed", after: "open", quote: "Open" }],
+        knowledge: [{ pageId: "source", fact: "Open", stance: "knows", quote: "Open", knowers: ["source", "target"] }],
+        relationshipShifts: [{ from: "source", to: "source", direction: "closer", note: "Trust" }],
+        openThreads: { add: [{ title: "Return", who: ["source", "target"] }], close: [], transitions: [] },
+    };
+    const scene = { ...page("scene"), type: "scene" as const, participants: ["source", "target"] };
+    const other = { ...page("other-page"), links: ["source", "target"] };
+    const revision = s.write({
+        pages: [source, target, scene, other],
+        events: [e, event("target-event")],
+        threads: [{ id: "thread", title: "Return", who: ["source", "target"], state: "open" }],
+    });
+    const merged = await answer(
+        await s.json(`${base}/page-tools`, {
+            revision,
+            tool: { kind: "merge", sourceId: "source", targetId: "target" },
+        }),
+    );
+    expect(merged.revision).toBe(revision.replace(/:1$/, ":2"));
+    expect(merged.data).toMatchObject({
+        id: "target",
+        reshaped: true,
+        aliases: ["Harbor", "Place source", "Quay"],
+        links: ["other-page"],
+    });
+    expect(merged.data.sections).toEqual([
+        {
+            ...target.sections[0],
+            body: "Target facts\n\nSource facts",
+            provenance: ["target-event", "source-event"],
+            sources: [...target.sections[0].sources, ...source.sections[0].sources],
+            updatedAt: Date.now(),
+            unsupported: true,
+            pinned: true,
+            locked: true,
+        },
+        source.sections[1],
+    ]);
+    const read = async (kind: string, id: string) =>
+        (await answer(await s.request(`${base}/records/${kind}/${id}`))).data;
+    expect(await read("pages", "source")).toEqual({ ...source, trashedAt: Date.now() });
+    expect(await read("pages", "scene")).toEqual({ ...scene, participants: ["target"] });
+    expect(await read("pages", "other-page")).toEqual({ ...other, links: ["target"] });
+    expect(await read("events", "source-event")).toEqual({
+        ...e,
+        participants: ["target"],
+        speakerId: "target",
+        stateChanges: [{ ...e.stateChanges[0], pageId: "target" }],
+        knowledge: [{ ...e.knowledge[0], pageId: "target", knowers: ["target"] }],
+        relationshipShifts: [{ ...e.relationshipShifts[0], from: "target", to: "target" }],
+        openThreads: { ...e.openThreads, add: [{ title: "Return", who: ["target"] }] },
+    });
+    expect(await read("threads", "thread")).toEqual({ id: "thread", title: "Return", who: ["target"], state: "open" });
+});
+
+it("refuses oversized merges, different types and scene tools without partial writes", async () => {
+    const s = await server();
+    const source = page("source");
+    const target = page("target");
+    const scene = { ...page("scene"), type: "scene" as const };
+    for (const variant of ["body", "sections", "type"] as const) {
+        const a = structuredClone(source);
+        const b = structuredClone(target);
+        if (variant === "body") a.sections[0].body = "x".repeat(STRUCTURED_MEMORY_LIMITS.sectionBodyChars);
+        if (variant === "sections")
+            a.sections = Array.from({ length: STRUCTURED_MEMORY_LIMITS.sectionsPerPage }, (_, i) => ({
+                ...a.sections[0],
+                heading: `Section ${i}`,
+            }));
+        if (variant === "type") b.type = "item";
+        const revision = s.write({ pages: [a, b, scene], events: [{ ...event("e"), participants: ["source"] }] });
+        const before = memorySnapshot(s, chatId);
+        await answer(
+            await s.json(`${base}/page-tools`, {
+                revision,
+                tool: { kind: "merge", sourceId: "source", targetId: "target" },
+            }),
+            400,
+        );
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+    }
+    const revision = s.write({ pages: [source, target] });
+    const before = memorySnapshot(s, chatId);
+    for (const tool of [
+        { kind: "trash", pageId: "scene" },
+        { kind: "untrash", pageId: "scene" },
+        { kind: "purge", pageId: "scene" },
+        { kind: "purge", pageId: "source" },
+        { kind: "merge", sourceId: "scene", targetId: "target" },
+        { kind: "merge", sourceId: "source", targetId: "scene" },
+        { kind: "split", pageId: "scene", headings: ["Facts"], title: "Copy", aliases: [] },
+        { kind: "split", pageId: "source", headings: ["Facts"], title: "Copy", aliases: [] },
+    ])
+        await answer(await s.json(`${base}/page-tools`, { revision, tool }), 400);
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+});
+
+it("blocks older reverts across moved and joined headings while allowing a later writer change to be undone", async () => {
+    const s = await server();
+    const source = page("source", "Source facts");
+    source.aliases = ["Move me", "Keep me"];
+    source.sections[0].provenance = ["e"];
+    source.sections[0].sources = [{ messageId: "evidence", index: 0, hash: "evidence" }];
+    source.sections.push({ ...source.sections[0], heading: "Access", body: "Boat" });
+    const target = page("target", "Target facts");
+    const entry = (id: string, heading: string): MemoryPage["history"][number] => ({
+        id,
+        heading,
+        eventId: "e",
+        kind: "change",
+        before: { body: "Old text", provenance: [], sources: [] },
+        highlighted: true,
+        at: 1,
+    });
+    source.history = [entry("source-facts", "Facts"), entry("source-access", "Access")];
+    // A removed target section also has old history: moving that heading must block its resurrection.
+    target.history = [entry("target-facts", "Facts"), entry("target-access", "Access")];
+    const originalEvent = { ...event("e"), participants: ["source"] };
+    let revision = s.write({ pages: [source, target], events: [originalEvent] });
+    const merged = await answer(
+        await s.json(`${base}/page-tools`, {
+            revision,
+            tool: { kind: "merge", sourceId: "source", targetId: "target" },
+        }),
+    );
+    for (const historyId of ["target-facts", "target-access"]) {
+        expect(
+            await answer(
+                await s.json(`${base}/revert`, { revision: merged.revision, pageId: "target", historyId }),
+                409,
+            ),
+        ).toMatchObject({ reason: "superseded" });
+    }
+    for (const h of (merged.data as MemoryPage).history.filter(({ kind }) => kind === "merge"))
+        await answer(
+            await s.json(`${base}/revert`, { revision: merged.revision, pageId: "target", historyId: h.id }),
+            400,
+        );
+    const changes: PageChanges = new Map();
+    changeSection(
+        changes,
+        merged.data,
+        { heading: "Facts", body: "Later writer text", kind: "change" },
+        { eventId: "e", sources: [], at: 2, newId: () => "later" },
+    );
+    revision = s.write({ pages: [changes.get("target")!.page] });
+    const undone = await answer(await s.json(`${base}/revert`, { revision, pageId: "target", historyId: "later" }));
+    expect(undone.data.sections[0].body).toBe("Target facts\n\nSource facts");
+    // Restore the original source as a separate live page to exercise the split's history barrier.
+    revision = s.write({ pages: [source], events: [originalEvent] });
+    const split = await answer(
+        await s.json(`${base}/page-tools`, {
+            revision,
+            tool: { kind: "split", pageId: "source", headings: ["Facts"], title: "New place", aliases: ["Move me"] },
+        }),
+    );
+    expect(split.data).toMatchObject({
+        type: "location",
+        title: "New place",
+        aliases: ["Move me"],
+        sections: [source.sections[0]],
+        reshaped: true,
+    });
+    const remaining = (await answer(await s.request(`${base}/records/pages/source`))).data as MemoryPage;
+    expect(remaining).toMatchObject({ aliases: ["Keep me"], sections: [source.sections[1]], reshaped: true });
+    expect(
+        await answer(
+            await s.json(`${base}/revert`, { revision: split.revision, pageId: "source", historyId: "source-facts" }),
+            409,
+        ),
+    ).toMatchObject({ reason: "superseded" });
+    for (const p of [remaining, split.data as MemoryPage])
+        for (const h of p.history.filter(({ kind }) => kind === "split"))
+            await answer(
+                await s.json(`${base}/revert`, { revision: split.revision, pageId: p.id, historyId: h.id }),
+                400,
+            );
+    expect((await answer(await s.request(`${base}/records/events/e`))).data).toEqual(originalEvent);
+});
+
+it("keeps trash out of packages and copies, refuses edits, restores current evidence flags and purges only trash", async () => {
+    const s = await server();
+    const p = page("p", "Remember me");
+    p.sections[0].provenance = ["e"];
+    p.history = [
+        { id: "writer", heading: "Facts", before: null, kind: "change", eventId: "e", highlighted: true, at: 1 },
+    ];
+    const revision = s.write({ pages: [p], events: [event("e")] });
+    const tool = async (kind: string) =>
+        answer(
+            await s.json(`${base}/page-tools`, {
+                revision: s.store.memory.readContents(characterId, chatId)!.revision,
+                tool: { kind, pageId: "p" },
+            }),
+        );
+    const trashed = await tool("trash");
+    expect(trashed.revision).not.toBe(revision);
+    expect(await answer(await s.request(base))).toMatchObject({ pages: [], trash: [{ id: "p", title: "Place p" }] });
+    expect((await answer(await s.request(`${base}/package`))).pages).toEqual([]);
+    expect((await answer(await s.request(`${base}/records/pages/p`))).data).toEqual({ ...p, trashedAt: Date.now() });
+    await answer(
+        await s.json(`${base}/edits`, {
+            revision: trashed.revision,
+            edit: { kind: "section", pageId: "p", heading: "Facts", body: "Wrong" },
+        }),
+        400,
+    );
+    await answer(await s.json(`${base}/revert`, { revision: trashed.revision, pageId: "p", historyId: "writer" }), 400);
+    const other = base.replace(encodeURIComponent(chatId), "other");
+    await answer(await s.json(`${other}/inherit`, { sourceChatId: chatId }));
+    expect(await answer(await s.request(other))).toMatchObject({ pages: [], trash: [] });
+    s.write({ remove: { events: ["e"] } });
+    // A trash-only destination still has rows, so a chat-file restore must not fill it.
+    expect(
+        await answer(await s.json(`${base}/restore`, { pages: [page("injected")], events: [], threads: [] })),
+    ).toMatchObject({ restored: false });
+    s.write({ events: [{ ...event("e"), status: "retracted" }] });
+    const restored = await tool("untrash");
+    expect(restored.data).toEqual({ ...p, sections: [{ ...p.sections[0], unsupported: true }] });
+    expect(await answer(await s.request(base))).toMatchObject({ pages: [{ id: "p" }], trash: [] });
+    await answer(
+        await s.json(`${base}/page-tools`, { revision: restored.revision, tool: { kind: "purge", pageId: "p" } }),
+        400,
+    );
+    await tool("trash");
+    expect((await tool("purge")).data).toBeNull();
+    await answer(await s.request(`${base}/records/pages/p`), 404);
+    expect((await answer(await s.request(`${base}/records/events/e`))).data.status).toBe("retracted");
+});
+
+// Literal page wire format: import tests must not bring the Svelte renderer into the server project.
+const importPageFile = {
+    path: "pages/location/Imported [imported].md",
+    text: '---\nid: "imported"\ntype: "location"\ntitle: "Imported"\naliases: []\ncontextMode: "auto"\nlinks: []\nretrieval: {"keywords":[]}\nsections: [{"heading":"Facts","provenance":[],"sources":[],"locked":false,"updatedAt":1,"bodyLines":1}]\n---\n\n## Facts\n\nImported text\n\n',
+};
+
+it("imports readable files with individual refusals and leaves every occupied or held chat untouched", async () => {
+    const s = await server();
+    const revision = s.store.memory.readContents(characterId, chatId)!.revision;
+    const result = await answer(
+        await s.json(`${base}/import`, {
+            revision,
+            files: [importPageFile, { path: "pages/location/broken.md", text: "not a page" }],
+        }),
+    );
+    expect(result).toMatchObject({
+        imported: { pages: 1, events: 0, threads: 0 },
+        refusals: [{ file: "pages/location/broken.md", reason: "unreadable" }],
+    });
+    expect((await answer(await s.request(`${base}/records/pages/imported`))).data).toEqual({
+        ...page("imported", "Imported text"),
+        title: "Imported",
+    });
+    for (const existing of [
+        { pages: [page("occupied")] },
+        { pages: [{ ...page("trash"), trashedAt: 1 }] },
+        { events: [event("occupied")] },
+        { threads: [{ id: "occupied", title: "Return", state: "open" as const, who: [] }] },
+        { runs: [run("occupied", "recorded")] },
+        null,
+    ]) {
+        const occupied = await server();
+        if (existing) occupied.write(existing);
+        else
+            storeAdoptionChat(occupied, {
+                summaries: [{ text: "Still waiting for adoption", chatMemos: ["m0"], isImportant: false }],
+            });
+        const before = memorySnapshot(occupied, chatId);
+        const trash = occupied.store.memory.readRecord(characterId, chatId, "pages", "trash");
+        expect(
+            await answer(
+                await occupied.json(`${base}/import`, { revision: before.contents.revision, files: [importPageFile] }),
+            ),
+        ).toEqual({ revision: before.contents.revision, imported: false, refusals: [] });
+        expect(memorySnapshot(occupied, chatId)).toEqual(before);
+        expect(occupied.store.memory.readRecord(characterId, chatId, "pages", "trash")).toEqual(trash);
+    }
+});
+
+it("checks epochs, fences, revisions and body limits before page tools or imports can write", async () => {
+    for (const route of ["page-tools", "import"]) {
+        const s = await server({ routeLimits: { memoryRestoreBodyBytes: 1024 } });
+        const revision =
+            route === "page-tools"
+                ? s.write({ pages: [page("p")] })
+                : s.store.memory.readContents(characterId, chatId)!.revision;
+        const body =
+            route === "page-tools"
+                ? { revision, tool: { kind: "trash", pageId: "p" } }
+                : { revision, files: [importPageFile] };
+        const before = memorySnapshot(s, chatId);
+        for (const epoch of [null, "wrong-epoch"]) {
+            expect(
+                await answer(
+                    await s.request(
+                        `${base}/${route}`,
+                        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+                        epoch,
+                    ),
+                    412,
+                ),
+            ).toMatchObject({ error: "EpochMismatch" });
+        }
+        expect(
+            await answer(await s.json(`${base}/${route}`, { ...body, revision: "old-revision" }), 409),
+        ).toMatchObject({ revision });
+        stageRun(s);
+        expect(await answer(await s.json(`${base}/${route}`, body), 409)).toMatchObject({ reason: "fenced" });
+        s.store.memory.rebuild.abandon(characterId, chatId, s.epoch);
+        await answer(
+            await s.json(`${base}/${route}`, { ...body, padding: "x".repeat(route === "import" ? 1024 : 70_000) }),
+            413,
+        );
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+        const accepted = await answer(await s.json(`${base}/${route}`, body));
+        expect(accepted.revision).not.toBe(revision);
+    }
+});
+
+it("finishes each page tool and import before a competing microtask can take the chat", async () => {
+    for (const route of ["page-tools", "import"]) {
+        const s = await server();
+        const revision =
+            route === "page-tools"
+                ? s.write({ pages: [page("p")] })
+                : s.store.memory.readContents(characterId, chatId)!.revision;
+        const body =
+            route === "page-tools"
+                ? { revision, tool: { kind: "trash", pageId: "p" } }
+                : { revision, files: [importPageFile] };
+        let queued = false;
+        let atHandoff: unknown;
+        const get = StatementSync.prototype.get;
+        // SQLite is the I/O boundary. Queue a competing operation when the fence reads its rebuild row.
+        const spy = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
+            this: StatementSync,
+            ...args
+        ) {
+            const result = get.apply(this, args);
+            if (!queued && /FROM memory_rebuilds\b/.test(this.sourceSQL)) {
+                queued = true;
+                queueMicrotask(() => {
+                    atHandoff = s.store.memory.readRecord(
+                        characterId,
+                        chatId,
+                        "pages",
+                        route === "page-tools" ? "p" : "imported",
+                    )?.data;
+                    stageRun(s);
+                });
+            }
+            return result;
+        });
+        try {
+            await answer(await s.json(`${base}/${route}`, body));
+        } finally {
+            spy.mockRestore();
+        }
+        expect(queued).toBe(true);
+        expect(atHandoff).toMatchObject(
+            route === "page-tools" ? { id: "p", trashedAt: Date.now() } : { id: "imported" },
+        );
     }
 });

@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from "svelte";
+import { zipSync, strToU8 } from "fflate";
+import { activateLore } from "../../../../shared/lore/activation.ts";
 import { fromStore, get, writable } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import type { ContextReport } from "../../../../shared/contextReport.ts";
@@ -13,6 +15,7 @@ import {
     seedChats,
     selectChat,
     setMessageText,
+    setChatMeta,
     patchMessage,
     hasChatWork,
     takeChatWork,
@@ -42,9 +45,14 @@ import StructuredMemoryPanel from "./StructuredMemoryPanel.svelte";
 import PreviewTab from "./PreviewTab.svelte";
 
 const io = vi.hoisted(() => ({
+    selectSingleFileHandle: vi.fn<typeof import("src/ts/util").selectSingleFileHandle>(),
     runServerJob: vi.fn<typeof import("src/ts/process/serverCommands").runServerJob>(),
     authFetch: vi.fn<typeof import("src/ts/storage/serverAuth").authFetch>(),
     downloadFile: vi.fn<typeof import("src/ts/globalApi.svelte").downloadFile>(),
+}));
+vi.mock("src/ts/util", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/util")>()),
+    selectSingleFileHandle: io.selectSingleFileHandle,
 }));
 vi.mock("src/ts/process/serverCommands", async (importOriginal) => ({
     ...(await importOriginal<typeof import("src/ts/process/serverCommands")>()),
@@ -1316,6 +1324,7 @@ function serveAdoptionContents() {
     const contents: StructuredMemoryContentsAnswer = {
         revision: revision(1),
         pages: [],
+        trash: [],
         events: [],
         threads: [],
         runs: [{ id: "failed", result: "failed", bytes: 100 }],
@@ -1570,6 +1579,7 @@ function serveRebuildContents() {
     const state: StructuredMemoryContentsAnswer = {
         revision: "r1",
         pages: [],
+        trash: [],
         events: [],
         threads: [],
         runs: [],
@@ -1793,4 +1803,251 @@ it("shows the current custom mode on the panel and the stored custom mode on Log
     click("[data-segment-btn]:last-child");
     await settle();
     expect(query('[data-memory-run="failed"]')?.textContent).toContain("Custom prompt");
+});
+
+function servePageTools() {
+    const state = {
+        revision: "before-tool",
+        pages: [
+            editablePage(),
+            { ...editablePage(), id: "target", title: "The harbor" },
+            { ...editablePage(), id: "scene", type: "scene" as const },
+        ],
+        trash: [] as MemoryPage[],
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === "/api/memory/structured/c/k")
+            return Response.json({
+                revision: state.revision,
+                pages: state.pages.map(({ id, title, type }) => ({ id, title, type, bytes: 100 })),
+                trash: state.trash.map(({ id, title }) => ({ id, title, bytes: 100 })),
+                events: [],
+                threads: [],
+                runs: [],
+            });
+        if (url.includes("/records/pages/"))
+            return Response.json({
+                revision: state.revision,
+                data: [...state.pages, ...state.trash].find(({ id }) => url.endsWith(`/${id}`)),
+            });
+        return fetch(url, init, options);
+    });
+    return state;
+}
+
+it("selects the page named by a merge answer and rereads contents, then restores a refused tool's copy", async () => {
+    const state = servePageTools();
+    vi.mocked(alertConfirm).mockResolvedValue(true);
+    const fetch = io.authFetch.getMockImplementation()!;
+    let refuse = false;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/page-tools")) return fetch(url, init, options);
+        if (refuse) return Response.json({ error: "Try again later" }, { status: 400 });
+        expect(JSON.parse(init!.body as string)).toEqual({
+            revision: "before-tool",
+            tool: { kind: "merge", sourceId: "p", targetId: "target" },
+        });
+        state.pages = state.pages.filter(({ id }) => id !== "p");
+        state.pages[0] = {
+            ...state.pages[0],
+            sections: [{ ...state.pages[0].sections[0], body: "Combined harbor memory" }],
+        };
+        state.trash = [{ ...editablePage(), trashedAt: 1 }];
+        state.revision = "after-tool";
+        return Response.json({ revision: state.revision, data: state.pages[0] });
+    });
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    const select = target.querySelector<HTMLSelectElement>("[data-memory-merge-target]")!;
+    const querySelector = select.querySelector.bind(select);
+    // happy-dom does not implement :checked for a select's selected option.
+    const selectedOption = vi
+        .spyOn(select, "querySelector")
+        .mockImplementation((selector) =>
+            selector === ":checked" ? (select.options[select.selectedIndex] ?? null) : querySelector(selector),
+        );
+    changeSelect("[data-memory-merge-target]", "target");
+    selectedOption.mockRestore();
+    await settle();
+    press("[data-memory-merge]");
+    await settle();
+    expect(query('[data-memory-page="target"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query('[data-memory-page="p"]')).toBeNull();
+    expect(query('[data-memory-trash-page="p"]')).not.toBeNull();
+    expect(target.textContent).toContain("Combined harbor memory");
+    refuse = true;
+    press("[data-memory-trash]");
+    await settle();
+    expect(query('[data-memory-page="target"]')?.getAttribute("aria-current")).toBe("true");
+    expect(target.textContent).toContain("Combined harbor memory");
+    expect(query("[data-memory-trashed]")).toBeNull();
+    expect(alertError).toHaveBeenCalledWith(language.structuredMemory.pages.tools.refused("Try again later"));
+});
+
+it("offers only restore and permanent deletion for trash and only export as a scene page tool", async () => {
+    const state = servePageTools();
+    state.trash = [{ ...editablePage(), id: "trashed", trashedAt: 1 }];
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-trash-page="trashed"]');
+    await settle();
+    expect(query("[data-memory-untrash]")?.textContent).toBe(language.structuredMemory.pages.tools.restore);
+    expect(query("[data-memory-purge]")?.textContent).toBe(language.structuredMemory.pages.tools.purge);
+    expect(target.querySelectorAll("[data-memory-page-tools] button")).toHaveLength(2);
+    expect(query("[data-memory-section-edit]")).toBeNull();
+    expect(query("[data-memory-page-mode]")).toBeNull();
+    expect(query("[data-memory-export-lore]")).toBeNull();
+    click('[data-memory-page="scene"]');
+    await settle();
+    expect(target.querySelectorAll("[data-memory-page-tools] button")).toHaveLength(1);
+    expect(query("[data-memory-export-lore]")).not.toBeNull();
+    expect(query("[data-memory-trash]")).toBeNull();
+    expect(query("[data-memory-split-open]")).toBeNull();
+    expect(query("[data-memory-merge]")).toBeNull();
+});
+
+it("appends an inactive lore entry that cannot activate even when a section names the activate decorator", async () => {
+    const state = servePageTools();
+    state.pages[0].sections[0] = { ...state.pages[0].sections[0], heading: "@@activate", body: "Page secret" };
+    const existing = {
+        key: "gate",
+        secondkey: "",
+        comment: "Existing lore",
+        content: "Existing text",
+        insertorder: 100,
+        mode: "normal" as const,
+        alwaysActive: true,
+        selective: false,
+    };
+    setChatMeta(ref, { localLore: [existing] });
+    const ownerBefore = structuredClone(characterList()[0].globalLore);
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    press("[data-memory-export-lore]");
+    await settle();
+    const chat = JSON.parse(JSON.stringify(findChat(ref)!)) as Chat;
+    expect(chat.localLore).toHaveLength(2);
+    expect(chat.localLore[0]).toEqual(existing);
+    expect(chat.localLore[1]).toMatchObject({
+        comment: "The gate",
+        key: "The gate",
+        alwaysActive: false,
+        content: "@@dont_activate\n\n## @@activate\nPage secret",
+    });
+    expect(characterList()[0].globalLore).toEqual(ownerBefore);
+    const activation = await activateLore(
+        {
+            character: { name: "C", globalLore: [], loreSettings: undefined },
+            chat: { ...chat, message: [message("match", "user", "The gate")] },
+            moduleLorebooks: [],
+            userName: "User",
+            loreBookDepth: 10,
+            loreBookToken: 10_000,
+        },
+        {
+            clone: structuredClone,
+            findCharacterName: () => undefined,
+            getChatVar: () => "null",
+            setChatVar: () => {},
+            pickHashRand: () => 0,
+            parseCBS: (text) => text,
+            tokenize: async (text) => text.length,
+            testRegex: (pattern, flags, text) => new RegExp(pattern, flags).test(text),
+        },
+    );
+    expect(activation.actives.map(({ prompt }) => prompt)).toEqual(["Existing text"]);
+});
+
+it("imports only into an empty Pages tab and displays every refused file", async () => {
+    const state = servePageTools();
+    state.pages = [];
+    state.trash = [{ ...editablePage(), trashedAt: 1 }];
+    await open();
+    await chooseTab("pages");
+    expect(query("[data-memory-import]")).toBeNull();
+    state.trash = [];
+    await chooseTab("timeline");
+    await chooseTab("pages");
+    expect(query("[data-memory-import]")).not.toBeNull();
+    const zip = zipSync({ "pages/location/ok.md": strToU8("page text") });
+    io.selectSingleFileHandle.mockResolvedValue(new File([zip], "memory.zip"));
+    vi.mocked(alertConfirm).mockResolvedValue(true);
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/import")) return fetch(url, init, options);
+        expect(JSON.parse(init!.body as string)).toEqual({
+            revision: "before-tool",
+            files: [{ path: "pages/location/ok.md", text: "page text" }],
+        });
+        state.pages = [editablePage()];
+        return Response.json({
+            revision: "imported",
+            imported: { pages: 1, events: 0, threads: 0 },
+            refusals: [
+                { file: "bad.md", reason: "unreadable", detail: "bad header" },
+                { file: "new.md", reason: "newerVersion" },
+            ],
+        });
+    });
+    press("[data-memory-import]");
+    await settle();
+    expect(query("[data-memory-import]")).toBeNull();
+    expect(query('[data-memory-page="p"]')).not.toBeNull();
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-import-refusal]")].map(
+            (row) => row.dataset.memoryImportRefusal,
+        ),
+    ).toEqual(["bad.md", "new.md"]);
+    expect(query('[data-memory-import-refusal="bad.md"]')?.textContent).toContain("bad header");
+    expect(query('[data-memory-import-refusal="new.md"]')?.textContent).toContain(
+        language.structuredMemory.pages.tools.importReasons.newerVersion,
+    );
+});
+
+it("sends only selected headings and aliases from the split form and opens the new page", async () => {
+    const state = servePageTools();
+    state.pages[0].aliases = ["Boat", "Gate"];
+    state.pages[0].sections.push({ ...state.pages[0].sections[0], heading: "Access", body: "By boat" });
+    vi.mocked(alertConfirm).mockResolvedValue(true);
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/page-tools")) return fetch(url, init, options);
+        expect(JSON.parse(init!.body as string)).toEqual({
+            revision: "before-tool",
+            tool: { kind: "split", pageId: "p", headings: ["Access"], aliases: ["Boat"], title: "Landing" },
+        });
+        const created = {
+            ...state.pages[0],
+            id: "new",
+            title: "Landing",
+            aliases: ["Boat"],
+            sections: [state.pages[0].sections[1]],
+        };
+        state.pages.push(created);
+        state.pages[0] = { ...state.pages[0], aliases: ["Gate"], sections: [state.pages[0].sections[0]] };
+        state.revision = "after-split";
+        return Response.json({ revision: state.revision, data: created });
+    });
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    press("[data-memory-split-open]");
+    click('[data-memory-split-heading="Access"] input');
+    click('[data-memory-split-alias="Boat"] input');
+    const title = target.querySelector<HTMLInputElement>("[data-memory-split-title] input")!;
+    title.value = "Landing";
+    title.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    press("[data-memory-split]");
+    await settle();
+    expect(query('[data-memory-page="new"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query("[data-memory-split-form]")).toBeNull();
+    expect(target.textContent).toContain("By boat");
+    expect(target.textContent).not.toContain("Original memory");
 });

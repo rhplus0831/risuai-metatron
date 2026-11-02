@@ -201,10 +201,9 @@ What `inheritedRecords` decides:
   does not read `unsupported`. For each heading, the first `page.history` entry of a behind event is the cut: it and
   every later entry of that heading go, a person's edits included, and the section becomes its `before`. A `null`
   removes it, and a heading with no live section comes back. It keeps the live section's `locked` and trust flags, loses
-  `disputed` and `unsupported`, and takes `updatedAt` from the cut.
+  `disputed` and `unsupported`, and takes `updatedAt` from the cut. A `reshaped` page is never rewound or dropped.
 - A page whose `heading: null` entry names a behind event stays out, and its id leaves the crossing pages' `links` and
-  the crossing threads' `who`. The scene's `participants` have no history, so any behind event makes them `[]` for the
-  writer to refill.
+  the crossing threads' `who`. The scene's `participants` have no history, so any behind event empties them.
 - Each section and each kept `before` keeps the crossing ids in `provenance` and the mapped `sources`. A section that
   still names a behind event after the rewind, because the history lost that change, gets `unsupported`, with its body
   kept, and so does one that had provenance and is left with no crossing event that is not `retracted`. No body is

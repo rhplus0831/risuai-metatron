@@ -318,6 +318,7 @@ describe("chat checkpoints", () => {
             expect(store.memory.readContents("c", "k")).toEqual({
                 revision: expect.any(String),
                 pages: [],
+                trash: [],
                 events: [],
                 threads: [],
                 runs: [],

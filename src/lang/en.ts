@@ -2715,12 +2715,60 @@ export const languageEnglish = {
                 compact: "Compacted",
                 edit: "Edited by you",
                 revert: "Reverted by you",
+                merge: "Merged by you",
+                split: "Split by you",
             } as Record<string, string>,
             highlighted: "Highlighted",
             highlightMode: "Highlighting in this chat",
             highlightDefault: "Use the default",
             wholePage: "Whole page",
             diffFailed: "The comparison could not be loaded.",
+            tools: {
+                refused: (error: string) => `This change was refused: ${error}`,
+                trash: "Trash",
+                delete: "Delete",
+                trashed:
+                    "This page is in the trash: it is not sent, listed, or written to, and everything on it stays until you delete it forever.",
+                restore: "Restore",
+                purge: "Delete forever",
+                purgeConfirm: (title: string) =>
+                    `Delete "${title}" forever? Its sections and history go with it, and nothing can bring them back.`,
+                mergeInto: "Merge into",
+                mergeTarget: "Choose a page",
+                merge: "Merge",
+                mergeConfirm: (source: string, target: string) =>
+                    `Merge "${source}" into "${target}"? Its sections, aliases, and every reference to it move to "${target}", a section both pages have is joined, and "${source}" goes to the trash with its history.`,
+                split: "Split",
+                splitTitle: "Title of the new page",
+                splitHeadings: "Sections to move",
+                splitAliases: "Aliases to move",
+                splitConfirm: (title: string, sections: number) =>
+                    `Move ${sections === 1 ? "1 section" : `${sections} sections`} to a new page "${title}"? The events stay on this page.`,
+                export: "Export to lorebook",
+                exported: (title: string) => `"${title}" was added to this chat's lorebook as an inactive entry.`,
+                exportNotLoaded: "This chat is not loaded, so nothing can be added to its lorebook.",
+                import: "Import a Markdown package",
+                importConfirm:
+                    "Import this package into the chat's memory? Only a chat with no memory records takes it, and what a file gets wrong is left out and listed.",
+                importDone: (counts: { pages: number; events: number; threads: number }) => {
+                    const { pages, events, threads } = counts;
+                    return `Imported ${pages === 1 ? "1 page" : `${pages} pages`}, ${events === 1 ? "1 event" : `${events} events`}, and ${threads === 1 ? "1 thread" : `${threads} threads`}.`;
+                },
+                importNothing:
+                    "Nothing was imported: this chat already holds memory records or waits for a choice on its HypaV3 summaries, or the package holds no record.",
+                importRefusals: "Left out",
+                importReasons: {
+                    unknownFile: "not a file of a memory package",
+                    unreadable: "not in the package's layout",
+                    newerVersion: "written by a newer version of the app",
+                    shape: "not a whole record",
+                    invalidId: "its id is not a valid id",
+                    duplicateId: "its id is already used in the package",
+                    secondScene: "a second scene page",
+                    tooLarge: "over the server's size limit",
+                    missingThreads: "this package has no threads file, so the events' thread references were dropped",
+                } as Record<string, string>,
+            },
         },
         timeline: {
             empty: "This chat has no recorded events yet.",

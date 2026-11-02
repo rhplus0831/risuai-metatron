@@ -20,6 +20,7 @@ import {
     type ResourceStore,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
+import { readRecordSet, rebuildChanges } from "../prompt/memory/structured/rebuild.ts";
 import { installSnapshot } from "./stagedRestore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
 import { reconcileEvents, reconcileMessageChanges } from "../prompt/memory/structured/reconcile.ts";
@@ -125,7 +126,7 @@ const contents = (store: ResourceStore, characterId = "c", chatId = "k") =>
     store.memory.readContents(characterId, chatId)!;
 const write = (store: ResourceStore, baseRevision: string, changes: MemoryChanges, characterId = "c", chatId = "k") =>
     store.memory.write(characterId, chatId, { epoch: store.epoch(), baseRevision }, changes);
-const emptyContents = (revision: string) => ({ revision, pages: [], events: [], threads: [], runs: [] });
+const emptyContents = (revision: string) => ({ revision, pages: [], trash: [], events: [], threads: [], runs: [] });
 const removal = (ids: string[]) => ({ pages: ids, events: ids, threads: ids, runs: ids });
 function chatSeq(db: DatabaseSync, characterId = "c", chatId = "k") {
     return (
@@ -445,6 +446,7 @@ it("selects contents without body columns and reads bodies by id with the curren
     expect(listing).toEqual({
         revision: first,
         pages: [{ id: "z", title: "Gate z", type: "concept", bytes: bytes.pages }],
+        trash: [],
         events: [{ id: "z", title: "Opening z", status: "retracted", bytes: bytes.events }],
         threads: [{ id: "z", title: input.threads[0].title, state: "paused", bytes: bytes.threads }],
         runs: [{ id: "z", result: "failed", bytes: bytes.runs }],
@@ -1017,4 +1019,33 @@ it("restores only live memory from mid-run snapshots and snapshots predating the
         expect(store.memory.rebuild.status("c", "k")).toBeNull();
         for (const table of stagedTables) expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
     }
+});
+
+it("retains trash through checkpoint capture, snapshot restoration and a rebuild swap", async () => {
+    const { store, dir } = fileStore();
+    seed(store);
+    const trash = { ...records(["trash"]).pages[0], trashedAt: 123 };
+    write(store, contents(store).revision, { pages: [trash] });
+    expect(contents(store)).toMatchObject({ pages: [], trash: [{ id: "trash" }] });
+    const checkpoint = store.checkpoints.save("c", "k", "Trash retained", "manual")!;
+    const captured = store.checkpoints.readMemory("c", "k", checkpoint.id)!;
+    expect(captured.captured).toBe(true);
+    if (!captured.captured) throw new Error("Checkpoint did not capture memory");
+    expect(captured.texts.pages.map((text) => JSON.parse(text))).toEqual([trash]);
+    const snapshot = path.join(dir, "trash.sqlite");
+    await store.backupTo(snapshot);
+    write(store, contents(store).revision, { remove: { pages: ["trash"] } });
+    await installSnapshot(store, snapshot, kinds);
+    expect(store.memory.readRecord("c", "k", "pages", "trash")?.data).toEqual(trash);
+    expect(contents(store)).toMatchObject({ pages: [], trash: [{ id: "trash" }] });
+    const live = readRecordSet(store.memory, "c", "k")!;
+    expect(live.pages).toEqual([]);
+    const changes = rebuildChanges("rebuild", live, {
+        pages: [],
+        events: [{ ...records(["new"]).events[0], createdRevision: 1 }],
+        threads: [],
+    })!;
+    write(store, contents(store).revision, changes);
+    expect(store.memory.readRecord("c", "k", "pages", "trash")?.data).toEqual(trash);
+    expect(contents(store)).toMatchObject({ pages: [], trash: [{ id: "trash" }] });
 });

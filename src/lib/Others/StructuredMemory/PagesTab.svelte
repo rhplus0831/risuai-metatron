@@ -2,9 +2,10 @@
     import { ChevronDownIcon, ChevronRightIcon } from "@lucide/svelte";
     import { tick, untrack } from "svelte";
     import { language } from "src/lang";
-    import { alertError, alertToast } from "src/ts/alert";
+    import { alertConfirm, alertError, alertToast } from "src/ts/alert";
     import {
         editStructuredMemory,
+        importStructuredMemoryPackage,
         memoryItemsUsed,
         memoryMessageIndexes,
         memoryPageHistoryView,
@@ -13,17 +14,21 @@
         readStructuredMemoryContents,
         readStructuredMemoryRecord,
         revertStructuredMemoryChange,
+        structuredMemoryPageTool,
         type MemoryDiffPart,
         type MemoryPageHistoryRow,
         type MemoryPanelTabProps,
         type StructuredMemoryResult,
     } from "src/ts/process/structuredMemory.svelte";
     import { findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { selectSingleFileHandle } from "src/ts/util";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import CheckInput from "src/lib/UI/GUI/CheckInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
+    import TextInput from "src/lib/UI/GUI/TextInput.svelte";
+    import type { loreBook } from "../../../../shared/database.ts";
     import {
         MEMORY_CONTEXT_MODES,
         STRUCTURED_MEMORY_HIGHLIGHT_MODES,
@@ -34,6 +39,8 @@
         type MemorySection,
         type StructuredMemoryContentsAnswer,
         type StructuredMemoryEdit,
+        type StructuredMemoryImportAnswer,
+        type StructuredMemoryPageTool,
         type StructuredMemoryRecordAnswer,
     } from "../../../../shared/structuredMemory.ts";
     import MemoryLinkButton from "./MemoryLinkButton.svelte";
@@ -45,6 +52,12 @@
     // record (`StructuredMemoryEdit`), so the server's own record decides everything else. A revert from
     // a history row goes the same way, except that the server alone knows what it restores, so the copy
     // stays as it is until the answer.
+    //
+    // A tool over a page as a whole (`StructuredMemoryPageTool`) goes that way too: the server answers
+    // the page to show next, the contents are read again, and that page is selected. The trash is listed
+    // under the tree; a page in it shows read-only with Restore and Delete forever. Merging, splitting,
+    // deleting forever, and importing a package are confirmed first. Exporting a page to the chat's
+    // lorebook is a chat write, not a memory write: it needs the chat loaded and nothing else.
     //
     // An open section editor keeps the body it opened on. A read or a revert that brings another body for
     // it closes the editor with the `changed` notice: a draft written against old text must not clobber
@@ -60,10 +73,13 @@
     /** The rows a list renders at once; a long chat stays cheap behind "show more". */
     const ROWS_AT_ONCE = 200;
     const FLAGS = ["disputed", "unsupported", "userCorrected"] as const;
-    const { sectionBodyChars, gradeMax } = STRUCTURED_MEMORY_LIMITS;
+    const { sectionBodyChars, gradeMax, labelChars } = STRUCTURED_MEMORY_LIMITS;
     const GRADES = Array.from({ length: gradeMax + 1 }, (_, grade) => grade);
+    /** What makes a lore entry inactive, read by the lore activation as a decorator. */
+    const LORE_INACTIVE = "@@dont_activate";
 
     const text = language.structuredMemory.pages;
+    const toolText = text.tools;
     const panelText = language.structuredMemory.panel;
     const revertText = language.structuredMemory.revert;
 
@@ -82,6 +98,16 @@
     /** The open section editor, with the body it opened on. */
     let editor = $state.raw<{ heading: string; base: string } | null>(null);
     let draft = $state("");
+
+    /** The merge target a person chose, among the live pages of the copy's type. */
+    let mergeTargetId = $state("");
+    /** The split form: the headings and aliases to move, and the new page's title. */
+    let splitOpen = $state(false);
+    let splitHeadings = $state<string[]>([]);
+    let splitAliases = $state<string[]>([]);
+    let splitTitle = $state("");
+    /** What the last import answered, until the next one or another chat. */
+    let importReport = $state.raw<StructuredMemoryImportAnswer | null>(null);
 
     let shownRows = $state(ROWS_AT_ONCE);
     /** The open history entry and its diff, one at a time. */
@@ -106,6 +132,27 @@
     const controlsOff = $derived(readOnly || sending);
     const draftFits = $derived(draft.trim() !== "" && draft.length <= sectionBodyChars);
     const highlightMode = $derived(structuredMemoryHighlightOverride(findChat(chatRef)) ?? "");
+    /** The copy is a page in the trash: read-only, with Restore and Delete forever alone. */
+    const inTrash = $derived(copy?.data.trashedAt !== undefined);
+    /** The live pages the copy can merge into: its type, not itself. */
+    const mergeTargets = $derived(
+        copy && contents ? contents.pages.filter(({ type, id }) => type === copy.data.type && id !== copy.data.id) : [],
+    );
+    const splitFits = $derived(
+        copy !== null &&
+            splitHeadings.length > 0 &&
+            splitHeadings.length < copy.data.sections.length &&
+            splitTitle.trim() !== "" &&
+            splitTitle.length <= labelChars,
+    );
+    /** The chat holds nothing the tab knows of and waits for no choice, which is what an import takes. */
+    const canImport = $derived(
+        contents !== null &&
+            [contents.pages, contents.trash, contents.events, contents.threads, contents.runs].every(
+                ({ length }) => length === 0,
+            ) &&
+            contents.adoption.adoptable === 0,
+    );
 
     const sameChat = (ref: ChatRef) => ref.chaId === chatRef.chaId && ref.chatId === chatRef.chatId;
 
@@ -202,6 +249,22 @@
         untrack(() => read());
     });
 
+    // An import's report belongs to the chat it was made in.
+    $effect(() => {
+        chatRef.chaId;
+        chatRef.chatId;
+        untrack(() => (importReport = null));
+    });
+
+    /** Forgets what the tools held of the page shown before. */
+    function resetTools() {
+        mergeTargetId = "";
+        splitOpen = false;
+        splitHeadings = [];
+        splitAliases = [];
+        splitTitle = "";
+    }
+
     function select(id: string) {
         if (id === selectedId) {
             return;
@@ -214,6 +277,7 @@
         recordFailure = null;
         editor = null;
         openEntry = null;
+        resetTools();
         void readRecord(id);
     }
 
@@ -243,13 +307,14 @@
     /**
      * Sends one change of the copy through `request`, with `applied` as the copy meanwhile. `keep` takes
      * the answer, and says whether it holds the page. Anything else restores the copy, shows the notice
-     * (none for `epoch`, which halts on its own), and reads again, and that read decides whether an open
-     * editor survives.
+     * (none for `epoch`, which halts on its own; `refusedText` words a failure's text, which for a tool is
+     * what the pages refused), and reads again, and that read decides whether an open editor survives.
      */
     async function sendChange<T>(
         request: (ref: ChatRef, revision: string) => Promise<StructuredMemoryResult<T>>,
         applied: MemoryPage,
         keep: (answer: T) => boolean,
+        refusedText?: (error: string) => string,
     ) {
         if (sending || readOnly || !copy) {
             return;
@@ -262,7 +327,9 @@
         copy = { ...before, data: applied };
         const result = await request(ref, before.revision);
         sending = false;
-        if (result.outcome === "failed" || (result.outcome === "refused" && result.reason !== "epoch")) {
+        if (result.outcome === "failed" && refusedText) {
+            alertError(refusedText(result.error));
+        } else if (result.outcome === "failed" || (result.outcome === "refused" && result.reason !== "epoch")) {
             alertError(memoryReadFailureText(result));
         }
         if (!sameChat(ref)) {
@@ -307,6 +374,159 @@
                 return true;
             },
         );
+    }
+
+    /**
+     * Sends `tool` over the copy. The answer names the page to show next, which is selected, or none after
+     * a purge; the contents are read again either way, since a tool moves pages between the lists.
+     */
+    function runTool(tool: StructuredMemoryPageTool) {
+        if (!copy) {
+            return;
+        }
+        const { data } = copy;
+        return sendChange(
+            (ref, revision) => structuredMemoryPageTool(ref, revision, tool),
+            data,
+            ({ revision, data: page }) => {
+                editor = null;
+                openEntry = null;
+                resetTools();
+                if (page === null) {
+                    selectedId = null;
+                    copy = null;
+                } else {
+                    selectedId = page.id;
+                    keepRecord({ revision, data: page }, true);
+                }
+                void readContents();
+                return true;
+            },
+            toolText.refused,
+        );
+    }
+
+    function trashPage() {
+        if (copy) {
+            void runTool({ kind: "trash", pageId: copy.data.id });
+        }
+    }
+
+    function untrashPage() {
+        if (copy) {
+            void runTool({ kind: "untrash", pageId: copy.data.id });
+        }
+    }
+
+    async function purgePage() {
+        if (!copy || controlsOff) {
+            return;
+        }
+        const { id, title } = copy.data;
+        if (await alertConfirm(toolText.purgeConfirm(title))) {
+            void runTool({ kind: "purge", pageId: id });
+        }
+    }
+
+    async function mergePage() {
+        const target = mergeTargets.find(({ id }) => id === mergeTargetId);
+        if (!copy || !target || controlsOff) {
+            return;
+        }
+        const { id, title } = copy.data;
+        if (await alertConfirm(toolText.mergeConfirm(title, target.title))) {
+            void runTool({ kind: "merge", sourceId: id, targetId: target.id });
+        }
+    }
+
+    function toggleSplitHeading(heading: string, moved: boolean) {
+        splitHeadings = moved ? [...splitHeadings, heading] : splitHeadings.filter((entry) => entry !== heading);
+    }
+
+    function toggleSplitAlias(alias: string, moved: boolean) {
+        splitAliases = moved ? [...splitAliases, alias] : splitAliases.filter((entry) => entry !== alias);
+    }
+
+    async function splitPage() {
+        if (!copy || !splitFits || controlsOff) {
+            return;
+        }
+        const tool: StructuredMemoryPageTool = {
+            kind: "split",
+            pageId: copy.data.id,
+            headings: splitHeadings,
+            title: splitTitle.trim(),
+            aliases: splitAliases,
+        };
+        if (await alertConfirm(toolText.splitConfirm(tool.title, tool.headings.length))) {
+            void runTool(tool);
+        }
+    }
+
+    /**
+     * Appends `page` to the chat's own lorebook as an inactive entry: the title and aliases as its keys, so
+     * they seed the next recording's aliases, and the sections under their headings behind the decorator
+     * that keeps it out of the prompt. A chat write on the loaded chat, outside the memory revision.
+     */
+    function exportToLore(page: MemoryPage) {
+        const chat = findChat(chatRef);
+        if (!chat) {
+            alertError(toolText.exportNotLoaded);
+            return;
+        }
+        const body = page.sections.map(({ heading, body }) => `## ${codeText(text.headings, heading)}\n${body}`);
+        const entry: loreBook = {
+            key: [page.title, ...page.aliases].join(","),
+            secondkey: "",
+            insertorder: 100,
+            comment: page.title,
+            content: `${LORE_INACTIVE}\n\n${body.join("\n\n")}`,
+            mode: "normal",
+            alwaysActive: false,
+            selective: false,
+        };
+        try {
+            setChatMeta(chatRef, { localLore: [...(chat.localLore ?? []), entry] });
+            alertToast(toolText.exported(page.title));
+        } catch (error) {
+            alertError(error instanceof Error ? error : String(error));
+        }
+    }
+
+    /**
+     * Imports a package zip into the chat, which must hold no records: the file is unzipped here and its
+     * Markdown sent. The answer is kept as the report, and the contents are read again after a write.
+     */
+    async function importPackage() {
+        if (controlsOff || !contents) {
+            return;
+        }
+        const file = await selectSingleFileHandle(["zip"]);
+        if (!file || sending) {
+            return;
+        }
+        const ref = chatRef;
+        const { revision } = contents;
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        if (!(await alertConfirm(toolText.importConfirm))) {
+            return;
+        }
+        sending = true;
+        const result = await importStructuredMemoryPackage(ref, revision, bytes);
+        sending = false;
+        if (!sameChat(ref)) {
+            return;
+        }
+        if (result.outcome !== "ok") {
+            if (result.outcome === "failed" || result.reason !== "epoch") {
+                alertError(memoryReadFailureText(result));
+                read();
+            }
+            return;
+        }
+        importReport = result.value;
+        alertToast(result.value.imported ? toolText.importDone(result.value.imported) : toolText.importNothing);
+        read();
     }
 
     /** `page` with `change` on the section under `heading`. */
@@ -412,21 +632,27 @@
                     </span>
                 {/if}
             {/each}
-            <CheckInput
-                check={section.locked}
-                disabled={controlsOff}
-                margin={false}
-                name={text.locked}
-                onChange={(locked) => setLock(section.heading, locked)}
-            />
-            <Button
-                size="sm"
-                styled="outlined"
-                disabled={controlsOff || editor !== null}
-                onclick={() => startEdit(section)}
-            >
-                <span data-memory-section-edit>{text.edit}</span>
-            </Button>
+            {#if inTrash}
+                {#if section.locked}
+                    <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2">{text.locked}</span>
+                {/if}
+            {:else}
+                <CheckInput
+                    check={section.locked}
+                    disabled={controlsOff}
+                    margin={false}
+                    name={text.locked}
+                    onChange={(locked) => setLock(section.heading, locked)}
+                />
+                <Button
+                    size="sm"
+                    styled="outlined"
+                    disabled={controlsOff || editor !== null}
+                    onclick={() => startEdit(section)}
+                >
+                    <span data-memory-section-edit>{text.edit}</span>
+                </Button>
+            {/if}
         </div>
         {#if editor?.heading === section.heading}
             <TextAreaInput
@@ -531,7 +757,7 @@
                         {@render historyMarks(entry)}
                     </span>
                 </button>
-                {#if entry.revertable}
+                {#if entry.revertable && !inTrash}
                     <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => revert(entry)}>
                         <span data-memory-history-revert>{revertText.button}</span>
                     </Button>
@@ -554,45 +780,139 @@
     </li>
 {/snippet}
 
+{#snippet pageTools(page: MemoryPage)}
+    <div class="flex flex-wrap items-center gap-2" data-memory-page-tools>
+        <Button size="sm" styled="outlined" disabled={readOnly} onclick={() => exportToLore(page)}>
+            <span data-memory-export-lore>{toolText.export}</span>
+        </Button>
+        {#if page.type !== "scene"}
+            <Button
+                size="sm"
+                styled="outlined"
+                disabled={controlsOff || page.sections.length < 2}
+                onclick={() => (splitOpen = !splitOpen)}
+            >
+                <span data-memory-split-open>{toolText.split}</span>
+            </Button>
+            <Button size="sm" styled="outlined" disabled={controlsOff} onclick={trashPage}>
+                <span data-memory-trash>{toolText.delete}</span>
+            </Button>
+            {#if mergeTargets.length > 0}
+                <label class="flex items-center gap-1">
+                    <span class="text-textcolor2">{toolText.mergeInto}</span>
+                    <SelectInput size="sm" bind:value={mergeTargetId} disabled={controlsOff} data-memory-merge-target>
+                        <OptionInput value="">{toolText.mergeTarget}</OptionInput>
+                        {#each mergeTargets as target (target.id)}
+                            <OptionInput value={target.id}>{target.title}</OptionInput>
+                        {/each}
+                    </SelectInput>
+                </label>
+                <Button size="sm" styled="outlined" disabled={controlsOff || mergeTargetId === ""} onclick={mergePage}>
+                    <span data-memory-merge>{toolText.merge}</span>
+                </Button>
+            {/if}
+        {/if}
+    </div>
+    {#if splitOpen && page.type !== "scene"}
+        <div class="flex flex-col gap-2 p-2 border rounded-md border-darkborderc" data-memory-split-form>
+            <span class="text-textcolor2">{toolText.splitHeadings}</span>
+            <div class="flex flex-wrap gap-3">
+                {#each page.sections as { heading } (heading)}
+                    <span data-memory-split-heading={heading}>
+                        <CheckInput
+                            check={splitHeadings.includes(heading)}
+                            disabled={controlsOff}
+                            margin={false}
+                            name={codeText(text.headings, heading)}
+                            onChange={(moved) => toggleSplitHeading(heading, moved)}
+                        />
+                    </span>
+                {/each}
+            </div>
+            {#if page.aliases.length > 0}
+                <span class="text-textcolor2">{toolText.splitAliases}</span>
+                <div class="flex flex-wrap gap-3">
+                    {#each page.aliases as alias (alias)}
+                        <span data-memory-split-alias={alias}>
+                            <CheckInput
+                                check={splitAliases.includes(alias)}
+                                disabled={controlsOff}
+                                margin={false}
+                                name={alias}
+                                onChange={(moved) => toggleSplitAlias(alias, moved)}
+                            />
+                        </span>
+                    {/each}
+                </div>
+            {/if}
+            <label class="flex flex-col gap-1" data-memory-split-title>
+                <span class="text-textcolor2">{toolText.splitTitle}</span>
+                <TextInput size="sm" bind:value={splitTitle} disabled={controlsOff} />
+            </label>
+            <div class="flex items-center justify-end gap-2">
+                <Button size="sm" styled="outlined" disabled={sending} onclick={() => (splitOpen = false)}>
+                    <span data-memory-split-cancel>{text.cancel}</span>
+                </Button>
+                <Button size="sm" disabled={controlsOff || !splitFits} onclick={splitPage}>
+                    <span data-memory-split>{toolText.split}</span>
+                </Button>
+            </div>
+        </div>
+    {/if}
+{/snippet}
+
 {#snippet pageDetail(page: MemoryPage)}
     <h2 class="text-base font-semibold break-words">{page.title}</h2>
     <p class="text-textcolor2">{codeText(text.types, page.type)}</p>
     {#if page.aliases.length > 0}
         <p class="break-words">{text.aliases}: {page.aliases.join(", ")}</p>
     {/if}
-    <div class="flex flex-wrap gap-3">
-        {#if page.type !== "scene"}
+    {#if page.trashedAt !== undefined}
+        <p class="text-textcolor2" data-memory-trashed>{toolText.trashed}</p>
+        <div class="flex flex-wrap items-center gap-2" data-memory-page-tools>
+            <Button size="sm" disabled={controlsOff} onclick={untrashPage}>
+                <span data-memory-untrash>{toolText.restore}</span>
+            </Button>
+            <Button size="sm" styled="outlined" disabled={controlsOff} onclick={purgePage}>
+                <span data-memory-purge>{toolText.purge}</span>
+            </Button>
+        </div>
+    {:else}
+        <div class="flex flex-wrap gap-3">
+            {#if page.type !== "scene"}
+                <label class="flex flex-col gap-1">
+                    <span class="text-textcolor2">{text.contextMode}</span>
+                    <SelectInput
+                        size="sm"
+                        value={page.contextMode}
+                        disabled={controlsOff}
+                        onchange={(event) => setContextMode(event.currentTarget.value as MemoryContextMode)}
+                        data-memory-page-mode
+                    >
+                        {#each MEMORY_CONTEXT_MODES as mode (mode)}
+                            <OptionInput value={mode}>{text.contextModes[mode]}</OptionInput>
+                        {/each}
+                    </SelectInput>
+                </label>
+            {/if}
             <label class="flex flex-col gap-1">
-                <span class="text-textcolor2">{text.contextMode}</span>
+                <span class="text-textcolor2">{text.grade}</span>
                 <SelectInput
                     size="sm"
-                    value={page.contextMode}
+                    value={page.grade ?? ""}
                     disabled={controlsOff}
-                    onchange={(event) => setContextMode(event.currentTarget.value as MemoryContextMode)}
-                    data-memory-page-mode
+                    onchange={(event) => setGrade(event.currentTarget.value)}
+                    data-memory-page-grade
                 >
-                    {#each MEMORY_CONTEXT_MODES as mode (mode)}
-                        <OptionInput value={mode}>{text.contextModes[mode]}</OptionInput>
+                    <OptionInput value="">{text.noGrade}</OptionInput>
+                    {#each GRADES as grade (grade)}
+                        <OptionInput value={grade}>{grade}</OptionInput>
                     {/each}
                 </SelectInput>
             </label>
-        {/if}
-        <label class="flex flex-col gap-1">
-            <span class="text-textcolor2">{text.grade}</span>
-            <SelectInput
-                size="sm"
-                value={page.grade ?? ""}
-                disabled={controlsOff}
-                onchange={(event) => setGrade(event.currentTarget.value)}
-                data-memory-page-grade
-            >
-                <OptionInput value="">{text.noGrade}</OptionInput>
-                {#each GRADES as grade (grade)}
-                    <OptionInput value={grade}>{grade}</OptionInput>
-                {/each}
-            </SelectInput>
-        </label>
-    </div>
+        </div>
+        {@render pageTools(page)}
+    {/if}
     {#if page.sections.length === 0}
         <p class="text-textcolor2">{text.noSections}</p>
     {:else}
@@ -615,6 +935,14 @@
     {/if}
 {/snippet}
 
+{#snippet importControls()}
+    {#if canImport}
+        <Button size="sm" styled="outlined" disabled={controlsOff} onclick={importPackage}>
+            <span data-memory-import>{toolText.import}</span>
+        </Button>
+    {/if}
+{/snippet}
+
 <div class="flex flex-col min-w-0 gap-2 text-sm" data-memory-pages data-read-only={readOnly}>
     <label class="flex flex-col self-start gap-1">
         <span class="text-textcolor2">{text.highlightMode}</span>
@@ -631,12 +959,30 @@
             {/each}
         </SelectInput>
     </label>
+    {#if importReport}
+        <div class="flex flex-col min-w-0 gap-1 break-words" data-memory-import-report>
+            <p>{importReport.imported ? toolText.importDone(importReport.imported) : toolText.importNothing}</p>
+            {#if importReport.refusals.length > 0}
+                <p class="text-textcolor2">{toolText.importRefusals}</p>
+                <ul class="flex flex-col min-w-0 pl-4 list-disc">
+                    {#each importReport.refusals as refusal}
+                        <li data-memory-import-refusal={refusal.file}>
+                            {refusal.file}: {codeText(toolText.importReasons, refusal.reason)}{refusal.detail
+                                ? ` (${refusal.detail})`
+                                : ""}
+                        </li>
+                    {/each}
+                </ul>
+            {/if}
+        </div>
+    {/if}
     {#if failure !== null}
         <p role="alert" class="text-draculared" data-memory-panel-failure>{failure}</p>
     {:else if !contents}
         <p class="text-textcolor2">{panelText.loading}</p>
-    {:else if contents.pages.length === 0}
+    {:else if contents.pages.length === 0 && contents.trash.length === 0}
         <p class="text-textcolor2">{text.empty}</p>
+        {@render importControls()}
     {:else}
         <div class="flex flex-col min-w-0 gap-3 sm:flex-row">
             <ul class="flex flex-col min-w-0 gap-0.5 sm:w-52 sm:shrink-0">
@@ -675,6 +1021,24 @@
                             {panelText.showMore(treeRows.length - shownRows)}
                         </button>
                     </li>
+                {/if}
+                {#if contents.trash.length > 0}
+                    <li class="mt-2 text-textcolor2" data-memory-trash-group>{toolText.trash}</li>
+                    {#each contents.trash as row (row.id)}
+                        <li class="min-w-0">
+                            <button
+                                type="button"
+                                class={"flex flex-wrap items-center w-full min-w-0 px-2 py-1 text-left transition-colors rounded-md gap-x-2 text-textcolor2 hover:bg-selected disabled:cursor-not-allowed" +
+                                    (row.id === selectedId ? " bg-selected" : "")}
+                                aria-current={row.id === selectedId}
+                                disabled={sending}
+                                onclick={() => select(row.id)}
+                                data-memory-trash-page={row.id}
+                            >
+                                <span class="min-w-0 break-words">{row.title}</span>
+                            </button>
+                        </li>
+                    {/each}
                 {/if}
             </ul>
             <div class="flex flex-col flex-1 min-w-0 gap-2" data-memory-page-detail>

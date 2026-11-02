@@ -811,3 +811,16 @@ it("refuses a snapshot whose decline column is neither zero nor one", async () =
         await expect(stageValidatedSnapshot(source, output, kinds)).rejects.toThrow(/invalid adoptionDeclined/);
     }
 });
+
+it("refuses a crafted snapshot page that is both scene and trashed", async () => {
+    const { source, output } = await memoryFixture();
+    const db = new DatabaseSync(source);
+    try {
+        db.exec(
+            "UPDATE memory_pages SET type = 'trashed', data = json_set(data, '$.type', 'scene', '$.trashedAt', 123) WHERE rowid = (SELECT min(rowid) FROM memory_pages)",
+        );
+    } finally {
+        db.close();
+    }
+    await expect(stageValidatedSnapshot(source, output, kinds)).rejects.toThrow(ResourceValidationError);
+});

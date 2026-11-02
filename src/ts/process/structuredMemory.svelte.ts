@@ -1,5 +1,5 @@
 import { Sha256 } from "@aws-crypto/sha256-js";
-import { strToU8, zipSync, type Zippable } from "fflate";
+import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from "fflate";
 import {
     eligibleHistory,
     parseContextReport,
@@ -13,7 +13,9 @@ import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     isSealedHypaV3Data,
     itemTag,
+    MEMORY_PACKAGE_VERSION,
     MEMORY_PAGE_TYPES,
+    MEMORY_RESTORE_BODY_BYTES,
     memoryEventCovers,
     rawWindow,
     reconcileMemoryEvents,
@@ -45,9 +47,13 @@ import {
     type StructuredMemoryEditAnswer,
     type StructuredMemoryFileEntry,
     type StructuredMemoryFileRecords,
+    type StructuredMemoryImportAnswer,
+    type StructuredMemoryImportFile,
     type StructuredMemoryInheritAnswer,
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
+    type StructuredMemoryPageTool,
+    type StructuredMemoryPageToolAnswer,
     type StructuredMemoryProjectionAnswer,
     type StructuredMemoryRebuild,
     type StructuredMemoryRecordAnswer,
@@ -69,14 +75,17 @@ import { authFetch } from "../storage/serverAuth";
 
 /**
  * The tab's reads of a chat's structured memory (`server/src/routes/structuredMemory.ts`), a person's
- * edits of it (`editStructuredMemory`) and reverts of what the writer changed
- * (`revertStructuredMemoryChange`), a new chat's inheritance (`inheritStructuredMemory`) or restore
- * from a chat file (`restoreStructuredMemory`), the adoption of a chat's HypaV3 summaries
- * (`adoptStructuredMemory`), the decline of it (`declineStructuredMemory`), the reset of the summaries
- * (`resetStructuredMemorySummaries`), what a rebuild or a press would cost (`readStructuredMemoryCost`),
- * the abandon of a rebuild (`abandonStructuredMemoryRebuild`), the writer's default prompts
- * (`readStructuredMemoryDefaultPrompts`), and the downloadable package built from the reads: a zip of
- * Markdown with one file per page and one timeline of the events.
+ * edits of it (`editStructuredMemory`), reverts of what the writer changed
+ * (`revertStructuredMemoryChange`), and tools over a page as a whole (`structuredMemoryPageTool`), a new
+ * chat's inheritance (`inheritStructuredMemory`) or restore from a chat file (`restoreStructuredMemory`),
+ * the adoption of a chat's HypaV3 summaries (`adoptStructuredMemory`), the decline of it
+ * (`declineStructuredMemory`), the reset of the summaries (`resetStructuredMemorySummaries`), what a
+ * rebuild or a press would cost (`readStructuredMemoryCost`), the abandon of a rebuild
+ * (`abandonStructuredMemoryRebuild`), the writer's default prompts (`readStructuredMemoryDefaultPrompts`),
+ * and the downloadable package built from the reads: a zip of Markdown with one file per page, one
+ * timeline of the events, and one file of the threads. The same zip imports into an empty chat
+ * (`importStructuredMemoryPackage`): the tab unzips it and sends the Markdown, which the server reads
+ * back.
  *
  * What a chat file takes of the records is read here too (`readStructuredMemoryFile`), and
  * `exportChatMemory` applies that read to the chat copy an export writes. So are the two reads a plugin's
@@ -108,11 +117,12 @@ import { authFetch } from "../storage/serverAuth";
  */
 
 /**
- * Why a read, an edit, a revert, an inherit, a restore, an adoption, a decline, a reset, or an abandon did
- * not answer: the chat or record is gone, the database was replaced, its memory moved on, or, for a write,
- * something that can write it holds the chat. A revert can also be `superseded`, when something later stands
- * on the change. A restore can also be `tooLarge`, when its records are over the route's body cap, and so can
- * a projection, when the chat's events are over a read round.
+ * Why a read, an edit, a revert, a page tool, an inherit, a restore, an import, an adoption, a decline, a
+ * reset, or an abandon did not answer: the chat or record is gone, the database was replaced, its memory
+ * moved on, or, for a write, something that can write it holds the chat. A revert can also be
+ * `superseded`, when something later stands on the change. A restore and an import can also be `tooLarge`,
+ * when their records are over the route's body cap, and so can a projection, when the chat's events are
+ * over a read round.
  */
 export type StructuredMemoryRefusal =
     "chatGone" | "recordGone" | "epoch" | "changed" | "fenced" | "superseded" | "tooLarge";
@@ -128,6 +138,9 @@ type AnswerBody = Record<string, unknown>;
 
 /** The rounds of one package read, kept together once all of them answered at one revision. */
 type PackageRead = { revision: string; pages: MemoryPage[]; events: MemoryEvent[] };
+
+/** What a zip holds that an import sends: the package's Markdown files, in the zip's order. */
+type ImportFiles = { files: StructuredMemoryImportFile[] };
 
 /** The chat's memory as the coverage route lists it, every round read at one revision. */
 export type StructuredMemoryCoverage = Omit<StructuredMemoryCoverageRound, "next">;
@@ -146,8 +159,6 @@ const WHOLE_READ_ATTEMPTS = 3;
  * none of its own, and an export needs no server until this read asks it.
  */
 const FILE_READ_DEADLINE_MS = 60_000;
-
-const PACKAGE_VERSION = 1;
 
 const LOG_VERSION = 1;
 
@@ -523,17 +534,18 @@ function isRebuild(value: unknown): value is StructuredMemoryRebuild {
 
 /**
  * A reader of the lists does not fail over `adoption`, `rebuild`, or `recordedLanguage`, which only the
- * panel reads; a malformed one is refused.
+ * panel reads; a malformed one is refused. Contents without a `trash` list, from before pages could be
+ * trashed, hold none.
  */
 function parseContents(body: AnswerBody): StructuredMemoryContentsAnswer | null {
-    const { revision, pages, events, threads, runs, adoption = NO_ADOPTION } = body;
+    const { revision, pages, events, threads, runs, trash = [], adoption = NO_ADOPTION } = body;
     const { rebuild = null, recordedLanguage = null } = body;
     return typeof revision === "string" &&
-        [pages, events, threads, runs].every((list) => Array.isArray(list)) &&
+        [pages, trash, events, threads, runs].every((list) => Array.isArray(list)) &&
         isAdoption(adoption) &&
         (rebuild === null || isRebuild(rebuild)) &&
         (recordedLanguage === null || typeof recordedLanguage === "string")
-        ? ({ ...body, adoption, rebuild, recordedLanguage } as StructuredMemoryContentsAnswer)
+        ? ({ ...body, trash, adoption, rebuild, recordedLanguage } as StructuredMemoryContentsAnswer)
         : null;
 }
 
@@ -579,6 +591,24 @@ function parseRevertAnswer(body: AnswerBody): StructuredMemoryRevertAnswer | nul
         typeof reverted === "boolean" &&
         storedCount(laterEvents) !== undefined
         ? (body as StructuredMemoryRevertAnswer)
+        : null;
+}
+
+function parsePageToolAnswer(body: AnswerBody): StructuredMemoryPageToolAnswer | null {
+    const { revision, data } = body;
+    return typeof revision === "string" && (data === null || isPlainObject(data))
+        ? (body as StructuredMemoryPageToolAnswer)
+        : null;
+}
+
+function parseImportAnswer(body: AnswerBody): StructuredMemoryImportAnswer | null {
+    const { revision, imported, refusals } = body;
+    const counted =
+        imported === false ||
+        (isPlainObject(imported) &&
+            [imported.pages, imported.events, imported.threads].every((count) => storedCount(count) !== undefined));
+    return typeof revision === "string" && counted && Array.isArray(refusals)
+        ? (body as StructuredMemoryImportAnswer)
         : null;
 }
 
@@ -725,6 +755,77 @@ export async function revertStructuredMemoryChange(
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ revision: record.value.revision, pageId, historyId }),
+    });
+}
+
+/**
+ * Sends one person's tool over a page as a whole, named against the memory read at `revision`: to the
+ * trash and back, deleted for good, merged into another page, or split. The answer's revision is what the
+ * next edit names, and its `data` the page the tab shows next, null after a purge. The caller shows the
+ * notice for a refusal; a 400's text says what the pages refused.
+ */
+export function structuredMemoryPageTool(
+    ref: ChatRef,
+    revision: string,
+    tool: StructuredMemoryPageTool,
+): Promise<StructuredMemoryResult<StructuredMemoryPageToolAnswer>> {
+    return readAnswer(`${chatPath(ref)}/page-tools`, parsePageToolAnswer, editRefusalOf, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revision, tool }),
+    });
+}
+
+/**
+ * The `.md` entries of `zip`, a package as `buildStructuredMemoryPackage` wrote it, with their text, or
+ * `tooLarge` once the entries' declared sizes pass `MEMORY_RESTORE_BODY_BYTES`, before any is inflated.
+ * Directories and other files are left out: the server refuses what it does not know by name, and a
+ * file that is not UTF-8 reads as its replacement characters, which the server then refuses.
+ */
+function packageFiles(zip: Uint8Array): StructuredMemoryResult<ImportFiles> {
+    let declared = 0;
+    const over = new Error("over the import's size cap");
+    try {
+        const entries = unzipSync(zip, {
+            filter: ({ name, originalSize }) => {
+                if (name.endsWith("/") || !name.endsWith(".md")) {
+                    return false;
+                }
+                declared += originalSize;
+                if (declared > MEMORY_RESTORE_BODY_BYTES) {
+                    throw over;
+                }
+                return true;
+            },
+        });
+        const files = Object.entries(entries).map(([path, bytes]) => ({ path, text: strFromU8(bytes) }));
+        return { outcome: "ok", value: { files } };
+    } catch (error) {
+        return error === over
+            ? { outcome: "refused", reason: "tooLarge" }
+            : { outcome: "failed", error: errorText(error) };
+    }
+}
+
+/**
+ * Gives `ref`, a chat with no records, the records of the package `zip` holds, against the memory read at
+ * `revision`. The tab unzips here and sends the Markdown; the server reads it back and takes what stands,
+ * and its answer lists what each refused file got wrong. A chat that holds a row of any kind answers
+ * `imported: false`. The caller shows the notice for a refusal.
+ */
+export function importStructuredMemoryPackage(
+    ref: ChatRef,
+    revision: string,
+    zip: Uint8Array,
+): Promise<StructuredMemoryResult<StructuredMemoryImportAnswer>> {
+    const unzipped = packageFiles(zip);
+    if (unzipped.outcome !== "ok") {
+        return Promise.resolve(unzipped);
+    }
+    return readAnswer(`${chatPath(ref)}/import`, parseImportAnswer, restoreRefusalOf, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revision, files: unzipped.value.files }),
     });
 }
 
@@ -990,9 +1091,10 @@ export async function readStructuredMemoryFile(
                 if (contents.outcome !== "ok") {
                     return contents;
                 }
-                const { revision, pages, events, threads, runs } = contents.value;
+                const { revision, pages, trash, events, threads, runs } = contents.value;
                 if (pages.length + events.length + threads.length === 0) {
-                    return { outcome: "ok", value: { rows: runs.length > 0, pages: [], events: [], threads: [] } };
+                    const rows = runs.length > 0 || trash.length > 0;
+                    return { outcome: "ok", value: { rows, pages: [], events: [], threads: [] } };
                 }
                 showedRecords = true;
                 const packaged = await readPackage(ref, { revision, signal });
@@ -1139,6 +1241,11 @@ export function renderMemoryPage(page: MemoryPage): string {
     return fileText(lines);
 }
 
+/** The header of the timeline and the threads file: the package's version and the revision it was read at. */
+function packageHeader(revision: string): string[] {
+    return ["---", `packageVersion: ${MEMORY_PACKAGE_VERSION}`, `revision: ${metadataValue(revision)}`, "---", ""];
+}
+
 /** The event's earliest anchored message position; Infinity without an anchored source. */
 function firstSourceIndex(event: MemoryEvent): number {
     let first = Infinity;
@@ -1158,7 +1265,7 @@ export function renderMemoryTimeline(events: readonly MemoryEvent[], revision: s
     const ordered = events
         .map((event) => ({ event, first: firstSourceIndex(event) }))
         .sort((a, b) => (a.first === b.first ? 0 : a.first - b.first));
-    const lines = ["---", `packageVersion: ${PACKAGE_VERSION}`, `revision: ${metadataValue(revision)}`, "---", ""];
+    const lines = [...packageHeader(revision)];
     for (const { event } of ordered) {
         lines.push(
             `## ${collapsed(event.title)}`,
@@ -1181,13 +1288,29 @@ export function renderMemoryTimeline(events: readonly MemoryEvent[], revision: s
     return fileText(lines);
 }
 
+/** The threads file: each thread in the given order, with its fields in a YAML fence under its title. */
+export function renderMemoryThreads(threads: readonly MemoryThread[], revision: string): string {
+    const lines = [...packageHeader(revision)];
+    for (const thread of threads) {
+        lines.push(`## ${collapsed(thread.title)}`, "", "```yaml", ...metadataLines(thread, []), "```", "");
+    }
+    return fileText(lines);
+}
+
 /** A chat's id as a file name's part: a resource id may hold what a file name cannot. */
 function chatFilePart(ref: ChatRef): string {
     return encodeURIComponent(ref.chatId).replace(/%/g, "_");
 }
 
-function zipPackage(ref: ChatRef, { revision, pages, events }: PackageRead): { name: string; bytes: Uint8Array } {
-    const files: Zippable = { "timeline.md": strToU8(renderMemoryTimeline(events, revision)) };
+function zipPackage(
+    ref: ChatRef,
+    { revision, pages, events }: PackageRead,
+    threads: readonly MemoryThread[],
+): { name: string; bytes: Uint8Array } {
+    const files: Zippable = {
+        "timeline.md": strToU8(renderMemoryTimeline(events, revision)),
+        "threads.md": strToU8(renderMemoryThreads(threads, revision)),
+    };
     for (const page of pages) {
         files[memoryPagePath(page)] = strToU8(renderMemoryPage(page));
     }
@@ -1195,15 +1318,22 @@ function zipPackage(ref: ChatRef, { revision, pages, events }: PackageRead): { n
 }
 
 /**
- * The chat's pages and events as a zip for `downloadFile`. A change of the chat's memory during the read
- * restarts it with nothing kept, and a chat that keeps changing is refused `changed`.
+ * The chat's pages, events, and threads as a zip for `downloadFile`, all read at one revision. A change of
+ * the chat's memory during the read restarts it with nothing kept, and a chat that keeps changing is
+ * refused `changed`.
  */
 export function buildStructuredMemoryPackage(
     ref: ChatRef,
 ): Promise<StructuredMemoryResult<{ name: string; bytes: Uint8Array }>> {
     return readAtOneRevision(async () => {
         const read = await readPackage(ref);
-        return read.outcome === "ok" ? { outcome: "ok", value: zipPackage(ref, read.value) } : read;
+        if (read.outcome !== "ok") {
+            return read;
+        }
+        const threads = await readThreads(ref, { revision: read.value.revision });
+        return threads.outcome === "ok"
+            ? { outcome: "ok", value: zipPackage(ref, read.value, threads.value) }
+            : threads;
     });
 }
 

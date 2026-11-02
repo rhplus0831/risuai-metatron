@@ -1,7 +1,8 @@
 // @vitest-environment node
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import type { Message } from "../../../shared/database.ts";
-import { strFromU8, unzipSync } from "fflate";
+import { strFromU8, strToU8, zipSync, unzipSync } from "fflate";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import type { MemoryEvent, MemoryPage, MemorySource } from "../../../shared/structuredMemory.ts";
@@ -30,6 +31,9 @@ import {
     readStructuredMemoryRecord,
     renderMemoryPage,
     renderMemoryTimeline,
+    renderMemoryThreads,
+    structuredMemoryPageTool,
+    importStructuredMemoryPackage,
 } from "./structuredMemory.svelte";
 
 const { authFetch } = vi.hoisted(() => ({ authFetch: vi.fn<typeof import("../storage/serverAuth").authFetch>() }));
@@ -88,6 +92,7 @@ const anchored = (index: number): MemorySource => ({ messageId: `m${index}`, has
 const unanchored: MemorySource = { messageId: "lost", hash: null, index: null };
 const round = (revision: string, pages: MemoryPage[], events: MemoryEvent[], next: number | null) =>
     Response.json({ revision, pages, events, next });
+const noThreads = (revision: string) => Response.json({ revision, threads: [], next: null });
 
 /** Read only metadata and its advertised lengths; never search the bodies for Markdown delimiters. */
 function metadata(lines: string[], start: number, end: string) {
@@ -170,6 +175,7 @@ it("reads with encoded ids and the epoch header and zips every round into Markdo
         .mockResolvedValueOnce(round(revision, [pages[0]], [], 1))
         .mockResolvedValueOnce(round(revision, [pages[1]], [], 2))
         .mockResolvedValueOnce(round(revision, [], [e], null))
+        .mockResolvedValueOnce(noThreads(revision))
         .mockResolvedValueOnce(Response.json({ error: "Record not found", reason: "recordGone" }, { status: 404 }))
         .mockResolvedValueOnce(Response.json({ error: "Chat not found", reason: "chatGone" }, { status: 404 }));
     expect(await readStructuredMemoryContents(ref)).toMatchObject({
@@ -181,11 +187,11 @@ it("reads with encoded ids and the epoch header and zips every round into Markdo
         value: { revision, data: pages[0] },
     });
     const files = await packageFiles();
-    expect(Object.keys(files)).toHaveLength(3);
+    expect(Object.keys(files)).toHaveLength(4);
     expect(splitTimeline(files["timeline.md"]).events.map(({ fields }) => fields.id)).toEqual([e.id]);
     expect(splitTimeline(files["timeline.md"]).fields.revision).toBe(revision);
     const exported = Object.entries(files)
-        .filter(([name]) => name !== "timeline.md")
+        .filter(([name]) => name.startsWith("pages/"))
         .map(([name, text]) => {
             expect(name.split("/").slice(0, 2)).toEqual(["pages", "location"]);
             const parsed = splitPage(text);
@@ -203,6 +209,7 @@ it("reads with encoded ids and the epoch header and zips every round into Markdo
         `${base}/package`,
         `${base}/package?cursor=1&revision=${encodeURIComponent(revision)}`,
         `${base}/package?cursor=2&revision=${encodeURIComponent(revision)}`,
+        `${base}/threads?cursor=0&revision=${encodeURIComponent(revision)}`,
     ]);
     for (const [, init] of authFetch.mock.calls) {
         expect(new Headers(init?.headers).get(RESOURCE_EPOCH_HEADER)).toBe("epoch");
@@ -225,10 +232,11 @@ it("discards partial pages and events on revision changes and can complete the t
         .mockResolvedValueOnce(round("epoch:1:2", [page("discarded-second")], [event("discarded-second")], 2))
         .mockResolvedValueOnce(Response.json({ revision: "epoch:1:3" }, { status: 409 }))
         .mockResolvedValueOnce(round("epoch:1:3", [page("current")], [], 1))
-        .mockResolvedValueOnce(round("epoch:1:3", [], [event("current")], null));
+        .mockResolvedValueOnce(round("epoch:1:3", [], [event("current")], null))
+        .mockResolvedValueOnce(noThreads("epoch:1:3"));
     const files = await packageFiles();
-    expect(Object.keys(files)).toHaveLength(2);
-    const pageText = Object.entries(files).find(([name]) => name !== "timeline.md")![1];
+    expect(Object.keys(files)).toHaveLength(3);
+    const pageText = Object.entries(files).find(([name]) => name.startsWith("pages/"))![1];
     expect(splitPage(pageText).fields.id).toBe("current");
     const timeline = splitTimeline(files["timeline.md"]);
     expect(timeline.fields.revision).toBe("epoch:1:3");
@@ -241,6 +249,7 @@ it("discards partial pages and events on revision changes and can complete the t
         `${base}/package?cursor=2&revision=epoch%3A1%3A2`,
         `${base}/package`,
         `${base}/package?cursor=1&revision=epoch%3A1%3A3`,
+        `${base}/threads?cursor=0&revision=epoch%3A1%3A3`,
     ]);
 });
 
@@ -903,4 +912,78 @@ it("reads test results of unknown shape and preserves custom prompt receipt and 
         memoryReceiptView({ ...receipt, customPrompt: "true", error: 4 }, { newest: true, taskLive: false }),
     ).toMatchObject({ customPrompt: false });
     expect(memoryRunView({ customPrompt: "true" }).customPrompt).toBe(false);
+});
+
+it("renders the literal import fixtures with exact bodies, whitespace headings and key lines", () => {
+    const body = '## x\n---\n```yaml\nid: "not metadata"\n```\n> quote\n';
+    const p = page("place", body);
+    p.sections[0].heading = "  Facts\t  and\n details  ";
+    p.aliases = ["Port"];
+    p.reshaped = true;
+    const e = event("event", [anchored(0)], body);
+    e.keyLines = [{ speaker: "  Captain\tName ", text: "one\n  two" }];
+    e.openThreads = {
+        add: [{ title: "Return", who: ["place"] }],
+        close: ["t"],
+        transitions: [{ threadId: "t", to: "done" }],
+    };
+    const threads = [
+        {
+            id: "t",
+            title: "  Return\t soon  ",
+            state: "done" as const,
+            who: ["place"],
+            openedBy: "event",
+            closedBy: "event",
+        },
+    ];
+    const files = [
+        { path: memoryPagePath(p), text: renderMemoryPage(p) },
+        { path: "timeline.md", text: renderMemoryTimeline([e], "r") },
+        { path: "threads.md", text: renderMemoryThreads(threads, "r") },
+    ];
+    expect(files[1].text).toContain("packageVersion: 2\n");
+    expect(files[2].text).toContain("packageVersion: 2\n");
+    const fixture = new URL("../../../server/src/tests/fixtures/memoryPackage.json", import.meta.url);
+    expect(files).toEqual(JSON.parse(readFileSync(fixture, "utf8")));
+});
+
+it("sends page tools and unzipped package files with the displayed revision and current epoch", async () => {
+    const p = page("selected");
+    authFetch.mockImplementation(async (url, init) => {
+        expect(init?.method).toBe("POST");
+        expect(new Headers(init?.headers).get(RESOURCE_EPOCH_HEADER)).toBe("epoch");
+        if (url.endsWith("/page-tools")) {
+            expect(JSON.parse(init!.body as string)).toEqual({
+                revision: "displayed",
+                tool: { kind: "merge", sourceId: "source", targetId: "selected" },
+            });
+            return Response.json({ revision: "saved", data: p });
+        }
+        expect(url).toBe(`${base}/import`);
+        expect(JSON.parse(init!.body as string)).toEqual({
+            revision: "empty",
+            files: [
+                { path: "timeline.md", text: "timeline text" },
+                { path: "threads.md", text: "thread text" },
+            ],
+        });
+        return Response.json({
+            revision: "imported",
+            imported: { pages: 0, events: 1, threads: 1 },
+            refusals: [{ file: "bad.md", reason: "unreadable" }],
+        });
+    });
+    expect(
+        await structuredMemoryPageTool(ref, "displayed", { kind: "merge", sourceId: "source", targetId: "selected" }),
+    ).toEqual({ outcome: "ok", value: { revision: "saved", data: p } });
+    const zip = zipSync({ "timeline.md": strToU8("timeline text"), "threads.md": strToU8("thread text") });
+    expect(await importStructuredMemoryPackage(ref, "empty", zip)).toEqual({
+        outcome: "ok",
+        value: {
+            revision: "imported",
+            imported: { pages: 0, events: 1, threads: 1 },
+            refusals: [{ file: "bad.md", reason: "unreadable" }],
+        },
+    });
 });

@@ -118,3 +118,24 @@ it("keeps personal sections and history, chosen pages and threads, and carries e
     );
     expect(later?.events?.[0]).toMatchObject({ adoptedSummaries: true });
 });
+
+it("seeds every unmarked section and history entry of merged and split pages", () => {
+    const base = memoryRecords(["ordinary"]).pages[0];
+    const pages = ["merged", "split"].map((id): MemoryPage => ({
+        ...base,
+        id,
+        reshaped: true,
+        sections: [base.sections[0], { ...base.sections[0], heading: "Access", body: "By boat" }],
+        history: [
+            {
+                id: `tool-${id}`,
+                kind: id === "merged" ? "merge" : "split",
+                heading: null,
+                before: null,
+                at: 1,
+                highlighted: false,
+            },
+        ],
+    }));
+    expect(rebuildSeed("rebuild", { pages: [base, ...pages], threads: [] })).toEqual({ pages, threads: [] });
+});

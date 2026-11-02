@@ -89,9 +89,11 @@ toggle, or the stop reason. A chat with no run answers `abandoned: false` and ca
 
 The seed goes in at the start, so the writer works with it. `seededPage` keeps a page with a section marked `locked`,
 `pinned`, `suppressed`, or `userCorrected`, or a person's grade, or a `contextMode` other than `auto` off the scene: its
-identity, those sections, their headings' history, no links. Its patches land on the same id and a lock refuses them by
-the usual rule. Any other page is written anew, which is how a language change retitles it. A thread with no `openedBy`,
-which a person added, is seeded too.
+identity, those sections, their headings' history, no links. A page a person merged or split (`reshaped`,
+[the page tools](structured-memory-pages.md#what-a-merge-or-split-does-to-history)) seeds with all its sections and
+history, because the arrangement is theirs. Its patches land on the same id and a lock refuses them by the usual rule.
+Any other page is written anew, which is how a language change retitles it. A thread with no `openedBy`, which a person
+added, is seeded too. A page in the trash stays live, untouched: the swap removes only ids of `contents.pages`.
 
 No event is seeded. `rebuildChanges` decides at the swap, so a retraction during the run counts:
 

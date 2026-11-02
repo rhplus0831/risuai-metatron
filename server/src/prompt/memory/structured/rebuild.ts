@@ -125,12 +125,14 @@ const sectionMarked = ({ locked, pinned, suppressed, userCorrected }: MemorySect
 /**
  * What a rebuild keeps of `page` at its start, or null when nothing of it is a person's: its identity,
  * its marked sections whole, those headings' history, and no links, and of the scene no attendance. Only
- * a marked section seeds the scene page: its `always` is code's, not a choice.
+ * a marked section seeds the scene page: its `always` is code's, not a choice. A page a person merged or
+ * split (`reshaped`) seeds with all of its sections and history: the arrangement is theirs, and a page
+ * seeded without it would be written anew or, with nothing marked, removed at the swap.
  */
 function seededPage(page: MemoryPage): MemoryPage | null {
-    const sections = page.sections.filter(sectionMarked);
+    const sections = page.reshaped ? page.sections : page.sections.filter(sectionMarked);
     const chosen = page.type !== "scene" && (page.gradeByUser === true || page.contextMode !== "auto");
-    if (sections.length === 0 && !chosen) {
+    if (sections.length === 0 && !chosen && !page.reshaped) {
         return null;
     }
     const headings = new Set(sections.map(({ heading }) => heading));
@@ -139,7 +141,9 @@ function seededPage(page: MemoryPage): MemoryPage | null {
         ...identity,
         sections,
         links: [],
-        history: page.history.filter(({ heading }) => heading !== null && headings.has(heading)),
+        history: page.reshaped
+            ? page.history
+            : page.history.filter(({ heading }) => heading !== null && headings.has(heading)),
         ...(page.type === "scene" ? { participants: [] } : {}),
     };
 }

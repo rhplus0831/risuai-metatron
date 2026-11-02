@@ -13,11 +13,14 @@ import {
     type MemorySceneDraft,
     type MemorySection,
     type MemorySource,
+    type MemoryThread,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     type StructuredMemoryHighlightKind,
     type StructuredMemoryHighlightMode,
+    type StructuredMemoryPageTool,
 } from "../../../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../../../shared/valueKinds.ts";
+import type { MemoryChanges } from "../../../data/memoryStore.ts";
 import type { EditStamp } from "./edits.ts";
 
 /**
@@ -42,6 +45,12 @@ import type { EditStamp } from "./edits.ts";
  * - A history entry's `before` keeps the section's marks with its content, so a revert gives it back as
  *   it stood. A revert undoes a writer's change newest first and never runs over a later one
  *   (`revertChange`), and what it took back stays on the page's history for the writer's next input.
+ * - A person's page tools (`applyPageTool`) reshape pages without any I/O: the route owns the fence, the
+ *   revision, and the write. A trashed page keeps everything and only leaves the lists. A merge and a split
+ *   leave a `merge` or `split` entry on every heading they touch, with no event, so no older entry of that
+ *   heading can be reverted over the arrangement, and mark the page `reshaped`, which a rebuild seeds whole
+ *   and a branch does not rewind. A merge moves every reference to the source onto the target in the same
+ *   change set; a split leaves events on the old page, since nothing says which half they meant.
  */
 
 export type Warning = MemoryReceipt["warnings"][number];
@@ -725,4 +734,386 @@ export function revertChange(
 export function laterEventCount(events: readonly Pick<MemoryEvent, "id" | "status">[], eventId: string): number {
     const index = events.findIndex(({ id }) => id === eventId);
     return index === -1 ? 0 : events.slice(index + 1).filter(({ status }) => status !== "retracted").length;
+}
+
+/** Why a page tool does not fit the page: it is gone, or the tool does not apply to it as it stands. */
+export class MemoryPageToolRefusal extends Error {
+    readonly reason: "gone" | "invalid";
+
+    constructor(reason: MemoryPageToolRefusal["reason"], message: string) {
+        super(message);
+        this.reason = reason;
+    }
+}
+
+const isTextList = (value: unknown): value is string[] =>
+    Array.isArray(value) && value.every((entry) => typeof entry === "string");
+
+/**
+ * The tool a request's `value` holds, or null for one that is malformed: unknown fields are dropped, a
+ * merge names two different pages, and a split names at least one heading and a title that has text and
+ * fits `labelChars`. What the pages make of it is `applyPageTool`'s.
+ */
+export function parseMemoryPageTool(value: unknown): StructuredMemoryPageTool | null {
+    if (!isPlainObject(value)) {
+        return null;
+    }
+    const { kind, pageId } = value;
+    if (kind === "merge") {
+        const { sourceId, targetId } = value;
+        return typeof sourceId === "string" && typeof targetId === "string" && sourceId !== targetId
+            ? { kind, sourceId, targetId }
+            : null;
+    }
+    if (typeof pageId !== "string") {
+        return null;
+    }
+    if (kind === "trash" || kind === "untrash" || kind === "purge") {
+        return { kind, pageId };
+    }
+    if (kind === "split") {
+        const { headings, title, aliases } = value;
+        return isTextList(headings) &&
+            headings.length > 0 &&
+            typeof title === "string" &&
+            title.trim() !== "" &&
+            title.length <= LIMITS.labelChars &&
+            isTextList(aliases)
+            ? { kind, pageId, headings, title: title.trim(), aliases }
+            : null;
+    }
+    return null;
+}
+
+/** The page ids a tool names, for the route's id check. */
+export function pageToolIds(tool: StructuredMemoryPageTool): string[] {
+    return tool.kind === "merge" ? [tool.sourceId, tool.targetId] : [tool.pageId];
+}
+
+/**
+ * What a tool reads of the chat, all as stored and each only when the tool needs it: `page` finds a page
+ * by id, trashed ones included; `pages` are the live pages.
+ */
+export type PageToolRecords = {
+    page(id: string): MemoryPage | undefined;
+    pages(): readonly MemoryPage[];
+    events(): readonly MemoryEvent[];
+    threads(): readonly MemoryThread[];
+};
+
+/**
+ * What a tool leaves: the change set to write, and the page the tab shows next, null after a purge.
+ * `flag` names the pages whose sections the route checks for standing evidence afterwards.
+ */
+export type PageToolResult = {
+    changes: Pick<MemoryChanges, "pages" | "events" | "threads" | "remove">;
+    shown: MemoryPage | null;
+    flag: string[];
+};
+
+const trashed = ({ trashedAt }: MemoryPage) => trashedAt !== undefined;
+
+/** The page `id` names, which must be there; a tool on the scene page or on a trashed one is refused. */
+function livePage(records: PageToolRecords, id: string, what: string): MemoryPage {
+    const page = records.page(id);
+    if (!page) {
+        throw new MemoryPageToolRefusal("gone", "Page not found");
+    }
+    if (page.type === "scene") {
+        throw new MemoryPageToolRefusal("invalid", `The scene page cannot be ${what}`);
+    }
+    if (trashed(page)) {
+        throw new MemoryPageToolRefusal("invalid", `A page in the trash cannot be ${what}`);
+    }
+    return page;
+}
+
+/** `list` with `from` read as `to`, each id once, or null when `from` is not in it. */
+function remappedIds(list: readonly string[], from: string, to: string): string[] | null {
+    return list.includes(from) ? [...new Set(list.map((id) => (id === from ? to : id)))] : null;
+}
+
+/** `event` with every page reference to `from` on `to`, or null when it holds none. */
+function remappedEvent(event: MemoryEvent, from: string, to: string): MemoryEvent | null {
+    let changed = false;
+    const list = (ids: string[]): string[] => {
+        const mapped = remappedIds(ids, from, to);
+        if (mapped) {
+            changed = true;
+        }
+        return mapped ?? ids;
+    };
+    const one = (value: string): string => {
+        if (value === from) {
+            changed = true;
+        }
+        return value === from ? to : value;
+    };
+    const mapped: MemoryEvent = {
+        ...event,
+        participants: list(event.participants),
+        stateChanges: event.stateChanges.map((change) => ({ ...change, pageId: one(change.pageId) })),
+        knowledge: event.knowledge.map((item) => ({
+            ...item,
+            pageId: one(item.pageId),
+            ...(item.knowers ? { knowers: list(item.knowers) } : {}),
+        })),
+        relationshipShifts: event.relationshipShifts.map((shift) => ({
+            ...shift,
+            from: one(shift.from),
+            to: one(shift.to),
+        })),
+        openThreads: {
+            ...event.openThreads,
+            add: event.openThreads.add.map((thread) => ({ ...thread, who: list(thread.who) })),
+        },
+        ...(event.speakerId !== undefined ? { speakerId: one(event.speakerId) } : {}),
+    };
+    return changed ? mapped : null;
+}
+
+/** A history entry a person's tool leaves: no event, never highlighted. */
+function toolEntry(
+    stamp: EditStamp,
+    heading: string | null,
+    before: MemoryHistorySnapshot | null,
+    kind: "merge" | "split",
+): MemoryPageHistoryEntry {
+    return { id: stamp.newId(), heading, before, kind, highlighted: false, at: stamp.now };
+}
+
+/** `page`'s history with `entries` added, within `pageHistoryEntries`. */
+const withHistory = (page: MemoryPage, entries: readonly MemoryPageHistoryEntry[]) =>
+    [...page.history, ...entries].slice(-LIMITS.pageHistoryEntries);
+
+/**
+ * `page`'s aliases with `names` added: the page's own stay as they are, and of the added each name key
+ * the page does not go by yet comes once, in its first spelling, blanks left out. Nothing is cut.
+ */
+function withAliases(page: MemoryPage, names: readonly string[]): string[] {
+    const known = new Set(pageNames(page));
+    const added: string[] = [];
+    for (const name of names) {
+        const key = nameKey(name);
+        if (key !== "" && !known.has(key)) {
+            known.add(key);
+            added.push(name);
+        }
+    }
+    return [...page.aliases, ...added];
+}
+
+/**
+ * One section of the target after a merge of `source`'s section of the same heading into `target`'s:
+ * the same body keeps the target's text, any other is the target's then the source's, a blank line
+ * between; evidence joins the older section's first (`newestEvidence`), and every mark holds when either
+ * section held it, since a flag that spoke of one half still speaks of the join. A body past
+ * `sectionBodyChars` is refused, because nothing is cut.
+ */
+function joinedSection(target: MemorySection, source: MemorySection, at: number): MemorySection {
+    const body = target.body === source.body ? target.body : `${target.body}\n\n${source.body}`;
+    if (body.length > LIMITS.sectionBodyChars) {
+        throw new MemoryPageToolRefusal(
+            "invalid",
+            `The joined section "${target.heading}" would be longer than ${LIMITS.sectionBodyChars} characters`,
+        );
+    }
+    const [older, newer] = target.updatedAt <= source.updatedAt ? [target, source] : [source, target];
+    const marks = [...SNAPSHOT_MARKS, "locked"] as const;
+    return {
+        heading: target.heading,
+        body,
+        provenance: newestEvidence(older.provenance, newer.provenance, (id) => id),
+        sources: newestEvidence(older.sources, newer.sources, ({ messageId }) => messageId),
+        locked: false,
+        updatedAt: at,
+        ...Object.fromEntries(marks.filter((mark) => target[mark] || source[mark]).map((mark) => [mark, true])),
+    };
+}
+
+/**
+ * `source` merged into `target`, both live pages of one type that is not the scene. The target takes the
+ * source's title and aliases as aliases, its links, its keywords, the later `lastUsed`, and its grade only
+ * when the target has none; `contextMode` stays the target's. A heading only the source has moves whole,
+ * one both have joins (`joinedSection`), and the page is refused past `sectionsPerPage`. Each touched
+ * heading gets a `merge` entry on the target, the source's own history stays with it, and the source goes
+ * to the trash as it is. Every reference to the source, in events, threads, other pages' links, and the
+ * scene's attendance, becomes one to the target, in the same change set.
+ */
+function mergedPages(records: PageToolRecords, sourceId: string, targetId: string, stamp: EditStamp): PageToolResult {
+    const source = livePage(records, sourceId, "merged");
+    const target = livePage(records, targetId, "merged into");
+    if (source.type !== target.type) {
+        throw new MemoryPageToolRefusal("invalid", "Only pages of one type can be merged");
+    }
+    const entries: MemoryPageHistoryEntry[] = [];
+    const joined = new Map<string, MemorySection>();
+    const moved: MemorySection[] = [];
+    for (const section of source.sections) {
+        const own = target.sections.find(({ heading }) => heading === section.heading);
+        if (own) {
+            joined.set(own.heading, joinedSection(own, section, stamp.now));
+            entries.push(toolEntry(stamp, own.heading, sectionSnapshot(own), "merge"));
+        } else {
+            moved.push(section);
+            entries.push(toolEntry(stamp, section.heading, null, "merge"));
+        }
+    }
+    const sections = [...target.sections.map((section) => joined.get(section.heading) ?? section), ...moved];
+    if (sections.length > LIMITS.sectionsPerPage) {
+        throw new MemoryPageToolRefusal(
+            "invalid",
+            `The merged page would have more than ${LIMITS.sectionsPerPage} sections`,
+        );
+    }
+    const lastUsed = Math.max(target.retrieval.lastUsed ?? -Infinity, source.retrieval.lastUsed ?? -Infinity);
+    const merged: MemoryPage = {
+        ...target,
+        aliases: withAliases(target, [source.title, ...source.aliases]),
+        sections,
+        links: [...new Set([...target.links, ...source.links].map((id) => (id === sourceId ? targetId : id)))].filter(
+            (id) => id !== targetId,
+        ),
+        retrieval: {
+            keywords: [...new Set([...target.retrieval.keywords, ...source.retrieval.keywords])],
+            ...(lastUsed !== -Infinity ? { lastUsed } : {}),
+        },
+        ...(target.grade === undefined && source.grade !== undefined
+            ? { grade: source.grade, ...(source.gradeByUser ? { gradeByUser: true } : {}) }
+            : {}),
+        history: withHistory(target, entries),
+        reshaped: true,
+    };
+    const pages: MemoryPage[] = [merged, { ...source, trashedAt: stamp.now }];
+    for (const page of records.pages()) {
+        if (page.id === sourceId || page.id === targetId) {
+            continue;
+        }
+        const links = remappedIds(page.links, sourceId, targetId);
+        const participants = page.participants && remappedIds(page.participants, sourceId, targetId);
+        if (links || participants) {
+            pages.push({ ...page, ...(links ? { links } : {}), ...(participants ? { participants } : {}) });
+        }
+    }
+    return {
+        changes: {
+            pages,
+            events: records.events().flatMap((event) => remappedEvent(event, sourceId, targetId) ?? []),
+            threads: records.threads().flatMap((thread) => {
+                const who = remappedIds(thread.who, sourceId, targetId);
+                return who ? [{ ...thread, who }] : [];
+            }),
+        },
+        shown: merged,
+        flag: [targetId],
+    };
+}
+
+/**
+ * `headings` and `aliases` of the page `pageId` names moved to a new page of its type titled `title`.
+ * The headings are a strict subset of the page's, since moving all of them is a rename, the aliases a
+ * subset of its own, and no live page of the type may already go by the title, the old page's remaining
+ * names included. The new page takes the sections as they stand, the context mode, and the grade with a
+ * person's mark on it, under one `split` entry; the old page gets a `split` entry per moved heading, so
+ * nothing older can put that text back beside what moved. Events stay on the old page.
+ */
+function splitPages(
+    records: PageToolRecords,
+    { pageId, headings, title, aliases }: Extract<StructuredMemoryPageTool, { kind: "split" }>,
+    stamp: EditStamp,
+): PageToolResult {
+    const page = livePage(records, pageId, "split");
+    const movedHeadings = new Set(headings);
+    if (movedHeadings.size !== headings.length || !headings.every((h) => page.sections.some((s) => s.heading === h))) {
+        throw new MemoryPageToolRefusal("invalid", "The headings to move must each be a section of the page, once");
+    }
+    if (movedHeadings.size >= page.sections.length) {
+        throw new MemoryPageToolRefusal("invalid", "A split leaves at least one section on the page");
+    }
+    const movedAliases = new Set(aliases);
+    if (!aliases.every((alias) => page.aliases.includes(alias))) {
+        throw new MemoryPageToolRefusal("invalid", "The aliases to move must each be an alias of the page");
+    }
+    const keptAliases = page.aliases.filter((alias) => !movedAliases.has(alias));
+    const key = nameKey(title);
+    const taken = records
+        .pages()
+        .some((other) =>
+            other.id === page.id
+                ? pageNames({ title: page.title, aliases: keptAliases }).includes(key)
+                : other.type === page.type && !trashed(other) && pageNames(other).includes(key),
+        );
+    if (taken) {
+        throw new MemoryPageToolRefusal("invalid", `A ${page.type} page already goes by "${title}"`);
+    }
+    const sections = page.sections.filter(({ heading }) => movedHeadings.has(heading));
+    const created: MemoryPage = {
+        ...newPage(stamp.newId(), page.type, title, []),
+        aliases: page.aliases.filter((alias) => movedAliases.has(alias)),
+        contextMode: page.contextMode,
+        sections,
+        ...(page.grade !== undefined ? { grade: page.grade, ...(page.gradeByUser ? { gradeByUser: true } : {}) } : {}),
+        history: [toolEntry(stamp, null, null, "split")],
+        reshaped: true,
+    };
+    const remaining: MemoryPage = {
+        ...page,
+        aliases: keptAliases,
+        sections: page.sections.filter(({ heading }) => !movedHeadings.has(heading)),
+        history: withHistory(
+            page,
+            sections.map((section) => toolEntry(stamp, section.heading, sectionSnapshot(section), "split")),
+        ),
+        reshaped: true,
+    };
+    return { changes: { pages: [remaining, created] }, shown: created, flag: [] };
+}
+
+/**
+ * `tool` over `records`, the chat as stored: what to write and what to show. A `MemoryPageToolRefusal`
+ * says why it does not fit, and the scene page takes no tool at all. A trash of a trashed page and a
+ * restore of a live one change nothing and show the page as it is; a purge takes only a trashed page. A
+ * restored page is flagged by the route against the events as they stand now, since they may have been
+ * retracted while it was away.
+ */
+export function applyPageTool(
+    records: PageToolRecords,
+    tool: StructuredMemoryPageTool,
+    stamp: EditStamp,
+): PageToolResult {
+    switch (tool.kind) {
+        case "merge":
+            return mergedPages(records, tool.sourceId, tool.targetId, stamp);
+        case "split":
+            return splitPages(records, tool, stamp);
+    }
+    const page = records.page(tool.pageId);
+    if (!page) {
+        throw new MemoryPageToolRefusal("gone", "Page not found");
+    }
+    if (page.type === "scene") {
+        throw new MemoryPageToolRefusal("invalid", "The scene page takes no page tool");
+    }
+    switch (tool.kind) {
+        case "trash": {
+            if (trashed(page)) {
+                return { changes: {}, shown: page, flag: [] };
+            }
+            const binned = { ...page, trashedAt: stamp.now };
+            return { changes: { pages: [binned] }, shown: binned, flag: [] };
+        }
+        case "untrash": {
+            if (!trashed(page)) {
+                return { changes: {}, shown: page, flag: [] };
+            }
+            const { trashedAt, ...restored } = page;
+            return { changes: { pages: [restored] }, shown: restored, flag: [restored.id] };
+        }
+        case "purge": {
+            if (!trashed(page)) {
+                throw new MemoryPageToolRefusal("invalid", "Only a page in the trash can be deleted for good");
+            }
+            return { changes: { remove: { pages: [page.id] } }, shown: null, flag: [] };
+        }
+    }
 }

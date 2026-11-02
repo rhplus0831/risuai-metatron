@@ -208,7 +208,8 @@ read.
 
 - Pages lists the contents through `memoryPageTree`, the scene first, and reads a page by id when selected. A section's
   heading is a key, shown through `pages.headings`, and a key it does not know shows as it is. There is no editor for a
-  page's title, aliases, type, or links.
+  page's title, aliases, type, or links. The tab also holds [the page tools](structured-memory-pages.md): the trash
+  under the tree, merge, split, the lorebook export, and import on an empty chat.
 - History comes from `memoryPageHistoryView`, newest first. An entry's "after" is the next entry of the same heading, or
   the live section, because no `after` is stored ([the rule](structured-memory.md#invariants)). The diff renders as
   spans, one open at a time.

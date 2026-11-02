@@ -1,0 +1,14 @@
+[
+  {
+    "path": "pages/location/Place [place].md",
+    "text": "---\nid: \"place\"\ntype: \"location\"\ntitle: \"Place\"\naliases: [\"Port\"]\ncontextMode: \"auto\"\nlinks: []\nretrieval: {\"keywords\":[]}\nreshaped: true\nsections: [{\"heading\":\"  Facts\\t  and\\n details  \",\"provenance\":[],\"sources\":[],\"locked\":false,\"updatedAt\":1,\"bodyLines\":7}]\n---\n\n## Facts and details\n\n## x\n---\n```yaml\nid: \"not metadata\"\n```\n> quote\n\n\n"
+  },
+  {
+    "path": "timeline.md",
+    "text": "---\npackageVersion: 2\nrevision: \"r\"\n---\n\n## Event event\n\n```yaml\nid: \"event\"\ntitle: \"Event event\"\nstatus: \"active\"\nparticipants: []\nstoryTime: {\"text\":\"Morning\"}\nkeyLines: [{\"speaker\":\"  Captain\\tName \",\"text\":\"one\\n  two\"}]\nstateChanges: []\nknowledge: []\nrelationshipShifts: []\nopenThreads: {\"add\":[{\"title\":\"Return\",\"who\":[\"place\"]}],\"close\":[\"t\"],\"transitions\":[{\"threadId\":\"t\",\"to\":\"done\"}]}\nsources: [{\"messageId\":\"m0\",\"hash\":\"hash\",\"index\":0}]\nwriterRun: \"run\"\ncreatedRevision: 1\nsummaryLines: 7\n```\n\n## x\n---\n```yaml\nid: \"not metadata\"\n```\n> quote\n\n\n> Captain Name: one two\n\n"
+  },
+  {
+    "path": "threads.md",
+    "text": "---\npackageVersion: 2\nrevision: \"r\"\n---\n\n## Return soon\n\n```yaml\nid: \"t\"\ntitle: \"  Return\\t soon  \"\nstate: \"done\"\nwho: [\"place\"]\nopenedBy: \"event\"\nclosedBy: \"event\"\n```\n\n"
+  }
+]

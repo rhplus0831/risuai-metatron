@@ -65,8 +65,10 @@ export type MemoryStaleReason = (typeof MEMORY_STALE_REASONS)[number];
 
 /**
  * What a page history entry records; code derives "important" highlighting from it, never a model score.
- * `edit` and `revert` are a person's: a `revert` is what undid a writer's change, and its `before` is the
- * text it took back.
+ * `edit`, `revert`, `merge`, and `split` are a person's: a `revert` is what undid a writer's change, and
+ * its `before` is the text it took back. A `merge` entry stands on each heading a merge touched on the
+ * target, and a `split` on each heading that left the old page, so no older entry of that heading can be
+ * reverted over what was reshaped.
  */
 export const MEMORY_HISTORY_CHANGE_KINDS = [
     "create",
@@ -77,6 +79,8 @@ export const MEMORY_HISTORY_CHANGE_KINDS = [
     "compact",
     "edit",
     "revert",
+    "merge",
+    "split",
 ] as const;
 export type MemoryHistoryChangeKind = (typeof MEMORY_HISTORY_CHANGE_KINDS)[number];
 
@@ -456,6 +460,18 @@ export interface MemoryPage {
     history: MemoryPageHistoryEntry[];
     /** The scene page's attendance: the page ids present, which drive retrieval and the speaker rules. */
     participants?: string[];
+    /**
+     * `Date.now()` of the page's move to the trash. A trashed page keeps its type and everything on it,
+     * leaves every reader's list of the chat's pages, and is read by id alone, until a person restores
+     * it or deletes it for good. The scene page is never trashed.
+     */
+    trashedAt?: number;
+    /**
+     * A person merged another page into this one or split it: what it holds is their arrangement, which
+     * no history entry can be trusted to rewind, so a rebuild seeds the page whole and a branch leaves it
+     * as it is. It outlives the bounded history.
+     */
+    reshaped?: true;
 }
 
 /** An open promise, foreshadowing, or question. */
@@ -601,10 +617,14 @@ export type StructuredMemoryRecordOf = {
 /** A table-of-contents row: the record's listed fields and the size of its stored text in bytes. */
 type StructuredMemoryContentsRow<T, Field extends keyof T> = Pick<T, Field> & { bytes: number };
 
-/** A chat's records without their bodies, each list in storage order. */
+/**
+ * A chat's records without their bodies, each list in storage order. `pages` lists the live pages alone;
+ * a page in the trash is listed in `trash`, with no type, since its row carries none.
+ */
 export type StructuredMemoryContents = {
     revision: string;
     pages: StructuredMemoryContentsRow<MemoryPage, "id" | "type" | "title">[];
+    trash: StructuredMemoryContentsRow<MemoryPage, "id" | "title">[];
     events: StructuredMemoryContentsRow<MemoryEvent, "id" | "title" | "status">[];
     threads: StructuredMemoryContentsRow<MemoryThread, "id" | "title" | "state">[];
     runs: StructuredMemoryContentsRow<MemoryRun, "id" | "result">[];
@@ -794,6 +814,64 @@ export type StructuredMemoryRevertAnswer = {
     data: MemoryPage;
     reverted: boolean;
     laterEvents: number;
+};
+
+/**
+ * What a person can do to a page as a whole, one tool per request (`structured/pages.ts`). The tab names
+ * pages, headings, and aliases, never a record. `trash` keeps the page by id with everything on it, out of
+ * every list; `untrash` brings it back; `purge` removes a trashed page for good. `merge` folds `sourceId`
+ * into `targetId`, a live page of the same type, and trashes the source; `split` moves `headings`, a strict
+ * subset of the page's, and `aliases`, a subset of its own, to a new page of its type titled `title`. The
+ * scene page takes none of them.
+ */
+export type StructuredMemoryPageTool =
+    | { kind: "trash"; pageId: string }
+    | { kind: "untrash"; pageId: string }
+    | { kind: "purge"; pageId: string }
+    | { kind: "merge"; sourceId: string; targetId: string }
+    | { kind: "split"; pageId: string; headings: string[]; title: string; aliases: string[] };
+
+/**
+ * The page tools route's answer: the revision the next edit names, and the page the tab shows now: the
+ * trashed, restored, or merged-into page, a split's new page, or null after a purge.
+ */
+export type StructuredMemoryPageToolAnswer = { revision: string; data: MemoryPage | null };
+
+/** The version the package's `timeline.md` and `threads.md` name; a package before `threads.md` is 1. */
+export const MEMORY_PACKAGE_VERSION = 2;
+
+/** One file of a Markdown package as the import route takes it: its path in the zip, and its text. */
+export type StructuredMemoryImportFile = { path: string; text: string };
+
+/**
+ * Why a package file, or one event of the timeline, stays out of an import. `missingThreads` is the one
+ * notice: a package before `threads.md` imports with its events' thread references dropped.
+ */
+export const MEMORY_IMPORT_REFUSALS = [
+    "unknownFile",
+    "unreadable",
+    "newerVersion",
+    "shape",
+    "invalidId",
+    "duplicateId",
+    "secondScene",
+    "tooLarge",
+    "missingThreads",
+] as const;
+export type MemoryImportRefusalReason = (typeof MEMORY_IMPORT_REFUSALS)[number];
+
+/** One refused file, `timeline.md#<event id>` for one event of the timeline, with what it got wrong. */
+export type StructuredMemoryImportRefusal = { file: string; reason: MemoryImportRefusalReason; detail?: string };
+
+/**
+ * The import route's answer: the chat's memory revision, what one write took, or false when nothing was
+ * written because the chat holds a row of any kind, waits for a person's choice on its HypaV3 summaries,
+ * or the files hold no record, and what each refused file got wrong, in either case.
+ */
+export type StructuredMemoryImportAnswer = {
+    revision: string;
+    imported: { pages: number; events: number; threads: number } | false;
+    refusals: StructuredMemoryImportRefusal[];
 };
 
 /**
