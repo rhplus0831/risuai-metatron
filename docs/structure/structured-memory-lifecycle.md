@@ -4,11 +4,12 @@
 
 - Owns what happens to a chat's `structuredMemory` records when the chat changes: reconciling events with the chat's
   messages and the repairs a person applies, retraction when messages are deleted and re-recording when they are edited,
-  what a checkpoint holds and restores of the records, and what a copied or branched chat starts with.
-- Paths: `server/src/prompt/memory/structured/{reconcile,inherit}.ts`, the repair and flagging rules of
+  what a checkpoint holds and restores of the records, what a copied or branched chat starts with, and what a chat file
+  carries and an imported chat restores.
+- Paths: `server/src/prompt/memory/structured/{reconcile,inherit,restore}.ts`, the repair and flagging rules of
   `server/src/prompt/memory/structured/edits.ts`, `src/ts/process/chatMemoryInherit.svelte.ts`, the reconciliation rules
-  of `shared/structuredMemory.ts`, and the memory parts of `server/src/data/checkpointStore.ts`,
-  `server/src/data/resourceStore.ts`, and `shared/chatCheckpoints.ts`.
+  of `shared/structuredMemory.ts`, the memory parts of `server/src/data/checkpointStore.ts`,
+  `server/src/data/resourceStore.ts`, `shared/chatCheckpoints.ts`, and `src/ts/characters.ts`.
 - See [structured memory](structured-memory.md) for the records these rules act on, the tables and store, and the edit
   route that carries a repair, and [Active Plans](../plan/README.md) for the design and remaining work.
 - Not here:
@@ -34,16 +35,21 @@
   is in [structured memory](structured-memory.md#files).
 - `server/src/prompt/memory/structured/inherit.ts`: what a copied or branched chat starts with, pure:
   `inheritedRecords`, `MemoryInheritance`.
+- `server/src/prompt/memory/structured/restore.ts`: what the restore route takes of a chat file, pure:
+  `parseRestoredRecords`, `RestoredRecords`.
 - `server/src/data/checkpointStore.ts` and `shared/chatCheckpoints.ts`: what a checkpoint holds of them,
   `CHECKPOINT_MEMORY_FIELD`, `CheckpointMemoryManifest`, and `readMemory` ([A checkpoint](#a-checkpoint)).
 - `server/src/data/resourceStore.ts`, the checkpoint's part: `CheckpointTransaction.restoreMemory`. The rest is in
   [structured memory](structured-memory.md#files).
-- `server/src/routes/structuredMemory.ts`: the inherit route and the repair half of the edit route
-  ([Copies and branches](#copies-and-branches)). The rest is in [structured memory](structured-memory.md#files).
-- `src/ts/process/structuredMemory.svelte.ts`: `inheritStructuredMemory`. The rest is in
+- `server/src/routes/structuredMemory.ts`: the inherit route ([Copies and branches](#copies-and-branches)), the restore
+  route ([Chat files](#chat-files)), and the repair half of the edit route. The rest is in
   [structured memory](structured-memory.md#files).
-- `src/ts/process/chatMemoryInherit.svelte.ts`: `createInheritingChat`, the wait and the notice. Its own file, because
-  they read the chat store and the save loop, and `structuredMemory.svelte.ts` stays free of both.
+- `src/ts/process/structuredMemory.svelte.ts`: `inheritStructuredMemory`, `readStructuredMemoryFile`,
+  `exportChatMemory`, `chatFileMemory`, `restoreStructuredMemory`. The rest is in
+  [structured memory](structured-memory.md#files).
+- `src/ts/process/chatMemoryInherit.svelte.ts`: `createInheritingChat`, `restoreChatMemory`, the wait and the notices.
+  Its own file, because they read the chat store and the save loop, and `structuredMemory.svelte.ts` stays free of both.
+- `src/ts/characters.ts`: `exportChat`, `exportAllChats`, and `importChat`'s `addChats` ([Chat files](#chat-files)).
 
 ## Flows
 
@@ -143,8 +149,8 @@ A checkpoint holds the chat's whole memory, all four kinds, runs included, so a 
 ### Copies and branches
 
 A chat copied from its row's options or branched from a message starts with the records its messages support, and
-nothing from after the branch point reaches its prompt. A new, imported, plugin-made, or recovered chat inherits
-nothing.
+nothing from after the branch point reaches its prompt. A new, plugin-made, or recovered chat inherits nothing, and an
+imported one inherits nothing but [restores what its file holds](#chat-files).
 
 `createInheritingChat` stands in for `createChat` at those two sites. The action finishes as it did, and the rest runs
 behind it, one attempt with no retry:
@@ -203,13 +209,93 @@ What `inheritedRecords` decides:
   crossing events give it, replayed from `open` in contents order as `admitAnalysis` commits them, with `closedBy` only
   on an ended state. Any other stays as stored.
 
+### Chat files
+
+An exported chat's JSON carries its pages, events, and threads, so an unchanged chat reads whole after a round trip,
+even on another server. A run never goes in: it holds a whole prompt, and a file can be passed on. An imported chat
+starts with an empty Log and no pause.
+
+`risuChat` and `risuAllChats` stay `ver: 2` and gain an optional field beside `data`, `structuredMemory`: a list of
+`StructuredMemoryFileEntry`, `{ chatId, pages, events, threads }`, one per chat that holds a page, event, or thread,
+with `chatId` the chat's id in the file. It sits in the envelope, not in a chat, because older builds and upstream
+ignore it there and `normalizeChatMeta` would store it in a chat.
+
+`readStructuredMemoryFile` reads what an export takes:
+
+- The contents come first, so a chat with no rows costs one request, and a chat with only runs no more. Otherwise
+  `/package` and `/threads` rounds all name the contents' revision, and a 409 restarts the whole collection with nothing
+  kept, 3 attempts in all.
+- An initial `chatGone` on the contents means no records: a chat the server refused may not be on it, and
+  `RefusedDataBanner` exports from there. `chatGone` after the contents showed records is a refusal.
+- `readWithDeadline` bounds the whole read at 60 s and its signal goes through `readAnswer`, because `authFetch` has no
+  deadline and this read must not hold an export that needs no server otherwise. The deadline is a `failed` result.
+
+`exportChat` reads for JSON and for HTML, whose `.idat` holds the chat JSON the HTML import reads but no records. It
+reads after `ensureChatLoaded` and before it copies the chat: a chat newer than its records leaves a turn uncovered,
+while records newer than the chat would put pages ahead of their messages. `exportAllChats` reads one chat at a time
+from the detached chats. `exportChatMemory` then changes the exported copy only:
+
+- `hypaV3Data` goes when `settings.ui.memoryAlgorithmType` is `structuredMemory` and the chat holds a page, event, or
+  thread, because an imported [projection](structured-memory.md#the-hypav3-projection) looks like a plugin's write. Both
+  conditions are required: a chat can hold real summaries beside records, and they are live after a switch back to
+  HypaV3.
+- `generationInfo.memory` goes from every message when the chat holds a row of any kind, runs included, since a chat
+  with only failed runs can hold paused receipts. A receipt is a display copy of a run, and runs do not cross: the panel
+  would offer Resume on an empty Log, and a failed restore would show `recorded`. The rest of `generationInfo` stays,
+  and hashes do not read it.
+
+A failed read, or any refusal but the initial `chatGone`, writes the chat with no records at all, never a part of them,
+and leaves `hypaV3Data` and the receipts as they are. The download goes on, because an export works with the server
+unreachable and the banner is the last rescue of refused data. `structuredMemory.memoryFile.exportedWithoutRecords`
+takes the place of `successExport`, since `alertError` and `alertNormal` each queue a dialog. HTML shows no notice: it
+holds no records anyway. `exportAllChats` names how many chats went without, and one chat's failure stops no other.
+
+`POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/restore`, `{ pages, events, threads }`, capped by
+`RouteLimits.memoryRestoreBodyBytes`, default `MEMORY_RESTORE_BODY_BYTES` (32 MiB, because a stored record alone may
+reach one round), answers `StructuredMemoryRestoreAnswer`:
+
+1. Ids and the body: 400, and 413 past the cap.
+2. `parseRestoredRecords`: 400 for anything of another shape.
+3. Epoch (412), then, with no await from here to the write, `fenced` (409 `reason: "fenced"`).
+4. The chat's contents, 404 `chatGone`. A row of any kind, runs included, or a request with no record answers
+   `restored: false` and writes nothing, which is what a repeat finds.
+5. `store.memory.write` at the contents' revision, built from the three checked lists, so no `runs` or `remove` gets
+   through. A store refusal is a 400: an invalid id, a second scene page, a record past the store's size limit.
+
+What `parseRestoredRecords` decides:
+
+- A file can come from anyone, the store leaves a record's shape to its callers, and readers dereference nested fields
+  unguarded, so it checks the whole nested shape of `MemoryPage`, `MemoryEvent`, and `MemoryThread`. A source is a
+  string `messageId` with a string `hash` and a safe-integer `index`, or with both null.
+- It refuses nothing on `STRUCTURED_MEMORY_LIMITS`, because genuine records pass them: 16 `close` ids after admission,
+  33 sections after an inherit, a person's 4,000-character scene section, unbounded event `sources`. It never truncates.
+- No reference has to resolve: `writerRun` names a run that is not there, and inherited records keep dangling ids.
+  Sources are not compared with the chat's messages, because reconciliation answers for that.
+- Unknown fields stay, so a newer file loses nothing. `createdRevision` goes, since the store stamps it, and so does
+  `rerecord`, a request about the source chat, as on a copy. `keptState` stays.
+
+In the tab only `importChat`'s `ver: 2` branch reaches records:
+
+- `chatFileMemory` reads the list: anything but an array counts as none, and of two entries for one id the first wins.
+  Each chat takes its entry by its file id, before `chat.id = v4()`. A file without the field imports as it always did,
+  with no request.
+- `addChats` begins a mutation scope before the first `createChat` and calls `restoreChatMemory` in a `finally`, so the
+  chats already created get their restore when a later `createChat` throws.
+- Behind the action, unawaited, one chat at a time with its own `try`: `createSettled`, the wait of
+  [a copy](#copies-and-branches), then `restoreStructuredMemory` on `createChat`'s answered id.
+- `restored: false`, or any refusal but `epoch`, which halts on its own, is a failure. One notice names the failed
+  chats, whatever the selected algorithm: a file that holds records was meant to restore them, unlike a copy, which asks
+  for every chat. A 413 is `tooLarge`, with its own words naming the limit.
+- The notice says the records could not be confirmed as restored and the earlier messages may not be covered, never that
+  nothing was restored: a response can be lost after a commit, and a send can start on the chat first.
+
 ## State
 
 - Stored records keep what was recorded, and reconciliation is a reading over them: `reconcileMemoryEvents` answers a
   copy, and no stored row changes ([Reconciliation and repairs](#reconciliation-and-repairs)).
 - Two fields of a stored event are requests, not facts: `keptState`, which a person's keep sets, and `rerecord`, which
   the tab's repair or a rewritten message sets. Both are part of the record, so a checkpoint keeps them with its exact
-  row text, and a copy keeps `keptState` and leaves `rerecord` behind.
+  row text, and a copy or a chat file's restore keeps `keptState` and leaves `rerecord` behind.
 - A retraction leaves the event stored with `status: "retracted"`, and sets `unsupported` on the sections it leaves
   without support. The flag is derived from `provenance` over the change set, not kept in its own table
   ([Retraction and edits](#retraction-and-edits)).
@@ -232,6 +318,12 @@ What `inheritedRecords` decides:
   transaction in [server resources](server-resources.md#snapshots-and-restore).
 - The inherit route and `createInheritingChat` are reached from the chat list's copy and branch sites, and the store
   write is [a memory write](structured-memory.md#a-memory-write).
+- The restore route is reached from `importChat` alone, [a memory write](structured-memory.md#a-memory-write) too, and
+  is the one route that writes records the tab sent ([Invariants](structured-memory.md#invariants)).
+- A chat file and [the HypaV3 projection](structured-memory.md#the-hypav3-projection): an exported copy drops
+  `hypaV3Data` by one rule, `exportChatMemory`'s: the selected algorithm is `structuredMemory` and the chat holds a
+  page, event, or thread. A projection overlaid on a chat's full read must keep inside that rule. Overlaid on any other
+  chat, it would be exported and imported as a plugin's write.
 
 ## Invariants
 
@@ -248,6 +340,8 @@ What `inheritedRecords` decides:
   `rerecord`, so decide whether the new one is a fact about the source chat, as `rerecord` is.
 - A new thing a checkpoint holds: it needs its own chunks in the manifest under `CHECKPOINT_MEMORY_FIELD`, a check in
   `walkCheckpointSnapshot`, and a place in `replace`, which restores all of a chat's memory in one transaction.
+- A new field on a record a chat file carries: `parseRestoredRecords`' checks cover every field of the type, so
+  `pnpm check` asks for one. Make it `optional` unless every file ever written holds the field.
 
 ## Tests
 
@@ -262,8 +356,14 @@ What `inheritedRecords` decides:
   `structuredMemoryRoutes.test.ts` the inherit route on a real app, and `chatMemoryInherit.test.ts` the tab's wait on
   fake timers, with the save loop and `authFetch` scripted. `Chat.test.ts` and `SideChatList.test.ts` drive the two
   sites.
-- Focused command: `pnpm --silent test:agent structuredMemory memoryStore reconcile chatCheckpoint inherit Inherit`. No
-  `slow` or `e2e` membership of its own.
+- `structured/restore.test.ts` drives the shape check with plain records, `structuredMemoryRoutes.test.ts` the restore
+  route and a round trip onto a second store on real apps, and `structuredMemory.test.ts` the file read with `authFetch`
+  scripted. `chatMemoryInherit.test.ts` drives the restore's wait.
+- `charactersCapture.test.ts` and `charactersImportChat.test.ts` run the export and the import on
+  `storeBackedServer.ts`, which has no memory route: its 500 reads as a failed memory read, so an export there takes the
+  notice unless the test answers the route, as `serveMemory` does.
+- Focused command: `pnpm --silent test:agent structuredMemory memoryStore reconcile chatCheckpoint inherit Inherit` and,
+  for chat files, `restore.test charactersCapture charactersImportChat`. No `slow` or `e2e` membership of its own.
 
 ## Known Hazards
 
@@ -293,3 +393,15 @@ What `inheritedRecords` decides:
   the prompt, flagged `unsupported`. Provenance is bounded too: a change `sectionEvidence` also dropped leaves nothing
   to flag it by. A page whose `create` entry aged out crosses too. A person's edit after the branch point has no place
   in the message order, so it crosses unless it follows a behind change. Decision: Structured Memory slice 5c, plan.
+- A chat's records over [the restore](#chat-files)'s body cap cannot be restored, and the export does not warn: the file
+  holds them and the import shows the size notice. Decision: Structured Memory slice 5f, plan.
+- HTML, TXT, and jsonl chat files carry no records, so a chat imported from one starts with a coverage gap. Decision:
+  Structured Memory slice 5f, plan.
+- An all-chats export reads the chats first and their records after, so a chat can be older than its records. Each
+  chat's read has its own 60 s bound, so a server that hangs by then holds the file a minute per chat. Decision:
+  Structured Memory slice 5f, plan.
+- A chat that holds real `hypaV3Data` under the structured algorithm exports without it, since nothing tells it from a
+  projection. Decision: Structured Memory slice 5f, plan.
+- A send that reaches an imported chat before its restore leaves it unrestored: the chat then holds rows, or is fenced,
+  and the notice shows. A tab closed before the restore posts leaves it the same with no notice: nothing retries it.
+  Decision: Structured Memory slice 5f, plan.

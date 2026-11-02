@@ -111,6 +111,7 @@ import {
     SINGLETON_RESOURCE_ID,
     revisionDigest,
 } from "../../shared/resources.ts";
+import { MEMORY_RESTORE_BODY_BYTES } from "../../shared/structuredMemory.ts";
 import { isClientRoutePath } from "../../shared/routes.ts";
 import { type BuildInfo, formatBuildId } from "../../shared/buildInfo.ts";
 import { readServerBuildInfo, resolveBuildInfo, resolveNormalizationIdentity } from "./buildInfo.ts";
@@ -136,8 +137,10 @@ export type RouteLimits = {
     bodyBytes?: number;
     /** The body cap of `POST /api/resources/read` (default `MAX_READ_BODY_BYTES`, 32 MiB). */
     readBodyBytes?: number;
-    /** The soft budget of one `/package`, `/coverage`, or `/runs` round of structured memory in stored bytes (default `MAX_READ_RESPONSE_BYTES`, 16 MiB). */
+    /** The soft budget of one `/package`, `/coverage`, `/runs`, or `/threads` round of structured memory in stored bytes (default `MAX_READ_RESPONSE_BYTES`, 16 MiB). */
     memoryPackageRoundBytes?: number;
+    /** The body cap of structured memory's `POST .../restore` (default `MEMORY_RESTORE_BODY_BYTES`, 32 MiB). */
+    memoryRestoreBodyBytes?: number;
 };
 
 /**
@@ -160,10 +163,10 @@ export type RouteLimits = {
  * defaults are the production ones). `generationOwnerAbsentMs` and `generationOwnerSilentMs` replace
  * the owner absence and negotiated socket silence allowances (tests shorten them). `routeLimits`
  * lowers the rate limits, the app's and the resource read's body caps, the structured memory rounds'
- * budget, and the asset batch, backup archive, and CharX entry caps (`RouteLimits`; tests reach
- * them quickly, the defaults are the production ones). `cbsTimeLimits` replaces the CBS wall times of
- * every job, render, and translation (`serverCbsLimits`; tests lengthen them, the defaults are the
- * production ones).
+ * budget and restore cap, and the asset batch, backup archive, and CharX entry caps (`RouteLimits`;
+ * tests reach them quickly, the defaults are the production ones). `cbsTimeLimits` replaces the CBS wall
+ * times of every job, render, and translation (`serverCbsLimits`; tests lengthen them, the defaults are
+ * the production ones).
  * The default runner gets the context's own memory task service (`createMemoryTasks`, returned as
  * `memoryTasks`): HypaV3 then selects stored summaries in a send and hands its chat to the service,
  * and the manual start and cancel routes are open. The `memoryTasks` option replaces the runner's
@@ -722,7 +725,8 @@ export function createServerContext(options: {
     // resource read's, the login, crypto, and set-password routes', the message search's, the memory
     // task start's, the structured memory POSTs', the checkpoint POSTs' and policy PUT's, the token
     // routes', and the missing asset check's bodies are capped by those routes (8 MiB, 16 KiB, 16 KiB,
-    // 1 MiB, 4 KiB, 4 KiB, 2 MiB, 32 MiB, 16 KiB, 4 KiB, 4 KiB, 64 KiB, 16 KiB, 2 MiB, 64 KiB).
+    // 1 MiB, 4 KiB, 4 KiB, 2 MiB, 32 MiB, 16 KiB, 4 KiB, 4 KiB, 64 KiB and a restore's 32 MiB, 16 KiB,
+    // 2 MiB, 64 KiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -843,6 +847,7 @@ export function createServerContext(options: {
         auth,
         limiter: authenticatedRouteLimiter.middleware,
         packageRoundBytes: options.routeLimits?.memoryPackageRoundBytes ?? MAX_READ_RESPONSE_BYTES,
+        restoreBodyBytes: options.routeLimits?.memoryRestoreBodyBytes ?? MEMORY_RESTORE_BODY_BYTES,
         // The chat's task, and a job too: a record-now job or a send's gap run writes with no task, and
         // the writer's retry after a revision conflict reapplies an old answer over a person's edit.
         fenced: (characterId, chatId) => {

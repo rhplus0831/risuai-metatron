@@ -1,6 +1,10 @@
 import { language } from "src/lang";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
-import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
+import {
+    MEMORY_RESTORE_BODY_BYTES,
+    STRUCTURED_MEMORY_ALGORITHM,
+    type StructuredMemoryFileRecords,
+} from "../../../shared/structuredMemory.ts";
 import { alertError } from "../alert";
 import { chatHasUnackedWork, createChat, type ChatRef } from "../storage/chatStore.svelte";
 import type { Chat } from "../storage/database.svelte";
@@ -11,16 +15,18 @@ import {
     type MutationScope,
 } from "../storage/resourceSync.svelte";
 import { settings } from "../storage/settingsViews.svelte";
-import { inheritStructuredMemory } from "./structuredMemory.svelte";
+import { inheritStructuredMemory, restoreStructuredMemory } from "./structuredMemory.svelte";
 
 /**
- * A copied or branched chat's memory: the tab makes the chat, and the server builds its records from the
- * chat it came from (`server/src/prompt/memory/structured/inherit.ts`). Its own module, because the wait
- * reads the chat store and the save loop, and `structuredMemory.svelte.ts` stays free of both.
+ * A new chat's memory. A copied or branched chat: the tab makes the chat, and the server builds its
+ * records from the chat it came from (`server/src/prompt/memory/structured/inherit.ts`). An imported
+ * chat: the tab makes the chat, and sends the records its file held
+ * (`server/src/prompt/memory/structured/restore.ts`). Its own module, because the wait reads the chat
+ * store and the save loop, and `structuredMemory.svelte.ts` stays free of both.
  *
  * `createChat` only queues the write, so the route is asked once the create can have reached the server.
- * A failure leaves the chat with no records and a notice, never a wrong record. There is one attempt:
- * the copy or the branch is already done, and nothing waits for this.
+ * A failure leaves a notice, never a wrong record. There is one attempt: the copy, the branch, or the
+ * import is already done, and nothing waits for this.
  */
 
 /** How often a blocked create is looked at, and how long it is waited for in all. */
@@ -80,4 +86,72 @@ export function createInheritingChat(
         }
     });
     return created;
+}
+
+/** One imported chat and what its file held: `chatId` is `createChat`'s answer, which may not be the id sent. */
+export type ChatMemoryRestore = { chatId: string; name: string; records: StructuredMemoryFileRecords };
+
+/** How a restore ended. `tooLarge` is a failure with its own notice: the records are over the route's cap. */
+type RestoreEnd = "done" | "failed" | "tooLarge";
+
+/**
+ * How the restore of `records` to `ref`, created inside `scope`, ended: an `epoch` refusal is no failure,
+ * because it halts the tab with its own notice. `restored: false` is one, since the chat is left without
+ * what its file held.
+ */
+async function restoreMemory(
+    ref: ChatRef,
+    records: StructuredMemoryFileRecords,
+    scope: MutationScope,
+): Promise<RestoreEnd> {
+    try {
+        if (!(await createSettled(ref, scope))) {
+            return "failed";
+        }
+        const result = await restoreStructuredMemory(ref, records);
+        if (result.outcome === "ok") {
+            return result.value.restored ? "done" : "failed";
+        }
+        if (result.outcome === "refused" && result.reason === "tooLarge") {
+            return "tooLarge";
+        }
+        return result.outcome === "refused" && result.reason === "epoch" ? "done" : "failed";
+    } catch {
+        return "failed";
+    }
+}
+
+/**
+ * Restores `restores`, the chats of `chaId` an import just made inside `scope`, one after another behind
+ * the action, each failure leaving the others to go on, and shows one notice naming the chats that failed.
+ * It shows it whatever the selected algorithm: a file that holds records was meant to restore them, unlike
+ * a copy, which asks for every chat. The notice says what the tab knows: the answer can be lost after the
+ * commit, so it cannot say that nothing was restored.
+ */
+export function restoreChatMemory(chaId: string, restores: readonly ChatMemoryRestore[], scope: MutationScope): void {
+    if (restores.length === 0) {
+        return;
+    }
+    void (async () => {
+        const failed: string[] = [];
+        const tooLarge: string[] = [];
+        for (const { chatId, name, records } of restores) {
+            const end = await restoreMemory({ chaId, chatId }, records, scope);
+            if (end === "failed") {
+                failed.push(name);
+            } else if (end === "tooLarge") {
+                tooLarge.push(name);
+            }
+        }
+        const { restoreFailed, restoreTooLarge } = language.structuredMemory.memoryFile;
+        const notices = [
+            ...(failed.length > 0 ? [restoreFailed(failed.join(", "))] : []),
+            ...(tooLarge.length > 0
+                ? [restoreTooLarge(tooLarge.join(", "), MEMORY_RESTORE_BODY_BYTES / (1024 * 1024))]
+                : []),
+        ];
+        if (notices.length > 0) {
+            alertError(notices.join("\n\n"));
+        }
+    })();
 }

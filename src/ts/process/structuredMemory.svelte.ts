@@ -6,7 +6,7 @@ import {
     type ContextMemoryWriter,
     type ContextReport,
 } from "../../../shared/contextReport.ts";
-import type { Message } from "../../../shared/database.ts";
+import type { Chat, Message } from "../../../shared/database.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
@@ -16,6 +16,7 @@ import {
     memoryEventCovers,
     rawWindow,
     reconcileMemoryEvents,
+    STRUCTURED_MEMORY_ALGORITHM,
     STRUCTURED_MEMORY_PATH,
     type MemoryEvent,
     type MemoryManifestItem,
@@ -23,6 +24,7 @@ import {
     type MemoryPage,
     type MemoryPageHistoryEntry,
     type MemoryPageType,
+    type MemoryThread,
     type ReadEntry,
     type StructuredMemoryCadence,
     type StructuredMemoryContentsAnswer,
@@ -31,23 +33,31 @@ import {
     type StructuredMemoryCoverageRun,
     type StructuredMemoryEdit,
     type StructuredMemoryEditAnswer,
+    type StructuredMemoryFileEntry,
+    type StructuredMemoryFileRecords,
     type StructuredMemoryInheritAnswer,
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
     type StructuredMemoryRecordAnswer,
     type StructuredMemoryRecordKind,
+    type StructuredMemoryRestoreAnswer,
     type StructuredMemoryRunsRound,
+    type StructuredMemoryThreadsRound,
 } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import type { ChatRef } from "../storage/chatStore.svelte";
+import { readWithDeadline } from "../storage/readDeadline";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 import { authFetch } from "../storage/serverAuth";
 
 /**
  * The tab's reads of a chat's structured memory (`server/src/routes/structuredMemory.ts`), a person's
- * edits of it (`editStructuredMemory`), a new chat's inheritance (`inheritStructuredMemory`), and the
- * downloadable package built from the reads: a zip of Markdown with one file per page and one timeline
- * of the events.
+ * edits of it (`editStructuredMemory`), a new chat's inheritance (`inheritStructuredMemory`) or restore
+ * from a chat file (`restoreStructuredMemory`), and the downloadable package built from the reads: a zip
+ * of Markdown with one file per page and one timeline of the events.
+ *
+ * What a chat file takes of the records is read here too (`readStructuredMemoryFile`), and
+ * `exportChatMemory` applies that read to the chat copy an export writes.
  *
  * In the package Markdown is display and the metadata lines are the authority. A metadata value is JSON
  * on one line, which is also valid YAML, and `bodyLines` and `summaryLines` count the lines of the text
@@ -72,10 +82,11 @@ import { authFetch } from "../storage/serverAuth";
  */
 
 /**
- * Why a read, an edit, or an inherit did not answer: the chat or record is gone, the database was
- * replaced, its memory moved on, or, for a write, something that can write it holds the chat.
+ * Why a read, an edit, an inherit, or a restore did not answer: the chat or record is gone, the database
+ * was replaced, its memory moved on, or, for a write, something that can write it holds the chat. A
+ * restore can also be `tooLarge`: its records are over the route's body cap.
  */
-export type StructuredMemoryRefusal = "chatGone" | "recordGone" | "epoch" | "changed" | "fenced";
+export type StructuredMemoryRefusal = "chatGone" | "recordGone" | "epoch" | "changed" | "fenced" | "tooLarge";
 
 export type StructuredMemoryResult<T> =
     | { outcome: "ok"; value: T }
@@ -92,8 +103,20 @@ type PackageRead = { revision: string; pages: MemoryPage[]; events: MemoryEvent[
 /** The chat's memory as the coverage route lists it, every round read at one revision. */
 export type StructuredMemoryCoverage = Omit<StructuredMemoryCoverageRound, "next">;
 
+/**
+ * What an export takes of the chat's memory, read at one revision. `rows` says whether the chat holds a
+ * row of any kind, which the lists alone cannot: a chat with only failed runs can hold paused receipts.
+ */
+export type StructuredMemoryFileRead = StructuredMemoryFileRecords & { rows: boolean };
+
 /** Whole reads in all, the first included, before a chat whose memory keeps changing is refused. */
 const WHOLE_READ_ATTEMPTS = 3;
+
+/**
+ * The bound of one chat's whole file read, every round included (`readWithDeadline`): `authFetch` has
+ * none of its own, and an export needs no server until this read asks it.
+ */
+const FILE_READ_DEADLINE_MS = 60_000;
 
 const PACKAGE_VERSION = 1;
 
@@ -140,6 +163,11 @@ function editRefusalOf(response: Response, body: AnswerBody): Unanswered {
     return response.status === 409
         ? { outcome: "refused", reason: body.reason === "fenced" ? "fenced" : "changed" }
         : refusalOf(response, body);
+}
+
+/** A restore's refusal: an edit's, and a 413 for records over the route's body cap. */
+function restoreRefusalOf(response: Response, body: AnswerBody): Unanswered {
+    return response.status === 413 ? { outcome: "refused", reason: "tooLarge" } : editRefusalOf(response, body);
 }
 
 /** Asks `path` and turns its answer into a result: `parse` answers null for a body of the wrong shape. */
@@ -384,6 +412,13 @@ function parseCoverageRound(body: AnswerBody, cursor: number): StructuredMemoryC
         : null;
 }
 
+function parseThreadsRound(body: AnswerBody, cursor: number): StructuredMemoryThreadsRound | null {
+    const { revision, threads, next } = body;
+    return typeof revision === "string" && Array.isArray(threads) && isForward(next, cursor)
+        ? (body as StructuredMemoryThreadsRound)
+        : null;
+}
+
 function parseEditAnswer(body: AnswerBody): StructuredMemoryEditAnswer | null {
     const { revision, kind, data } = body;
     return typeof revision === "string" &&
@@ -397,6 +432,13 @@ function parseInheritAnswer(body: AnswerBody): StructuredMemoryInheritAnswer | n
     const { revision, inherited } = body;
     return typeof revision === "string" && typeof inherited === "boolean"
         ? (body as StructuredMemoryInheritAnswer)
+        : null;
+}
+
+function parseRestoreAnswer(body: AnswerBody): StructuredMemoryRestoreAnswer | null {
+    const { revision, restored } = body;
+    return typeof revision === "string" && typeof restored === "boolean"
+        ? (body as StructuredMemoryRestoreAnswer)
         : null;
 }
 
@@ -464,20 +506,45 @@ export function inheritStructuredMemory(
 }
 
 /**
- * One whole read of a route's rounds: the rounds after the first name the first's revision, each goes
- * through `take`, and the answer is that revision.
+ * Gives `ref`, a chat just imported, the records its file held. The server takes them only for a chat with
+ * no rows, so a 404 `chatGone` says the chat has not reached it, and a chat a send reached first answers
+ * `restored: false`. The caller shows the notice for a refusal.
+ */
+export function restoreStructuredMemory(
+    ref: ChatRef,
+    { pages, events, threads }: StructuredMemoryFileRecords,
+): Promise<StructuredMemoryResult<StructuredMemoryRestoreAnswer>> {
+    return readAnswer(`${chatPath(ref)}/restore`, parseRestoreAnswer, restoreRefusalOf, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pages, events, threads }),
+    });
+}
+
+/** What ties a route's rounds to a read beyond them. */
+type RoundsOptions = {
+    /** The revision every round must name, the first one included. */
+    revision?: string;
+    signal?: AbortSignal;
+};
+
+/**
+ * One whole read of a route's rounds: every round names `options.revision`, or without one the rounds
+ * after the first name the first's, each goes through `take`, and the answer is that revision.
  */
 async function readRounds<Round extends { revision: string; next: number | null }>(
     path: string,
     parse: (body: AnswerBody, cursor: number) => Round | null,
     take: (round: Round) => void,
+    options: RoundsOptions = {},
 ): Promise<StructuredMemoryResult<string>> {
-    let revision: string | undefined;
+    const { signal } = options;
+    let { revision } = options;
     let cursor = 0;
     for (;;) {
         const position = cursor;
         const query = revision === undefined ? "" : `?cursor=${position}&revision=${encodeURIComponent(revision)}`;
-        const round = await readAnswer(`${path}${query}`, (body) => parse(body, position), roundRefusalOf);
+        const round = await readAnswer(`${path}${query}`, (body) => parse(body, position), roundRefusalOf, { signal });
         if (round.outcome !== "ok") {
             return round;
         }
@@ -512,18 +579,39 @@ async function readAtOneRevision<T>(
 }
 
 /** Every page and event of the chat at one revision. */
-async function readPackage(ref: ChatRef): Promise<StructuredMemoryResult<PackageRead>> {
+async function readPackage(ref: ChatRef, options?: RoundsOptions): Promise<StructuredMemoryResult<PackageRead>> {
     const pages: MemoryPage[] = [];
     const events: MemoryEvent[] = [];
-    const read = await readRounds(`${chatPath(ref)}/package`, parseRound, (round) => {
-        for (const page of round.pages) {
-            pages.push(page);
-        }
-        for (const event of round.events) {
-            events.push(event);
-        }
-    });
+    const read = await readRounds(
+        `${chatPath(ref)}/package`,
+        parseRound,
+        (round) => {
+            for (const page of round.pages) {
+                pages.push(page);
+            }
+            for (const event of round.events) {
+                events.push(event);
+            }
+        },
+        options,
+    );
     return read.outcome === "ok" ? { outcome: "ok", value: { revision: read.value, pages, events } } : read;
+}
+
+/** Every thread of the chat at the revision `options` names. */
+async function readThreads(ref: ChatRef, options: RoundsOptions): Promise<StructuredMemoryResult<MemoryThread[]>> {
+    const threads: MemoryThread[] = [];
+    const read = await readRounds(
+        `${chatPath(ref)}/threads`,
+        parseThreadsRound,
+        (round) => {
+            for (const thread of round.threads) {
+                threads.push(thread);
+            }
+        },
+        options,
+    );
+    return read.outcome === "ok" ? { outcome: "ok", value: threads } : read;
 }
 
 /**
@@ -545,6 +633,108 @@ export function readStructuredMemoryCoverage(ref: ChatRef): Promise<StructuredMe
         });
         return read.outcome === "ok" ? { outcome: "ok", value: { revision: read.value, events, runs } } : read;
     });
+}
+
+/**
+ * What an export takes of the chat's memory, read whole at one revision, in `FILE_READ_DEADLINE_MS` at
+ * most, whose passing is a failure. The contents come first, so a chat with no rows costs one request,
+ * and a chat that holds only runs no more; every other round names the contents' revision. A change of the
+ * chat's memory during the read restarts it with nothing kept, and a chat that keeps changing is refused
+ * `changed`.
+ *
+ * A chat the server does not hold has no records, because an export can come ahead of its save, or in
+ * place of it: `RefusedDataBanner` exports what the server refused. That holds only until the contents
+ * have shown records: past that `chatGone` is a refusal.
+ */
+export async function readStructuredMemoryFile(
+    ref: ChatRef,
+): Promise<StructuredMemoryResult<StructuredMemoryFileRead>> {
+    let showedRecords = false;
+    try {
+        return await readWithDeadline(FILE_READ_DEADLINE_MS, "The memory read timed out", (signal) =>
+            readAtOneRevision(async () => {
+                const contents = await readAnswer(chatPath(ref), parseContents, refusalOf, { signal });
+                if (contents.outcome === "refused" && contents.reason === "chatGone" && !showedRecords) {
+                    return { outcome: "ok", value: { rows: false, pages: [], events: [], threads: [] } };
+                }
+                if (contents.outcome !== "ok") {
+                    return contents;
+                }
+                const { revision, pages, events, threads, runs } = contents.value;
+                if (pages.length + events.length + threads.length === 0) {
+                    return { outcome: "ok", value: { rows: runs.length > 0, pages: [], events: [], threads: [] } };
+                }
+                showedRecords = true;
+                const packaged = await readPackage(ref, { revision, signal });
+                if (packaged.outcome !== "ok") {
+                    return packaged;
+                }
+                const threaded = await readThreads(ref, { revision, signal });
+                if (threaded.outcome !== "ok") {
+                    return threaded;
+                }
+                return {
+                    outcome: "ok",
+                    value: {
+                        rows: true,
+                        pages: packaged.value.pages,
+                        events: packaged.value.events,
+                        threads: threaded.value,
+                    },
+                };
+            }),
+        );
+    } catch (error) {
+        return { outcome: "failed", error: errorText(error) };
+    }
+}
+
+/**
+ * What an export does with `read`, the answer of `readStructuredMemoryFile`, to `chat`, the copy it writes:
+ * `entry` is the chat's line in the file's `structuredMemory`, null with no records, and `failed` says the
+ * read did not answer, which leaves `chat` as it is and takes every record out of the file, so a file
+ * never holds part of a chat's memory.
+ *
+ * With records and `algorithm`, the selected `memoryAlgorithmType`, on this algorithm, `hypaV3Data` goes: a
+ * structured chat's read can carry the projection, and an imported one looks like a plugin's write. Under
+ * another algorithm it stays, because a chat can hold real summaries beside its records. With a row of any
+ * kind the receipts go too (`generationInfo.memory`, the rest stays): a receipt is a display copy of a
+ * run, runs stay out of the file, and it would offer Resume on an empty Log or say `recorded` of a restore
+ * that failed. Hashes do not read it.
+ */
+export function exportChatMemory(
+    chat: Chat,
+    read: StructuredMemoryResult<StructuredMemoryFileRead>,
+    algorithm: string | undefined,
+): { entry: StructuredMemoryFileEntry | null; failed: boolean } {
+    if (read.outcome !== "ok") {
+        return { entry: null, failed: true };
+    }
+    const { rows, pages, events, threads } = read.value;
+    const records = pages.length + events.length + threads.length > 0;
+    if (records && algorithm === STRUCTURED_MEMORY_ALGORITHM) {
+        delete chat.hypaV3Data;
+    }
+    if (rows) {
+        for (const { generationInfo } of chat.message) {
+            delete generationInfo?.memory;
+        }
+    }
+    return { entry: records ? { chatId: chat.id, pages, events, threads } : null, failed: false };
+}
+
+/**
+ * A chat file's `structuredMemory` list by the chat ids it names: anything but a list names none, and
+ * of two entries for one id the first stands. The records are the file's, unread: the route checks them.
+ */
+export function chatFileMemory(list: unknown): ReadonlyMap<string, StructuredMemoryFileEntry> {
+    const entries = new Map<string, StructuredMemoryFileEntry>();
+    for (const entry of Array.isArray(list) ? list : []) {
+        if (isPlainObject(entry) && typeof entry.chatId === "string" && !entries.has(entry.chatId)) {
+            entries.set(entry.chatId, entry as StructuredMemoryFileEntry);
+        }
+    }
+    return entries;
 }
 
 /**

@@ -1,5 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
+import type { Chat } from "../../shared/database.ts";
+import { MEMORY_RESTORE_BODY_BYTES, type StructuredMemoryFileRecords } from "../../shared/structuredMemory.ts";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 
 // `importChat` writes the character selected when the dialog opened, captured by id,
@@ -15,6 +17,7 @@ const { server, alerts, picker } = vi.hoisted(() => ({
     server: { current: null as any },
     alerts: {
         error: vi.fn(),
+        select: vi.fn(),
         normal: vi.fn(),
         normalWait: vi.fn(async () => undefined),
         confirm: vi.fn(async () => true),
@@ -31,6 +34,7 @@ vi.mock("./storage/serverAuth", () => ({
 vi.mock("./alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: alerts.error,
+        alertSelect: alerts.select,
         alertNormal: alerts.normal,
         alertNormalWait: alerts.normalWait,
         alertConfirm: alerts.confirm,
@@ -40,7 +44,7 @@ vi.mock("./alert", async () =>
 vi.mock("./parser/parser.svelte", () => ({
     hasher: vi.fn(async () => ""),
     risuChatParser: vi.fn((text: string) => text),
-    parseMarkdownSafe: vi.fn(),
+    parseMarkdownSafe: vi.fn((text: string) => text),
 }));
 vi.mock("./process/index.svelte", () => ({}));
 vi.mock("./translator/translator", () => ({ translateHTML: vi.fn() }));
@@ -123,6 +127,14 @@ async function boot() {
     const util = await import("./util");
     vi.spyOn(util, "sleep").mockResolvedValue(undefined);
     vi.spyOn(util, "selectSingleFile").mockImplementation(() => picker.answer() as any);
+    const globalApi = await import("./globalApi.svelte");
+    const downloads: { name: string; data: string }[] = [];
+    vi.spyOn(globalApi, "downloadFile").mockImplementation(async (name, data) => {
+        downloads.push({
+            name,
+            data: typeof data === "string" ? data : Buffer.from(data as Uint8Array).toString("utf8"),
+        });
+    });
     const characters = await import("./characters");
     const binding = await import("./storage/chatBinding.svelte");
     const select = (chaId: string) => selectionModule.selectCharacter(chaId);
@@ -139,7 +151,7 @@ async function boot() {
         };
         await characters.importChat();
     };
-    return { ...booted, characters, binding, alpha, beta, index, select, chatsOf, texts, run };
+    return { ...booted, characters, binding, alpha, beta, index, select, chatsOf, texts, run, downloads };
 }
 
 // The first boot compiles the module graph; done once here so no test pays for it, in the
@@ -485,4 +497,312 @@ describe("importChat prepares each imported chat's binding", () => {
             { modelPresetId: ids.modelPresetId, bindedPersona: ids.bindedPersona, bindingReview: true },
         ]);
     });
+});
+
+/** Memory HTTP is scripted only in these tests; the real save adapter and server chat store remain in use. */
+function serveMemory(
+    booted: Awaited<ReturnType<typeof boot>>,
+    answer: (chatId: string, route: string, init?: RequestInit) => Response | Promise<Response>,
+) {
+    const requests: { chatId: string; route: string; body: unknown; saved: unknown }[] = [];
+    server.current = {
+        close: () => booted.fake.close(),
+        fetch: (path: string, init?: RequestInit) => {
+            const match = new URL(path, "http://test").pathname.match(
+                /^\/api\/memory\/structured\/([^/]+)\/([^/]+)(?:\/(.*))?$/,
+            );
+            if (!match) return booted.fake.fetch(path, init);
+            const chatId = decodeURIComponent(match[2]);
+            const route = match[3] ?? "";
+            requests.push({
+                chatId,
+                route,
+                body: init?.body ? JSON.parse(init.body as string) : null,
+                saved: plain(booted.fake.chat(decodeURIComponent(match[1]), chatId)),
+            });
+            return answer(chatId, route, init);
+        },
+    };
+    return requests;
+}
+
+function fileRecords(id: string): StructuredMemoryFileRecords {
+    return {
+        pages: [
+            {
+                id: `page-${id}`,
+                type: "location",
+                title: `Place ${id}`,
+                aliases: [],
+                contextMode: "auto",
+                sections: [
+                    {
+                        heading: "Facts",
+                        body: `Body ${id}`,
+                        provenance: [`event-${id}`],
+                        sources: [],
+                        locked: false,
+                        updatedAt: 1,
+                    },
+                ],
+                links: [],
+                retrieval: { keywords: [] },
+                history: [],
+            },
+        ],
+        events: [
+            {
+                id: `event-${id}`,
+                title: `Event ${id}`,
+                summary: `Summary ${id}`,
+                status: "active",
+                participants: [],
+                storyTime: { text: "Morning" },
+                keyLines: [],
+                stateChanges: [],
+                knowledge: [],
+                relationshipShifts: [],
+                openThreads: { add: [], close: [], transitions: [] },
+                sources: [],
+                writerRun: "private-run",
+                createdRevision: 7,
+            },
+        ],
+        threads: [{ id: `thread-${id}`, title: `Return ${id}`, who: [], state: "open" }],
+    };
+}
+const pausedChat = (id: string): Chat => ({
+    id,
+    name: id,
+    note: "",
+    localLore: [],
+    fmIndex: -1,
+    hypaV3Data: { summaries: [{ text: "Real HypaV3 summary", chatMemos: ["m0"], isImportant: false }] },
+    message: [0, 1].map((i) => ({
+        chatId: `${id}-m${i}`,
+        role: "char",
+        data: `Message ${i}`,
+        generationInfo: {
+            model: "story-model",
+            generationId: `generation-${i}`,
+            memory: { state: "skipped", reason: "writerPaused", pages: [], refused: [], unverified: [], warnings: [] },
+        },
+    })),
+});
+function memoryRead(records: StructuredMemoryFileRecords, route: string, runs: unknown[] = []) {
+    return Response.json(
+        route === "package"
+            ? { revision: "r", pages: records.pages, events: records.events, next: null }
+            : route === "threads"
+              ? { revision: "r", threads: records.threads, next: null }
+              : { revision: "r", ...records, runs },
+    );
+}
+
+it.each(["structuredMemory", "hypaMemoryV3"])(
+    "exports JSON and HTML under %s with only the applicable projection and receipts removed",
+    async (algorithm) => {
+        const b = await boot();
+        b.settings.ui.memoryAlgorithmType = algorithm;
+        const input = pausedChat("exported");
+        b.chat.createChat(b.alpha, input);
+        await b.sync.flushResources();
+        const records = fileRecords(input.id!);
+        serveMemory(b, (_chatId, route) =>
+            memoryRead(records, route, [{ id: "private-run", input: "PRIVATE PROMPT" }]),
+        );
+        for (const mode of ["0", "2"]) {
+            alerts.select.mockResolvedValueOnce(mode);
+            if (mode === "2") alerts.select.mockResolvedValueOnce("1").mockResolvedValueOnce("0");
+            await b.characters.exportChat(input.id!);
+            expect(b.downloads).toHaveLength(mode === "0" ? 1 : 2);
+            const text = b.downloads.at(-1)!.data;
+            const envelope = mode === "0" ? JSON.parse(text) : null;
+            const exported = envelope
+                ? envelope.data
+                : JSON.parse(new DOMParser().parseFromString(text, "text/html").querySelector(".idat")!.textContent!);
+            if (envelope) {
+                expect(envelope).toMatchObject({
+                    type: "risuChat",
+                    ver: 2,
+                    structuredMemory: [{ chatId: input.id, ...records }],
+                });
+                expect(envelope.data).not.toHaveProperty("structuredMemory");
+                expect(envelope.structuredMemory[0]).not.toHaveProperty("runs");
+            }
+            if (algorithm === "structuredMemory") expect(exported).not.toHaveProperty("hypaV3Data");
+            else expect(exported.hypaV3Data).toEqual(input.hypaV3Data);
+            expect(exported.message.map((message: any) => message.generationInfo)).toEqual([
+                { model: "story-model", generationId: "generation-0" },
+                { model: "story-model", generationId: "generation-1" },
+            ]);
+            expect(text).not.toContain("PRIVATE PROMPT");
+        }
+        expect(plain(b.chat.findChat({ chaId: b.alpha, chatId: input.id! }))).toMatchObject(input);
+        expect(b.fake.chat(b.alpha, input.id!)!.data).toMatchObject(input);
+    },
+);
+
+it("exports all chats with an entry for pages, events or threads, stripping receipts even from run-only chats", async () => {
+    const b = await boot();
+    b.settings.ui.memoryAlgorithmType = "structuredMemory";
+    const kinds = ["pages", "events", "threads", "runs", "empty"] as const;
+    const inputs = kinds.map(pausedChat);
+    for (const input of inputs) b.chat.createChat(b.alpha, input);
+    await b.sync.flushResources();
+    const entries = kinds.slice(0, 3).map((kind) => ({
+        chatId: kind,
+        pages: [],
+        events: [],
+        threads: [],
+        [kind]: fileRecords(kind)[kind as keyof StructuredMemoryFileRecords],
+    }));
+    serveMemory(b, (chatId, route) =>
+        memoryRead(
+            entries.find((entry) => entry.chatId === chatId) ?? { pages: [], events: [], threads: [] },
+            route,
+            chatId === "runs" ? [{ id: "private-run", input: "PRIVATE PROMPT" }] : [],
+        ),
+    );
+    await b.characters.exportAllChats();
+    expect(b.downloads).toHaveLength(1);
+    const file = JSON.parse(b.downloads[0].data);
+    expect(file).toMatchObject({ type: "risuAllChats", ver: 2 });
+    expect(file.structuredMemory).toHaveLength(3);
+    expect(file.structuredMemory).toEqual(expect.arrayContaining(entries));
+    for (const input of inputs) {
+        const exported = file.data.find((chat: Chat) => chat.id === input.id);
+        expect(exported).not.toHaveProperty("structuredMemory");
+        if (["pages", "events", "threads"].includes(input.id!)) expect(exported).not.toHaveProperty("hypaV3Data");
+        else expect(exported.hypaV3Data).toEqual(input.hypaV3Data);
+        expect(exported.message.map((message: any) => message.generationInfo)).toEqual(
+            input.id === "empty"
+                ? input.message.map((message) => message.generationInfo)
+                : [
+                      { model: "story-model", generationId: "generation-0" },
+                      { model: "story-model", generationId: "generation-1" },
+                  ],
+        );
+    }
+    expect(b.downloads[0].data).not.toContain("PRIVATE PROMPT");
+    expect(alerts.normal).toHaveBeenCalledWith(language.successExport);
+    expect(alerts.error).not.toHaveBeenCalled();
+});
+
+it("downloads chats after a partial memory read fails and replaces the success notice while other chats still export", async () => {
+    const b = await boot();
+    b.settings.ui.memoryAlgorithmType = "structuredMemory";
+    const input = pausedChat("failed");
+    b.chat.createChat(b.alpha, input);
+    await b.sync.flushResources();
+    serveMemory(b, (chatId, route) =>
+        chatId === "failed" && route === "threads"
+            ? Response.json({ error: "Offline" }, { status: 503 })
+            : memoryRead(fileRecords(chatId), route),
+    );
+    alerts.select.mockResolvedValueOnce("0");
+    await b.characters.exportChat(input.id!);
+    expect(b.downloads).toHaveLength(1);
+    const single = JSON.parse(b.downloads[0].data);
+    expect(single.data).toMatchObject(input);
+    expect(single).not.toHaveProperty("structuredMemory");
+    expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.structuredMemory.memoryFile.exportedWithoutRecords);
+    expect(alerts.normal).not.toHaveBeenCalled();
+    alerts.error.mockClear();
+    await b.characters.exportAllChats();
+    expect(b.downloads).toHaveLength(2);
+    const all = JSON.parse(b.downloads[1].data);
+    expect(all.data.find((chat: Chat) => chat.id === "failed")).toMatchObject(input);
+    expect(all.structuredMemory).toEqual([{ chatId: "a1", ...fileRecords("a1") }]);
+    expect(alerts.error).toHaveBeenCalledExactlyOnceWith(
+        language.structuredMemory.memoryFile.allExportedWithoutRecords(1),
+    );
+    expect(alerts.normal).not.toHaveBeenCalled();
+});
+
+it("imports each file entry by its old chat id after saving new chats, regardless of algorithm, and skips legacy files", async () => {
+    const b = await boot();
+    b.settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+    const requests = serveMemory(b, () => Response.json({ revision: "restored", restored: true }));
+    const inputs = ["first", "second"].map((id) => ({
+        ...chatV2(id, null, id),
+        id,
+        message: [{ chatId: `${id}-message`, role: "char", data: id }],
+    }));
+    await b.run({
+        name: "memory.json",
+        data: encode({
+            type: "risuAllChats",
+            ver: 2,
+            data: inputs,
+            structuredMemory: [
+                { chatId: "second", ...fileRecords("second") },
+                { chatId: "first", ...fileRecords("first") },
+            ],
+        }),
+    });
+    await b.sync.flushResources();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requests).toHaveLength(2);
+    for (const [index, input] of inputs.entries()) {
+        const imported = b.chatsOf(b.alpha)[index];
+        expect(imported.id).toMatch(UUID_V4);
+        expect(imported.id).not.toBe(input.id);
+        expect(imported.message).toEqual(input.message);
+        expect(requests[index]).toMatchObject({
+            chatId: imported.id,
+            route: "restore",
+            body: fileRecords(input.id),
+            saved: { data: { id: imported.id, message: input.message } },
+        });
+        expect(b.fake.chat(b.alpha, imported.id)!.data).not.toHaveProperty("structuredMemory");
+    }
+    expect(alerts.error).not.toHaveBeenCalled();
+    await b.run({
+        name: "old.json",
+        data: encode({ type: "risuChat", ver: 2, data: { ...inputs[0], id: "legacy", name: "Legacy" } }),
+    });
+    await b.sync.flushResources();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requests).toHaveLength(2);
+    expect(b.chatsOf(b.alpha)[0].name).toBe("Legacy");
+});
+
+it("keeps all imported chats and reports refused, unrestored and oversized records once without stopping later restores", async () => {
+    const b = await boot();
+    b.settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+    const inputs = ["Refused", "Not restored", "Oversized", "Healthy"].map((id) => ({ ...chatV2(id, null, id), id }));
+    const responses = [
+        () => Response.json({ reason: "fenced" }, { status: 409 }),
+        () => Response.json({ revision: "busy", restored: false }),
+        () => Response.json({ error: "Body too large" }, { status: 413 }),
+        () => Response.json({ revision: "restored", restored: true }),
+    ];
+    const requests = serveMemory(b, () => responses.shift()!());
+    await b.run({
+        name: "memory.json",
+        data: encode({
+            type: "risuAllChats",
+            ver: 2,
+            data: inputs,
+            structuredMemory: inputs.map(({ id }) => ({ chatId: id, ...fileRecords(id) })),
+        }),
+    });
+    await b.sync.flushResources();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requests).toHaveLength(4);
+    expect(requests.at(-1)!.body).toEqual(fileRecords("Healthy"));
+    const imported = b.chatsOf(b.alpha).slice(0, 4);
+    expect(imported.map((chat) => chat.name)).toEqual(inputs.map((chat) => chat.name));
+    for (const chat of imported) expect(b.fake.chat(b.alpha, chat.id)!.data.name).toBe(chat.name);
+    expect(alerts.error).toHaveBeenCalledExactlyOnceWith(
+        [
+            language.structuredMemory.memoryFile.restoreFailed("Refused, Not restored"),
+            language.structuredMemory.memoryFile.restoreTooLarge(
+                "Oversized",
+                MEMORY_RESTORE_BODY_BYTES / (1024 * 1024),
+            ),
+        ].join("\n\n"),
+    );
+    expect(alerts.normal).toHaveBeenCalledWith(language.successImport);
 });

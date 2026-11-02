@@ -190,3 +190,59 @@ it.each([
         expect(m.chat.findChat({ chaId: source.chaId, chatId: created.id! })?.message).toEqual(input.message);
     },
 );
+
+it.each(["acknowledged", "still queued"])(
+    "restores a generation-blocked import after its create is %s",
+    async (end) => {
+        m.views.settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+        flushResources.mockRejectedValueOnce(new m.sync.GenerationBlockedError([]));
+        authFetch.mockResolvedValueOnce(Response.json({ revision: "restored", restored: true }));
+        const scope = m.sync.beginMutationScope();
+        const created = m.chat.createChat(source.chaId, input, { index: 0 });
+        const records = {
+            pages: [],
+            events: [],
+            threads: [{ id: "t", title: "Return", who: [], state: "open" as const }],
+        };
+        m.inherit.restoreChatMemory(source.chaId, [{ chatId: created.id!, name: created.name, records }], scope);
+        await vi.advanceTimersByTimeAsync(end === "acknowledged" ? 249 : 29_999);
+        expect(authFetch).not.toHaveBeenCalled();
+        expect(alertError).not.toHaveBeenCalled();
+        if (end === "acknowledged") acknowledgeCreate();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(authFetch).toHaveBeenCalledExactlyOnceWith(
+            `/api/memory/structured/character%2F%EB%AC%B8/${encodeURIComponent(created.id!)}/restore`,
+            expect.objectContaining({ method: "POST", body: JSON.stringify(records) }),
+        );
+        expect(new Headers(authFetch.mock.calls[0][1]?.headers).get(RESOURCE_EPOCH_HEADER)).toBe("epoch");
+        expect(m.chat.findChat({ chaId: source.chaId, chatId: created.id! })?.message).toEqual(input.message);
+        expect(alertError).not.toHaveBeenCalled();
+    },
+);
+
+it("keeps imports whose create was discarded, refused or failed and reports them without restoring", async () => {
+    const scope = m.sync.beginMutationScope();
+    const created = ["Discarded", "Refused", "Offline"].map((name) =>
+        m.chat.createChat(source.chaId, { ...input, name }),
+    );
+    flushResources
+        .mockResolvedValueOnce({ discarded: [`chats/${source.chaId}/${created[0].id}`], refused: [] })
+        .mockResolvedValueOnce({ discarded: [], refused: [`chats/${source.chaId}/${created[1].id}`] })
+        .mockRejectedValueOnce(new Error("Offline"));
+    m.inherit.restoreChatMemory(
+        source.chaId,
+        created.map(({ id, name }) => ({
+            chatId: id!,
+            name,
+            records: { pages: [], events: [], threads: [{ id: "t", title: "Return", who: [], state: "open" }] },
+        })),
+        scope,
+    );
+    await settle();
+    expect(authFetch).not.toHaveBeenCalled();
+    expect(alertError).toHaveBeenCalledExactlyOnceWith(
+        m.language.structuredMemory.memoryFile.restoreFailed("Discarded, Refused, Offline"),
+    );
+    for (const { id } of created)
+        expect(m.chat.findChat({ chaId: source.chaId, chatId: id! })?.message).toEqual(input.message);
+});

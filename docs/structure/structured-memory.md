@@ -6,7 +6,7 @@
   the tab's client and Markdown package, and the HypaV3 compatibility projection.
 - Paths: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`, `server/src/routes/structuredMemory.ts`,
   `server/src/prompt/memory/structured/` (the writer's files: [the writer guide](structured-memory-writer.md); the read
-  path's: [the read path guide](structured-memory-read.md); `reconcile.ts` and `inherit.ts`:
+  path's: [the read path guide](structured-memory-read.md); `reconcile.ts`, `inherit.ts`, and `restore.ts`:
   [the lifecycle guide](structured-memory-lifecycle.md)), and `src/ts/process/structuredMemory.svelte.ts` (its receipt
   and panel parts: [the read path guide](structured-memory-read.md)).
 - The Memory settings page selects it, ahead of the flags. Production has its [writer](structured-memory-writer.md), and
@@ -18,7 +18,7 @@
   - The read path's lanes, card, manifest, and report, the receipts, and the memory panel in the tab →
     [structured memory read path](structured-memory-read.md).
   - Reconciling events with the chat's messages and the repairs, retraction and re-recording, what a checkpoint holds of
-    the records, and what a copied or branched chat inherits →
+    the records, what a copied or branched chat inherits, and what a chat file carries and an imported chat restores →
     [structured memory lifecycle](structured-memory-lifecycle.md).
   - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](memory.md).
   - `Chat.hypaV3Data` and its write rules → [memory](memory.md), `shared/memory.ts`.
@@ -33,6 +33,7 @@
   - Records: `MemoryEvent`, `MemoryPage`, `MemorySection`, `MemoryThread`, `MemoryRun`, `MemoryReceipt`.
   - Writer output: `MemoryEventDraft`, `MemoryAnalysisResult`, `MemoryPageCandidate`.
   - Evidence anchors: `MemorySource`, `MemoryAnchoredSource`, `MemoryUnanchoredSource`.
+  - Chat files: `StructuredMemoryFileRecords`, `StructuredMemoryFileEntry`, `MEMORY_RESTORE_BODY_BYTES`.
   - Per-send: `MemoryManifest`, `MemoryManifestItem`.
   - `projectHypaV3Data`: the `SerializableHypaV3Data` view of a chat's events.
   - `memoryGrade`: a record's grade from its axes. `memoryThreadEnded`: `done` and `cancelled`. `writerPaused`: the
@@ -47,8 +48,8 @@
 - `server/src/routes/structuredMemory.ts`: `registerStructuredMemoryRoutes`. Its path and answers are shared:
   `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`, `StructuredMemoryContentsAnswer`,
   `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`, `StructuredMemoryCoverageRound`,
-  `StructuredMemoryRunsRound`, `StructuredMemoryLogRun`, `StructuredMemoryEdit`, `StructuredMemoryEditAnswer`,
-  `StructuredMemoryInheritAnswer`.
+  `StructuredMemoryRunsRound`, `StructuredMemoryThreadsRound`, `StructuredMemoryLogRun`, `StructuredMemoryEdit`,
+  `StructuredMemoryEditAnswer`, `StructuredMemoryInheritAnswer`, `StructuredMemoryRestoreAnswer`.
 - `server/src/prompt/memory/structured/edits.ts`: what a person's edit does, pure: `parseMemoryEdit`, `applyPageEdit`,
   `applyThreadEdit`, `MemoryEditRefusal`. The repairs, `applyEventRepair` and `flagUnsupportedSections`:
   [the lifecycle guide](structured-memory-lifecycle.md#files).
@@ -81,8 +82,10 @@ All are `GET` under `STRUCTURED_MEMORY_PATH/:characterId/:chatId`, authenticated
   reads no chat, whose read parses every message.
 - `/runs?cursor=N&revision=R` answers one round of the chat's runs, newest first, without `input` and
   `settingsFingerprint`, and `total`. A round also stops at `MEMORY_RUNS_ROUND_ROWS`, however small the runs are.
-- Both charge and budget as `/package` does, before any record is read: a round's first record is served whatever its
-  size.
+- `/threads?cursor=N&revision=R` answers one round of the chat's threads, in contents order, whole records as stored,
+  which [a chat file](structured-memory-lifecycle.md#chat-files) reads beside `/package`.
+- All three charge and budget as `/package` does, before any record is read: a round's first record is served whatever
+  its size.
 - `revision` is compared whole as an opaque token, and a different one is 409 naming the current one. A round is one
   snapshot, and that comparison is what ties rounds into one.
 
@@ -114,6 +117,12 @@ What an edit does (`edits.ts`):
 - A thread takes any state, and leaving an ended one drops `closedBy`.
 - [A repair](structured-memory-lifecycle.md#reconciliation-and-repairs) acts on an event, and reads the chat in that
   same step unless it is a retract.
+
+### The restore route
+
+`POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/restore` gives an imported chat the records its file held, after the
+whole shape check of `parseRestoredRecords`, and only when the chat holds no row. Its steps are in
+[Chat files](structured-memory-lifecycle.md#chat-files).
 
 ### The Markdown package
 
@@ -220,9 +229,10 @@ group is refused, and a full one is checked and restored.
   exceptions are a restore's staged writer and install copy, a checkpoint load's `tx.restoreMemory`, in the load's
   transaction under its writer lease, and `reconcileMessageChanges`, which holds no fence
   ([Retraction and edits](structured-memory-lifecycle.md#retraction-and-edits)).
-- A route writes only a closed edit applied to the record as stored ([the edit route](#the-edit-route)), or on
+- A route writes a closed edit applied to the record as stored ([the edit route](#the-edit-route)), or on
   [the inherit route](structured-memory-lifecycle.md#copies-and-branches) the records the server builds from the source
-  chat, never a record the tab sent.
+  chat. [The restore route](#the-restore-route) is exactly the one route that writes records the tab sent: for a chat
+  with no rows, after `parseRestoredRecords`.
 - A snapshot a live write could have left is never refused, and a crafted one is a `ResourceValidationError` (a 400),
   never a constraint failure. A record's chat has a `memory_state` row, but a state row needs no records, and an event's
   `createdRevision` is within that row's revision, without being unique or the latest.
@@ -235,7 +245,8 @@ group is refused, and a full one is checked and restored.
   is what keeps a page's embedded sections within the read budget, and it is hard where the read budget is soft.
 - Table-of-contents statements never select `data`; `octet_length(data)` takes the size from the row's header. Column
   values come from the serialized record, so `toJSON` cannot make a column disagree with `data`.
-- The store checks what its columns and rows need, not a record's whole shape: the callers own that.
+- The store checks what its columns and rows need, not a record's whole shape: the callers own that, and a record from
+  outside passes `parseRestoredRecords`.
 - A package path never holds a raw id: a resource id may hold `/`, so the id part is `encodeURIComponent` with `*` also
   encoded. It alone makes a path unique; the title part is display.
 - `structuredMemory` and every value in the module's `const` lists are persisted: never rename one (repository invariant
@@ -260,7 +271,8 @@ group is refused, and a full one is checked and restored.
 ## Recipes
 
 - A new persisted record field: add it to the shape in `shared/structuredMemory.ts`, optional unless every stored record
-  will have it, and extend this guide's contract.
+  will have it, give it [a check](structured-memory-lifecycle.md#recipes) in `structured/restore.ts`, and extend this
+  guide's contract.
 - A new closed value: append to its `const` list; a validator reads the list, so it follows.
 - A new column: `CREATE TABLE IF NOT EXISTS` never extends a table, so it needs its own migration in `openChatSchema`,
   and `MEMORY_TABLE_COLUMNS` matches exactly, so the walk must also take a snapshot of the old layout. Read a new listed

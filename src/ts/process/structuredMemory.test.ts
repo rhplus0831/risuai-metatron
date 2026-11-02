@@ -13,6 +13,7 @@ import {
     buildStructuredMemoryPackage,
     buildStructuredMemoryLog,
     readStructuredMemoryCoverage,
+    readStructuredMemoryFile,
     joinMemoryCoverage,
     memoryRunView,
     memoryTimelineRows,
@@ -683,4 +684,92 @@ it("joins reconciled held messages as stale with no leaving coverage or request 
     expect(join().leaving).toEqual([0, 1]);
     expect(facts).toEqual(before);
     expect(authFetch).not.toHaveBeenCalled();
+});
+
+it("reads whole chat files across package and thread rounds, restarting both at a moved revision", async () => {
+    vi.useFakeTimers();
+    try {
+        const contents = (revision: string) =>
+            Response.json({
+                revision,
+                pages: [{ id: "page" }],
+                events: [{ id: "event" }],
+                threads: [{ id: "thread" }],
+                runs: [{ id: "private-run" }],
+            });
+        const threads = [
+            { id: "t1", title: "Return", who: ["page"], state: "open" },
+            { id: "t2", title: "Promise", who: [], state: "done", closedBy: "event" },
+        ];
+        const p = page("page");
+        const e = event("event", [anchored(0)]);
+        authFetch
+            .mockResolvedValueOnce(contents("old"))
+            .mockResolvedValueOnce(round("old", [page("abandoned")], [], null))
+            .mockResolvedValueOnce(
+                Response.json({ revision: "old", threads: [{ ...threads[0], id: "abandoned" }], next: 1 }),
+            )
+            .mockResolvedValueOnce(Response.json({ reason: "changed", revision: "new" }, { status: 409 }))
+            .mockResolvedValueOnce(contents("new"))
+            .mockResolvedValueOnce(round("new", [p], [], 1))
+            .mockResolvedValueOnce(round("new", [], [e], null))
+            .mockResolvedValueOnce(Response.json({ revision: "new", threads: [threads[0]], next: 1 }))
+            .mockResolvedValueOnce(Response.json({ revision: "new", threads: [threads[1]], next: null }));
+        expect(await readStructuredMemoryFile(ref)).toEqual({
+            outcome: "ok",
+            value: { rows: true, pages: [p], events: [e], threads },
+        });
+        expect(authFetch.mock.calls.map(([url]) => url)).toEqual([
+            base,
+            `${base}/package?cursor=0&revision=old`,
+            `${base}/threads?cursor=0&revision=old`,
+            `${base}/threads?cursor=1&revision=old`,
+            base,
+            `${base}/package?cursor=0&revision=new`,
+            `${base}/package?cursor=1&revision=new`,
+            `${base}/threads?cursor=0&revision=new`,
+            `${base}/threads?cursor=1&revision=new`,
+        ]);
+    } finally {
+        vi.useRealTimers();
+    }
+});
+
+it("refuses a changing or vanished chat file without partial records, but treats initial chatGone as empty", async () => {
+    vi.useFakeTimers();
+    try {
+        const contents = () =>
+            Response.json({ revision: "r", pages: [{ id: "p" }], events: [], threads: [], runs: [] });
+        const gone = () => Response.json({ reason: "chatGone" }, { status: 404 });
+        authFetch.mockResolvedValueOnce(gone());
+        expect(await readStructuredMemoryFile(ref)).toEqual({
+            outcome: "ok",
+            value: { rows: false, pages: [], events: [], threads: [] },
+        });
+        for (const disappearsAfterRestart of [false, true]) {
+            authFetch
+                .mockReset()
+                .mockResolvedValueOnce(contents())
+                .mockResolvedValueOnce(round("r", [page("partial")], [], null));
+            if (disappearsAfterRestart) {
+                authFetch
+                    .mockResolvedValueOnce(Response.json({ reason: "changed" }, { status: 409 }))
+                    .mockResolvedValueOnce(gone());
+            } else {
+                authFetch.mockResolvedValueOnce(gone());
+            }
+            expect(await readStructuredMemoryFile(ref)).toEqual({ outcome: "refused", reason: "chatGone" });
+        }
+        authFetch.mockReset();
+        for (let attempt = 0; attempt < 3; attempt++) {
+            authFetch
+                .mockResolvedValueOnce(contents())
+                .mockResolvedValueOnce(round("r", [page("partial")], [], null))
+                .mockResolvedValueOnce(Response.json({ reason: "changed" }, { status: 409 }));
+        }
+        expect(await readStructuredMemoryFile(ref)).toEqual({ outcome: "refused", reason: "changed" });
+        expect(authFetch).toHaveBeenCalledTimes(9);
+    } finally {
+        vi.useRealTimers();
+    }
 });

@@ -2539,6 +2539,7 @@ export const languageEnglish = {
                 changed: "This chat's memory changed in the meantime. Refresh to try again.",
                 epoch: "The data was restored on the server. Reload the page to continue.",
                 fenced: "A reply or the memory writer is working in this chat. Wait until it ends before editing.",
+                tooLarge: "These records are over the server's size limit.",
             },
             readFailed: (error: string) => `The memory could not be read: ${error}`,
         },
@@ -2704,6 +2705,16 @@ export const languageEnglish = {
         inherit: {
             failed: (chat: string) =>
                 `Memory records could not be copied to "${chat}". The chat itself is intact, but its earlier messages are not covered by memory.`,
+        },
+        memoryFile: {
+            exportedWithoutRecords:
+                "The chat was exported, but its memory records could not be read, so the file holds none of them.",
+            allExportedWithoutRecords: (count: number) =>
+                `The chats were exported, but the memory records of ${count} of them could not be read, so the file holds none for those chats.`,
+            restoreFailed: (chats: string) =>
+                `The memory records of these chats could not be confirmed as restored: ${chats}. The chats themselves are imported, but their earlier messages may not be covered by memory.`,
+            restoreTooLarge: (chats: string, limitMiB: number) =>
+                `The memory records of these chats are over the server's ${limitMiB} MiB limit, so they could not be confirmed as restored: ${chats}. The chats themselves are imported, but their earlier messages may not be covered by memory.`,
         },
         settings: {
             description:

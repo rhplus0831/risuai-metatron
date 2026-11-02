@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import {
     memoryAnchorState,
+    reconcileMemoryEvents,
+    writerPaused,
     MEMORY_RUNS_ROUND_ROWS,
     STRUCTURED_MEMORY_LIMITS,
 } from "../../../shared/structuredMemory.ts";
@@ -1156,4 +1158,173 @@ it("fences every event repair behind an admitted job without changing memory", a
             )
         ).data.status,
     ).toBe("retracted");
+});
+
+it("restores chat file records on another store with active whole events, an empty Log and no pause", async () => {
+    const source = await server();
+    const destination = await server();
+    bindChat(source);
+    const original = source.store.readChatSource(characterId, chatId).data as Chat;
+    const sources = original.message.map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) }));
+    const p = page("place", "The gate opens. Nothing in this page may be lost.");
+    p.sections[0].sources = sources;
+    p.sections[0].provenance = ["arrival"];
+    const e = { ...event("arrival"), sources, rerecord: true, keptState: "source-kept-state" };
+    const threads: MemoryThread[] = [
+        { id: "return", title: "Return to the gate", who: [p.id], state: "open", openedBy: e.id },
+    ];
+    source.write({ pages: [p] });
+    source.write({ pages: [p], events: [e], threads, runs: Array.from({ length: 5 }, (_, i) => run(`private-${i}`)) });
+    const sourceBefore = memorySnapshot(source, chatId);
+    const packed = await answer(await source.request(`${base}/package`));
+    const threaded = await answer(
+        await source.request(`${base}/threads?revision=${encodeURIComponent(packed.revision)}&cursor=0`),
+    );
+    const file = JSON.parse(
+        JSON.stringify({
+            type: "risuChat",
+            ver: 2,
+            data: original,
+            structuredMemory: [{ chatId, pages: packed.pages, events: packed.events, threads: threaded.threads }],
+        }),
+    );
+    // Script the import's new chat id and preserve its message ids on a separate destination store.
+    const importedId = "imported-on-another-server";
+    await answer(
+        await destination.json("/api/resources/batch", {
+            chats: [
+                {
+                    characterId,
+                    chatId: importedId,
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { ...file.data, id: importedId } }],
+                },
+            ],
+        }),
+    );
+    const importedBase = `/api/memory/structured/${encodeURIComponent(characterId)}/${importedId}`;
+    const restored = await answer(await destination.json(`${importedBase}/restore`, file.structuredMemory[0]));
+    expect(restored.restored).toBe(true);
+    const restoredPackage = await answer(await destination.request(`${importedBase}/package`));
+    const expectedEvent = { ...event("arrival"), sources, keptState: "source-kept-state", createdRevision: 1 };
+    expect(restoredPackage).toEqual({ revision: restored.revision, pages: [p], events: [expectedEvent], next: null });
+    expect((await answer(await destination.request(`${importedBase}/threads`))).threads).toEqual(threads);
+    const imported = destination.store.readChatSource(characterId, importedId).data as Chat;
+    expect(imported.message).toEqual(original.message);
+    expect(reconcileMemoryEvents(restoredPackage.events, imported.message, messageSourceHash)).toEqual([expectedEvent]);
+    const log = await answer(await destination.request(`${importedBase}/runs`));
+    expect(log).toEqual({ revision: restored.revision, runs: [], total: 0, next: null });
+    expect(writerPaused(log.runs)).toBe(false);
+    expect(memorySnapshot(source, chatId)).toEqual(sourceBefore);
+});
+
+it("restores only empty chats, never writes supplied runs, and refuses malformed records atomically", async () => {
+    const s = await server();
+    const records = {
+        pages: [page("p")],
+        events: [{ ...event("e"), createdRevision: 99, rerecord: true, keptState: "kept" }],
+        threads: [{ id: "t", title: "Return", who: [], state: "open" as const }],
+    };
+    const empty = memorySnapshot(s, chatId);
+    const malformed = {
+        ...records,
+        pages: [{ ...records.pages[0], sections: [{ ...records.pages[0].sections[0], provenance: [null] }] }],
+    };
+    await answer(await s.json(`${base}/restore`, malformed), 400);
+    expect(memorySnapshot(s, chatId)).toEqual(empty);
+    const accepted = await answer(await s.json(`${base}/restore`, { ...records, runs: [run("private")] }));
+    expect(accepted.restored).toBe(true);
+    expect(memorySnapshot(s, chatId).records).toEqual({
+        ...records,
+        events: [{ ...event("e"), createdRevision: 1, keptState: "kept" }],
+        runs: [],
+    });
+    for (const existing of [
+        { pages: [page("existing")] },
+        { events: [event("existing")] },
+        { threads: [records.threads[0]] },
+        { runs: [run("existing")] },
+    ]) {
+        const occupied = await server();
+        occupied.write(existing);
+        const before = memorySnapshot(occupied, chatId);
+        expect(await answer(await occupied.json(`${base}/restore`, records))).toEqual({
+            revision: before.contents.revision,
+            restored: false,
+        });
+        expect(memorySnapshot(occupied, chatId)).toEqual(before);
+    }
+});
+
+it("caps restore bodies using the app's memory restore limit without writing a partial record", async () => {
+    const s = await server({ routeLimits: { memoryRestoreBodyBytes: 512 } });
+    const before = memorySnapshot(s, chatId);
+    await answer(
+        await s.json(`${base}/restore`, { pages: [page("large", "x".repeat(1024))], events: [], threads: [] }),
+        413,
+    );
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    expect(
+        (
+            await answer(
+                await s.json(`${base}/restore`, {
+                    pages: [],
+                    events: [],
+                    threads: [{ id: "small", title: "Return", who: [], state: "open" }],
+                }),
+            )
+        ).restored,
+    ).toBe(true);
+});
+
+it("fences restore behind an admitted job and accepts the same records after it ends", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const entered = deferred();
+    const release = deferred();
+    const s = await server({
+        generationRunner: async (job) => {
+            entered.resolve();
+            await release.promise;
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        },
+    });
+    const context = bindChat(s);
+    const records = { pages: [page("p")], events: [], threads: [] };
+    const before = memorySnapshot(s, chatId);
+    await answer(
+        await s.json("/api/generations", {
+            kind: "command",
+            clientId: "tab",
+            context,
+            command: { type: "button", data: "" },
+        }),
+    );
+    await entered.promise;
+    try {
+        expect(await answer(await s.json(`${base}/restore`, records), 409)).toMatchObject({ reason: "fenced" });
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+    } finally {
+        release.resolve();
+        await s.context.generationJobs.drain();
+    }
+    expect((await answer(await s.json(`${base}/restore`, records))).restored).toBe(true);
+});
+
+it("reads whole threads in revision-bound byte rounds and refuses a stale continuation", async () => {
+    const threads: MemoryThread[] = [
+        { id: "a", title: "문😀".repeat(80), who: [], state: "open" },
+        { id: "b", title: "문😀".repeat(80), who: [], state: "paused" },
+        { id: "c", title: "x".repeat(5000), who: [], state: "done", openedBy: "event" },
+    ];
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: bytes(threads[0]) + bytes(threads[1]) } });
+    const revision = s.write({ threads });
+    expect(await answer(await s.request(`${base}/threads`))).toEqual({
+        revision,
+        threads: threads.slice(0, 2),
+        next: 2,
+    });
+    const continuation = `${base}/threads?cursor=2&revision=${encodeURIComponent(revision)}`;
+    expect(await answer(await s.request(continuation))).toEqual({ revision, threads: [threads[2]], next: null });
+    s.write({ threads: [{ ...threads[2], state: "cancelled" }] });
+    await answer(await s.request(continuation), 409);
 });

@@ -2,6 +2,7 @@ import { selectCharacter } from "./storage/selection.svelte";
 import { settings } from "./storage/settingsViews.svelte";
 import { writable } from "svelte/store";
 import { saveImage, type character, type Chat, defaultSdDataFunc } from "./storage/database.svelte";
+import type { StructuredMemoryFileEntry, StructuredMemoryFileRecords } from "../../shared/structuredMemory.ts";
 import {
     alertAddCharacter,
     alertClear,
@@ -48,6 +49,9 @@ import { importedChatBinding } from "./storage/chatBinding.svelte";
 import { importedChatTranslation } from "./translator/chatTranslation.svelte";
 import { importedChatTogglePreset } from "./toggles/chatToggles.svelte";
 import { readChatsDetached } from "./storage/chatEdits";
+import { beginMutationScope } from "./storage/resourceSync.svelte";
+import { type ChatMemoryRestore, restoreChatMemory } from "./process/chatMemoryInherit.svelte";
+import { chatFileMemory, exportChatMemory, readStructuredMemoryFile } from "./process/structuredMemory.svelte";
 import { importCharacter } from "./characterCards";
 import { savePickedFiles } from "./storage/assetQueue";
 import { PngChunk } from "./pngChunk";
@@ -265,6 +269,12 @@ export async function exportChat(chatId: string) {
         if (chaId !== undefined) {
             await ensureChatLoaded({ chaId, chatId });
         }
+        // Read before the copy below: a chat newer than its records leaves a turn uncovered, while records
+        // newer than the chat would put pages ahead of their messages.
+        const memory =
+            chaId !== undefined && (mode === "0" || mode === "2")
+                ? await readStructuredMemoryFile({ chaId, chatId })
+                : undefined;
         // Found again after the load: the chat as it is now.
         const char = chaId === undefined ? undefined : characterRecord(chaId);
         const found = char ? findChat({ chaId: char.chaId, chatId }) : undefined;
@@ -273,6 +283,7 @@ export async function exportChat(chatId: string) {
         }
         // A copy: the chat can change while the export translates.
         const chat = JSON.parse(JSON.stringify(found)) as Chat;
+        const fileMemory = memory && exportChatMemory(chat, memory, settings.ui.memoryAlgorithmType);
         // The exported chat's persona name and render context, read now: it need not be the selected
         // chat, and the selection can change during the awaits below.
         const ref = { chaId: char.chaId, chatId };
@@ -307,6 +318,7 @@ export async function exportChat(chatId: string) {
                     ver: 2,
                     data: chat,
                     folders: folders,
+                    ...(fileMemory?.entry ? { structuredMemory: [fileMemory.entry] } : {}),
                 }),
                 "utf-8",
             );
@@ -454,7 +466,12 @@ export async function exportChat(chatId: string) {
                 Buffer.from(stringl, "utf-8"),
             );
         }
-        alertNormal(language.successExport);
+        // Only JSON can hold records, and one dialog at a time: both of these queue.
+        if (mode === "0" && fileMemory?.failed) {
+            alertError(language.structuredMemory.memoryFile.exportedWithoutRecords);
+        } else {
+            alertNormal(language.successExport);
+        }
     } catch (error) {
         alertError(error);
     }
@@ -481,16 +498,26 @@ export async function importChat() {
          * needed). Every format passes here: each chat keeps only the bound ids that exist here and
          * waits for the user's confirmation before its first send (`importedChatBinding`), and keeps its
          * translator and toggle presets only when they exist here (`importedChatTranslation`,
-         * `importedChatTogglePreset`).
+         * `importedChatTogglePreset`). `records` holds what the file held of each chat's memory, by the
+         * chat's place in `chats`; the restores run behind the action, also when a later chat throws.
          */
-        const addChats = (chats: Chat[]) => {
-            chats.forEach((chat, index) => {
-                delete chat.pinned;
-                importedChatBinding(chat);
-                importedChatTranslation(chat);
-                importedChatTogglePreset(chat);
-                createChat(chaId, chat, { index });
-            });
+        const addChats = (chats: Chat[], records: (StructuredMemoryFileRecords | undefined)[] = []) => {
+            const scope = beginMutationScope();
+            const restores: ChatMemoryRestore[] = [];
+            try {
+                chats.forEach((chat, index) => {
+                    delete chat.pinned;
+                    importedChatBinding(chat);
+                    importedChatTranslation(chat);
+                    importedChatTogglePreset(chat);
+                    const { id, name } = createChat(chaId, chat, { index });
+                    if (records[index]) {
+                        restores.push({ chatId: id, name, records: records[index] });
+                    }
+                });
+            } finally {
+                restoreChatMemory(chaId, restores, scope);
+            }
         };
 
         if (dat.name.endsWith("jsonl")) {
@@ -550,13 +577,15 @@ export async function importChat() {
                     }
                 });
                 updateCharacter(chaId, { chatFolders: [...(target.chatFolders ?? []), ...folders] });
+                const fileMemory = chatFileMemory(json.structuredMemory);
+                const records = chats.map((chat) => fileMemory.get(chat.id));
                 chats.forEach((chat) => {
                     if (chat.folderId && folderIdMap[chat.folderId]) {
                         chat.folderId = folderIdMap[chat.folderId];
                     }
                     chat.id = v4();
                 });
-                addChats(chats);
+                addChats(chats, records);
                 alertNormal(language.successImport);
                 return;
             }
@@ -628,17 +657,33 @@ export async function exportAllChats() {
         const name = char.name;
         const allFolders = JSON.parse(JSON.stringify(char.chatFolders ?? []));
         const allChats = (await readChatsDetached([chaId])).get(chaId) ?? [];
+        // One chat at a time: one that cannot be read goes out with no records, and the others go on.
+        const structuredMemory: StructuredMemoryFileEntry[] = [];
+        let withoutRecords = 0;
+        for (const chat of allChats) {
+            const memory = await readStructuredMemoryFile({ chaId, chatId: chat.id });
+            const { entry, failed } = exportChatMemory(chat, memory, settings.ui.memoryAlgorithmType);
+            if (entry) {
+                structuredMemory.push(entry);
+            }
+            withoutRecords += failed ? 1 : 0;
+        }
         const stringl = Buffer.from(
             JSON.stringify({
                 type: "risuAllChats",
                 ver: 2,
                 data: allChats,
                 folders: allFolders,
+                ...(structuredMemory.length > 0 ? { structuredMemory } : {}),
             }),
             "utf-8",
         );
         await downloadFile(`${name}_all_chats_${date}`.replace(/[<>:"/\\|?*.,]/g, "") + ".json", stringl);
-        alertNormal(language.successExport);
+        if (withoutRecords > 0) {
+            alertError(language.structuredMemory.memoryFile.allExportedWithoutRecords(withoutRecords));
+        } else {
+            alertNormal(language.successExport);
+        }
     } catch (error) {
         alertError(error);
     }

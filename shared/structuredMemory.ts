@@ -1,6 +1,7 @@
 import type { Message } from "./database.ts";
 import { eligibleHistory } from "./eligibleHistory.ts";
 import type { SerializableHypaV3Data, SerializableSummary } from "./memory.ts";
+import { MAX_READ_RESPONSE_BYTES } from "./resources.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
 /**
@@ -636,6 +637,35 @@ export type StructuredMemoryEditAnswer = { revision: string } & (
  * or when the source chat holds no page, event, or thread.
  */
 export type StructuredMemoryInheritAnswer = { revision: string; inherited: boolean };
+
+/**
+ * One round of the threads route, which a chat file reads beside the package rounds. `next` is the position
+ * to continue from in the list of the chat's threads, or null when the list is done.
+ */
+export type StructuredMemoryThreadsRound = {
+    revision: string;
+    threads: MemoryThread[];
+    next: number | null;
+};
+
+/** What a chat file holds of a chat's memory. Never a run: a run holds a whole prompt, and a file can be passed on. */
+export type StructuredMemoryFileRecords = { pages: MemoryPage[]; events: MemoryEvent[]; threads: MemoryThread[] };
+
+/**
+ * One chat's entry in the optional `structuredMemory` list of an exported `risuChat` or `risuAllChats` file.
+ * The list sits beside the file's `data`, not in a chat, so a build that does not know it ignores it and no
+ * chat stores it. `chatId` is the chat's id in the file. A chat with no page, event, or thread has no entry.
+ */
+export type StructuredMemoryFileEntry = StructuredMemoryFileRecords & { chatId: string };
+
+/** The default body cap of the restore route: a stored record alone may reach one read round. */
+export const MEMORY_RESTORE_BODY_BYTES = 2 * MAX_READ_RESPONSE_BYTES;
+
+/**
+ * The restore route's answer: the chat's memory revision, and whether this call wrote the records. It did
+ * not when the chat already holds a row of any kind, or when the request held no record.
+ */
+export type StructuredMemoryRestoreAnswer = { revision: string; restored: boolean };
 
 /** The most runs one round of the runs route holds, however small they are. */
 export const MEMORY_RUNS_ROUND_ROWS = 50;

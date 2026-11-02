@@ -261,6 +261,12 @@ describe("handlers that await keep their target", () => {
 
     it("exportChat exports the chat it was opened for, though the chats are reordered and another character selected meanwhile", async () => {
         const { characters, characterStore, chat, downloads } = await boot();
+        // The fake server has no memory routes: this chat holds no records.
+        const { fetch } = server.current;
+        server.current.fetch = async (path: string, init?: RequestInit) =>
+            path.startsWith("/api/memory/structured/")
+                ? Response.json({ revision: "memory", pages: [], events: [], threads: [], runs: [] })
+                : fetch(path, init);
         characterStore.selectCharacter("c");
         chat.selectChat("c", "k");
         const dialog = gate<string>();

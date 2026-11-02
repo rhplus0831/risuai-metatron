@@ -199,8 +199,9 @@ coupling links.
   `src/lib/Others/StructuredMemory/`, `src/lib/ChatScreens/MemoryReceiptLine.svelte`, and in
   `src/ts/process/structuredMemory.svelte.ts` the receipt and panel functions (`memoryReceiptView`,
   `joinMemoryCoverage`, `memoryItemsUsed`).
-- **structured-memory-lifecycle**: `server/src/prompt/memory/structured/{reconcile,inherit}.ts`,
-  `src/ts/process/chatMemoryInherit.svelte.ts`, and the repair, checkpoint, and inherit parts of the files above.
+- **structured-memory-lifecycle**: `server/src/prompt/memory/structured/{reconcile,inherit,restore}.ts`,
+  `src/ts/process/chatMemoryInherit.svelte.ts`, and the repair, checkpoint, inherit, and chat file parts of the files
+  above.
 - **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`,
   `shared/{llm,llmSecrets}.ts`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`,
   `server/src/prompt/tokens.ts`, `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`,

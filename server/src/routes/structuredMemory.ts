@@ -21,7 +21,9 @@ import {
     type StructuredMemoryRecordAnswer,
     type StructuredMemoryRecordKind,
     type StructuredMemoryRecordOf,
+    type StructuredMemoryRestoreAnswer,
     type StructuredMemoryRunsRound,
+    type StructuredMemoryThreadsRound,
 } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { messageSourceHash } from "../data/memoryStore.ts";
@@ -37,6 +39,7 @@ import {
 } from "../prompt/memory/structured/edits.ts";
 import { inheritedRecords } from "../prompt/memory/structured/inherit.ts";
 import { withUnsupportedSections } from "../prompt/memory/structured/reconcile.ts";
+import { parseRestoredRecords } from "../prompt/memory/structured/restore.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { limitedBody } from "./limitedBody.ts";
@@ -151,6 +154,10 @@ type RoundRead = {
  *   runs, newest first, answered `StructuredMemoryRunsRound`, each without `input` and
  *   `settingsFingerprint`. A round also stops at `MEMORY_RUNS_ROUND_ROWS` runs. Bytes, `cursor`,
  *   `revision`, and the refusals work as in the package round.
+ * - `GET /api/memory/structured/:characterId/:chatId/threads?cursor=N&revision=R`: one round of the chat's
+ *   threads, in contents order, whole as stored, answered `StructuredMemoryThreadsRound`: what a chat file
+ *   takes beside the package rounds. Bytes, `cursor`, `revision`, and the refusals work as in the package
+ *   round.
  * - `POST /api/memory/structured/:characterId/:chatId/edits` `{ revision, edit }`: one person's edit
  *   (`StructuredMemoryEdit`, `structured/edits.ts`), answered `StructuredMemoryEditAnswer`. An edit that
  *   changes nothing still names a revision, so a stale one is refused like any other. An event's repair
@@ -167,14 +174,22 @@ type RoundRead = {
  *   `inherited: false` and write nothing. 400 for a `sourceChatId` that is no id or is the chat itself,
  *   404 `chatGone` for either chat, and 409 `{ error, reason: "fenced" }` while `fenced` holds for the new
  *   chat. The source chat is not fenced. The body is read after authentication and capped at 64 KiB.
+ * - `POST /api/memory/structured/:characterId/:chatId/restore` `{ pages, events, threads }`: gives an
+ *   imported chat the records its file held, answered `StructuredMemoryRestoreAnswer`. It is the one route
+ *   that writes records the tab sent, so it takes only their whole shape (`structured/restore.ts`) and only
+ *   a chat with no rows: a chat that holds a row of any kind, runs included, and a request with no record
+ *   answer `restored: false` and write nothing. Sources are not compared with the chat's messages, and a
+ *   run never gets through. 400 for a body of another shape or a record the store refuses, 404 `chatGone`,
+ *   and 409 `{ error, reason: "fenced" }` while `fenced` holds. The body is read after authentication and
+ *   capped at `restoreBodyBytes`, 413 past it.
  *
  * All are authenticated, rate-limited, and epoch-checked (412 `EpochMismatch`); 400 for an id that is
  * not a resource id, 503 (`Retry-After`) when the store is closed. The app makes every answer
  * `no-store` and refuses them during shutdown. The epoch check and the store reads run in one
  * synchronous step, so a round is one snapshot; separate rounds are tied together only by `revision`.
- * An edit's or an inherit's checks and its write share one such step too, after its body is read, so
- * nothing can take the chat between the fence and the write, and no writer of the source chat comes
- * between its reads.
+ * An edit's, an inherit's, or a restore's checks and its write share one such step too, after its body
+ * is read, so nothing can take the chat between the fence and the write, and no writer of the source
+ * chat comes between its reads.
  */
 export function registerStructuredMemoryRoutes(
     app: Hono<AppEnv>,
@@ -183,12 +198,15 @@ export function registerStructuredMemoryRoutes(
         auth: AuthStore;
         limiter: MiddlewareHandler<AppEnv>;
         packageRoundBytes: number;
-        /** Whether something that can write this chat's memory holds the chat, which refuses an edit or an inherit. */
+        /** The cap of a restore's body, which holds at once what rounds read one at a time. */
+        restoreBodyBytes: number;
+        /** Whether something that can write this chat's memory holds the chat, which refuses an edit, an inherit, or a restore. */
         fenced: (characterId: string, chatId: string) => boolean;
     },
 ) {
-    const { store, auth, limiter, packageRoundBytes, fenced } = arg;
+    const { store, auth, limiter, packageRoundBytes, restoreBodyBytes, fenced } = arg;
     const limitBody = limitedBody(MAX_EDIT_BODY_BYTES);
+    const limitRestoreBody = limitedBody(restoreBodyBytes);
     const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -362,6 +380,17 @@ export function registerStructuredMemoryRoutes(
         }),
     );
 
+    app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/threads`, limiter, authenticated, (c) =>
+        answerRound(c, ({ contents, cursor, read }) => {
+            const { rows, next } = roundOf(contents.threads, cursor, packageRoundBytes);
+            return {
+                revision: contents.revision,
+                threads: rows.map(({ id }) => read("threads", id)),
+                next,
+            } satisfies StructuredMemoryThreadsRound;
+        }),
+    );
+
     app.post(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/edits`, limiter, authenticated, limitBody, async (c) => {
         const characterId = c.req.param("characterId");
         const chatId = c.req.param("chatId");
@@ -520,4 +549,56 @@ export function registerStructuredMemoryRoutes(
             return storeErrorResponse(c, error);
         }
     });
+
+    app.post(
+        `${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/restore`,
+        limiter,
+        authenticated,
+        limitRestoreBody,
+        async (c) => {
+            const characterId = c.req.param("characterId");
+            const chatId = c.req.param("chatId");
+            if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+                return c.json({ error: "characterId and chatId must be ids" }, 400);
+            }
+            const read = await readJsonBody(c);
+            if (!read.ok) {
+                return read.response;
+            }
+            const records = parseRestoredRecords(read.body);
+            if (!records) {
+                return c.json({ error: "The body must hold whole pages, events, and threads" }, 400);
+            }
+            const epoch = c.req.header(RESOURCE_EPOCH_HEADER);
+            if (epoch !== store.epoch()) {
+                return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+            }
+            if (fenced(characterId, chatId)) {
+                return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
+            }
+            try {
+                const contents = store.memory.readContents(characterId, chatId);
+                if (!contents) {
+                    return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+                }
+                const { revision } = contents;
+                const { pages, events, threads } = records;
+                if (
+                    [contents.pages, contents.events, contents.threads, contents.runs].some(
+                        ({ length }) => length > 0,
+                    ) ||
+                    [pages, events, threads].every(({ length }) => length === 0)
+                ) {
+                    return compressedJson(c, { revision, restored: false } satisfies StructuredMemoryRestoreAnswer);
+                }
+                const options = { epoch, baseRevision: revision };
+                return compressedJson(c, {
+                    revision: store.memory.write(characterId, chatId, options, { pages, events, threads }),
+                    restored: true,
+                } satisfies StructuredMemoryRestoreAnswer);
+            } catch (error) {
+                return storeErrorResponse(c, error);
+            }
+        },
+    );
 }
