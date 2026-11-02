@@ -113,11 +113,11 @@ it("edits only consumed Structured Memory settings and shares the selected prese
     settings.ui.memoryAlgorithmType = "structuredMemory";
     open();
     const preset = () => settings.hypaV3Presets.items.find((p) => p.id === settings.hypaV3Presets.selectedId)!.settings;
-    const checkbox = () => target.querySelector<HTMLInputElement>("input[type=checkbox]")!;
     const kindBox = (label: string) =>
         [...target.querySelectorAll<HTMLInputElement>("input[type=checkbox]")].find((input) =>
             input.closest("label")?.textContent?.includes(label),
         )!;
+    const checkbox = () => kindBox(text.volatileBeforeLastUser);
     const assertControls = (conditional: string | null) => {
         const allowed = [
             selectWith("structuredMemory"),
@@ -133,6 +133,8 @@ it("edits only consumed Structured Memory settings and shares the selected prese
             control(text.evidenceTarget),
             control(text.threadsTarget),
             control(text.instructions),
+            kindBox(text.fineTuning),
+            ...(preset().structured.fineTuning ? [control(text.analysisPrompt), control(text.patchPrompt)] : []),
             checkbox(),
             control(text.highlightMode),
             ...Object.values(text.highlightKinds).map(kindBox),
@@ -203,6 +205,18 @@ it("edits only consumed Structured Memory settings and shares the selected prese
         assertControls(null);
         expect(preset().structured.cadence).toBe(cadence);
     }
+    preset().structured.fineTuning = true;
+    flushSync();
+    assertControls(null);
+    change(control(text.analysisPrompt) as HTMLTextAreaElement, "<|im_start|>user<|im_sep|>Mine<|im_end|>");
+    change(control(text.patchPrompt) as HTMLTextAreaElement, "<|im_start|>user<|im_sep|>Theirs<|im_end|>");
+    expect(preset().structured).toMatchObject({
+        analysisPrompt: "<|im_start|>user<|im_sep|>Mine<|im_end|>",
+        patchPrompt: "<|im_start|>user<|im_sep|>Theirs<|im_end|>",
+    });
+    preset().structured.fineTuning = false;
+    flushSync();
+    assertControls(null);
     mode(hypa.budgetModeTokens);
     expect(preset().memoryBudgetTokens).toBe(3456);
     change(selectWith("structuredMemory"), "hypaV3");

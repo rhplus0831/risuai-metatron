@@ -49,6 +49,7 @@
     } from "../../../../shared/structuredMemory.ts";
     import SettingRenderer from "../SettingRenderer.svelte";
     import SettingsSections from "../SettingsSections.svelte";
+    import StructuredMemoryPrompts from "./StructuredMemoryPrompts.svelte";
     import { memorySettingsSections, memorySupaMemoryItems } from "src/ts/setting/memorySettingsData";
 
     const currentCharacter = $derived(selectedCharacter());
@@ -643,7 +644,7 @@
             (next, count) => (next.laneTargets.threads = count),
         )}
         <span class="text-textcolor">{text.instructions}</span>
-        <div class="mb-4">
+        <div class="mb-2">
             <TextAreaInput
                 size="sm"
                 placeholder={text.instructionsPlaceholder}
@@ -654,6 +655,14 @@
                 }
             />
         </div>
+        <span class="mb-4 text-xs text-textcolor2" data-structured-memory-instructions-help
+            >{text.instructionsHelp}</span
+        >
+        <StructuredMemoryPrompts
+            {structured}
+            presetId={currentHypaV3?.id}
+            setStructured={(change) => setStructured(preset, change)}
+        />
         <div class="mb-2 flex items-center">
             <Check
                 name={text.volatileBeforeLastUser}

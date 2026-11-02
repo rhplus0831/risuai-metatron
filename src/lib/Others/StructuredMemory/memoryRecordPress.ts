@@ -1,7 +1,11 @@
 import { language } from "src/lang";
 import { alertConfirm, alertToast } from "src/ts/alert";
 import { runServerJob } from "src/ts/process/serverCommands";
-import { readStructuredMemoryCost } from "src/ts/process/structuredMemory.svelte";
+import {
+    memoryTestResultView,
+    type MemoryTestResultView,
+    readStructuredMemoryCost,
+} from "src/ts/process/structuredMemory.svelte";
 import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
 import type { ChatRef } from "src/ts/storage/chatStore.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -59,6 +63,37 @@ export async function pressMemoryRecord(owner: AnyClientCharacter, chatRef: Chat
     } else if (terminal !== null && terminal !== "lost" && terminal.type === "done") {
         alertToast(text.requested);
     }
+}
+
+/**
+ * A press of the prompts' test run: the `memoryTest` command, whose answer is its job's `done.result`,
+ * and nothing is saved but the settings the transport flushes first. Answers what the run showed, or
+ * null: this tab's busy job was followed instead (the busy toast), the job was refused or ended in an
+ * error (the transport's own alerts), or its terminal carried no result of the test's shape, which a
+ * retained terminal, stripped of its payload, does (its own toast).
+ */
+export async function pressMemoryTest(
+    owner: AnyClientCharacter,
+    chatRef: ChatRef,
+): Promise<MemoryTestResultView | null> {
+    const { outcome, terminal } = await runServerJob(owner, chatRef, {
+        kind: "command",
+        command: { type: "memoryTest" },
+        label: "memoryTest",
+        context: { mode: "manual" },
+    });
+    if (outcome === "followed") {
+        alertToast(language.structuredMemory.receipt.busy);
+        return null;
+    }
+    if (terminal === null || terminal === "lost" || terminal.type !== "done") {
+        return null;
+    }
+    const view = memoryTestResultView(terminal.result);
+    if (view === null) {
+        alertToast(language.structuredMemory.settings.testLost);
+    }
+    return view;
 }
 
 /** Runs a `memoryRebuild` command and says how it went. The server starts or refuses it: this only asks. */

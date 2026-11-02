@@ -23,6 +23,7 @@ import { createResourceStore } from "../data/resourceStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { messageSourceHash } from "../data/memoryStore.ts";
 import type { Message } from "../../../shared/database.ts";
+import { readRecordSet, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
 import { memoryRecords, writeMemory } from "./memoryFixtures.ts";
 import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
@@ -3339,6 +3340,213 @@ describe("structured memory job hand-offs", () => {
                 seperateModelsForAxModels: enabled,
                 auxSlots: enabled ? { memory: { profileId: "receipt-plugin" } } : {},
             });
+
+        const testStore = () =>
+            createResourceStore({
+                file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+            });
+        const testJob = (chaId: string, hooks?: Record<string, unknown>) =>
+            job("command", chaId, { mode: "manual" }, { command: { type: "memoryTest" }, ...(hooks ? { hooks } : {}) });
+
+        it("tests the newest window through an unanswered reply, returns validation and slot warnings, and saves nothing", async () => {
+            await patchHypaV3({
+                structured: {
+                    cadence: "everyTurn",
+                    fineTuning: true,
+                    analysisPrompt:
+                        "<|im_start|>user<|im_sep|>{{slot::messages}} {{slot::scene}} {{slot::typo}}<|im_end|>",
+                    patchPrompt: "<|im_start|>user<|im_sep|>{{slot::cast}} {{slot::previous}}<|im_end|>",
+                },
+            });
+            const chaId = await seedCharacter({ messages });
+            const store = testStore();
+            try {
+                const records = memoryRecords(["last"], "Cara promises to return.");
+                const window = messages.slice(2).map((message, index) => ({
+                    messageId: message.chatId,
+                    hash: messageSourceHash(message as Message),
+                    index: index + 2,
+                }));
+                records.runs[0].window = window;
+                records.events[0].sources = window;
+                records.pages[0].sections[0].locked = true;
+                writeMemory(store, chaId, "k", records);
+                const beforeChat = await readChat(chaId);
+                const beforeMemory = readRecordSet(store.memory, chaId, "k");
+                const beforeRevision = store.memory.readContents(chaId, "k")!.revision;
+                const draft = {
+                    ...JSON.parse(analysis(0)),
+                    keyLines: [{ speaker: "C", text: "Invented quotation" }],
+                    openThreads: { add: [{ title: "A new promise", who: [] }], close: [], transitions: [] },
+                    pageCandidates: [{ targetId: "last", reason: "New fact", confidence: 1 }],
+                    scene: { place: "Harbor", time: "Dawn", state: "Waiting", participants: [] },
+                };
+                const patch = { pageId: "last", heading: "Gate", op: "upsert", body: "Overwrite locked facts" };
+                state.summaries = [JSON.stringify(draft), JSON.stringify({ patches: [patch] })];
+                const result = await testJob(chaId);
+                expect(result.status).toBe(200);
+                expect(result.terminal).toMatchObject({
+                    type: "done",
+                    result: {
+                        kind: "memoryTest",
+                        customPrompt: true,
+                        outcome: "recorded",
+                        messageIds: ["u2", "a2"],
+                        patchCalled: true,
+                        analysis: { event: { summary: "Cara promises to return." } },
+                        patches: [patch],
+                        unverified: [expect.objectContaining({ text: "Invented quotation" })],
+                        warnings: [expect.objectContaining({ kind: "lockedSection" })],
+                        slots: {
+                            analysis: {
+                                unquoted: ["format", "rules", "language", "cast", "threads", "previous"],
+                                unknown: ["typo"],
+                            },
+                            patch: { unquoted: ["format", "rules", "language"], unknown: [] },
+                        },
+                    },
+                });
+                expect(summaries()).toHaveLength(2);
+                expect(summaries()[0].body.messages[0].content).toContain("Second reply");
+                expect(await readChat(chaId)).toEqual(beforeChat);
+                expect(readRecordSet(store.memory, chaId, "k")).toEqual(beforeMemory);
+                expect(store.memory.readContents(chaId, "k")!.revision).toBe(beforeRevision);
+                expect(fake.leases).toEqual([]);
+                expect(fake.handOffs).toEqual([]);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("falls back from changed or disabled run messages to the first open window and reports none without one", async () => {
+            for (const invalid of ["hash", "disabled", "empty"] as const) {
+                const chaId = await seedCharacter({ messages: invalid === "empty" ? [messages[0]] : messages });
+                const store = testStore();
+                try {
+                    if (invalid !== "empty") {
+                        const run = memoryRecords(["last"]).runs[0];
+                        run.window = messages.slice(2).map((message, index) => ({
+                            messageId: message.chatId,
+                            hash: messageSourceHash(message as Message),
+                            index: index + 2,
+                        }));
+                        writeMemory(store, chaId, "k", { runs: [run] });
+                        const current = await readChat(chaId);
+                        const changed = await batch({
+                            chats: [
+                                {
+                                    characterId: chaId,
+                                    chatId: "k",
+                                    baseRevision: current.revision,
+                                    ops:
+                                        invalid === "hash"
+                                            ? [{ op: "setText", id: "a2", text: "Changed reply" }]
+                                            : [
+                                                  {
+                                                      op: "setMessage",
+                                                      id: "a2",
+                                                      message: { ...messages[3], disabled: true },
+                                                  },
+                                              ],
+                                },
+                            ],
+                        });
+                        expect(changed.status).toBe(200);
+                    }
+                    const before = await readChat(chaId);
+                    const beforeMemory = readRecordSet(store.memory, chaId, "k");
+                    const count = summaries().length;
+                    state.summaries.push(analysis(0));
+                    const result = await testJob(chaId);
+                    expect(result.terminal).toMatchObject({
+                        type: "done",
+                        result: {
+                            kind: "memoryTest",
+                            customPrompt: false,
+                            outcome: invalid === "empty" ? "none" : "recorded",
+                            messageIds: invalid === "empty" ? [] : ["u1", "a1"],
+                            patchCalled: false,
+                        },
+                    });
+                    expect(summaries()).toHaveLength(count + (invalid === "empty" ? 0 : 1));
+                    expect(await readChat(chaId)).toEqual(before);
+                    expect(readRecordSet(store.memory, chaId, "k")).toEqual(beforeMemory);
+                } finally {
+                    store.close();
+                }
+            }
+        });
+
+        it("refuses unsafe test jobs by reason without cancelling memory work and rejects rebuilds at admission", async () => {
+            for (const reason of [
+                "plugin",
+                "trigger",
+                "queued",
+                "running",
+                "adoption",
+                "algorithm",
+                "rebuild",
+            ] as const) {
+                fake.reset();
+                await pluginSlot(reason === "plugin");
+                await patchSettings({ memoryAlgorithmType: reason === "algorithm" ? "none" : "structuredMemory" });
+                const chaId = await seedCharacter({
+                    messages,
+                    extra: reason === "trigger" ? { lowLevelAccess: true, triggerscript: [requestTrigger] } : {},
+                });
+                if (reason === "adoption")
+                    await setChatMeta(chaId, {
+                        hypaV3Data: {
+                            summaries: [{ text: "Old memory", chatMemos: ["u1", "a1"], isImportant: false }],
+                        },
+                    });
+                const status =
+                    reason === "queued" || reason === "running"
+                        ? { kind: "structuredMemory" as const, taskId: "existing", state: reason, done: 0, total: 1 }
+                        : null;
+                fake.setStatus(status);
+                const store = testStore();
+                try {
+                    if (reason === "rebuild")
+                        store.memory.rebuild.begin(
+                            chaId,
+                            "k",
+                            { epoch, mode: "rebuild", plan: [["u1", "a1"]] },
+                            rebuildSeed("rebuild", readRecordSet(store.memory, chaId, "k")!),
+                        );
+                    const beforeChat = await readChat(chaId);
+                    const beforeMemory = readRecordSet(store.memory, chaId, "k");
+                    const result = await testJob(chaId, pluginHooks);
+                    const expected = {
+                        plugin: /plugin model/i,
+                        trigger: /request trigger/i,
+                        queued: /writer is working/i,
+                        running: /writer is working/i,
+                        adoption: /adopt or decline/i,
+                        algorithm: /not this chat's memory/i,
+                        rebuild: /being rebuilt/i,
+                    }[reason];
+                    if (reason === "rebuild") {
+                        expect(result.status).toBe(409);
+                        expect(JSON.stringify(result.body)).toMatch(expected);
+                        expect(result.events).toEqual([]);
+                    } else
+                        expect(result.terminal).toMatchObject({
+                            type: "error",
+                            message: expect.stringMatching(expected),
+                        });
+                    expect(fake.service.status()).toEqual(status);
+                    expect(fake.leases).toEqual([]);
+                    expect(fake.records).toEqual([]);
+                    expect(summaries()).toEqual([]);
+                    expect(await readChat(chaId)).toEqual(beforeChat);
+                    expect(readRecordSet(store.memory, chaId, "k")).toEqual(beforeMemory);
+                } finally {
+                    store.close();
+                }
+            }
+        });
 
         it("stores a reply's tab requirement or paused notice even when its cadence hands off no task", async () => {
             for (const cadence of ["everyK", "manual"]) {

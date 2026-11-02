@@ -23,6 +23,7 @@ import {
     memoryBlockEntries,
     memoryPagePath,
     memoryReceiptView,
+    memoryTestResultView,
     memoryWriterNotice,
     newestAssistantMessageId,
     readStructuredMemoryContents,
@@ -843,4 +844,63 @@ it("reads cost previews and durable run metadata and abandons through the epoch-
     });
     authFetch.mockResolvedValue(Response.json({ calls: 2, messages: 3 }));
     expect((await readStructuredMemoryCost(ref, { mode: "backfill", turns: 1 })).outcome).toBe("failed");
+});
+
+it("reads test results of unknown shape and preserves custom prompt receipt and run details", () => {
+    for (const value of [
+        undefined,
+        null,
+        7,
+        "text",
+        [],
+        {},
+        { kind: "preview" },
+        { kind: "memoryTest", outcome: "unknown" },
+    ])
+        expect(memoryTestResultView(value)).toBeNull();
+    const result = memoryTestResultView({
+        kind: "memoryTest",
+        outcome: "failed",
+        customPrompt: true,
+        messageIds: ["m1", null, 2],
+        patchCalled: true,
+        analysis: { event: { title: "<b>Title</b>" } },
+        patches: [{ body: "<script>text</script>" }],
+        error: "Missing scene",
+        slots: { analysis: { unquoted: ["rules", 1], unknown: ["typo"] }, patch: null },
+        warnings: null,
+        refused: [{ candidate: { targetId: "Gate" }, refusal: "lockedSection" }],
+        unverified: null,
+        inputTokens: 12,
+        outputTokens: {},
+    });
+    expect(result).toMatchObject({
+        outcome: "failed",
+        customPrompt: true,
+        messageIds: ["m1"],
+        patchCalled: true,
+        analysis: { event: { title: "<b>Title</b>" } },
+        patches: [{ body: "<script>text</script>" }],
+        error: "Missing scene",
+        slots: { analysis: { unquoted: ["rules"], unknown: ["typo"] }, patch: { unquoted: [], unknown: [] } },
+        warnings: [],
+        refused: [{ candidate: "Gate", refusal: "lockedSection" }],
+        unverified: [],
+        inputTokens: 12,
+        outputTokens: 0,
+    });
+    const receipt = { state: "failed", customPrompt: true, error: "Missing scene", reason: "customPromptInvalid" };
+    expect(memoryReceiptView(receipt, { newest: true, taskLive: false })).toMatchObject({
+        customPrompt: true,
+        error: "Missing scene",
+    });
+    expect(memoryRunView({ customPrompt: true, error: "Missing scene", receipt })).toMatchObject({
+        customPrompt: true,
+        error: "Missing scene",
+        reason: "customPromptInvalid",
+    });
+    expect(
+        memoryReceiptView({ ...receipt, customPrompt: "true", error: 4 }, { newest: true, taskLive: false }),
+    ).toMatchObject({ customPrompt: false });
+    expect(memoryRunView({ customPrompt: "true" }).customPrompt).toBe(false);
 });

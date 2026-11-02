@@ -506,6 +506,11 @@ export interface MemoryReceipt {
     outputTokens?: number;
     /** The preset's own prompt replaced the default one for this recording. */
     customPrompt?: boolean;
+    /**
+     * A failed run's bounded, redacted error, kept on the receipt only under `customPrompt`, so the field or
+     * slot a custom prompt lost is named where the person reads first, not only in the Log.
+     */
+    error?: string;
 }
 
 /** One writer run. */
@@ -656,6 +661,52 @@ export type StructuredMemoryCostAnswer = { calls: number; messages: number; esti
  * threads, and the context messages. A starting value, not a measurement of any one chat.
  */
 export const MEMORY_CALL_OVERHEAD_TOKENS = 1500;
+
+/**
+ * One writer call's default prompt as the default-prompts route answers it: the ChatML frame as stored,
+ * with its slots in place and no preset text, and the texts of its `format` and `rules` slots, which
+ * carry the fields the validator checks.
+ */
+export type StructuredMemoryDefaultPrompt = { frame: string; format: string; rules: string };
+
+/** The default-prompts route's answer: the analysis call's and the patch call's defaults. */
+export type StructuredMemoryDefaultPromptsAnswer = {
+    analysis: StructuredMemoryDefaultPrompt;
+    patch: StructuredMemoryDefaultPrompt;
+};
+
+/**
+ * What a test run says of one custom frame's slots: the call's default slots it does not quote, and the
+ * names it quotes that are no slot of the call, which stay literal in the prompt. Both are warnings, not
+ * failures; a missing required slot fails the run instead.
+ */
+export type StructuredMemorySlotWarnings = { unquoted: string[]; unknown: string[] };
+
+/**
+ * The `memoryTest` command's `done.result`: one run of the writer over the chat's last window, with
+ * nothing saved. `outcome` is the writer's, or `none` when the chat has no window to test, in which case
+ * `messageIds` is empty. `analysis` and `patches` are the model's answers as parsed, `patchCalled` says
+ * the patch call ran, and the lists are what the run's receipt would have listed. `slots` is empty in
+ * both calls while the preset's prompts do not replace the defaults.
+ */
+export type StructuredMemoryTestResult = {
+    kind: "memoryTest";
+    customPrompt: boolean;
+    slots: { analysis: StructuredMemorySlotWarnings; patch: StructuredMemorySlotWarnings };
+    messageIds: string[];
+    outcome: "recorded" | "failed" | "skipped" | "none";
+    reason?: string;
+    error?: string;
+    analysis?: MemoryAnalysisResult;
+    patches?: MemoryPatch[];
+    patchCalled: boolean;
+    warnings: MemoryReceipt["warnings"];
+    unverified: MemoryReceipt["unverified"];
+    refused: MemoryReceipt["refused"];
+    model?: string;
+    inputTokens: number;
+    outputTokens: number;
+};
 
 /**
  * The input tokens of `calls` analysis calls over windows of `windowBytes` UTF-8 bytes. An estimate at three

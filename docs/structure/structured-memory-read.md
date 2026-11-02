@@ -3,11 +3,11 @@
 ## Scope
 
 - Owns the `structuredMemory` read path and what the tab shows of it: the lanes that offer records, the memory card that
-  spends the budget on them, the trim, the manifest and report a send leaves, the receipts on messages, and the memory
-  panel and receipt line in the tab.
+  spends the budget on them, the trim, the manifest and report a send leaves, the receipts on messages, the memory panel
+  and receipt line in the tab, and the prompt fine-tuning page with its test run.
 - Paths: `server/src/prompt/memory/structured/{lanes,retrieve,card,step}.ts`, `src/lib/Others/StructuredMemory/`,
-  `src/lib/ChatScreens/MemoryReceiptLine.svelte`, and the receipt and panel parts of
-  `src/ts/process/structuredMemory.svelte.ts`.
+  `src/lib/ChatScreens/MemoryReceiptLine.svelte`, `src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`, and the
+  receipt and panel parts of `src/ts/process/structuredMemory.svelte.ts`.
 - See [structured memory](structured-memory.md) for the records the read path reads and how the algorithm is selected,
   and [Active Plans](../plan/README.md) for the design and remaining work.
 - Not here:
@@ -36,7 +36,8 @@
   `PagesTab.svelte`, `TimelineTab.svelte`, `ThreadsTab.svelte`, `LogTab.svelte`, `MemoryLinkButton.svelte`,
   `MemoryManifest.svelte` (a report's writer, items, left-out rows, and lane spend, shared with `ContextMeter`),
   `memoryText.ts`, the stored codes as text, and `memoryRecordPress.ts`, the `memoryRecord` press the panel shares with
-  the receipt line. `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: the status line it shares with the modal.
+  the receipt line, and `pressMemoryTest`. `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: the status line it shares
+  with the modal.
 - `src/ts/process/structuredMemory.svelte.ts`, the pure parts the panel reads with: `reconcileMemoryCoverage`,
   `memoryMessageHash`, `memoryMessageHasher`, `joinMemoryCoverage`, `groupMemoryCoverage`, `memoryMessageExcerpt`,
   `memoryRunView`, `memoryTimelineRows`, `memoryPageTree`, `memoryPageHistoryView`, `memoryEventView`,
@@ -45,6 +46,9 @@
   `memoryItemKey`, `memoryItemTitles`, `memoryBlockEntries`.
 - `src/lib/ChatScreens/MemoryReceiptLine.svelte`: the line, from `Chat.svelte`'s `genInfo`. `memoryReceiptView` and
   `newestAssistantMessageId` in `structuredMemory.svelte.ts` are its pure part.
+- `src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`: the fine-tuning controls and the test run's result.
+  `memoryTestResultView` and `readStructuredMemoryDefaultPrompts` are its parts in `structuredMemory.svelte.ts`, and
+  `StructuredMemoryTestResult` in `shared/structuredMemory.ts` is that job's `done.result`.
 
 ## Flows
 
@@ -245,6 +249,49 @@ receipt that reads paused, resume; a newest `notAutomatic` receipt, its reason a
 longer held reads as no receipt, or it would hide record now after the choice. The press is `pressMemoryRecord`, as on
 the receipt line, off while pressing, read-only, or the task is live.
 
+### Prompt fine-tuning
+
+`StructuredMemoryPrompts.svelte` sits in the Memory settings page and edits the preset's `fineTuning`, `analysisPrompt`,
+and `patchPrompt`. Ticking the box warns, then seeds blank prompts from `GET /api/memory/structured/default-prompts`; a
+read that fails leaves the box off. Unticking keeps the texts. The same answer shows the defaults, and `promptGuide` in
+`en.ts` is the stored guide.
+
+Under `fineTuning` a call's text is its whole frame (`parseCustomFrame`): the same ChatML parser, CBS, and slot filling,
+and the same validation of the answer. `instructions` reach no custom frame, only compaction, whose default frame stays.
+A frame fails the run `customPromptInvalid`, with a failed receipt and no call, when it is blank, parses to no message,
+or lacks a required slot. Slots are read after CBS and before filling, so a CBS branch cannot hide one:
+
+| Call     | Required            | Why                                                                                |
+| -------- | ------------------- | ---------------------------------------------------------------------------------- |
+| Analysis | `messages`, `scene` | Quotes come from the window; the scene slot lists what a person took back          |
+| Patch    | `cast`, `previous`  | The cast carries `takenBack`, and admission treats its pages and sections as shown |
+
+So what a person took back reaches a custom prompt as it reaches the default one, and replay's check of the taken-back
+lines holds in both modes. A bad analysis frame fails in the opening write, a bad patch frame after the analysis call,
+and either counts toward the pause. A custom patch prompt is checked against the record margin before its call and fails
+`inputTooLarge`, since a frame can be any length.
+
+`customPrompt` means `fineTuning` was on, not that a frame ran: it is on the run, on the failed and recorded receipts,
+and on `writerNotice`'s. A failed receipt under it also keeps the bounded, redacted `error`, so a missing field is named
+on the line and not only in the Log. The panel's line reads the current settings; a receipt and a Log row read what they
+stored. The health badge does not exist yet.
+
+### The test run
+
+The `memoryTest` command job (`testRun.ts`) runs the writer once over a window and answers on `done.result`.
+
+1. Admission is `admitRecord`'s, then a refusal for a tab-bound `memory` slot or `request` trigger, naming it, and for a
+   queued or running task of the chat. It takes no writer lease, because acquiring one cancels a running task; the job
+   holds the chat's slot, and `rebuildLocks` and `chatBusy` refuse it before it runs.
+2. It runs on the detached `createMemoryTaskHost`, so no tool, inlay, chat variable, or tab callback is in reach.
+3. Window: the newest run's, while each of its messages is still eligible with the same hash, whatever the ceiling; else
+   the first open window; else `none`.
+4. `createStructuredWriter` runs with `dryRun` and a `commit` that keeps the changes and writes nothing. `dryRun` builds
+   the prompt anew, skips the last event, so the window's own event cannot dedupe the patch call away, and skips
+   compaction and warming. `commitPages` still runs, so its refusals appear in the result.
+
+`pressMemoryTest` treats a followed job and a terminal without the result, which a retained one is, as no result.
+
 ## State
 
 - The read path stores nothing of its own: its records are [structured memory's](structured-memory.md#state). What a
@@ -276,6 +323,8 @@ the receipt line, off while pressing, read-only, or the task is live.
 
 - A new Memory settings page control: expose a preset field only once something reads it, then add it to the list
   `MemorySettings.structuredMemory.test.ts` compares the page's editable controls with.
+- A new writer slot: add it to `ANALYSIS_SLOT_NAMES` or `PATCH_SLOT_NAMES`, and to `promptGuide`, which names the
+  optional ones.
 - A new panel tab: add one component to `TABS` taking `MemoryPanelTabProps`.
 - A new stored code the panel or the receipt line shows: give it text in `memoryText.ts`, and keep reading the stored
   value as data of any shape (`memoryRunView`, `memoryReceiptView`).
@@ -302,6 +351,9 @@ the receipt line, off while pressing, read-only, or the task is live.
 - Selection and the meter: `MemorySettings.structuredMemory.test.ts` compares the page's editable controls with the list
   it may expose, so a new control fails it until something reads the field. `Toggles.test.ts` holds the toggle and
   `alwaysToggleOn`, `ContextMeter.svelte.test.ts` the line and the popover's one read.
+- Fine-tuning: `prompts.test.ts` for the frame rules, `memoryTasks.test.ts` for both modes, invalid frames, replay, and
+  the size check, `memoryJobs.test.ts` for the test run on a real stack, `structuredMemoryRoutes.test.ts` for the
+  default prompts, and `StructuredMemoryPrompts.test.ts` for the controls.
 - The preview: `memoryJobs.test.ts` and `promptRunner.test.ts` drive both kinds on a real stack, and
   `StructuredMemoryPanel.test.ts` scripts `runServerJob` for the tab.
 - Focused command:
@@ -339,6 +391,16 @@ the receipt line, off while pressing, read-only, or the task is live.
   cost preview. Decision: Structured Memory D3, plan.
 - Coverage counts tokens with the tab's scope, whose model settings fall back when a chat's binding is missing, and a
   refresh with unchanged texts does not recount after a tokenizer change.
+- A test run refuses a Plugin `memory` slot or a `request` trigger, because a tab callback saves its mutations even when
+  it throws. Decision: Structured Memory slice 7c, plan.
+- A test run leaves the request history row, its diagnostics event, and the job's generation receipt: the call's logs,
+  as for a preview. The press also saves pending settings first, which is the settings save. Decision: Structured Memory
+  slice 7c, plan.
+- A test run replays over the records as they stand, so the window's own changes are already on the pages, and its
+  answer can differ from what the run recorded. It costs up to two calls and asks first about neither.
+- A custom prompt may leave out `{{slot::rules}}`: `takenBack` still shows in the cast, without the rule that says to
+  respect it. The test run lists the slot. `memoryWorkCost` does not know a custom prompt's size.
+- A seeded prompt is a copy: a later change of a default frame does not reach it, though a change of a slot's text does.
 
 ### Gotchas
 

@@ -18,7 +18,12 @@ import type {
     MessagePresetInfo,
 } from "../../../shared/database.ts";
 import { greetingText } from "../../../shared/greetings.ts";
-import { type HypaV3Budget, type HypaV3BudgetReduction, summarizesLocally } from "../../../shared/hypaV3Presets.ts";
+import {
+    type HypaV3Budget,
+    type HypaV3BudgetReduction,
+    selectedHypaV3Preset,
+    summarizesLocally,
+} from "../../../shared/hypaV3Presets.ts";
 import { LLMFlags, type LLMModel } from "../../../shared/llm.ts";
 import type { LoreActivation } from "../../../shared/lore/activation.ts";
 import type {
@@ -44,6 +49,7 @@ import {
 import {
     type MemoryManifestItem,
     type MemoryReceipt,
+    normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_ALGORITHM,
 } from "../../../shared/structuredMemory.ts";
 import type { MemoryControl } from "../jobs/generationJobs.ts";
@@ -489,7 +495,8 @@ function rethrowHypaV3(memory: MemoryHost, error: unknown): never {
  * slot or trigger that needs the tab, a local model), else that it is paused. Only the send can say
  * so: a task is handed off only when a window is due, and never for a chat that waits for that choice,
  * so under `everyK`, `tokens`, or `manual` its word would come late or never. A run that records the
- * reply replaces this.
+ * reply replaces this. The receipt says `customPrompt` while the preset's own prompts stand in for the
+ * defaults, as every receipt does then, even though this one ran no frame.
  */
 function writerNotice(
     db: Database,
@@ -502,6 +509,7 @@ function writerNotice(
     if (!reason && !paused) {
         return undefined;
     }
+    const { fineTuning } = normalizeStructuredMemorySettings(selectedHypaV3Preset(db)?.settings?.structured);
     return {
         state: reason ? "notAutomatic" : "skipped",
         reason: reason ?? "writerPaused",
@@ -509,6 +517,7 @@ function writerNotice(
         refused: [],
         unverified: [],
         warnings: [],
+        ...(fineTuning ? { customPrompt: true } : {}),
     };
 }
 

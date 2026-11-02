@@ -52,6 +52,8 @@ import {
     assembleCompactPrompt,
     assemblePatchPrompt,
     compactSlots,
+    fillSlots,
+    parseCustomFrame,
     patchSlots,
     sceneTakenBackLines,
 } from "./prompts.ts";
@@ -112,6 +114,16 @@ export { writerPaused };
  * - A historical write (`historical`, a backfill) records a window that lies before records that already
  *   exist, so it must leave current state alone: it merges into no later event, rewrites no scene, moves
  *   no thread, and patches no page in `frozenPages`. It still makes new pages, which later windows patch.
+ * - Custom prompts: under the preset's `fineTuning`, its own ChatML is each call's whole frame
+ *   (`parseCustomFrame`), with the same slots and the same validation of the answer. The run and its
+ *   receipts carry `customPrompt`, a stored input is replayed only under the same mode, and a frame that
+ *   is blank, is not ChatML, or lacks a required slot fails the run `customPromptInvalid` with no call:
+ *   the analysis frame in the opening write, the patch frame as a patch failure. A custom patch frame can
+ *   be any length, so its prompt is checked against the record margin before the call. Compaction keeps
+ *   its default frame.
+ * - Dry run (`dryRun`, the test run): the prompt is built anew, the answer is admitted as if the window
+ *   were new, no compaction call is made and nothing is warmed, and every write still goes through the
+ *   caller's `commit`, which keeps what a recording would have written and stores none of it.
  */
 
 type WriterArg = Parameters<StructuredMemoryWriter>[0];
@@ -251,10 +263,23 @@ function writerLanguage({ scope, host, input }: WriterArg): string {
     return structuredMemoryWriterLanguage(scopeChat(scope), owner, writerSettings(host).language, host.db.language);
 }
 
-/** The prompt for `arg.window`, from the records as `contents` lists them. */
-function buildPrompt(store: Pick<WriterStore, "memory">, arg: WriterArg, contents: MemoryContents): OpenAIChat[] {
+/**
+ * The prompt for `arg.window`, from the records as `contents` lists them: the default frame with the
+ * preset's `instructions`, or under `fineTuning` the preset's own analysis frame, which is checked
+ * before any slot is written; `invalid` is why it cannot be the prompt.
+ */
+function buildPrompt(
+    store: Pick<WriterStore, "memory">,
+    arg: WriterArg,
+    contents: MemoryContents,
+): { formated: OpenAIChat[] } | { invalid: string } {
     const { scope, host, input, window } = arg;
     const { chaId, chatId } = input.chatRef;
+    const settings = writerSettings(host);
+    const frame = settings.fineTuning ? parseCustomFrame(host, settings.analysisPrompt, "analysis") : null;
+    if (frame && !frame.ok) {
+        return { invalid: frame.error };
+    }
     const chat = scopeChat(scope);
     const owner = scope.db.characters.find((entry) => entry?.chaId === chaId);
     const pages = readPages(store, arg, contents);
@@ -277,13 +302,17 @@ function buildPrompt(store: Pick<WriterStore, "memory">, arg: WriterArg, content
         window,
         speaker: speakerLabels(arg, owner?.name ?? ""),
     });
-    return assembleAnalysisPrompt(host, writerSettings(host).instructions, slots);
+    return {
+        formated: frame ? fillSlots(frame.messages, slots) : assembleAnalysisPrompt(host, settings.instructions, slots),
+    };
 }
 
 /**
  * The input to send again, from the newest run that did not record, when it is still this run's. An input
  * must hold every line the scene now lists as taken back: compared with its parsed text, so that JSON's
- * escapes cannot hide one. Its scene slot quoting the same text as the scene does not count.
+ * escapes cannot hide one. Its scene slot quoting the same text as the scene does not count. A stored
+ * input is also one of this run's prompt mode: a fingerprint that matches does not say which frame built
+ * it, and a custom frame must not replay a default input or the other way round.
  */
 function replayedInput(
     store: Pick<WriterStore, "memory">,
@@ -296,6 +325,7 @@ function replayedInput(
     if (
         !run?.input ||
         run.settingsFingerprint !== arg.input.settingsFingerprint ||
+        Boolean(run.customPrompt) !== writerSettings(arg.host).fineTuning ||
         !sameWindow(run.window, arg.window.sources)
     ) {
         return null;
@@ -307,7 +337,11 @@ function replayedInput(
     return formated && sceneTakenBackLines(scene).every(lists) ? { text: run.input, formated } : null;
 }
 
-/** `run` as a failure, with the receipt a later reader shows; `reason` is a stored code. */
+/**
+ * `run` as a failure, with the receipt a later reader shows; `reason` is a stored code. A run under a
+ * custom prompt says so on its receipt and keeps the error there too, so a person tuning the prompt reads
+ * the missing field or slot where the receipt is.
+ */
 function failedRun(run: MemoryRun, reason: string, error: string): MemoryRun {
     const receipt: MemoryReceipt = {
         state: "failed",
@@ -320,6 +354,7 @@ function failedRun(run: MemoryRun, reason: string, error: string): MemoryRun {
         model: run.model,
         inputTokens: run.inputTokens,
         outputTokens: run.outputTokens,
+        ...(run.customPrompt ? { customPrompt: true, error } : {}),
     };
     return { ...run, result: "failed", error, receipt };
 }
@@ -410,7 +445,10 @@ export function commitWindow(
 /**
  * Starts a run: from the records as stored, closes what an earlier run left `pending` and commits this
  * one with its snapshot, in one write. Answers the run, or how the writer ended without a call. Nothing
- * awaited here costs a model call, so a moved revision just starts over.
+ * awaited here costs a model call, so a moved revision just starts over. A run that cannot be sent, its
+ * prompt too large to store or its custom frame unusable, is the same write with the failed row in place
+ * of the pending one; a `MemoryHostFailure` while a custom frame is parsed (a CBS limit) is written so
+ * too, then thrown on to end the task as a failed call's does.
  */
 async function openRun(store: WriterStore, arg: WriterArg): Promise<OpenedRun | StructuredMemoryWriterResult> {
     const { input, tokenizer, commit } = arg;
@@ -435,8 +473,6 @@ async function openRun(store: WriterStore, arg: WriterArg): Promise<OpenedRun | 
                 interrupted.push({ ...leftover, result: "skipped", reason: "interrupted" });
             }
         }
-        const replayed = replayedInput(store, arg, contents);
-        const formated = replayed?.formated ?? buildPrompt(store, arg, contents);
         const run: MemoryRun = {
             id,
             window: arg.window.sources,
@@ -445,20 +481,47 @@ async function openRun(store: WriterStore, arg: WriterArg): Promise<OpenedRun | 
             outputTokens: 0,
             durationMs: 0,
             result: "pending",
-            input: replayed?.text ?? JSON.stringify(formated),
             settingsFingerprint: input.settingsFingerprint,
             language: writerLanguage(arg),
+            ...(writerSettings(arg.host).fineTuning ? { customPrompt: true } : {}),
         };
-        const bytes = Buffer.byteLength(JSON.stringify(run), "utf8");
-        if (bytes > MAX_READ_RESPONSE_BYTES - RUN_RECORD_MARGIN_BYTES) {
-            const error = `The prompt of ${bytes} bytes is too large to store, so it was not sent`;
-            const failed = failedRun({ ...run, input: undefined }, "inputTooLarge", error);
+        /** The one write of a run that makes no call; null when a moved revision asks for another try. */
+        const unsent = (reason: string, error: string): StructuredMemoryWriterResult | null => {
+            const failed = failedRun(run, reason, clampText(error, LIMITS.runErrorChars));
             const answer = commit(contents.revision, { runs: [...interrupted, failed] });
             if (answer.outcome === "committed") {
-                return { outcome: "failed", error };
+                return { outcome: "failed", error: failed.error! };
             }
-            if (answer.reason !== "revisionConflict") {
-                return { outcome: "skipped", reason: answer.reason };
+            return answer.reason === "revisionConflict" ? null : { outcome: "skipped", reason: answer.reason };
+        };
+        const replayed = arg.dryRun ? null : replayedInput(store, arg, contents);
+        let built: ReturnType<typeof buildPrompt>;
+        try {
+            built = replayed ? { formated: replayed.formated } : buildPrompt(store, arg, contents);
+        } catch (error) {
+            if (error instanceof MemoryHostFailure) {
+                unsent("hostFailure", error.message);
+            }
+            throw error;
+        }
+        if ("invalid" in built) {
+            const ended = unsent("customPromptInvalid", built.invalid);
+            if (ended) {
+                return ended;
+            }
+            continue;
+        }
+        const { formated } = built;
+        run.input = replayed?.text ?? JSON.stringify(formated);
+        const bytes = Buffer.byteLength(JSON.stringify(run), "utf8");
+        if (bytes > MAX_READ_RESPONSE_BYTES - RUN_RECORD_MARGIN_BYTES) {
+            delete run.input;
+            const ended = unsent(
+                "inputTooLarge",
+                `The prompt of ${bytes} bytes is too large to store, so it was not sent`,
+            );
+            if (ended) {
+                return ended;
             }
             continue;
         }
@@ -508,7 +571,8 @@ function commitFresh(
 /**
  * What admission reads of the records `contents` lists: every page id, the threads `named`, the last event.
  * A historical write has none: the window lies before it, and a merge would append older sources after
- * newer ones, which reconciliation reads as moved.
+ * newer ones, which reconciliation reads as moved. Neither has a dry run, whose window may be the one the
+ * last event already records: merged into it, the answer would show no page target to test.
  */
 function admissionState(
     store: Pick<WriterStore, "memory">,
@@ -524,7 +588,7 @@ function admissionState(
             threads.set(id, thread);
         }
     }
-    const last = arg.historical ? undefined : contents.events.at(-1);
+    const last = arg.historical || arg.dryRun ? undefined : contents.events.at(-1);
     return {
         pages: new Set(contents.pages.map(({ id }) => id)),
         threads,
@@ -731,8 +795,35 @@ export function createStructuredWriter(
         if (shown.rows.length > 0) {
             const language = writerLanguage(arg);
             const slots = patchSlots({ language, rows: shown.rows, event: first.admission.event });
-            const formated = assemblePatchPrompt(host, writerSettings(host).instructions, slots);
+            const settings = writerSettings(host);
+            let formated: OpenAIChat[];
+            if (settings.fineTuning) {
+                let frame: ReturnType<typeof parseCustomFrame>;
+                try {
+                    frame = parseCustomFrame(host, settings.patchPrompt, "patch");
+                } catch (error) {
+                    if (error instanceof MemoryHostFailure) {
+                        fail("hostFailure", error.message);
+                    }
+                    throw error;
+                }
+                if (!frame.ok) {
+                    return fail("customPromptInvalid", frame.error);
+                }
+                formated = fillSlots(frame.messages, slots);
+            } else {
+                formated = assemblePatchPrompt(host, settings.instructions, slots);
+            }
             run = { ...run, patchInput: JSON.stringify(formated) };
+            // A custom frame is not bounded by the limits the margin was sized for.
+            const bytes = settings.fineTuning ? Buffer.byteLength(JSON.stringify(run), "utf8") : 0;
+            if (bytes > MAX_READ_RESPONSE_BYTES - RUN_RECORD_MARGIN_BYTES) {
+                run = { ...run, patchInput: undefined };
+                return fail(
+                    "inputTooLarge",
+                    `The patch prompt of ${bytes} bytes is too large to store, so it was not sent`,
+                );
+            }
             for (const message of formated) {
                 run = { ...run, inputTokens: run.inputTokens + (await tokenizer.tokenizeChat(message)) };
             }
@@ -774,7 +865,7 @@ export function createStructuredWriter(
 
         const compactions: Compaction[] = [];
         const compactionWarnings: Warning[] = [];
-        if (run.patches?.length) {
+        if (run.patches?.length && !arg.dryRun) {
             const fresh = store.memory.readContents(chaId, chatId);
             if (!fresh) {
                 return { outcome: "skipped", reason: "chatGone" };
@@ -821,6 +912,7 @@ export function createStructuredWriter(
                 model: run.model,
                 inputTokens: run.inputTokens,
                 outputTokens: run.outputTokens,
+                ...(run.customPrompt ? { customPrompt: true } : {}),
             };
             const recorded: MemoryRun = {
                 ...run,
@@ -833,6 +925,9 @@ export function createStructuredWriter(
         });
         if (answer.outcome !== "committed") {
             return answer;
+        }
+        if (arg.dryRun) {
+            return { outcome: "recorded" };
         }
         const warmingError = await warmRecords(host, event!, sectionTexts);
         return warmingError === undefined ? { outcome: "recorded" } : { outcome: "recorded", warmingError };

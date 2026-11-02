@@ -280,6 +280,9 @@
                                 {#if view.durationMs !== undefined}
                                     <span>{text.seconds(view.durationMs)}</span>
                                 {/if}
+                                {#if view.customPrompt}
+                                    <span data-memory-run-custom-prompt>{receiptText.customPrompt}</span>
+                                {/if}
                             </span>
                             {#if view.reason !== undefined}
                                 <span class="text-textcolor2">{memoryReasonText(view.reason)}</span>

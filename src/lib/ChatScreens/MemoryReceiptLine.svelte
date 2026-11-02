@@ -85,6 +85,7 @@
             view.warnings.length > 0 ||
             view.unverified.length > 0 ||
             view.refused.length > 0 ||
+            view.error !== undefined ||
             view.model !== undefined ||
             hasTokens,
     );
@@ -162,6 +163,11 @@
             {:else}
                 <span class="min-w-0 break-words p-1">{summary}</span>
             {/if}
+            {#if view.customPrompt}
+                <span class="shrink-0 rounded-sm bg-darkbutton px-1.5 text-xs" data-memory-receipt-custom-prompt>
+                    {text.customPrompt}
+                </span>
+            {/if}
             {#if view.action}
                 <button
                     class={"shrink-0 rounded-md border border-darkborderc px-2 py-0.5 transition-all " +
@@ -175,6 +181,9 @@
         </div>
         {#if expanded && hasDetails}
             <div class="mt-1 flex w-full flex-col gap-1 rounded-md border border-darkborderc p-2 text-xs break-words">
+                {#if view.error !== undefined}
+                    <span class="text-draculared" data-memory-receipt-error>{view.error}</span>
+                {/if}
                 {#if view.changes.length > 0}
                     {@const revertText = language.structuredMemory.revert}
                     <span class="font-semibold">{text.changes}</span>

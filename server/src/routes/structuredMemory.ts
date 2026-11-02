@@ -23,6 +23,7 @@ import {
     type StructuredMemoryCoverageRound,
     type StructuredMemoryCoverageRun,
     type StructuredMemoryDeclineAnswer,
+    type StructuredMemoryDefaultPromptsAnswer,
     type StructuredMemoryEdit,
     type StructuredMemoryEditAnswer,
     type StructuredMemoryInheritAnswer,
@@ -55,6 +56,7 @@ import {
 } from "../prompt/memory/structured/edits.ts";
 import { inheritedRecords } from "../prompt/memory/structured/inherit.ts";
 import { laterEventCount, MemoryRevertRefusal, revertChange } from "../prompt/memory/structured/pages.ts";
+import { defaultPrompts } from "../prompt/memory/structured/prompts.ts";
 import { memoryWorkCost } from "../prompt/memory/structured/rebuild.ts";
 import { withUnsupportedSections } from "../prompt/memory/structured/reconcile.ts";
 import { parseRestoredRecords } from "../prompt/memory/structured/restore.ts";
@@ -278,6 +280,10 @@ type RoundRead = {
  *   what a rebuild, a backfill, or a press of record now through `through` would cost, reading only,
  *   answered `StructuredMemoryCostAnswer`: an estimate, because a route has no job scope to reach a real
  *   tokenizer. 400 for another `mode` or `turns` or a `through` that is no id, 404 `chatGone`.
+ * - `GET /api/memory/structured/default-prompts`: the writer's default analysis and patch frames as stored
+ *   text, with their slots in place and no preset text, and the texts of each call's `format` and `rules`
+ *   slots, answered `StructuredMemoryDefaultPromptsAnswer` (`structured/prompts.ts`). It names no chat and
+ *   reads no store.
  * - `POST /api/memory/structured/:characterId/:chatId/rebuild/abandon`, with no body: ends the chat's
  *   rebuild with nothing written live, whatever stopped it, a hold and the memory toggle included,
  *   answered `StructuredMemoryAbandonAnswer`: the chat's task is cancelled and the run and what it staged
@@ -325,6 +331,13 @@ export function registerStructuredMemoryRoutes(
         }
         await next();
     };
+
+    app.get(`${STRUCTURED_MEMORY_PATH}/default-prompts`, limiter, authenticated, (c) => {
+        if (c.req.header(RESOURCE_EPOCH_HEADER) !== store.epoch()) {
+            return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+        }
+        return compressedJson(c, defaultPrompts() satisfies StructuredMemoryDefaultPromptsAnswer);
+    });
 
     app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId`, limiter, authenticated, async (c) => {
         const characterId = c.req.param("characterId");

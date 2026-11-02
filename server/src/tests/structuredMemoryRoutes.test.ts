@@ -18,6 +18,7 @@ import {
     MEMORY_REVISION_CHATS_MAX,
     STRUCTURED_MEMORY_LIMITS,
 } from "../../../shared/structuredMemory.ts";
+import { defaultPrompts, analysisSlots, patchSlots } from "../prompt/memory/structured/prompts.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RunningJob } from "../jobs/generationJobs.ts";
 import { loadJobScope, memorySettingsFingerprint, memoryTokenPolicy } from "../jobs/jobScope.ts";
@@ -2461,4 +2462,37 @@ it("refuses non-writer and lost history entries and fences reverts throughout a 
         ).toMatchObject({ reason: "fenced" });
     }
     expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({ revision, data: p });
+});
+
+it("serves default frames and format and rules only to authenticated requests in the current epoch", async () => {
+    const s = await server();
+    const route = "/api/memory/structured/default-prompts";
+    const anonymous = await s.app.request(route, { headers: { "x-resource-epoch": s.epoch } });
+    expect(anonymous.status).toBe(400);
+    for (const epoch of [null, "stale"]) {
+        expect((await s.request(route, {}, epoch)).status).toBe(412);
+    }
+    const body = await answer(await s.request(route));
+    const slots = {
+        analysis: analysisSlots({
+            language: "English",
+            cast: [],
+            scene: null,
+            threads: [],
+            messages: [],
+            window: { messages: [], sources: [] },
+            speaker: () => "C",
+            previousTitle: undefined,
+        }),
+        patch: patchSlots({ language: "English", rows: [], event: event("e") }),
+    };
+    for (const call of ["analysis", "patch"] as const) {
+        expect(body[call].frame).toBe(defaultPrompts()[call].frame);
+        expect(body[call].frame).toContain("<|im_start|>system");
+        for (const name of Object.keys(slots[call])) expect(body[call].frame).toContain(`{{slot::${name}}}`);
+        expect(body[call].format).toBe(slots[call].format);
+        expect(body[call].rules).toBe(slots[call].rules);
+        expect(body[call].format).toContain("JSON");
+        expect(body[call].rules).toContain("Rules:");
+    }
 });

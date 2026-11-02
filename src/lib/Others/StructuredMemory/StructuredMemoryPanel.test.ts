@@ -1770,3 +1770,27 @@ it("writes and clears the chat highlight override from Pages without changing an
     changeSelect(selector, "");
     expect(findChat(ref)!.structuredMemoryHighlight).toBeUndefined();
 });
+
+it("shows the current custom mode on the panel and the stored custom mode on Log rows", async () => {
+    const structured = settings.hypaV3Presets.items[0].settings.structured!;
+    structured.fineTuning = true;
+    io.authFetch.mockImplementation(async (url) => {
+        if (url.includes("/coverage")) return Response.json(facts());
+        if (url.includes("/runs"))
+            return Response.json({
+                revision: "r1",
+                total: 1,
+                next: null,
+                runs: [{ id: "custom", result: "failed", customPrompt: true, error: "Missing scene", window: [] }],
+            });
+        throw new Error(`Unexpected request: ${url}`);
+    });
+    await open();
+    expect(query("[data-memory-custom-prompt]")?.textContent).toContain("Custom prompt");
+    structured.fineTuning = false;
+    flushSync();
+    expect(query("[data-memory-custom-prompt]")).toBeNull();
+    click("[data-segment-btn]:last-child");
+    await settle();
+    expect(query('[data-memory-run="failed"]')?.textContent).toContain("Custom prompt");
+});

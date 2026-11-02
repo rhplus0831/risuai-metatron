@@ -135,7 +135,10 @@ export type StructuredMemoryWriterResult =
  * `baseRevision` (a run's receipt also goes onto the window's assistant messages), and it throws once
  * the task ended. A throw ends the task as any failed work does. `manual` says a person started the
  * task, and `historical` that the window lies before records that already exist, so the run must leave
- * current state and the pages in `frozenPages` alone (`writer.ts`).
+ * current state and the pages in `frozenPages` alone (`writer.ts`). `dryRun` is a test run whose
+ * `commit` keeps nothing: the run builds its prompt anew, admits its answer as if the window were new,
+ * and makes no compaction call and warms nothing, so what it hands `commit` is what a recording would
+ * have written.
  */
 export type StructuredMemoryWriter = (arg: {
     scope: JobScope;
@@ -145,6 +148,7 @@ export type StructuredMemoryWriter = (arg: {
     window: WriterWindow;
     manual: boolean;
     historical?: { frozenPages: readonly string[] };
+    dryRun?: boolean;
     commit(baseRevision: string, changes: MemoryChanges): StructuredMemoryCommit;
 }) => Promise<StructuredMemoryWriterResult>;
 

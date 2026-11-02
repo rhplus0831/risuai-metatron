@@ -274,3 +274,17 @@ it("links every changed section to its history and offers receipt reverts only f
     expect(rows[0].querySelector("[data-memory-receipt-reverted]")).not.toBeNull();
     hypaV3ModalOpen.set(false);
 });
+
+it("shows the stored custom prompt label and failure as text on the receipt", () => {
+    render();
+    const error = "Missing {{slot::scene}} <img src=x onerror=alert(1)>";
+    patch(receipt({ state: "failed", reason: "customPromptInvalid", customPrompt: true, error }));
+    expect(target.textContent).toContain("Custom prompt");
+    target.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click();
+    flushSync();
+    expect(target.textContent).toContain(error);
+    expect(target.querySelector("img")).toBeNull();
+    patch(receipt({ state: "recorded" }));
+    expect(target.textContent).not.toContain("Custom prompt");
+    expect(target.textContent).not.toContain(error);
+});

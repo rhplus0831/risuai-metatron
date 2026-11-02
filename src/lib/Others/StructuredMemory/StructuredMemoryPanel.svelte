@@ -549,6 +549,10 @@
                 </div>
             {/if}
 
+            {#if chatRef && writerSettings.fineTuning}
+                <div class="text-sm text-textcolor2" data-memory-custom-prompt>{receiptText.customPrompt}</div>
+            {/if}
+
             {#if chatRef && heldFacts?.resettable}
                 <div
                     class="flex flex-wrap items-center justify-between gap-2 text-sm text-textcolor2"

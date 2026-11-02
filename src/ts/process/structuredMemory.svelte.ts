@@ -40,6 +40,7 @@ import {
     type StructuredMemoryCoverageRound,
     type StructuredMemoryCoverageRun,
     type StructuredMemoryDeclineAnswer,
+    type StructuredMemoryDefaultPromptsAnswer,
     type StructuredMemoryEdit,
     type StructuredMemoryEditAnswer,
     type StructuredMemoryFileEntry,
@@ -56,6 +57,8 @@ import {
     type StructuredMemoryRevertAnswer,
     type StructuredMemoryRevisionsAnswer,
     type StructuredMemoryRunsRound,
+    type StructuredMemorySlotWarnings,
+    type StructuredMemoryTestResult,
     type StructuredMemoryThreadsRound,
 } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
@@ -71,8 +74,9 @@ import { authFetch } from "../storage/serverAuth";
  * from a chat file (`restoreStructuredMemory`), the adoption of a chat's HypaV3 summaries
  * (`adoptStructuredMemory`), the decline of it (`declineStructuredMemory`), the reset of the summaries
  * (`resetStructuredMemorySummaries`), what a rebuild or a press would cost (`readStructuredMemoryCost`),
- * the abandon of a rebuild (`abandonStructuredMemoryRebuild`), and the downloadable package built from the
- * reads: a zip of Markdown with one file per page and one timeline of the events.
+ * the abandon of a rebuild (`abandonStructuredMemoryRebuild`), the writer's default prompts
+ * (`readStructuredMemoryDefaultPrompts`), and the downloadable package built from the reads: a zip of
+ * Markdown with one file per page and one timeline of the events.
  *
  * What a chat file takes of the records is read here too (`readStructuredMemoryFile`), and
  * `exportChatMemory` applies that read to the chat copy an export writes. So are the two reads a plugin's
@@ -83,7 +87,8 @@ import { authFetch } from "../storage/serverAuth";
  * on one line, which is also valid YAML, and `bodyLines` and `summaryLines` count the lines of the text
  * they describe, so a body holding `## x` or `---` can still be split exactly.
  *
- * `memoryReceiptView` turns a message's stored receipt into what its receipt line shows.
+ * `memoryReceiptView` turns a message's stored receipt into what its receipt line shows, and
+ * `memoryTestResultView` a test run's `done.result` into what the settings page shows of it.
  *
  * The memory panel's data is here too. `joinMemoryCoverage` and `memoryTimelineRows` join the held
  * messages with the record facts the coverage route answers, because the tab holds the chat's whole
@@ -247,21 +252,28 @@ export type MemoryReceiptChange = {
     kind?: string;
 };
 
-export type MemoryReceiptView = {
+/** The lists a receipt or a test run carries, each item as plain text. */
+export type MemoryReceiptLists = {
+    warnings: { kind: string; detail?: string }[];
+    unverified: { kind: string; text: string; reason?: string }[];
+    refused: { candidate: string; refusal: string }[];
+};
+
+export type MemoryReceiptView = MemoryReceiptLists & {
     kind: MemoryReceiptViewKind;
     /** The stored reason code. */
     reason?: string;
     /** Events, pages, refused candidates, and unverified items the receipt lists. */
     counts: { events: number; pages: number; refused: number; unverified: number };
-    /** The items behind the counts, as plain text, and what the recording cost. */
-    warnings: { kind: string; detail?: string }[];
-    unverified: { kind: string; text: string; reason?: string }[];
-    refused: { candidate: string; refusal: string }[];
     /** What the recording changed, by page in the receipt's order, each new page ahead of its sections. */
     changes: MemoryReceiptChange[];
     model?: string;
     inputTokens?: number;
     outputTokens?: number;
+    /** The preset's own prompts stood in for the defaults. */
+    customPrompt: boolean;
+    /** A failed run's error, which a receipt keeps only under `customPrompt`. */
+    error?: string;
     /** What the line's button does: record through this message, or resume recording. */
     action: "record" | "resume" | null;
 };
@@ -272,6 +284,7 @@ const NO_RECEIPT_ITEMS = {
     unverified: [],
     refused: [],
     changes: [],
+    customPrompt: false,
 } satisfies Partial<MemoryReceiptView>;
 
 /** The object entries of a stored list. */
@@ -312,6 +325,25 @@ function receiptChanges(pages: unknown): MemoryReceiptChange[] {
     });
 }
 
+/** The lists of a stored receipt, or of anything that carries them, read as data of any shape. */
+function receiptLists(stored: Record<string, unknown>): MemoryReceiptLists {
+    return {
+        warnings: storedItems(stored.warnings).map(({ kind, detail }) => ({
+            kind: storedText(kind) ?? "",
+            ...present("detail", storedText(detail)),
+        })),
+        unverified: storedItems(stored.unverified).map((item) => ({
+            kind: storedText(item.kind) ?? "",
+            text: storedText(item.text) ?? "",
+            ...present("reason", storedText(item.reason)),
+        })),
+        refused: storedItems(stored.refused).map((item) => ({
+            candidate: candidateText(item.candidate),
+            refusal: storedText(item.refusal) ?? "",
+        })),
+    };
+}
+
 /** What a row without an outcome shows: only the chat's newest assistant message shows anything. */
 function noOutcomeView(context: { newest: boolean; taskLive: boolean }): MemoryReceiptView {
     if (!context.newest) {
@@ -341,33 +373,22 @@ export function memoryReceiptView(
         return { ...NO_RECEIPT_ITEMS, kind: "hidden", action: null };
     }
     const reason = storedText(receipt.reason);
-    const refused = storedItems(receipt.refused);
-    const unverified = storedItems(receipt.unverified);
+    const lists = receiptLists(receipt);
     const stored = {
         ...present("reason", reason),
         counts: {
             events: storedText(receipt.eventId) ? 1 : 0,
             pages: storedItems(receipt.pages).length,
-            refused: refused.length,
-            unverified: unverified.length,
+            refused: lists.refused.length,
+            unverified: lists.unverified.length,
         },
-        warnings: storedItems(receipt.warnings).map(({ kind, detail }) => ({
-            kind: storedText(kind) ?? "",
-            ...present("detail", storedText(detail)),
-        })),
-        unverified: unverified.map((item) => ({
-            kind: storedText(item.kind) ?? "",
-            text: storedText(item.text) ?? "",
-            ...present("reason", storedText(item.reason)),
-        })),
-        refused: refused.map((item) => ({
-            candidate: candidateText(item.candidate),
-            refusal: storedText(item.refusal) ?? "",
-        })),
+        ...lists,
         changes: receiptChanges(receipt.pages),
         ...present("model", storedText(receipt.model) || undefined),
         ...present("inputTokens", storedCount(receipt.inputTokens)),
         ...present("outputTokens", storedCount(receipt.outputTokens)),
+        customPrompt: receipt.customPrompt === true,
+        ...present("error", storedText(receipt.error)),
     };
     switch (receipt.state) {
         case "recorded":
@@ -610,6 +631,13 @@ function parseAbandonAnswer(body: AnswerBody): StructuredMemoryAbandonAnswer | n
         : null;
 }
 
+function parseDefaultPrompts(body: AnswerBody): StructuredMemoryDefaultPromptsAnswer | null {
+    const { analysis, patch } = body;
+    const isPrompt = (value: unknown) =>
+        isPlainObject(value) && [value.frame, value.format, value.rules].every((text) => typeof text === "string");
+    return isPrompt(analysis) && isPrompt(patch) ? (body as StructuredMemoryDefaultPromptsAnswer) : null;
+}
+
 function parseRunsRound(body: AnswerBody, cursor: number): StructuredMemoryRunsRound | null {
     const { revision, total, runs, next } = body;
     return typeof revision === "string" &&
@@ -761,6 +789,13 @@ export function resetStructuredMemorySummaries(
     ref: ChatRef,
 ): Promise<StructuredMemoryResult<StructuredMemoryResetAnswer>> {
     return readAnswer(`${chatPath(ref)}/reset-summaries`, parseResetAnswer, editRefusalOf, { method: "POST" });
+}
+
+/** The writer's default frames and slot texts: what the settings page shows, and what seeds a custom prompt. */
+export function readStructuredMemoryDefaultPrompts(): Promise<
+    StructuredMemoryResult<StructuredMemoryDefaultPromptsAnswer>
+> {
+    return readAnswer(`${STRUCTURED_MEMORY_PATH}/default-prompts`, parseDefaultPrompts);
 }
 
 /**
@@ -1735,6 +1770,8 @@ export type MemoryRunView = {
     refused: MemoryReceiptView["refused"];
     unverified: MemoryReceiptView["unverified"];
     warnings: MemoryReceiptView["warnings"];
+    /** The preset's own prompts stood in for the defaults. */
+    customPrompt: boolean;
 };
 
 const quoteKey = (kind: string, text: string) => `${kind}\u0000${text}`;
@@ -1839,5 +1876,50 @@ export function memoryRunView(run: unknown): MemoryRunView {
         refused,
         unverified,
         warnings,
+        customPrompt: stored.customPrompt === true,
+    };
+}
+
+/** What the settings page shows of a test run: the shared result with its lists as plain text and its answers as data. */
+export type MemoryTestResultView = MemoryReceiptLists &
+    Omit<StructuredMemoryTestResult, "kind" | "analysis" | "patches" | keyof MemoryReceiptLists> & {
+        /** The model's answers as parsed, shown as text; absent when the call did not get that far. */
+        analysis?: unknown;
+        patches?: unknown;
+    };
+
+const TEST_OUTCOMES: readonly StructuredMemoryTestResult["outcome"][] = ["recorded", "failed", "skipped", "none"];
+
+/**
+ * What a `memoryTest` job's `done.result` shows, read as data of any shape: null for a result of another
+ * kind, which is what a retained terminal, stripped of its payload, or another job's terminal gives.
+ */
+export function memoryTestResultView(result: unknown): MemoryTestResultView | null {
+    if (!isPlainObject(result) || result.kind !== "memoryTest") {
+        return null;
+    }
+    const outcome = TEST_OUTCOMES.find((entry) => entry === result.outcome);
+    if (outcome === undefined) {
+        return null;
+    }
+    const slotWarnings = (value: unknown): StructuredMemorySlotWarnings => {
+        const stored = isPlainObject(value) ? value : {};
+        return { unquoted: storedTexts(stored.unquoted), unknown: storedTexts(stored.unknown) };
+    };
+    const slots = isPlainObject(result.slots) ? result.slots : {};
+    return {
+        customPrompt: result.customPrompt === true,
+        slots: { analysis: slotWarnings(slots.analysis), patch: slotWarnings(slots.patch) },
+        messageIds: storedTexts(result.messageIds),
+        outcome,
+        ...present("reason", storedText(result.reason)),
+        ...present("error", storedText(result.error)),
+        ...(isPlainObject(result.analysis) ? { analysis: result.analysis } : {}),
+        ...(Array.isArray(result.patches) ? { patches: result.patches } : {}),
+        patchCalled: result.patchCalled === true,
+        ...receiptLists(result),
+        ...present("model", storedText(result.model) || undefined),
+        inputTokens: storedCount(result.inputTokens) ?? 0,
+        outputTokens: storedCount(result.outputTokens) ?? 0,
     };
 }

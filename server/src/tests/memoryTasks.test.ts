@@ -29,6 +29,8 @@ import {
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
 } from "../../../shared/structuredMemory.ts";
+import { MAX_READ_RESPONSE_BYTES } from "../../../shared/resources.ts";
+import { defaultPrompts } from "../prompt/memory/structured/prompts.ts";
 import { revertChange } from "../prompt/memory/structured/pages.ts";
 import { readRecordSet, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
 import { readMemoryRecords } from "../prompt/memory/structured/step.ts";
@@ -2564,6 +2566,249 @@ describe("structured memory tasks", () => {
         return { ...writerInput(t), rebuild: true as const };
     };
 
+    const customFrames = {
+        fineTuning: true,
+        cadence: "everyTurn",
+        instructions: "PRESET INSTRUCTIONS for {{user}}",
+        analysisPrompt:
+            "<|im_start|>user<|im_sep|>CUSTOM ANALYSIS {{user}}\n{{slot::scene}}\n{{slot::messages}}<|im_end|>",
+        patchPrompt: "<|im_start|>user<|im_sep|>CUSTOM PATCH {{user}}\n{{slot::cast}}\n{{slot::previous}}<|im_end|>",
+    };
+
+    it("replaces both frames only in fine-tuning, validates both modes alike, and keeps compaction instructions", async () => {
+        for (const fineTuning of [false, true]) {
+            const t = structuredHarness({ hypaSettings: { structured: { ...customFrames, fineTuning } } });
+            const [page, editable] = memoryRecords(["harbor", "inn"], "Harbor").pages;
+            page.sections[0].locked = true;
+            page.history = [
+                {
+                    id: "undo",
+                    kind: "revert",
+                    heading: "Gate",
+                    highlighted: false,
+                    at: 1,
+                    before: { body: "Rejected claim", provenance: [], sources: [] },
+                },
+            ];
+            const { request, terminal, patchRequest } = await beginPagePatch(
+                t,
+                [page, editable],
+                analysis({
+                    keyLines: [{ speaker: "Cara", text: "Not in the window" }],
+                }),
+            );
+            const analysisText = t.provider.asked(request);
+            const patchText = t.provider.asked(patchRequest);
+            for (const [req, text, marker] of [
+                [request, analysisText, "CUSTOM ANALYSIS Uma"],
+                [patchRequest, patchText, "CUSTOM PATCH Uma"],
+            ] as const) {
+                if (fineTuning) {
+                    expect(req.body.messages).toHaveLength(1);
+                    expect(req.body.messages[0].role).toBe("user");
+                    expect(text).toContain(marker);
+                    expect(text).not.toContain("PRESET INSTRUCTIONS");
+                    expect(text).not.toContain("You keep the");
+                } else {
+                    expect(text).toContain("You keep the");
+                    expect(text).toContain("PRESET INSTRUCTIONS for Uma");
+                    expect(text).not.toContain("CUSTOM");
+                }
+            }
+            expect(analysisText).toContain("User line 1 of the story.");
+            expect(patchText).toContain('"takenBack":[{"heading":"Gate","text":"Rejected claim"}]');
+            patchRequest.answer(
+                JSON.stringify({
+                    patches: [
+                        { pageId: page.id, heading: page.sections[0].heading, op: "upsert", body: "Overwrite lock" },
+                        {
+                            pageId: editable.id,
+                            heading: "New facts",
+                            op: "upsert",
+                            body: "x".repeat(MEMORY_SECTION_BUDGETS.location + 100),
+                        },
+                    ],
+                }),
+            );
+            const compact = await nextPatch(t, patchRequest.index + 1, terminal);
+            expect(t.provider.asked(compact)).toContain("Make one section of a page shorter");
+            expect(t.provider.asked(compact)).toContain("PRESET INSTRUCTIONS for Uma");
+            compact.answer(JSON.stringify({ body: "Shortened facts" }));
+            await finishRecording(t, terminal);
+            const run = runRecord(t);
+            expect(Boolean(run.customPrompt)).toBe(fineTuning);
+            expect(Boolean(run.receipt!.customPrompt)).toBe(fineTuning);
+            expect(run.receipt!.unverified).toContainEqual(expect.objectContaining({ text: "Not in the window" }));
+            expect(run.receipt!.warnings).toContainEqual(expect.objectContaining({ kind: "lockedSection" }));
+            expect(pageRecords(t).find(({ id }) => id === editable.id)!.sections).toContainEqual(
+                expect.objectContaining({ heading: "New facts", body: "Shortened facts" }),
+            );
+            expect(t.chat("k1")!.message.find(({ chatId }) => chatId === "m2")!.generationInfo!.memory).toMatchObject({
+                state: "recorded",
+                ...(fineTuning ? { customPrompt: true } : {}),
+            });
+        }
+    });
+
+    it("fails invalid custom frames before their call and names missing slots on failed receipts", async () => {
+        const cases = [
+            { call: "analysis", prompt: " ", error: "blank" },
+            { call: "analysis", prompt: "ordinary text", error: "ChatML" },
+            { call: "analysis", prompt: "<|im_start|>user<|im_sep|>{{slot::scene}}<|im_end|>", error: "messages" },
+            {
+                call: "analysis",
+                prompt: "<|im_start|>user<|im_sep|>{{slot::messages}}{{#if 0}}{{slot::scene}}{{/if}}<|im_end|>",
+                error: "scene",
+            },
+            { call: "patch", prompt: " ", error: "blank" },
+            { call: "patch", prompt: "ordinary text", error: "ChatML" },
+            { call: "patch", prompt: "<|im_start|>user<|im_sep|>{{slot::previous}}<|im_end|>", error: "cast" },
+            {
+                call: "patch",
+                prompt: "<|im_start|>user<|im_sep|>{{slot::cast}}{{#if 0}}{{slot::previous}}{{/if}}<|im_end|>",
+                error: "previous",
+            },
+        ];
+        for (const row of cases) {
+            const t = structuredHarness({
+                hypaSettings: { structured: { ...customFrames, [`${row.call}Prompt`]: row.prompt } },
+            });
+            let terminal: Promise<MemoryTaskEvent>;
+            if (row.call === "patch") {
+                const first = await beginAnalysis(t);
+                terminal = first.terminal;
+                first.request.answer(
+                    JSON.stringify({
+                        ...analysis(),
+                        pageCandidates: [
+                            {
+                                create: { type: "location", title: "Harbor", aliases: [] },
+                                reason: "Arrival",
+                                confidence: 1,
+                            },
+                        ],
+                    }),
+                );
+            } else {
+                terminal = t.nextTerminal("k1");
+                t.service.handOff(writerInput(t, "m3"));
+            }
+            const ended = await Promise.race([
+                terminal,
+                t.provider.request(row.call === "analysis" ? 0 : 1).then(() => {
+                    throw new Error(`Invalid ${row.call} frame reached provider`);
+                }),
+            ]);
+            expect(ended.status.state).toBe("failed");
+            await t.service.drain();
+            expect(t.provider.requests).toHaveLength(row.call === "analysis" ? 0 : 1);
+            const run = runRecord(t);
+            expect(run).toMatchObject({
+                customPrompt: true,
+                result: "failed",
+                receipt: {
+                    customPrompt: true,
+                    state: "failed",
+                    reason: "customPromptInvalid",
+                    error: expect.stringContaining(row.error),
+                },
+            });
+            expect(t.chat("k1")!.message.find(({ chatId }) => chatId === "m2")!.generationInfo!.memory).toEqual(
+                run.receipt,
+            );
+            expect(contents(t).events).toEqual([]);
+        }
+    });
+
+    it("keeps bounded redacted provider errors on custom failed receipts", async () => {
+        const t = structuredHarness({ hypaSettings: { structured: customFrames } });
+        const { request, terminal } = await beginAnalysis(t);
+        request.fail(`Missing title: ${MEMORY_KEY} ${PROXY_KEY} ${"detail ".repeat(LIMITS.runErrorChars)}`);
+        expect((await terminal).status.state).toBe("failed");
+        await t.service.drain();
+        const run = runRecord(t);
+        expect(run.receipt).toMatchObject({
+            state: "failed",
+            customPrompt: true,
+            reason: "requestFailed",
+            error: expect.stringContaining("Missing title"),
+        });
+        expect(run.receipt!.error!.length).toBeLessThanOrEqual(LIMITS.runErrorChars);
+        expect(run.receipt!.error).not.toContain(MEMORY_KEY);
+        expect(run.receipt!.error).not.toContain(PROXY_KEY);
+        expect(run.receipt!.error).toBe(run.error);
+    });
+
+    it("does not replay a plain failed input in custom mode even with the same fingerprint", async () => {
+        const t = structuredHarness();
+        const first = await beginAnalysis(t);
+        first.request.fail("Temporary failure");
+        await first.terminal;
+        await t.service.drain();
+        t.replace("hypaV3Presets", (data) => ({
+            ...data,
+            items: data.items.map((item: any) => ({
+                ...item,
+                settings: { ...item.settings, structured: customFrames },
+            })),
+        }));
+        const input = writerInput(t, "m3");
+        writeMemory(t.store, "c", "k1", {
+            runs: [{ ...runRecord(t), settingsFingerprint: input.settingsFingerprint }],
+        });
+        const retry = await beginAnalysis(t, input);
+        expect(t.provider.asked(retry.request)).toContain("CUSTOM ANALYSIS Uma");
+        expect(retry.request.rawBody).not.toBe(first.request.rawBody);
+        retry.request.answer(JSON.stringify(analysis()));
+        await finishRecording(t, retry.terminal);
+        expect(runRecord(t).customPrompt).toBe(true);
+    });
+
+    it("refuses an oversized custom patch input before making its model call", async () => {
+        const t = structuredHarness({
+            hypaSettings: {
+                structured: {
+                    ...customFrames,
+                    patchPrompt: customFrames.patchPrompt.replace(
+                        "CUSTOM PATCH",
+                        "{{slot::cast}}".repeat(Math.ceil(MAX_READ_RESPONSE_BYTES / 2000)),
+                    ),
+                },
+            },
+        });
+        const page = memoryRecords(["large"], "x".repeat(2100)).pages[0];
+        page.title = "Harbor";
+        writeMemory(t.store, "c", "k1", { pages: [page] });
+        const { request, terminal } = await beginAnalysis(t);
+        request.answer(
+            JSON.stringify({
+                ...analysis(),
+                pageCandidates: [
+                    {
+                        targetId: page.id,
+                        reason: "Arrival",
+                        confidence: 1,
+                    },
+                ],
+            }),
+        );
+        const ended = await Promise.race([
+            terminal,
+            t.provider.request(1).then(() => {
+                throw new Error("Oversized patch reached provider");
+            }),
+        ]);
+        expect(ended.status.state).toBe("failed");
+        await t.service.drain();
+        expect(t.provider.requests).toHaveLength(1);
+        expect(runRecord(t)).toMatchObject({
+            customPrompt: true,
+            result: "failed",
+            receipt: { state: "failed", customPrompt: true, reason: "inputTooLarge" },
+        });
+        expect(contents(t).events).toEqual([]);
+    });
+
     it("uses the chat highlight override before the preset and suppresses rule highlights in rebuilds and backfills", async () => {
         for (const row of [
             { preset: "all", override: undefined, mode: undefined, highlighted: true },
@@ -2639,73 +2884,86 @@ describe("structured memory tasks", () => {
         );
     });
 
-    it("rebuilds analysis after a scene revert and keeps that section reverted until a different rewrite", async () => {
-        const t = structuredHarness();
-        t.write("k1", [
-            {
-                op: "append",
-                anchor: { end: true },
-                messages: [m("m8", "Fourth reply", "char"), m("m9", "Confirm fourth reply", "user")],
-            },
-        ]);
-        await recordOnly(t, {
-            ...analysis(),
-            scene: { place: "Harbor", time: "Dawn", state: "Waiting", participants: [] },
-        });
-        const scene = pageRecords(t).find(({ type }) => type === "scene")!;
-        const failed = await beginAnalysis(t, writerInput(t, "m5"));
-        expect(t.provider.asked(failed.request)).toContain("place: Harbor");
-        failed.request.fail("Temporary failure");
-        expect((await failed.terminal).status.state).toBe("failed");
-        await t.service.drain();
-        const undone = revertChange(scene, scene.history.find(({ heading }) => heading === "place")!.id, {
-            now: t.clock.now,
-            newId: () => "scene-revert",
-        })!;
-        writeMemory(t.store, "c", "k1", { pages: [undone.page] });
-        expect(
-            pageRecords(t)
-                .find(({ id }) => id === scene.id)!
-                .sections.some(({ heading }) => heading === "place"),
-        ).toBe(false);
-        const retry = await beginAnalysis(t, writerInput(t, "m5"));
-        expect(retry.request.rawBody).not.toBe(failed.request.rawBody);
-        expect(t.provider.asked(retry.request)).toContain("taken back from place: Harbor");
-        retry.request.answer(
-            JSON.stringify({
+    it.each([false, true])(
+        "rebuilds analysis after a scene revert and keeps it reverted with fine-tuning %s",
+        async (fineTuning) => {
+            const frames = defaultPrompts();
+            const t = structuredHarness({
+                hypaSettings: {
+                    structured: {
+                        cadence: "everyTurn",
+                        fineTuning,
+                        analysisPrompt: frames.analysis.frame,
+                        patchPrompt: frames.patch.frame,
+                    },
+                },
+            });
+            t.write("k1", [
+                {
+                    op: "append",
+                    anchor: { end: true },
+                    messages: [m("m8", "Fourth reply", "char"), m("m9", "Confirm fourth reply", "user")],
+                },
+            ]);
+            await recordOnly(t, {
                 ...analysis(),
                 scene: { place: "Harbor", time: "Dawn", state: "Waiting", participants: [] },
-            }),
-        );
-        await finishRecording(t, retry.terminal);
-        const kept = pageRecords(t).find(({ id }) => id === scene.id)!;
-        expect(kept.sections.some(({ heading }) => heading === "place")).toBe(false);
-        expect(kept.history).toEqual(undone.page.history);
-        expect(runRecord(t).receipt!.warnings).toContainEqual(
-            expect.objectContaining({ kind: "revertedScene", pageId: scene.id, heading: "place" }),
-        );
-        await recordOnly(
-            t,
-            { ...analysis(), scene: { place: "Inn", time: "Dawn", state: "Waiting", participants: [] } },
-            writerInput(t, "m7"),
-        );
-        expect(
-            pageRecords(t)
-                .find(({ id }) => id === scene.id)!
-                .sections.find(({ heading }) => heading === "place")!.body,
-        ).toBe("Inn");
-        await recordOnly(
-            t,
-            { ...analysis(), scene: { place: "Harbor", time: "Dawn", state: "Waiting", participants: [] } },
-            writerInput(t, "m9"),
-        );
-        expect(
-            pageRecords(t)
-                .find(({ id }) => id === scene.id)!
-                .sections.find(({ heading }) => heading === "place")!.body,
-        ).toBe("Harbor");
-        expect(runRecord(t).receipt!.warnings.some(({ kind }) => kind === "revertedScene")).toBe(false);
-    });
+            });
+            const scene = pageRecords(t).find(({ type }) => type === "scene")!;
+            const failed = await beginAnalysis(t, writerInput(t, "m5"));
+            expect(t.provider.asked(failed.request)).toContain("place: Harbor");
+            failed.request.fail("Temporary failure");
+            expect((await failed.terminal).status.state).toBe("failed");
+            await t.service.drain();
+            const undone = revertChange(scene, scene.history.find(({ heading }) => heading === "place")!.id, {
+                now: t.clock.now,
+                newId: () => "scene-revert",
+            })!;
+            writeMemory(t.store, "c", "k1", { pages: [undone.page] });
+            expect(
+                pageRecords(t)
+                    .find(({ id }) => id === scene.id)!
+                    .sections.some(({ heading }) => heading === "place"),
+            ).toBe(false);
+            const retry = await beginAnalysis(t, writerInput(t, "m5"));
+            expect(retry.request.rawBody).not.toBe(failed.request.rawBody);
+            expect(t.provider.asked(retry.request)).toContain("taken back from place: Harbor");
+            retry.request.answer(
+                JSON.stringify({
+                    ...analysis(),
+                    scene: { place: "Harbor", time: "Dawn", state: "Waiting", participants: [] },
+                }),
+            );
+            await finishRecording(t, retry.terminal);
+            const kept = pageRecords(t).find(({ id }) => id === scene.id)!;
+            expect(kept.sections.some(({ heading }) => heading === "place")).toBe(false);
+            expect(kept.history).toEqual(undone.page.history);
+            expect(runRecord(t).receipt!.warnings).toContainEqual(
+                expect.objectContaining({ kind: "revertedScene", pageId: scene.id, heading: "place" }),
+            );
+            await recordOnly(
+                t,
+                { ...analysis(), scene: { place: "Inn", time: "Dawn", state: "Waiting", participants: [] } },
+                writerInput(t, "m7"),
+            );
+            expect(
+                pageRecords(t)
+                    .find(({ id }) => id === scene.id)!
+                    .sections.find(({ heading }) => heading === "place")!.body,
+            ).toBe("Inn");
+            await recordOnly(
+                t,
+                { ...analysis(), scene: { place: "Harbor", time: "Dawn", state: "Waiting", participants: [] } },
+                writerInput(t, "m9"),
+            );
+            expect(
+                pageRecords(t)
+                    .find(({ id }) => id === scene.id)!
+                    .sections.find(({ heading }) => heading === "place")!.body,
+            ).toBe("Harbor");
+            expect(runRecord(t).receipt!.warnings.some(({ kind }) => kind === "revertedScene")).toBe(false);
+        },
+    );
 
     it("chains a rebuild with whole-run progress and resumes failed staging after a service restart without recording finished windows again", async () => {
         const t = structuredHarness({ limits: { maxWriterWindows: 1, taskDeadlineMs: 100 } });

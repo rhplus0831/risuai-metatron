@@ -5,7 +5,8 @@
 - Owns the `structuredMemory` writer: its settings and their overrides, the windows it records, its task kind in the
   memory task service, a writer run, the analysis and patch prompts, admission of the model's answer, the pages it
   maintains, and record now with the `memoryRecord` job.
-- Paths: `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob}.ts`, the
+- Paths:
+  `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob,testRun}.ts`, the
   writer's task kind in `server/src/prompt/memory/memoryTasks.ts`, and `structuredMemoryStep` in
   `server/src/prompt/assemble.ts`.
 - See [structured memory](structured-memory.md) for how the algorithm is selected, and [Active Plans](../plan/README.md)
@@ -30,7 +31,7 @@
   `writerCeiling`, `writerCadence`, `recordedMessages`, `readRecordedMessages`, `confirmedThrough`,
   `windowStillConfirmed`.
 - `server/src/prompt/memory/structured/prompts.ts`: `analysisSlots`, `assembleAnalysisPrompt`, `patchSlots`,
-  `assemblePatchPrompt`, `compactSlots`, `assembleCompactPrompt`.
+  `assemblePatchPrompt`, `compactSlots`, `assembleCompactPrompt`, `parseCustomFrame`, `defaultPrompts`.
 - `server/src/prompt/memory/structured/analysis.ts`: the pure `parseAnalysis` and `admitAnalysis`.
 - `server/src/prompt/memory/structured/pages.ts`: the pure page rules: `castSlice`, `planPages`, `aliasSeeds`,
   `windowSpeaker`, `changeSection`, `rewriteScene`, `sectionVectorText`.
@@ -42,7 +43,7 @@
   writer's one write on either path; `writerRequestDb` and `writerHostDeps`, what its requests ignore of the preset;
   `adoptionHold` and `chatAdoptionHold`; `writerPaused`, re-exported from `shared/`.
 - `server/src/prompt/memory/structured/recordJob.ts`: `runMemoryRecord`, the `memoryRecord` command; `recordGapInJob`, a
-  send's approved gap.
+  send's approved gap. `testRun.ts`: `runMemoryTest`, [the test run](structured-memory-read.md#the-test-run).
 - `server/src/prompt/memory/memoryTasks.ts`: the task kind inside the shared service: `StructuredMemoryWriter`
   (`structuredWriter` replaces `createStructuredWriter`, in tests), `StructuredMemoryWriterResult`,
   `StructuredMemoryCommit`, `MemoryTaskLimits.maxWriterWindows`.
@@ -145,8 +146,8 @@ where a `historical` write [leaves current state alone](structured-memory-rebuil
 2. Leftovers: one task runs per chat, so a `pending` row found here is abandoned. The write that opens the run closes it
    `skipped` (`interrupted`): a cancel, a checkpoint load, or a restart proves nothing about the model.
 3. Input: only the newest row that did not record is read. Its `input` is sent again as stored when its window has the
-   same message ids and hashes and its `settingsFingerprint` is the task's. Otherwise the prompt is built anew, so
-   changed instructions take effect and a regrouped window rebuilds.
+   same message ids and hashes and its `settingsFingerprint` and prompt mode are the task's. Otherwise the prompt is
+   built anew, so changed instructions take effect and a regrouped window rebuilds.
 4. Snapshot: a `pending` row holds the exact input, and the run's `language`, before any call. An input too large for a
    record fails the run (`inputTooLarge`) with no call.
 5. Call: `host.request`, on `writerHostDeps`: temperature 0, and no `jsonSchemaEnabled` or `extractJson`, which shape
@@ -211,8 +212,8 @@ reply. It shares `runWindows` with record now, inside the send's job.
 `assembleAnalysisPrompt` parses the default ChatML frame and the preset's `instructions` with the slots in place, so CBS
 runs on them alone, then fills the slots in one pass over the parsed messages. Chat text never reaches CBS, cannot start
 a ChatML message, and a value holding a slot's name stays as it is. Message text stays raw so a quote can match, with
-inlays shown as `[Image]`. `fineTuning` is not read yet. The language is the chat's override, the owner's, the preset's,
-then `db.language`.
+inlays shown as `[Image]`. Under `fineTuning` the frame is [the preset's](structured-memory-read.md#prompt-fine-tuning).
+The language is the chat's override, the owner's, the preset's, then `db.language`.
 
 `castSlice` fills the `cast` slot, at most `promptPages` rows, in this order: `always` pages, the scene's
 `participants`, then pages whose title or alias is a case-insensitive substring of a window message. The scene page has
@@ -300,9 +301,10 @@ set is legal, and a restore checks neither, because a snapshot may predate the p
 `showTargets` lists the accepted pages. A section shows whole or not at all, in target order, while `promptPatchChars`
 of bodies last; one past that is listed under `notShown`, and a target with sections, none of which fit, is refused
 `overBudget`. The call holds the admitted event and no message, so an item whose quote failed never reaches a page, and
-everything on a page traces to its `provenance` event. The prompt is bounded by limits, so it has no size check, and
-`RUN_RECORD_MARGIN_BYTES` covers it. A row marks a `userCorrected` section, which the rules say to change only when the
-event contradicts it, and `takenBack` lists the page's newest reverts. That room comes first out of `promptPatchChars`.
+everything on a page traces to its `provenance` event. The default prompt is bounded by limits, so it has no size check,
+and `RUN_RECORD_MARGIN_BYTES` covers it. A row marks a `userCorrected` section, which the rules say to change only when
+the event contradicts it, and `takenBack` lists the page's newest reverts. That room comes first out of
+`promptPatchChars`.
 
 An answer needs a `patches` list. `op` is `upsert` or `delete`; an upsert's `body` is the section's whole new text.
 
@@ -366,8 +368,8 @@ with its hashes and `historyId`. The text diff is the Pages tab's history; the r
   the preset. A chat's `structuredMemoryLanguage` wins over its owner's, and the owner's over the preset's `language`,
   where `""` follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
 - `MemorySettings.svelte` exposes only the fields something reads, and shares with HypaV3 only the preset picker, the
-  budget mode, and the memory maximum. `screening` and the fine-tuning fields stay hidden until their readers land. So a
-  preset's `summarizationModel` and `alwaysToggleOn` still apply with no control here.
+  budget mode, and the memory maximum. `screening` stays hidden until its reader lands. So a preset's
+  `summarizationModel` and `alwaysToggleOn` still apply with no control here.
 - `cadenceTokens` is the `tokens` cadence's threshold under a `tokens` budget mode, and `cadenceRatio` its share of the
   max context under a `ratio` one; each mode keeps the other's field.
 

@@ -1291,6 +1291,35 @@ describe("the context report", () => {
             }
         });
 
+        it("marks paused and not-automatic notices with the selected prompt mode", async () => {
+            for (const fineTuning of [false, true]) {
+                for (const held of [false, true]) {
+                    const assembly = structuredAssembly({
+                        messages: fiveMessages,
+                        maxContext: 2000,
+                        records: { ...stored([]), paused: !held, ...(held ? { adoptionHeld: true } : {}) },
+                        settings: { fineTuning, cadence: "everyTurn" },
+                    });
+                    const result = await assemblePrompt(assembly.host, {
+                        chatAdditonalTokens: 3,
+                        continue: false,
+                        generationId: "notice",
+                        stageTimings: { stage1Duration: 0, stage2Duration: 0 },
+                    });
+                    expect(result).toMatchObject({
+                        generationInfo: {
+                            memory: {
+                                state: held ? "notAutomatic" : "skipped",
+                                reason: held ? "awaitingAdoption" : "writerPaused",
+                            },
+                        },
+                    });
+                    if (result.type !== "prompt") throw new Error(JSON.stringify(result));
+                    expect(Boolean(result.generationInfo?.memory?.customPrompt)).toBe(fineTuning);
+                }
+            }
+        });
+
         it("leaves a held send without a gap question or task and explains the hold in its reply receipt", async () => {
             const assembly = structuredAssembly({
                 messages: fiveMessages,

@@ -238,9 +238,10 @@ status carried by a failed WebLLM request.
 
 ### Prompt job execution
 
-- `createGenerationRunner` sends `command` jobs to `runCommand` (`memoryRecord` to `runMemoryRecord`, `memoryRebuild` to
-  `runMemoryRebuild`); other kinds go to `runPromptJob`, which delegates one send to `runPromptSend` and emits `done`
-  after it returns. Command sequences call `runPromptSend` per part ([Command sequences](#command-sequences)).
+- `createGenerationRunner` sends `command` jobs to `runCommand` (`memoryRecord` to `runMemoryRecord`, `memoryTest` to
+  `runMemoryTest`, `memoryRebuild` to `runMemoryRebuild`); other kinds go to `runPromptJob`, which delegates one send to
+  `runPromptSend` and emits `done` after it returns. Command sequences call `runPromptSend` per part
+  ([Command sequences](#command-sequences)).
 - When input processing applies, it runs on the admitted preset before `presetChain`; `assemblePrompt` runs per speaker
   after a continue message is locked. Its `AssemblyHost` supplies job-scoped reads and writes, callbacks, token
   counting, and memory services. Assembly's prompt and lore behavior is owned by [chat pipeline](chat-pipeline.md);

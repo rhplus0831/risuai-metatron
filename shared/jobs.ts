@@ -86,14 +86,17 @@ export const MAX_TRIGGER_NAME_BYTES = 4096;
  * (`risu-form`) with its attribute's key and submitted string values, a manual trigger (`risu-trigger`,
  * `/trigger`) by name (its `risu-id` is `context.triggerId`), a person's start of Structured
  * Memory's writer: "record now" through the message `messageId`, which that press confirms, or resume
- * without one, or a rebuild of the chat's records from its transcript: a start in windows of `turns`
- * turns, or a resume of the run the chat holds. The last two are the only ones a group chat runs.
+ * without one, a test run of that writer over the chat's last window, which saves nothing and answers
+ * on `done.result` (`StructuredMemoryTestResult`), or a rebuild of the chat's records from its
+ * transcript: a start in windows of `turns` turns, or a resume of the run the chat holds. The memory
+ * commands are the only ones a group chat runs.
  */
 export type GenerationCommand =
     | { type: "button"; data: string }
     | { type: "form"; key: string; values: Record<string, string | string[]> }
     | { type: "manual"; name: string }
     | { type: "memoryRecord"; messageId?: string }
+    | { type: "memoryTest" }
     | { type: "memoryRebuild"; mode: StructuredMemoryRebuildMode; turns: 1 | 2 }
     | { type: "memoryRebuild"; resume: true };
 

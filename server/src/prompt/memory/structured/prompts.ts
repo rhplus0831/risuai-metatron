@@ -12,6 +12,7 @@ import {
     type MemoryPage,
     type MemoryThread,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
+    type StructuredMemoryDefaultPromptsAnswer,
 } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryEventWrite } from "../../../data/memoryStore.ts";
 import type { MemoryHost } from "../host.ts";
@@ -26,20 +27,46 @@ import type { WriterWindow } from "./window.ts";
  * afterwards, in one pass over the parsed messages, so chat and model text never reach CBS and cannot
  * start a ChatML message, and a value that holds a slot's name stays as it is.
  *
+ * Under the preset's `fineTuning`, its `analysisPrompt` and `patchPrompt` are the whole frame of their
+ * call (`parseCustomFrame`): the same parser and the same filling, with `instructions` left out, since
+ * the person writes the frame. A custom frame is checked after CBS and before filling, so a CBS branch
+ * cannot hide a slot: it must quote the call's required slots, because a call without its messages or
+ * its pages has nothing to validate against. The compaction frame stays code's in both modes, and so does
+ * what the slots hold, which is why the answer's validation is the same whatever the frame.
+ *
  * The analysis prompt's size is a cost on every recorded turn: its fixed parts stay short and everything
  * it lists is bounded. Only `messages` is not, because a quote must be found in the window's whole text.
- * The patch prompt holds no message and everything in it is bounded, so it needs no size check of its
- * own. Neither does the compaction prompt: it holds one section, and no run keeps it.
+ * The default patch prompt holds no message and everything in it is bounded, so it needs no size check
+ * of its own; a custom one is checked by the writer, since its frame can be any length. Neither needs the
+ * compaction prompt: it holds one section, and no run keeps it.
  */
 
-/** The prompt's named inputs. */
-export type AnalysisSlots = Record<
-    "format" | "rules" | "language" | "cast" | "scene" | "threads" | "previous" | "messages",
-    string
->;
+/** The analysis prompt's slot names, in the default frame's order. */
+export const ANALYSIS_SLOT_NAMES = [
+    "format",
+    "rules",
+    "language",
+    "cast",
+    "scene",
+    "threads",
+    "previous",
+    "messages",
+] as const;
 
-/** The patch prompt's named inputs: the same names, where `cast` is its pages and `previous` the event. */
-export type PatchSlots = Record<"format" | "rules" | "language" | "cast" | "previous", string>;
+/** The patch prompt's slot names: the same names, where `cast` is its pages and `previous` the event. */
+export const PATCH_SLOT_NAMES = ["format", "rules", "language", "cast", "previous"] as const;
+
+/** The slots a custom frame must quote, by call: what the call records, and what its answer is checked against. */
+export const REQUIRED_SLOT_NAMES = {
+    analysis: ["messages", "scene"],
+    patch: ["cast", "previous"],
+} as const satisfies Record<"analysis" | "patch", readonly string[]>;
+
+/** The prompt's named inputs. */
+export type AnalysisSlots = Record<(typeof ANALYSIS_SLOT_NAMES)[number], string>;
+
+/** The patch prompt's named inputs. */
+export type PatchSlots = Record<(typeof PATCH_SLOT_NAMES)[number], string>;
 
 /** The compaction prompt's named inputs: `page` says what the section is, and `section` is its body. */
 export type CompactSlots = Record<"format" | "rules" | "language" | "page" | "section", string>;
@@ -307,6 +334,16 @@ export function compactSlots({ language, target }: CompactInput): CompactSlots {
     };
 }
 
+/** The parsed `messages` with their slots filled in one pass; a name that is no slot stays as it is. */
+export function fillSlots(messages: readonly OpenAIChat[], slots: Record<string, string>): OpenAIChat[] {
+    return messages.map((message) => ({
+        ...message,
+        content: message.content.replace(SLOT_TOKEN_REGEX, (token, name: string) =>
+            Object.hasOwn(slots, name) ? slots[name] : token,
+        ),
+    }));
+}
+
 /** `frame` parsed with its slots in place, then the slots filled in one pass. */
 function assemblePrompt<Slots extends Record<string, string>>(
     host: Pick<MemoryHost, "parseChatML">,
@@ -314,12 +351,67 @@ function assemblePrompt<Slots extends Record<string, string>>(
     slots: Slots,
 ): OpenAIChat[] {
     // Each frame starts with a ChatML marker, so it always parses.
-    return host.parseChatML(frame)!.map((message) => ({
-        ...message,
-        content: message.content.replace(SLOT_TOKEN_REGEX, (token, name: string) =>
-            Object.hasOwn(slots, name) ? slots[name] : token,
-        ),
-    }));
+    return fillSlots(host.parseChatML(frame)!, slots);
+}
+
+/** A preset's own frame, parsed and checked, or why it cannot be a call's prompt. */
+export type CustomFrame =
+    | {
+          ok: true;
+          /** The frame as parsed, with its slots still in place. */
+          messages: OpenAIChat[];
+          /** The call's slots the frame does not quote: a warning, since the model then lacks them. */
+          unquoted: string[];
+          /** The names the frame quotes that are no slot of the call: they stay literal in the prompt. */
+          unknown: string[];
+      }
+    | { ok: false; error: string };
+
+/**
+ * The preset's own frame for `call`, through ChatML and CBS as the default frame goes, with its slots
+ * still in place. Blank text, text the parser gives no message for (it needs a leading ChatML marker),
+ * and a frame that does not quote every slot of `REQUIRED_SLOT_NAMES[call]` are refused with the reason:
+ * a run on one would record nothing it could check. The slots are read from the parsed messages, after
+ * CBS, so no CBS branch can hide one.
+ */
+export function parseCustomFrame(
+    host: Pick<MemoryHost, "parseChatML">,
+    text: string,
+    call: keyof typeof REQUIRED_SLOT_NAMES,
+): CustomFrame {
+    if (text.trim() === "") {
+        return { ok: false, error: `The ${call} prompt is blank` };
+    }
+    const messages = host.parseChatML(text);
+    if (!messages || messages.length === 0) {
+        return { ok: false, error: `The ${call} prompt is not ChatML: it holds no <|im_start|> message` };
+    }
+    const names: readonly string[] = call === "analysis" ? ANALYSIS_SLOT_NAMES : PATCH_SLOT_NAMES;
+    const quoted = new Set<string>();
+    for (const { content } of messages) {
+        for (const match of content.matchAll(SLOT_TOKEN_REGEX)) {
+            quoted.add(match[1]);
+        }
+    }
+    const missing = REQUIRED_SLOT_NAMES[call].filter((name) => !quoted.has(name));
+    if (missing.length > 0) {
+        const list = missing.map((name) => `{{slot::${name}}}`).join(" and ");
+        return { ok: false, error: `The ${call} prompt does not quote ${list}` };
+    }
+    return {
+        ok: true,
+        messages,
+        unquoted: names.filter((name) => !quoted.has(name)),
+        unknown: [...quoted].filter((name) => !names.includes(name)),
+    };
+}
+
+/** Each call's default frame as stored text, with no preset text, and the slot texts the validator reads. */
+export function defaultPrompts(): StructuredMemoryDefaultPromptsAnswer {
+    return {
+        analysis: { frame: analysisFrame(""), format: FORMAT, rules: RULES },
+        patch: { frame: patchFrame(""), format: PATCH_FORMAT, rules: PATCH_RULES },
+    };
 }
 
 /** The analysis call's messages. */
