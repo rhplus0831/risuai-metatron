@@ -1,6 +1,6 @@
 # Structured Memory Plan (initial design)
 
-Status: design drafted 2026-11-01 from the owner's request, sliced the same day. Landed: 1a (e6f734303), 2a (19820d111), 1b (89cf98299), 1c (61e93aa7e), 1d (e979f105d), 2b (c627a7b05), 2c (30c6aad33), 2d (9d7bd42be), 2e (32f3113e4), 3a (fdbd31190), 3b (65c940e0d), 3c (40f1a6f26), 4a (e3c90eb7d), 4b (7d0241c37), 4c (ec4049a27), 7a (596ab8cb2), 5d (944f86bfa), 5a (612ce5ba5), 5c (0bb2bd22d), 5b (60574a53e), 5f (71ce92c6f), 5e (492285cb6), 6a (bd554de9a), 5g (d1a6e6664), 6c (a0410cb5f), 6b (edb182cee), 7b (78787e89b). All nine open
+Status: design drafted 2026-11-01 from the owner's request, sliced the same day. Landed: 1a (e6f734303), 2a (19820d111), 1b (89cf98299), 1c (61e93aa7e), 1d (e979f105d), 2b (c627a7b05), 2c (30c6aad33), 2d (9d7bd42be), 2e (32f3113e4), 3a (fdbd31190), 3b (65c940e0d), 3c (40f1a6f26), 4a (e3c90eb7d), 4b (7d0241c37), 4c (ec4049a27), 7a (596ab8cb2), 5d (944f86bfa), 5a (612ce5ba5), 5c (0bb2bd22d), 5b (60574a53e), 5f (71ce92c6f), 5e (492285cb6), 6a (bd554de9a), 5g (d1a6e6664), 6c (a0410cb5f), 6b (edb182cee), 7b (78787e89b), 7c (a44a4cadb). All nine open
 questions were answered by the owner (see **Answered questions**). The persisted discriminator is `structuredMemory`;
 "Structured memory" stays the settings label until the owner renames it.
 
