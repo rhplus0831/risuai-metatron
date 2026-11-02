@@ -870,12 +870,16 @@ Files: new `server/src/prompt/memory/structured/compact.ts` and tests; `structur
 
 ### Slice 7b: change highlighting and revert (Q8; needs 4c) — _hard_
 
-Files: `structured/pages.ts`, `structured/patches.ts`, `structured/prompts.ts`, `routes/structuredMemory.ts`,
-`PagesTab.svelte`, `MemoryReceiptLine.svelte`, `MemorySettings.svelte`, `src/lang/en.ts`, tests.
+Files: `structured/pages.ts`, `structured/patches.ts`, `structured/prompts.ts`, `structured/writer.ts`,
+`structured/restore.ts`, `routes/structuredMemory.ts`, `PagesTab.svelte`, `MemoryReceiptLine.svelte`,
+`StructuredMemoryPanel.svelte`, `MemorySettings.svelte`, `src/ts/process/structuredMemory.svelte.ts`, `src/lang/en.ts`,
+tests.
 
 - The three modes, per chat with a global default, and the kinds as checkboxes; importance comes from the change kind in
   code. Revert from the receipt and the history, recorded as `revertedBy: user`, which the writer's input then carries so
-  the change is not proposed again; the notice counts the items added after it that stay.
+  the change is not proposed again; the notice counts the items added after it that stay. The call that writes the
+  scene reads reverts too, so a reverted scene section stays reverted past the next rewrite. No `retract` checkbox: a
+  retraction writes no page history entry, so the kind has nothing to highlight (owner, 2026-11-02).
 - A patch may replace a `userCorrected` section, and the lock stays the only hard guarantee (owner, 2026-11-02). The
   patch call shows the mark, and its prompt says to change such a section only when new events contradict it. A patch
   that replaces one clears the flag, so the Pages tab stops crediting the person and compaction may touch it, and the
@@ -970,7 +974,7 @@ Answered by the owner on 2026-11-01:
   in the receipt and the page history, and the user reverts from either. The owner's three-mode idea (as Claude Code's
   permission modes) is kept as a **highlighting** setting, per chat with a global default: highlight nothing /
   highlight important changes (default) / highlight every change. "Important" is decided by code from the change
-  kind, never by a model score: a new page, a contradiction of a lasting attribute, a deletion or retraction, and
+  kind, never by a model score: a new page, a contradiction of a lasting attribute, a deletion, and
   optionally a `change` above a grade threshold; the settings page shows these kinds as checkboxes. A reverted change
   is recorded as `revertedBy: user` so the writer does not propose it again, and the revert notice counts the items
   added after it that stay. The hard guarantee for content that must not change without the user is the per-section
