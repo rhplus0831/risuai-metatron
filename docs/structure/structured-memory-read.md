@@ -154,6 +154,10 @@ read.
   its `verified` items of one kind. A newer report of another kind means none, and no older report is reached. Coverage
   badges a row by `eventId` and a closed group by any of its rows, Log a run by the event it committed, Timeline an
   event, and Pages a page.
+- A chat whose held `hypaV3Data` is unsealed and holds summaries, and whose contents list no page, event, or thread, is
+  offered [adoption](structured-memory-lifecycle.md#adopting-hypav3-summaries) under the writer line. A chat with only
+  runs is offered it too. The contents read the writer line already makes decides, so there is no second request, and
+  the words say no model is called. The route checks again, so a stale panel's press answers `adopted: 0`.
 - Preview runs only on its button. A preview is a local send, so it flips `readOnly`, which moves `refresh`: a run on
   `refresh` would never stop. It answers the prompt with no next message, so it says the next send can differ.
 - `memoryBlockEntries` finds the block by `itemTag`, because `editRequest` can rebuild entries without their `memo`. A
@@ -197,6 +201,7 @@ read.
   event's first message still present, else its stored `sourceIndex`, else last, and ages it from its newest message
   still present, as the flow lane does. `memory_events.seq` says nothing of message order. Opening a row reads its
   record through `memoryEventView`, and a stale row holds the repairs ([Panel edits](#panel-edits)).
+- An open event whose `writerRun` is `ADOPTED_WRITER_RUN` says it came from HypaV3 data without a model call.
 - Threads lists the contents, with the state on each row, and opening one reads its `who`, `openedBy`, and `closedBy`.
 - A link between tabs is `open(target)`, which the panel turns into `focus` for the tab it shows. A message link is
   `jump(messageId)`: `setChatOpen`, `requestMessageJump`, then the panel closes. The panel can sit over a closed chat.

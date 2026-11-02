@@ -2710,6 +2710,23 @@ export const languageEnglish = {
             failed: (chat: string) =>
                 `Memory records could not be copied to "${chat}". The chat itself is intact, but its earlier messages are not covered by memory.`,
         },
+        adopt: {
+            offer: (summaries: number) =>
+                `${
+                    summaries === 1
+                        ? "This chat has 1 HypaV3 summary and no memory records. Adopting makes it an event, so the turns it covers count as recorded."
+                        : `This chat has ${summaries} HypaV3 summaries and no memory records. Adopting makes each summary an event, so the turns they cover count as recorded.`
+                } No model is called, and the HypaV3 data stays as it is.`,
+            button: "Adopt summaries",
+            done: (events: number, stale: number) => {
+                const adopted = `Adopted ${events === 1 ? "1 event" : `${events} events`}, with no model call.`;
+                return stale > 0
+                    ? `${adopted} ${stale === 1 ? "1 could not be matched to its messages" : `${stale} could not be matched to their messages`}: see Timeline.`
+                    : adopted;
+            },
+            nothing: "Nothing to adopt: this chat already has memory records or no summaries.",
+            adoptedEvent: "Originally adopted from HypaV3 data, without a model call.",
+        },
         memoryFile: {
             exportedWithoutRecords:
                 "The chat was exported, but its memory records could not be read, so the file holds none of them.",

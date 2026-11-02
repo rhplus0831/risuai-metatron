@@ -161,7 +161,7 @@ completed plans and retrieval commands.
 | Structured memory: events, pages, threads, store, routes, package, the HypaV3 projection | [structured-memory](docs/structure/structured-memory.md)                     |
 | Structured memory writer: windows, tasks, runs, admission, pages, record now             | [structured-memory-writer](docs/structure/structured-memory-writer.md)       |
 | Structured memory read path: lanes, card, report, receipts, the memory panel             | [structured-memory-read](docs/structure/structured-memory-read.md)           |
-| Structured memory lifecycle: reconciliation, repairs, retraction, checkpoints, copies    | [structured-memory-lifecycle](docs/structure/structured-memory-lifecycle.md) |
+| Structured memory lifecycle: reconciliation, repairs, checkpoints, copies, adoption      | [structured-memory-lifecycle](docs/structure/structured-memory-lifecycle.md) |
 | Model catalogues/profiles/slots, credentials, adapters, streaming, token counts          | [llm-requests](docs/structure/llm-requests.md)                               |
 | CBS, markdown/sanitization, chat variables, partial edit, highlighting                   | [cbs-rendering](docs/structure/cbs-rendering.md)                             |
 | Regex, triggers v2, Lua editors/shared engines                                           | [scripts-triggers](docs/structure/scripts-triggers.md)                       |
@@ -199,9 +199,9 @@ coupling links.
   `src/lib/Others/StructuredMemory/`, `src/lib/ChatScreens/MemoryReceiptLine.svelte`, and in
   `src/ts/process/structuredMemory.svelte.ts` the receipt and panel functions (`memoryReceiptView`,
   `joinMemoryCoverage`, `memoryItemsUsed`).
-- **structured-memory-lifecycle**: `server/src/prompt/memory/structured/{reconcile,inherit,restore}.ts`,
-  `src/ts/process/chatMemoryInherit.svelte.ts`, and the repair, checkpoint, inherit, and chat file parts of the files
-  above.
+- **structured-memory-lifecycle**: `server/src/prompt/memory/structured/{reconcile,inherit,restore,adopt}.ts`,
+  `src/ts/process/chatMemoryInherit.svelte.ts`, and the repair, checkpoint, inherit, chat file, and adoption parts of
+  the files above.
 - **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`,
   `shared/{llm,llmSecrets}.ts`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`,
   `server/src/prompt/tokens.ts`, `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`,

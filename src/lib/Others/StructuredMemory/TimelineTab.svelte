@@ -24,6 +24,7 @@
     import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import {
+        ADOPTED_WRITER_RUN,
         memoryAnchorState,
         memoryRerecordTarget,
         type StructuredMemoryCoverageEvent,
@@ -251,6 +252,9 @@
             <p class="text-textcolor2">{panelText.loading}</p>
         {:else}
             <p class="whitespace-pre-wrap">{openEvent.summary}</p>
+            {#if openEvent.writerRun === ADOPTED_WRITER_RUN}
+                <p class="text-textcolor2" data-memory-event-adopted>{language.structuredMemory.adopt.adoptedEvent}</p>
+            {/if}
             {#if openEvent.storyTime.text !== ""}
                 <p>
                     {logText.storyTime}: {openEvent.storyTime.text}{openEvent.storyTime.ordinal === undefined

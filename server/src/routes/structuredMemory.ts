@@ -9,6 +9,7 @@ import {
     storedMemorySources,
     type MemoryEvent,
     type MemoryPage,
+    type StructuredMemoryAdoptAnswer,
     type StructuredMemoryContentsAnswer,
     type StructuredMemoryCoverageEvent,
     type StructuredMemoryCoverageRound,
@@ -30,6 +31,7 @@ import { messageSourceHash } from "../data/memoryStore.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { readJsonBody } from "../http/body.ts";
 import { compressedJson } from "../http/compressedJson.ts";
+import { adoptedEvents } from "../prompt/memory/structured/adopt.ts";
 import {
     applyEventRepair,
     applyPageEdit,
@@ -182,14 +184,22 @@ type RoundRead = {
  *   run never gets through. 400 for a body of another shape or a record the store refuses, 404 `chatGone`,
  *   and 409 `{ error, reason: "fenced" }` while `fenced` holds. The body is read after authentication and
  *   capped at `restoreBodyBytes`, 413 past it.
+ * - `POST /api/memory/structured/:characterId/:chatId/adopt`, with no body: turns the summaries of the
+ *   chat's stored `hypaV3Data` into events, with no model call (`structured/adopt.ts`), answered
+ *   `StructuredMemoryAdoptAnswer`. The server reads the chat as stored, and the tab sends nothing. It
+ *   writes no run and leaves `hypaV3Data` as it is. A chat that holds a page, event, or thread, which is
+ *   what a repeat finds, and one with nothing adoptable answer `adopted: 0` and write nothing. Runs do not
+ *   count, unlike the two routes above: a failed writer run leaves a run row and no record, so counting one
+ *   would refuse adoption for good, and a pending run's task is what the fence holds off. 404 `chatGone`,
+ *   and 409 `{ error, reason: "fenced" }` while `fenced` holds.
  *
  * All are authenticated, rate-limited, and epoch-checked (412 `EpochMismatch`); 400 for an id that is
  * not a resource id, 503 (`Retry-After`) when the store is closed. The app makes every answer
  * `no-store` and refuses them during shutdown. The epoch check and the store reads run in one
  * synchronous step, so a round is one snapshot; separate rounds are tied together only by `revision`.
- * An edit's, an inherit's, or a restore's checks and its write share one such step too, after its body
- * is read, so nothing can take the chat between the fence and the write, and no writer of the source
- * chat comes between its reads.
+ * An edit's, an inherit's, a restore's, or an adoption's checks and its write share one such step too,
+ * after any body is read, so nothing can take the chat between the fence and the write, and no writer of
+ * the source chat comes between its reads.
  */
 export function registerStructuredMemoryRoutes(
     app: Hono<AppEnv>,
@@ -200,7 +210,7 @@ export function registerStructuredMemoryRoutes(
         packageRoundBytes: number;
         /** The cap of a restore's body, which holds at once what rounds read one at a time. */
         restoreBodyBytes: number;
-        /** Whether something that can write this chat's memory holds the chat, which refuses an edit, an inherit, or a restore. */
+        /** Whether something that can write this chat's memory holds the chat, which refuses an edit, an inherit, a restore, or an adoption. */
         fenced: (characterId: string, chatId: string) => boolean;
     },
 ) {
@@ -601,4 +611,51 @@ export function registerStructuredMemoryRoutes(
             }
         },
     );
+
+    app.post(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/adopt`, limiter, authenticated, limitBody, async (c) => {
+        const characterId = c.req.param("characterId");
+        const chatId = c.req.param("chatId");
+        if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+            return c.json({ error: "characterId and chatId must be ids" }, 400);
+        }
+        const epoch = c.req.header(RESOURCE_EPOCH_HEADER);
+        if (epoch !== store.epoch()) {
+            return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+        }
+        if (fenced(characterId, chatId)) {
+            return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
+        }
+        const gone = () => c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+        try {
+            const contents = store.memory.readContents(characterId, chatId);
+            if (!contents) {
+                return gone();
+            }
+            const { revision } = contents;
+            const nothingAdopted = { revision, adopted: 0, stale: 0 } satisfies StructuredMemoryAdoptAnswer;
+            if ([contents.pages, contents.events, contents.threads].some(({ length }) => length > 0)) {
+                return compressedJson(c, nothingAdopted);
+            }
+            const chat = store.readChatSource(characterId, chatId).data as Chat | null;
+            if (!chat) {
+                return gone();
+            }
+            const events = adoptedEvents({
+                data: chat.hypaV3Data,
+                messages: chat.message,
+                hashOf: messageSourceHash,
+                newId: randomUUID,
+            });
+            if (events.length === 0) {
+                return compressedJson(c, nothingAdopted);
+            }
+            return compressedJson(c, {
+                revision: store.memory.write(characterId, chatId, { epoch, baseRevision: revision }, { events }),
+                adopted: events.length,
+                stale: events.filter(({ status }) => status === "stale").length,
+            } satisfies StructuredMemoryAdoptAnswer);
+        } catch (error) {
+            return storeErrorResponse(c, error);
+        }
+    });
 }

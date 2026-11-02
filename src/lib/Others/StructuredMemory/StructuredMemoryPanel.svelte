@@ -2,11 +2,13 @@
     import { RefreshCcwIcon, XIcon } from "@lucide/svelte";
     import { untrack, type Component } from "svelte";
     import { language } from "src/lang";
+    import { alertError, alertToast } from "src/ts/alert";
     import { requestMessageJump } from "src/ts/messageSearch.svelte";
     import { chatStatusKey, generatingChatKeys } from "src/ts/process/chatStatus.svelte";
     import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { memoryTaskAwaitingSync, memoryTaskFenced, memoryTaskStatus } from "src/ts/process/memoryTasks.svelte";
     import {
+        adoptStructuredMemory,
         memoryWriterNotice,
         newestAssistantMessageId,
         newestMemoryReceipt,
@@ -22,12 +24,17 @@
     import Button from "src/lib/UI/GUI/Button.svelte";
     import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
     import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
-    import { normalizeStructuredMemorySettings, writerPaused } from "../../../../shared/structuredMemory.ts";
+    import {
+        hypaV3DataHoldsSummaries,
+        isSealedHypaV3Data,
+        normalizeStructuredMemorySettings,
+        writerPaused,
+    } from "../../../../shared/structuredMemory.ts";
     import { memoryTaskStatusLine } from "../HypaV3Modal/taskStatusLine";
     import CoverageTab from "./CoverageTab.svelte";
     import LogTab from "./LogTab.svelte";
     import { pressMemoryRecord } from "./memoryRecordPress";
-    import { memoryReasonText } from "./memoryText";
+    import { memoryReadFailureText, memoryReasonText } from "./memoryText";
     import PagesTab from "./PagesTab.svelte";
     import PreviewTab from "./PreviewTab.svelte";
     import ThreadsTab from "./ThreadsTab.svelte";
@@ -45,10 +52,12 @@
     //
     // Pages, Timeline, and Threads write, each edit checked against the revision it was made on and fenced
     // on the server; read-only here only turns their controls off first. The writer line says when recording
-    // is not automatic and why, from the current state, and holds the buttons that start it.
+    // is not automatic and why, from the current state, and holds the buttons that start it. Under it, a
+    // chat with HypaV3 summaries and no records is offered their adoption, which the server checks again.
 
     const text = language.structuredMemory.panel;
     const receiptText = language.structuredMemory.receipt;
+    const adoptText = language.structuredMemory.adopt;
     const TABS: { value: string; label: string; component: Component<MemoryPanelTabProps> }[] = [
         { value: "coverage", label: text.coverage, component: CoverageTab },
         { value: "preview", label: text.preview, component: PreviewTab },
@@ -105,24 +114,34 @@
         seen = now;
     });
 
-    /** The chat whose runs say the writer is paused; a read that failed says nothing of the kind. */
-    let pausedChat = $state<string | null>(null);
-    let pausedRead = 0;
+    /** What the chat's contents say and which chat they were read for; a read that failed says nothing. */
+    let contentsFacts = $state.raw<{ chatKey: string | null; paused: boolean; noRecords: boolean } | null>(null);
+    let contentsRead = 0;
+    const heldFacts = $derived(contentsFacts?.chatKey === chatKey ? contentsFacts : null);
 
-    async function readPaused() {
+    async function readContents() {
         const ref = chatRef;
         const key = chatKey;
-        const number = ++pausedRead;
+        const number = ++contentsRead;
         const result = ref ? await readStructuredMemoryContents(ref) : null;
-        if (number === pausedRead) {
-            pausedChat = result?.outcome === "ok" && writerPaused(result.value.runs) ? key : null;
+        if (number === contentsRead) {
+            contentsFacts =
+                result?.outcome === "ok"
+                    ? {
+                          chatKey: key,
+                          paused: writerPaused(result.value.runs),
+                          noRecords: [result.value.pages, result.value.events, result.value.threads].every(
+                              ({ length }) => length === 0,
+                          ),
+                      }
+                    : null;
         }
     }
 
     $effect(() => {
         refresh;
         chatKey;
-        untrack(() => void readPaused());
+        untrack(() => void readContents());
     });
 
     const messages = $derived(chatRef ? (findChat(chatRef)?.message ?? []) : []);
@@ -139,7 +158,7 @@
         memoryWriterNotice({
             memoryOn: chatRef !== null && !!findCharacter(chatRef.chaId)?.supaMemory,
             cadence,
-            paused: pausedChat !== null && pausedChat === chatKey,
+            paused: heldFacts?.paused ?? false,
             receipt: newestMemoryReceipt(messages),
             taskLive,
         }),
@@ -170,6 +189,33 @@
         pressing = true;
         try {
             await pressMemoryRecord(owner, ref, writerAction === "resume" ? undefined : newestReply);
+        } finally {
+            pressing = false;
+        }
+    }
+
+    /** The held summaries an adoption can take, 0 for none. A projection is never adopted as summaries. */
+    const adoptableSummaries = $derived.by(() => {
+        const data = chatRef ? findChat(chatRef)?.hypaV3Data : undefined;
+        return data && hypaV3DataHoldsSummaries(data) && !isSealedHypaV3Data(data) ? data.summaries.length : 0;
+    });
+
+    /** An `epoch` refusal already raised its own notice, so it adds none, as in Timeline's repairs. */
+    async function pressAdopt() {
+        const ref = chatRef;
+        if (!ref || pressing) {
+            return;
+        }
+        pressing = true;
+        try {
+            const result = await adoptStructuredMemory(ref);
+            if (result.outcome === "ok") {
+                const { adopted, stale } = result.value;
+                alertToast(adopted > 0 ? adoptText.done(adopted, stale) : adoptText.nothing);
+                refresh += 1;
+            } else if (result.outcome === "failed" || result.reason !== "epoch") {
+                alertError(memoryReadFailureText(result));
+            }
         } finally {
             pressing = false;
         }
@@ -283,6 +329,23 @@
                             </span>
                         </Button>
                     {/if}
+                </div>
+            {/if}
+
+            {#if chatRef && adoptableSummaries > 0 && heldFacts?.noRecords}
+                <div
+                    class="flex flex-wrap items-center justify-between gap-2 text-sm text-textcolor2"
+                    data-memory-adopt
+                >
+                    <span class="min-w-0">{adoptText.offer(adoptableSummaries)}</span>
+                    <Button
+                        size="sm"
+                        styled="outlined"
+                        disabled={pressing || readOnly || taskLive}
+                        onclick={pressAdopt}
+                    >
+                        <span data-memory-adopt-action>{adoptText.button}</span>
+                    </Button>
                 </div>
             {/if}
 

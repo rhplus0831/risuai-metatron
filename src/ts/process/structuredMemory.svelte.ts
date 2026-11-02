@@ -26,6 +26,7 @@ import {
     type MemoryPageType,
     type MemoryThread,
     type ReadEntry,
+    type StructuredMemoryAdoptAnswer,
     type StructuredMemoryCadence,
     type StructuredMemoryContentsAnswer,
     type StructuredMemoryCoverageEvent,
@@ -53,8 +54,9 @@ import { authFetch } from "../storage/serverAuth";
 /**
  * The tab's reads of a chat's structured memory (`server/src/routes/structuredMemory.ts`), a person's
  * edits of it (`editStructuredMemory`), a new chat's inheritance (`inheritStructuredMemory`) or restore
- * from a chat file (`restoreStructuredMemory`), and the downloadable package built from the reads: a zip
- * of Markdown with one file per page and one timeline of the events.
+ * from a chat file (`restoreStructuredMemory`), the adoption of a chat's HypaV3 summaries
+ * (`adoptStructuredMemory`), and the downloadable package built from the reads: a zip of Markdown with
+ * one file per page and one timeline of the events.
  *
  * What a chat file takes of the records is read here too (`readStructuredMemoryFile`), and
  * `exportChatMemory` applies that read to the chat copy an export writes.
@@ -82,9 +84,9 @@ import { authFetch } from "../storage/serverAuth";
  */
 
 /**
- * Why a read, an edit, an inherit, or a restore did not answer: the chat or record is gone, the database
- * was replaced, its memory moved on, or, for a write, something that can write it holds the chat. A
- * restore can also be `tooLarge`: its records are over the route's body cap.
+ * Why a read, an edit, an inherit, a restore, or an adoption did not answer: the chat or record is gone,
+ * the database was replaced, its memory moved on, or, for a write, something that can write it holds the
+ * chat. A restore can also be `tooLarge`: its records are over the route's body cap.
  */
 export type StructuredMemoryRefusal = "chatGone" | "recordGone" | "epoch" | "changed" | "fenced" | "tooLarge";
 
@@ -442,6 +444,13 @@ function parseRestoreAnswer(body: AnswerBody): StructuredMemoryRestoreAnswer | n
         : null;
 }
 
+function parseAdoptAnswer(body: AnswerBody): StructuredMemoryAdoptAnswer | null {
+    const { revision, adopted, stale } = body;
+    return typeof revision === "string" && typeof adopted === "number" && typeof stale === "number"
+        ? (body as StructuredMemoryAdoptAnswer)
+        : null;
+}
+
 function parseRunsRound(body: AnswerBody, cursor: number): StructuredMemoryRunsRound | null {
     const { revision, total, runs, next } = body;
     return typeof revision === "string" &&
@@ -519,6 +528,15 @@ export function restoreStructuredMemory(
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ pages, events, threads }),
     });
+}
+
+/**
+ * Asks the server to make each HypaV3 summary of `ref`, a chat with no records, a stored event. The server
+ * reads the summaries from what it stores, calls no model, and leaves them as they are; a repeat answers
+ * `adopted: 0`. The caller shows the notice for a refusal.
+ */
+export function adoptStructuredMemory(ref: ChatRef): Promise<StructuredMemoryResult<StructuredMemoryAdoptAnswer>> {
+    return readAnswer(`${chatPath(ref)}/adopt`, parseAdoptAnswer, editRefusalOf, { method: "POST" });
 }
 
 /** What ties a route's rounds to a read beyond them. */
@@ -1351,6 +1369,8 @@ export function memoryBlockEntries<T extends Pick<OpenAIChat, "content">>(
 
 /** What a Log row's expanded view shows of the event a run extracted. */
 export type MemoryRunEventView = {
+    /** What a stored event names as its writer; a run's own event has none. */
+    writerRun?: string;
     title: string;
     summary: string;
     storyTime: { text: string; ordinal?: number };
@@ -1467,7 +1487,8 @@ function runEventView(event: Record<string, unknown>, unverified: ReadonlySet<st
 
 /** What Timeline shows of a stored event, read as an extraction is: as data of any shape. */
 export function memoryEventView(event: unknown): MemoryRunEventView {
-    return runEventView(isPlainObject(event) ? event : {}, new Set());
+    const stored = isPlainObject(event) ? event : {};
+    return { ...runEventView(stored, new Set()), ...present("writerRun", storedText(stored.writerRun)) };
 }
 
 /**

@@ -21,6 +21,12 @@ export const STRUCTURED_MEMORY_ALGORITHM = "structuredMemory" as const;
 /** The per-chat routes (`server/src/routes/structuredMemory.ts`). */
 export const STRUCTURED_MEMORY_PATH = "/api/memory/structured";
 
+/**
+ * The `writerRun` of an event adopted from a chat's HypaV3 summaries. It names no run: adoption calls no
+ * model and writes no run row. Persisted: never rename it.
+ */
+export const ADOPTED_WRITER_RUN = "adopted-hypav3";
+
 /** What a page describes. A chat has exactly one `scene` page, rewritten rather than appended to. */
 export const MEMORY_PAGE_TYPES = ["character", "location", "faction", "item", "concept", "scene", "note"] as const;
 export type MemoryPageType = (typeof MEMORY_PAGE_TYPES)[number];
@@ -338,7 +344,7 @@ export interface MemoryEvent extends Omit<MemoryEventDraft, "knowledge">, Memory
     keptState?: string;
     /** A person's repair or an edit of a cited message asked for a re-record that has not committed yet. */
     rerecord?: boolean;
-    /** The id of the run that wrote it. */
+    /** The id of the run that first wrote it, or `ADOPTED_WRITER_RUN`, which names none. */
     writerRun: string;
     /** The chat's memory revision that committed it. */
     createdRevision: number;
@@ -637,6 +643,13 @@ export type StructuredMemoryEditAnswer = { revision: string } & (
  * or when the source chat holds no page, event, or thread.
  */
 export type StructuredMemoryInheritAnswer = { revision: string; inherited: boolean };
+
+/**
+ * The adopt route's answer: the chat's memory revision, the events this call wrote, and how many of them
+ * it stored stale. Both are 0 when the chat already holds a record, which is what a repeat finds, or when
+ * nothing is adoptable.
+ */
+export type StructuredMemoryAdoptAnswer = { revision: string; adopted: number; stale: number };
 
 /**
  * One round of the threads route, which a chat file reads beside the package rounds. `next` is the position

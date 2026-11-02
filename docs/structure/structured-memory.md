@@ -27,7 +27,8 @@
 ## Files
 
 - `shared/structuredMemory.ts`: types and pure rules only, safe in the tab and on the server.
-  - `STRUCTURED_MEMORY_ALGORITHM`: the persisted discriminator.
+  - `STRUCTURED_MEMORY_ALGORITHM`: the persisted discriminator. `ADOPTED_WRITER_RUN`: the `writerRun` of an adopted
+    event, which names no run.
   - `STRUCTURED_MEMORY_LIMITS`: the record limits, `CHARACTER_SECTION_SLOTS`: the fixed character sections, and
     `MEMORY_SECTION_BUDGETS`: what [compaction](structured-memory-writer.md#compaction) holds a section to.
   - Records: `MemoryEvent`, `MemoryPage`, `MemorySection`, `MemoryThread`, `MemoryRun`, `MemoryReceipt`.
@@ -51,7 +52,8 @@
   `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`, `StructuredMemoryContentsAnswer`,
   `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`, `StructuredMemoryCoverageRound`,
   `StructuredMemoryRunsRound`, `StructuredMemoryThreadsRound`, `StructuredMemoryLogRun`, `StructuredMemoryEdit`,
-  `StructuredMemoryEditAnswer`, `StructuredMemoryInheritAnswer`, `StructuredMemoryRestoreAnswer`.
+  `StructuredMemoryEditAnswer`, `StructuredMemoryInheritAnswer`, `StructuredMemoryRestoreAnswer`,
+  `StructuredMemoryAdoptAnswer`.
 - `server/src/prompt/memory/structured/edits.ts`: what a person's edit does, pure: `parseMemoryEdit`, `applyPageEdit`,
   `applyThreadEdit`, `MemoryEditRefusal`. The repairs, `applyEventRepair` and `flagUnsupportedSections`:
   [the lifecycle guide](structured-memory-lifecycle.md#files).
@@ -187,7 +189,8 @@ a re-record last. An event with no placed source goes last. The manifest is the 
 A tab's read overlays it:
 
 - A structured chat: `memoryAlgorithmType` selects this algorithm, the chat has an event, and its stored `hypaV3Data`
-  holds no summaries (`hypaV3DataHoldsSummaries`). A value with summaries means HypaV3 owns the field, and an empty one,
+  holds no summaries (`hypaV3DataHoldsSummaries`). A value with summaries means HypaV3 owns the field,
+  [an adopted chat](structured-memory-lifecycle.md#adopting-hypav3-summaries) until a reset included, and an empty one,
   which opening the modal stores, owns nothing. The setting is one `json_extract` per read operation, never per chat, so
   under another algorithm a read touches no memory table, and a chat with no events answers as stored.
 - Only `/api/resources` asks (`memoryProjection`, its GET and POST reads). `readChatSource` and a plain `readRefs` stay
@@ -277,8 +280,9 @@ group is refused, and a full one is checked and restored.
   ([Retraction and edits](structured-memory-lifecycle.md#retraction-and-edits)).
 - A route writes a closed edit applied to the record as stored ([the edit route](#the-edit-route)), or on
   [the inherit route](structured-memory-lifecycle.md#copies-and-branches) the records the server builds from the source
-  chat. [The restore route](#the-restore-route) is exactly the one route that writes records the tab sent: for a chat
-  with no rows, after `parseRestoredRecords`.
+  chat, or on [the adopt route](structured-memory-lifecycle.md#adopting-hypav3-summaries) the events it builds from the
+  chat's stored summaries. [The restore route](#the-restore-route) is exactly the one route that writes records the tab
+  sent: for a chat with no rows, after `parseRestoredRecords`.
 - A snapshot a live write could have left is never refused, and a crafted one is a `ResourceValidationError` (a 400),
   never a constraint failure. A record's chat has a `memory_state` row, but a state row needs no records, and an event's
   `createdRevision` is within that row's revision, without being unique or the latest.

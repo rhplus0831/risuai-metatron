@@ -4,7 +4,7 @@ import { fromStore, get, writable } from "svelte/store";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ContextReport } from "../../../../shared/contextReport.ts";
 import { previewChat, previewChatReport } from "src/ts/process/index.svelte";
-import type { Message } from "../../../../shared/database.ts";
+import type { Chat, Message } from "../../../../shared/database.ts";
 import { language } from "src/lang";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import {
@@ -23,14 +23,17 @@ import { chatStatusKey } from "src/ts/process/chatStatus.svelte";
 import { beginLocalSend } from "src/ts/process/localSends";
 import { followedJobs } from "src/ts/process/serverCommands";
 import { noteMemoryTaskFrame, resetMemoryTasks } from "src/ts/process/memoryTasks.svelte";
-import { alertConfirm, alertError } from "src/ts/alert";
+import { alertConfirm, alertError, alertToast } from "src/ts/alert";
 import { pendingMessageJump } from "src/ts/messageSearch.svelte";
 import { memoryMessageHash } from "src/ts/process/structuredMemory.svelte";
 import {
+    ADOPTED_WRITER_RUN,
+    sealHypaV3Data,
     STRUCTURED_MEMORY_LIMITS,
     type MemoryEvent,
     type MemoryPage,
     type MemoryThread,
+    type StructuredMemoryContentsAnswer,
 } from "../../../../shared/structuredMemory.ts";
 import StructuredMemoryPanel from "./StructuredMemoryPanel.svelte";
 import PreviewTab from "./PreviewTab.svelte";
@@ -104,6 +107,7 @@ async function open() {
 }
 function install(
     messages = [message("u0", "user"), message("a0", "char"), message("u1", "user"), message("a1", "char")],
+    hypaV3Data?: Chat["hypaV3Data"],
 ) {
     installFlatDatabaseWithChats({
         characters: [
@@ -114,7 +118,7 @@ function install(
                 firstMessage: "",
                 supaMemory: true,
                 chats: [
-                    { id: "k", name: "K", note: "", localLore: [], message: messages },
+                    { id: "k", name: "K", note: "", localLore: [], message: messages, hypaV3Data },
                     { id: "other", name: "Other", note: "", localLore: [], message: [message("other", "char")] },
                 ],
             },
@@ -140,6 +144,7 @@ beforeEach(() => {
     });
     io.runServerJob.mockReset();
     vi.mocked(alertError).mockClear();
+    vi.mocked(alertToast).mockClear();
     io.downloadFile.mockReset().mockResolvedValue(undefined);
     resetMemoryTasks();
     followedJobs.set(new Map());
@@ -1290,4 +1295,152 @@ it("shows a send's stale reason in the panel manifest", async () => {
     expect(query('[data-memory-manifest-stale-reason="moved"]')?.textContent).toBe(
         language.structuredMemory.coverage.reasons.moved,
     );
+});
+
+const heldSummaries = () => ({
+    summaries: [{ text: "The gate opened.", chatMemos: ["u0", "a0"], isImportant: true }],
+});
+function holdHypaV3Data(hypaV3Data: Chat["hypaV3Data"]) {
+    install(undefined, hypaV3Data);
+    flushSync();
+}
+function serveAdoptionContents() {
+    const contents: StructuredMemoryContentsAnswer = {
+        revision: revision(1),
+        pages: [],
+        events: [],
+        threads: [],
+        runs: [{ id: "failed", result: "failed", bytes: 100 }],
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url === "/api/memory/structured/c/k" ? Promise.resolve(Response.json(contents)) : fetch(url, init, options),
+    );
+    return contents;
+}
+
+it("offers adoption only after empty record contents are read and only for held unsealed summaries, ignoring runs", async () => {
+    holdHypaV3Data(heldSummaries());
+    const contents = serveAdoptionContents();
+    const pending = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    let contentsPending = true;
+    io.authFetch.mockImplementation((url, init, options) => {
+        if (url === "/api/memory/structured/c/k" && contentsPending) {
+            contentsPending = false;
+            return pending.promise;
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    expect(query("[data-memory-adopt]")).toBeNull();
+    pending.resolve(Response.json(contents));
+    await settle();
+    expect(query("[data-memory-adopt]")?.textContent).toContain("No model is called");
+    io.authFetch.mockImplementation(fetch);
+    const occupied: Partial<StructuredMemoryContentsAnswer>[] = [
+        { pages: [{ id: "p", title: "Page", type: "note", bytes: 100 }] },
+        { events: [{ id: "e", title: "Event", status: "active", bytes: 100 }] },
+        { threads: [{ id: "t", title: "Thread", state: "open", bytes: 100 }] },
+    ];
+    for (const records of occupied) {
+        Object.assign(contents, { pages: [], events: [], threads: [] }, records);
+        click("[data-memory-panel-refresh]");
+        await settle();
+        expect(query("[data-memory-adopt]")).toBeNull();
+    }
+    Object.assign(contents, { pages: [], events: [], threads: [] });
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-adopt]")).not.toBeNull();
+    for (const data of [sealHypaV3Data(heldSummaries()), { summaries: [] }, undefined]) {
+        holdHypaV3Data(data);
+        await settle();
+        expect(query("[data-memory-adopt]")).toBeNull();
+    }
+});
+
+it("disables adoption while read-only, posts once without a body, then toasts and rereads so the offer disappears", async () => {
+    holdHypaV3Data(heldSummaries());
+    const contents = serveAdoptionContents();
+    const response = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.endsWith("/adopt") ? response.promise : fetch(url, init, options),
+    );
+    await open();
+    const held = JSON.parse(JSON.stringify(findChat(ref)));
+    const button = () => query("[data-memory-adopt-action]")!.closest("button")!;
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    flushSync();
+    expect(button().disabled).toBe(true);
+    button().click();
+    await settle();
+    expect(reads("adopt")).toHaveLength(0);
+    release();
+    await settle();
+    expect(button().disabled).toBe(false);
+    button().click();
+    button().click();
+    await settle();
+    expect(button().disabled).toBe(true);
+    expect(reads("adopt")).toHaveLength(1);
+    const [url, init] = reads("adopt")[0];
+    expect(url).toBe("/api/memory/structured/c/k/adopt");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBeUndefined();
+    const coverageReads = reads().length;
+    const contentsReads = io.authFetch.mock.calls.filter(([url]) => url === "/api/memory/structured/c/k").length;
+    contents.events = [{ id: "adopted", title: "The gate opened.", status: "active", bytes: 100 }];
+    contents.revision = revision(2);
+    response.resolve(Response.json({ revision: revision(2), adopted: 1, stale: 0 }));
+    await settle();
+    expect(alertToast).toHaveBeenCalledWith(language.structuredMemory.adopt.done(1, 0));
+    expect(reads()).toHaveLength(coverageReads + 1);
+    expect(io.authFetch.mock.calls.filter(([url]) => url === "/api/memory/structured/c/k")).toHaveLength(
+        contentsReads + 1,
+    );
+    expect(query("[data-memory-adopt]")).toBeNull();
+    expect(findChat(ref)).toEqual(held);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("shows an adoption refusal without changing the held chat or showing a success toast", async () => {
+    holdHypaV3Data(heldSummaries());
+    serveAdoptionContents();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.endsWith("/adopt")
+            ? Promise.resolve(Response.json({ reason: "fenced", error: "Writer holds the chat" }, { status: 409 }))
+            : fetch(url, init, options),
+    );
+    await open();
+    const held = JSON.parse(JSON.stringify(findChat(ref)));
+    press("[data-memory-adopt-action]");
+    await settle();
+    expect(reads("adopt")).toHaveLength(1);
+    expect(alertError).toHaveBeenCalledWith(language.structuredMemory.panel.readRefused.fenced);
+    expect(alertToast).not.toHaveBeenCalled();
+    expect(findChat(ref)).toEqual(held);
+    expect(query("[data-memory-adopt]")).not.toBeNull();
+    expect(query("[data-memory-adopt-action]")?.closest("button")?.disabled).toBe(false);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("shows Originally adopted only in an open event whose writer run is the adoption marker", async () => {
+    const state = serveAnchoredEvent();
+    state.event.writerRun = ADOPTED_WRITER_RUN;
+    await open();
+    await chooseTab("timeline");
+    expect(query("[data-memory-event-adopted]")).toBeNull();
+    click('[data-memory-event="e"] > button');
+    await settle();
+    expect(query("[data-memory-event-adopted]")?.textContent).toBe(language.structuredMemory.adopt.adoptedEvent);
+    state.event.writerRun = "ordinary-writer-run";
+    click('[data-memory-event="e"] > button');
+    click('[data-memory-event="e"] > button');
+    await settle();
+    expect(query("[data-memory-event-adopted]")).toBeNull();
+    expect(query('[data-memory-event="e"]')?.textContent).toContain("The gate opened");
 });

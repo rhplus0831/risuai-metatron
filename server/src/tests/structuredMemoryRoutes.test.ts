@@ -3,6 +3,8 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import {
+    ADOPTED_WRITER_RUN,
+    isSealedHypaV3Data,
     memoryAnchorState,
     reconcileMemoryEvents,
     writerPaused,
@@ -167,6 +169,212 @@ function memorySnapshot(s: Awaited<ReturnType<typeof server>>, id: string) {
         ),
     };
 }
+
+function storeAdoptionChat(s: Awaited<ReturnType<typeof server>>, hypaV3Data: unknown) {
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [
+                    {
+                        op: "replace",
+                        chat: {
+                            ...chat,
+                            hypaV3Data: hypaV3Data as Chat["hypaV3Data"],
+                            message: [
+                                { chatId: "m0", role: "user", data: "Stored question" },
+                                { chatId: "m1", role: "char", data: "Stored answer" },
+                            ],
+                        },
+                    },
+                ],
+            },
+        ],
+    });
+}
+
+it("adopts stored summaries without a body or a new run, preserves the chat and its unsealed reads, and repeats without writing", async () => {
+    const s = await server();
+    const hypaV3Data = {
+        summaries: [
+            {
+                text: `At 3.5 miles, we stopped. ${"Detail. ".repeat(150)}`,
+                chatMemos: [null, "m1", "m0", "m1"],
+                isImportant: true,
+            },
+            { text: "Lost evidence.", chatMemos: ["gone", "m1"], isImportant: false },
+        ],
+    };
+    storeAdoptionChat(s, hypaV3Data);
+    const failed = run("failed-before-adoption");
+    const initial = s.write({ runs: [failed] });
+    const stored = s.store.readChatSource(characterId, chatId);
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const ui = kinds.get("ui")!;
+    const row = s.store.get(ui, "main")!;
+    s.store.put(ui, "main", { ...(row.data as object), memoryAlgorithmType: "structuredMemory" }, row.revision);
+
+    const result = await answer(await s.request(`${base}/adopt`, { method: "POST" }));
+    expect(result).toEqual({ revision: expect.any(String), adopted: 2, stale: 1 });
+    expect(result.revision).not.toBe(initial);
+    const packed = await answer(await s.request(`${base}/package`));
+    const [whole, stale] = packed.events as MemoryEvent[];
+    const sources = stored.data!.message.map((m: Message, index: number) => ({
+        messageId: m.chatId!,
+        hash: messageSourceHash(m),
+        index,
+    }));
+    expect(packed).toEqual({
+        revision: result.revision,
+        pages: [],
+        events: [
+            {
+                ...event(whole.id, hypaV3Data.summaries[0].text),
+                title: "At 3.5 miles, we stopped.",
+                storyTime: { text: "" },
+                sources,
+                writerRun: ADOPTED_WRITER_RUN,
+                createdRevision: 2,
+                pinned: true,
+            },
+            {
+                ...event(stale.id, "Lost evidence."),
+                title: "Lost evidence.",
+                storyTime: { text: "" },
+                sources: [sources[1], { messageId: "gone", hash: null, index: null }],
+                status: "stale",
+                staleReason: "missing",
+                writerRun: ADOPTED_WRITER_RUN,
+                createdRevision: 2,
+            },
+        ],
+        next: null,
+    });
+    expect(whole.id).not.toBe(stale.id);
+    expect(reconcileMemoryEvents(packed.events, stored.data!.message, messageSourceHash)).toEqual(packed.events);
+    expect(memorySnapshot(s, chatId).records.runs).toEqual([failed]);
+    expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+    const read = await answer(await s.json("/api/resources/read", { chats: [{ characterId, id: chatId }] }));
+    const overlay = s.store.readRefs([], { chats: [{ characterId, id: chatId }], memoryProjection: true });
+    for (const data of [read.chats[0].data, overlay.chats[0].data]) {
+        expect(data?.hypaV3Data).toEqual(hypaV3Data);
+        expect(isSealedHypaV3Data(data?.hypaV3Data)).toBe(false);
+    }
+    const adopted = memorySnapshot(s, chatId);
+    expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }))).toEqual({
+        revision: result.revision,
+        adopted: 0,
+        stale: 0,
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(adopted);
+    expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+});
+
+it("writes nothing when adoption finds an existing page, event, or thread", async () => {
+    for (const existing of [
+        { pages: [page("existing")] },
+        { events: [event("existing")] },
+        { threads: [{ id: "existing", title: "Return", who: [], state: "open" as const }] },
+    ]) {
+        const s = await server();
+        storeAdoptionChat(s, { summaries: [{ text: "Adoptable.", chatMemos: ["m0", "m1"], isImportant: false }] });
+        s.write(existing);
+        const before = memorySnapshot(s, chatId);
+        const stored = s.store.readChatSource(characterId, chatId);
+        expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }))).toEqual({
+            revision: before.contents.revision,
+            adopted: 0,
+            stale: 0,
+        });
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+        expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+    }
+});
+
+it("moves no memory revision when the stored chat has no adoptable summary text", async () => {
+    const s = await server();
+    for (const data of [
+        undefined,
+        { summaries: [] },
+        { summaries: [{ text: " \n\t", chatMemos: ["m0"], isImportant: false }] },
+    ]) {
+        storeAdoptionChat(s, data);
+        const before = memorySnapshot(s, chatId);
+        const stored = s.store.readChatSource(characterId, chatId);
+        expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }))).toEqual({
+            revision: before.contents.revision,
+            adopted: 0,
+            stale: 0,
+        });
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+        expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+    }
+});
+
+it("refuses adoption for another epoch, a missing chat, or an invalid resource id without writing", async () => {
+    const s = await server();
+    storeAdoptionChat(s, { summaries: [{ text: "Adoptable.", chatMemos: ["m0"], isImportant: false }] });
+    const before = memorySnapshot(s, chatId);
+    const stored = s.store.readChatSource(characterId, chatId);
+    expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }, "another-epoch"), 412)).toEqual({
+        error: "EpochMismatch",
+        epoch: s.epoch,
+    });
+    expect(
+        await answer(
+            await s.request(`${base.replace(encodeURIComponent(chatId), "absent")}/adopt`, { method: "POST" }),
+            404,
+        ),
+    ).toMatchObject({ reason: "chatGone" });
+    for (const id of [characterId, chatId]) {
+        await answer(await s.request(`${base.replace(encodeURIComponent(id), "%00")}/adopt`, { method: "POST" }), 400);
+    }
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+});
+
+it("fences adoption behind an admitted job and adopts after the fence falls", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const entered = deferred();
+    const release = deferred();
+    const s = await server({
+        generationRunner: async (job) => {
+            entered.resolve();
+            await release.promise;
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        },
+    });
+    storeAdoptionChat(s, { summaries: [{ text: "Adoptable.", chatMemos: ["m0", "m1"], isImportant: false }] });
+    const context = bindChat(s);
+    await answer(
+        await s.json("/api/generations", {
+            kind: "command",
+            clientId: "tab",
+            context,
+            command: { type: "button", data: "" },
+        }),
+    );
+    await entered.promise;
+    const before = memorySnapshot(s, chatId);
+    const stored = s.store.readChatSource(characterId, chatId);
+    try {
+        expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+        expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+    } finally {
+        release.resolve();
+        await s.context.generationJobs.drain();
+    }
+    expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }))).toEqual({
+        revision: expect.any(String),
+        adopted: 1,
+        stale: 0,
+    });
+});
 
 it.each([false, true])(
     "inherits server records for branch=%s once, with no source runs or later branch body",

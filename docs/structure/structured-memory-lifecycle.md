@@ -4,9 +4,9 @@
 
 - Owns what happens to a chat's `structuredMemory` records when the chat changes: reconciling events with the chat's
   messages and the repairs a person applies, retraction when messages are deleted and re-recording when they are edited,
-  what a checkpoint holds and restores of the records, what a copied or branched chat starts with, and what a chat file
-  carries and an imported chat restores.
-- Paths: `server/src/prompt/memory/structured/{reconcile,inherit,restore}.ts`, the repair and flagging rules of
+  what a checkpoint holds and restores of the records, what a copied or branched chat starts with, what a chat file
+  carries and an imported chat restores, and how a chat's HypaV3 summaries are adopted.
+- Paths: `server/src/prompt/memory/structured/{reconcile,inherit,restore,adopt}.ts`, the repair and flagging rules of
   `server/src/prompt/memory/structured/edits.ts`, `src/ts/process/chatMemoryInherit.svelte.ts`, the reconciliation rules
   of `shared/structuredMemory.ts`, the memory parts of `server/src/data/checkpointStore.ts`,
   `server/src/data/resourceStore.ts`, `shared/chatCheckpoints.ts`, and `src/ts/characters.ts`.
@@ -37,15 +37,17 @@
   `inheritedRecords`, `MemoryInheritance`.
 - `server/src/prompt/memory/structured/restore.ts`: what the restore route takes of a chat file, pure:
   `parseRestoredRecords`, `RestoredRecords`.
+- `server/src/prompt/memory/structured/adopt.ts`: what a chat's HypaV3 summaries become, pure: `adoptedEvents`,
+  `HypaV3Adoption`.
 - `server/src/data/checkpointStore.ts` and `shared/chatCheckpoints.ts`: what a checkpoint holds of them,
   `CHECKPOINT_MEMORY_FIELD`, `CheckpointMemoryManifest`, and `readMemory` ([A checkpoint](#a-checkpoint)).
 - `server/src/data/resourceStore.ts`, the checkpoint's part: `CheckpointTransaction.restoreMemory`. The rest is in
   [structured memory](structured-memory.md#files).
 - `server/src/routes/structuredMemory.ts`: the inherit route ([Copies and branches](#copies-and-branches)), the restore
-  route ([Chat files](#chat-files)), and the repair half of the edit route. The rest is in
-  [structured memory](structured-memory.md#files).
+  route ([Chat files](#chat-files)), the adopt route ([Adopting HypaV3 summaries](#adopting-hypav3-summaries)), and the
+  repair half of the edit route. The rest is in [structured memory](structured-memory.md#files).
 - `src/ts/process/structuredMemory.svelte.ts`: `inheritStructuredMemory`, `readStructuredMemoryFile`,
-  `exportChatMemory`, `chatFileMemory`, `restoreStructuredMemory`. The rest is in
+  `exportChatMemory`, `chatFileMemory`, `restoreStructuredMemory`, `adoptStructuredMemory`. The rest is in
   [structured memory](structured-memory.md#files).
 - `src/ts/process/chatMemoryInherit.svelte.ts`: `createInheritingChat`, `restoreChatMemory`, the wait and the notices.
   Its own file, because they read the chat store and the save loop, and `structuredMemory.svelte.ts` stays free of both.
@@ -290,6 +292,47 @@ In the tab only `importChat`'s `ver: 2` branch reaches records:
 - The notice says the records could not be confirmed as restored and the earlier messages may not be covered, never that
   nothing was restored: a response can be lost after a commit, and a send can start on the chat first.
 
+### Adopting HypaV3 summaries
+
+A chat with HypaV3 summaries and no records can take them as events, with no model call and no cost to preview.
+`StructuredMemoryPanel` offers it ([the memory panel](structured-memory-read.md#the-memory-panel)), and
+`POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/adopt`, with no body, answers `StructuredMemoryAdoptAnswer`.
+
+The route decides, whatever the tab offered:
+
+- It reads the chat through `readChatSource`, never an overlaid or tab-sent value, so a projection cannot be adopted,
+  and `adoptedEvents` also refuses a sealed value. No body is read, so the checks and the write are one synchronous
+  step: the epoch, the fence (409 `fenced`), the contents, the build, then `store.memory.write`.
+- A chat with a page, event, or thread answers `adopted: 0`, which is what a repeat finds, and so does one with nothing
+  to adopt. Neither writes. Runs do not count, unlike [a copy](#copies-and-branches) and [a chat file](#chat-files): a
+  failed writer run leaves a row and no record, so counting one would refuse adoption for good, and the fence holds off
+  a live one.
+- It writes events only. `hypaV3Data` and the chat row stay as they were, and adopting adds no run to the Log. Failed
+  runs already there stay, and so does a pause they caused. `writerRun` is `ADOPTED_WRITER_RUN`, which names no run.
+  Timeline's line says "originally": a later run can merge into the last adopted event, which keeps that `writerRun`.
+
+`adoptedEvents` builds one event for each summary with text, in stored order:
+
+- `summary` is the stored text whole. `eventSummaryChars` binds the writer's answer, while a covering event lets its
+  messages leave the prompt and the value can be reset later, so a cut would lose text for good.
+- `title` is the first sentence, clamped to `eventTitleChars`. `isImportant` becomes `pinned`. There are no
+  participants, and `categoryId` and `tags` stay behind in `hypaV3Data`.
+- Sources are `chatMemos`, each id once, by current position, with hashes of the messages as stored, so a new event
+  reads whole. A `null` memo is dropped: `assemble.ts` builds the greeting with no memo, so a first summary normally
+  holds one, and calling it missing would make that summary stale in most chats.
+- A cited message that is gone is a `MemoryUnanchoredSource`, and its event is stored `stale` with
+  `staleReason: "missing"`. So is an event left with no source, because [reconciliation](#reconciliation-and-repairs)
+  reads an event with no sources as whole. Neither moves until a repair does.
+
+After it:
+
+- `recordedMessages` reads sources in any status, so adopted turns count as recorded and the writer takes only later
+  ones. `coveredMessages` takes active events only, so a stale one lets no message leave the prompt.
+- The stored value holds summaries, so `overlayMemoryProjection` and the upstream export stand aside, and plugins read
+  the real `hypaV3Data` until a reset empties it. From then on they read
+  [the projection](structured-memory.md#the-hypav3-projection), `pinned` as `isImportant`.
+- The next send can embed the new events, as any send embeds its records. Only adopting is free of model calls.
+
 ## State
 
 - Stored records keep what was recorded, and reconciliation is a reading over them: `reconcileMemoryEvents` answers a
@@ -321,6 +364,9 @@ In the tab only `importChat`'s `ver: 2` branch reaches records:
   write is [a memory write](structured-memory.md#a-memory-write).
 - The restore route is reached from `importChat` alone, [a memory write](structured-memory.md#a-memory-write) too, and
   is the one route that writes records the tab sent ([Invariants](structured-memory.md#invariants)).
+- The adopt route is reached from the panel alone, and
+  [the writer's windows](structured-memory-writer.md#the-writers-windows) read what it writes as recorded through
+  `sources`, so an event's shape is the only contract between them.
 - A chat file and [the HypaV3 projection](structured-memory.md#the-hypav3-projection): an exported copy drops
   `hypaV3Data` by the seal alone (`exportChatMemory`), so the projection a tab's read overlays must stay sealed, and an
   unsealed one would be exported as real summaries. An import of an older file that holds a sealed value drops it in
@@ -360,11 +406,15 @@ In the tab only `importChat`'s `ver: 2` branch reaches records:
 - `structured/restore.test.ts` drives the shape check with plain records, `structuredMemoryRoutes.test.ts` the restore
   route and a round trip onto a second store on real apps, and `structuredMemory.test.ts` the file read with `authFetch`
   scripted. `chatMemoryInherit.test.ts` drives the restore's wait.
+- `structured/adopt.test.ts` drives the build with plain records and an injected `hashOf`,
+  `structuredMemoryRoutes.test.ts` the adopt route and the read after it on a real app, and
+  `StructuredMemoryPanel.test.ts` the offer and the press.
 - `charactersCapture.test.ts` and `charactersImportChat.test.ts` run the export and the import on
   `storeBackedServer.ts`, which has no memory route: its 500 reads as a failed memory read, so an export there takes the
   notice unless the test answers the route, as `serveMemory` does.
 - Focused command: `pnpm --silent test:agent structuredMemory memoryStore reconcile chatCheckpoint inherit Inherit` and,
-  for chat files, `restore.test charactersCapture charactersImportChat`. No `slow` or `e2e` membership of its own.
+  for chat files, `restore.test charactersCapture charactersImportChat`, and for adoption,
+  `adopt.test structuredMemoryRoutes StructuredMemoryPanel`. No `slow` or `e2e` membership of its own.
 
 ## Known Hazards
 
@@ -398,6 +448,24 @@ In the tab only `importChat`'s `ver: 2` branch reaches records:
   holds them and the import shows the size notice. Decision: Structured Memory slice 5f, plan.
 - HTML, TXT, and jsonl chat files carry no records, so a chat imported from one starts with a coverage gap. Decision:
   Structured Memory slice 5f, plan.
+- [Adoption](#adopting-hypav3-summaries) refuses a chat the writer reached first: one automatic task or Record now
+  leaves a record, and the summaries are then not offered, because nothing merges them with events. Decision: Structured
+  Memory slice 6a, plan.
+- Under `doNotSummarizeUserMessage` a summary cites only replies, so an adopted chat's user messages stay uncovered, and
+  no window takes them, because a turn whose reply is recorded drops out. No source is invented for them. Decision:
+  Structured Memory slice 6a, plan.
+- The panel replaces `HypaV3Modal`, so a reset of the adopted value needs another algorithm selected for a moment. Until
+  then plugins and the upstream export read the old summaries, without any later event. Decision: Structured Memory
+  slice 6a, plan.
+- An adopted summary over the card's budget is left out whole (`budget`) while its messages leave the prompt and only
+  its flow title goes. Retrieval embeds the whole text, so a provider that refuses it fails similarity for that send,
+  with no participants to fall back on, and compaction never touches events. Decision: Structured Memory slice 6a, plan.
+- `pinned` selects nothing in any lane, so an adopted important summary is no longer sent every time. Decision:
+  Structured Memory slice 6a, plan.
+- A stored-stale adopted event has narrower repairs. A keep reads active, but with no source present retrieval leaves it
+  out as `not-relevant`. A re-record needs the newest cited message a send reads to be a reply. An edit of a surviving
+  source spends no automatic call, because the event reads `missing`, not `changed`. A copy drops an event with an
+  unanchored source or none, kept or not. Decision: Structured Memory slice 6a, plan.
 - An all-chats export reads the chats first and their records after, so a chat can be older than its records. Each
   chat's read has its own 60 s bound, so a server that hangs by then holds the file a minute per chat. Decision:
   Structured Memory slice 5f, plan.
