@@ -803,6 +803,16 @@ export const languageEnglish = {
         unseen: (name: string) => `New reply: ${name}`,
         memory: (name: string, count: string | null = null) =>
             count === null ? `Summarizing memory: ${name}` : `Summarizing memory (${count}): ${name}`,
+        health: (name: string, detail: string | null = null) => `${detail ?? "Memory needs attention"}: ${name}`,
+        healthStates: {
+            writerPaused: "Memory recording is paused",
+            gap: "The last send dropped unrecorded history",
+            staleEvents: "Memory events need a repair",
+            unsupportedSections: "Memory sections lost their evidence",
+            requiredOverCap: "The required memory pages did not fit",
+            pageOverBudget: "A memory section is past its budget",
+            customPrompt: "Custom memory writer prompt",
+        },
     },
     refusedData: {
         chatTitle: "The server refused this chat change",
@@ -2435,6 +2445,9 @@ export const languageEnglish = {
                 paused: "Paused",
                 notAutomatic: "Not automatic",
             },
+            writerReasons: {
+                repair: "a re-record is waiting",
+            } as Record<string, string>,
             included: "Included",
             noneIncluded: "Nothing was included.",
             verified: "Found in the prompt",
@@ -2504,6 +2517,7 @@ export const languageEnglish = {
             model: "Model",
             tokens: (input: number, output: number) => `Tokens: ${input} in, ${output} out`,
             customPrompt: "Custom prompt",
+            repairPending: "A repair is waiting: record now re-records the marked events",
         },
         notAutomaticReasons: {
             pluginModel: "the memory model is a plugin model, which needs this tab",
@@ -2569,6 +2583,7 @@ export const languageEnglish = {
             pages: "Pages",
             timeline: "Timeline",
             threads: "Threads",
+            settings: "Settings",
             refresh: "Refresh",
             close: "Close",
             readOnly: "A reply or the memory writer is working in this chat, so this panel is read-only until it ends.",
@@ -2588,6 +2603,14 @@ export const languageEnglish = {
             },
             readFailed: (error: string) => `The memory could not be read: ${error}`,
         },
+        settingsTab: {
+            language: "Recording language in this chat",
+            languagePlaceholder: "Leave it blank to use the preset's language",
+            highlightMode: "Highlighting in this chat",
+            highlightDefault: "Use the default",
+            presetValues: "Every other value, the screening lists included, comes from the selected memory preset.",
+            openMemorySettings: "Open memory settings",
+        },
         coverage: {
             states: {
                 covered: "Covered",
@@ -2606,6 +2629,8 @@ export const languageEnglish = {
                 inserted: "a message was inserted among the ones its event cites",
                 moved: "the messages its event cites moved",
                 interrupted: "the run was interrupted",
+                screenedRefusal: "the reply matches a refusal text of the memory preset's screening",
+                screenedFormat: "the reply matches a format text of the memory preset's screening",
             } as Record<string, string>,
             roles: { user: "User", char: "Character" } as Record<string, string>,
             empty: "This chat has no messages yet.",
@@ -2719,8 +2744,6 @@ export const languageEnglish = {
                 split: "Split by you",
             } as Record<string, string>,
             highlighted: "Highlighted",
-            highlightMode: "Highlighting in this chat",
-            highlightDefault: "Use the default",
             wholePage: "Whole page",
             diffFailed: "The comparison could not be loaded.",
             tools: {
@@ -2953,6 +2976,11 @@ export const languageEnglish = {
                 patchCall: "page update",
             },
             volatileBeforeLastUser: "Put what changes each send right before the latest user message",
+            screeningRefusal: "Refusal texts that keep a reply out of memory",
+            screeningFormat: "Format texts that keep a reply out of memory",
+            screeningPlaceholder: "One text per line",
+            screeningHelp:
+                "A reply holding one of these texts, compared without case, is never recorded and shows as excluded in Coverage. Its text still reaches the prompt. Blank lines are dropped.",
         },
     },
     bulkEnabling: "Lorebook Bulk Enabling",

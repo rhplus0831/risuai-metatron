@@ -193,6 +193,14 @@ export const GENERATION_ERROR_STAGES = ["setup", "input", "assembly", "request",
 
 export type GenerationErrorStage = (typeof GENERATION_ERROR_STAGES)[number];
 
+/**
+ * A failure a tab tells apart from the rest by code, not by text: a send whose required memory pages did
+ * not fit under the preset's cap (`memoryRequiredOverCap`), which the memory health badge shows.
+ */
+export const GENERATION_ERROR_CODES = ["memoryRequiredOverCap"] as const;
+
+export type GenerationErrorCode = (typeof GENERATION_ERROR_CODES)[number];
+
 /** A job's or a request's id as the server makes them (`randomUUID`). */
 export const GENERATION_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 
@@ -328,6 +336,8 @@ export type GenerationTerminalEvent =
           stage?: GenerationErrorStage;
           requestId?: string;
           providerCode?: string;
+          /** The failure's code when it has one (`GenerationErrorCode`). */
+          code?: GenerationErrorCode;
       };
 
 /** A command job's sequence progress, retained with its terminal. */

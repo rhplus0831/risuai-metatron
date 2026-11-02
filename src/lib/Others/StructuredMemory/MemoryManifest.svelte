@@ -2,7 +2,7 @@
     import { CheckIcon, CircleAlertIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import { memoryItemKey } from "src/ts/process/structuredMemory.svelte";
-    import type { ContextReport } from "../../../../shared/contextReport.ts";
+    import type { ContextMemoryWriter, ContextReport } from "../../../../shared/contextReport.ts";
     import { memoryReasonText } from "./memoryText";
 
     // What a send's report says of its memory: the writer, the included records, the candidates left
@@ -26,6 +26,14 @@
     const excludedMore = $derived(Math.max(0, (memory.excludedTotal ?? 0) - excluded.length));
 
     const fmt = (value: number) => value.toLocaleString();
+
+    /** The writer's reason: one of the writer's own codes, else a stored code of another kind. */
+    function writerReasonText({ reason }: ContextMemoryWriter): string {
+        if (reason === undefined) {
+            return "";
+        }
+        return Object.hasOwn(text.writerReasons, reason) ? text.writerReasons[reason] : memoryReasonText(reason);
+    }
 </script>
 
 <div class="flex flex-col gap-2 text-xs" data-memory-manifest>
@@ -35,7 +43,7 @@
             <span class="min-w-0 text-right break-words">
                 {text.writerStates[memory.writer.state]}{memory.writer.reason === undefined
                     ? ""
-                    : `: ${memoryReasonText(memory.writer.reason)}`}
+                    : `: ${writerReasonText(memory.writer)}`}
             </span>
         </div>
     {/if}

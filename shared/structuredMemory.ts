@@ -653,14 +653,64 @@ export type StructuredMemoryRebuild = {
 };
 
 /**
+ * What the health routes read of a chat's live records, with no message read: whether automatic
+ * recording is paused (`writerPaused`), the events stored `stale`, the events not retracted that wait for
+ * a re-record, and on the pages out of the trash the sections flagged `unsupported` and the sections past
+ * their budget (`memorySectionOverBudget`).
+ */
+export type StructuredMemoryHealthFacts = {
+    paused: boolean;
+    storedStale: number;
+    pendingRepairs: number;
+    unsupportedSections: number;
+    overBudgetSections: number;
+};
+
+/** The most chats one request of the health route names. */
+export const MEMORY_HEALTH_CHATS_MAX = 64;
+
+/** The stored bytes of live pages one health request may scan; the first chat is always answered. */
+export const MEMORY_HEALTH_ROUND_BYTES = 16 * 1024 * 1024;
+
+/**
+ * The health route's answer: a prefix of the request, in its order, each entry the chat's facts or null
+ * for a chat that does not exist. The prefix holds the first chat and stops before the chat whose live
+ * pages would take the scan past `MEMORY_HEALTH_ROUND_BYTES`; the rest goes in another request.
+ */
+export type StructuredMemoryHealthAnswer = { health: (StructuredMemoryHealthFacts | null)[] };
+
+/**
+ * The states of the memory health badge, worst first. The badge shows the first that holds:
+ * `writerPaused` from the runs, `gap` and `staleEvents` from the last send's report and the stored
+ * events, `unsupportedSections` and `pageOverBudget` from the live pages, `requiredOverCap` from the
+ * last send's failure, and `customPrompt` from the preset, which is a neutral notice, not a fault.
+ */
+export const MEMORY_HEALTH_STATES = [
+    "writerPaused",
+    "gap",
+    "staleEvents",
+    "unsupportedSections",
+    "requiredOverCap",
+    "pageOverBudget",
+    "customPrompt",
+] as const;
+export type MemoryHealthState = (typeof MEMORY_HEALTH_STATES)[number];
+
+/** The worst of the states that hold, or null when none does. */
+export function memoryHealthState(holds: Readonly<Record<MemoryHealthState, boolean>>): MemoryHealthState | null {
+    return MEMORY_HEALTH_STATES.find((state) => holds[state]) ?? null;
+}
+
+/**
  * The contents route's answer: a chat's records without their bodies, what the panel offers for its
- * summaries, its rebuild, and the language of its newest recorded run, null with none or from before runs
- * kept one.
+ * summaries, its rebuild, the language of its newest recorded run, null with none or from before runs
+ * kept one, and its health facts.
  */
 export type StructuredMemoryContentsAnswer = StructuredMemoryContents & {
     adoption: StructuredMemoryAdoption;
     rebuild: StructuredMemoryRebuild | null;
     recordedLanguage: string | null;
+    health: StructuredMemoryHealthFacts;
 };
 
 /** The abandon route's answer: the chat's memory revision, which it left alone, and whether a run went. */
@@ -1164,6 +1214,30 @@ function trailingFailures(runs: readonly Pick<MemoryRun, "result">[]): number {
 /** Whether automatic recording is paused: `consecutiveFailures` failed runs at the end of `runs`. */
 export function writerPaused(runs: readonly Pick<MemoryRun, "result">[]): boolean {
     return trailingFailures(runs) >= STRUCTURED_MEMORY_LIMITS.consecutiveFailures;
+}
+
+/** Why the preset's screening keeps a reply out of the writer's windows; the Coverage view's reason codes. */
+export type MemoryScreenReason = "screenedRefusal" | "screenedFormat";
+
+/**
+ * Whether `screening` keeps `message` out of everything the writer records, and as what: a reply whose
+ * stored text holds one of the `refusal` texts, else one of the `format` texts, compared without case.
+ * Only a reply is screened, and nothing is stored: each read decides again from the lists and the text
+ * as they stand, so a list change takes effect on the next read. The raw text stays in the prompt.
+ */
+export function memoryScreenReason(
+    message: Pick<Message, "role" | "data">,
+    screening: StructuredMemorySettings["screening"],
+): MemoryScreenReason | null {
+    if (message.role !== "char" || (screening.refusal.length === 0 && screening.format.length === 0)) {
+        return null;
+    }
+    const text = message.data.toLowerCase();
+    const holds = (needle: string) => needle !== "" && text.includes(needle.toLowerCase());
+    if (screening.refusal.some(holds)) {
+        return "screenedRefusal";
+    }
+    return screening.format.some(holds) ? "screenedFormat" : null;
 }
 
 /**

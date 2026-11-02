@@ -36,10 +36,12 @@ import {
     ADOPTED_WRITER_RUN,
     sealHypaV3Data,
     STRUCTURED_MEMORY_LIMITS,
+    writerPaused,
     type MemoryEvent,
     type MemoryPage,
     type MemoryThread,
     type StructuredMemoryContentsAnswer,
+    type MemoryRun,
 } from "../../../../shared/structuredMemory.ts";
 import StructuredMemoryPanel from "./StructuredMemoryPanel.svelte";
 import PreviewTab from "./PreviewTab.svelte";
@@ -189,7 +191,7 @@ it("switches Coverage and Log with SegmentedControl and refreshes after each cha
     );
     await open();
     expect(query('[data-memory-panel="coverage"]')).not.toBeNull();
-    expect(target.querySelectorAll("[data-segment-btn]")).toHaveLength(6);
+    expect(target.querySelectorAll("[data-segment-btn]")).toHaveLength(7);
     expect(query('[data-segment-btn][aria-pressed="true"]')?.textContent).toBe(
         language.structuredMemory.panel.coverage,
     );
@@ -252,7 +254,7 @@ it("switches Coverage and Log with SegmentedControl and refreshes after each cha
     click("[data-memory-panel-refresh]");
     await settle();
     expect(reads()).toHaveLength(count + 1);
-    click("[data-segment-btn]:last-child");
+    click("[data-segment-btn]:nth-of-type(6)");
     await settle();
     expect(query('[data-memory-panel="log"]')).not.toBeNull();
     expect(query("[data-memory-log]")?.dataset.readOnly).toBe("false");
@@ -321,7 +323,7 @@ it.each(["coverage", "log"])(
         });
         await open();
         if (tab === "log") {
-            click("[data-segment-btn]:last-child");
+            click("[data-segment-btn]:nth-of-type(6)");
             await settle();
         }
         click("[data-memory-panel-refresh]");
@@ -407,7 +409,7 @@ it("shows run metrics and extracted items beside their verified or unverified qu
             : fetch(url, init, options),
     );
     await open();
-    click("[data-segment-btn]:last-child");
+    click("[data-segment-btn]:nth-of-type(6)");
     await settle();
     const row = query('[data-memory-run="failed"]')!;
     expect(row.textContent).toContain(language.structuredMemory.log.range(2, 5, 2));
@@ -456,7 +458,7 @@ it("restarts Log pagination on a changed revision without keeping older rows", a
         );
     });
     await open();
-    click("[data-segment-btn]:last-child");
+    click("[data-segment-btn]:nth-of-type(6)");
     await settle();
     const more = [...target.querySelectorAll("button")].find(
         (button) => button.textContent.trim() === language.structuredMemory.log.loadMore,
@@ -573,7 +575,7 @@ it("badges only verified events from the newest valid report on Coverage rows, c
         expect.stringContaining("used-u"),
         expect.stringContaining("used-a"),
     ]);
-    click("[data-segment-btn]:last-child");
+    click("[data-segment-btn]:nth-of-type(6)");
     await settle();
     const runs = [...target.querySelectorAll("[data-memory-run]")];
     expect(runs.map((row) => !!row.querySelector("[data-memory-used]"))).toEqual([true, false, false, false]);
@@ -739,6 +741,13 @@ function serveMemory() {
                 events: [{ id: "event", title: "Opening", status: "active", bytes: 100 }],
                 threads: [{ id: "t", title: "A promise", state: state.thread.state, bytes: 100 }],
                 runs: state.runs,
+                health: {
+                    paused: writerPaused(state.runs as MemoryRun[]),
+                    storedStale: 0,
+                    pendingRepairs: 0,
+                    unsupportedSections: 0,
+                    overBudgetSections: 0,
+                },
             });
         if (url.endsWith("/records/pages/p")) return Response.json({ revision: state.revision, data: state.page });
         if (url.endsWith("/records/pages/scene"))
@@ -756,7 +765,7 @@ function serveMemory() {
     });
     return state;
 }
-async function chooseTab(name: "pages" | "timeline" | "threads") {
+async function chooseTab(name: "pages" | "timeline" | "threads" | "settings") {
     const button = [...target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]")].find(
         (button) => button.textContent?.trim() === language.structuredMemory.panel[name],
     );
@@ -1331,6 +1340,7 @@ function serveAdoptionContents() {
         adoption: { adoptable: 1, declined: false, resettable: false },
         rebuild: null,
         recordedLanguage: null,
+        health: { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 },
     };
     const fetch = io.authFetch.getMockImplementation()!;
     io.authFetch.mockImplementation((url, init, options) =>
@@ -1586,6 +1596,7 @@ function serveRebuildContents() {
         adoption: { adoptable: 0, declined: false, resettable: false },
         rebuild: null,
         recordedLanguage: "English",
+        health: { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 },
     };
     const fetch = io.authFetch.getMockImplementation()!;
     io.authFetch.mockImplementation(async (url, init, options) => {
@@ -1766,10 +1777,10 @@ it("opens a requested page history diff, scrolls only that jump, and reverts fro
     expect(alertToast).toHaveBeenLastCalledWith(language.structuredMemory.revert.done(1));
 });
 
-it("writes and clears the chat highlight override from Pages without changing another chat", async () => {
+it("writes and clears the chat highlight override from Settings without changing another chat", async () => {
     serveMemory();
     await open();
-    await chooseTab("pages");
+    await chooseTab("settings");
     const selector = "[data-memory-highlight-mode]";
     expect(target.querySelector<HTMLSelectElement>(selector)!.value).toBe("");
     for (const mode of ["none", "important", "all"]) {
@@ -1800,7 +1811,7 @@ it("shows the current custom mode on the panel and the stored custom mode on Log
     structured.fineTuning = false;
     flushSync();
     expect(query("[data-memory-custom-prompt]")).toBeNull();
-    click("[data-segment-btn]:last-child");
+    click("[data-segment-btn]:nth-of-type(6)");
     await settle();
     expect(query('[data-memory-run="failed"]')?.textContent).toContain("Custom prompt");
 });
@@ -2050,4 +2061,49 @@ it("sends only selected headings and aliases from the split form and opens the n
     expect(query("[data-memory-split-form]")).toBeNull();
     expect(target.textContent).toContain("By boat");
     expect(target.textContent).not.toContain("Original memory");
+});
+
+it("writes and clears the chat language through chat edits and locks both Settings overrides while read-only", async () => {
+    serveMemory();
+    await open();
+    await chooseTab("pages");
+    expect(query("[data-memory-highlight-mode]")).toBeNull();
+    await chooseTab("settings");
+    const input = target.querySelector<HTMLInputElement>("[data-memory-language] input")!;
+    const setLanguage = (value: string) => {
+        input.value = value;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+    };
+    setLanguage("  Korean  ");
+    expect(findChat(ref)!.structuredMemoryLanguage).toBe("Korean");
+    expect(findChat({ ...ref, chatId: "other" })!.structuredMemoryLanguage).toBeUndefined();
+    expect(hasChatWork()).toBe(true);
+    setLanguage("   ");
+    expect(findChat(ref)!.structuredMemoryLanguage).toBeUndefined();
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    await settle();
+    expect(input.disabled).toBe(true);
+    const highlight = target.querySelector<HTMLSelectElement>("[data-memory-highlight-mode]")!;
+    expect(highlight.disabled).toBe(true);
+    setLanguage("Blocked");
+    highlight.value = "all";
+    highlight.dispatchEvent(new Event("change", { bubbles: true }));
+    flushSync();
+    expect(findChat(ref)!.structuredMemoryLanguage).toBeUndefined();
+    expect(findChat(ref)!.structuredMemoryHighlight).toBeUndefined();
+});
+
+it("shows pending repairs from health on the writer line below paused", async () => {
+    const contents = serveAdoptionContents();
+    contents.adoption.adoptable = 0;
+    contents.health.pendingRepairs = 1;
+    await open();
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("repair");
+    expect(query("[data-memory-writer-action]")?.dataset.memoryWriterAction).toBe("record");
+    contents.health.paused = true;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("paused");
 });

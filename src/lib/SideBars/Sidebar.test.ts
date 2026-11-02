@@ -27,6 +27,7 @@ vi.mock("src/ts/process/chatStatus.svelte", async () => {
         chatStatusKey: vi.fn(),
         generatingChatKeys: () => new Set<string>(),
         isChatBusy: () => false,
+        memoryHealthStates: () => new Map<string, string>(),
         recoveryChatKeys: writable(new Set<string>()),
         unseenChatKeys: writable(new Set<string>()),
     };

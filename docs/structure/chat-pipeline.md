@@ -308,7 +308,8 @@ page is away does not count. Kept terminal receipts and shutdown outcomes are ow
 
 - `chatStatus.svelte.ts` holds per-tab sources keyed by `${chaId}\u0000${chatId}`: `generatingChatKeys()`
   (`followedJobs` plus `lockedChatKeys()`), `recoveryChatKeys` (lost chat → job id), and `unseenChatKeys` (up to 256
-  chats whose reply ended while not visible).
+  chats whose reply ended while not visible). The memory health facts and the over-cap mark sit there too
+  ([the health badge](structured-memory-read.md#the-health-badge)).
 - `watchChatVisibility`, started once from `bootstrap.ts`, clears recovery and unseen for the chat whose transcript is
   shown (`visibleChatKey`), even when a lost follow adds a mark without a visibility change. New follows clear that
   chat's recovery; deleted chats' recovery is pruned.

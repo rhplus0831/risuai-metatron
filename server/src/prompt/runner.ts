@@ -1465,7 +1465,11 @@ async function runSpeaker(arg: {
         }
         if (assembled.type === "alert") {
             // The client's `alertError` and `return false`: the job's error, never an inlay error message.
-            throw new SendError(refusal?.message ?? assembled.error, { stage: "assembly" }, refusal?.status);
+            throw new SendError(
+                refusal?.message ?? assembled.error,
+                { stage: "assembly", ...(assembled.code !== undefined ? { code: assembled.code } : {}) },
+                refusal?.status,
+            );
         }
         const { formated, biases, promptInfo } = assembled;
         generationInfo = assembled.generationInfo;

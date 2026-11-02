@@ -195,8 +195,9 @@
   `OpenChatPanel` root) stretches over it with `-mr-(--sidebar-gutter) pr-(--sidebar-gutter)` so its scrollbar sits at
   the pane's edge.
 - `statusSets` reads `refusedChatKeys(refusedItems())` from the save adapter's reactive refusal inventory, the chat keys
-  of `src/ts/process/chatStatus.svelte.ts`, and `summarizingChats()` from `src/ts/process/memoryTasks.svelte.ts`
-  reactively. `characterStatuses` aggregates once per change.
+  of `src/ts/process/chatStatus.svelte.ts`, `summarizingChats()` from `src/ts/process/memoryTasks.svelte.ts`, and
+  `memoryHealthStates()` ([the health badge](structured-memory-read.md#the-health-badge)) reactively.
+  `characterStatuses` aggregates once per change.
 - Top-level characters and members of open folders read their character's status. Collapsed folders use `folderStatus`
   over their members; an open folder has no badge on its own row. `pinnedStatuses` resolves each pinned chat separately.
 - A row whose winning status is `memory` shows the count of its only summarizing chat; with several summarizing chats,
@@ -210,8 +211,9 @@
 - `PinnedChatsRail.svelte` / `pinnedChats.ts`: collect pinned chats from summaries in character order (folders expanded,
   remaining characters appended), omit trashed characters, and open through `globalApi.openPinnedChat` (select chat
   before character). The same projection supplies home cards.
-- `src/lib/SideBars/chatStatus.ts`: priority is recovery → refused → generating → memory task → unseen; only chat
-  refusals produce a refused chat badge.
+- `src/lib/SideBars/chatStatus.ts`: priority is recovery → refused → generating → memory task → unseen → memory health;
+  only chat refusals produce a refused chat badge. A health badge carries the state's text on a pinned chat and
+  `groupHealthState` on a character or folder, and `customPrompt` looks neutral.
 - `OpenChatPanel.svelte`: chat-bound editors capture a `ChatRef` and are recreated for another chat; binding pickers and
   dialogs use that ref. New-chat defaults and translation behavior are documented in [persistence](persistence.md) and
   [media-aux](media-aux.md).

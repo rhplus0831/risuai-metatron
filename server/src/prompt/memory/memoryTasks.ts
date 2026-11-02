@@ -1193,7 +1193,11 @@ export function createMemoryTasks(deps: {
                 endRunning(task, "skipped", { reason: "chatGone" });
                 return;
             }
-            const window = rebuildWindow(scopeChat(scope)?.message ?? [], plan[done]);
+            const window = rebuildWindow(
+                scopeChat(scope)?.message ?? [],
+                plan[done],
+                writerCadence(scope.db).screening,
+            );
             if (window) {
                 const result = await stagedWriter({
                     scope,

@@ -1,9 +1,17 @@
 import { language } from "src/lang";
 import type { RefusedItem } from "src/ts/storage/resourceSync.svelte";
+import { MEMORY_HEALTH_STATES, type MemoryHealthState } from "../../../shared/structuredMemory.ts";
 
-export type ChatStatus = "recovery" | "refused" | "generating" | "memory" | "unseen";
+export type ChatStatus = "recovery" | "refused" | "generating" | "memory" | "unseen" | "health";
 
-export const CHAT_STATUS_PRIORITY: readonly ChatStatus[] = ["recovery", "refused", "generating", "memory", "unseen"];
+export const CHAT_STATUS_PRIORITY: readonly ChatStatus[] = [
+    "recovery",
+    "refused",
+    "generating",
+    "memory",
+    "unseen",
+    "health",
+];
 
 /** A summarizing chat's progress (`done/total`). */
 export type MemoryCount = { done: number; total: number };
@@ -15,6 +23,8 @@ export type ChatStatusSets = {
     /** Chats whose HypaV3 memory task is queued or running (`summarizingChats`); none when absent. */
     memory?: ReadonlySet<string> | ReadonlyMap<string, unknown>;
     unseen: ReadonlySet<string>;
+    /** Chats whose Structured Memory health badge has a state (`memoryHealthStates`); none when absent. */
+    health?: ReadonlyMap<string, MemoryHealthState>;
 };
 
 /** Chat status keys, distinct from the save adapter's opaque refusal keys. */
@@ -93,9 +103,45 @@ export function memoryCountText(count: MemoryCount): string {
     return `${count.done}/${count.total}`;
 }
 
-/** The status label; a memory status carries its count when it has one. */
-export function chatStatusLabel(status: ChatStatus, name: string, count: MemoryCount | null = null): string {
-    return status === "memory"
-        ? language.chatStatus.memory(name, count ? memoryCountText(count) : null)
-        : language.chatStatus[status](name);
+/**
+ * The worst health state among the chats of `chaIds` (`MEMORY_HEALTH_STATES` order), what a character's
+ * or folder's badge shows; null with none.
+ */
+export function groupHealthState(
+    states: ReadonlyMap<string, MemoryHealthState>,
+    chaIds: readonly string[],
+): MemoryHealthState | null {
+    const owners = new Set(chaIds);
+    let worst: number = MEMORY_HEALTH_STATES.length;
+    for (const [key, state] of states) {
+        const [chaId] = key.split("\u0000", 1);
+        if (owners.has(chaId)) {
+            worst = Math.min(worst, MEMORY_HEALTH_STATES.indexOf(state));
+        }
+    }
+    return worst === MEMORY_HEALTH_STATES.length ? null : MEMORY_HEALTH_STATES[worst];
+}
+
+/** The text of a health state, what a chat's own badge shows. */
+export function memoryHealthText(state: MemoryHealthState): string {
+    return language.chatStatus.healthStates[state];
+}
+
+/**
+ * The status label; a memory status carries its count when it has one, and a health status its state's
+ * text when the label is a chat's own (a character's or folder's label is generic).
+ */
+export function chatStatusLabel(
+    status: ChatStatus,
+    name: string,
+    count: MemoryCount | null = null,
+    health: MemoryHealthState | null = null,
+): string {
+    if (status === "memory") {
+        return language.chatStatus.memory(name, count ? memoryCountText(count) : null);
+    }
+    if (status === "health") {
+        return language.chatStatus.health(name, health ? memoryHealthText(health) : null);
+    }
+    return language.chatStatus[status](name);
 }

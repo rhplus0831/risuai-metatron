@@ -1,15 +1,42 @@
+import { untrack } from "svelte";
+import { SvelteMap, SvelteSet } from "svelte/reactivity";
 import { fromStore, get, writable } from "svelte/store";
+import { parseContextReport, type ContextReport } from "../../../shared/contextReport.ts";
+import type { Message } from "../../../shared/database.ts";
+import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
-import { chatEntry, currentChatRef, findChat, lockedChatKeys, type ChatRef } from "src/ts/storage/chatStore.svelte";
+import type { DeepReadonly } from "../../../shared/readonly.ts";
+import {
+    MEMORY_HEALTH_CHATS_MAX,
+    memoryHealthState,
+    normalizeStructuredMemorySettings,
+    STRUCTURED_MEMORY_ALGORITHM,
+    type MemoryHealthState,
+    type StructuredMemoryHealthFacts,
+} from "../../../shared/structuredMemory.ts";
+import { characterList, findCharacter } from "src/ts/storage/characterStore.svelte";
+import {
+    chatEntry,
+    chatList,
+    currentChatRef,
+    findChat,
+    lockedChatKeys,
+    type ChatRef,
+} from "src/ts/storage/chatStore.svelte";
+import { settings } from "src/ts/storage/settingsViews.svelte";
 import { PlaygroundStore, selection } from "src/ts/storage/selection.svelte";
 import { followedJobs, readChatAgain } from "src/ts/process/serverCommands";
 import { isLocalSend, localSends } from "src/ts/process/localSends";
+import { readStructuredMemoryHealth } from "src/ts/process/structuredMemory.svelte";
 import { bookmarkListOpen, gridOpenStore, hypaV3ModalOpen, settingsOpen } from "src/ts/screenVisibility";
 import { messageSearchPanel } from "src/ts/messageSearch.svelte";
 import { popUpEditorStore } from "src/ts/popupEditorSession.svelte";
 import { isPageVisible } from "src/ts/pageVisibility.svelte";
 
 const MAX_UNSEEN_CHATS = 256;
+
+/** How long after a read of every chat's health a page return waits before it reads them again. */
+const HEALTH_REREAD_MS = 60_000;
 
 // Lazy views avoid reading followedJobs during the serverCommands → chatStatus import cycle.
 // fromStore subscribes only for reactive readers; their effects own subscription cleanup.
@@ -26,6 +53,11 @@ let foreignView: { current: ReadonlyMap<string, string> } | undefined;
 /** The per-tab status key, shared with the followed-job registry. */
 export function chatStatusKey(ref: ChatRef): string {
     return `${ref.chaId}\u0000${ref.chatId}`;
+}
+
+function keyRef(key: string): ChatRef {
+    const [chaId, chatId] = key.split("\u0000");
+    return { chaId, chatId };
 }
 
 /** Chats with a job this tab follows or a server generation lock (reactive). */
@@ -85,11 +117,23 @@ export function noteJobLost(ref: ChatRef, jobId: string): void {
     }
 }
 
+/**
+ * Notes a job's end for the chat's badges: a send that failed because its required memory pages were over
+ * the cap marks the chat until its next good send, which also marks the chat unseen when the reply
+ * landed away from the open chat.
+ */
 export function noteJobDone(ref: ChatRef, end: GenerationTerminalEvent): void {
-    if (end.type !== "done" || typeof end.messageId !== "string" || end.messageId.length === 0) {
+    const key = chatStatusKey(ref);
+    if (end.type === "error") {
+        if (end.code === "memoryRequiredOverCap") {
+            requiredOverCapChats.add(key);
+        }
         return;
     }
-    const key = chatStatusKey(ref);
+    if (typeof end.messageId !== "string" || end.messageId.length === 0) {
+        return;
+    }
+    requiredOverCapChats.delete(key);
     const unseen = get(unseenChatKeys);
     if (key === visibleChatKey() || unseen.has(key)) {
         return;
@@ -127,7 +171,122 @@ export function visibleChatKey(): string | null {
     return (selection.chatOpen || playground) && screen === (playground ? 2 : 0) ? chatStatusKey(ref) : null;
 }
 
-/** Starts the tab's visibility and new-follow cleanup; the caller owns the returned disposer. */
+// The memory health badge. The facts are the server's last answer per chat status key, read for the
+// pinned chats and the open chat alone (`healthChatKeys`): after boot, for a chat newly pinned, for the
+// open chat as it opens and when the memory panel closes, and for every chat when the page comes back
+// after a minute. Never on a send or a task's end: the badge is a last observation. The open chat adds
+// what its newest report says, and this tab's mark of a send that failed because the required pages were
+// over the cap, which only a reload or the chat's next good send clears.
+
+/** The health facts last read per chat status key; null for a chat the server does not know. */
+const healthFacts = new SvelteMap<string, StructuredMemoryHealthFacts | null>();
+
+/** Chats whose last send failed because the required memory pages were over the cap, until their next good send. */
+const requiredOverCapChats = new SvelteSet<string>();
+
+/** When every chat with a state was last read, for the page-return reads. */
+let healthReadAt = 0;
+
+function structuredMemorySelected(): boolean {
+    return settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+}
+
+/** The chats that have a health state: the open chat first, then the pinned chats, by status key (reactive). */
+function healthChatKeys(): string[] {
+    const keys: string[] = [];
+    const open = currentChatRef();
+    if (open && open.chaId !== "§playground") {
+        keys.push(chatStatusKey(open));
+    }
+    for (const character of characterList()) {
+        if (!character || character.trashTime) {
+            continue;
+        }
+        for (const chat of chatList(character.chaId)) {
+            const key = chatStatusKey({ chaId: character.chaId, chatId: chat.id });
+            if (chat.pinned === true && !keys.includes(key)) {
+                keys.push(key);
+            }
+        }
+    }
+    return keys;
+}
+
+/**
+ * Reads the health facts of `keys`, `MEMORY_HEALTH_CHATS_MAX` a request, and keeps each answer as it
+ * comes. An answer is a prefix of its request, so the next request starts at the first key it left out.
+ * A read that does not answer leaves what is held and throws nothing.
+ */
+async function readHealth(keys: readonly string[]): Promise<void> {
+    let start = 0;
+    while (start < keys.length) {
+        const chunk = keys.slice(start, start + MEMORY_HEALTH_CHATS_MAX);
+        const result = await readStructuredMemoryHealth(chunk.map(keyRef));
+        if (result.outcome !== "ok") {
+            return;
+        }
+        const { health } = result.value;
+        health.forEach((facts, index) => healthFacts.set(chunk[index], facts));
+        start += health.length;
+    }
+}
+
+/** The memory part of the newest valid report among `messages` when it is Structured Memory's, else null. */
+function newestMemoryReport(messages: readonly DeepReadonly<Message>[]): NonNullable<ContextReport["memory"]> | null {
+    for (let index = messages.length - 1; index >= 0; index--) {
+        const report = parseContextReport(messages[index].generationInfo?.context);
+        if (report) {
+            return report.memory?.kind === "structuredMemory" ? report.memory : null;
+        }
+    }
+    return null;
+}
+
+/**
+ * The memory health state of each chat that has one (`memoryHealthState`), by status key: the pinned
+ * chats and the open chat, while Structured Memory is the selected algorithm and the chat's character
+ * has memory on (reactive). A chat not loaded is judged from its last read facts, so its stale count is
+ * partial and it knows no gap; the open chat adds its newest report's gap against the preset's
+ * `gapConfirmTokens`, its writer state, and its stale exclusions. `customPrompt` is the preset's and
+ * needs no facts.
+ */
+export function memoryHealthStates(): ReadonlyMap<string, MemoryHealthState> {
+    const states = new Map<string, MemoryHealthState>();
+    if (!structuredMemorySelected()) {
+        return states;
+    }
+    const preset = selectedHypaV3Preset({
+        hypaV3Presets: settings.hypaV3Presets.items,
+        hypaV3PresetId: settings.hypaV3Presets.selectedId,
+    })?.settings;
+    const customPrompt = normalizeStructuredMemorySettings(preset?.structured).fineTuning;
+    const open = currentChatRef();
+    const openKey = open ? chatStatusKey(open) : null;
+    for (const key of healthChatKeys()) {
+        const ref = keyRef(key);
+        if (!findCharacter(ref.chaId)?.supaMemory) {
+            continue;
+        }
+        const facts = healthFacts.get(key) ?? null;
+        const memory = key === openKey ? newestMemoryReport(findChat(ref)?.message ?? []) : null;
+        const staleExcluded = memory?.excluded?.filter(({ reason }) => reason === "stale").length ?? 0;
+        const state = memoryHealthState({
+            writerPaused: memory?.writer?.state === "paused" || facts?.paused === true,
+            gap: memory?.gapTokens !== undefined && preset !== undefined && memory.gapTokens > preset.gapConfirmTokens,
+            staleEvents: (facts?.storedStale ?? 0) + (facts?.pendingRepairs ?? 0) + staleExcluded > 0,
+            unsupportedSections: (facts?.unsupportedSections ?? 0) > 0,
+            requiredOverCap: requiredOverCapChats.has(key),
+            pageOverBudget: (facts?.overBudgetSections ?? 0) > 0,
+            customPrompt,
+        });
+        if (state) {
+            states.set(key, state);
+        }
+    }
+    return states;
+}
+
+/** Starts the tab's visibility and new-follow cleanup, and the health reads; the caller owns the returned disposer. */
 export function watchChatVisibility(): () => void {
     return $effect.root(() => {
         $effect(() => {
@@ -148,8 +307,7 @@ export function watchChatVisibility(): () => void {
                 recoveryChatKeys.set(next);
                 // The lost job may have written since the chat was last read: read it again now that it
                 // is shown (outside the effect; `readChatAgain` writes chat state).
-                const [chaId, chatId] = key.split("\u0000");
-                queueMicrotask(() => readChatAgain({ chaId, chatId }));
+                queueMicrotask(() => readChatAgain(keyRef(key)));
             }
         });
 
@@ -158,11 +316,64 @@ export function watchChatVisibility(): () => void {
             const locks = lockedChatKeys();
             for (const key of previousLocks) {
                 if (!locks.has(key)) {
-                    const [chaId, chatId] = key.split("\u0000");
-                    clearForeignJob({ chaId, chatId });
+                    clearForeignJob(keyRef(key));
                 }
             }
             previousLocks = locks;
+        });
+
+        // The health reads leave their effect first and nothing waits on them, so boot and the first
+        // chat render go on without them. Keys the last run saw are not read again: a chat read as it
+        // opens or when the panel closes is, and a pinned chat on its way back from the pins is too.
+        let known = new Set<string>();
+        let previousOpen: string | null = null;
+        $effect(() => {
+            if (!structuredMemorySelected()) {
+                known = new Set();
+                previousOpen = null;
+                return;
+            }
+            const keys = healthChatKeys();
+            const ref = currentChatRef();
+            const openKey = ref && ref.chaId !== "§playground" ? chatStatusKey(ref) : null;
+            const opened = openKey !== null && openKey !== previousOpen ? openKey : null;
+            const fresh = keys.filter((key) => !known.has(key) || key === opened);
+            if (known.size === 0) {
+                healthReadAt = Date.now();
+            }
+            known = new Set(keys);
+            previousOpen = openKey;
+            if (fresh.length > 0) {
+                queueMicrotask(() => void readHealth(fresh));
+            }
+        });
+        let panelWasOpen = false;
+        $effect(() => {
+            const panelOpen = (hypaV3View ??= fromStore(hypaV3ModalOpen)).current;
+            const closed = panelWasOpen && !panelOpen;
+            panelWasOpen = panelOpen;
+            if (!closed || !untrack(structuredMemorySelected)) {
+                return;
+            }
+            const open = untrack(currentChatRef);
+            if (open && open.chaId !== "§playground") {
+                const key = chatStatusKey(open);
+                queueMicrotask(() => void readHealth([key]));
+            }
+        });
+        let pageWasVisible = isPageVisible();
+        $effect(() => {
+            const visible = isPageVisible();
+            const returned = !pageWasVisible && visible;
+            pageWasVisible = visible;
+            if (!returned || !untrack(structuredMemorySelected) || Date.now() - healthReadAt < HEALTH_REREAD_MS) {
+                return;
+            }
+            healthReadAt = Date.now();
+            const keys = untrack(healthChatKeys);
+            if (keys.length > 0) {
+                queueMicrotask(() => void readHealth(keys));
+            }
         });
 
         // A subscription sees even a short follow that starts and ends between effect flushes.
@@ -177,8 +388,7 @@ export function watchChatVisibility(): () => void {
             }
             previous = jobs;
             for (const key of recovery.keys()) {
-                const [chaId, chatId] = key.split("\u0000");
-                if (!chatEntry({ chaId, chatId })) {
+                if (!chatEntry(keyRef(key))) {
                     (next ??= new Map(recovery)).delete(key);
                 }
             }
@@ -208,6 +418,9 @@ export function resetChatStatusForTests(): void {
     recoveryChatKeys.set(new Map());
     unseenChatKeys.set(new Set());
     foreignJobs.set(new Map());
+    healthFacts.clear();
+    requiredOverCapChats.clear();
+    healthReadAt = 0;
     foreignView = undefined;
     followedView = undefined;
     playgroundView = undefined;
@@ -215,4 +428,5 @@ export function resetChatStatusForTests(): void {
     unseenView = undefined;
     settingsView = undefined;
     gridView = undefined;
+    hypaV3View = undefined;
 }

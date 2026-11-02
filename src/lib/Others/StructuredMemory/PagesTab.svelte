@@ -31,9 +31,7 @@
     import type { loreBook } from "../../../../shared/database.ts";
     import {
         MEMORY_CONTEXT_MODES,
-        STRUCTURED_MEMORY_HIGHLIGHT_MODES,
         STRUCTURED_MEMORY_LIMITS,
-        structuredMemoryHighlightOverride,
         type MemoryContextMode,
         type MemoryPage,
         type MemorySection,
@@ -65,8 +63,7 @@
     // when it falls applies the same rule. Everything shown is plain text.
     //
     // A jump can name a history entry: that entry's diff opens once its page is the copy, and comes into
-    // view once it has rendered, because the history sits below every section. The chat's own highlight
-    // mode is a chat field, written through the chat module and not through the routes.
+    // view once it has rendered, because the history sits below every section.
 
     let { chatRef, readOnly, refresh, focus, open, jump }: MemoryPanelTabProps = $props();
 
@@ -131,7 +128,6 @@
     const history = $derived(copy ? memoryPageHistoryView(copy.data) : []);
     const controlsOff = $derived(readOnly || sending);
     const draftFits = $derived(draft.trim() !== "" && draft.length <= sectionBodyChars);
-    const highlightMode = $derived(structuredMemoryHighlightOverride(findChat(chatRef)) ?? "");
     /** The copy is a page in the trash: read-only, with Restore and Delete forever alone. */
     const inTrash = $derived(copy?.data.trashedAt !== undefined);
     /** The live pages the copy can merge into: its type, not itself. */
@@ -577,19 +573,6 @@
         }
     }
 
-    /** The chat's own mode, or `""` for the default. Not under `controlsOff`, and only on a held chat. */
-    function setHighlightMode(value: string) {
-        if (controlsOff || !findChat(chatRef)) {
-            return;
-        }
-        const mode = STRUCTURED_MEMORY_HIGHLIGHT_MODES.find((entry) => entry === value);
-        if (mode) {
-            setChatMeta(chatRef, { structuredMemoryHighlight: mode });
-        } else {
-            setChatMeta(chatRef, {}, ["structuredMemoryHighlight"]);
-        }
-    }
-
     async function toggleEntry({ id, before, after }: MemoryPageHistoryRow) {
         const number = ++diffNumber;
         diff = null;
@@ -944,21 +927,6 @@
 {/snippet}
 
 <div class="flex flex-col min-w-0 gap-2 text-sm" data-memory-pages data-read-only={readOnly}>
-    <label class="flex flex-col self-start gap-1">
-        <span class="text-textcolor2">{text.highlightMode}</span>
-        <SelectInput
-            size="sm"
-            value={highlightMode}
-            disabled={controlsOff}
-            onchange={(event) => setHighlightMode(event.currentTarget.value)}
-            data-memory-highlight-mode
-        >
-            <OptionInput value="">{text.highlightDefault}</OptionInput>
-            {#each STRUCTURED_MEMORY_HIGHLIGHT_MODES as mode (mode)}
-                <OptionInput value={mode}>{language.structuredMemory.highlightModes[mode]}</OptionInput>
-            {/each}
-        </SelectInput>
-    </label>
     {#if importReport}
         <div class="flex flex-col min-w-0 gap-1 break-words" data-memory-import-report>
             <p>{importReport.imported ? toolText.importDone(importReport.imported) : toolText.importNothing}</p>

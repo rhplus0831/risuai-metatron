@@ -720,6 +720,16 @@ export const languageKorean = {
         unseen: (name: string) => `새 답변: ${name}`,
         memory: (name: string, count: string | null = null) =>
             count === null ? `메모리 요약 중: ${name}` : `메모리 요약 중 (${count}): ${name}`,
+        health: (name: string, detail: string | null = null) => `${detail ?? "메모리 확인 필요"}: ${name}`,
+        healthStates: {
+            writerPaused: "메모리 기록이 일시 중지됨",
+            gap: "마지막 전송에서 기록되지 않은 대화가 잘림",
+            staleEvents: "메모리 이벤트에 복구가 필요함",
+            unsupportedSections: "메모리 섹션의 근거가 사라짐",
+            requiredOverCap: "필수 메모리 페이지가 한도를 넘음",
+            pageOverBudget: "메모리 섹션이 예산을 넘음",
+            customPrompt: "사용자 정의 메모리 작성 프롬프트",
+        },
     },
     refusedData: {
         chatTitle: "서버가 이 채팅의 변경을 거부했습니다",

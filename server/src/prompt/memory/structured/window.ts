@@ -6,6 +6,7 @@ import {
     type MemoryAnchoredSource,
     type MemoryEvent,
     memoryRerecordTarget,
+    memoryScreenReason,
     normalizeStructuredMemorySettings,
     storedMemorySources,
     type StructuredMemorySettings,
@@ -37,6 +38,11 @@ import type { MemoryTokenizer } from "../host.ts";
  *   each event a start re-records gets one window of its own ahead of the rest, and the ordinary windows
  *   stay exactly as they were. A person's start takes every mark, an automatic task only the marks an
  *   edit explains (`automaticRerecords`).
+ * - A reply the preset's screening lists match (`memoryScreenReason`) enters no window: it is dropped
+ *   from the confirmed messages after the ceiling is found, so a press on it still confirms, and the user
+ *   message before it folds into the next turn. A message an event already cites stays recorded. A
+ *   person's start re-records a marked event through its screened messages, since they asked for them;
+ *   an automatic start leaves that event and its mark.
  */
 
 /**
@@ -45,11 +51,17 @@ import type { MemoryTokenizer } from "../host.ts";
  */
 export type WriterWindow = { sources: MemoryAnchoredSource[]; messages: Message[]; rerecords?: string };
 
-/** What decides when a window closes: the writer's settings and the budget mode of their preset. */
+/**
+ * What decides when a window closes and what stays out of one: the writer's settings, the budget mode of
+ * their preset, and the preset's screening lists.
+ */
 export type WriterCadence = Pick<
     StructuredMemorySettings,
-    "cadence" | "cadenceTurns" | "cadenceTokens" | "cadenceRatio"
+    "cadence" | "cadenceTurns" | "cadenceTokens" | "cadenceRatio" | "screening"
 > & { budgetMode?: HypaV3Settings["budgetMode"] };
+
+/** Screening that keeps nothing out. */
+const NO_SCREENING: WriterCadence["screening"] = { refusal: [], format: [] };
 
 /** A confirmed message, with the id that anchors it and its place in the stored list. */
 export type ConfirmedMessage = { id: string; message: Message; index: number };
@@ -57,13 +69,13 @@ export type ConfirmedMessage = { id: string; message: Message; index: number };
 /** Where windows stop: before the message `id`, or through it when a press confirmed it (`inclusive`). */
 export type WriterCeiling = { id: string; inclusive: boolean };
 
-/** The selected memory preset's cadence settings. */
+/** The selected memory preset's cadence and screening settings. */
 export function writerCadence(db: Parameters<typeof selectedHypaV3Preset>[0]): WriterCadence {
     const settings = selectedHypaV3Preset(db)?.settings;
-    const { cadence, cadenceTurns, cadenceTokens, cadenceRatio } = normalizeStructuredMemorySettings(
+    const { cadence, cadenceTurns, cadenceTokens, cadenceRatio, screening } = normalizeStructuredMemorySettings(
         settings?.structured,
     );
-    return { cadence, cadenceTurns, cadenceTokens, cadenceRatio, budgetMode: settings?.budgetMode };
+    return { cadence, cadenceTurns, cadenceTokens, cadenceRatio, screening, budgetMode: settings?.budgetMode };
 }
 
 /**
@@ -130,10 +142,11 @@ export function anchoredMessages(messages: readonly Message[]): ConfirmedMessage
 
 /**
  * The eligible messages before the ceiling, or through it when `inclusive`, in chat order, positioned
- * in the stored list (a message without a `chatId` cannot be anchored). Null when the ceiling is not
- * itself eligible: a message that is gone, disabled, or cut off by an `allBefore` confirms nothing.
+ * in the stored list (a message without a `chatId` cannot be anchored), screened replies included. Null
+ * when the ceiling is not itself eligible: a message that is gone, disabled, or cut off by an `allBefore`
+ * confirms nothing.
  */
-function confirmedMessages(
+function messagesUnderCeiling(
     messages: readonly Message[],
     confirmedBefore: string,
     inclusive: boolean,
@@ -143,15 +156,41 @@ function confirmedMessages(
     return ceiling === -1 ? null : anchored.slice(0, inclusive ? ceiling + 1 : ceiling);
 }
 
+/** `confirmed` without the replies `screening` keeps out of the writer's windows. */
+function unscreened(confirmed: readonly ConfirmedMessage[], screening: WriterCadence["screening"]): ConfirmedMessage[] {
+    return confirmed.filter(({ message }) => memoryScreenReason(message, screening) === null);
+}
+
+/**
+ * `messagesUnderCeiling` without the screened replies: the ceiling is found first, so a press on a
+ * screened reply, or a ceiling that is one, confirms what lies before it.
+ */
+function confirmedMessages(
+    messages: readonly Message[],
+    confirmedBefore: string,
+    inclusive: boolean,
+    screening: WriterCadence["screening"],
+): ConfirmedMessage[] | null {
+    const confirmed = messagesUnderCeiling(messages, confirmedBefore, inclusive);
+    return confirmed && unscreened(confirmed, screening);
+}
+
 /**
  * The id of the newest reply `confirmedBefore` confirms: the last eligible assistant message with a
- * `chatId` before it. Undefined with no ceiling, no such reply, or a ceiling that is not eligible.
+ * `chatId` before it that `screening` leaves in. Undefined with no ceiling, no such reply, or a ceiling
+ * that is not eligible. A screened newest reply is skipped, or it would read pending for ever.
  */
-export function confirmedThrough(messages: readonly Message[], confirmedBefore: string | null): string | undefined {
+export function confirmedThrough(
+    messages: readonly Message[],
+    confirmedBefore: string | null,
+    screening: WriterCadence["screening"],
+): string | undefined {
     if (confirmedBefore === null) {
         return undefined;
     }
-    return confirmedMessages(messages, confirmedBefore, false)?.findLast(({ message }) => message.role === "char")?.id;
+    return confirmedMessages(messages, confirmedBefore, false, screening)?.findLast(
+        ({ message }) => message.role === "char",
+    )?.id;
 }
 
 /** The turns of `confirmed`; user messages with no assistant message after them belong to none. */
@@ -185,7 +224,8 @@ export function windowOf(entries: readonly ConfirmedMessage[]): WriterWindow {
  * One window for each of `events` that can run, by its first message still present. An event's window is
  * exactly its sources a send still reads, in chat order, with fresh anchors. It runs when `confirmed`
  * holds every one of them and `memoryRerecordTarget` names a reply: any other is left out and keeps its
- * mark.
+ * mark. `confirmed` is what the start reads: a person's start passes the messages with the screened
+ * replies in, an automatic one without them, so an event over a screened reply waits for a person.
  */
 function rerecordWindows(
     events: readonly MemoryEvent[],
@@ -222,9 +262,10 @@ function rerecordWindows(
  * alike; `maxContext` is the input's in both. Only the `tokens` cadence counts: there the turns
  * accumulate until their messages reach the threshold.
  *
- * `manual` (a manual start) also closes the trailing partial window, and under the `manual` cadence,
- * which closes none on its own, makes one window of each turn. `inclusive` reads `confirmedBefore` as
- * the last confirmed message instead of the one after it.
+ * `manual` (a manual start) also closes the trailing partial window, under the `manual` cadence, which
+ * closes none on its own, makes one window of each turn, and re-records a marked event through the
+ * replies `cadence.screening` would keep out, which the ordinary windows never hold. `inclusive` reads
+ * `confirmedBefore` as the last confirmed message instead of the one after it.
  */
 export async function confirmedWindows(arg: {
     messages: readonly Message[];
@@ -239,12 +280,13 @@ export async function confirmedWindows(arg: {
     rerecord?: readonly MemoryEvent[];
 }): Promise<WriterWindow[] | null> {
     const { recorded, cadence, tokenizer, limit, manual = false, rerecord = [] } = arg;
-    const confirmed = confirmedMessages(arg.messages, arg.confirmedBefore, arg.inclusive ?? false);
-    if (!confirmed) {
+    const underCeiling = messagesUnderCeiling(arg.messages, arg.confirmedBefore, arg.inclusive ?? false);
+    if (!underCeiling) {
         return null;
     }
+    const confirmed = unscreened(underCeiling, cadence.screening);
     const threshold = tokenThreshold(cadence, arg.maxContext);
-    const windows = rerecordWindows(rerecord, arg.messages, confirmed).slice(0, limit);
+    const windows = rerecordWindows(rerecord, arg.messages, manual ? underCeiling : confirmed).slice(0, limit);
     if (windows.length >= limit) {
         return windows;
     }
@@ -300,7 +342,7 @@ export function windowStillConfirmed(
     confirmedBefore: string,
     options: { inclusive?: boolean } = {},
 ): boolean {
-    const confirmed = confirmedMessages(messages, confirmedBefore, options.inclusive ?? false);
+    const confirmed = confirmedMessages(messages, confirmedBefore, options.inclusive ?? false, NO_SCREENING);
     if (!confirmed) {
         return false;
     }

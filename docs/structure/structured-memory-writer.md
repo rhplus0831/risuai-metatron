@@ -368,8 +368,8 @@ with its hashes and `historyId`. The text diff is the Pages tab's history; the r
   the preset. A chat's `structuredMemoryLanguage` wins over its owner's, and the owner's over the preset's `language`,
   where `""` follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
 - `MemorySettings.svelte` exposes only the fields something reads, and shares with HypaV3 only the preset picker, the
-  budget mode, and the memory maximum. `screening` stays hidden until its reader lands. So a preset's
-  `summarizationModel` and `alwaysToggleOn` still apply with no control here.
+  budget mode, and the memory maximum. `screening`: [its rules](structured-memory-read.md#reply-screening). So a
+  preset's `summarizationModel` and `alwaysToggleOn` still apply with no control here.
 - `cadenceTokens` is the `tokens` cadence's threshold under a `tokens` budget mode, and `cadenceRatio` its share of the
   max context under a `ratio` one; each mode keeps the other's field.
 

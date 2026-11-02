@@ -51,8 +51,9 @@ transcript can reproduce; `backfill` takes the turns no event cites and adds to 
    reach), no service, a live task, a run already there, and no window.
 2. `begin` and `MemoryTasks.rebuild` are one synchronous step. A refused queue abandons what began.
 3. Work: `rebuildWork` takes the plan once and goes on from the run's `cursor`. Each window reads the chat as stored
-   (`rebuildWindow`), so an edited message is read as it is now, and one with no message left moves the cursor with no
-   call. The writer runs on `rebuildStore`, `manual: true`, unchanged but for `historical`.
+   (`rebuildWindow`, [screened](structured-memory-read.md#reply-screening) replies left out), so an edited message is
+   read as it is now, and one with no message left moves the cursor with no call. The writer runs on `rebuildStore`,
+   `manual: true`, unchanged but for `historical`.
 4. Commit: `commitOfRebuild` checks the task's fence, the hold on the live records, then `commitWindow` on the staged
    store under the window's own last message, inclusive, so no stored ceiling can go missing. No chat is written, so
    there is no receipt and no revision for the tab's fence. A closing commit, one with a `recorded` run, moves the

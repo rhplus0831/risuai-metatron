@@ -3,7 +3,14 @@ import { describe, expect, it } from "vitest";
 import type { Message } from "../../../../../shared/database.ts";
 import { messageSourceHash } from "../../../data/memoryStore.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
-import { confirmedWindows, windowStillConfirmed, writerCeiling, type WriterCadence } from "./window.ts";
+import { writerState } from "./step.ts";
+import {
+    confirmedThrough,
+    confirmedWindows,
+    windowStillConfirmed,
+    writerCeiling,
+    type WriterCadence,
+} from "./window.ts";
 
 describe("confirmed writer windows", () => {
     it("closes only uncovered confirmed turns at the selected cadence", async () => {
@@ -19,6 +26,7 @@ describe("confirmed writer windows", () => {
             cadenceTurns: 2,
             cadenceTokens: 8,
             cadenceRatio: 0.12,
+            screening: { refusal: [], format: [] },
             budgetMode: "tokens",
         };
         const cases: {
@@ -183,6 +191,7 @@ it("includes the manually confirmed assistant in both window planning and commit
                 cadenceTokens: 100,
                 cadenceRatio: 0.1,
                 budgetMode: "tokens",
+                screening: { refusal: [], format: [] },
             },
             manual: true,
             maxContext: 1000,
@@ -226,7 +235,13 @@ it("puts one exact remaining-source repair window before ordinary recorded-aware
         messages: current,
         confirmedBefore: "next",
         recorded: new Set(["u2", "a2", "u3", "a3"]),
-        cadence: { cadence: "everyTurn" as const, cadenceTurns: 1, cadenceTokens: 1, cadenceRatio: 0.1 },
+        cadence: {
+            cadence: "everyTurn" as const,
+            cadenceTurns: 1,
+            cadenceTokens: 1,
+            cadenceRatio: 0.1,
+            screening: { refusal: [], format: [] },
+        },
         maxContext: 1000,
         tokenizer: { tokenize: async () => 1, tokenizeChat: async () => 1 },
         limit: 2,
@@ -244,4 +259,89 @@ it("puts one exact remaining-source repair window before ordinary recorded-aware
         "repair",
     ]);
     expect((await confirmedWindows(args))!.flatMap((w) => w.messages.map((m) => m.chatId))).toEqual(["u1", "a1"]);
+});
+
+it("screens live assistant text after finding the ceiling and folds users into the next turn", async () => {
+    const messages: Message[] = [
+        { chatId: "u1", role: "user", data: "I CANNOT help" },
+        { chatId: "a1", role: "char", data: "Prefix: I CANNOT help with this." },
+        { chatId: "u2", role: "user", data: "Try again" },
+        { chatId: "a2", role: "char", data: "The gate opens" },
+        { chatId: "a3", role: "char", data: "Invalid FORMAT here" },
+        { chatId: "next", role: "user", data: "Continue" },
+    ];
+    const screening = { refusal: ["cannot"], format: ["format"] };
+    const args = {
+        messages,
+        confirmedBefore: "next",
+        recorded: new Set<string>(),
+        cadence: { cadence: "everyTurn" as const, cadenceTurns: 1, cadenceTokens: 1, cadenceRatio: 0.1, screening },
+        maxContext: 1000,
+        tokenizer: { tokenize: async () => 1, tokenizeChat: async () => 1 },
+        limit: 10,
+    };
+    const ids = async (extra = {}) =>
+        (await confirmedWindows({ ...args, ...extra }))?.map((w) => w.messages.map((m) => m.chatId));
+    expect(await ids()).toEqual([["u1", "u2", "a2"]]);
+    expect(await ids({ confirmedBefore: "a3" })).toEqual([["u1", "u2", "a2"]]);
+    expect(await ids({ confirmedBefore: "a3", inclusive: true, manual: true })).toEqual([["u1", "u2", "a2"]]);
+    expect(await ids({ confirmedBefore: "a1", inclusive: true, manual: true })).toEqual([]);
+    expect(confirmedThrough(messages, "next", screening)).toBe("a2");
+    screening.refusal = [];
+    expect(await ids()).toEqual([
+        ["u1", "a1"],
+        ["u2", "a2"],
+    ]);
+    messages[4].data = "A valid ending";
+    expect(await ids()).toEqual([["u1", "a1"], ["u2", "a2"], ["a3"]]);
+    expect(confirmedThrough(messages, "next", screening)).toBe("a3");
+});
+
+it("only a person's start re-records a marked event through screened sources", async () => {
+    const messages: Message[] = [
+        { chatId: "u", role: "user", data: "Question" },
+        { chatId: "a", role: "char", data: "I cannot help" },
+        { chatId: "next", role: "user", data: "Continue" },
+    ];
+    const repair = {
+        ...memoryRecords(["repair"]).events[0],
+        createdRevision: 1,
+        rerecord: true,
+        sources: messages.slice(0, 2).map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) })),
+    };
+    const before = structuredClone(repair);
+    const args = {
+        messages,
+        confirmedBefore: "next",
+        recorded: new Set(["u", "a"]),
+        rerecord: [repair],
+        cadence: {
+            cadence: "everyTurn" as const,
+            cadenceTurns: 1,
+            cadenceTokens: 1,
+            cadenceRatio: 0.1,
+            screening: { refusal: ["cannot"], format: [] },
+        },
+        maxContext: 1000,
+        tokenizer: { tokenize: async () => 1, tokenizeChat: async () => 1 },
+        limit: 10,
+    };
+    expect(await confirmedWindows(args)).toEqual([]);
+    expect(repair).toEqual(before);
+    expect(await confirmedWindows({ ...args, manual: true })).toEqual([
+        { rerecords: "repair", sources: repair.sources, messages: messages.slice(0, 2) },
+    ]);
+    expect(repair).toEqual(before);
+    expect(writerState(undefined, [], "a", new Set(["u", "a"]), [repair])).toEqual({
+        state: "pending",
+        reason: "repair",
+    });
+    expect(
+        writerState(undefined, [{ id: "failure", bytes: 1, result: "failed" }], "a", new Set(["u", "a"]), [repair]),
+    ).toEqual({
+        state: "failed",
+    });
+    expect(writerState(undefined, [], "a", new Set(["u", "a"]), [{ ...repair, status: "retracted" }])).toEqual({
+        state: "recorded",
+    });
 });

@@ -236,6 +236,43 @@
             structured.highlightKinds = ticked ? [...others, kind] : others;
         });
     }
+
+    type ScreeningKind = keyof StructuredMemorySettings["screening"];
+
+    /** The entries of a screening box, one per line, the blank lines dropped: what the preset stores. */
+    const screeningLines = (value: string) => value.split("\n").filter((line) => line.trim() !== "");
+
+    /**
+     * The screening boxes' text as typed, per preset, so a new line is not dropped under the typist: the
+     * stored list has no blank entry, and a box showing the stored list alone would lose it at once.
+     */
+    let screeningDrafts = $state<{ presetId: string | undefined; refusal: string; format: string } | null>(null);
+
+    /** A box's text: its draft while that still reads as the stored list, else the stored list. */
+    function screeningText(structured: StructuredMemorySettings, kind: ScreeningKind): string {
+        const stored = structured.screening[kind].join("\n");
+        const draft = screeningDrafts;
+        return draft && draft.presetId === currentHypaV3?.id && screeningLines(draft[kind]).join("\n") === stored
+            ? draft[kind]
+            : stored;
+    }
+
+    function setScreening(
+        target: HypaV3Settings,
+        structured: StructuredMemorySettings,
+        kind: ScreeningKind,
+        value: string,
+    ) {
+        const presetId = currentHypaV3?.id;
+        const held = screeningDrafts?.presetId === presetId ? screeningDrafts : null;
+        screeningDrafts = {
+            presetId,
+            refusal: held?.refusal ?? structured.screening.refusal.join("\n"),
+            format: held?.format ?? structured.screening.format.join("\n"),
+            [kind]: value,
+        };
+        setStructured(target, (next) => (next.screening[kind] = screeningLines(value)));
+    }
 </script>
 
 {#snippet presetPicker()}
@@ -658,6 +695,29 @@
         <span class="mb-4 text-xs text-textcolor2" data-structured-memory-instructions-help
             >{text.instructionsHelp}</span
         >
+        <span class="text-textcolor">{text.screeningRefusal}</span>
+        <div class="mb-2" data-structured-memory-screening="refusal">
+            <TextAreaInput
+                size="sm"
+                placeholder={text.screeningPlaceholder}
+                bind:value={
+                    () => screeningText(structured, "refusal"),
+                    (value) => setScreening(preset, structured, "refusal", value)
+                }
+            />
+        </div>
+        <span class="text-textcolor">{text.screeningFormat}</span>
+        <div class="mb-2" data-structured-memory-screening="format">
+            <TextAreaInput
+                size="sm"
+                placeholder={text.screeningPlaceholder}
+                bind:value={
+                    () => screeningText(structured, "format"),
+                    (value) => setScreening(preset, structured, "format", value)
+                }
+            />
+        </div>
+        <span class="mb-4 text-xs text-textcolor2" data-structured-memory-screening-help>{text.screeningHelp}</span>
         <StructuredMemoryPrompts
             {structured}
             presetId={currentHypaV3?.id}

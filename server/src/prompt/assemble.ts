@@ -28,6 +28,7 @@ import { LLMFlags, type LLMModel } from "../../../shared/llm.ts";
 import type { LoreActivation } from "../../../shared/lore/activation.ts";
 import type {
     AnyMemoryTaskInput,
+    GenerationErrorCode,
     GenerationStage,
     MemoryBlockingReason,
     MemoryGapChoice,
@@ -286,8 +287,11 @@ export type AssembledPrompt =
     | { type: "stopped" }
     /** `throwError(error)` and `return false`. */
     | { type: "error"; error: string }
-    /** `alertError(error)` and `return false` (Hanurai's): the send ends with the text, never as a chat message. */
-    | { type: "alert"; error: string };
+    /**
+     * `alertError(error)` and `return false` (Hanurai's): the send ends with the text, never as a chat
+     * message. `code` names the failure when a tab tells it apart by one.
+     */
+    | { type: "alert"; error: string; code?: GenerationErrorCode };
 
 /**
  * `additionalInformations` of `src/ts/process/embedding/addinfo.ts`: the three paragraphs of the
@@ -525,7 +529,7 @@ type StructuredMemoryStepResult =
     /** No job's side to read from: the raw history stays, and no report says otherwise. */
     | { type: "raw" }
     | { type: "error"; error: string }
-    | { type: "alert"; error: string }
+    | { type: "alert"; error: string; code: GenerationErrorCode }
     | {
           type: "selected";
           selected: MemorySelected;
@@ -665,13 +669,13 @@ async function structuredMemoryStep(
         });
         memoryTask = { input, due: (windows?.length ?? 0) > 0 };
     }
-    const through = confirmedThrough(messages, ceiling);
+    const through = confirmedThrough(messages, ceiling, cadence.screening);
     return {
         type: "selected",
         selected,
         manifest: sendManifest(selected, {
             confirmedThrough: through,
-            writer: writerState(notice, records.runs, through, recorded),
+            writer: writerState(notice, records.runs, through, recorded, records.events),
             ...(gap !== undefined ? { gap } : {}),
             ...(handsOff ? { writerStage: notice?.reason ?? (memoryTask?.due ? "due" : "notDue") } : {}),
         }),
@@ -1932,7 +1936,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                     return { type: "error", error: step.error };
                 }
                 if (step.type === "alert") {
-                    return { type: "alert", error: step.error };
+                    return { type: "alert", error: step.error, code: step.code };
                 }
                 if (step.type === "selected") {
                     const { selected } = step;
@@ -3001,7 +3005,7 @@ function memoryManifestFields(
     manifest: MemorySendManifest,
     items: readonly MemoryManifestItem[],
 ): Partial<NonNullable<ContextReport["memory"]>> {
-    const { excluded, excludedTotal, lanes, writer, stages, writerStage } = manifest;
+    const { excluded, excludedTotal, lanes, gapTokens, writer, stages, writerStage } = manifest;
     const found = items.filter(({ verified }) => verified).length;
     const card =
         items.length === 0 ? "empty" : found === items.length ? "verified" : found > 0 ? "partial" : "notVerified";
@@ -3010,6 +3014,7 @@ function memoryManifestFields(
         excluded,
         excludedTotal,
         lanes,
+        gapTokens,
         ...(manifest.confirmedThrough !== undefined ? { confirmedThrough: manifest.confirmedThrough } : {}),
         writer,
         stages: [

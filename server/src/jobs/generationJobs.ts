@@ -20,8 +20,10 @@ import {
     type GenerationStopBody,
     type GenerationHooks,
     type HydrationReceipt,
+    GENERATION_ERROR_CODES,
     GENERATION_ERROR_STAGES,
     GENERATION_ID_PATTERN,
+    type GenerationErrorCode,
     type GenerationErrorReason,
     type GenerationErrorStage,
     type GenerationEvent,
@@ -90,9 +92,14 @@ const socketPath = /^\/api\/generations\/([^/]+)\/ws$/;
 
 /**
  * Where a runner failed, for the terminal `error` event: the stage, the LLM request that failed when
- * it was one, and its provider error code.
+ * it was one, its provider error code, and the failure's own code when a tab tells it apart by one.
  */
-export type GenerationFailure = { stage?: GenerationErrorStage; requestId?: string; providerCode?: string | null };
+export type GenerationFailure = {
+    stage?: GenerationErrorStage;
+    requestId?: string;
+    providerCode?: string | null;
+    code?: GenerationErrorCode;
+};
 
 /** A runner's failure with an HTTP-like status for the terminal `error` event. */
 export class GenerationRunnerError extends Error {
@@ -128,7 +135,7 @@ export function markFailure<E>(error: E, failure: GenerationFailure): E {
         target = foreignFailures.get(error) ?? {};
         foreignFailures.set(error, target);
     }
-    for (const key of ["stage", "requestId", "providerCode"] as const) {
+    for (const key of ["stage", "requestId", "providerCode", "code"] as const) {
         const value = failure[key];
         if ((target[key] === undefined || target[key] === null) && value !== undefined && value !== null) {
             (target as Record<string, unknown>)[key] = value;
@@ -1203,6 +1210,9 @@ export function createGenerationJobs(options: {
                 ? { requestId: failure.requestId }
                 : {}),
             ...(isProviderCode(failure.providerCode) ? { providerCode: failure.providerCode } : {}),
+            ...(failure.code !== undefined && GENERATION_ERROR_CODES.includes(failure.code)
+                ? { code: failure.code }
+                : {}),
         };
     }
 

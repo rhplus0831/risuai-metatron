@@ -2728,6 +2728,7 @@ describe("structured memory job hand-offs", () => {
                         expect(result.terminal).toMatchObject({
                             type: "error",
                             message: expect.stringContaining("required memory pages"),
+                            code: "memoryRequiredOverCap",
                         });
                         if (result.terminal?.type !== "error") throw new Error(JSON.stringify(result.terminal));
                         expect(result.terminal.message).toContain("Gate scene (");
@@ -2743,6 +2744,56 @@ describe("structured memory job hand-offs", () => {
             } finally {
                 store.close();
                 await patchHypaV3(priorSettings);
+            }
+        });
+
+        it("keeps screened text and retrieval in the send while storing the gap token report", async () => {
+            await patchPreset("modelProfiles", { maxContext: 5000 });
+            await patchHypaV3({ gapConfirmTokens: 10000, structured: { cadence: "manual", windowTurns: 1 } });
+            const chaId = await seedCharacter({
+                messages: [...messages, { chatId: "u3", role: "user", data: "Continue" }],
+            });
+            const store = openStore();
+            try {
+                const records = memoryRecords(["recorded"]);
+                records.events[0].sources = messages
+                    .slice(0, 2)
+                    .map((m, index) => ({ messageId: m.chatId, index, hash: messageSourceHash(m as Message) }));
+                writeMemory(store, chaId, "k", records);
+                const before = readRecordSet(store.memory, chaId, "k");
+                const plain = await job("preview", chaId);
+                await patchHypaV3({
+                    gapConfirmTokens: 10000,
+                    structured: { cadence: "manual", windowTurns: 1, screening: { refusal: ["reply"], format: [] } },
+                });
+                const screened = await job("preview", chaId);
+                expect(plain.terminal?.type).toBe("done");
+                expect(screened.terminal?.type).toBe("done");
+                if (plain.terminal?.type !== "done" || screened.terminal?.type !== "done")
+                    throw new Error("Preview failed");
+                const baseline = plain.terminal.result as { messages: unknown[]; context: unknown };
+                const filtered = screened.terminal.result as { messages: unknown[]; context: unknown };
+                expect(filtered.messages).toEqual(baseline.messages);
+                expect(parseContextReport(filtered.context)?.memory?.items).toEqual(
+                    parseContextReport(baseline.context)?.memory?.items,
+                );
+                const result = await job("send", chaId);
+                expect(result.terminal?.type).toBe("done");
+                const prompt = JSON.stringify(mains()[0].body.messages);
+                expect(prompt).toContain("Second reply");
+                expect(
+                    mains()[0]
+                        .body.messages.filter((message: { role: string }) => message.role === "assistant")
+                        .map((message: { content: string }) => message.content),
+                ).not.toContain("First reply");
+                expect(prompt).toContain("[m:a1] character:");
+                const reply = (await readChat(chaId)).data.message.at(-1);
+                const report = parseContextReport(reply.generationInfo.context);
+                expect(report?.memory?.gapTokens).toBe(0);
+                expect(report?.memory?.confirmedThrough).toBeUndefined();
+                expect(readRecordSet(store.memory, chaId, "k")).toEqual(before);
+            } finally {
+                store.close();
             }
         });
 
@@ -3475,6 +3526,35 @@ describe("structured memory job hand-offs", () => {
                 } finally {
                     store.close();
                 }
+            }
+        });
+
+        it("falls back to a fresh test window when screening now matches the newest recorded run", async () => {
+            await patchHypaV3({
+                structured: { cadence: "everyTurn", screening: { refusal: ["SECOND REPLY"], format: [] } },
+            });
+            const chaId = await seedCharacter({ messages });
+            const store = testStore();
+            try {
+                const run = memoryRecords(["last"]).runs[0];
+                run.window = messages.slice(2).map((message, index) => ({
+                    messageId: message.chatId,
+                    hash: messageSourceHash(message as Message),
+                    index: index + 2,
+                }));
+                writeMemory(store, chaId, "k", { runs: [run] });
+                const before = readRecordSet(store.memory, chaId, "k");
+                state.summaries = [analysis(0)];
+                const result = await testJob(chaId);
+                expect(result.terminal).toMatchObject({
+                    type: "done",
+                    result: { kind: "memoryTest", outcome: "recorded", messageIds: ["u1", "a1"] },
+                });
+                expect(JSON.stringify(summaries()[0].body.messages)).toContain("First reply");
+                expect(JSON.stringify(summaries()[0].body.messages)).not.toContain("Second reply");
+                expect(readRecordSet(store.memory, chaId, "k")).toEqual(before);
+            } finally {
+                store.close();
             }
         });
 

@@ -38,7 +38,6 @@
     import {
         normalizeStructuredMemorySettings,
         structuredMemoryWriterLanguage,
-        writerPaused,
         type StructuredMemoryRebuild,
         type StructuredMemoryRebuildMode,
     } from "../../../../shared/structuredMemory.ts";
@@ -49,6 +48,7 @@
     import { memoryReadFailureText, memoryReasonText } from "./memoryText";
     import PagesTab from "./PagesTab.svelte";
     import PreviewTab from "./PreviewTab.svelte";
+    import SettingsTab from "./SettingsTab.svelte";
     import ThreadsTab from "./ThreadsTab.svelte";
     import TimelineTab from "./TimelineTab.svelte";
 
@@ -87,6 +87,7 @@
         { value: "timeline", label: text.timeline, component: TimelineTab },
         { value: "threads", label: text.threads, component: ThreadsTab },
         { value: "log", label: text.log, component: LogTab },
+        { value: "settings", label: text.settings, component: SettingsTab },
     ];
 
     let tab = $state<string | number>(TABS[0].value);
@@ -116,6 +117,7 @@
     let contentsFacts = $state.raw<{
         chatKey: string | null;
         paused: boolean;
+        pendingRepairs: number;
         adoptable: number;
         resettable: boolean;
         rebuild: StructuredMemoryRebuild | null;
@@ -166,7 +168,8 @@
                 result?.outcome === "ok"
                     ? {
                           chatKey: key,
-                          paused: writerPaused(result.value.runs),
+                          paused: result.value.health.paused,
+                          pendingRepairs: result.value.health.pendingRepairs,
                           adoptable: result.value.adoption.adoptable,
                           resettable: result.value.adoption.resettable,
                           rebuild: result.value.rebuild,
@@ -200,6 +203,7 @@
             memoryOn: chatRef !== null && !!findCharacter(chatRef.chaId)?.supaMemory,
             cadence,
             paused: heldFacts?.paused ?? false,
+            pendingRepairs: heldFacts?.pendingRepairs ?? 0,
             adoptionHeld: adoptable > 0,
             receipt: newestMemoryReceipt(messages),
             taskLive,
@@ -215,6 +219,8 @@
                 return text.memoryOff;
             case "paused":
                 return receiptText.paused;
+            case "repair":
+                return receiptText.repairPending;
             case "notAutomatic":
                 return receiptText.notAutomatic(memoryReasonText(notice.reason));
             default:

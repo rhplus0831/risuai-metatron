@@ -6,6 +6,8 @@ import {
     ADOPTED_WRITER_RUN,
     hypaV3DataHoldsSummaries,
     isSealedHypaV3Data,
+    MEMORY_HEALTH_CHATS_MAX,
+    MEMORY_HEALTH_ROUND_BYTES,
     MEMORY_RECORD_KINDS,
     MEMORY_REVISION_CHATS_MAX,
     MEMORY_RUNS_ROUND_ROWS,
@@ -26,6 +28,7 @@ import {
     type StructuredMemoryDefaultPromptsAnswer,
     type StructuredMemoryEdit,
     type StructuredMemoryEditAnswer,
+    type StructuredMemoryHealthAnswer,
     type StructuredMemoryImportAnswer,
     type StructuredMemoryImportFile,
     type StructuredMemoryInheritAnswer,
@@ -124,10 +127,10 @@ function isCostMode(mode: string | undefined): mode is StructuredMemoryCostMode 
     return mode === "record" || (STRUCTURED_MEMORY_REBUILD_MODES as readonly (string | undefined)[]).includes(mode);
 }
 
-/** The chats a revisions request names, or null for a body of another shape, a bad id, or a list past the cap. */
-function parseRevisionRefs(body: unknown): MemoryChatRef[] | null {
+/** The chats a revisions or health request names, or null for a body of another shape, a bad id, or a list past `max`. */
+function parseChatRefs(body: unknown, max: number): MemoryChatRef[] | null {
     const chats = isPlainObject(body) ? body.chats : undefined;
-    if (!Array.isArray(chats) || chats.length > MEMORY_REVISION_CHATS_MAX) {
+    if (!Array.isArray(chats) || chats.length > max) {
         return null;
     }
     const refs: MemoryChatRef[] = [];
@@ -213,10 +216,10 @@ type RoundRead = {
  *
  * - `GET /api/memory/structured/:characterId/:chatId`: the table of contents, answered
  *   `StructuredMemoryContentsAnswer`, with `adoption`, what the panel offers for the chat's stored HypaV3
- *   summaries as the server sees them, `rebuild`, the chat's rebuild if it holds one, and
- *   `recordedLanguage`, the language of the newest recorded run, one record read; 404 `chatGone`. Pages
- *   in the trash are listed apart (`trash`), so every round and route that starts from `pages` leaves
- *   them out; the record route still reads one by id.
+ *   summaries as the server sees them, `rebuild`, the chat's rebuild if it holds one, `recordedLanguage`,
+ *   the language of the newest recorded run, one record read, and `health`, the chat's health facts as the
+ *   health route answers them; 404 `chatGone`. Pages in the trash are listed apart (`trash`), so every
+ *   round and route that starts from `pages` leaves them out; the record route still reads one by id.
  * - `GET /api/memory/structured/:characterId/:chatId/records/:kind/:id`: one record as stored, answered
  *   `StructuredMemoryRecordAnswer`; 400 for an unknown kind, 404 `chatGone` or `recordGone`.
  * - `GET /api/memory/structured/:characterId/:chatId/package?cursor=N&revision=R`: one round of the
@@ -249,6 +252,13 @@ type RoundRead = {
  *   plugin read that finds nothing new costs this request alone. 400 for a body of another shape, a list
  *   past the cap, or an id that is not a resource id. The body is read after authentication and capped at
  *   256 KiB.
+ * - `POST /api/memory/structured/health` `{ chats: { characterId, chatId }[] }`: at most
+ *   `MEMORY_HEALTH_CHATS_MAX` chats' health facts (`StructuredMemoryHealthFacts`), answered
+ *   `StructuredMemoryHealthAnswer`: a prefix of the request, by position, null for a chat that does not
+ *   exist. The first chat is always answered, and the list stops before the chat whose live pages would
+ *   take the stored bytes scanned past `MEMORY_HEALTH_ROUND_BYTES`, so a tab asks again from there. Live
+ *   tables only, pages in the trash left out, and no message read: what the memory health badge shows for
+ *   the pinned chats and the open one. Refusals and the body cap are the revisions route's.
  * - `GET /api/memory/structured/:characterId/:chatId/projection`: the chat's projection as a whole read
  *   would overlay it, reconciled against its stored messages, answered
  *   `StructuredMemoryProjectionAnswer`; `hypaV3Data` is null for a chat that read leaves as stored, and
@@ -426,6 +436,7 @@ export function registerStructuredMemoryRoutes(
                 },
                 rebuild: store.memory.rebuild.status(characterId, chatId),
                 recordedLanguage: (recorded && listedRecord(characterId, chatId, "runs", recorded.id).language) ?? null,
+                health: store.memory.readHealth([{ characterId, chatId }])[0]!,
             } satisfies StructuredMemoryContentsAnswer);
         } catch (error) {
             return storeErrorResponse(c, error);
@@ -613,7 +624,7 @@ export function registerStructuredMemoryRoutes(
         if (!read.ok) {
             return read.response;
         }
-        const refs = parseRevisionRefs(read.body);
+        const refs = parseChatRefs(read.body, MEMORY_REVISION_CHATS_MAX);
         if (!refs) {
             return c.json(
                 { error: `chats must be at most ${MEMORY_REVISION_CHATS_MAX} { characterId, chatId } ids` },
@@ -627,6 +638,30 @@ export function registerStructuredMemoryRoutes(
             return compressedJson(c, {
                 revisions: store.memory.readProjectionRevisions(refs),
             } satisfies StructuredMemoryRevisionsAnswer);
+        } catch (error) {
+            return storeErrorResponse(c, error);
+        }
+    });
+
+    app.post(`${STRUCTURED_MEMORY_PATH}/health`, limiter, authenticated, limitRevisionsBody, async (c) => {
+        const read = await readJsonBody(c);
+        if (!read.ok) {
+            return read.response;
+        }
+        const refs = parseChatRefs(read.body, MEMORY_HEALTH_CHATS_MAX);
+        if (!refs) {
+            return c.json(
+                { error: `chats must be at most ${MEMORY_HEALTH_CHATS_MAX} { characterId, chatId } ids` },
+                400,
+            );
+        }
+        if (c.req.header(RESOURCE_EPOCH_HEADER) !== store.epoch()) {
+            return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+        }
+        try {
+            return compressedJson(c, {
+                health: store.memory.readHealth(refs, MEMORY_HEALTH_ROUND_BYTES),
+            } satisfies StructuredMemoryHealthAnswer);
         } catch (error) {
             return storeErrorResponse(c, error);
         }

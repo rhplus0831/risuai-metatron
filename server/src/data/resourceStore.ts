@@ -12,12 +12,17 @@ import type {
     ChatRecord,
     ChatSummary,
 } from "../../../shared/chats.ts";
+import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import { HIDDEN_HYDRATION_KINDS } from "../../../shared/jobs.ts";
+import type { HypaV3Preset } from "../../../shared/memory.ts";
 import {
     hypaV3DataHoldsSummaries,
+    normalizeStructuredMemorySettings,
     sealHypaV3Data,
     STRUCTURED_MEMORY_ALGORITHM,
     type SealedHypaV3Data,
+    type StructuredMemoryHealthFacts,
+    type StructuredMemorySettings,
 } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import {
@@ -2030,6 +2035,31 @@ export function createResourceStore(options: {
             readProjectionRevisions(refs: readonly MemoryChatRef[]): (string | null)[] {
                 assertOpen();
                 return structuredMemorySelected() ? memoryTables.readProjectionRevisions(refs) : refs.map(() => null);
+            },
+            /**
+             * The health facts of each chat's live records (`memoryTables.readHealth`), in request order, no
+             * message read; null for a missing chat. With `budgetBytes`, a prefix of `refs` that stops before
+             * the chat whose live pages would take the scan past it, the first chat always answered.
+             */
+            readHealth(refs: readonly MemoryChatRef[], budgetBytes?: number): (StructuredMemoryHealthFacts | null)[] {
+                assertOpen();
+                return memoryTables.readHealth(refs, budgetBytes);
+            },
+            /**
+             * The selected memory preset's writer settings, from the stored preset collection in one row
+             * read, every field filled; the defaults with no preset. For a reader with no job scope.
+             */
+            readWriterSettings(): StructuredMemorySettings {
+                assertOpen();
+                const row = selectOne.get(RESOURCE_KIND.hypaV3Presets, SINGLETON_RESOURCE_ID) as
+                    { data: string } | undefined;
+                const record: unknown = row ? JSON.parse(row.data) : undefined;
+                const { items, selectedId } = isPlainObject(record) ? record : {};
+                const preset = selectedHypaV3Preset({
+                    hypaV3Presets: Array.isArray(items) ? (items as HypaV3Preset[]) : [],
+                    ...(typeof selectedId === "string" ? { hypaV3PresetId: selectedId } : {}),
+                });
+                return normalizeStructuredMemorySettings(preset?.settings?.structured);
             },
             /**
              * A chat's rebuild (`memoryTables.rebuild`): a run that outlives a process, and its staged

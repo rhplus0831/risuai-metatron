@@ -188,6 +188,12 @@ export type ContextReport = {
         /** Structured Memory: each lane's target and spend. */
         lanes?: readonly ContextMemoryLane[];
         /**
+         * Structured Memory: the tokens of the history the trim dropped, 0 with none; absent in reports
+         * written before a send kept it. The health badge's gap state reads it against the preset's
+         * `gapConfirmTokens`.
+         */
+        gapTokens?: number;
+        /**
          * Structured Memory: the newest reply the send's writer ceiling confirms (`confirmedThrough`);
          * absent when none is.
          */
@@ -367,6 +373,7 @@ export function parseContextReport(value: unknown): ContextReport | null {
             (memory.excluded !== undefined && !isMemoryExcluded(memory.excluded)) ||
             (memory.excludedTotal !== undefined && !isCount(memory.excludedTotal)) ||
             (memory.lanes !== undefined && !isMemoryLanes(memory.lanes)) ||
+            (memory.gapTokens !== undefined && !isCount(memory.gapTokens)) ||
             (memory.confirmedThrough !== undefined && typeof memory.confirmedThrough !== "string") ||
             (memory.writer !== undefined && !isMemoryWriter(memory.writer)) ||
             (memory.stages !== undefined && !isMemoryStages(memory.stages))

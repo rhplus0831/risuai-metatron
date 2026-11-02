@@ -133,6 +133,8 @@ it("edits only consumed Structured Memory settings and shares the selected prese
             control(text.evidenceTarget),
             control(text.threadsTarget),
             control(text.instructions),
+            control(text.screeningRefusal),
+            control(text.screeningFormat),
             kindBox(text.fineTuning),
             ...(preset().structured.fineTuning ? [control(text.analysisPrompt), control(text.patchPrompt)] : []),
             checkbox(),
@@ -270,4 +272,32 @@ it("edits highlight modes, kinds and change grade while preserving a stored retr
     expect(preset().highlightMode).toBe("all");
     expect(boxes()).toHaveLength(0);
     expect(preset().highlightKinds).toContain("retract");
+});
+
+it("edits both screening lists by line while preserving a typed newline", () => {
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    open();
+    const screening = () => settings.hypaV3Presets.items[0].settings.structured.screening;
+    for (const [label, key] of [
+        [text.screeningRefusal, "refusal"],
+        [text.screeningFormat, "format"],
+    ] as const) {
+        const input = control(label) as HTMLTextAreaElement;
+        change(input, "First entry");
+        change(input, input.value + "\n");
+        expect(input.value).toBe("First entry\n");
+        change(input, input.value + "Second entry\n\n   \nThird entry");
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+        expect(screening()[key]).toEqual(["First entry", "Second entry", "Third entry"]);
+    }
+    expect(screening()).toEqual({
+        refusal: ["First entry", "Second entry", "Third entry"],
+        format: ["First entry", "Second entry", "Third entry"],
+    });
+    change(control(text.screeningRefusal) as HTMLTextAreaElement, "\n  \n");
+    control(text.screeningRefusal).dispatchEvent(new Event("change", { bubbles: true }));
+    flushSync();
+    expect(screening().refusal).toEqual([]);
+    expect(screening().format).toHaveLength(3);
 });

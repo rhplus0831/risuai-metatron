@@ -112,7 +112,13 @@ it("stores missing and sourceless summaries stale while recording their citation
         messages,
         confirmedBefore: "m6",
         recorded: recordedMessages(events),
-        cadence: { cadence: "everyTurn", cadenceTurns: 1, cadenceTokens: 100, cadenceRatio: 0.1 },
+        cadence: {
+            cadence: "everyTurn",
+            cadenceTurns: 1,
+            cadenceTokens: 100,
+            cadenceRatio: 0.1,
+            screening: { refusal: [], format: [] },
+        },
         maxContext: 1000,
         tokenizer: {
             tokenizeChat: async () => {

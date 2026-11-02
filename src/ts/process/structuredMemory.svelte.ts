@@ -13,10 +13,12 @@ import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     isSealedHypaV3Data,
     itemTag,
+    MEMORY_HEALTH_CHATS_MAX,
     MEMORY_PACKAGE_VERSION,
     MEMORY_PAGE_TYPES,
     MEMORY_RESTORE_BODY_BYTES,
     memoryEventCovers,
+    memoryScreenReason,
     rawWindow,
     reconcileMemoryEvents,
     sealedHypaV3DataIntact,
@@ -47,6 +49,8 @@ import {
     type StructuredMemoryEditAnswer,
     type StructuredMemoryFileEntry,
     type StructuredMemoryFileRecords,
+    type StructuredMemoryHealthAnswer,
+    type StructuredMemoryHealthFacts,
     type StructuredMemoryImportAnswer,
     type StructuredMemoryImportFile,
     type StructuredMemoryInheritAnswer,
@@ -63,6 +67,7 @@ import {
     type StructuredMemoryRevertAnswer,
     type StructuredMemoryRevisionsAnswer,
     type StructuredMemoryRunsRound,
+    type StructuredMemorySettings,
     type StructuredMemorySlotWarnings,
     type StructuredMemoryTestResult,
     type StructuredMemoryThreadsRound,
@@ -449,7 +454,7 @@ export function newestMemoryReceipt(messages: readonly DeepReadonly<Message>[]):
 
 /** What the panel's writer line says; `kind` is null when recording needs no word. */
 export type MemoryWriterNotice = {
-    kind: "memoryOff" | "paused" | "notAutomatic" | null;
+    kind: "memoryOff" | "paused" | "repair" | "notAutomatic" | null;
     /** Why recording is not automatic: a stored reason code, or `manual` for the preset's cadence. */
     reason?: string;
     /** What the line's button does. */
@@ -467,14 +472,17 @@ function awaitedAdoption(receipt: unknown): boolean {
  * these holds. With memory off the command refuses, so there is no action. A chat held for its adoption
  * choice (`adoptionHeld`, as the server last said) says so, and its choice is the only thing to press.
  * Paused, by the runs or by `receipt`, offers resume. A `notAutomatic` receipt gives its reason, and a
- * `manual` cadence its own. Past those, and in the `manual` case, the action is `memoryReceiptView`'s for
- * the newest message. `receipt` is `newestMemoryReceipt`, stored data of any shape; one from while the
- * chat was held reads as no receipt once it is not, or it would hide record now after the choice.
+ * `manual` cadence its own. Under paused, a chat with an event waiting for a re-record (`pendingRepairs`,
+ * as the server last said) says so, with the action the newest message would have. Past those, and in
+ * the `manual` case, the action is `memoryReceiptView`'s for the newest message. `receipt` is
+ * `newestMemoryReceipt`, stored data of any shape; one from while the chat was held reads as no receipt
+ * once it is not, or it would hide record now after the choice.
  */
 export function memoryWriterNotice({
     memoryOn,
     cadence,
     paused,
+    pendingRepairs,
     adoptionHeld,
     receipt,
     taskLive,
@@ -482,6 +490,7 @@ export function memoryWriterNotice({
     memoryOn: boolean;
     cadence: StructuredMemoryCadence;
     paused: boolean;
+    pendingRepairs: number;
     adoptionHeld: boolean;
     receipt: unknown;
     taskLive: boolean;
@@ -498,6 +507,9 @@ export function memoryWriterNotice({
     });
     if (paused || kind === "paused") {
         return { kind: "paused", action: "resume" };
+    }
+    if (pendingRepairs > 0) {
+        return { kind: "repair", action };
     }
     if (kind === "notAutomatic") {
         return { kind, ...present("reason", reason), action };
@@ -532,20 +544,40 @@ function isRebuild(value: unknown): value is StructuredMemoryRebuild {
     );
 }
 
+/** What contents without `health` say: nothing to show, which the health route decides anyway. */
+const NO_HEALTH: StructuredMemoryHealthFacts = {
+    paused: false,
+    storedStale: 0,
+    pendingRepairs: 0,
+    unsupportedSections: 0,
+    overBudgetSections: 0,
+};
+
+function isHealthFacts(value: unknown): value is StructuredMemoryHealthFacts {
+    return (
+        isPlainObject(value) &&
+        typeof value.paused === "boolean" &&
+        [value.storedStale, value.pendingRepairs, value.unsupportedSections, value.overBudgetSections].every(
+            (count) => storedCount(count) !== undefined,
+        )
+    );
+}
+
 /**
- * A reader of the lists does not fail over `adoption`, `rebuild`, or `recordedLanguage`, which only the
- * panel reads; a malformed one is refused. Contents without a `trash` list, from before pages could be
- * trashed, hold none.
+ * A reader of the lists does not fail over `adoption`, `rebuild`, `recordedLanguage`, or `health`, which
+ * only the panel reads; a malformed one is refused. Contents without a `trash` list, from before pages
+ * could be trashed, hold none.
  */
 function parseContents(body: AnswerBody): StructuredMemoryContentsAnswer | null {
     const { revision, pages, events, threads, runs, trash = [], adoption = NO_ADOPTION } = body;
-    const { rebuild = null, recordedLanguage = null } = body;
+    const { rebuild = null, recordedLanguage = null, health = NO_HEALTH } = body;
     return typeof revision === "string" &&
         [pages, trash, events, threads, runs].every((list) => Array.isArray(list)) &&
         isAdoption(adoption) &&
         (rebuild === null || isRebuild(rebuild)) &&
-        (recordedLanguage === null || typeof recordedLanguage === "string")
-        ? ({ ...body, trash, adoption, rebuild, recordedLanguage } as StructuredMemoryContentsAnswer)
+        (recordedLanguage === null || typeof recordedLanguage === "string") &&
+        isHealthFacts(health)
+        ? ({ ...body, trash, adoption, rebuild, recordedLanguage, health } as StructuredMemoryContentsAnswer)
         : null;
 }
 
@@ -685,6 +717,20 @@ function parseRevisions(body: AnswerBody, length: number): StructuredMemoryRevis
         revisions.length === length &&
         revisions.every((revision) => revision === null || typeof revision === "string")
         ? (body as StructuredMemoryRevisionsAnswer)
+        : null;
+}
+
+/**
+ * The answer is a prefix of the request, by position: one to `length` entries for a request that named
+ * any chat. An empty list, or one past the request, says nothing of the chats it named.
+ */
+function parseHealth(body: AnswerBody, length: number): StructuredMemoryHealthAnswer | null {
+    const { health } = body;
+    return Array.isArray(health) &&
+        health.length >= Math.min(1, length) &&
+        health.length <= length &&
+        health.every((entry) => entry === null || isHealthFacts(entry))
+        ? (body as StructuredMemoryHealthAnswer)
         : null;
 }
 
@@ -934,6 +980,24 @@ export function readStructuredMemoryRevisions(
     signal?: AbortSignal,
 ): Promise<StructuredMemoryResult<StructuredMemoryRevisionsAnswer>> {
     return readAnswer(`${STRUCTURED_MEMORY_PATH}/revisions`, (body) => parseRevisions(body, refs.length), refusalOf, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chats: refs.map(({ chaId, chatId }) => ({ characterId: chaId, chatId })) }),
+        signal,
+    });
+}
+
+/**
+ * The health facts of a prefix of `refs`, by position, in one request (`MEMORY_HEALTH_CHATS_MAX` at
+ * most), reading no message: the server stops before the chat that would take its scan past
+ * `MEMORY_HEALTH_ROUND_BYTES`, so a caller asks again from the first entry it did not get. A null entry
+ * is an answer: the chat does not exist.
+ */
+export function readStructuredMemoryHealth(
+    refs: readonly ChatRef[],
+    signal?: AbortSignal,
+): Promise<StructuredMemoryResult<StructuredMemoryHealthAnswer>> {
+    return readAnswer(`${STRUCTURED_MEMORY_PATH}/health`, (body) => parseHealth(body, refs.length), refusalOf, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ chats: refs.map(({ chaId, chatId }) => ({ characterId: chaId, chatId })) }),
@@ -1516,20 +1580,26 @@ function runState({ result }: StructuredMemoryCoverageRun): MemoryCoverageState 
  *
  * A row's state comes from the first of these that holds. A message a send does not read
  * (`eligibleHistory`) is `excluded`. Then the events that cite it: `covered` by one that covers it,
- * else `stale`, else `excluded` by a suppressed event, else by a retracted one. Then the newest
- * non-recorded run that names it. Then its own stored receipt when that is a notice no run row stands
- * behind (`notAutomatic`, `skipped`), read as `skipped`. Anything else is `pending`: a missing receipt
- * proves nothing, so the newest reply reads `pending` too.
+ * else `stale`, else `excluded` by a suppressed event, else by a retracted one. Then a reply the
+ * preset's `screening` keeps out of the writer's windows (`memoryScreenReason`) is `excluded` with its
+ * screening reason. Then the newest non-recorded run that names it. Then its own stored receipt when
+ * that is a notice no run row stands behind (`notAutomatic`, `skipped`), read as `skipped`. Anything
+ * else is `pending`: a missing receipt proves nothing, so the newest reply reads `pending` too.
  *
  * `gap` and `leaving` come from `rawWindow` over the eligible stored messages, so they are a reading of
  * the stored text and not a send's prediction: a send works from processed text with the greeting, and
- * can also trim uncovered history that no longer fits. A send of a chat with `memoryOn` false runs no
- * memory, so nothing leaves.
+ * can also trim uncovered history that no longer fits. A screened reply is no gap, since nothing will
+ * record it, though its raw text stays in the prompt as any uncovered message's does. A send of a chat
+ * with `memoryOn` false runs no memory, so nothing leaves.
  */
 export function joinMemoryCoverage(
     messages: readonly DeepReadonly<Message>[],
     facts: CoverageFacts,
-    { windowTurns, memoryOn }: { windowTurns: number; memoryOn: boolean },
+    {
+        windowTurns,
+        memoryOn,
+        screening,
+    }: { windowTurns: number; memoryOn: boolean; screening: StructuredMemorySettings["screening"] },
 ): MemoryCoverageJoin {
     const citations = new Map<string, Citation>();
     const covered = new Set<string>();
@@ -1554,7 +1624,8 @@ export function joinMemoryCoverage(
 
     const eligible = eligibleHistory(messages.map(({ disabled }, index) => ({ disabled, index }))).messages;
     const read = new Set(eligible.map(({ index }) => index));
-    const decide = ({ chatId: id, generationInfo }: DeepReadonly<Message>, index: number): CoverageDecision => {
+    const decide = (message: DeepReadonly<Message>, index: number): CoverageDecision => {
+        const { chatId: id, generationInfo } = message;
         if (!read.has(index)) {
             return { state: "excluded", reason: "disabled" };
         }
@@ -1562,6 +1633,10 @@ export function joinMemoryCoverage(
         if (citation) {
             const { state, eventId, reason } = citation;
             return { state, eventId, ...present("reason", reason) };
+        }
+        const screened = memoryScreenReason(message, screening);
+        if (screened !== null) {
+            return { state: "excluded", reason: screened };
         }
         const run = id === undefined ? undefined : runs.get(id);
         if (run) {
@@ -1594,10 +1669,13 @@ export function joinMemoryCoverage(
     const gap: number[] = [];
     const leaving: number[] = [];
     for (let position = 0; position < start; position++) {
+        const { index } = eligible[position];
         if (!dropped.has(position)) {
-            gap.push(eligible[position].index);
+            if (memoryScreenReason(messages[index], screening) === null) {
+                gap.push(index);
+            }
         } else if (memoryOn) {
-            leaving.push(eligible[position].index);
+            leaving.push(index);
         }
     }
     return { rows, counts, gap, leaving };

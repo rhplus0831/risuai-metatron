@@ -26,9 +26,9 @@ The tab's `fetchLog` belongs to [global-api](global-api.md); capture/credential 
     store.
 - `server/src/diagnostics/log.ts` `logEvent`, `formatLogEvent`: checked failure fields and a known error
   name/application frame, never its message. `generationJobs.ts` `markFailure`/`failureOf`/`errorTerminal` preserve the
-  nearest `stage`, `requestId`, `providerCode` through replacement errors. Writes mark `persist`, scripts mark `script`,
-  requests mark `request`; the runner supplies its current stage when none was marked. A recorder also receives caught
-  runtime faults.
+  nearest `stage`, `requestId`, `providerCode`, `code` through replacement errors. Writes mark `persist`, scripts mark
+  `script`, requests mark `request`; the runner supplies its current stage when none was marked. A recorder also
+  receives caught runtime faults.
 - `server/src/routes/requestHistory.ts` `registerRequestHistoryRoutes`:
   - `GET /api/request-history?cursor&limit&chaId&chatId&jobId&status` → `{ items, next }`; malformed cursor/size/status
     → 400. `GET /:id` returns content or 404.

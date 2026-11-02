@@ -5,6 +5,7 @@
     import {
         chatStatusKey,
         generatingChatKeys,
+        memoryHealthStates,
         recoveryChatKeys,
         unseenChatKeys,
     } from "src/ts/process/chatStatus.svelte";
@@ -56,6 +57,7 @@
         collectCharacterStatuses,
         collectMemoryProgress,
         folderStatus,
+        groupHealthState,
         groupMemoryCount,
         resolveChatStatus,
         refusedChatKeys,
@@ -73,12 +75,14 @@
         collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
     );
     const summarizing = $derived(summarizingChats());
+    const healthStates = $derived(memoryHealthStates());
     const statusSets = $derived({
         recovery: $recoveryChatKeys,
         refused: refusedChatKeys(refusedItems()),
         generating: generatingChatKeys(),
         memory: summarizing,
         unseen: $unseenChatKeys,
+        health: healthStates,
     });
     const characterStatuses = $derived(collectCharacterStatuses(statusSets));
     const memoryProgress = $derived(collectMemoryProgress(summarizing));
@@ -511,6 +515,7 @@
             items={pinnedChats}
             statuses={pinnedStatuses}
             memoryCounts={summarizing}
+            {healthStates}
             selectedChaId={selection.chatOpen ? selection.characterId : null}
             selectedChatId={selection.characterId ? selectedChatId(selection.characterId) : null}
             rounded={IconRounded}
@@ -597,6 +602,7 @@
             items={pinnedChats}
             statuses={pinnedStatuses}
             memoryCounts={summarizing}
+            {healthStates}
             selectedChaId={selection.chatOpen ? selection.characterId : null}
             selectedChatId={selection.characterId ? selectedChatId(selection.characterId) : null}
             rounded={IconRounded}
@@ -644,11 +650,11 @@
                                 char.folder.map((member) => member.chaId),
                             )
                           : null}
-                {@const statusCount = memoryCountOf(
-                    status,
-                    char.type === "normal" ? [char.chaId] : char.folder.map((member) => member.chaId),
-                )}
-                {@const statusLabel = status ? chatStatusLabel(status, char.name, statusCount) : ""}
+                {@const statusChaIds =
+                    char.type === "normal" ? [char.chaId] : char.folder.map((member) => member.chaId)}
+                {@const statusCount = memoryCountOf(status, statusChaIds)}
+                {@const statusHealth = status === "health" ? groupHealthState(healthStates, statusChaIds) : null}
+                {@const statusLabel = status ? chatStatusLabel(status, char.name, statusCount, statusHealth) : ""}
                 {@const name = status ? `${char.name} · ${statusLabel}` : char.name}
                 <div
                     class="group relative flex items-center px-2"
@@ -827,7 +833,7 @@
                             </LazyCharImage>
                         {/if}
                         {#if status}
-                            <ChatStatusBadge {status} label={statusLabel} count={statusCount} />
+                            <ChatStatusBadge {status} label={statusLabel} count={statusCount} health={statusHealth} />
                         {/if}
                     </div>
                 </div>
@@ -888,8 +894,10 @@
                             {#each char.folder as char2}
                                 {@const memberStatus = characterStatuses.get(char2.chaId)}
                                 {@const memberCount = memoryCountOf(memberStatus ?? null, [char2.chaId])}
+                                {@const memberHealth =
+                                    memberStatus === "health" ? groupHealthState(healthStates, [char2.chaId]) : null}
                                 {@const memberStatusLabel = memberStatus
-                                    ? chatStatusLabel(memberStatus, char2.name, memberCount)
+                                    ? chatStatusLabel(memberStatus, char2.name, memberCount, memberHealth)
                                     : ""}
                                 {@const memberName = memberStatus ? `${char2.name} · ${memberStatusLabel}` : char2.name}
                                 <div
@@ -949,6 +957,7 @@
                                                 status={memberStatus}
                                                 label={memberStatusLabel}
                                                 count={memberCount}
+                                                health={memberHealth}
                                             />
                                         {/if}
                                     </div>

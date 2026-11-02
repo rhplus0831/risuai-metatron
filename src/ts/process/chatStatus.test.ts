@@ -35,7 +35,12 @@ const stubs = vi.hoisted(() => ({
     follows: [] as Follow[],
     closeWithoutTerminal: false,
     read: vi.fn(),
+    healthFetch: vi.fn<typeof import("../storage/serverAuth").authFetch>(),
 }));
+
+vi.mock("../storage/serverAuth", async () =>
+    (await import("../storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: stubs.healthFetch }),
+);
 
 vi.mock("src/lang", () => ({
     language: { serverJob: { lost: "job lost", endedAway: "ended away" } },
@@ -147,6 +152,7 @@ beforeEach(async () => {
     ({ flushSync } = await import("svelte"));
     localStorage.clear();
     sessionStorage.clear();
+    stubs.healthFetch.mockReset();
     stubs.follows.length = 0;
     stubs.closeWithoutTerminal = false;
     stubs.read.mockReset().mockResolvedValue({ characterId: "c", chatId: "k", epoch: EPOCH, state: "running" });
@@ -535,4 +541,228 @@ describe("isChatBusy", () => {
         chat.releaseFeedLocks();
         expect(status.isChatBusy(b)).toBe(false);
     });
+});
+
+const healthy = { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 };
+async function enableMemory() {
+    const { settings } = await import("../storage/settingsViews.svelte");
+    const { characterList } = await import("../storage/characterStore.svelte");
+    const { createHypaV3Preset } = await import("../../../shared/hypaV3Presets.ts");
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    settings.hypaV3Presets.items = [
+        createHypaV3Preset("Memory", { gapConfirmTokens: 10, structured: { fineTuning: true } }, "memory"),
+    ];
+    settings.hypaV3Presets.selectedId = "memory";
+    for (const character of characterList()) character.supaMemory = true;
+    return settings;
+}
+async function settleHealth() {
+    for (let i = 0; i < 50; i++) {
+        await Promise.resolve();
+        flushSync();
+    }
+}
+
+it("reads only pinned and open health on visibility triggers, resumes prefixes and keeps facts on failure", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(100_000);
+    const settings = await enableMemory();
+    settings.ui.memoryAlgorithmType = "none";
+    chat.setChatMeta(b, { pinned: true });
+    view(a);
+    const { hypaV3ModalOpen } = await import("../screenVisibility");
+    hypaV3ModalOpen.set(false);
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    const requests: { characterId: string; chatId: string }[][] = [];
+    let release!: (response: Response) => void;
+    stubs.healthFetch.mockImplementation(async (url, init) => {
+        expect(url).toBe("/api/memory/structured/health");
+        const refs = JSON.parse(String(init?.body)).chats;
+        requests.push(refs);
+        if (requests.length === 1)
+            return new Promise((resolve) => {
+                release = resolve;
+            });
+        return Response.json({
+            health: refs.map((ref: { characterId: string; chatId: string }) =>
+                ref.characterId === "c" && ref.chatId === "k" ? { ...healthy, storedStale: 1 } : healthy,
+            ),
+        });
+    });
+    watch();
+    await settleHealth();
+    expect(requests).toEqual([]);
+    expect(status.memoryHealthStates().size).toBe(0);
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    await settleHealth();
+    expect(requests).toEqual([
+        [
+            { characterId: "c", chatId: "k" },
+            { characterId: "c", chatId: "j" },
+        ],
+    ]);
+    // The open chat and custom notice remain usable while the boot read is unanswered.
+    expect(chat.currentChatRef()).toEqual(a);
+    expect(status.memoryHealthStates()).toEqual(
+        new Map([
+            [keyA, "customPrompt"],
+            [keyB, "customPrompt"],
+        ]),
+    );
+    release(Response.json({ health: [{ ...healthy, storedStale: 1 }] }));
+    await settleHealth();
+    expect(requests[1]).toEqual([{ characterId: "c", chatId: "j" }]);
+    expect(status.memoryHealthStates().get(keyA)).toBe("staleEvents");
+    chat.setChatMeta(other, { pinned: true });
+    await settleHealth();
+    expect(requests.at(-1)).toEqual([{ characterId: "d", chatId: "k" }]);
+    const count = requests.length;
+    const { beginLocalSend } = await import("./localSends");
+    const endSend = beginLocalSend(a)!;
+    commands.followedJobs.set(new Map([["stream", keyA]]));
+    chat.setMessageText(a, "m2", "Streaming reply");
+    const tasks = await import("./memoryTasks.svelte");
+    tasks.noteMemoryTaskFrame({
+        type: "memoryTask",
+        epoch: EPOCH,
+        characterId: "c",
+        chatId: "k",
+        status: {
+            kind: "structuredMemory",
+            taskId: "memory",
+            state: "done",
+            done: 1,
+            total: 1,
+            terminalRevision: null,
+        },
+    });
+    await settleHealth();
+    expect(tasks.memoryTaskStatus(a)?.state).toBe("done");
+    endSend();
+    commands.followedJobs.set(new Map());
+    status.noteJobDone(a, done({ messageId: "m2" }));
+    await settleHealth();
+    expect(requests).toHaveLength(count);
+    view(b);
+    await settleHealth();
+    expect(requests.at(-1)).toEqual([{ characterId: "c", chatId: "j" }]);
+    hypaV3ModalOpen.set(true);
+    await settleHealth();
+    const beforeClose = requests.length;
+    hypaV3ModalOpen.set(false);
+    await settleHealth();
+    expect(requests).toHaveLength(beforeClose + 1);
+    expect(requests.at(-1)).toEqual([{ characterId: "c", chatId: "j" }]);
+    const returnPage = async () => {
+        visibility.mockReturnValue("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+        await settleHealth();
+        visibility.mockReturnValue("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+        await settleHealth();
+    };
+    vi.setSystemTime(159_999);
+    await returnPage();
+    expect(requests).toHaveLength(beforeClose + 1);
+    vi.setSystemTime(160_000);
+    await returnPage();
+    expect(requests.at(-1)).toEqual([
+        { characterId: "c", chatId: "j" },
+        { characterId: "d", chatId: "k" },
+    ]);
+    const afterMinute = requests.length;
+    await returnPage();
+    expect(requests).toHaveLength(afterMinute);
+    view(a);
+    await settleHealth();
+    stubs.healthFetch.mockRejectedValue(new Error("offline"));
+    const held = new Map(status.memoryHealthStates());
+    hypaV3ModalOpen.set(true);
+    await settleHealth();
+    hypaV3ModalOpen.set(false);
+    await settleHealth();
+    expect(status.memoryHealthStates()).toEqual(held);
+    settings.ui.memoryAlgorithmType = "hypaV3";
+    const calls = stubs.healthFetch.mock.calls.length;
+    vi.setSystemTime(220_000);
+    await returnPage();
+    expect(stubs.healthFetch).toHaveBeenCalledTimes(calls);
+    expect(status.memoryHealthStates().size).toBe(0);
+    tasks.resetMemoryTasks();
+});
+
+it("marks required overflow and clears successful sends strictly by character and chat", async () => {
+    const settings = await enableMemory();
+    settings.hypaV3Presets.items[0].settings.structured.fineTuning = false;
+    view(a);
+    chat.setChatMeta(b, { pinned: true });
+    chat.setChatMeta(other, { pinned: true });
+    const overflow = { ...error, code: "memoryRequiredOverCap" as const };
+    status.noteJobDone(a, overflow);
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "requiredOverCap"]]));
+    status.noteJobDone(b, error);
+    status.noteJobDone(a, error);
+    status.noteJobDone(other, done({ messageId: "reply" }));
+    status.noteJobDone(a, done());
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "requiredOverCap"]]));
+    status.noteJobDone(other, overflow);
+    status.noteJobDone(b, done({ messageId: "reply" }));
+    expect(status.memoryHealthStates()).toEqual(
+        new Map([
+            [keyA, "requiredOverCap"],
+            [keyOther, "requiredOverCap"],
+        ]),
+    );
+    status.noteJobDone(a, done({ messageId: "reply" }));
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyOther, "requiredOverCap"]]));
+    status.noteJobDone(other, done({ messageId: "reply" }));
+    expect(status.memoryHealthStates().size).toBe(0);
+    expect(stubs.healthFetch).not.toHaveBeenCalled();
+});
+
+it("uses the newest report's strict gap threshold and the preset's custom notice only for memory-enabled chats", async () => {
+    const settings = await enableMemory();
+    view(a);
+    chat.setChatMeta(b, { pinned: true });
+    const report = (gapTokens?: number) => ({
+        v: 1 as const,
+        maxContext: 1000,
+        maxResponse: 100,
+        input: 300,
+        sections: [],
+        adjustment: 300,
+        attributionExact: true,
+        history: { total: 2, kept: 1, totalUser: 1, keptUser: 1, droppedTokens: 20 },
+        lore: { budgetUsed: 0, budget: 0, rejectedCount: 0, rejectedTokens: 0, active: 0 },
+        tokenScope: "scope",
+        historyDigest: "digest",
+        memory: {
+            kind: "structuredMemory" as const,
+            tokens: 0,
+            coverage: "gap" as const,
+            ...(gapTokens === undefined ? {} : { gapTokens }),
+        },
+    });
+    chat.patchMessage(a, "m1", { generationInfo: { context: report(99) } });
+    for (const [tokens, expected] of [
+        [11, "gap"],
+        [10, "customPrompt"],
+        [undefined, "customPrompt"],
+    ] as const) {
+        chat.patchMessage(a, "m2", { generationInfo: { context: report(tokens) } });
+        expect(status.memoryHealthStates()).toEqual(
+            new Map([
+                [keyA, expected],
+                [keyB, "customPrompt"],
+            ]),
+        );
+    }
+    const { findCharacter } = await import("../storage/characterStore.svelte");
+    Object.assign(findCharacter("c")!, { supaMemory: false });
+    expect(status.memoryHealthStates().size).toBe(0);
+    Object.assign(findCharacter("c")!, { supaMemory: true });
+    settings.ui.memoryAlgorithmType = "none";
+    expect(status.memoryHealthStates().size).toBe(0);
+    expect(stubs.healthFetch).not.toHaveBeenCalled();
 });

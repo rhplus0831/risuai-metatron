@@ -5,6 +5,7 @@
     import {
         chatStatusKey,
         generatingChatKeys,
+        memoryHealthStates,
         recoveryChatKeys,
         unseenChatKeys,
     } from "src/ts/process/chatStatus.svelte";
@@ -42,12 +43,14 @@
         collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
     );
     const summarizing = $derived(summarizingChats());
+    const healthStates = $derived(memoryHealthStates());
     const statusSets = $derived({
         recovery: $recoveryChatKeys,
         refused: refusedChatKeys(refusedItems()),
         generating: generatingChatKeys(),
         memory: summarizing,
         unseen: $unseenChatKeys,
+        health: healthStates,
     });
     const pinnedStatuses = $derived.by(() => {
         const statuses = new Map<string, ChatStatus>();
@@ -108,7 +111,11 @@
                             {@const status = pinnedStatuses.get(chatStatusKey(item))}
                             {@const statusCount =
                                 status === "memory" ? (summarizing.get(chatStatusKey(item)) ?? null) : null}
-                            {@const statusLabel = status ? chatStatusLabel(status, item.chatName, statusCount) : ""}
+                            {@const statusHealth =
+                                status === "health" ? (healthStates.get(chatStatusKey(item)) ?? null) : null}
+                            {@const statusLabel = status
+                                ? chatStatusLabel(status, item.chatName, statusCount, statusHealth)
+                                : ""}
                             {@const label =
                                 language.openPinnedChat(item.chatName, item.characterName) +
                                 (status ? ` · ${statusLabel}` : "")}
@@ -136,7 +143,12 @@
                                         />
                                     {/await}
                                     {#if status}
-                                        <ChatStatusBadge {status} label={statusLabel} count={statusCount} />
+                                        <ChatStatusBadge
+                                            {status}
+                                            label={statusLabel}
+                                            count={statusCount}
+                                            health={statusHealth}
+                                        />
                                     {/if}
                                 </span>
                                 <span class="min-w-0">

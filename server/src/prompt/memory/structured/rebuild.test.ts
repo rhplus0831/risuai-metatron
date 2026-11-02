@@ -18,6 +18,8 @@ const event = (id: string, ids: string[], extra: Partial<MemoryEvent> = {}): Mem
     ...extra,
 });
 
+const NO_SCREENING = { refusal: [], format: [] };
+
 it("rebuilds retired replacements but excludes personal retractions and backfills uncited users of covered turns", () => {
     const events = [
         event("retired", ["u1", "a1"], { status: "retracted" }),
@@ -25,23 +27,25 @@ it("rebuilds retired replacements but excludes personal retractions and backfill
         event("retracted", ["u2", "a2"], { status: "retracted" }),
         event("adopted-reply", ["a3"], { writerRun: ADOPTED_WRITER_RUN }),
     ];
-    expect(rebuildPlan({ messages, events, mode: "rebuild", turns: 1 })).toEqual([
+    expect(rebuildPlan({ messages, events, mode: "rebuild", turns: 1, screening: NO_SCREENING })).toEqual([
         ["u1", "a1"],
         ["u3", "a3"],
     ]);
-    expect(rebuildPlan({ messages, events, mode: "rebuild", turns: 2 })).toEqual([["u1", "a1", "u3", "a3"]]);
-    expect(rebuildPlan({ messages, events, mode: "backfill", turns: 1 })).toEqual([["u3"]]);
+    expect(rebuildPlan({ messages, events, mode: "rebuild", turns: 2, screening: NO_SCREENING })).toEqual([
+        ["u1", "a1", "u3", "a3"],
+    ]);
+    expect(rebuildPlan({ messages, events, mode: "backfill", turns: 1, screening: NO_SCREENING })).toEqual([["u3"]]);
 });
 
 it("reads planned windows from current messages with fresh anchors and skips removed or disabled sources", () => {
     const edited = { ...messages[2], data: "Edited user" };
     const current = [messages[0], edited, { ...messages[3], disabled: true }, messages[5]];
-    const result = rebuildWindow(current, ["a2", "u2", "a1"]);
+    const result = rebuildWindow(current, ["a2", "u2", "a1"], NO_SCREENING);
     expect(result).toEqual({
         ceiling: { id: "u2", inclusive: true },
         window: { messages: [edited], sources: [{ messageId: "u2", index: 1, hash: messageSourceHash(edited) }] },
     });
-    expect(rebuildWindow(current, ["a1", "a2"])).toBeNull();
+    expect(rebuildWindow(current, ["a1", "a2"], NO_SCREENING)).toBeNull();
 });
 
 it("keeps personal sections and history, chosen pages and threads, and carries events until all their sources are replaced", () => {
@@ -138,4 +142,33 @@ it("seeds every unmarked section and history entry of merged and split pages", (
         ],
     }));
     expect(rebuildSeed("rebuild", { pages: [base, ...pages], threads: [] })).toEqual({ pages, threads: [] });
+});
+
+it("screens rebuild and backfill plans and rechecks edited replies when building each window", () => {
+    const current = structuredClone(messages);
+    current[1].data = "A REFUSAL in stored text";
+    const screening = { refusal: ["refusal"], format: ["bad format"] };
+    const events = [event("recorded", ["u1", "a1"])];
+    const before = structuredClone(events);
+    const rebuild = rebuildPlan({ messages: current, events, mode: "rebuild", turns: 1, screening });
+    expect(rebuild).toEqual([
+        ["u1", "u2", "a2"],
+        ["u3", "a3"],
+    ]);
+    expect(rebuildPlan({ messages: current, events, mode: "backfill", turns: 1, screening })).toEqual([
+        ["u2", "a2"],
+        ["u3", "a3"],
+    ]);
+    current[3].data = "Now BAD FORMAT";
+    expect(rebuildWindow(current, rebuild[0], screening)).toMatchObject({
+        window: { messages: [current[0], current[2]] },
+    });
+    expect(rebuildWindow(current, ["a2"], screening)).toBeNull();
+    const changes = rebuildChanges(
+        "rebuild",
+        { pages: [], threads: [], events },
+        { pages: [], threads: [], events: [event("new", ["u1", "u2", "a2"])] },
+    );
+    expect(changes?.remove?.events ?? []).not.toContain("recorded");
+    expect(events).toEqual(before);
 });

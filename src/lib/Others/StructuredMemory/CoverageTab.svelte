@@ -73,16 +73,21 @@
     const hashOf = memoryMessageHasher();
     // With no chat held there is nothing to compare, which says nothing of its events.
     const reconciled = $derived(facts && heldChat ? reconcileMemoryCoverage(facts, messages, hashOf) : facts);
-    const windowTurns = $derived(
+    const writerSettings = $derived(
         normalizeStructuredMemorySettings(
             selectedHypaV3Preset({
                 hypaV3Presets: settings.hypaV3Presets.items,
                 hypaV3PresetId: settings.hypaV3Presets.selectedId,
             })?.settings.structured,
-        ).windowTurns,
+        ),
     );
+    const windowTurns = $derived(writerSettings.windowTurns);
     const memoryOn = $derived(!!findCharacter(chatRef.chaId)?.supaMemory);
-    const coverage = $derived(reconciled ? joinMemoryCoverage(messages, reconciled, { windowTurns, memoryOn }) : null);
+    const coverage = $derived(
+        reconciled
+            ? joinMemoryCoverage(messages, reconciled, { windowTurns, memoryOn, screening: writerSettings.screening })
+            : null,
+    );
     const groups = $derived(coverage ? groupMemoryCoverage(coverage.rows) : []);
     const eventTitles = $derived(new Map<string, string>(reconciled?.events.map(({ id, title }) => [id, title])));
     const usedEvents = $derived(memoryItemsUsed(messages, "event"));

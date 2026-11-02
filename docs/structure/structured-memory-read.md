@@ -33,11 +33,11 @@
 - `previewChatReport` in `src/ts/process/index.svelte.ts`: a preview's messages and report. `GenerationPreviewResult` in
   `shared/jobs.ts` is that job's `done.result`.
 - `src/lib/Others/StructuredMemory/`: `StructuredMemoryPanel.svelte`, `CoverageTab.svelte`, `PreviewTab.svelte`,
-  `PagesTab.svelte`, `TimelineTab.svelte`, `ThreadsTab.svelte`, `LogTab.svelte`, `MemoryLinkButton.svelte`,
-  `MemoryManifest.svelte` (a report's writer, items, left-out rows, and lane spend, shared with `ContextMeter`),
-  `memoryText.ts`, the stored codes as text, and `memoryRecordPress.ts`, the `memoryRecord` press the panel shares with
-  the receipt line, and `pressMemoryTest`. `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: the status line it shares
-  with the modal.
+  `PagesTab.svelte`, `TimelineTab.svelte`, `ThreadsTab.svelte`, `LogTab.svelte`, `SettingsTab.svelte`,
+  `MemoryLinkButton.svelte`, `MemoryManifest.svelte` (a report's writer, items, left-out rows, and lane spend, shared
+  with `ContextMeter`), `memoryText.ts`, the stored codes as text, and `memoryRecordPress.ts`, the `memoryRecord` press
+  the panel shares with the receipt line, and `pressMemoryTest`. `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: the
+  status line it shares with the modal.
 - `src/ts/process/structuredMemory.svelte.ts`, the pure parts the panel reads with: `reconcileMemoryCoverage`,
   `memoryMessageHash`, `memoryMessageHasher`, `joinMemoryCoverage`, `groupMemoryCoverage`, `memoryMessageExcerpt`,
   `memoryRunView`, `memoryTimelineRows`, `memoryPageTree`, `memoryPageHistoryView`, `memoryEventView`,
@@ -151,15 +151,15 @@ diff through `requestMemoryPanelTarget`, which the panel takes as it mounts, bec
 the panel is closed. A highlighted row also carries a revert, as does every writer's section entry in the Pages history;
 both go through `revertStructuredMemoryChange`, which reads the page for its revision first. The receipt is a stored
 copy that no revert changes, so the row shows reverted only for its own mount, and a later press answers that nothing is
-left to undo. The Pages tab holds the chat's own highlight mode, a chat field written through `setChatMeta`.
+left to undo. The Settings tab holds the chat's own highlight mode, a chat field written through `setChatMeta`.
 
 ### The memory panel
 
 `StructuredMemoryPanel` replaces `HypaV3Modal` when `memoryAlgorithmType` selects the algorithm, under the same
 `hypaV3ModalOpen` store, so `chatStatus.svelte.ts` still counts the transcript as hidden. `App.svelte` picks it, and the
 menu row in `DefaultChatScreen` and the button in `CharConfig` open it ahead of any older memory flag. A tab is one
-component in `TABS`, taking `MemoryPanelTabProps`, mounted while it shows. Pages, Timeline, and Threads write; the rest
-read.
+component in `TABS`, taking `MemoryPanelTabProps`, mounted while it shows. Pages, Timeline, Threads, and Settings write;
+the rest read.
 
 - "Used in the last send" comes from `memoryItemsUsed`: the newest valid report, found as the meter finds its own, and
   its `verified` items of one kind. A newer report of another kind means none, and no older report is reached. Coverage
@@ -192,11 +192,12 @@ read.
   stay as answered.
 - `joinMemoryCoverage` takes a row's state from the first that holds: not in `eligibleHistory`, `excluded` (`disabled`);
   an event that covers it, `covered`; a stale event, `stale`; a suppressed one, `excluded` (`suppressed`); a retracted
-  one, `excluded` (`retracted`); the newest unrecorded run naming it, by result; its own receipt when that is a notice
-  no run stands behind (`notAutomatic`, `writerPaused`), `skipped`; else `pending`.
-- The gap is the eligible messages older than `rawWindow`'s start that no covering event cites, and leaving is its
-  `dropped`, emptied when the owner's `supaMemory` is off. Tokens are counted on those rows alone, and only when their
-  texts change, so a reply streaming into the window starts no count.
+  one, `excluded` (`retracted`); [screened](#reply-screening), `excluded` (`screenedRefusal`, `screenedFormat`); the
+  newest unrecorded run naming it, by result; its own receipt when that is a notice no run stands behind
+  (`notAutomatic`, `writerPaused`), `skipped`; else `pending`.
+- The gap is the eligible messages older than `rawWindow`'s start that no covering event cites, less screened replies,
+  and leaving is its `dropped`, emptied when the owner's `supaMemory` is off. Tokens are counted on those rows alone,
+  and only when their texts change, so a reply streaming into the window starts no count.
 - Coverage groups consecutive rows of one state and renders 200 rows at a time. One group opens at a time.
 - The Log reads a round at a time, and a 409 on a later round restarts the list. A row expands to `MemoryRun.analysis`,
   each item next to its quote, with what the receipt's `unverified` names marked. That list names an item by kind and
@@ -245,10 +246,11 @@ and turns Save off, and the read when it falls applies the same rule.
 `memoryWriterNotice` decides the line under the status lines from the current state, because a receipt or a report is a
 copy of its moment. The first that holds: memory off, no action, because the command refuses; a held chat as the
 contents say, `awaitingAdoption`, no action; `writerPaused` over the current runs (from the contents) or a newest
-receipt that reads paused, resume; a newest `notAutomatic` receipt, its reason and `memoryReceiptView`'s action; a
-`manual` cadence, reason `manual`. Past those only the action shows. A newest `awaitingAdoption` receipt on a chat no
-longer held reads as no receipt, or it would hide record now after the choice. The press is `pressMemoryRecord`, as on
-the receipt line, off while pressing, read-only, or the task is live.
+receipt that reads paused, resume; events waiting for a re-record (`health.pendingRepairs`), the action the newest
+message would have; a newest `notAutomatic` receipt, its reason and `memoryReceiptView`'s action; a `manual` cadence,
+reason `manual`. Past those only the action shows. A newest `awaitingAdoption` receipt on a chat no longer held reads as
+no receipt, or it would hide record now after the choice. The press is `pressMemoryRecord`, as on the receipt line, off
+while pressing, read-only, or the task is live.
 
 ### Prompt fine-tuning
 
@@ -275,7 +277,7 @@ and either counts toward the pause. A custom patch prompt is checked against the
 `customPrompt` means `fineTuning` was on, not that a frame ran: it is on the run, on the failed and recorded receipts,
 and on `writerNotice`'s. A failed receipt under it also keeps the bounded, redacted `error`, so a missing field is named
 on the line and not only in the Log. The panel's line reads the current settings; a receipt and a Log row read what they
-stored. The health badge does not exist yet.
+stored. The [health badge](#the-health-badge) reads the current settings too.
 
 ### The test run
 
@@ -292,6 +294,51 @@ The `memoryTest` command job (`testRun.ts`) runs the writer once over a window a
    compaction and warming. `commitPages` still runs, so its refusals appear in the result.
 
 `pressMemoryTest` treats a followed job and a terminal without the result, which a retained one is, as no result.
+
+### Reply screening
+
+The preset's `screening` lists keep a reply out of what the writer records. `memoryScreenReason` is the rule: a reply
+whose stored `data` holds a listed text, without case, refusal first. It is decided at each read and stored nowhere, so
+a list change or an edit needs no repair.
+
+- Reach: the writer only. The raw text stays in the prompt and trims as it does today, so screened ids stay out of the
+  `covered` set `rawWindow` takes, and retrieval knows nothing of screening.
+- Windows: the ceiling is found first, so a press on a screened reply confirms what lies before it. Screened replies
+  then drop, and the user message before one folds into the next turn. `confirmedThrough` skips them, or a screened
+  newest reply would read `pending` for ever. `WriterCadence` carries the lists.
+- A message an event cites stays `covered`: screening changes no stored record.
+- A person's start re-records a marked event through its screened messages. An automatic start leaves it, marked.
+- Rebuild and backfill screen at the plan, at the cost, and again in `rebuildWindow`, since a reply can be edited after
+  the plan. `memoryWorkCost` has no job scope, so it reads `store.memory.readWriterSettings`.
+- A test run drops a replayed window that holds a screened reply and takes the window the cadence would close.
+
+### The health badge
+
+`memoryHealthStates` (`chatStatus.svelte.ts`) gives the worst of `MEMORY_HEALTH_STATES` for the open chat and the pinned
+chats, while the algorithm is selected and the character's `supaMemory` is on. `health` is last in
+`CHAT_STATUS_PRIORITY`, so a lasting state hides no `unseen`.
+
+| State                 | Comes from                                                         |
+| --------------------- | ------------------------------------------------------------------ |
+| `writerPaused`        | `paused`, or the open chat's newest report; never a receipt        |
+| `gap`                 | The open chat's newest report: `gapTokens` over `gapConfirmTokens` |
+| `staleEvents`         | `storedStale`, `pendingRepairs`, the report's `stale` exclusions   |
+| `unsupportedSections` | `unsupportedSections`                                              |
+| `requiredOverCap`     | The tab's mark of a send failed `memoryRequiredOverCap`            |
+| `pageOverBudget`      | `overBudgetSections`                                               |
+| `customPrompt`        | The preset's `fineTuning`, with no read; neutral                   |
+
+- `watchChatVisibility` reads the facts from an effect, deferred and awaited by nothing, so boot and the first chat
+  render do not wait: after boot, for a new key, for the open chat on opening and on the panel closing, and on a page
+  return at most once a minute. Never on a send, a task end, or streaming. A failed read keeps what is held.
+- `POST /health` ([the read routes](structured-memory.md#the-read-routes)) can answer a prefix, and the tab asks again
+  from where it stopped. [Measured](../audit/structured-memory-health-read-2026-11-03.md).
+- The mark is keyed by chat: an `error` terminal with `code: "memoryRequiredOverCap"` sets that chat's, a `done` with a
+  `messageId` clears only that chat's. A preview that fails over cap sets it too: that is a true observation.
+- `DefaultChatScreen` shows the state inline on a line under the `ContextMeter` row, with the meter off too, and a press
+  opens the panel. Character and folder badges take `groupHealthState`.
+- The contents answer carries the facts as `health`, so the panel's writer line and the badge read one fact.
+  `writerState` answers `pending`, reason `repair`, from `records.events`, already in hand at a send.
 
 ## State
 
@@ -355,6 +402,8 @@ The `memoryTest` command job (`testRun.ts`) runs the writer once over a window a
 - Fine-tuning: `prompts.test.ts` for the frame rules, `memoryTasks.test.ts` for both modes, invalid frames, replay, and
   the size check, `memoryJobs.test.ts` for the test run on a real stack, `structuredMemoryRoutes.test.ts` for the
   default prompts, and `StructuredMemoryPrompts.test.ts` for the controls.
+- The health badge: `structuredMemoryRoutes.test.ts` for the route and its budget, `chatStatus.test.ts` for the states,
+  the read triggers, and the mark, `memoryJobs.test.ts` for the failure code on a real stack.
 - The preview: `memoryJobs.test.ts` and `promptRunner.test.ts` drive both kinds on a real stack, and
   `StructuredMemoryPanel.test.ts` scripts `runServerJob` for the tab.
 - Focused command:
@@ -402,6 +451,18 @@ The `memoryTest` command job (`testRun.ts`) runs the writer once over a window a
 - A custom prompt may leave out `{{slot::rules}}`: `takenBack` still shows in the cast, without the rule that says to
   respect it. The test run lists the slot. `memoryWorkCost` does not know a custom prompt's size.
 - A seeded prompt is a copy: a later change of a default frame does not reach it, though a change of a slot's text does.
+- The badge is a last observation: memory writes publish nothing, so a writer run or another tab's repair shows at the
+  next read. Decision: Structured Memory slice 7e, plan.
+- A chat not loaded knows no gap and only stored `stale` plus marks, because both need its messages. Only pinned chats
+  and the open chat have a state. Decision: Structured Memory slice 7e, plan.
+- A reload loses the over-cap mark, and only the tab that followed the job holds it. Decision: Structured Memory slice
+  7e, plan.
+- Gap is the last send's trimmed tokens, which a later recording does not rewrite, and a screened reply counts once it
+  trims. Decision: Structured Memory slice 7e, plan.
+- `overBudgetSections` counts code points, not `memorySectionOverBudget`'s UTF-16 units, so a body with astral
+  characters near its budget can read differently.
+- A screened reply can stay in the writer's context-only `previous` slot, and a user message strands when the next reply
+  is already recorded. Decision: Structured Memory slice 7e, plan.
 
 ### Gotchas
 

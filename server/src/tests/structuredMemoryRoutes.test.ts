@@ -15,6 +15,8 @@ import {
     writerPaused,
     sealedHypaV3DataIntact,
     MEMORY_RUNS_ROUND_ROWS,
+    MEMORY_HEALTH_CHATS_MAX,
+    MEMORY_SECTION_BUDGETS,
     MEMORY_REVISION_CHATS_MAX,
     STRUCTURED_MEMORY_LIMITS,
 } from "../../../shared/structuredMemory.ts";
@@ -509,6 +511,7 @@ it("lists only this chat's metadata and reads every record kind exactly as store
         adoption: { adoptable: 0, declined: false, resettable: false },
         rebuild: null,
         recordedLanguage: null,
+        health: { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 },
     });
     for (const [kind, record] of [
         ["pages", p],
@@ -2890,4 +2893,128 @@ it("finishes each page tool and import before a competing microtask can take the
             route === "page-tools" ? { id: "p", trashedAt: Date.now() } : { id: "imported" },
         );
     }
+});
+
+it("returns compact ordered live health at the chat limit without messages or record bodies", async () => {
+    const s = await server();
+    const ids = [chatId, ...Array.from({ length: MEMORY_HEALTH_CHATS_MAX - 1 }, (_, i) => `health-${i}`)];
+    s.store.applyChanges({
+        chats: ids
+            .slice(1)
+            .map((id) => ({ characterId, chatId: id, baseRevision: null, ops: [{ op: "create" as const, chat }] })),
+    });
+    const p = page("live", "PRIVATE BODY " + "x".repeat(MEMORY_SECTION_BUDGETS.location + 1));
+    p.sections[0].unsupported = true;
+    for (const id of ids)
+        writeMemory(s.store, characterId, id, {
+            pages: [p, { ...p, id: "trash", trashedAt: 1 }],
+            events: [
+                { ...event("stale"), status: "stale", rerecord: true },
+                { ...event("retracted"), status: "retracted", rerecord: true },
+            ],
+            runs: Array.from({ length: STRUCTURED_MEMORY_LIMITS.consecutiveFailures }, (_, i) =>
+                run(`failed-${i}`, "failed"),
+            ),
+        });
+    stageRun(s);
+    const staged = s.store.memory.rebuild.staged;
+    staged.write(
+        characterId,
+        chatId,
+        { epoch: s.epoch, baseRevision: staged.readContents(characterId, chatId)!.revision },
+        {
+            pages: [{ ...p, id: "staged-bad" }],
+            events: [{ ...event("staged-stale"), status: "stale", rerecord: true }],
+        },
+    );
+    const facts = { paused: true, storedStale: 1, pendingRepairs: 1, unsupportedSections: 1, overBudgetSections: 1 };
+    const queries: string[] = [];
+    let bodies = 0;
+    const spies = (["get", "all"] as const).map((method) => {
+        const original = StatementSync.prototype[method];
+        return vi.spyOn(StatementSync.prototype, method).mockImplementation(function (
+            this: StatementSync,
+            ...args: unknown[]
+        ) {
+            queries.push(this.sourceSQL);
+            const value = Reflect.apply(original, this, args);
+            if (JSON.stringify(value)?.includes("PRIVATE BODY")) bodies++;
+            return value;
+        });
+    });
+    try {
+        const refs = ids.map((chatId) => ({ characterId, chatId }));
+        const result = await answer(await s.json("/api/memory/structured/health", { chats: refs }));
+        expect(result).toEqual({ health: Array.from({ length: 64 }, () => facts) });
+        const size = bytes(result);
+        expect(size).toBeLessThan(8 * 1024);
+        expect(queries.some((sql) => /\bmessages\b/.test(sql))).toBe(false);
+        expect(bodies).toBe(0);
+        queries.length = 0;
+        s.store.memory.readContents(characterId, chatId);
+        expect(bodies).toBe(0);
+        expect(queries.some((sql) => /\bmessages\b/.test(sql))).toBe(false);
+        expect((await answer(await s.request(base))).health).toEqual(facts);
+        expect(
+            await answer(
+                await s.json("/api/memory/structured/health", {
+                    chats: [refs[0], { characterId, chatId: "gone" }, { characterId, chatId: "other" }],
+                }),
+            ),
+        ).toEqual({
+            health: [
+                facts,
+                null,
+                { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 },
+            ],
+        });
+        await answer(await s.json("/api/memory/structured/health", { chats: [...refs, refs[0]] }), 400);
+        await answer(await s.json("/api/memory/structured/health", { chats: [{ characterId }] }), 400);
+    } finally {
+        spies.forEach((spy) => spy.mockRestore());
+    }
+});
+
+it("bounds health scans by live page bytes and always answers the first chat", async () => {
+    const s = await server();
+    const first = page("first", "문😀");
+    const second = page("second", "Another body");
+    s.write({ pages: [first, { ...page("trash", "x".repeat(1000)), trashedAt: 1 }] });
+    writeMemory(s.store, characterId, "other", { pages: [second] });
+    stageRun(s);
+    const refs = [chatId, "other"].map((chatId) => ({ characterId, chatId }));
+    const empty = { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 };
+    expect(s.store.memory.readHealth(refs, 1)).toEqual([empty]);
+    expect(s.store.memory.readHealth(refs, bytes(first) + bytes(second) - 1)).toEqual([empty]);
+    expect(s.store.memory.readHealth(refs, bytes(first) + bytes(second))).toEqual([empty, empty]);
+});
+
+it("screens rebuild, backfill and record cost previews against current preset lists", async () => {
+    const s = await server();
+    bindChat(s);
+    const kind = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("hypaV3Presets")!;
+    const record = s.store.get(kind, "main")!;
+    const data = record.data as { selectedId: string; items: { id: string; settings: Record<string, unknown> }[] };
+    s.store.put(
+        kind,
+        "main",
+        {
+            ...data,
+            items: data.items.map((item) => ({
+                ...item,
+                settings: { ...item.settings, structured: { screening: { refusal: ["GATE OPENS"], format: [] } } },
+            })),
+        },
+        record.revision,
+    );
+    for (const query of ["mode=rebuild&turns=1", "mode=backfill&turns=1", "mode=record&turns=1&through=a"]) {
+        expect(await answer(await s.request(`${base}/cost?${query}`))).toEqual({
+            calls: 0,
+            messages: 0,
+            estimatedTokens: 0,
+        });
+    }
+    const latest = s.store.get(kind, "main")!;
+    s.store.put(kind, "main", data, latest.revision);
+    expect(await answer(await s.request(`${base}/cost?mode=rebuild&turns=1`))).toMatchObject({ calls: 1, messages: 2 });
 });

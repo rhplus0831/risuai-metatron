@@ -6,6 +6,7 @@ import {
 } from "../../../../../shared/contextReport.ts";
 import type { Message } from "../../../../../shared/database.ts";
 import type { HypaV3BudgetReduction } from "../../../../../shared/hypaV3Presets.ts";
+import type { GenerationErrorCode } from "../../../../../shared/jobs.ts";
 import type { HypaV3Settings } from "../../../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../../../shared/openai.ts";
 import {
@@ -125,9 +126,11 @@ export type MemorySelected = {
 
 /**
  * A selection that does not fit fails the send: `error` names the tokens it needs. `error` is what a send
- * shows its own way, into the chat under `inlayErrorResponse`, and `alert` always ends it with a `SendError`.
+ * shows its own way, into the chat under `inlayErrorResponse`, and `alert` always ends it with a `SendError`
+ * carrying `code`, which the tab's health badge tells apart from any other failure.
  */
-export type MemorySelection = MemorySelected | { type: "error"; error: string } | { type: "alert"; error: string };
+export type MemorySelection =
+    MemorySelected | { type: "error"; error: string } | { type: "alert"; error: string; code: GenerationErrorCode };
 
 /** A send's manifest as the step knows it. `buildContextReport` adds what only the final prompt can say. */
 export type MemorySendManifest = {
@@ -136,6 +139,8 @@ export type MemorySendManifest = {
     excluded: readonly ContextMemoryExcluded[];
     excludedTotal: number;
     lanes: readonly LaneSpend[];
+    /** The tokens of the history the trim dropped: what the badge's gap state reads. */
+    gapTokens: number;
     confirmedThrough?: string;
     writer: ContextMemoryWriter;
     /** The ledger's stages before the card's. */
@@ -255,7 +260,11 @@ export async function selectMemory(
     if (card.type === "requiredOverLimit") {
         const titles = new Map(records.pages.map(({ id, title }) => [id, title]));
         const pages = card.pages.map(({ id, tokens }) => `${titles.get(id) ?? id} (${tokens})`);
-        return { type: "alert", error: requiredOverCap(card.tokens, card.limit, pages.join(", ")) };
+        return {
+            type: "alert",
+            error: requiredOverCap(card.tokens, card.limit, pages.join(", ")),
+            code: "memoryRequiredOverCap",
+        };
     }
     const placed = cardEntries(card, structured.volatileBeforeLastUser);
 
@@ -305,6 +314,7 @@ export async function selectMemory(
 
 /**
  * The writer's state at a send: what `notice` says, else whether its newest finished run failed, else
+ * `pending` with the reason `repair` while an event of `events` not retracted waits for a re-record, else
  * whether the newest confirmed reply (`through`) is recorded. A skipped run says nothing about the writer.
  */
 export function writerState(
@@ -312,6 +322,7 @@ export function writerState(
     runs: MemoryRecords["runs"],
     through: string | undefined,
     recorded: ReadonlySet<string>,
+    events: readonly Pick<MemoryEvent, "status" | "rerecord">[],
 ): ContextMemoryWriter {
     if (notice) {
         return {
@@ -321,6 +332,9 @@ export function writerState(
     }
     if (runs.findLast(({ result }) => result === "recorded" || result === "failed")?.result === "failed") {
         return { state: "failed" };
+    }
+    if (events.some(({ status, rerecord }) => rerecord && status !== "retracted")) {
+        return { state: "pending", reason: "repair" };
     }
     return { state: through !== undefined && !recorded.has(through) ? "pending" : "recorded" };
 }
@@ -336,6 +350,7 @@ export function sendManifest(
         excluded: reportedMemoryExclusions(selected.excluded),
         excludedTotal: selected.excluded.length,
         lanes: selected.lanes,
+        gapTokens: selected.gapTokens,
         ...(confirmedThrough !== undefined ? { confirmedThrough } : {}),
         writer,
         stages: [

@@ -3,6 +3,7 @@ import type { MemoryBlockingReason, MemoryTaskBase, StructuredMemoryTaskInput } 
 import {
     type MemoryAnchoredSource,
     type MemoryRun,
+    memoryScreenReason,
     normalizeStructuredMemorySettings,
     storedMemorySources,
     type StructuredMemorySlotWarnings,
@@ -112,9 +113,15 @@ async function testWindow(
         (source): source is MemoryAnchoredSource => source.hash !== null,
     );
     const last = sources.at(-1);
+    const cadence = writerCadence(scope.db);
     if (last && windowStillConfirmed({ sources }, messages, last.messageId, { inclusive: true })) {
         const byId = new Map(anchoredMessages(messages).map((entry) => [entry.id, entry]));
-        return windowOf(sources.map(({ messageId }) => byId.get(messageId)!));
+        const entries = sources.map(({ messageId }) => byId.get(messageId)!);
+        // A reply the screening lists now match leaves the newest run's window behind: the test takes
+        // the window the cadence would close instead, as a run would.
+        if (entries.every(({ message }) => memoryScreenReason(message, cadence.screening) === null)) {
+            return windowOf(entries);
+        }
     }
     const ceiling = writerCeiling(messages);
     if (ceiling === null) {
@@ -124,7 +131,7 @@ async function testWindow(
         messages,
         confirmedBefore: ceiling,
         recorded: readRecordedMessages(store, chaId, chatId),
-        cadence: writerCadence(scope.db),
+        cadence,
         maxContext: base.maxContext,
         tokenizer,
         limit: 1,

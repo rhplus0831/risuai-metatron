@@ -2965,6 +2965,73 @@ describe("structured memory tasks", () => {
         },
     );
 
+    it("leaves a screened repair marked automatically and records it on a person's explicit start", async () => {
+        const t = structuredHarness({
+            hypaSettings: { structured: { cadence: "everyTurn", screening: { refusal: ["cannot help"], format: [] } } },
+        });
+        t.store.onMessagesChanged((notice) => reconcileMessageChanges(t.store, notice));
+        const sources = t
+            .chat("k1")!
+            .message.slice(0, 2)
+            .map((message, index) => ({ messageId: message.chatId!, index, hash: messageSourceHash(message) }));
+        writeMemory(t.store, "c", "k1", { events: [event("old", sources)] });
+        t.write("k1", [{ op: "setText", id: "m2", text: "I CANNOT HELP with that" }]);
+        const marked = eventRecord(t);
+        expect(marked.rerecord).toBe(true);
+        const automatic = t.nextTerminal("k1");
+        t.service.handOff(writerInput(t, "m3"));
+        await Promise.race([
+            automatic,
+            t.provider.request(0).then(() => {
+                throw new Error("Automatic writer read the screened repair");
+            }),
+        ]);
+        await t.service.drain();
+        expect(t.provider.requests).toEqual([]);
+        expect(eventRecord(t)).toEqual(marked);
+        const manual = t.nextTerminal("k1");
+        expect(t.service.record(writerInput(t, "m3"), { through: "m2" }).outcome).toBe("queued");
+        const request = await nextPatch(t, 0, manual);
+        expect(t.provider.asked(request)).toContain("I CANNOT HELP with that");
+        request.answer(JSON.stringify(analysis()));
+        await finishRecording(t, manual);
+        expect(eventRecord(t).sources.map(({ messageId }) => messageId)).toEqual(["m1", "m2"]);
+        expect(t.store.memory.readRecord("c", "k1", "events", "old")!.data.status).toBe("retracted");
+    });
+
+    it("rechecks screening after the plan when each rebuild or backfill window reaches the writer", async () => {
+        for (const mode of ["rebuild", "backfill"] as const) {
+            const t = structuredHarness({
+                hypaSettings: {
+                    structured: { cadence: "everyTurn", screening: { refusal: ["cannot help"], format: [] } },
+                },
+            });
+            const old = event("already-recorded", [
+                { messageId: "m4", index: 3, hash: messageSourceHash(t.chat("k1")!.message[3]) },
+            ]);
+            writeMemory(t.store, "c", "k1", { events: [old] });
+            const original = eventRecord(t);
+            const input = beginStagedRun(t, mode, [
+                ["m1", "m2"],
+                ["m3", "m4"],
+            ]);
+            const terminal = t.nextTerminal("k1");
+            expect(t.service.rebuild(input).outcome).toBe("queued");
+            const first = await nextPatch(t, 0, terminal);
+            t.write("k1", [{ op: "setText", id: "m4", text: "I CANNOT HELP with that" }]);
+            first.answer(JSON.stringify(analysis({ summary: "First event" })));
+            const second = await nextPatch(t, 1, terminal);
+            expect(t.provider.asked(second)).toContain("[m:m3]");
+            expect(t.provider.asked(second)).not.toContain("[m:m4]");
+            expect(t.provider.asked(second)).not.toContain("I CANNOT HELP with that");
+            second.answer(JSON.stringify(analysis({ summary: "Another event" })));
+            expect((await terminal).status).toMatchObject({ state: "done", done: 2, total: 2, reason: "rebuilt" });
+            await t.service.drain();
+            expect(eventRecord(t).sources.map(({ messageId }) => messageId)).toEqual(["m3"]);
+            expect(t.store.memory.readRecord("c", "k1", "events", "already-recorded")!.data).toEqual(original);
+        }
+    });
+
     it("chains a rebuild with whole-run progress and resumes failed staging after a service restart without recording finished windows again", async () => {
         const t = structuredHarness({ limits: { maxWriterWindows: 1, taskDeadlineMs: 100 } });
         writeMemory(t.store, "c", "k1", { ...memoryRecords(["live"]), adoptionDeclined: true });

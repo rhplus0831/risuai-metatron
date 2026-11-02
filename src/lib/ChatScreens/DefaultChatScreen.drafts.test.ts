@@ -795,3 +795,27 @@ it("opens structured memory from the menu ahead of older flags and preserves the
     }
     hypaV3ModalOpen.set(false);
 });
+
+it("renders a memory health badge with the context meter off and opens the panel on press", async () => {
+    const { target, click } = await mountComposer();
+    const { settings } = await import("src/ts/storage/settingsViews.svelte");
+    const { findCharacter } = await import("src/ts/storage/characterStore.svelte");
+    const { createHypaV3Preset } = await import("../../../shared/hypaV3Presets.ts");
+    const { hypaV3ModalOpen } = await import("src/ts/screenVisibility");
+    const { get } = await import("svelte/store");
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    settings.ui.contextMeter = false;
+    settings.hypaV3Presets.items = [createHypaV3Preset("Memory", { structured: { fineTuning: true } }, "memory")];
+    settings.hypaV3Presets.selectedId = "memory";
+    Object.assign(findCharacter("c")!, { supaMemory: true });
+    hypaV3ModalOpen.set(false);
+    flushSync();
+    const badge = target.querySelector('[data-memory-health-badge="customPrompt"]');
+    expect(badge).not.toBeNull();
+    click(badge);
+    expect(get(hypaV3ModalOpen)).toBe(true);
+    settings.ui.memoryAlgorithmType = "none";
+    flushSync();
+    expect(target.querySelector("[data-memory-health-badge]")).toBeNull();
+    hypaV3ModalOpen.set(false);
+});

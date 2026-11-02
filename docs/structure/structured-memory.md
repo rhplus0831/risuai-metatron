@@ -104,6 +104,9 @@ All are `GET` under `STRUCTURED_MEMORY_PATH/:characterId/:chatId`, authenticated
   its size.
 - `revision` is compared whole as an opaque token, and a different one is 409 naming the current one. A round is one
   snapshot, and that comparison is what ties rounds into one.
+- `POST /health` answers [the badge's](structured-memory-read.md#the-health-badge) facts for up to
+  `MEMORY_HEALTH_CHATS_MAX` chats by position, live tables only, no message read, null for a missing chat. It scans
+  `MEMORY_HEALTH_ROUND_BYTES` of pages, always the first chat, so the answer can be a prefix.
 
 ### The edit route
 

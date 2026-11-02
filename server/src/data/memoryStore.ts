@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { parseContextReport } from "../../../shared/contextReport.ts";
 import type { Message } from "../../../shared/database.ts";
 import type { SerializableHypaV3Data } from "../../../shared/memory.ts";
@@ -9,10 +9,12 @@ import {
     MEMORY_PAGE_TYPES,
     MEMORY_RECORD_KINDS,
     MEMORY_RUN_RESULTS,
+    MEMORY_SECTION_BUDGETS,
     MEMORY_THREAD_STATES,
     projectHypaV3Data,
     reconcileMemoryEvents,
     storedMemorySources,
+    writerPaused,
 } from "../../../shared/structuredMemory.ts";
 import type {
     MemoryEvent,
@@ -21,6 +23,7 @@ import type {
     MemoryRun,
     MemoryThread,
     StructuredMemoryContents,
+    StructuredMemoryHealthFacts,
     StructuredMemoryRebuild,
     StructuredMemoryRebuildMode,
     StructuredMemoryRecordKind,
@@ -582,6 +585,36 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             "AND EXISTS (SELECT 1 FROM memory_events e WHERE e.chatSeq = c.seq) " +
             "AND COALESCE(json_array_length(c.meta, '$.hypaV3Data.summaries'), 0) = 0",
     );
+    // The health facts, with no record parsed in JavaScript and no body leaving SQLite: the runs' results
+    // in order, counts over the events' status column and their `rerecord` field, and one pass over the
+    // sections of the pages out of the trash for their `unsupported` flags and the bodies past their
+    // type's budget (`MEMORY_SECTION_BUDGETS`). SQLite's `length` counts code points where
+    // `memorySectionOverBudget` counts UTF-16 units, so only a body with astral characters near its budget
+    // can read differently here; the badge this feeds is advisory. The live pages' stored bytes bound what
+    // one health request scans.
+    const selectRunResults = db.prepare(
+        `SELECT result FROM ${MEMORY_TABLES.runs.table} WHERE chatSeq = ? ORDER BY seq`,
+    );
+    const countStaleEvents = db.prepare(
+        `SELECT COUNT(*) AS count FROM ${MEMORY_TABLES.events.table} WHERE chatSeq = ? AND status = 'stale'`,
+    );
+    const countPendingRepairs = db.prepare(
+        `SELECT COUNT(*) AS count FROM ${MEMORY_TABLES.events.table} ` +
+            "WHERE chatSeq = ? AND status != 'retracted' AND json_extract(data, '$.rerecord') = 1",
+    );
+    const budgetCases = Object.entries(MEMORY_SECTION_BUDGETS)
+        .map(([type, budget]) => `WHEN '${type}' THEN ${budget}`)
+        .join(" ");
+    const countSectionFlags = db.prepare(
+        "SELECT COALESCE(SUM(s.value ->> '$.unsupported' = 1), 0) AS unsupported, " +
+            `COALESCE(SUM(length(s.value ->> '$.body') > CASE p.type ${budgetCases} ELSE 0 END), 0) AS overBudget ` +
+            `FROM ${MEMORY_TABLES.pages.table} p, json_each(p.data, '$.sections') s ` +
+            `WHERE p.chatSeq = ? AND p.type != '${TRASHED_PAGE_COLUMN}'`,
+    );
+    const sumLivePageBytes = db.prepare(
+        `SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM ${MEMORY_TABLES.pages.table} ` +
+            `WHERE chatSeq = ? AND type != '${TRASHED_PAGE_COLUMN}'`,
+    );
     const selectRun = db.prepare(
         "SELECT mode, revision, sourceReplaced, cursor, total, reason, error FROM memory_rebuilds WHERE chatSeq = ?",
     );
@@ -753,6 +786,40 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                     { seq: number; revision: number } | undefined;
                 return row ? tokens.token(row.seq, row.revision) : null;
             });
+        },
+
+        /**
+         * The health facts of each chat's live records (`StructuredMemoryHealthFacts`), in request order, a
+         * handful of statements each and no message read; null for a missing chat. The staged tables of a
+         * rebuild count for nothing. `budgetBytes` bounds the stored bytes of live pages one call scans: the
+         * first chat is always answered, and the list stops before the chat that would pass the budget, so
+         * it is a prefix of `refs`; with no budget every ref is answered.
+         */
+        readHealth(refs: readonly MemoryChatRef[], budgetBytes = Infinity): (StructuredMemoryHealthFacts | null)[] {
+            const facts: (StructuredMemoryHealthFacts | null)[] = [];
+            let scanned = 0;
+            for (const { characterId, chatId } of refs) {
+                const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+                if (!chat) {
+                    facts.push(null);
+                    continue;
+                }
+                const { bytes } = sumLivePageBytes.get(chat.seq) as { bytes: number };
+                if (facts.length > 0 && scanned + bytes > budgetBytes) {
+                    break;
+                }
+                scanned += bytes;
+                const count = (statement: StatementSync) => (statement.get(chat.seq) as { count: number }).count;
+                const sections = countSectionFlags.get(chat.seq) as { unsupported: number; overBudget: number };
+                facts.push({
+                    paused: writerPaused(selectRunResults.all(chat.seq) as Pick<MemoryRun, "result">[]),
+                    storedStale: count(countStaleEvents),
+                    pendingRepairs: count(countPendingRepairs),
+                    unsupportedSections: sections.unsupported,
+                    overBudgetSections: sections.overBudget,
+                });
+            }
+            return facts;
         },
 
         /** The stored bytes of a chat's events, 0 without any. */

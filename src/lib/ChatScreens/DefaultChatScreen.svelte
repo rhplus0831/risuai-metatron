@@ -70,6 +70,7 @@
         generatingChatKeys,
         foreignJobChatKeys,
         isChatBusy,
+        memoryHealthStates,
     } from "src/ts/process/chatStatus.svelte";
     import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { createSendAborts } from "src/ts/process/sendAborts.svelte";
@@ -113,6 +114,8 @@
     import { composerPlaceholder } from "./composerPlaceholder";
     import Chats from "./Chats.svelte";
     import ContextMeter from "./ContextMeter.svelte";
+    import ChatStatusBadge from "../SideBars/ChatStatusBadge.svelte";
+    import { memoryHealthText } from "../SideBars/chatStatus";
     import Button from "../UI/GUI/Button.svelte";
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
     import { getAdditionalChatLoadPages, getInitialChatLoadPages } from "src/ts/chatLoadPages";
@@ -131,6 +134,11 @@
     const subModel = $derived(getModelInfoForMode("submodel").id);
     /** The memory menu row opens the panel, whatever older flags the settings still hold. */
     const structuredMemorySelected = $derived(settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
+    /** The open chat's memory health state, shown above the composer and opening the panel like the menu row. */
+    const memoryHealth = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref ? (memoryHealthStates().get(chatStatusKey(ref)) ?? null) : null;
+    });
 
     const loadPlaygroundMenu = () => import("../Playground/PlaygroundMenu.svelte").then((m) => m.default);
 
@@ -1098,6 +1106,25 @@
                                 generatingChatKeys().has(chatStatusKey(displayedChat))}
                         />
                     {/key}
+                {/if}
+                {#if displayedChat && memoryHealth}
+                    <!-- The memory health badge: a line of its own above the composer row, shown with the meter off too. -->
+                    <div class="mb-1 ml-4 flex min-w-0">
+                        <button
+                            type="button"
+                            class="flex max-w-full min-w-0 items-center hover:underline"
+                            title={memoryHealthText(memoryHealth)}
+                            onclick={() => ($hypaV3ModalOpen = true)}
+                            data-memory-health-badge={memoryHealth}
+                        >
+                            <ChatStatusBadge
+                                status="health"
+                                health={memoryHealth}
+                                inline
+                                label={memoryHealthText(memoryHealth)}
+                            />
+                        </button>
+                    </div>
                 {/if}
                 <div class="relative flex items-stretch w-full">
                     {#if settings.ui.useChatSticker && currentCharacter.type !== "group"}

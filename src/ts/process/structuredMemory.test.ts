@@ -92,6 +92,7 @@ const anchored = (index: number): MemorySource => ({ messageId: `m${index}`, has
 const unanchored: MemorySource = { messageId: "lost", hash: null, index: null };
 const round = (revision: string, pages: MemoryPage[], events: MemoryEvent[], next: number | null) =>
     Response.json({ revision, pages, events, next });
+const NO_SCREENING = { refusal: [], format: [] };
 const noThreads = (revision: string) => Response.json({ revision, threads: [], next: null });
 
 /** Read only metadata and its advertised lengths; never search the bodies for Markdown delimiters. */
@@ -508,7 +509,7 @@ it("joins coverage by eligibility, event precedence, newest run and receipt noti
             { id: "pending-run", result: "pending" as const, messageIds: ["running"] },
         ],
     };
-    const joined = joinMemoryCoverage(messages, facts, { windowTurns: 1, memoryOn: true });
+    const joined = joinMemoryCoverage(messages, facts, { windowTurns: 1, memoryOn: true, screening: NO_SCREENING });
     expect(joined.rows.map(({ state, reason }) => [state, reason])).toEqual([
         ["excluded", "disabled"],
         ["excluded", "disabled"],
@@ -542,15 +543,21 @@ it("counts the raw window in assistant turns and leaves only covered eligible hi
         events: [{ id: "event", title: "Event", status: "active" as const, messageIds: ["disabled", "u0", "a1"] }],
         runs: [],
     };
-    expect(joinMemoryCoverage(messages, facts, { windowTurns: 1, memoryOn: true })).toMatchObject({
+    expect(
+        joinMemoryCoverage(messages, facts, { windowTurns: 1, memoryOn: true, screening: NO_SCREENING }),
+    ).toMatchObject({
         gap: [2],
         leaving: [1],
     });
-    expect(joinMemoryCoverage(messages, facts, { windowTurns: 1, memoryOn: false })).toMatchObject({
+    expect(
+        joinMemoryCoverage(messages, facts, { windowTurns: 1, memoryOn: false, screening: NO_SCREENING }),
+    ).toMatchObject({
         gap: [2],
         leaving: [],
     });
-    expect(joinMemoryCoverage(messages, facts, { windowTurns: 2, memoryOn: true })).toMatchObject({
+    expect(
+        joinMemoryCoverage(messages, facts, { windowTurns: 2, memoryOn: true, screening: NO_SCREENING }),
+    ).toMatchObject({
         gap: [],
         leaving: [],
     });
@@ -683,6 +690,7 @@ it("joins reconciled held messages as stale with no leaving coverage or request 
         joinMemoryCoverage(messages, reconcileMemoryCoverage(facts, messages, hash), {
             windowTurns: 1,
             memoryOn: true,
+            screening: NO_SCREENING,
         });
     expect(join().leaving).toEqual([0, 1]);
     messages[1].data = "Edited answer";
@@ -796,7 +804,7 @@ it("keeps the adoption reason on a receipt but restores the writer action after 
         action: null,
     });
     for (const cadence of ["everyTurn", "manual"] as const) {
-        const current = { memoryOn: true, cadence, paused: false, receipt, taskLive: false };
+        const current = { memoryOn: true, cadence, paused: false, pendingRepairs: 0, receipt, taskLive: false };
         expect(memoryWriterNotice({ ...current, adoptionHeld: true })).toEqual({
             kind: "notAutomatic",
             reason: "awaitingAdoption",
@@ -986,4 +994,49 @@ it("sends page tools and unzipped package files with the displayed revision and 
             refusals: [{ file: "bad.md", reason: "unreadable" }],
         },
     });
+});
+
+it("keeps citations above live screening and screening above runs and receipts without adding screened gaps", () => {
+    const messages: Message[] = [
+        { chatId: "cited", role: "char", data: "Cannot help: bad format" },
+        { chatId: "refusal", role: "char", data: "Prefix CANNOT HELP: BAD FORMAT suffix" },
+        {
+            chatId: "format",
+            role: "char",
+            data: "Bad Format",
+            generationInfo: {
+                memory: {
+                    state: "skipped",
+                    reason: "writerPaused",
+                    pages: [],
+                    refused: [],
+                    unverified: [],
+                    warnings: [],
+                },
+            },
+        },
+        { chatId: "user", role: "user", data: "Cannot help: bad format" },
+        { chatId: "latest", role: "char", data: "Answer" },
+    ];
+    const facts = {
+        events: [{ id: "e", title: "Recorded", status: "active" as const, messageIds: ["cited"] }],
+        runs: [{ id: "failed", result: "failed" as const, messageIds: ["refusal"] }],
+    };
+    const screening = { refusal: ["cannot help"], format: ["bad format"] };
+    const join = () => joinMemoryCoverage(messages, facts, { windowTurns: 1, memoryOn: true, screening });
+    const before = structuredClone(facts);
+    expect(join().rows.map(({ state, reason }) => ({ state, reason }))).toEqual([
+        { state: "covered", reason: undefined },
+        { state: "excluded", reason: "screenedRefusal" },
+        { state: "excluded", reason: "screenedFormat" },
+        { state: "pending", reason: undefined },
+        { state: "pending", reason: undefined },
+    ]);
+    expect(join()).toMatchObject({ gap: [], leaving: [0] });
+    screening.refusal = [];
+    expect(join().rows[1]).toMatchObject({ state: "excluded", reason: "screenedFormat" });
+    messages[1].data = "Corrected answer";
+    expect(join().rows[1]).toMatchObject({ state: "failed", runId: "failed" });
+    expect(join().gap).toEqual([1]);
+    expect(facts).toEqual(before);
 });

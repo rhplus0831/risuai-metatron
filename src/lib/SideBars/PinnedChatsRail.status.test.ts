@@ -2,7 +2,15 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import { getCharImage } from "src/ts/characters";
-import { resolveChatStatus, type ChatStatus, type ChatStatusSets } from "./chatStatus";
+import { memoryHealthState, type MemoryHealthState } from "../../../shared/structuredMemory.ts";
+import {
+    groupHealthState,
+    collectCharacterStatuses,
+    folderStatus,
+    resolveChatStatus,
+    type ChatStatus,
+    type ChatStatusSets,
+} from "./chatStatus";
 import type { PinnedChatItem } from "./pinnedChats";
 
 vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn(async () => "") }));
@@ -283,4 +291,75 @@ describe("PinnedChatsRail memory badges", () => {
         expect(badge(0).classList.contains("w-5")).toBe(false);
         expect(badge(0).classList.contains("px-1")).toBe(true);
     });
+});
+
+it("shows the worst health state on chats and groups, with only custom prompts neutral and unseen ahead", () => {
+    const order: MemoryHealthState[] = [
+        "writerPaused",
+        "gap",
+        "staleEvents",
+        "unsupportedSections",
+        "requiredOverCap",
+        "pageOverBudget",
+        "customPrompt",
+    ];
+    for (let index = 0; index < order.length; index++) {
+        const state = order[index];
+        const holds = Object.fromEntries(order.map((name, i) => [name, i >= index])) as Record<
+            MemoryHealthState,
+            boolean
+        >;
+        expect(memoryHealthState(holds)).toBe(state);
+        const health = new Map<string, MemoryHealthState>([
+            ["a\u0000shared", state],
+            ["b\u0000shared", "customPrompt"],
+            ["outside\u0000k", "writerPaused"],
+        ]);
+        expect(groupHealthState(health, ["a"])).toBe(state);
+        expect(groupHealthState(health, ["b", "a"])).toBe(state);
+        expect(groupHealthState(health, ["b"])).toBe("customPrompt");
+        const sets = {
+            recovery: new Set<string>(),
+            generating: new Set<string>(),
+            unseen: new Set(["a\u0000shared"]),
+            health,
+        };
+        expect(resolveChatStatus(sets, "a\u0000shared")).toBe("unseen");
+        expect(folderStatus(collectCharacterStatuses(sets), ["a", "b"])).toBe("unseen");
+        const target = document.createElement("div");
+        document.body.append(target);
+        mounted.push(
+            mount(PinnedChatsRail, {
+                target,
+                props: {
+                    items: [items[0]],
+                    selectedChaId: null,
+                    selectedChatId: null,
+                    rounded: false,
+                    onOpen: () => {},
+                    statuses: new Map<string, ChatStatus>([["a\u0000shared", "health"]]),
+                    healthStates: health,
+                },
+            }),
+        );
+        mounted.push(
+            mount(ChatStatusBadge, {
+                target,
+                props: {
+                    status: "health",
+                    health: groupHealthState(health, ["a", "b"]),
+                    label: "Group health",
+                    inline: true,
+                },
+            }),
+        );
+        flushSync();
+        const badges = [...target.querySelectorAll<HTMLElement>(badgeSelector)];
+        expect(badges).toHaveLength(2);
+        for (const badge of badges) {
+            expect(badge.dataset.risuChatHealth).toBe(state);
+            expect(/(?:bg|text)-danger-500/.test(badge.className)).toBe(state !== "customPrompt");
+            expect(/bg-neutral-500|text-textcolor2/.test(badge.className)).toBe(state === "customPrompt");
+        }
+    }
 });
