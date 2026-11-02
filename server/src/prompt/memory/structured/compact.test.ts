@@ -68,7 +68,7 @@ it("keeps only a strictly shorter usable answer without trimming or cutting its 
 it("drops a compaction when the fresh attempt no longer changes or permits its section", () => {
     const original = memoryRecords(["harbor"], "Harbor").pages[0];
     const from = "x".repeat(MEMORY_SECTION_BUDGETS.location + 1);
-    for (const reason of ["changed body", "identical upsert", "locked", "userCorrected", "refused sibling"] as const) {
+    for (const reason of ["changed body", "identical upsert", "locked", "refused sibling"] as const) {
         const fresh = structuredClone(original);
         fresh.sections.push({ ...fresh.sections[0], heading: "Hearth", body: "Warm" });
         const seen = new Map([[fresh.id, new Map(fresh.sections.map(({ heading, body }) => [heading, body]))]]);
@@ -78,7 +78,6 @@ it("drops a compaction when the fresh attempt no longer changes or permits its s
             seen.get(fresh.id)!.set("Gate", from);
         }
         if (reason === "locked") fresh.sections[0].locked = true;
-        if (reason === "userCorrected") fresh.sections[0].userCorrected = true;
         if (reason === "refused sibling") fresh.sections[1].locked = true;
         let id = 0;
         const stamp: PageStamp = { eventId: "event", sources: [], at: 123, newId: () => `history-${++id}` };

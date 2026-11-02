@@ -23,7 +23,9 @@ import {
     type PageChanges,
     type PagePlan,
     type PageStamp,
+    PROMPT_TAKEN_BACK,
     receiptPages,
+    revertEntries,
     rewriteScene,
     sectionWarning,
     type Warning,
@@ -43,10 +45,19 @@ import {
  *   `contradictionConfidence`, where a missing confidence counts as 0, both values stay, marked disputed.
  *   Nothing is cut to fit: a body past `sectionBodyChars`, as answered or once joined, is refused.
  * - The model never sets what code owns: evidence, flags, locks, and history are `changeSection`'s.
+ * - A patch may replace a `userCorrected` section: only a lock refuses it. The call shows the mark and its
+ *   rules ask for a contradiction, and what such a patch does to the mark is `changeSection`'s.
+ * - What a person took back reaches the call, so a reverted change is not proposed again. Its room comes
+ *   first out of `promptPatchChars`, so a page full of bodies cannot push it out and the prompt stays
+ *   within that bound. Code does not compare a patch with it: a change can come true later.
  */
 
 /** One section row of the patch call's list. */
-type PatchRowSection = { heading: string; body: string; locked?: true } | { heading: string; empty: true };
+type PatchRowSection =
+    { heading: string; body: string; locked?: true; userCorrected?: true } | { heading: string; empty: true };
+
+/** What a person took back of a page: a section's text, or `deleted` for a deletion they undid. */
+type PatchRowTakenBack = { heading: string; text: string } | { heading: string; deleted: true };
 
 /** A page as the patch call lists it. */
 export type PatchRow = {
@@ -56,6 +67,8 @@ export type PatchRow = {
     sections: PatchRowSection[];
     /** The sections past the call's budget, by heading. */
     notShown: string[];
+    /** The newest of what a person took back of the page, when there is any. */
+    takenBack?: PatchRowTakenBack[];
 };
 
 /** What a patch call shows of its targets. */
@@ -74,25 +87,48 @@ export type ParsedPatches = { ok: true; patches: MemoryPatch[]; warnings: Warnin
 type SectionEdit = { heading: string; body: string | null; kind: MemoryHistoryChangeKind; disputed?: boolean };
 
 /**
- * The patch call's list. Sections show whole or not at all, in target order, while `promptPatchChars` of
- * bodies last, and one past that is listed by heading under `notShown`. A target with sections, none of
- * which fit, is refused `overBudget`, and a page with none needs no room. A character page marks each
- * slot it has no section for.
+ * The patch call's list. What a person took back comes first out of `promptPatchChars`, at most
+ * `PROMPT_TAKEN_BACK` rows a page, newest first. Sections then show whole or not at all, in target order,
+ * while the rest lasts, and one past that is listed by heading under `notShown`. A target with sections,
+ * none of which fit, is refused `overBudget`, and a page with none needs no room. A character page marks
+ * each slot it has no section for.
  */
 export function showTargets(targets: PagePlan["targets"]): ShownPages {
     const rows: PatchRow[] = [];
     const seen = new Map<string, Map<string, string | null>>();
     const refused: MemoryReceipt["refused"] = [];
     let room = LIMITS.promptPatchChars;
+    const takenBack = new Map<string, PatchRowTakenBack[]>();
+    for (const { page } of targets) {
+        const listed = revertEntries(page).slice(0, PROMPT_TAKEN_BACK);
+        takenBack.set(
+            page.id,
+            listed.flatMap(({ heading, before }): PatchRowTakenBack[] => {
+                const shown = clampText(heading, LIMITS.labelChars);
+                const text = before && clampText(before.body, LIMITS.promptSectionSummaryChars);
+                const charge = shown.length + (text?.length ?? 0);
+                if (charge > room) {
+                    return [];
+                }
+                room -= charge;
+                return [text === null ? { heading: shown, deleted: true } : { heading: shown, text }];
+            }),
+        );
+    }
     for (const { page, candidate } of targets) {
         const headings = new Map<string, string | null>();
         const sections: PatchRowSection[] = [];
         const notShown: string[] = [];
-        for (const { heading, body, locked } of page.sections) {
+        for (const { heading, body, locked, userCorrected } of page.sections) {
             if (body.length <= room) {
                 room -= body.length;
                 headings.set(heading, body);
-                sections.push({ heading, body, ...(locked ? { locked } : {}) });
+                sections.push({
+                    heading,
+                    body,
+                    ...(locked ? { locked } : {}),
+                    ...(userCorrected ? { userCorrected } : {}),
+                });
             } else {
                 headings.set(heading, null);
                 notShown.push(heading);
@@ -107,7 +143,8 @@ export function showTargets(targets: PagePlan["targets"]): ShownPages {
             sections.push({ heading, empty: true });
         }
         const { id, type, title } = page;
-        rows.push({ id, type, title, sections, notShown });
+        const taken = takenBack.get(id) ?? [];
+        rows.push({ id, type, title, sections, notShown, ...(taken.length > 0 ? { takenBack: taken } : {}) });
         seen.set(id, headings);
     }
     return { rows, seen, refused };

@@ -2456,6 +2456,22 @@ export const languageEnglish = {
                 threads: "Threads",
             },
         },
+        revert: {
+            button: "Revert",
+            reverted: "Reverted",
+            done: (laterEvents: number) =>
+                laterEvents === 0
+                    ? "Reverted."
+                    : laterEvents === 1
+                      ? "Reverted. 1 later event stays."
+                      : `Reverted. ${laterEvents} later events stay.`,
+            nothing: "Nothing to revert: this change was already reverted.",
+        },
+        highlightModes: {
+            none: "Highlight nothing",
+            important: "Highlight important changes",
+            all: "Highlight every change",
+        },
         receipt: {
             recorded: (counts: { events: number; pages: number; refused: number; unverified: number }) => {
                 const { events, pages, refused, unverified } = counts;
@@ -2479,6 +2495,8 @@ export const languageEnglish = {
             recordCost: (calls: number, tokens: number) => `Record now? ${memoryCostText(calls, tokens)}`,
             recordCostUnknown: "Record now? The cost could not be read, so it is unknown.",
             busy: "This chat is busy. Try again when the running job ends.",
+            changes: "Changes",
+            newPage: "New page",
             warnings: "Warnings",
             unverified: "To check",
             refused: "Refused",
@@ -2530,6 +2548,7 @@ export const languageEnglish = {
             compactionStale: "The records changed during the run, so a shorter text was left out",
             compactionSkipped: "A long section a person corrected, or one in dispute, was left as it is",
             frozenPage: "A page that already stood was left as it is, because this turn lies before it",
+            revertedScene: "The scene repeated what you took back, so that part was left as it is",
         } as Record<string, string>,
         refusalKinds: {
             lowConfidence: "an unresolved mention, too uncertain to make a page",
@@ -2560,6 +2579,8 @@ export const languageEnglish = {
                 changed: "This chat's memory changed in the meantime. Refresh to try again.",
                 epoch: "The data was restored on the server. Reload the page to continue.",
                 fenced: "A reply or the memory writer is working in this chat. Wait until it ends before editing.",
+                superseded:
+                    "This change can no longer be reverted: a later change stands on it, or its history is gone.",
                 tooLarge: "These records are over the server's size limit.",
             },
             readFailed: (error: string) => `The memory could not be read: ${error}`,
@@ -2690,7 +2711,11 @@ export const languageEnglish = {
                 retract: "Retracted",
                 compact: "Compacted",
                 edit: "Edited by you",
+                revert: "Reverted by you",
             } as Record<string, string>,
+            highlighted: "Highlighted",
+            highlightMode: "Highlighting in this chat",
+            highlightDefault: "Use the default",
             wholePage: "Whole page",
             diffFailed: "The comparison could not be loaded.",
         },
@@ -2813,6 +2838,15 @@ export const languageEnglish = {
             cadenceTurns: "Turns between recordings",
             cadenceTokens: "Unrecorded tokens that start a recording",
             cadenceRatio: "Unrecorded share of the max context that starts a recording",
+            highlightMode: "Highlighting of the writer's changes",
+            highlightKinds: {
+                create: "New pages and sections",
+                contradiction: "Contradictions",
+                delete: "Deleted sections",
+                change: "Other changes",
+            },
+            highlightChangeGrade: "Lowest grade of a highlighted change",
+            highlightHelp: "A change that replaces your correction is always highlighted.",
             windowTurns: "Turns kept as full messages",
             flowEvents: "Recent events listed",
             requiredCap: "Most tokens for required pages",

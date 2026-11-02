@@ -637,11 +637,12 @@ it("compares page history only with the next entry of its heading or the live se
         entry("updated", "Facts", "Facts before", 3),
         entry("page", null, null, 4),
     ];
+    const marks = { highlighted: false, reverted: false, revertable: false };
     expect(memoryPageHistoryView(p)).toEqual([
-        { id: "page", heading: null, kind: "edit", at: 4, before: null, after: null },
-        { id: "updated", heading: "Facts", kind: "edit", at: 3, before: "Facts before", after: "Facts now" },
-        { id: "other", heading: "Other", kind: "edit", at: 2, before: "Other before", after: "Other now" },
-        { id: "created", heading: "Facts", kind: "edit", at: 1, before: null, after: "Facts before" },
+        { ...marks, id: "page", heading: null, kind: "edit", at: 4, before: null, after: null },
+        { ...marks, id: "updated", heading: "Facts", kind: "edit", at: 3, before: "Facts before", after: "Facts now" },
+        { ...marks, id: "other", heading: "Other", kind: "edit", at: 2, before: "Other before", after: "Other now" },
+        { ...marks, id: "created", heading: "Facts", kind: "edit", at: 1, before: null, after: "Facts before" },
     ]);
 });
 

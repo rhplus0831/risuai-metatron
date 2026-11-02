@@ -53,6 +53,7 @@ import {
     type StructuredMemoryRecordKind,
     type StructuredMemoryResetAnswer,
     type StructuredMemoryRestoreAnswer,
+    type StructuredMemoryRevertAnswer,
     type StructuredMemoryRevisionsAnswer,
     type StructuredMemoryRunsRound,
     type StructuredMemoryThreadsRound,
@@ -65,7 +66,8 @@ import { authFetch } from "../storage/serverAuth";
 
 /**
  * The tab's reads of a chat's structured memory (`server/src/routes/structuredMemory.ts`), a person's
- * edits of it (`editStructuredMemory`), a new chat's inheritance (`inheritStructuredMemory`) or restore
+ * edits of it (`editStructuredMemory`) and reverts of what the writer changed
+ * (`revertStructuredMemoryChange`), a new chat's inheritance (`inheritStructuredMemory`) or restore
  * from a chat file (`restoreStructuredMemory`), the adoption of a chat's HypaV3 summaries
  * (`adoptStructuredMemory`), the decline of it (`declineStructuredMemory`), the reset of the summaries
  * (`resetStructuredMemorySummaries`), what a rebuild or a press would cost (`readStructuredMemoryCost`),
@@ -89,7 +91,8 @@ import { authFetch } from "../storage/serverAuth";
  * messages first, with the same rule a send uses, so an edit shows at once and with no request.
  * `memoryRunView` turns a stored run into what a Log row shows, `memoryPageTree` and
  * `memoryPageHistoryView` a page into its rows, and `memoryWriterNotice` the current state into the
- * panel's writer line.
+ * panel's writer line. A receipt's link reaches a panel that is not there yet through
+ * `requestMemoryPanelTarget`, which the panel takes as it mounts.
  *
  * What a send reported is read here too: `memoryStatusWord` for the context meter's line,
  * `memoryItemsUsed` for the panel's badges, and `memoryBlockEntries` for a preview's block.
@@ -100,12 +103,14 @@ import { authFetch } from "../storage/serverAuth";
  */
 
 /**
- * Why a read, an edit, an inherit, a restore, an adoption, a decline, a reset, or an abandon did not answer:
- * the chat or record is gone, the database was replaced, its memory moved on, or, for a write, something
- * that can write it holds the chat. A restore can also be `tooLarge`, when its records are over the route's body
- * cap, and so can a projection, when the chat's events are over a read round.
+ * Why a read, an edit, a revert, an inherit, a restore, an adoption, a decline, a reset, or an abandon did
+ * not answer: the chat or record is gone, the database was replaced, its memory moved on, or, for a write,
+ * something that can write it holds the chat. A revert can also be `superseded`, when something later stands
+ * on the change. A restore can also be `tooLarge`, when its records are over the route's body cap, and so can
+ * a projection, when the chat's events are over a read round.
  */
-export type StructuredMemoryRefusal = "chatGone" | "recordGone" | "epoch" | "changed" | "fenced" | "tooLarge";
+export type StructuredMemoryRefusal =
+    "chatGone" | "recordGone" | "epoch" | "changed" | "fenced" | "superseded" | "tooLarge";
 
 export type StructuredMemoryResult<T> =
     | { outcome: "ok"; value: T }
@@ -184,6 +189,13 @@ function editRefusalOf(response: Response, body: AnswerBody): Unanswered {
         : refusalOf(response, body);
 }
 
+/** A revert's refusal: an edit's, and a 409 that says a later change stands on this one. */
+function revertRefusalOf(response: Response, body: AnswerBody): Unanswered {
+    return response.status === 409 && body.reason === "superseded"
+        ? { outcome: "refused", reason: "superseded" }
+        : editRefusalOf(response, body);
+}
+
 /** A restore's refusal: an edit's, and a 413 for records over the route's body cap. */
 function restoreRefusalOf(response: Response, body: AnswerBody): Unanswered {
     return response.status === 413 ? { outcome: "refused", reason: "tooLarge" } : editRefusalOf(response, body);
@@ -222,6 +234,19 @@ async function readAnswer<T>(
 export type MemoryReceiptViewKind =
     "recorded" | "failed" | "notAutomatic" | "paused" | "skipped" | "working" | "none" | "hidden";
 
+/**
+ * One thing a receipt says changed: a section, with the history entry that holds its diff, or a new page,
+ * with neither. `title` is blank on a receipt from before they kept one, and `kind` is the change's kind,
+ * set only on a highlighted change.
+ */
+export type MemoryReceiptChange = {
+    pageId: string;
+    title: string;
+    heading?: string;
+    historyId?: string;
+    kind?: string;
+};
+
 export type MemoryReceiptView = {
     kind: MemoryReceiptViewKind;
     /** The stored reason code. */
@@ -232,6 +257,8 @@ export type MemoryReceiptView = {
     warnings: { kind: string; detail?: string }[];
     unverified: { kind: string; text: string; reason?: string }[];
     refused: { candidate: string; refusal: string }[];
+    /** What the recording changed, by page in the receipt's order, each new page ahead of its sections. */
+    changes: MemoryReceiptChange[];
     model?: string;
     inputTokens?: number;
     outputTokens?: number;
@@ -244,6 +271,7 @@ const NO_RECEIPT_ITEMS = {
     warnings: [],
     unverified: [],
     refused: [],
+    changes: [],
 } satisfies Partial<MemoryReceiptView>;
 
 /** The object entries of a stored list. */
@@ -263,6 +291,25 @@ const present = <K extends string, V>(key: K, value: V | undefined) =>
 function candidateText(candidate: unknown): string {
     const { create, targetId } = isPlainObject(candidate) ? candidate : {};
     return storedText(isPlainObject(create) ? create.title : undefined) ?? storedText(targetId) ?? "";
+}
+
+/** The rows of a receipt's stored `pages`: a row with no page, or a section with no history entry, has none. */
+function receiptChanges(pages: unknown): MemoryReceiptChange[] {
+    return storedItems(pages).flatMap((page) => {
+        const pageId = storedText(page.pageId);
+        if (pageId === undefined) {
+            return [];
+        }
+        const title = storedText(page.title) ?? "";
+        const sections = storedItems(page.sections).flatMap((section): MemoryReceiptChange[] => {
+            const heading = storedText(section.heading);
+            const historyId = storedText(section.historyId);
+            return heading === undefined || historyId === undefined
+                ? []
+                : [{ pageId, title, heading, historyId, ...present("kind", storedText(section.highlighted)) }];
+        });
+        return page.created === true ? [{ pageId, title }, ...sections] : sections;
+    });
 }
 
 /** What a row without an outcome shows: only the chat's newest assistant message shows anything. */
@@ -317,6 +364,7 @@ export function memoryReceiptView(
             candidate: candidateText(item.candidate),
             refusal: storedText(item.refusal) ?? "",
         })),
+        changes: receiptChanges(receipt.pages),
         ...present("model", storedText(receipt.model) || undefined),
         ...present("inputTokens", storedCount(receipt.inputTokens)),
         ...present("outputTokens", storedCount(receipt.outputTokens)),
@@ -503,6 +551,16 @@ function parseEditAnswer(body: AnswerBody): StructuredMemoryEditAnswer | null {
         : null;
 }
 
+function parseRevertAnswer(body: AnswerBody): StructuredMemoryRevertAnswer | null {
+    const { revision, data, reverted, laterEvents } = body;
+    return typeof revision === "string" &&
+        isPlainObject(data) &&
+        typeof reverted === "boolean" &&
+        storedCount(laterEvents) !== undefined
+        ? (body as StructuredMemoryRevertAnswer)
+        : null;
+}
+
 function parseInheritAnswer(body: AnswerBody): StructuredMemoryInheritAnswer | null {
     const { revision, inherited } = body;
     return typeof revision === "string" && typeof inherited === "boolean"
@@ -617,6 +675,28 @@ export function editStructuredMemory(
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ revision, edit }),
+    });
+}
+
+/**
+ * Undoes the writer's change `historyId` names on page `pageId`. The page's record gives the revision, so
+ * a press names the memory as it stands now, and the server's refusals answer for what stands on the
+ * change. The answer's revision is what the next edit names, and `laterEvents` what the notice counts.
+ * The caller shows the notice, for a refusal as well.
+ */
+export async function revertStructuredMemoryChange(
+    ref: ChatRef,
+    pageId: string,
+    historyId: string,
+): Promise<StructuredMemoryResult<StructuredMemoryRevertAnswer>> {
+    const record = await readStructuredMemoryRecord(ref, "pages", pageId);
+    if (record.outcome !== "ok") {
+        return record;
+    }
+    return readAnswer(`${chatPath(ref)}/revert`, parseRevertAnswer, revertRefusalOf, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ revision: record.value.revision, pageId, historyId }),
     });
 }
 
@@ -1121,15 +1201,38 @@ export function buildStructuredMemoryLog(
     });
 }
 
-/** What a panel tab can send the panel to: an event in Timeline or a page in Pages. */
-export type MemoryPanelTarget = { tab: "timeline" | "pages"; id: string };
+/**
+ * What a panel tab can send the panel to: an event in Timeline or a page in Pages, where `historyId` opens
+ * that entry's diff.
+ */
+export type MemoryPanelTarget = { tab: "timeline" | "pages"; id: string; historyId?: string };
+
+/** What a press asked of a panel that was not mounted yet, for the chat it was pressed in. */
+let pendingPanelTarget: { ref: ChatRef; target: MemoryPanelTarget } | null = null;
+
+/**
+ * Asks the next panel to mount for `ref` to show `target`. A panel that is not there can take no event, so
+ * it asks here, as it mounts. Only a closed panel needs this: an open one covers the whole screen.
+ */
+export function requestMemoryPanelTarget(ref: ChatRef, target: MemoryPanelTarget): void {
+    pendingPanelTarget = { ref, target };
+}
+
+/** What `requestMemoryPanelTarget` left for `ref`, once; what it left for another chat goes all the same. */
+export function takeMemoryPanelTarget(ref: ChatRef | null): MemoryPanelTarget | null {
+    const pending = pendingPanelTarget;
+    pendingPanelTarget = null;
+    return pending && ref && pending.ref.chaId === ref.chaId && pending.ref.chatId === ref.chatId
+        ? pending.target
+        : null;
+}
 
 /** What the panel hands every tab. */
 export type MemoryPanelTabProps = {
     chatRef: ChatRef;
     readOnly: boolean;
     refresh: number;
-    /** What to show after a jump from another tab, or null. */
+    /** What to show after a jump from another tab or a receipt, or null. */
     focus: MemoryPanelTarget | null;
     open: (target: MemoryPanelTarget) => void;
     /** Leaves the panel for this message in the chat. */
@@ -1425,10 +1528,14 @@ export function memoryPageTree<Row extends { type: MemoryPageType }>(rows: reado
 }
 
 /** One page history entry as the Pages tab lists it. */
-export type MemoryPageHistoryRow = Pick<MemoryPageHistoryEntry, "id" | "heading" | "kind" | "at"> & {
+export type MemoryPageHistoryRow = Pick<MemoryPageHistoryEntry, "id" | "heading" | "kind" | "at" | "highlighted"> & {
     /** The section's text before and after the change; null where it had none. */
     before: string | null;
     after: string | null;
+    /** A person undid the change. */
+    reverted: boolean;
+    /** A writer's change of a section that is not undone yet. */
+    revertable: boolean;
 };
 
 /**
@@ -1441,13 +1548,16 @@ export function memoryPageHistoryView({
     history,
 }: Pick<MemoryPage, "sections" | "history">): MemoryPageHistoryRow[] {
     const states = new Map<string, string | null>(sections.map(({ heading, body }) => [heading, body]));
-    return [...history].reverse().map(({ id, heading, kind, at, before }) => {
+    return [...history].reverse().map(({ id, heading, kind, at, before, highlighted, revertedBy, eventId }) => {
+        const reverted = revertedBy !== undefined;
+        const row = { id, heading, kind, at, highlighted, reverted };
         if (heading === null) {
-            return { id, heading, kind, at, before: null, after: null };
+            return { ...row, before: null, after: null, revertable: false };
         }
         const after = states.get(heading) ?? null;
         states.set(heading, before?.body ?? null);
-        return { id, heading, kind, at, before: before?.body ?? null, after };
+        const revertable = eventId !== undefined && kind !== "edit" && kind !== "revert" && !reverted;
+        return { ...row, before: before?.body ?? null, after, revertable };
     });
 }
 

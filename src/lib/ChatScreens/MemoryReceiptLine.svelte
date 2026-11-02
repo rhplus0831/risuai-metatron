@@ -1,17 +1,28 @@
 <script lang="ts">
     import { ChevronDownIcon, ChevronRightIcon } from "@lucide/svelte";
     import { language } from "src/lang";
+    import { alertError, alertToast } from "src/ts/alert";
     import { memoryTaskStatus } from "src/ts/process/memoryTasks.svelte";
-    import { memoryReceiptView, newestAssistantMessageId } from "src/ts/process/structuredMemory.svelte";
+    import {
+        memoryReceiptView,
+        newestAssistantMessageId,
+        requestMemoryPanelTarget,
+        revertStructuredMemoryChange,
+        type MemoryReceiptChange,
+    } from "src/ts/process/structuredMemory.svelte";
     import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { hypaV3ModalOpen } from "src/ts/stores.svelte";
+    import MemoryLinkButton from "../Others/StructuredMemory/MemoryLinkButton.svelte";
     import { pressMemoryRecord } from "../Others/StructuredMemory/memoryRecordPress";
+    import { codeText, memoryReadFailureText } from "../Others/StructuredMemory/memoryText";
 
     // One assistant message's line about Structured Memory's writer: what it recorded, why it did not,
     // or why it will not on its own, collapsed to one row, with the button that starts it. The row list
     // mounts `Chat` once per text, so `messageGenerationInfo` keeps the receipt the row was mounted
     // with; a receipt arrives without a text change, so the line reads the held chat, which is deep
-    // state, and the feed's patch moves it.
+    // state, and the feed's patch moves it. Its details list what changed: each row opens the panel at
+    // that change's diff, and a highlighted one can be reverted here.
 
     interface Props {
         chatRef: ChatRef;
@@ -28,6 +39,9 @@
 
     let expanded = $state(false);
     let pressing = $state(false);
+    let reverting = $state(false);
+    /** The history entries reverted from this line: the receipt is a stored copy, which no revert changes. */
+    let revertedHere = $state.raw<ReadonlySet<string>>(new Set());
 
     const chat = $derived(findChat(chatRef));
     const stored = $derived.by(() => {
@@ -38,8 +52,8 @@
     const status = $derived(memoryTaskStatus(chatRef));
     const taskLive = $derived(status?.state === "queued" || status?.state === "running");
     const view = $derived(memoryReceiptView(stored, { newest, taskLive }));
-    /** The button is off: a press is in flight, the writer is working, or a job owns the message. */
-    const busy = $derived(pressing || taskLive || locked);
+    /** The buttons are off: a press is in flight, the writer is working, or a job owns the message. */
+    const busy = $derived(pressing || reverting || taskLive || locked);
 
     /** A stored code's text from `reasons`; the code itself for one this tab does not know. */
     function reasonText(reasons: Record<string, string>, code: string | undefined): string {
@@ -67,7 +81,8 @@
     });
     const hasTokens = $derived(view.inputTokens !== undefined || view.outputTokens !== undefined);
     const hasDetails = $derived(
-        view.warnings.length > 0 ||
+        view.changes.length > 0 ||
+            view.warnings.length > 0 ||
             view.unverified.length > 0 ||
             view.refused.length > 0 ||
             view.model !== undefined ||
@@ -84,6 +99,43 @@
             await pressMemoryRecord(owner, chatRef, view.action === "resume" ? undefined : messageId);
         } finally {
             pressing = false;
+        }
+    }
+
+    /** A change's link: its page and section, as far as the receipt holds them. */
+    function changeLabel({ title, heading }: MemoryReceiptChange): string {
+        const section = heading === undefined ? "" : codeText(language.structuredMemory.pages.headings, heading);
+        return [title, section].filter((part) => part !== "").join(": ") || language.structuredMemory.receipt.newPage;
+    }
+
+    /** Opens the panel at `change`. It is closed while this line shows: open, it covers the whole screen. */
+    function openChange({ pageId, historyId }: MemoryReceiptChange) {
+        requestMemoryPanelTarget(chatRef, {
+            tab: "pages",
+            id: pageId,
+            ...(historyId !== undefined ? { historyId } : {}),
+        });
+        hypaV3ModalOpen.set(true);
+    }
+
+    /** Undoes `change`. An `epoch` refusal already raised its own notice. */
+    async function revert({ pageId, historyId }: MemoryReceiptChange) {
+        if (busy || historyId === undefined) {
+            return;
+        }
+        reverting = true;
+        try {
+            const result = await revertStructuredMemoryChange(chatRef, pageId, historyId);
+            if (result.outcome === "ok") {
+                const { done, nothing } = language.structuredMemory.revert;
+                const { reverted, laterEvents } = result.value;
+                revertedHere = new Set([...revertedHere, historyId]);
+                alertToast(reverted ? done(laterEvents) : nothing);
+            } else if (result.outcome === "failed" || result.reason !== "epoch") {
+                alertError(memoryReadFailureText(result));
+            }
+        } finally {
+            reverting = false;
         }
     }
 </script>
@@ -123,6 +175,36 @@
         </div>
         {#if expanded && hasDetails}
             <div class="mt-1 flex w-full flex-col gap-1 rounded-md border border-darkborderc p-2 text-xs break-words">
+                {#if view.changes.length > 0}
+                    {@const revertText = language.structuredMemory.revert}
+                    <span class="font-semibold">{text.changes}</span>
+                    {#each view.changes as change}
+                        <span class="flex flex-wrap items-center gap-1" data-memory-receipt-change={change.pageId}>
+                            <MemoryLinkButton label={changeLabel(change)} onclick={() => openChange(change)} />
+                            {#if change.heading === undefined && change.title !== ""}
+                                <span>{text.newPage}</span>
+                            {/if}
+                            {#if change.kind !== undefined}
+                                <span data-memory-receipt-kind={change.kind}>
+                                    {codeText(language.structuredMemory.pages.historyKinds, change.kind)}
+                                </span>
+                                {#if change.historyId !== undefined && revertedHere.has(change.historyId)}
+                                    <span data-memory-receipt-reverted>{revertText.reverted}</span>
+                                {:else}
+                                    <button
+                                        class={"shrink-0 rounded-md border border-darkborderc px-2 py-0.5 transition-all " +
+                                            (busy ? "opacity-50 cursor-not-allowed" : "hover:text-textcolor")}
+                                        disabled={busy}
+                                        onclick={() => revert(change)}
+                                        data-memory-receipt-revert
+                                    >
+                                        {revertText.button}
+                                    </button>
+                                {/if}
+                            {/if}
+                        </span>
+                    {/each}
+                {/if}
                 {#if view.warnings.length > 0}
                     <span class="font-semibold">{text.warnings}</span>
                     {#each view.warnings as warning}

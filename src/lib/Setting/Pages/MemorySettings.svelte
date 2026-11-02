@@ -40,7 +40,11 @@
         normalizeStructuredMemorySettings,
         STRUCTURED_MEMORY_ALGORITHM,
         STRUCTURED_MEMORY_CADENCES,
+        STRUCTURED_MEMORY_HIGHLIGHT_MODES,
+        STRUCTURED_MEMORY_LIMITS,
         type StructuredMemoryCadence,
+        type StructuredMemoryHighlightKind,
+        type StructuredMemoryHighlightMode,
         type StructuredMemorySettings,
     } from "../../../../shared/structuredMemory.ts";
     import SettingRenderer from "../SettingRenderer.svelte";
@@ -193,6 +197,14 @@
     // shares the selected HypaV3 preset for its budget and keeps its own settings in `structured`.
     const structuredMemorySelected = $derived(settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
 
+    /** The kinds a person can tick. `retract` has none, since a retraction writes no page history entry. */
+    const HIGHLIGHT_KIND_BOXES = [
+        "create",
+        "contradiction",
+        "delete",
+        "change",
+    ] as const satisfies readonly StructuredMemoryHighlightKind[];
+
     /**
      * Changes the preset's `structured`. A stored value can be partial or damaged, which every reader
      * fills field by field, so a change starts from that reading and stores it whole.
@@ -209,10 +221,19 @@
         value: number | null | undefined,
         min: number,
         write: (structured: StructuredMemorySettings, count: number) => void,
+        max = Infinity,
     ) {
-        if (typeof value === "number" && Number.isInteger(value) && value >= min) {
+        if (typeof value === "number" && Number.isInteger(value) && value >= min && value <= max) {
             setStructured(target, (structured) => write(structured, value));
         }
+    }
+
+    /** Ticks a highlight kind or not; every other kind the preset lists stays, a `retract` included. */
+    function setHighlightKind(target: HypaV3Settings, kind: StructuredMemoryHighlightKind, ticked: boolean) {
+        setStructured(target, (structured) => {
+            const others = structured.highlightKinds.filter((entry) => entry !== kind);
+            structured.highlightKinds = ticked ? [...others, kind] : others;
+        });
     }
 </script>
 
@@ -428,15 +449,17 @@
     min: number,
     read: (structured: StructuredMemorySettings) => number,
     write: (structured: StructuredMemorySettings, count: number) => void,
+    max?: number,
 )}
     <span class="text-textcolor">{label}</span>
     <NumberInput
         marginBottom
         size="sm"
         {min}
+        {max}
         bind:value={
             () => read(normalizeStructuredMemorySettings(preset.structured)),
-            (value) => setStructuredCount(preset, value, min, write)
+            (value) => setStructuredCount(preset, value, min, write, max)
         }
     />
 {/snippet}
@@ -640,6 +663,44 @@
                 }
             />
         </div>
+        <span class="text-textcolor">{text.highlightMode}</span>
+        <SelectInput
+            className="mb-2"
+            value={structured.highlightMode}
+            onchange={({ currentTarget }) =>
+                setStructured(
+                    preset,
+                    (next) => (next.highlightMode = currentTarget.value as StructuredMemoryHighlightMode),
+                )}
+        >
+            {#each STRUCTURED_MEMORY_HIGHLIGHT_MODES as mode (mode)}
+                <OptionInput value={mode}>{language.structuredMemory.highlightModes[mode]}</OptionInput>
+            {/each}
+        </SelectInput>
+        <span class="mb-4 text-xs text-textcolor2" data-structured-memory-highlight-help>{text.highlightHelp}</span>
+        {#if structured.highlightMode === "important"}
+            {#each HIGHLIGHT_KIND_BOXES as kind (kind)}
+                <div class="mb-2 flex items-center">
+                    <Check
+                        name={text.highlightKinds[kind]}
+                        bind:check={
+                            () => structured.highlightKinds.includes(kind),
+                            (value) => setHighlightKind(preset, kind, value)
+                        }
+                    />
+                </div>
+            {/each}
+            {#if structured.highlightKinds.includes("change")}
+                {@render structuredCount(
+                    preset,
+                    text.highlightChangeGrade,
+                    0,
+                    (read) => read.highlightChangeGrade,
+                    (next, count) => (next.highlightChangeGrade = count),
+                    STRUCTURED_MEMORY_LIMITS.gradeMax,
+                )}
+            {/if}
+        {/if}
     {/if}
 
     <div class="mb-8"></div>

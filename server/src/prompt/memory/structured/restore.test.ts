@@ -75,3 +75,29 @@ it("refuses malformed nested records instead of accepting or repairing them", ()
         expect(parseRestoredRecords(body), JSON.stringify(body)).toBeNull();
     }
 });
+
+it("validates every optional history snapshot mark as a boolean while preserving valid marks", () => {
+    const records = memoryRecords(["saved"]);
+    const marks = ["userCorrected", "disputed", "unsupported", "pinned", "suppressed"] as const;
+    const before = {
+        body: "Personal correction",
+        provenance: [],
+        sources: [],
+        userCorrected: true,
+        disputed: false,
+        unsupported: true,
+        pinned: false,
+        suppressed: true,
+    };
+    records.pages[0].history = [
+        { id: "change", heading: "Gate", before, eventId: "saved", kind: "change", highlighted: true, at: 1 },
+    ];
+    expect(parseRestoredRecords(records)?.pages[0].history[0].before).toEqual(before);
+    for (const mark of marks) {
+        for (const value of ["true", 1, null]) {
+            const malformed = structuredClone(records);
+            Object.assign(malformed.pages[0].history[0].before!, { [mark]: value });
+            expect(parseRestoredRecords(malformed), `${mark}: ${JSON.stringify(value)}`).toBeNull();
+        }
+    }
+});

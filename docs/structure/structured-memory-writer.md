@@ -264,10 +264,16 @@ finite confidence is malformed.
 one change set: created pages, the scene page when the chat has none, patches, links, then the scene rewrite.
 
 - History: each section change adds one entry with the replaced content, its kind, and the event, to
-  `pageHistoryEntries`; a new page has one `heading: null` `create` entry. `highlighted` stays false until highlighting
-  reads the settings.
+  `pageHistoryEntries`; a new page has one `heading: null` `create` entry. `before` keeps the section's marks with its
+  content, so a [revert](structured-memory.md#the-revert-route) gives it back as it stood.
+- Highlighting: the stamp carries the rule, the chat's mode else the preset's, and a run with `input.rebuild` uses
+  `none`. `all` highlights every writer entry; `important` a kind in `highlightKinds`, and a `change` only from
+  `highlightChangeGrade`, the higher of the event's and the page's grade. An identical upsert never is. No page history
+  entry has kind `retract`, so the settings offer no such box and a stored one stays.
 - Evidence: a change adds the event to `provenance` and the window to `sources`, each to the newest `sectionEvidence`.
-  Trust flags and `locked` stay; `unsupported` clears; `disputed` clears unless the change sets it.
+  `locked`, `pinned`, and `suppressed` stay; `unsupported` clears; `disputed` clears unless the change sets it.
+- A change may replace a `userCorrected` section. One that changes the text, or deletes it, clears the mark and is
+  highlighted in every mode, `none` included. An identical upsert and a disputed join, which keeps the words, keep it.
 - Links: a relationship shift adds `to` to its `from` page's `links`, to `pageRefsPerItem`, with no section change.
 
 ### The scene page
@@ -278,8 +284,10 @@ one. A `scene` answer rewrites the fixed sections `place`, `time`, and `state` a
 call, because a patch call runs only when a candidate is accepted. A blank field, or one that says the same, changes
 nothing, and an empty or fully unresolved list keeps the attendance. Sections are independent facts, so a lock skips one
 section with `lockedSection` and the rest go on. A rewrite is a `change` entry, so the bounded history keeps old scenes;
-attendance alone has none, and each event's participants record it. `readMemoryRecords` gives `participants` to the read
-path as `stage`.
+attendance alone has none, and each event's participants record it. The analysis prompt's scene slot lists what a person
+took back, past its clamp, a stored input without those lines is not replayed, and a field repeating text a revert took
+back is skipped `revertedScene` until a different rewrite lands on that heading. `readMemoryRecords` gives
+`participants` to the read path as `stage`.
 
 The store holds the rule: the partial unique index `memory_pages_scene`, a `ResourceValidationError` from `write` before
 any statement runs (a second scene page in a set, or one while the chat keeps another that is not in `remove.pages`),
@@ -293,7 +301,8 @@ set is legal, and a restore checks neither, because a snapshot may predate the p
 of bodies last; one past that is listed under `notShown`, and a target with sections, none of which fit, is refused
 `overBudget`. The call holds the admitted event and no message, so an item whose quote failed never reaches a page, and
 everything on a page traces to its `provenance` event. The prompt is bounded by limits, so it has no size check, and
-`RUN_RECORD_MARGIN_BYTES` covers it.
+`RUN_RECORD_MARGIN_BYTES` covers it. A row marks a `userCorrected` section, which the rules say to change only when the
+event contradicts it, and `takenBack` lists the page's newest reverts. That room comes first out of `promptPatchChars`.
 
 An answer needs a `patches` list. `op` is `upsert` or `delete`; an upsert's `body` is the section's whole new text.
 
@@ -357,8 +366,8 @@ with its hashes and `historyId`. The text diff is the Pages tab's history; the r
   the preset. A chat's `structuredMemoryLanguage` wins over its owner's, and the owner's over the preset's `language`,
   where `""` follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
 - `MemorySettings.svelte` exposes only the fields something reads, and shares with HypaV3 only the preset picker, the
-  budget mode, and the memory maximum. `requiredCap`, `laneTargets.pages`, `highlight*`, and `screening` stay hidden
-  until their readers land. So a preset's `summarizationModel` and `alwaysToggleOn` still apply with no control here.
+  budget mode, and the memory maximum. `screening` and the fine-tuning fields stay hidden until their readers land. So a
+  preset's `summarizationModel` and `alwaysToggleOn` still apply with no control here.
 - `cadenceTokens` is the `tokens` cadence's threshold under a `tokens` budget mode, and `cadenceRatio` its share of the
   max context under a `ratio` one; each mode keeps the other's field.
 
@@ -444,9 +453,11 @@ with its hashes and `historyId`. The text diff is the Pages tab's history; the r
   changes to a later window. Decision: Structured Memory D3, plan.
 - Section evidence keeps the newest `sectionEvidence`, so a section can read `unsupported` while an older dropped event
   still supports it. Decision: Structured Memory slice 4a, plan.
-- `userCorrected` outlives later patches, so a section a person once corrected is never compacted, and can grow until
-  `sectionTooLong` refuses its page's patches. The person trims it. A section a failed or discarded compaction left long
-  waits for its next change. Decision: Structured Memory D13, plan.
+- A section whose `userCorrected` stands is never compacted, and can grow by disputed joins until `sectionTooLong`
+  refuses its page's patches. The person trims it. A section a failed or discarded compaction left long waits for its
+  next change. Decision: Structured Memory D13, plan.
+- `takenBack` is advice: code compares a patch with it nowhere, so a model can write the text again. Only a scene field
+  is held. Decision: Structured Memory slice 7b, plan.
 - Budgets are per section in characters, so they do not keep the required lane under `requiredCap`. Compaction runs
   before the commit, so a deadline during one costs the run its analysis and patch calls, and a person pressing record
   now waits for it. `compactionFailed` holds no provider text. Decision: Structured Memory D13, plan.

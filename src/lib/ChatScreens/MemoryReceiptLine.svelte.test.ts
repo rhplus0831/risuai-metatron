@@ -12,7 +12,10 @@ vi.mock("src/ts/storage/serverAuth", async () =>
     (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock(),
 );
 import { authFetch } from "src/ts/storage/serverAuth";
-import { alertConfirm } from "src/ts/alert";
+import { get } from "svelte/store";
+import { hypaV3ModalOpen } from "src/ts/stores.svelte";
+import { takeMemoryPanelTarget } from "src/ts/process/structuredMemory.svelte";
+import { alertConfirm, alertToast } from "src/ts/alert";
 import { language } from "src/lang";
 import { runServerJob } from "src/ts/process/serverCommands";
 import { resetMemoryTasks, noteMemoryTaskFrame } from "src/ts/process/memoryTasks.svelte";
@@ -205,4 +208,69 @@ it("records one-call work immediately and asks before multiple calls or an unrea
         label: "memoryRecord",
         context: { mode: "manual" },
     });
+});
+
+it("links every changed section to its history and offers receipt reverts only for highlighted rows, including old receipts", async () => {
+    const fetch = vi
+        .mocked(authFetch)
+        .mockReset()
+        .mockImplementation(async (url, init) => {
+            if (url.endsWith("/records/pages/p")) return Response.json({ revision: "fresh", data: { id: "p" } });
+            if (url.endsWith("/revert")) {
+                expect(JSON.parse(String(init?.body))).toEqual({
+                    revision: "fresh",
+                    pageId: "p",
+                    historyId: "highlighted",
+                });
+                return Response.json({ revision: "after", data: { id: "p" }, reverted: true, laterEvents: 2 });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        });
+    vi.mocked(alertToast).mockClear();
+    render();
+    patch(
+        receipt({
+            pages: [
+                {
+                    pageId: "p",
+                    title: "Harbor",
+                    created: false,
+                    sections: [
+                        { heading: "Gate", historyId: "highlighted", highlighted: "contradiction" },
+                        { heading: "Hearth", historyId: "ordinary" },
+                    ],
+                },
+                { pageId: "legacy", created: false, sections: [{ heading: "Old facts", historyId: "old" }] },
+            ],
+        }),
+    );
+    target.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click();
+    flushSync();
+    const rows = [...target.querySelectorAll<HTMLElement>("[data-memory-receipt-change]")];
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => row.querySelector("button")!.textContent?.trim())).toEqual([
+        "Harbor: Gate",
+        "Harbor: Hearth",
+        "Old facts",
+    ]);
+    expect(rows.map((row) => !!row.querySelector("[data-memory-receipt-revert]"))).toEqual([true, false, false]);
+    for (const [index, expected] of [
+        { tab: "pages", id: "p", historyId: "highlighted" },
+        { tab: "pages", id: "p", historyId: "ordinary" },
+        { tab: "pages", id: "legacy", historyId: "old" },
+    ].entries()) {
+        hypaV3ModalOpen.set(false);
+        rows[index].querySelector<HTMLButtonElement>("button")!.click();
+        flushSync();
+        expect(get(hypaV3ModalOpen)).toBe(true);
+        expect(takeMemoryPanelTarget(ref)).toEqual(expected);
+    }
+    rows[0].querySelector<HTMLButtonElement>("[data-memory-receipt-revert]")!.click();
+    for (let i = 0; i < 30; i++) await tick();
+    flushSync();
+    expect(fetch.mock.calls.filter(([url]) => url.endsWith("/revert"))).toHaveLength(1);
+    expect(alertToast).toHaveBeenLastCalledWith(language.structuredMemory.revert.done(2));
+    expect(rows[0].querySelector("[data-memory-receipt-revert]")).toBeNull();
+    expect(rows[0].querySelector("[data-memory-receipt-reverted]")).not.toBeNull();
+    hypaV3ModalOpen.set(false);
 });

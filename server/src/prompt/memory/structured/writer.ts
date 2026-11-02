@@ -15,6 +15,7 @@ import {
     memoryThreadEnded,
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
+    structuredMemoryHighlightOverride,
     structuredMemoryWriterLanguage,
     writerPaused,
 } from "../../../../../shared/structuredMemory.ts";
@@ -35,6 +36,7 @@ import {
     type AliasSeed,
     aliasSeeds,
     castSlice,
+    type HighlightRule,
     type PagePlan,
     planPages,
     sectionWarning,
@@ -51,6 +53,7 @@ import {
     assemblePatchPrompt,
     compactSlots,
     patchSlots,
+    sceneTakenBackLines,
 } from "./prompts.ts";
 import { eventVectorTexts } from "./retrieve.ts";
 import { windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./window.ts";
@@ -74,8 +77,9 @@ export { writerPaused };
  *   nor resetting and a recorded one resetting, stop an automatic run with no call and no row
  *   (`writerPaused`). A manual start runs past it.
  * - Replay: the newest row that did not record is the only one read. Its input is sent again, exactly,
- *   when its window (by message id and hash) and its settings are still this run's; otherwise, so that
- *   fixed instructions take effect and a regrouped window rebuilds, the prompt is built anew.
+ *   when its window (by message id and hash) and its settings are still this run's, and it lists all a
+ *   person took back of the scene since; otherwise, so that fixed instructions take effect, a regrouped
+ *   window rebuilds, and a reverted scene stays reverted, the prompt is built anew.
  * - Snapshot: no analysis call is made before its exact input is stored in a `pending` row. An input too
  *   large for a record fails the run with no call.
  * - Failure: a provider failure, an empty or unexpected answer, or an answer `parseAnalysis` refuses
@@ -196,6 +200,19 @@ export function chatAdoptionHold(
 const writerSettings = (host: MemoryHost) =>
     normalizeStructuredMemorySettings(selectedHypaV3Preset(host.db)?.settings?.structured);
 
+/**
+ * How a run highlights what it writes: the chat's mode, else the preset's. A rebuild or a backfill writes
+ * a chat's past over again, so it asks nobody to look at each change.
+ */
+function highlightRule({ host, input, scope }: WriterArg): HighlightRule {
+    const { highlightMode, highlightKinds, highlightChangeGrade } = writerSettings(host);
+    return {
+        mode: input.rebuild ? "none" : (structuredMemoryHighlightOverride(scopeChat(scope)) ?? highlightMode),
+        kinds: highlightKinds,
+        changeGrade: highlightChangeGrade,
+    };
+}
+
 const sameWindow = (a: readonly MemoryAnchoredSource[], b: readonly MemoryAnchoredSource[]) =>
     a.length === b.length && a.every(({ messageId, hash }, i) => messageId === b[i].messageId && hash === b[i].hash);
 
@@ -263,7 +280,11 @@ function buildPrompt(store: Pick<WriterStore, "memory">, arg: WriterArg, content
     return assembleAnalysisPrompt(host, writerSettings(host).instructions, slots);
 }
 
-/** The input to send again, from the newest run that did not record, when it is still this run's. */
+/**
+ * The input to send again, from the newest run that did not record, when it is still this run's. An input
+ * must hold every line the scene now lists as taken back: compared with its parsed text, so that JSON's
+ * escapes cannot hide one. Its scene slot quoting the same text as the scene does not count.
+ */
 function replayedInput(
     store: Pick<WriterStore, "memory">,
     arg: WriterArg,
@@ -280,7 +301,10 @@ function replayedInput(
         return null;
     }
     const formated = parsedInput(run.input);
-    return formated && { text: run.input, formated };
+    const sceneRow = contents.pages.find(({ type }) => type === "scene");
+    const scene = sceneRow ? (store.memory.readRecord(chaId, chatId, "pages", sceneRow.id)?.data ?? null) : null;
+    const lists = (line: string) => formated?.some(({ content }) => content.includes(line));
+    return formated && sceneTakenBackLines(scene).every(lists) ? { text: run.input, formated } : null;
 }
 
 /** `run` as a failure, with the receipt a later reader shows; `reason` is a stored code. */
@@ -736,7 +760,14 @@ export function createStructuredWriter(
                 seen: shown.seen,
                 compactions,
                 sceneId,
-                stamp: { eventId: admission.event.id, sources: window.sources, at: now(), newId: randomUUID },
+                stamp: {
+                    eventId: admission.event.id,
+                    sources: window.sources,
+                    at: now(),
+                    newId: randomUUID,
+                    highlight: highlightRule(arg),
+                    grade: admission.event.grade,
+                },
             });
             return { plan, admission, written };
         };

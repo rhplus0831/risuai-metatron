@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from "svelte";
 import { fromStore, get, writable } from "svelte/store";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import type { ContextReport } from "../../../../shared/contextReport.ts";
 import { previewChat, previewChatReport } from "src/ts/process/index.svelte";
 import type { Chat, Message } from "../../../../shared/database.ts";
@@ -28,7 +28,7 @@ import { followedJobs } from "src/ts/process/serverCommands";
 import { noteMemoryTaskFrame, resetMemoryTasks } from "src/ts/process/memoryTasks.svelte";
 import { alertConfirm, alertError, alertToast } from "src/ts/alert";
 import { pendingMessageJump } from "src/ts/messageSearch.svelte";
-import { memoryMessageHash } from "src/ts/process/structuredMemory.svelte";
+import { requestMemoryPanelTarget, memoryMessageHash } from "src/ts/process/structuredMemory.svelte";
 import {
     ADOPTED_WRITER_RUN,
     sealHypaV3Data,
@@ -135,6 +135,10 @@ function install(
     selectCharacter("c");
     selectChat("c", "k");
 }
+beforeAll(async () => {
+    await import("diff");
+});
+
 beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
@@ -1692,4 +1696,77 @@ it("shows run progress and pause or resumable controls and always permits abando
     expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.rebuild.abandonConfirm);
     expect(query("[data-memory-rebuild]")).toBeNull();
     expect(query("[data-memory-panel-read-only]")).toBeNull();
+});
+
+it("opens a requested page history diff, scrolls only that jump, and reverts from history", async () => {
+    const state = serveMemory();
+    const before = { body: "Earlier memory", provenance: ["old"], sources: [] };
+    state.page.history = [
+        { id: "writer-change", heading: "Facts", kind: "change", eventId: "event", highlighted: true, before, at: 1 },
+    ];
+    const scrolls: HTMLElement[] = [];
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(function (this: HTMLElement) {
+        scrolls.push(this);
+    });
+    releases.push(() => scroll.mockRestore());
+    requestMemoryPanelTarget(ref, { tab: "pages", id: "p", historyId: "writer-change" });
+    await open();
+    const row = '[data-memory-history-id="writer-change"]';
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query(`${row} [data-memory-history-diff]`)?.textContent).toContain("Earlier");
+    expect(query(`${row} [data-memory-history-diff]`)?.textContent).toContain("Original");
+    expect(scrolls).toEqual([query(row)]);
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+    scroll.mockClear();
+    click(`${row} button[aria-expanded]`);
+    await settle();
+    click(`${row} button[aria-expanded]`);
+    await settle();
+    expect(query(`${row} [data-memory-history-diff]`)).not.toBeNull();
+    expect(scroll).not.toHaveBeenCalled();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/revert")) return fetch(url, init, options);
+        state.page = {
+            ...state.page,
+            sections: [{ ...state.page.sections[0], ...before }],
+            history: [
+                { ...state.page.history[0], revertedBy: "user" },
+                {
+                    id: "undo",
+                    heading: "Facts",
+                    kind: "revert",
+                    highlighted: false,
+                    at: 2,
+                    before: { body: "Original memory", provenance: ["event"], sources: [] },
+                },
+            ],
+        };
+        state.revision = "reverted-revision";
+        return Response.json({ revision: state.revision, data: state.page, reverted: true, laterEvents: 1 });
+    });
+    press(`${row} [data-memory-history-revert]`);
+    await settle();
+    expect(reads("revert").map(([, init]) => JSON.parse(init!.body as string))).toEqual([
+        { revision: "read-revision", pageId: "p", historyId: "writer-change" },
+    ]);
+    expect(query(`${row} [data-memory-history-reverted]`)).not.toBeNull();
+    expect(query(`${row} [data-memory-history-revert]`)).toBeNull();
+    expect(query('[data-memory-history-id="undo"] [data-memory-history-revert]')).toBeNull();
+    expect(alertToast).toHaveBeenLastCalledWith(language.structuredMemory.revert.done(1));
+});
+
+it("writes and clears the chat highlight override from Pages without changing another chat", async () => {
+    serveMemory();
+    await open();
+    await chooseTab("pages");
+    const selector = "[data-memory-highlight-mode]";
+    expect(target.querySelector<HTMLSelectElement>(selector)!.value).toBe("");
+    for (const mode of ["none", "important", "all"]) {
+        changeSelect(selector, mode);
+        expect(findChat(ref)!.structuredMemoryHighlight).toBe(mode);
+        expect(findChat({ ...ref, chatId: "other" })!.structuredMemoryHighlight).toBeUndefined();
+    }
+    changeSelect(selector, "");
+    expect(findChat(ref)!.structuredMemoryHighlight).toBeUndefined();
 });

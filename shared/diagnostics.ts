@@ -392,6 +392,7 @@ export const ROUTE_TEMPLATES = [
     "/api/memory/structured/:characterId/:chatId/projection",
     "/api/memory/structured/:characterId/:chatId/records/:kind/:id",
     "/api/memory/structured/:characterId/:chatId/edits",
+    "/api/memory/structured/:characterId/:chatId/revert",
     "/api/memory/structured/:characterId/:chatId/inherit",
     "/api/memory/structured/:characterId/:chatId/restore",
     "/api/memory/structured/:characterId/:chatId/adopt",

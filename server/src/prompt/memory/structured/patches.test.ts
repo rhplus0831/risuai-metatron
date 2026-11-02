@@ -8,7 +8,7 @@ import {
 } from "../../../../../shared/structuredMemory.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { type PageChanges, type PageStamp } from "./pages.ts";
-import { applyPatches, parsePatches, showTargets } from "./patches.ts";
+import { applyPatches, commitPages, parsePatches, showTargets } from "./patches.ts";
 
 const section = (heading: string, body = `Old ${heading}`): MemorySection => ({
     heading,
@@ -271,4 +271,133 @@ it("bounds section evidence and replacement history while preserving untouched b
             at: 123,
         })),
     ]);
+});
+
+it("highlights committed kinds under the selected mode and the higher event or page grade", () => {
+    const cases = [
+        {
+            mode: "none",
+            kinds: ["create", "contradiction", "delete", "change"],
+            eventGrade: 6,
+            pageGrade: 6,
+            expected: [],
+        },
+        {
+            mode: "all",
+            kinds: [],
+            eventGrade: 0,
+            pageGrade: 0,
+            expected: ["create", "contradiction", "delete", "change"],
+        },
+        {
+            mode: "important",
+            kinds: ["create", "contradiction", "delete", "change"],
+            eventGrade: 3,
+            pageGrade: 3,
+            expected: ["create", "contradiction", "delete"],
+        },
+        { mode: "important", kinds: ["change"], eventGrade: 4, pageGrade: 0, expected: ["change"] },
+        { mode: "important", kinds: ["change"], eventGrade: 0, pageGrade: 4, expected: ["change"] },
+        { mode: "important", kinds: ["create"], eventGrade: 6, pageGrade: 6, expected: ["create"] },
+    ] as const;
+    for (const row of cases) {
+        const before = page();
+        before.grade = row.pageGrade;
+        before.sections = [section("change"), section("contradiction"), section("delete"), section("identical")];
+        const result = commitPages({
+            pages: [before],
+            plan: { targets: [], created: [], refused: [], names: new Map() },
+            admission: { event: memoryRecords(["event"]).events[0], repeated: false, scene: null },
+            patches: [
+                patch("create"),
+                patch("change"),
+                patch("contradiction", { conflict: "contradiction", confidence: 1 }),
+                patch("delete", { op: "delete" }),
+                patch("identical", { body: "Old identical" }),
+            ],
+            seen: shown([before]),
+            compactions: [],
+            sceneId: "scene",
+            stamp: {
+                ...stamp(),
+                grade: row.eventGrade,
+                highlight: { mode: row.mode, kinds: row.kinds, changeGrade: 4 },
+            },
+        });
+        const saved = result.pages.find(({ id }) => id === "bad")!;
+        expect(
+            saved.history
+                .filter(({ highlighted }) => highlighted)
+                .map(({ kind }) => kind)
+                .sort(),
+            JSON.stringify(row),
+        ).toEqual([...row.expected].sort());
+        expect(
+            result.receipts
+                .find(({ pageId }) => pageId === "bad")!
+                .sections.filter(({ highlighted }) => highlighted)
+                .map(({ highlighted }) => highlighted)
+                .sort(),
+        ).toEqual([...row.expected].sort());
+        expect(saved.history.find(({ heading }) => heading === "identical")!.highlighted).toBe(false);
+    }
+});
+
+it("replaces corrections with a forced highlight and a marked snapshot but keeps identical and disputed corrections", () => {
+    for (const mode of ["none", "important", "all"] as const) {
+        const before = page();
+        before.sections = ["replace", "identical", "disputed", "locked"].map((heading) => ({
+            ...section(heading),
+            userCorrected: true,
+            pinned: true,
+            suppressed: true,
+            unsupported: true,
+            locked: heading === "locked",
+        }));
+        const commit = (patches: MemoryPatch[]) =>
+            commitPages({
+                pages: [before],
+                plan: { targets: [], created: [], refused: [], names: new Map() },
+                admission: { event: memoryRecords(["event"]).events[0], repeated: false, scene: null },
+                patches,
+                seen: shown([before]),
+                compactions: [],
+                sceneId: "scene",
+                stamp: { ...stamp(), highlight: { mode, kinds: [], changeGrade: 6 } },
+            });
+        const result = commit([
+            patch("replace"),
+            patch("identical", { body: "Old identical" }),
+            patch("disputed", { conflict: "contradiction", confidence: 0 }),
+        ]);
+        const saved = result.pages.find(({ id }) => id === "bad")!;
+        expect(saved.sections.find(({ heading }) => heading === "replace")).toMatchObject({ body: "New text" });
+        expect(saved.sections.find(({ heading }) => heading === "replace")!.userCorrected).toBeUndefined();
+        expect(saved.sections.find(({ heading }) => heading === "identical")).toMatchObject({
+            body: "Old identical",
+            userCorrected: true,
+        });
+        expect(saved.sections.find(({ heading }) => heading === "disputed")).toMatchObject({
+            body: "Old disputed\n[disputed] New text",
+            userCorrected: true,
+            disputed: true,
+        });
+        expect(saved.history.find(({ heading }) => heading === "replace")).toMatchObject({
+            highlighted: true,
+            before: {
+                body: "Old replace",
+                provenance: ["old-event"],
+                sources: before.sections[0].sources,
+                userCorrected: true,
+                pinned: true,
+                suppressed: true,
+                unsupported: true,
+            },
+        });
+        expect(saved.history.find(({ heading }) => heading === "identical")!.highlighted).toBe(false);
+        expect(result.receipts.find(({ pageId }) => pageId === "bad")!.sections[0].highlighted).toBe("change");
+        const locked = commit([patch("locked")]);
+        expect(locked.warnings).toContainEqual(expect.objectContaining({ kind: "lockedSection" }));
+        expect(locked.pages.some(({ id }) => id === "bad")).toBe(false);
+    }
 });

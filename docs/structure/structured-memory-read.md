@@ -142,6 +142,13 @@ Lane rules:
 The row list mounts `Chat` once per text, so `messageGenerationInfo` keeps what the row was mounted with: the line reads
 the held chat, and a feed patch moves it.
 
+The line's details list what the recording changed (`receiptChanges`). Each row opens the panel at that page's history
+diff through `requestMemoryPanelTarget`, which the panel takes as it mounts, because a link can only be pressed while
+the panel is closed. A highlighted row also carries a revert, as does every writer's section entry in the Pages history;
+both go through `revertStructuredMemoryChange`, which reads the page for its revision first. The receipt is a stored
+copy that no revert changes, so the row shows reverted only for its own mount, and a later press answers that nothing is
+left to undo. The Pages tab holds the chat's own highlight mode, a chat field written through `setChatMeta`.
+
 ### The memory panel
 
 `StructuredMemoryPanel` replaces `HypaV3Modal` when `memoryAlgorithmType` selects the algorithm, under the same

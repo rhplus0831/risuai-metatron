@@ -63,7 +63,11 @@ export type MemoryKnowledgeStance = (typeof MEMORY_KNOWLEDGE_STANCES)[number];
 export const MEMORY_STALE_REASONS = ["changed", "missing", "inserted", "moved"] as const;
 export type MemoryStaleReason = (typeof MEMORY_STALE_REASONS)[number];
 
-/** What a page history entry records; code derives "important" highlighting from it, never a model score. */
+/**
+ * What a page history entry records; code derives "important" highlighting from it, never a model score.
+ * `edit` and `revert` are a person's: a `revert` is what undid a writer's change, and its `before` is the
+ * text it took back.
+ */
 export const MEMORY_HISTORY_CHANGE_KINDS = [
     "create",
     "change",
@@ -72,6 +76,7 @@ export const MEMORY_HISTORY_CHANGE_KINDS = [
     "retract",
     "compact",
     "edit",
+    "revert",
 ] as const;
 export type MemoryHistoryChangeKind = (typeof MEMORY_HISTORY_CHANGE_KINDS)[number];
 
@@ -109,7 +114,10 @@ export type MemoryManifestItemKind = (typeof MEMORY_MANIFEST_ITEM_KINDS)[number]
 export const STRUCTURED_MEMORY_CADENCES = ["everyTurn", "everyK", "tokens", "manual"] as const;
 export type StructuredMemoryCadence = (typeof STRUCTURED_MEMORY_CADENCES)[number];
 
-/** Which recorded changes are highlighted: none, the kinds the preset lists, or every one. */
+/**
+ * Which recorded changes are highlighted: none, the kinds the preset lists, or every one. A change that
+ * replaces a person's correction is highlighted in all three.
+ */
 export const STRUCTURED_MEMORY_HIGHLIGHT_MODES = ["none", "important", "all"] as const;
 export type StructuredMemoryHighlightMode = (typeof STRUCTURED_MEMORY_HIGHLIGHT_MODES)[number];
 
@@ -396,6 +404,14 @@ export interface MemorySection extends MemoryTrustFlags, MemorySectionContent {
 }
 
 /**
+ * What a history entry keeps of a section: its content and the marks that were on it, each only while it
+ * was set, so a revert gives the section back as it stood. An `edit` entry keeps the content alone.
+ */
+export type MemoryHistorySnapshot = MemorySectionContent &
+    MemoryTrustFlags &
+    Pick<MemorySection, "unsupported" | "disputed">;
+
+/**
  * A replaced version of a section or page. The state after an entry is the next entry's `before` or
  * the live section, so no `after` is stored.
  */
@@ -405,8 +421,9 @@ export interface MemoryPageHistoryEntry {
     /** The section; null when the entry concerns the whole page. */
     heading: string | null;
     /** The content replaced; null when nothing was replaced. */
-    before: MemorySectionContent | null;
+    before: MemoryHistorySnapshot | null;
     kind: MemoryHistoryChangeKind;
+    /** Code asked a person to look at this writer's change; a person's own entries never are. */
     highlighted: boolean;
     /** Set when the user undid the change, so the writer does not propose it again. */
     revertedBy?: "user";
@@ -463,6 +480,8 @@ export interface MemoryReceipt {
     eventId?: string;
     pages: {
         pageId: string;
+        /** The page's title then, at most `labelChars`; absent on a receipt from before this was kept. */
+        title?: string;
         created: boolean;
         sections: {
             heading: string;
@@ -470,6 +489,8 @@ export interface MemoryReceipt {
             afterHash?: string;
             /** The page history entry a revert from the receipt addresses. */
             historyId?: string;
+            /** The change's kind, present only on a change that was highlighted. */
+            highlighted?: MemoryHistoryChangeKind;
         }[];
     }[];
     /** Candidates code turned down; `lowConfidence` ones are the unresolved mentions. */
@@ -711,6 +732,18 @@ export type StructuredMemoryEditAnswer = { revision: string } & (
     | { kind: "threads"; data: MemoryThread }
     | { kind: "events"; data: MemoryEvent }
 );
+
+/**
+ * The revert route's answer: the page as it now stands, with the revision the next edit names, whether this
+ * call undid the change, and how many events recorded after it stay. A change a person already undid answers
+ * `reverted: false`, which is what a repeat finds.
+ */
+export type StructuredMemoryRevertAnswer = {
+    revision: string;
+    data: MemoryPage;
+    reverted: boolean;
+    laterEvents: number;
+};
 
 /**
  * The inherit route's answer: the new chat's memory revision, and whether records crossed from the source

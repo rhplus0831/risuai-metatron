@@ -29,6 +29,7 @@ import {
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
 } from "../../../shared/structuredMemory.ts";
+import { revertChange } from "../prompt/memory/structured/pages.ts";
 import { readRecordSet, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
 import { readMemoryRecords } from "../prompt/memory/structured/step.ts";
 import { reconcileMessageChanges } from "../prompt/memory/structured/reconcile.ts";
@@ -2563,6 +2564,149 @@ describe("structured memory tasks", () => {
         return { ...writerInput(t), rebuild: true as const };
     };
 
+    it("uses the chat highlight override before the preset and suppresses rule highlights in rebuilds and backfills", async () => {
+        for (const row of [
+            { preset: "all", override: undefined, mode: undefined, highlighted: true },
+            { preset: "all", override: "none", mode: undefined, highlighted: false },
+            { preset: "none", override: "all", mode: undefined, highlighted: true },
+            { preset: "all", override: "all", mode: "rebuild", highlighted: false },
+            { preset: "all", override: "all", mode: "backfill", highlighted: false },
+        ] as const) {
+            const t = structuredHarness({
+                hypaSettings: { structured: { cadence: "everyTurn", highlightMode: row.preset } },
+            });
+            if (row.override)
+                t.store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId: "k1",
+                            baseRevision: t.store.chatRevision("c", "k1"),
+                            ops: [{ op: "meta", set: { structuredMemoryHighlight: row.override } }],
+                        },
+                    ],
+                });
+            const input = row.mode ? beginStagedRun(t, row.mode, [["m1", "m2"]]) : writerInput(t, "m3");
+            await recordOnly(
+                t,
+                { ...analysis(), scene: { place: "Harbor", time: "Dawn", state: "Arriving", participants: [] } },
+                input,
+            );
+            const entries = pageRecords(t).flatMap(({ history }) => history);
+            expect(entries.length).toBeGreaterThan(0);
+            expect(
+                entries.map(({ highlighted }) => highlighted),
+                JSON.stringify(row),
+            ).toEqual(entries.map(() => row.highlighted));
+            expect(
+                runRecord(t)
+                    .receipt!.pages.flatMap(({ sections }) => sections)
+                    .every(({ highlighted }) => !!highlighted === row.highlighted),
+            ).toBe(true);
+        }
+    });
+
+    it("compacts a replacement of a personal correction and highlights it even when highlights are off", async () => {
+        const t = structuredHarness({
+            hypaSettings: { structured: { cadence: "everyTurn", highlightMode: "none", highlightKinds: [] } },
+        });
+        const page = memoryRecords(["corrected"], "My correction").pages[0];
+        page.sections[0].userCorrected = true;
+        const { terminal, patchRequest } = await beginPagePatch(t, [page]);
+        expect(t.provider.asked(patchRequest)).toContain('"userCorrected":true');
+        expect(t.provider.asked(patchRequest)).toContain("change it only when the event contradicts them");
+        const body = "x".repeat(MEMORY_SECTION_BUDGETS.location + 1);
+        patchRequest.answer(
+            JSON.stringify({
+                patches: [
+                    { pageId: page.id, heading: "Gate", op: "upsert", body, conflict: "contradiction", confidence: 1 },
+                ],
+            }),
+        );
+        const compact = await nextPatch(t, patchRequest.index + 1, terminal);
+        compact.answer(JSON.stringify({ body: "New concise fact" }));
+        await finishRecording(t, terminal);
+        const saved = pageRecords(t).find(({ id }) => id === page.id)!;
+        expect(saved.sections[0].body).toBe("New concise fact");
+        expect(saved.sections[0].userCorrected).toBeUndefined();
+        expect(saved.history.map(({ kind, highlighted }) => ({ kind, highlighted }))).toEqual([
+            { kind: "contradiction", highlighted: true },
+            { kind: "compact", highlighted: false },
+        ]);
+        expect(saved.history[0].before).toMatchObject({ body: "My correction", userCorrected: true });
+        expect(runRecord(t).receipt!.pages.find(({ pageId }) => pageId === page.id)!.sections[0].highlighted).toBe(
+            "contradiction",
+        );
+    });
+
+    it("rebuilds analysis after a scene revert and keeps that section reverted until a different rewrite", async () => {
+        const t = structuredHarness();
+        t.write("k1", [
+            {
+                op: "append",
+                anchor: { end: true },
+                messages: [m("m8", "Fourth reply", "char"), m("m9", "Confirm fourth reply", "user")],
+            },
+        ]);
+        await recordOnly(t, {
+            ...analysis(),
+            scene: { place: "Harbor", time: "Dawn", state: "Waiting", participants: [] },
+        });
+        const scene = pageRecords(t).find(({ type }) => type === "scene")!;
+        const failed = await beginAnalysis(t, writerInput(t, "m5"));
+        expect(t.provider.asked(failed.request)).toContain("place: Harbor");
+        failed.request.fail("Temporary failure");
+        expect((await failed.terminal).status.state).toBe("failed");
+        await t.service.drain();
+        const undone = revertChange(scene, scene.history.find(({ heading }) => heading === "place")!.id, {
+            now: t.clock.now,
+            newId: () => "scene-revert",
+        })!;
+        writeMemory(t.store, "c", "k1", { pages: [undone.page] });
+        expect(
+            pageRecords(t)
+                .find(({ id }) => id === scene.id)!
+                .sections.some(({ heading }) => heading === "place"),
+        ).toBe(false);
+        const retry = await beginAnalysis(t, writerInput(t, "m5"));
+        expect(retry.request.rawBody).not.toBe(failed.request.rawBody);
+        expect(t.provider.asked(retry.request)).toContain("taken back from place: Harbor");
+        retry.request.answer(
+            JSON.stringify({
+                ...analysis(),
+                scene: { place: "Harbor", time: "Dawn", state: "Waiting", participants: [] },
+            }),
+        );
+        await finishRecording(t, retry.terminal);
+        const kept = pageRecords(t).find(({ id }) => id === scene.id)!;
+        expect(kept.sections.some(({ heading }) => heading === "place")).toBe(false);
+        expect(kept.history).toEqual(undone.page.history);
+        expect(runRecord(t).receipt!.warnings).toContainEqual(
+            expect.objectContaining({ kind: "revertedScene", pageId: scene.id, heading: "place" }),
+        );
+        await recordOnly(
+            t,
+            { ...analysis(), scene: { place: "Inn", time: "Dawn", state: "Waiting", participants: [] } },
+            writerInput(t, "m7"),
+        );
+        expect(
+            pageRecords(t)
+                .find(({ id }) => id === scene.id)!
+                .sections.find(({ heading }) => heading === "place")!.body,
+        ).toBe("Inn");
+        await recordOnly(
+            t,
+            { ...analysis(), scene: { place: "Harbor", time: "Dawn", state: "Waiting", participants: [] } },
+            writerInput(t, "m9"),
+        );
+        expect(
+            pageRecords(t)
+                .find(({ id }) => id === scene.id)!
+                .sections.find(({ heading }) => heading === "place")!.body,
+        ).toBe("Harbor");
+        expect(runRecord(t).receipt!.warnings.some(({ kind }) => kind === "revertedScene")).toBe(false);
+    });
+
     it("chains a rebuild with whole-run progress and resumes failed staging after a service restart without recording finished windows again", async () => {
         const t = structuredHarness({ limits: { maxWriterWindows: 1, taskDeadlineMs: 100 } });
         writeMemory(t.store, "c", "k1", { ...memoryRecords(["live"]), adoptionDeclined: true });
@@ -3172,7 +3316,7 @@ describe("structured memory tasks", () => {
         ]);
     });
 
-    it("makes no compaction call for locked, corrected, disputed, identical, or untouched sections", async () => {
+    it("makes no compaction call for locked, disputed, identical, or untouched sections, or a correction a disputed join keeps", async () => {
         const t = structuredHarness();
         const body = "x".repeat(MEMORY_SECTION_BUDGETS.location + 1);
         const pages = memoryRecords(["locked", "corrected", "disputed", "identical", "untouched"]).pages;
@@ -3189,7 +3333,7 @@ describe("structured memory tasks", () => {
                     heading: id === "untouched" ? "Hearth" : "Gate",
                     op: "upsert",
                     body: id === "untouched" ? "Lit" : body,
-                    ...(id === "disputed" ? { conflict: "contradiction", confidence: 0 } : {}),
+                    ...(id === "disputed" || id === "corrected" ? { conflict: "contradiction", confidence: 0 } : {}),
                 })),
             }),
         );
@@ -3197,7 +3341,10 @@ describe("structured memory tasks", () => {
         expect(t.provider.requests).toHaveLength(2);
         const saved = pageRecords(t);
         expect(saved.find(({ id }) => id === "locked")).toEqual(pages[0]);
-        expect(saved.find(({ id }) => id === "corrected")!.sections[0]).toMatchObject({ body, userCorrected: true });
+        expect(saved.find(({ id }) => id === "corrected")!.sections[0]).toMatchObject({
+            body: `${pages[1].sections[0].body}\n[disputed] ${body}`,
+            userCorrected: true,
+        });
         expect(saved.find(({ id }) => id === "disputed")!.sections[0]).toMatchObject({
             body: `${pages[2].sections[0].body}\n[disputed] ${body}`,
             disputed: true,

@@ -9,6 +9,7 @@ import {
     type MemoryAxes,
     type MemoryEvent,
     type MemoryEventDraft,
+    type MemoryHistorySnapshot,
     type MemoryKnowledge,
     type MemoryPage,
     type MemoryPageHistoryEntry,
@@ -99,22 +100,26 @@ const contentChecks: FieldChecks<MemorySectionContent> = {
     sources: listOf(isSource),
 };
 
-const isSection = shaped<MemorySection>({
-    ...contentChecks,
-    heading: isText,
-    locked: isFlag,
-    updatedAt: isNumber,
+const markChecks: FieldChecks<Omit<MemoryHistorySnapshot, keyof MemorySectionContent>> = {
     unsupported: optional(isFlag),
     disputed: optional(isFlag),
     pinned: optional(isFlag),
     suppressed: optional(isFlag),
     userCorrected: optional(isFlag),
+};
+
+const isSection = shaped<MemorySection>({
+    ...contentChecks,
+    ...markChecks,
+    heading: isText,
+    locked: isFlag,
+    updatedAt: isNumber,
 });
 
 const isHistoryEntry = shaped<MemoryPageHistoryEntry>({
     id: isText,
     heading: nullable(isText),
-    before: nullable(shaped<MemorySectionContent>(contentChecks)),
+    before: nullable(shaped<MemoryHistorySnapshot>({ ...contentChecks, ...markChecks })),
     kind: oneOf(MEMORY_HISTORY_CHANGE_KINDS),
     highlighted: isFlag,
     revertedBy: optional(oneOf(["user"])),

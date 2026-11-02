@@ -114,6 +114,10 @@ it("edits only consumed Structured Memory settings and shares the selected prese
     open();
     const preset = () => settings.hypaV3Presets.items.find((p) => p.id === settings.hypaV3Presets.selectedId)!.settings;
     const checkbox = () => target.querySelector<HTMLInputElement>("input[type=checkbox]")!;
+    const kindBox = (label: string) =>
+        [...target.querySelectorAll<HTMLInputElement>("input[type=checkbox]")].find((input) =>
+            input.closest("label")?.textContent?.includes(label),
+        )!;
     const assertControls = (conditional: string | null) => {
         const allowed = [
             selectWith("structuredMemory"),
@@ -130,6 +134,8 @@ it("edits only consumed Structured Memory settings and shares the selected prese
             control(text.threadsTarget),
             control(text.instructions),
             checkbox(),
+            control(text.highlightMode),
+            ...Object.values(text.highlightKinds).map(kindBox),
             ...(conditional ? [control(conditional)] : []),
         ];
         // Exhaustive editable controls: an unconsumed setting must not acquire an editor here.
@@ -205,4 +211,49 @@ it("edits only consumed Structured Memory settings and shares the selected prese
     change(selectWith("first"), "second");
     expect(settings.hypaV3Presets.selectedId).toBe("second");
     expect((control(hypa.memoryBudgetTokensLabel) as HTMLInputElement).value).toBe("4321");
+});
+
+it("edits highlight modes, kinds and change grade while preserving a stored retract kind", () => {
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    const preset = () => settings.hypaV3Presets.items.find((p) => p.id === "first")!.settings.structured;
+    Object.assign(preset(), { highlightMode: "none", highlightKinds: ["retract"], highlightChangeGrade: 4 });
+    open();
+    const boxes = () =>
+        [...target.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].filter((input) =>
+            Object.values(text.highlightKinds).some((label) => input.closest("label")?.textContent?.includes(label)),
+        );
+    expect(boxes()).toHaveLength(0);
+    const otherCheckboxes = target.querySelectorAll('input[type="checkbox"]').length;
+    change(control(text.highlightMode) as HTMLSelectElement, "important");
+    // Only the four offered kinds gain controls; a persisted retract has no checkbox.
+    expect(target.querySelectorAll('input[type="checkbox"]')).toHaveLength(otherCheckboxes + 4);
+    expect(preset().highlightMode).toBe("important");
+    expect(boxes()).toHaveLength(4);
+    expect(
+        boxes()
+            .map((input) => input.closest("label")!.textContent!.trim())
+            .sort(),
+    ).toEqual(Object.values(text.highlightKinds).sort());
+    for (const kind of ["create", "contradiction", "delete", "change"] as const) {
+        const input = boxes().find((input) =>
+            input.closest("label")!.textContent!.includes(text.highlightKinds[kind]),
+        )!;
+        input.click();
+        flushSync();
+        expect(preset().highlightKinds).toContain(kind);
+        expect(preset().highlightKinds).toContain("retract");
+    }
+    change(control(text.highlightChangeGrade) as HTMLInputElement, "5");
+    expect(preset().highlightChangeGrade).toBe(5);
+    boxes()
+        .find((input) => input.closest("label")!.textContent!.includes(text.highlightKinds.change))!
+        .click();
+    flushSync();
+    expect(preset().highlightKinds).toEqual(expect.arrayContaining(["retract", "create", "contradiction", "delete"]));
+    expect(preset().highlightKinds).not.toContain("change");
+    expect(target.textContent).not.toContain(text.highlightChangeGrade);
+    change(control(text.highlightMode) as HTMLSelectElement, "all");
+    expect(preset().highlightMode).toBe("all");
+    expect(boxes()).toHaveLength(0);
+    expect(preset().highlightKinds).toContain("retract");
 });

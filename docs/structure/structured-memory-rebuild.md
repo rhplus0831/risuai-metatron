@@ -141,24 +141,24 @@ The lock is the run row, not a task: job admission is the one chokepoint, and a 
 records through a gap run or a hand-off that the swap would lose. It lasts until a person resumes to the end or
 abandons.
 
-| During a run                               | What happens                                                                        |
-| ------------------------------------------ | ----------------------------------------------------------------------------------- |
-| Send, continue, command, `memoryRecord`    | Refused at admission beside `chatBusy`, 409 with text naming the panel              |
-| Preview                                    | Allowed: it writes nothing                                                          |
-| `memoryRebuild`                            | Reaches admission; refused unless it is a resume                                    |
-| Panel edit, adopt, decline, reset, restore | 409 `fenced`, as is an inherit into the chat                                        |
-| Inherit from the chat, a chat file         | Allowed: they read live records                                                     |
-| Checkpoint save                            | Allowed: it holds live records                                                      |
-| Checkpoint load                            | Refused as `generating` (`loadLocked`), since `busy` also guards saves              |
-| Chat deletion                              | Allowed: `invalidate` ends the task, the cascade takes the run and its rows         |
-| Whole-chat replace                         | The task ends; `noteSourceReplaced` makes the run not resumable; abandon works      |
-| Message edit or confirmed delete           | Allowed: `reconcileMessageChanges` reacts on the live records, then the staged ones |
-| A window's source changed in flight        | `windowChanged`: the run stops, and a resume reads that window again                |
-| Automatic task                             | `startChecks` ends it `skipped` (`memoryRebuilding`)                                |
-| A live writer that got past admission      | `commitWindow` refuses `windowChanged`; `rebuildStore` answers that it holds no run |
-| Algorithm switched away                    | `rebuilding` is false, so no lock; the run waits, and the panel returns with it     |
-| Maintenance, shutdown, restart             | The task ends and the run stays. Nothing resumes it: no startup scan                |
-| Snapshot restore                           | `DELETE FROM chats` cascades the run away                                           |
+| During a run                              | What happens                                                                        |
+| ----------------------------------------- | ----------------------------------------------------------------------------------- |
+| Send, continue, command, `memoryRecord`   | Refused at admission beside `chatBusy`, 409 with text naming the panel              |
+| Preview                                   | Allowed: it writes nothing                                                          |
+| `memoryRebuild`                           | Reaches admission; refused unless it is a resume                                    |
+| Panel edit, revert, adopt, decline, reset | 409 `fenced`, as are a restore and an inherit into the chat                         |
+| Inherit from the chat, a chat file        | Allowed: they read live records                                                     |
+| Checkpoint save                           | Allowed: it holds live records                                                      |
+| Checkpoint load                           | Refused as `generating` (`loadLocked`), since `busy` also guards saves              |
+| Chat deletion                             | Allowed: `invalidate` ends the task, the cascade takes the run and its rows         |
+| Whole-chat replace                        | The task ends; `noteSourceReplaced` makes the run not resumable; abandon works      |
+| Message edit or confirmed delete          | Allowed: `reconcileMessageChanges` reacts on the live records, then the staged ones |
+| A window's source changed in flight       | `windowChanged`: the run stops, and a resume reads that window again                |
+| Automatic task                            | `startChecks` ends it `skipped` (`memoryRebuilding`)                                |
+| A live writer that got past admission     | `commitWindow` refuses `windowChanged`; `rebuildStore` answers that it holds no run |
+| Algorithm switched away                   | `rebuilding` is false, so no lock; the run waits, and the panel returns with it     |
+| Maintenance, shutdown, restart            | The task ends and the run stays. Nothing resumes it: no startup scan                |
+| Snapshot restore                          | `DELETE FROM chats` cascades the run away                                           |
 
 ### The cost preview
 
@@ -241,6 +241,8 @@ same buttons. It starts nothing. A chat with no such run has nothing to compare,
   Structured Memory slice 6b, plan.
 - A backfill adds events and new pages and leaves current state alone: existing pages, the scene, and threads learn
   nothing from it. A rebuild refreshes them. Decision: Structured Memory slice 6b, plan.
+- A rebuild forgets reverts on sections with no mark: such a section is written anew, its history goes, and the writer
+  can propose the change again. Decision: Structured Memory slice 7b, plan.
 - A person's state change on a writer's thread does not survive a rebuild: only `openedBy` says whose a thread is.
   Decision: Structured Memory slice 6b, plan.
 - Old receipts stay on their messages, with their event and run ids, as on a copied chat. Decision: Structured Memory

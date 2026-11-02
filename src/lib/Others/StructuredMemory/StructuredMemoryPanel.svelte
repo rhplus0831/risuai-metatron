@@ -21,6 +21,7 @@
         newestMemoryReceipt,
         readStructuredMemoryContents,
         resetStructuredMemorySummaries,
+        takeMemoryPanelTarget,
         type MemoryPanelTabProps,
         type MemoryPanelTarget,
         type StructuredMemoryResult,
@@ -54,7 +55,8 @@
     // The memory panel of a Structured Memory chat: `App.svelte` mounts it in place of the HypaV3 modal,
     // under the same `hypaV3ModalOpen` store. A tab is one component taking `MemoryPanelTabProps`, mounted
     // while it shows, so opening it is its first read and a new entry here adds one. `open` takes the
-    // panel to a record in another tab, and `jump` out of the panel to a message.
+    // panel to a record in another tab, and `jump` out of the panel to a message. A receipt's link opens
+    // the panel at a record too: it asks before the panel exists, so the panel reads that as it mounts.
     //
     // A tab reads again each time `refresh` moves: on the button, and when the panel stops being
     // read-only, which is when a memory task or a record-now job has finished writing. It joins held
@@ -413,6 +415,11 @@
     function open(target: MemoryPanelTarget) {
         tab = target.tab;
         asked = { ...target, chatKey };
+    }
+
+    const requested = untrack(() => takeMemoryPanelTarget(chatRef));
+    if (requested) {
+        open(requested);
     }
 
     /** A person's choice of tab: nothing a jump asked for carries over. */

@@ -2239,3 +2239,226 @@ it("refuses held rebuild starts and resumes through the same job admission as re
     });
     expect(memorySnapshot(s, chatId)).toEqual(before);
 });
+
+it("restores a writer change's text, evidence and marks once and counts only later unretracted events", async () => {
+    const s = await server();
+    const earlier = {
+        body: "The gate was closed.",
+        provenance: ["old"],
+        sources: [{ messageId: "old-message", hash: "old-hash", index: 0 }],
+        userCorrected: true,
+        disputed: true,
+        unsupported: true,
+        pinned: true,
+        suppressed: true,
+    };
+    const p = page("p", "The gate is open.");
+    p.sections[0] = {
+        ...p.sections[0],
+        provenance: ["opening"],
+        sources: [],
+        locked: true,
+        pinned: true,
+        suppressed: true,
+    };
+    p.history = [
+        {
+            id: "change",
+            heading: "Facts",
+            before: earlier,
+            kind: "change",
+            eventId: "opening",
+            highlighted: true,
+            at: 2,
+        },
+    ];
+    const stale = s.write({
+        pages: [p],
+        events: [
+            event("old"),
+            event("opening"),
+            { ...event("removed"), status: "retracted" },
+            event("later"),
+            { ...event("stale"), status: "stale" },
+        ],
+    });
+    const reverted = await answer(
+        await s.json(`${base}/revert`, { revision: stale, pageId: "p", historyId: "change" }),
+    );
+    expect(reverted).toMatchObject({
+        reverted: true,
+        laterEvents: 2,
+        data: {
+            sections: [{ ...earlier, heading: "Facts", locked: true, updatedAt: Date.now() }],
+            history: [
+                { ...p.history[0], revertedBy: "user" },
+                {
+                    id: expect.any(String),
+                    heading: "Facts",
+                    kind: "revert",
+                    highlighted: false,
+                    at: Date.now(),
+                    before: {
+                        body: "The gate is open.",
+                        provenance: ["opening"],
+                        sources: [],
+                        pinned: true,
+                        suppressed: true,
+                    },
+                },
+            ],
+        },
+    });
+    expect(reverted.data.history).toHaveLength(2);
+    expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({
+        revision: reverted.revision,
+        data: reverted.data,
+    });
+    expect(
+        await answer(await s.json(`${base}/revert`, { revision: reverted.revision, pageId: "p", historyId: "change" })),
+    ).toEqual({ ...reverted, reverted: false, laterEvents: 0 });
+    expect(
+        await answer(await s.json(`${base}/revert`, { revision: stale, pageId: "p", historyId: "change" }), 409),
+    ).toMatchObject({ revision: reverted.revision });
+    expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({
+        revision: reverted.revision,
+        data: reverted.data,
+    });
+
+    const orphan = { ...p, id: "orphan", history: [{ ...p.history[0], eventId: "not-listed" }] };
+    const revision = s.write({ pages: [orphan] });
+    expect(
+        await answer(await s.json(`${base}/revert`, { revision, pageId: "orphan", historyId: "change" })),
+    ).toMatchObject({ reverted: true, laterEvents: 0 });
+});
+
+it("reverts compactions with their patch by either id and undoes repeated-event changes newest first", async () => {
+    const s = await server();
+    const snapshot = (body: string) => ({ body, provenance: [], sources: [] });
+    for (const historyId of ["patch", "compact"]) {
+        const p = page(historyId, "Shortened");
+        p.history = [
+            {
+                id: "patch",
+                heading: "Facts",
+                before: snapshot("Original"),
+                kind: "change",
+                eventId: "same-event",
+                highlighted: true,
+                at: 1,
+            },
+            {
+                id: "compact",
+                heading: "Facts",
+                before: snapshot("Long replacement"),
+                kind: "compact",
+                eventId: "same-event",
+                highlighted: true,
+                at: 1,
+            },
+        ];
+        const revision = s.write({ pages: [p] });
+        const result = await answer(await s.json(`${base}/revert`, { revision, pageId: p.id, historyId }));
+        expect(result.data.sections[0].body).toBe("Original");
+        expect(result.data.history).toEqual([
+            ...p.history.map((entry) => ({ ...entry, revertedBy: "user" })),
+            expect.objectContaining({ kind: "revert", before: snapshot("Shortened"), highlighted: false }),
+        ]);
+    }
+    const p = page("scene", "Third scene");
+    p.type = "scene";
+    p.history = [
+        {
+            id: "first",
+            heading: "Facts",
+            before: snapshot("First scene"),
+            kind: "change",
+            eventId: "repeat",
+            highlighted: true,
+            at: 1,
+        },
+        {
+            id: "second",
+            heading: "Facts",
+            before: snapshot("Second scene"),
+            kind: "change",
+            eventId: "repeat",
+            highlighted: true,
+            at: 1,
+        },
+    ];
+    let revision = s.write({ pages: [p] });
+    expect(
+        await answer(await s.json(`${base}/revert`, { revision, pageId: p.id, historyId: "first" }), 409),
+    ).toMatchObject({ reason: "superseded" });
+    const latest = await answer(await s.json(`${base}/revert`, { revision, pageId: p.id, historyId: "second" }));
+    expect(latest.data.sections[0].body).toBe("Second scene");
+    expect(latest.data.history[0].revertedBy).toBeUndefined();
+    const oldest = await answer(
+        await s.json(`${base}/revert`, { revision: latest.revision, pageId: p.id, historyId: "first" }),
+    );
+    expect(oldest.data.sections[0].body).toBe("First scene");
+
+    const edited = page("edited", "Writer text");
+    edited.history = [{ ...p.history[0], id: "writer" }];
+    revision = s.write({ pages: [edited] });
+    const personal = await answer(
+        await s.json(`${base}/edits`, {
+            revision,
+            edit: { kind: "section", pageId: edited.id, heading: "Facts", body: "My correction" },
+        }),
+    );
+    expect(personal.data.history.at(-1)).toMatchObject({ kind: "edit", highlighted: false });
+    expect(
+        await answer(
+            await s.json(`${base}/revert`, { revision: personal.revision, pageId: edited.id, historyId: "writer" }),
+            409,
+        ),
+    ).toMatchObject({ reason: "superseded" });
+    expect(await answer(await s.request(`${base}/records/pages/edited`))).toEqual({
+        revision: personal.revision,
+        data: personal.data,
+    });
+
+    const compact = page("trimmed", "Shortened");
+    compact.history = [
+        {
+            id: "compact",
+            heading: "Facts",
+            before: snapshot("Long replacement"),
+            kind: "compact",
+            eventId: "old",
+            highlighted: true,
+            at: 1,
+        },
+    ];
+    revision = s.write({ pages: [compact] });
+    expect(
+        await answer(await s.json(`${base}/revert`, { revision, pageId: compact.id, historyId: "compact" }), 409),
+    ).toMatchObject({ reason: "superseded" });
+});
+
+it("refuses non-writer and lost history entries and fences reverts throughout a rebuild", async () => {
+    const s = await server();
+    const p = page("p");
+    p.history = [
+        { id: "create", heading: null, before: null, kind: "create", eventId: "e", highlighted: true, at: 1 },
+        { id: "edit", heading: "Facts", before: null, kind: "edit", highlighted: false, at: 2 },
+        { id: "revert", heading: "Facts", before: null, kind: "revert", highlighted: false, at: 3 },
+        { id: "writer", heading: "Facts", before: null, kind: "create", eventId: "e", highlighted: true, at: 4 },
+    ];
+    const revision = s.write({ pages: [p] });
+    for (const historyId of ["create", "edit", "revert"])
+        await answer(await s.json(`${base}/revert`, { revision, pageId: "p", historyId }), 400);
+    expect(
+        await answer(await s.json(`${base}/revert`, { revision, pageId: "p", historyId: "evicted" }), 404),
+    ).toMatchObject({ reason: "recordGone" });
+    stageRun(s);
+    for (const stopped of [false, true]) {
+        if (stopped) s.store.memory.rebuild.noteStop(characterId, chatId, { epoch: s.epoch, reason: "cancelled" });
+        expect(
+            await answer(await s.json(`${base}/revert`, { revision, pageId: "p", historyId: "writer" }), 409),
+        ).toMatchObject({ reason: "fenced" });
+    }
+    expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({ revision, data: p });
+});

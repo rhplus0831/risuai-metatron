@@ -132,6 +132,24 @@ What an edit does (`edits.ts`):
 - [A repair](structured-memory-lifecycle.md#reconciliation-and-repairs) acts on an event, and reads the chat in that
   same step unless it is a retract.
 
+### The revert route
+
+`POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/revert`, `{ revision, pageId, historyId }`, capped at 64 KiB, answers
+`StructuredMemoryRevertAnswer`. Its checks and order are the edit route's, so a running or stopped rebuild refuses it
+409 `fenced`, and a write the swap would lose never happens. `revertChange` (`pages.ts`) undoes one writer's change:
+
+- Only a writer's section entry can be undone. A page's creation, an `edit`, and a `revert` are 400, and an entry the
+  bounded history lost is 404 `recordGone`. A repeat answers `reverted: false` through an empty change set.
+- A `compact` is one change with the entry just before it, by place and event, never by event id alone: a repeated
+  turn's scene rewrites share one. A `compact` whose patch left the history is 409 `reason: "superseded"`.
+- A later entry of the heading that still stands is 409 `superseded`, so undoing goes newest first and never overwrites
+  a later patch or a person's edit. A lock does not stop a revert.
+- The section takes the first `before` of the change, with its marks, or goes when that is null. The entries gain
+  `revertedBy: "user"`, and one `revert` entry keeps the text taken back, which the writer's next input reads.
+
+`laterEvents`, which the notice counts, is the non-retracted events after the change's own in insertion order, 0 when it
+is not listed.
+
 ### The restore route
 
 `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/restore` gives an imported chat the records its file held, after the
@@ -440,6 +458,11 @@ group is refused, and a full one is checked and restored.
   listener that needs the newest calls `getChatFromIndex`.
 - A chat past `MEMORY_REVISION_CHATS_MAX` waits its turn across reads, and one over the projection's byte cap keeps its
   last whole read's value.
+- A page's creation cannot be reverted: that would delete the page and everything citing it. Decision: Structured Memory
+  slice 7b, plan.
+- Two reverts newest first and then a branch cut between them keep the older entry's `revertedBy`, though the cut
+  brought its text back: the badge is wrong and the entry cannot be undone, and the writer is told nothing, since its
+  list comes from the `revert` entries the cut dropped. Decision: Structured Memory slice 7b, plan.
 - A change shows at the first read past a chat's `MEMORY_RECHECK_WINDOW_MS`, not the very next read. The refresh shares
   `authenticatedRouteLimiter`, and its cost is bounded per chat per tab: one `getChar` loop is one request a window, and
   a plugin walking chats through `getChatFromIndex` costs one request per chat per window.

@@ -1,8 +1,8 @@
 <script lang="ts">
     import { ChevronDownIcon, ChevronRightIcon } from "@lucide/svelte";
-    import { untrack } from "svelte";
+    import { tick, untrack } from "svelte";
     import { language } from "src/lang";
-    import { alertError } from "src/ts/alert";
+    import { alertError, alertToast } from "src/ts/alert";
     import {
         editStructuredMemory,
         memoryItemsUsed,
@@ -12,11 +12,13 @@
         memoryTextDiff,
         readStructuredMemoryContents,
         readStructuredMemoryRecord,
+        revertStructuredMemoryChange,
         type MemoryDiffPart,
         type MemoryPageHistoryRow,
         type MemoryPanelTabProps,
+        type StructuredMemoryResult,
     } from "src/ts/process/structuredMemory.svelte";
-    import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import CheckInput from "src/lib/UI/GUI/CheckInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
@@ -24,7 +26,9 @@
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import {
         MEMORY_CONTEXT_MODES,
+        STRUCTURED_MEMORY_HIGHLIGHT_MODES,
         STRUCTURED_MEMORY_LIMITS,
+        structuredMemoryHighlightOverride,
         type MemoryContextMode,
         type MemoryPage,
         type MemorySection,
@@ -38,12 +42,18 @@
     // The Pages tab: the chat's pages as a tree, and one page to read and correct. An edit is applied to
     // the tab's copy, sent, and a refusal puts the copy back with the notice and reads again; a success
     // keeps the answer, whose revision the next edit names. The tab sends what changed and never a
-    // record (`StructuredMemoryEdit`), so the server's own record decides everything else.
+    // record (`StructuredMemoryEdit`), so the server's own record decides everything else. A revert from
+    // a history row goes the same way, except that the server alone knows what it restores, so the copy
+    // stays as it is until the answer.
     //
-    // An open section editor keeps the body it opened on. A read that brings another body for it closes
-    // the editor with the `changed` notice: a draft written against old text must not clobber the
-    // writer's new text. Read-only keeps the draft and only turns Save off, and the read that comes when
-    // it falls applies the same rule. Everything shown is plain text.
+    // An open section editor keeps the body it opened on. A read or a revert that brings another body for
+    // it closes the editor with the `changed` notice: a draft written against old text must not clobber
+    // the writer's new text. Read-only keeps the draft and only turns Save off, and the read that comes
+    // when it falls applies the same rule. Everything shown is plain text.
+    //
+    // A jump can name a history entry: that entry's diff opens once its page is the copy, and comes into
+    // view once it has rendered, because the history sits below every section. The chat's own highlight
+    // mode is a chat field, written through the chat module and not through the routes.
 
     let { chatRef, readOnly, refresh, focus, open, jump }: MemoryPanelTabProps = $props();
 
@@ -55,6 +65,7 @@
 
     const text = language.structuredMemory.pages;
     const panelText = language.structuredMemory.panel;
+    const revertText = language.structuredMemory.revert;
 
     let contents = $state.raw<StructuredMemoryContentsAnswer | null>(null);
     let failure = $state<string | null>(null);
@@ -77,6 +88,9 @@
     let openEntry = $state<string | null>(null);
     let diff = $state.raw<MemoryDiffPart[] | "failed" | null>(null);
     let diffNumber = 0;
+    /** The history entry a jump asked for, until its page is the copy. */
+    let askedEntry: { pageId: string; historyId: string } | null = null;
+    let historyList = $state<HTMLElement>();
 
     const messages = $derived(findChat(chatRef)?.message ?? []);
     const usedPages = $derived(memoryItemsUsed(messages, "page"));
@@ -91,6 +105,7 @@
     const history = $derived(copy ? memoryPageHistoryView(copy.data) : []);
     const controlsOff = $derived(readOnly || sending);
     const draftFits = $derived(draft.trim() !== "" && draft.length <= sectionBodyChars);
+    const highlightMode = $derived(structuredMemoryHighlightOverride(findChat(chatRef)) ?? "");
 
     const sameChat = (ref: ChatRef) => ref.chaId === chatRef.chaId && ref.chatId === chatRef.chatId;
 
@@ -116,6 +131,43 @@
         return opened !== null && page.sections.find(({ heading }) => heading === opened.heading)?.body !== opened.base;
     }
 
+    /** Keeps `record` as the copy; an open editor it overruns closes with the notice, unless `noticed`. */
+    function keepRecord(record: StructuredMemoryRecordAnswer<"pages">, noticed = false) {
+        copy = record;
+        if (editorOverrun(record.data)) {
+            editor = null;
+            if (!noticed) {
+                alertError(memoryReadFailureText({ outcome: "refused", reason: "changed" }));
+            }
+        }
+    }
+
+    /**
+     * Opens the entry a jump asked for once its page is the copy, even one that stands open, and brings it
+     * into view when its diff has rendered, or failed to, unless a person moved on meanwhile. A lost entry
+     * opens nothing. A person's own click on a row never scrolls.
+     */
+    async function openAskedEntry() {
+        const asked = askedEntry;
+        if (!asked || asked.pageId !== copy?.data.id) {
+            return;
+        }
+        askedEntry = null;
+        const entry = history.find(({ id, heading }) => id === asked.historyId && heading !== null);
+        if (!entry) {
+            return;
+        }
+        openEntry = null;
+        await toggleEntry(entry);
+        await tick();
+        if (openEntry === entry.id && diff !== null) {
+            const row = [...(historyList?.querySelectorAll<HTMLElement>("[data-memory-history-id]") ?? [])].find(
+                ({ dataset }) => dataset.memoryHistoryId === entry.id,
+            );
+            row?.scrollIntoView?.({ block: "nearest" });
+        }
+    }
+
     /** Reads page `id` into the copy. `noticed`: a refused edit has just said the memory changed. */
     async function readRecord(id: string, noticed = false) {
         const ref = chatRef;
@@ -132,14 +184,9 @@
             }
             return;
         }
-        copy = result.value;
+        keepRecord(result.value, noticed);
         recordFailure = null;
-        if (editorOverrun(result.value.data)) {
-            editor = null;
-            if (!noticed) {
-                alertError(memoryReadFailureText({ outcome: "refused", reason: "changed" }));
-            }
-        }
+        void openAskedEntry();
     }
 
     /** Reads what the tab shows. While an edit is out the copy waits for its answer, which is newer. */
@@ -159,6 +206,9 @@
         if (id === selectedId) {
             return;
         }
+        if (askedEntry?.pageId !== id) {
+            askedEntry = null;
+        }
         selectedId = id;
         copy = null;
         recordFailure = null;
@@ -171,7 +221,12 @@
     $effect(() => {
         const target = focus;
         if (target) {
-            untrack(() => select(target.id));
+            untrack(() => {
+                const { id, historyId } = target;
+                askedEntry = historyId === undefined ? null : { pageId: id, historyId };
+                select(id);
+                void openAskedEntry();
+            });
         }
     });
 
@@ -186,11 +241,16 @@
     });
 
     /**
-     * Sends `edit` with `applied` as the copy meanwhile. A refusal restores the copy, shows the notice
+     * Sends one change of the copy through `request`, with `applied` as the copy meanwhile. `keep` takes
+     * the answer, and says whether it holds the page. Anything else restores the copy, shows the notice
      * (none for `epoch`, which halts on its own), and reads again, and that read decides whether an open
-     * editor survives. A section's own success closes its editor.
+     * editor survives.
      */
-    async function send(edit: StructuredMemoryEdit, applied: MemoryPage) {
+    async function sendChange<T>(
+        request: (ref: ChatRef, revision: string) => Promise<StructuredMemoryResult<T>>,
+        applied: MemoryPage,
+        keep: (answer: T) => boolean,
+    ) {
         if (sending || readOnly || !copy) {
             return;
         }
@@ -200,7 +260,7 @@
         // A read on its way may have been answered from before this edit.
         recordNumber += 1;
         copy = { ...before, data: applied };
-        const result = await editStructuredMemory(ref, before.revision, edit);
+        const result = await request(ref, before.revision);
         sending = false;
         if (result.outcome === "failed" || (result.outcome === "refused" && result.reason !== "epoch")) {
             alertError(memoryReadFailureText(result));
@@ -208,15 +268,45 @@
         if (!sameChat(ref)) {
             return;
         }
-        if (result.outcome === "ok" && result.value.kind === "pages") {
-            copy = { revision: result.value.revision, data: result.value.data };
-            if (edit.kind === "section") {
-                editor = null;
-            }
-        } else {
+        if (result.outcome !== "ok" || !keep(result.value)) {
             copy = before;
             read(result.outcome === "refused" && result.reason === "changed");
         }
+    }
+
+    /** Sends `edit` with `applied` as the copy meanwhile. A section's own success closes its editor. */
+    function send(edit: StructuredMemoryEdit, applied: MemoryPage) {
+        return sendChange(
+            (ref, revision) => editStructuredMemory(ref, revision, edit),
+            applied,
+            (answer) => {
+                if (answer.kind !== "pages") {
+                    return false;
+                }
+                copy = { revision: answer.revision, data: answer.data };
+                if (edit.kind === "section") {
+                    editor = null;
+                }
+                return true;
+            },
+        );
+    }
+
+    /** Undoes the writer's change `entry` names. The notice counts the later events that stay. */
+    function revert({ id }: MemoryPageHistoryRow) {
+        if (!copy) {
+            return;
+        }
+        const { data } = copy;
+        void sendChange(
+            (ref) => revertStructuredMemoryChange(ref, data.id, id),
+            data,
+            ({ revision, data: page, reverted, laterEvents }) => {
+                keepRecord({ revision, data: page });
+                alertToast(reverted ? revertText.done(laterEvents) : revertText.nothing);
+                return true;
+            },
+        );
     }
 
     /** `page` with `change` on the section under `heading`. */
@@ -264,6 +354,19 @@
                 { kind: "section", pageId: copy.data.id, heading, body: draft },
                 withSection(copy.data, heading, { body: draft }),
             );
+        }
+    }
+
+    /** The chat's own mode, or `""` for the default. Not under `controlsOff`, and only on a held chat. */
+    function setHighlightMode(value: string) {
+        if (controlsOff || !findChat(chatRef)) {
+            return;
+        }
+        const mode = STRUCTURED_MEMORY_HIGHLIGHT_MODES.find((entry) => entry === value);
+        if (mode) {
+            setChatMeta(chatRef, { structuredMemoryHighlight: mode });
+        } else {
+            setChatMeta(chatRef, {}, ["structuredMemoryHighlight"]);
         }
     }
 
@@ -382,32 +485,58 @@
     </section>
 {/snippet}
 
+{#snippet historyMarks(entry: MemoryPageHistoryRow)}
+    {#if entry.highlighted}
+        <span class="px-1.5 rounded-sm bg-darkbutton text-secondary-500" data-memory-history-highlighted>
+            {text.highlighted}
+        </span>
+    {/if}
+    {#if entry.reverted}
+        <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2" data-memory-history-reverted>
+            {revertText.reverted}
+        </span>
+    {/if}
+{/snippet}
+
 {#snippet historyRow(entry: MemoryPageHistoryRow)}
     {@const summary = `${codeText(text.historyKinds, entry.kind)}, ${new Date(entry.at).toLocaleString()}`}
-    <li class="flex flex-col min-w-0 py-1 break-words" data-memory-history={entry.kind}>
+    <li
+        class="flex flex-col min-w-0 py-1 break-words"
+        data-memory-history={entry.kind}
+        data-memory-history-id={entry.id}
+    >
         {#if entry.heading === null}
             <span class="flex flex-wrap gap-x-2 text-textcolor2">
                 <span>{summary}</span>
                 <span>{text.wholePage}</span>
+                {@render historyMarks(entry)}
             </span>
         {:else}
             {@const expanded = openEntry === entry.id}
-            <button
-                type="button"
-                class="flex items-center min-w-0 gap-2 text-left transition-colors hover:text-textcolor"
-                aria-expanded={expanded}
-                onclick={() => toggleEntry(entry)}
-            >
-                {#if expanded}
-                    <ChevronDownIcon size={16} class="shrink-0" />
-                {:else}
-                    <ChevronRightIcon size={16} class="shrink-0" />
+            <div class="flex flex-wrap items-center justify-between min-w-0 gap-2">
+                <button
+                    type="button"
+                    class="flex items-center min-w-0 gap-2 text-left transition-colors hover:text-textcolor"
+                    aria-expanded={expanded}
+                    onclick={() => toggleEntry(entry)}
+                >
+                    {#if expanded}
+                        <ChevronDownIcon size={16} class="shrink-0" />
+                    {:else}
+                        <ChevronRightIcon size={16} class="shrink-0" />
+                    {/if}
+                    <span class="flex flex-wrap min-w-0 gap-x-2 text-textcolor2">
+                        <span>{summary}</span>
+                        <span>{codeText(text.headings, entry.heading)}</span>
+                        {@render historyMarks(entry)}
+                    </span>
+                </button>
+                {#if entry.revertable}
+                    <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => revert(entry)}>
+                        <span data-memory-history-revert>{revertText.button}</span>
+                    </Button>
                 {/if}
-                <span class="flex flex-wrap min-w-0 gap-x-2 text-textcolor2">
-                    <span>{summary}</span>
-                    <span>{codeText(text.headings, entry.heading)}</span>
-                </span>
-            </button>
+            </div>
             {#if expanded}
                 {#if diff === "failed"}
                     <p role="alert" class="pl-6 text-draculared">{text.diffFailed}</p>
@@ -475,7 +604,10 @@
     {#if history.length === 0}
         <p class="text-textcolor2">{text.noHistory}</p>
     {:else}
-        <ul class="flex flex-col min-w-0 border-t divide-y divide-darkborderc border-darkborderc">
+        <ul
+            class="flex flex-col min-w-0 border-t divide-y divide-darkborderc border-darkborderc"
+            bind:this={historyList}
+        >
             {#each history as entry}
                 {@render historyRow(entry)}
             {/each}
@@ -484,6 +616,21 @@
 {/snippet}
 
 <div class="flex flex-col min-w-0 gap-2 text-sm" data-memory-pages data-read-only={readOnly}>
+    <label class="flex flex-col self-start gap-1">
+        <span class="text-textcolor2">{text.highlightMode}</span>
+        <SelectInput
+            size="sm"
+            value={highlightMode}
+            disabled={controlsOff}
+            onchange={(event) => setHighlightMode(event.currentTarget.value)}
+            data-memory-highlight-mode
+        >
+            <OptionInput value="">{text.highlightDefault}</OptionInput>
+            {#each STRUCTURED_MEMORY_HIGHLIGHT_MODES as mode (mode)}
+                <OptionInput value={mode}>{language.structuredMemory.highlightModes[mode]}</OptionInput>
+            {/each}
+        </SelectInput>
+    </label>
     {#if failure !== null}
         <p role="alert" class="text-draculared" data-memory-panel-failure>{failure}</p>
     {:else if !contents}

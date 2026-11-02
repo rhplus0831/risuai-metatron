@@ -16,7 +16,7 @@ import {
 import type { MemoryEventWrite } from "../../../data/memoryStore.ts";
 import type { MemoryHost } from "../host.ts";
 import type { CompactionTarget } from "./compact.ts";
-import { type CastRow, SCENE_SECTIONS } from "./pages.ts";
+import { type CastRow, PROMPT_TAKEN_BACK, revertEntries, SCENE_SECTIONS } from "./pages.ts";
 import type { PatchRow } from "./patches.ts";
 import type { WriterWindow } from "./window.ts";
 
@@ -111,7 +111,8 @@ const RULES = `Rules:
 - A quote (a key line's text and every "quote") is copied verbatim from one message under "Messages to record", at most ${LIMITS.keyLineChars} characters: never reworded, never joined across messages or across an [Image] mark, never taken from the context.
 - Page and thread ids come only from the lists shown. Never invent an id: a lasting subject with no listed page gets a "create" in pageCandidates, and its exact title stands in for its id in this answer. Leave out the rest.
 - pageCandidates name the pages whose facts these messages change: a listed page by "targetId", a new one by "create". Confidence runs from 0 to 1 and says how sure you are of it.
-- Each axis is an integer from 0 to ${LIMITS.axisMax}.`;
+- Each axis is an integer from 0 to ${LIMITS.axisMax}.
+- A scene field never repeats a text listed as taken back unless the messages establish it again.`;
 
 const PATCH_FORMAT = `Answer with one JSON object and nothing else:
 { "patches": [{ "pageId": "page id", "heading": "section heading", "op": "${MEMORY_PATCH_OPS.join(" or ")}", "body": "the section's whole new text, on an upsert", "conflict": "${MEMORY_PATCH_CONFLICTS.join(" or ")}, when it replaces a value", "was": "the value it replaces", "confidence": 0.9 }] }
@@ -122,6 +123,8 @@ const PATCH_RULES = `Rules:
 - An upsert replaces the section's whole text, so repeat what stays true in it.
 - Never patch a section marked locked or listed under notShown, and never leave a page with no text.
 - A character page uses only the headings it lists, and a heading marked empty has no text yet.
+- A section marked userCorrected holds a person's words: change it only when the event contradicts them.
+- A person undid what a page lists under takenBack: do not write that text again, and do not delete a section marked deleted there.
 - "conflict" is "change" when the story moved on from the old value, and "contradiction" when both cannot be true and the story does not say why, with "confidence" from 0 to 1 that the new value is right.`;
 
 const COMPACT_FORMAT = `Answer with one JSON object and nothing else:
@@ -217,7 +220,26 @@ function previousSlot(input: AnalysisInput): string {
     return lines.length === 0 ? NONE : `Context only: never quote it.\n${lines.join("\n")}`;
 }
 
-/** What the scene page says: its fixed sections and who is present, by page id. */
+/**
+ * What the scene slot lists of what a person took back of the scene, newest first, `PROMPT_TAKEN_BACK` at
+ * most: each line says so itself, because the text alone is what a prompt from before the revert shows as
+ * the scene.
+ */
+export function sceneTakenBackLines(scene: MemoryPage | null): string[] {
+    const headings: readonly string[] = SCENE_SECTIONS;
+    return (scene ? revertEntries(scene) : [])
+        .flatMap(({ heading, before }) =>
+            before && headings.includes(heading)
+                ? [`taken back from ${heading}: ${clampText(before.body, LIMITS.promptSectionSummaryChars)}`]
+                : [],
+        )
+        .slice(0, PROMPT_TAKEN_BACK);
+}
+
+/**
+ * What the scene page says: its fixed sections and who is present, by page id, and past the clamp, so a
+ * long scene cannot cut them, what a person took back of it.
+ */
 function sceneSlot(scene: MemoryPage | null): string {
     const lines = SCENE_SECTIONS.flatMap((heading) => {
         const body = scene?.sections.find((section) => section.heading === heading)?.body;
@@ -226,7 +248,8 @@ function sceneSlot(scene: MemoryPage | null): string {
     if (scene?.participants?.length) {
         lines.push(`participants: ${JSON.stringify(scene.participants)}`);
     }
-    return clampText(lines.join("\n"), LIMITS.promptSceneChars) || NONE;
+    const shown = clampText(lines.join("\n"), LIMITS.promptSceneChars);
+    return [...(shown === "" ? [] : [shown]), ...sceneTakenBackLines(scene)].join("\n") || NONE;
 }
 
 /** The slot values of one recording. */
