@@ -168,8 +168,8 @@ abandons.
 `GET .../cost?mode=rebuild|backfill|record&turns=1|2[&through=<id>]` answers `StructuredMemoryCostAnswer` and writes
 nothing. `calls` are windows, so it is the least a press spends: a window can add a patch call and compaction calls.
 `record` counts the marked events and stops at `maxWriterWindows`. `estimatedTokens` is `memoryCostTokens`, the windows'
-UTF-8 bytes over 3 plus `MEMORY_CALL_OVERHEAD_TOKENS` per call: analysis input only, an estimate, because a route has no
-job scope to reach a real tokenizer.
+UTF-8 bytes over 3 plus `MEMORY_CALL_OVERHEAD_TOKENS` per call: analysis input only,
+[an estimate](../audit/structured-memory-2026-11-03.md), because a route has no job scope to reach a real tokenizer.
 
 Rebuild and backfill always ask. `pressMemoryRecord` asks at 2 calls or more, and when the read fails, naming the cost
 as unknown. `recordTurns` takes the cadence for the windows.

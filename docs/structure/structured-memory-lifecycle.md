@@ -453,8 +453,9 @@ takes over from it.
   the event reads `missing` or `changed` for the panel. Decision: Structured Memory slice 5b, plan.
 - A checkpoint save reads and hashes every record's text in one synchronous step, however little changed, and runs are
   never pruned while each holds whole prompts. So a save's event-loop hold grows with the chat's memory, on every
-  automatic checkpoint and every load's safety checkpoint: about 660 ms for 64 MB of runs on tmpfs. A load parses every
-  record on top. Decision: Structured Memory slice 5d, plan.
+  automatic checkpoint and every load's safety checkpoint:
+  [about 500 ms for 79 MB of runs](../audit/structured-memory-2026-11-03.md). A load parses every record on top.
+  Decision: Structured Memory slice 5d, plan.
 - A tab closed before [the inherit](#copies-and-branches) posts leaves the new chat with no records and no notice:
   nothing retries it. Decision: Structured Memory slice 5c, plan.
 - A send that reaches the new chat before the inherit is fenced or finds records, so that chat keeps a gap. Decision:
