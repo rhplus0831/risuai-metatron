@@ -840,7 +840,7 @@ Files: new `server/src/prompt/memory/structured/adopt.ts` and tests; `routes/str
 
 ### Slice 6c: the adoption choice and reset (D11, D12; needs 6a, 5g) — _hard_
 
-Files: `server/src/prompt/memory/structured/{writer,recordJob}.ts`, `server/src/prompt/assemble.ts`, `memoryStore.ts`,
+Files: `server/src/prompt/memory/structured/{writer,recordJob,step}.ts`, `server/src/prompt/assemble.ts`, `memoryStore.ts`,
 `server/src/data/chatStore.ts`, `server/src/data/resourceStore.ts`, `routes/structuredMemory.ts`,
 `shared/structuredMemory.ts`, `shared/diagnostics.ts`, the panel, `src/lang/en.ts`, tests.
 
