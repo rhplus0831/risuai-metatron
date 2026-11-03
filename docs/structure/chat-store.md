@@ -4,10 +4,11 @@
 
 - Owns the chat module and write protocol, its view of server jobs (locks, stream buffer, and hydration), chat field
   drafts, checkpoints, and the client side of the restore floor.
-- Not here: save loop, conflicts, live updates → [resource sync](resource-sync.md); chat journal, recovery drafts →
-  [draft recovery](draft-recovery.md); database model, records → [persistence](persistence.md); server chat store,
-  checkpoint service, floor checks → [server resources](server-resources.md); the send →
-  [chat pipeline](chat-pipeline.md); the checkpoint dialog → [UI and theming](ui-theming.md).
+- Not here: save loop, conflicts → [resource sync](resource-sync.md); live updates → [live updates](live-updates.md);
+  chat journal, recovery drafts → [draft recovery](draft-recovery.md); database model, records →
+  [persistence](persistence.md); server chat store, checkpoint service, floor checks →
+  [server resources](server-resources.md); the send → [chat pipeline](chat-pipeline.md); the checkpoint dialog →
+  [UI and theming](ui-theming.md).
 - `Decision:` plan names resolve through [the archive](../archived-plan/README.md).
 
 ## Files
@@ -79,7 +80,7 @@
 ### Locks and streaming
 
 - `isMessageLocked`, `isChatGenerating`, `isCharacterGenerating`, `lockedChatKeys()` count this tab's job locks and the
-  [feed's](resource-sync.md#feed-locks). A character's permanent deletion and different-id replacement refuse locally on
+  [feed's](live-updates.md#feed-locks). A character's permanent deletion and different-id replacement refuse locally on
   `isCharacterGenerating`.
 - `isCharacterStreamedHere` counts this tab's job locks only: the list read recovery of `hydrate` waits on it
   (`refreshCharacter`) without blocking an observing tab, and a flush depending on that read rejects with
@@ -225,7 +226,7 @@
 - `noteRemoteChat`: a held chat at an older revision is read again once idle (`canRefreshChat`: no pending or in-flight
   work, generation of this tab, deferral, quarantine, or unexpired retry block). A notice at or below the held revision
   drops, then and once this client holds it another way. A chat the mirror lacks of a held character asks for the list.
-- A loaded chat takes the entry's [fitting patch or delta](resource-sync.md#chat-live-updates). An unloaded member
+- A loaded chat takes the entry's [fitting patch or delta](live-updates.md#chat-live-updates). An unloaded member
   settles without a list read (`applyRemoteSummary`) when the entry is newer than the held revision and not below the
   acknowledged floor and the chat is idle and not stale: a `summary` naming that chat and revision replaces the held
   one, a `summaryBase` equal to the held revision keeps it. Only the summary and revision change, and the notice

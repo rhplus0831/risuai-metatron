@@ -13,7 +13,7 @@
   - Plugin hooks and the API a plugin sees → [plugins](plugin-sandbox.md); the MCP clients a callback reaches →
     [mcp](mcp.md).
   - Provider request bodies → `llm-requests.md`; server-side proxy routes → `self-host-server.md`.
-  - The live-update feed's save loop → [resource-sync](resource-sync.md#feed-connection); the durable request history →
+  - The live-update feed's save loop → [resource-sync](live-updates.md#feed-connection); the durable request history →
     [diagnostics](diagnostics.md).
   - The asset transport → [assets](assets.md); the alerts a notice maps to → [global-api](global-api.md).
 
@@ -44,7 +44,7 @@ The transport below retains this tab's in-memory log.
   context names (`PluginCallContext.channelCall`) while it runs in this tab and the server has not cancelled it, else
   null. `request.ts`'s send guard reads it; it never picks a callback for a request.
 - `src/ts/network/eventFeed.ts`: the client of the live-update socket `/api/events/ws`;
-  [documented with the save loop it feeds](resource-sync.md#feed-connection).
+  [documented with the save loop it feeds](live-updates.md#feed-connection).
 - `src/ts/network/socketLiveness.ts`: liveness of the feed and job sockets (the server pings both every 15 s), stated in
   its comments, its windows in `CONNECT_TIMEOUT_MS` (10 s), `STALE_AFTER_MS` (45 s), `WATCHDOG_INTERVAL_MS` (15 s),
   `RESUME_AFTER_HIDDEN_MS` (30 s), and `RESUME_FOLD_MS` (250 ms). The caller abandons its socket on each callback.

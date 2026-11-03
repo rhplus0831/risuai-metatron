@@ -1,10 +1,12 @@
-# Resource Sync: Save Adapter, Transport, Live Updates
+# Resource Sync: Boot, Save Adapter, Conflicts, Transport
 
 ## Scope
 
-- Owns the boot load and boot cache, the save adapter, the resource transport, and the live-update client.
-- Not here: [the chat module](chat-store.md), [the journal and recovery](draft-recovery.md),
-  [records and shapes](persistence.md), [the server](server-resources.md).
+- Owns the boot load and boot cache, the save adapter, conflicts and merges, credential writes, and the resource
+  transport.
+- Not here: [the live-update client, feed locks, and the restore halt](live-updates.md),
+  [the chat module](chat-store.md), [the journal and recovery](draft-recovery.md), [records and shapes](persistence.md),
+  [the server](server-resources.md).
 - A `Decision:` plan name resolves through [the archive](../archived-plan/README.md).
 
 ## Files
@@ -18,8 +20,6 @@
   `sendBatchOnUnload` send a `keepalive` batch with a pre-signed token.
 - `src/ts/storage/{bootCache.ts,recordMerge.ts,readDeadline.ts}`: cache validation, record merge policy, and read
   deadlines.
-- `src/ts/network/eventFeed.ts`: the client of `/api/events/ws` (`shared/events.ts`); `src/ts/network/socketLiveness.ts`
-  holds its timers and resume triggers.
 - `src/ts/bootstrap.ts` `loadData`: boot ordering and the handoff from record installation through sync and feed
   startup.
 
@@ -262,7 +262,7 @@
 - Chat-level ops, a multi-id `remove`, and ops on other messages keep the retry path. The sent sequence settles when
   none is kept.
 - The split follows the server's ids, not this tab's locks, so an observer and a tab whose follow ended `lost` are
-  alike. It is the fallback for an edit sent before the [lock frame](#feed-locks).
+  alike. It is the fallback for an edit sent before the [lock frame](live-updates.md#feed-locks).
 
 ### Record hydration
 
@@ -284,101 +284,6 @@
   alerts; other failures keep the queue.
 - `awaitSecretWrites()` throws on a refused op, on only cleanups behind an unsaved deletion, or when halted; `auxFetch`
   calls it first. Unload sends no credential ops.
-
-### Feed connection
-
-- `startEventFeed()` signs a fresh JWT per attempt and reconnects with jittered backoff, 1 s doubling to 30 s, reset
-  only after a reconcile succeeds.
-- A `hello` of the loaded epoch runs `replaceFeedLocks`, then `reconcileRemote` from the advertised map when
-  `hello.digest` matches `revisionDigest`; otherwise it fetches `listRevisions` first. A `hello` or `epoch` frame of
-  another epoch [halts](#restore-halt).
-- The map holds the last advertised revisions, independently of held records. A listing seeds it, overlaid with changes
-  since `hello`; the fetched listing itself goes unchanged to reconciliation and memory fences.
-- A failed reconcile closes the connection and schedules the reconnect itself, since `close` may never come. A listing
-  past `RECONCILE_DEADLINE_MS` (30 s) fails it: pings keep a socket alive while its read is stuck.
-- One connection is current (`generation`): anything late from an older one does nothing, except its listing's
-  epoch-mismatch error, which still resets the memory tasks and the map.
-- A connection not open within 10 s (authentication included), or frameless for 45 s while visible, is abandoned without
-  waiting for `close`. When the page comes back (30 s hidden, `resume`, `online`) it is replaced at once, a pending
-  retry included (`resumeReconnect`).
-
-### Live updates
-
-- `noteRemoteChanges` drops a ref not newer than the held revision; `inlays` and `pluginPermissions` go to their owners.
-- A record patch applies at once when `applyRemotePatch` can: held at exactly its base (same epoch and incarnation, one
-  write before), no local change (`canApplyRemote`). A character's fields go in raw, never a fixed, client-only, or
-  inherited one; other kinds except `llmSecrets` take `patchedRecord` and `applyToMirror` as a read would.
-- A patch that cannot apply waits with its entry, retried by each cycle and refresh pass before reading; what it cannot
-  take is read whole.
-- A newer mirrored record, an unheld character included, waits in `remoteRecords`, as does a singleton with no local
-  record (`pluginStorage` absent at boot). One written locally but unsaved is not adopted: its create's 409 decides.
-- The refresh queue (50 ms later) reads them in one `readRefs` beside any write. An entry at or below the held revision
-  drops unread; one with a local change (`canApplyRemote`) waits. Generating alone holds no character back.
-- After the read it re-checks, then applies through `applyToMirror`, the saved text the mirror's projection: no discard,
-  settled key, or notice. `reconcileSelection()` follows `presets`, `personas`, `modelPresets`. A new character comes
-  with its chat list; a chat or order ref that beat its insertion reads the list again.
-- A deleted character is removed (selected → home) only when the held revision is unchanged since issue, else read
-  again. Its chats' unsent work is discarded with the notice and reported (`forgetCharacter` with `discard`); a queued
-  delete it fulfils settles.
-- A read settles only the notice it was issued for or a later one its answer covers.
-- `llmSecrets` adopts as a credential reply does; a local edit meeting a changed server sibling waits (`blockedLocal`)
-  for the 409.
-- `MAX_REMOTE_READS` (1,000) caps records, chat lists (new characters' first), and idle chats per read.
-- `reconcileRemote` compares every listed row the same way, treats a held row no longer listed as a deletion, and lets
-  each owner reconcile its kind.
-- The translator and HypaV3 `selectedId` are shared across tabs; preset and persona selections stay per tab.
-
-### Chat live updates
-
-- A chat ref reaches `noteRemoteChat` with its by-id change (`patch`, or `delta` with `metaFields`; at most one) and
-  [summary knowledge](chat-store.md#summaries-and-refresh).
-- `applyRemoteChatPatch` applies it with no read or notice only when the chat is loaded, idle (`canRefreshChat`), not
-  stale, and held at exactly `baseRevision` (chat revisions advance by op count). It queues nothing and never settles a
-  job hydration.
-- `stagedMetaFields` checks a delta against the held copy before anything changes; a field named twice, `message`, a
-  top-level `__proto__`, or a merge into a non-map is a miss. A delta never goes through `mergeChatMeta`, which queues a
-  write.
-- A miss marks nothing stale and takes the ordinary notice and idle refresh. A newer order ref or a new chat queues the
-  chat list.
-- A chat an idle read or list finds gone is removed only when its held revision is unchanged since issue, never by
-  creating a replacement. A list keeps out a chat deleted here but unsaved, and drops a notice only when the adopted
-  copy covers it.
-
-### Feed locks
-
-- A `change` frame's locks reach `noteRemoteStreaming` after its refs, so a fitting `begin` patch puts the row in before
-  its lock; otherwise the lock is installed by id and the row arrives locked.
-- Each listed chat's list replaces its `feedLocks`; a listed message is locked whether or not the mirror holds it, one
-  unlisted or of another generation is released.
-- A feed lock is a lock only: the lock readers (`isMessageLocked`, `assertUnlocked`, `lockedChatKeys`, so the sidebar
-  status and the memory and lore-draft fences) and trimming count it. It holds no text, retires nothing, and never holds
-  the save loop: `canRefreshChat`, the conflict deferral, `acceptRemoteCollection`, and deferred reloads use
-  `isChatStreamedHere`, list recovery `isCharacterStreamedHere` (this tab's job locks only), so an observer keeps taking
-  checkpoint patches.
-- A lock is released by a list without it, an adopted whole read lacking it, the chat found gone (`removeRemoteChat`,
-  `dropChatRevision`), and `forgetCharacter`. None retires, so the job's next write locks again.
-- Whole reads carry `ChatReadRecord.streaming` (sampled with the read, never on summaries) and are stamped at issue
-  (`issueChatReadStamp`). An adopted read replaces the chat's locks, whatever the revisions, when issued after the
-  chat's newest feed list, the newest `hello`, and its last honored read; otherwise its list is ignored, so a delayed
-  answer never reinstalls a released lock.
-- A copy without a list or a stamp (an older server) releases only locks announced at an older revision than its own, or
-  at none.
-- `hello` carries the whole lock snapshot; `replaceFeedLocks` installs it before the reconcile starts, so the
-  reconcile's reads decide.
-
-### Restore halt
-
-- A tab learns of a restore or import from the `epoch` frame, a reconnect's `hello`, or its next request (412, a changed
-  epoch). `haltForRestore` stops saving, shows `resourceRestored` through `alertTerminal`, and reloads once the user
-  acknowledges and the [restore snapshot](draft-recovery.md#journal-writes) committed, at most 1 s from the halt: a
-  hanging or failed journal still reloads.
-- `beforeRestoreReload` and the notice run synchronously inside the halt. A transform the restore refused shows no toast
-  (`transformClient.ts`). Any resource request's 412, or a read of another epoch, halts the same way.
-- `setMutationAdmission` checks right before a mutation goes out, after signing. A cycle stops before each batch and
-  after each answer once halted (captured chat work is requeued); queue reads abort and nothing they return applies.
-- A job a restore or import ended (`maintenance`) starts `watchForRestore`: one small read a second, each aborted past 5
-  s, for two minutes, so a send's owner is told with its socket down; the job's error shows only when nothing was
-  replaced.
 
 ### flushResources
 
@@ -453,15 +358,15 @@
 
 ## Tests
 
-- Focused: `pnpm --silent test:agent src/ts/storage/tests/resourceSync*.test.ts src/ts/network/eventFeed.test.ts`.
-  `slow`: a long-chat case in `src/ts/storage/tests/resourceSyncHydration.test.ts`. `e2e`: `e2e/terminalNotice.spec.ts`.
+- Focused: `pnpm --silent test:agent src/ts/storage/tests/resourceSync*.test.ts`. `slow`: a long-chat case in
+  `src/ts/storage/tests/resourceSyncHydration.test.ts`. `e2e`: none of its own; the live-update client's are
+  [live-updates](live-updates.md#tests).
 - Adapter tests use the real Svelte module, a fresh module graph, and fake timers per test.
 - `src/ts/storage/tests/fakeResourceServer.ts`: an in-memory `authFetch` resource-route fake with batch, lost-answer,
   failure, and ordering hooks; `src/ts/storage/tests/serverKinds.ts` and `materialize(fake)` keep its record set aligned
   with the server.
 - `src/ts/storage/tests/storeBackedServer.ts`: an `authFetch` stand-in over the real store (SQLite in memory);
   `streamingForChat` selects whole-read lock lists, with no locks by default to model an older server.
-- `src/ts/network/tests/eventSocket.ts` (`FakeSocket`): the shared fake browser socket.
 - Not tested through summaries: most adapter tests and `src/ts/storage/tests/mutationStoresHarness.ts` boot whole chats.
   Only `src/ts/storage/tests/resourceSyncLazyChats.test.ts` and
   `src/ts/storage/tests/resourceSyncAbsentSingleton.test.ts` boot the adapter from summaries throughout.
@@ -472,19 +377,10 @@
 
 - A single oversized chat group is quarantined before dispatch and cannot be chunked; see
   [Batch composition](#batch-composition) for the cap. An edit or Retry still over it quarantines again silently.
-- A tab can still edit a generating reply before the job's first write's frame arrives (`hello` cannot list a message
-  before `begin`), or, with an older server, after an adopted newer read released the locks, until the next write
-  (`CHECKPOINT_INTERVAL_MS` while streaming; longer while a job waits). The edit is [dropped](#generating-refusals), the
-  mirror shows it until the whole read, and with no retry block a later edit can land over the finished reply.
-- The same window decides when an observer refuses a permanent character delete or different-id replace
-  (`isCharacterGenerating`). A fix would announce the job's chat reservation in the feed and read lock lists, locking
-  the chat's tail.
 - A page restored from the back-forward cache may still wait for an unload answer; `flushResources` gives up after 20 s.
 - A save's echo arriving before its acknowledgement schedules a cycle 50 ms later (`noteRemoteChanges`), so continuous
   typing can save more often than the debounce. [Measurements](../audit/projection-bindings-2026-10-04.md) no longer
   show the extra saves, but the 50 ms echo cycle remains; coalescing would bound it.
-- A noticed idle chat read whole (`readIdleChats`) before the pass's trim may be evicted once its notice settles,
-  wasting the read.
 
 ### Limitations
 
@@ -504,17 +400,11 @@
   parent's server-side deletion still clears it. Decision: Static Audit Fixes SA3, archive.
 - [Isolated](#refusals-and-quarantine) requests are atomic only per request. Decision: `resourceSync.svelte.ts`
   `isolateBatches`.
-- Two tabs editing one record converge only through the 409 path: live updates skip a record with an unsent change.
-  Decision: Durable Drafts D11, D8, archive.
 - A preset's record and credential are separate requests: a refused credential leaves the entry keyless, and a deleted
   owner's entry stays until cleanup succeeds. Decision: a preset is saved before its key (`resourceSync.svelte.ts`
   credential writes).
 - Keepalive has no prefix send: an ineligible batch waits for normal saving and the journal. Decision: Durable Drafts
   D7, archive.
-- A loaded chat noticed without a by-id change is read whole when idle: a reply over `MAX_FEED_PATCH_BYTES` (64 KiB)
-  into a chat another tab has open costs up to one read per checkpoint. Decision: no by-id read for an over-cap change:
-  `delta` removed the measured large-metadata case, and no measurement shows how often an observer meets the rest (ST04,
-  [server migration audit](../research/deep-audit-with-fable/server-migration-audit.md)).
 
 ### Gotchas
 

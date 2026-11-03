@@ -9,7 +9,7 @@
   parts of `server/src/data/{resourceStore,chatStore}.ts` (`coalescedChat`, `budgetedEntries`, `applyGroup`'s entries,
   `chatFeedChange`, `ChatWriteChange`).
 - Not here:
-  - The socket's client and the save loop it feeds → [resource-sync](resource-sync.md#feed-connection).
+  - The socket's client and the save loop it feeds → [resource-sync](live-updates.md#feed-connection).
   - The store's commits, chat summaries, and the epoch → [server resources](server-resources.md).
   - Generation jobs, the job socket, and the job channel → [server generation](server-generation.md).
   - The memory task registry whose statuses the `memoryTask` frames carry → [memory](memory.md#background-memory-task).
@@ -130,7 +130,7 @@ carries what it knows about the chat's summary, and its by-id change when that f
 - [Server generation](server-generation.md): the job socket's `chatPatch` keeps the whole `meta` where an entry switches
   to a delta, a lock release with no refs (`publishStreaming`) is a frame of its own, and the memory task registry
   supplies the `memoryTask` frames.
-- The client, [resource-sync](resource-sync.md#feed-connection), reconciles on reconnect and applies the entry forms.
+- The client, [resource-sync](live-updates.md#feed-connection), reconciles on reconnect and applies the entry forms.
 
 ## Invariants
 
@@ -142,8 +142,8 @@ carries what it knows about the chat's summary, and its by-id change when that f
 
 - A new frame kind: add it to `shared/events.ts`, send it through `routes/events.ts` `send` so
   [frame admission](#frame-admission) measures it, and teach the client (`src/ts/network/eventFeed.ts`,
-  [resource-sync](resource-sync.md#feed-connection)) to apply it. A new optional payload of a `change` entry goes
-  through `budgetedEntries`, so the [publication budget](#publication-budget) counts it.
+  [resource-sync](live-updates.md#feed-connection)) to apply it. A new optional payload of a `change` entry goes through
+  `budgetedEntries`, so the [publication budget](#publication-budget) counts it.
 
 ## Tests
 
@@ -152,7 +152,7 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 - `chatMetadataCoalescingEvents.test.ts` identifies the job fixture's SQLite connection by its epoch and counts
   transactions on it, so background writes in other stores cannot alter the coalescing assertion.
 - Feed: `pnpm --silent test:agent server/src/tests/{changeFeed,events,chatMetadataCoalescingEvents}.test.ts`.
-- Not tested: none recorded here; the client's reconnect and replay are [resource-sync](resource-sync.md)'s.
+- Not tested: none recorded here; the client's reconnect and replay are [live-updates](live-updates.md)'s.
 
 ## Known Hazards
 

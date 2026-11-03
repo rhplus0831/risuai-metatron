@@ -13,7 +13,7 @@ started, since plugin hooks need a tab and the phone's screen turns off) and its
 the job channel already has; the [server generation guide](../structure/server-generation.md) (Generation
 channels, Job chat and barriers), the [network and jobs guide](../structure/network-jobs.md) (Generation job client, Job
 channel), the [chat pipeline guide](../structure/chat-pipeline.md) (Stop for a job this tab does not follow,
-Replays and uncertain creates), the [resource sync guide](../structure/resource-sync.md) (Live updates), and the
+Replays and uncertain creates), the [live updates guide](../structure/live-updates.md) (Live updates), and the
 [plugins guide](../structure/plugin-sandbox.md) (Job owner presence) at `186b9da71`. The 2026-11-04
 revision applies the owner's decisions on the audit's
 [per-plan report](../audit/plan-design-audit-2026-11-04/job-handoff.md) and on an independent second review of
@@ -26,7 +26,7 @@ mapping, and the Reroll Candidates Slice 1 overlaps (**Slices**) corrected.
 Owning guides when sliced: [server generation](../structure/server-generation.md) (the owner and viewer
 sockets, takeover, the handoff offers), [network and jobs](../structure/network-jobs.md) (the tab's follow roles, the
 worker policy, the offers store), [chat pipeline](../structure/chat-pipeline.md) (what the creator's tab shows
-after a handoff), [resource sync](../structure/resource-sync.md) (the new live-update frames and the client
+after a handoff), [live updates](../structure/live-updates.md) (the new live-update frames and the client
 register message), [settings and i18n](../structure/settings-i18n.md) (the device toggles and name),
 [plugins](../structure/plugin-sandbox.md) (Job owner presence: what a hook may assume about the tab it
 runs in), [test harness](../structure/test-harness.md) (the browser check).

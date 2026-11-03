@@ -7,10 +7,10 @@
 - Paths: `src/ts/storage/` except the files the guides below own, `src/ts/toggles/`, `src/ts/chatLoadPages.ts`, and the
   persisted shapes in `shared/` (a shape's meaning stays with its original module's guide, such as `shared/llm.ts` →
   [LLM requests](llm-requests.md)).
-- Not here: [save loop, boot, live updates](resource-sync.md), [chat module, checkpoints](chat-store.md),
-  [journal, recovery](draft-recovery.md), [server store, routes, archives](server-resources.md),
-  [backup UI, upstream converters](backup-sync-hub.md), [asset client and queues](assets.md#asset-client),
-  [import transports](characters-modules.md#import-transports).
+- Not here: [save loop, boot](resource-sync.md), [live updates](live-updates.md),
+  [chat module, checkpoints](chat-store.md), [journal, recovery](draft-recovery.md),
+  [server store, routes, archives](server-resources.md), [backup UI, upstream converters](backup-sync-hub.md),
+  [asset client and queues](assets.md#asset-client), [import transports](characters-modules.md#import-transports).
 - A `Decision:` plan name resolves through [the archive](../archived-plan/README.md).
 
 ## Files

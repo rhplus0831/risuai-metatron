@@ -143,7 +143,7 @@
   captured versions, keeps unchanged layers, and reports `journalSkipped` `tooLarge` at most once per key and content
   generation. Full text eligibility and exact UTF-8 budgets stay the journal's boundary.
 - The restore snapshot (`haltForRestore`) is one write outside that queue, within the bound of the
-  [restore halt](resource-sync.md#restore-halt). `captureRestoreJournal` takes, synchronously and before anything
+  [restore halt](live-updates.md#restore-halt). `captureRestoreJournal` takes, synchronously and before anything
   settles, every record view with a desired or written layer or a transaction in flight, and every chat/order view (an
   empty projection included).
 - It goes under each view's old epoch, with every layer of the scope written or nulled at one fresh version issued after

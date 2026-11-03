@@ -4,7 +4,7 @@ import { MAX_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../../shared/resource
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
-// Per `docs/structure/resource-sync.md` ("Serialization", "Record patches", "Record merge", "Live updates"),
+// Per `docs/structure/resource-sync.md` ("Serialization", "Record patches", "Record merge") and `docs/structure/live-updates.md` ("Live updates"),
 // a held character or `modules` record is saved as a record patch (`updateOperation`), another tab's `modules` patch is
 // applied from the change feed without a read (`applyModulesPatch`), under the real boot, the real
 // save loop, the real mutation modules, and the real server store with its normalizers and change

@@ -156,7 +156,8 @@ completed plans and retrieval commands.
 | The globalApi facade, save entry points, writers, chat fold, utils, alerts, notices, Iris             | [global-api](docs/structure/global-api.md)                       |
 | Request history, checked failures, diagnostics, reports, support shares                               | [diagnostics](docs/structure/diagnostics.md)                     |
 | Persisted fields, records, settings views, normalization, chat bindings                               | [persistence](docs/structure/persistence.md)                     |
-| Boot load and cache, save loop, conflicts, credential writes, live updates                            | [resource-sync](docs/structure/resource-sync.md)                 |
+| Boot load and cache, save loop, batches, conflicts and merges, credential writes, transport           | [resource-sync](docs/structure/resource-sync.md)                 |
+| Live updates in the tab: feed connection, record and chat updates, feed locks, restore halt           | [live-updates](docs/structure/live-updates.md)                   |
 | Chat module, chat writes, job hydration, chat checkpoints, restore floor                              | [chat-store](docs/structure/chat-store.md)                       |
 | Draft journal, composer rows, boot recovery, recovery drafts                                          | [draft-recovery](docs/structure/draft-recovery.md)               |
 | Send/job client, stages, prompts, lore, commands, inlays, groups, reroll, message search              | [chat-pipeline](docs/structure/chat-pipeline.md)                 |
@@ -210,7 +211,9 @@ coupling links.
   `src/ts/storage/{chatStore.svelte,chatEdits,chatFieldDraft.svelte,localLoreDraft.svelte,loreOverridesDraft.svelte}.ts`,
   `src/ts/checkpoints/`, the hydration memory in `src/ts/network/jobChannel.ts`.
 - **resource-sync**: `src/ts/storage/{resourceSync.svelte,resourceClient,bootCache,recordMerge,readDeadline}.ts`,
-  `src/ts/network/{eventFeed,socketLiveness}.ts`, `loadData` in `src/ts/bootstrap.ts`.
+  `loadData` in `src/ts/bootstrap.ts`.
+- **live-updates**: `src/ts/network/{eventFeed,socketLiveness}.ts`, and the live-update part of
+  `src/ts/storage/resourceSync.svelte.ts`.
 - **draft-recovery**: `src/ts/storage/{draftJournal,journalEligibility,journalRecovery,recoveryDrafts.svelte}.ts`,
   `chatJournal` in `chatStore.svelte.ts`, the journal part of `resourceSync.svelte.ts`.
 - **persistence**: remaining `src/ts/storage/`, `src/ts/toggles/`, `src/ts/chatLoadPages.ts`,

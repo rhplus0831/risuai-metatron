@@ -561,7 +561,7 @@ collection after a missed rename, an unknown notice or a reconnect listing"); a 
 read (`src/ts/storage/tests/resourceSyncFeedPatches.test.ts` "applies metadata deltas as remote values equal to a
 whole read without queuing a write", over the same 100 KiB of memory data). Open: message-row delta reads were not
 built, so the over-cap change of a loaded chat still reads the chat whole, a reply over 64 KiB streaming into a chat
-another tab has open ([resource sync](../../structure/resource-sync.md#limitations)). ST01's lore edit is
+another tab has open ([live updates](../../structure/live-updates.md#limitations)). ST01's lore edit is
 not part of this change.
 
 ### ST05 — A completed row still pays a transform round trip on every remount

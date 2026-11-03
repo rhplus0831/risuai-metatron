@@ -283,7 +283,7 @@ page is away does not count. Kept terminal receipts and shutdown outcomes are ow
   work.
 - The whole read carries the chat's lock list, so a feed lock whose release frame was missed is released once the job
   has ended; only a feed frame or `hello` that arrived while the read was out keeps the feed's locks instead
-  ([locks](resource-sync.md#feed-locks)).
+  ([locks](live-updates.md#feed-locks)).
 - A lost job may still be writing, so `readChatAgain(ref)` reads the chat when it is viewed (`watchChatVisibility`) and
   for a completion push (`refreshChatAfterPush(ref)`).
 - One chat's recovery reads run one at a time (`readRecoveringChat`). The idle refresh's own read may overlap them; a

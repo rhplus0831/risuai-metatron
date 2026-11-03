@@ -689,7 +689,7 @@ try {
     await restoreDuringSend("import", importArchive);
     // The snapshot route: an idle import takes a safety snapshot of the data as it is now (the
     // archive's), which is then restored by id during a send. The idle import's own reload is the
-    // runner's (an idle tab learns of it on its next request: `resource-sync.md` "Restore halt").
+    // runner's (an idle tab learns of it on its next request: `live-updates.md` "Restore halt").
     const prepared = await importArchive();
     epoch = prepared.body?.epoch ?? epoch;
     await openApp(page);

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page } from "./fixtures";
 import { openApp } from "../util/playwright/stack.mjs";
 
-// The restore notice as the terminal notice (`resource-sync.md` "Restore halt", `global-api.md`
+// The restore notice as the terminal notice (`live-updates.md` "Restore halt", `global-api.md`
 // `alertTerminal` and `TerminalNotice.svelte`), in the real app against the isolated stack of
 // `playwright.config.ts`. Before the fix a transform the restore refused (412 EpochMismatch)
 // toasted over the notice, the toast's end cleared the shared alert store, and the page reloaded

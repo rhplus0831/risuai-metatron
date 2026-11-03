@@ -19,8 +19,8 @@ cursor") and the Per-Event Server Work plan's **Later** ("a by-id read for an ov
 "a streaming-row text delta on the job socket", "retiring `patch` for `delta` … once an older client can be
 refused"), both in [the archive](../archived-plan/README.md) (Remaining Follow-Ups); the [rendering performance
 investigation](../research/rendering-performance-investigation.md) F1 (stream ingress after a history-sized
-lookup); the [resource sync guide](../structure/resource-sync.md) (Feed connection, Live updates, Chat live
-updates, Transport, Limitations), the [live-update feed guide](../structure/live-update-feed.md)
+lookup); the [live updates guide](../structure/live-updates.md) (Feed connection, Live updates, Chat live
+updates, Limitations), the [resource sync guide](../structure/resource-sync.md) (Transport), the [live-update feed guide](../structure/live-update-feed.md)
 (Live-update hello, Frame admission, Own chat changes, Feed chat entries, Publication budget), the
 [server generation guide](../structure/server-generation.md) (Job chat and barriers), the
 [chat store guide](../structure/chat-store.md) (Job chunks, Summaries and refresh) and the [server resources
@@ -28,7 +28,7 @@ guide](../structure/server-resources.md) (Resource routes, Store tables) at `215
 [per-plan report](../audit/plan-design-audit-2026-11-04/incremental-chat-transport.md) and [cross-plan
 report](../audit/plan-design-audit-2026-11-04/cross-plan.md).
 
-Owning guides when sliced: [resource sync](../structure/resource-sync.md) (the cursor replay on reconnect, the
+Owning guides when sliced: [live updates](../structure/live-updates.md) (the cursor replay on reconnect, the
 new feed entry forms a tab applies, the by-id row read), [live-update feed](../structure/live-update-feed.md)
 (`hello.cursor`, the feed entry builder), [server generation](../structure/server-generation.md) (the job
 socket's streamed rows and query flags), [server

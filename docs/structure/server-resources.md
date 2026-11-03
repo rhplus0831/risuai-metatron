@@ -175,7 +175,7 @@ routes cap their bodies at 4 KiB.
   carries `streaming`: the chat's generation locks as the live-update `hello` lists them (`ChatReadRecord`,
   `shared/resources.ts`), taken from `generationJobs.streamingSnapshot()` in the same synchronous step as the store
   read, so the lock list matches the chat's revision (`[]`: no locks; a missing chat and a summary carry none).
-- The tab replaces the chat's feed locks with it ([feed locks](resource-sync.md#feed-locks)); a client must treat the
+- The tab replaces the chat's feed locks with it ([feed locks](live-updates.md#feed-locks)); a client must treat the
   field as optional.
 
 ### Read budget
