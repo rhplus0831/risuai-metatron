@@ -9,9 +9,9 @@
   `src/ts/{bootstrap,safeBoot,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex,keepAliveAudio}.ts`,
   `src/ts/router/`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
 - Not here: DB shape and migrations → `persistence.md`. The save loop → [save cycle](resource-sync.md#save-cycle);
-  `globalFetch` → [global-api](global-api.md). Chat UI below `ChatScreen` → `ui-theming.md`. The server's client-route
-  fallback (`shared/routes.ts`, `GET *` in `server/src/app.ts`) → `self-host-server.md`. The settings page numbers →
-  `settings-i18n.md`.
+  `globalFetch` → [network-jobs](network-jobs.md). Chat UI below `ChatScreen` → `ui-theming.md`. The server's
+  client-route fallback (`shared/routes.ts`, `GET *` in `server/src/app.ts`) → `self-host-server.md`. The settings page
+  numbers → `settings-i18n.md`.
 
 ## Files
 

@@ -109,7 +109,7 @@ run.
 - P2. LLM generation and provider requests run on the server; plugin providers and browser WebLLM are explicit
   exceptions. The tab never reads LLM credential values (`llmSecrets` is write-only). Credentialed LLM auxiliary
   operations use `auxFetch`; other remote calls use `globalFetch`/`fetchNative`, preserving proxy, local-network policy,
-  and logs. See [global-api](docs/structure/global-api.md).
+  and logs. See [network-jobs](docs/structure/network-jobs.md).
   - TTS and image providers have separate client/server routing and credential paths; see
     [media-aux](docs/structure/media-aux.md). P2's LLM rule does not describe every media request.
 
@@ -151,7 +151,9 @@ completed plans and retrieval commands.
 | Task                                                                                                  | Guide                                                            |
 | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | Boot, screen selection, URL/history, stores, flags, hotkeys                                           | [app-shell](docs/structure/app-shell.md)                         |
-| Network/proxy, tab job client/channel, assets/thumbnails, notifications, alerts, utils                | [global-api](docs/structure/global-api.md)                       |
+| Asset sources and thumbnails, the asset client and queues, the batch codec                            | [assets](docs/structure/assets.md)                               |
+| Network/proxy, aux fetch, the request log, tab job client/channel, Web Push                           | [network-jobs](docs/structure/network-jobs.md)                   |
+| The globalApi facade, save entry points, writers, chat fold, utils, alerts, notices, Iris             | [global-api](docs/structure/global-api.md)                       |
 | Request history, checked failures, diagnostics, reports, support shares                               | [diagnostics](docs/structure/diagnostics.md)                     |
 | Persisted fields, records, settings views, normalization, chat bindings                               | [persistence](docs/structure/persistence.md)                     |
 | Boot load and cache, save loop, conflicts, credential writes, live updates                            | [resource-sync](docs/structure/resource-sync.md)                 |
@@ -248,10 +250,13 @@ coupling links.
   `src/lib/UI/Realm/`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`, `server/src/data/upstream/` (its
   workers and staging: **server-resources**), `shared/{upstreamBackup,upstreamExportReport}.ts`; Realm APIs such as
   `getRisuHub` and `downloadRisuHub` in `src/ts/characterCards.ts`.
-- **global-api**: `src/ts/globalApi.svelte.ts`, `src/ts/chatFold.svelte.ts`, `src/ts/util.ts`, `src/ts/util/`,
-  `src/ts/{alert,alertQueue}.ts`, `shared/{assetBatch,localNetwork,notifications}.ts`,
-  `src/ts/storage/{assetClient,assetQueue}.ts`, remaining `src/ts/network/`,
-  `src/ts/{dragTypes,sourcemap,iris,licenses}.ts`, `src/lib/Others/{AlertComp,IrisModal}.svelte`.
+- **assets**: `src/ts/storage/{assetClient,assetQueue}.ts`, `shared/assetBatch.ts`, and the asset functions of
+  `src/ts/globalApi.svelte.ts`.
+- **network-jobs**: remaining `src/ts/network/`, `shared/{localNetwork,notifications}.ts`, and the fetch functions of
+  `src/ts/globalApi.svelte.ts`.
+- **global-api**: the rest of `src/ts/globalApi.svelte.ts`, `src/ts/chatFold.svelte.ts`, `src/ts/util.ts`,
+  `src/ts/util/`, `src/ts/{alert,alertQueue}.ts`, `src/ts/{dragTypes,sourcemap,iris,licenses}.ts`,
+  `src/lib/Others/{AlertComp,IrisModal}.svelte`.
 - **settings-i18n**: `src/ts/setting/`, `src/ts/settingsMenu.ts`, remaining `src/lib/Setting/`, `src/lang/`,
   `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/PromptDiffModal.svelte`.
 - **app-shell**: `index.html`, `src/{main,boot,startApp}.ts`, `src/App.svelte`,

@@ -16,8 +16,8 @@
   Domain-specific runtime semantics stay with their owner guides; request history and diagnostics have a dedicated
   [owner](diagnostics.md).
 - Client counterparts, owned by other guides:
-  - `src/ts/storage/serverAuth.ts` → `persistence.md`; `src/ts/storage/assetClient.ts` → `global-api.md`.
-  - `globalApi.svelte.ts` `fetchNative` → `global-api.md`.
+  - `src/ts/storage/serverAuth.ts` → `persistence.md`; `src/ts/storage/assetClient.ts` → `assets.md`.
+  - `globalApi.svelte.ts` `fetchNative` → `network-jobs.md`.
   - `characterCards.ts` `hubURL` → `characters-modules.md`.
 
 ## Files
@@ -57,7 +57,7 @@ Routes, data, HTTP helpers, jobs, prompt processing, and tests live under `serve
 - `http/{body,rateLimit,clientIp,compressedJson,staticCache,assetVerification,assetThumbnails}.ts` cover request limits,
   client IPs, caching, and asset delivery; `compressedJson` answers the
   [resource reads](server-resources.md#resource-routes). Thumbnail cache publication, removal, and stale-entry sweeps
-  synchronize per key directory. See [global API](global-api.md) for the tab's transport and fetch policy.
+  synchronize per key directory. See [network and jobs](network-jobs.md) for the tab's transport and fetch policy.
 - `diagnostics/` owns request history, diagnostic journals, reports, and support shares ([diagnostics](diagnostics.md)).
 - Packaging: `server/ssl/` generates local certificates; `Dockerfile`, `.dockerignore`, `server.sh`, and `server.bat`
   define deployment and launch behavior.
@@ -488,7 +488,7 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
   `pnpm --silent test:agent server/src/tests/{assets,assetRoute,assetVerification,assetThumbnails,proxy}.test.ts`.
 - Ordered and durable writes: `pnpm --silent test:agent server/src/tests/{orderedWriter,durableWrite}.test.ts`.
 - Diagnostics and request history coverage belongs to [diagnostics](diagnostics.md); client transport tests to
-  [global API](global-api.md).
+  [network and jobs](network-jobs.md).
 
 ## Known Hazards
 

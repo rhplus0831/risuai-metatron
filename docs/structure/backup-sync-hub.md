@@ -21,7 +21,7 @@
   - The archive format, snapshots, and the backup routes → `server-resources.md`.
   - Hub URL and card codecs → `characters-modules.md` (`characterCards.ts`).
   - Node `/hub-proxy` → `self-host-server.md`.
-  - `localNetwork.ts` → `global-api.md`.
+  - `localNetwork.ts` → `network-jobs.md`.
 
 ## Files
 

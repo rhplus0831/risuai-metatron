@@ -27,14 +27,14 @@ period), F13 (the fallback path reads originals, not thumbnails), and "Prepared 
 `8f0db0fb7`: [server resources](../structure/server-resources.md) (Snapshots and restore, Maintenance, the
 Issues entry that retained snapshots keep asset references forever), [self-host server](../structure/self-host-server.md)
 (Storage routes, Disk layout, User files, Thumbnail cache, Known Hazards), [persistence](../structure/persistence.md)
-(asset lists are immutable tuples; keys are on-disk names), and [global API](../structure/global-api.md) (Asset
+(asset lists are immutable tuples; keys are on-disk names), and [assets](../structure/assets.md) (Asset
 sources, Asset client).
 
 Owning guides when sliced: [self-host server](../structure/self-host-server.md) (the report, scan, and sweep
 routes, the lifecycle database, the lease, the per-key publish contract, the sweep's synchronous turn, the
 disk preflight), [server resources](../structure/server-resources.md) (snapshot pins and labels, manual
 snapshots, deletion, the per-snapshot reference index, the roots a restore or an import adds),
-[global API](../structure/global-api.md) (the client calls), [settings and i18n](../structure/settings-i18n.md)
+[assets](../structure/assets.md) (the client calls), [settings and i18n](../structure/settings-i18n.md)
 (the Storage section of Advanced settings), [test harness](../structure/test-harness.md) (the browser check).
 
 Relation to completed plans (see [the archive](../archived-plan/README.md)): Direct Asset URLs made

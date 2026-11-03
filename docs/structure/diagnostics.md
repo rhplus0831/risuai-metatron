@@ -10,7 +10,7 @@ Paths: `shared/{requestHistory,diagnostics,diagnosticsReport}.ts`, `server/src/d
 `src/ts/network/requestHistory.ts`, `src/lib/Others/RequestLogs/`,
 `src/lib/Setting/Pages/Advanced/DiagnosticsPanel.svelte`.
 
-The tab's `fetchLog` belongs to [global-api](global-api.md); capture/credential redaction to
+The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credential redaction to
 [llm-requests](llm-requests.md); startup/auth/disposal to [self-host-server](self-host-server.md).
 
 ## Files
@@ -213,7 +213,7 @@ The tab's `fetchLog` belongs to [global-api](global-api.md); capture/credential 
   before history writes.
 - [Self-host server](self-host-server.md): journal lifetime, fatal-fault recording, graceful shutdown, auth, limiter,
   and stores.
-- [App shell](app-shell.md): collector startup; [global-api](global-api.md): tab logs and job/feed hooks;
+- [App shell](app-shell.md): collector startup; [network-jobs](network-jobs.md): tab logs and job/feed hooks;
   [test-harness](test-harness.md): crash-process tests.
 
 ## Invariants

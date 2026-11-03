@@ -9,7 +9,7 @@
   [LLM requests](llm-requests.md)).
 - Not here: [save loop, boot, live updates](resource-sync.md), [chat module, checkpoints](chat-store.md),
   [journal, recovery](draft-recovery.md), [server store, routes, archives](server-resources.md),
-  [backup UI, upstream converters](backup-sync-hub.md), [asset client and queues](global-api.md#asset-client),
+  [backup UI, upstream converters](backup-sync-hub.md), [asset client and queues](assets.md#asset-client),
   [import transports](characters-modules.md#import-transports).
 - A `Decision:` plan name resolves through [the archive](../archived-plan/README.md).
 

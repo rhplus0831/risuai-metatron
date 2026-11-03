@@ -53,7 +53,7 @@ disconnect ended through `endWith`, not bounded by the abort grace) remains unre
 an `Unconfirmed` issue in the [server generation guide](../structure/server-generation.md#issues).
 U1 uses a synchronous live-page claim in `sessionStorage`, not a coordinated lease, because
 `generationClientId` is read synchronously; its accepted gaps are in the
-[global API guide](../structure/global-api.md#limitations).
+[network and jobs guide](../structure/network-jobs.md#limitations).
 
 ## Plan-related findings
 
@@ -255,7 +255,7 @@ can clone a tab.
 
 **Code.** [generationJobs.ts](../../src/ts/network/generationJobs.ts), its module comment and
 `resumeSavedGenerations`; [bootstrap.ts](../../src/ts/bootstrap.ts);
-[persistence guide](../structure/persistence.md) and [global API guide](../structure/global-api.md).
+[persistence guide](../structure/persistence.md) and [network and jobs guide](../structure/network-jobs.md).
 
 **Confirmed by reference search.** Product boot invokes `resumeServerJobs`, which uses
 `followJobToEnd`. The only callers of `resumeSavedGenerations` are tests; the other reference

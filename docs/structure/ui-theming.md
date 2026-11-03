@@ -262,8 +262,8 @@
 - `TextAreaResizable` is an auto-growing textarea with opt-in popup access and optional fixed `stableHeight`; writes
   require the same value and session.
 - `LazyFileSrc` holds a stored URL only near the viewport and releases it on path change/unmount; object-URL ownership
-  is in [global API](global-api.md). `LazyCharImage` defers image reads and can request 256/512 server thumbnails;
-  editors and asset previews keep the original.
+  is in [assets](assets.md). `LazyCharImage` defers image reads and can request 256/512 server thumbnails; editors and
+  asset previews keep the original.
 
 ### Editor token counts
 

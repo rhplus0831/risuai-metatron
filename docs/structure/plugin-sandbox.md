@@ -31,7 +31,7 @@
     upstream backup's `2`, `'2.1'`, or none) stay in the list but never load, and `PluginSettings.svelte` marks their
     row "Unsupported API".
   - `importPlugin`: rejects any plugin whose `//@api` tokens do not include `3.0` (`pluginApiVersionUnsupported`).
-- `plugins/pluginHooks.ts`: the hook registries. A server job reaches them through the job channel (`global-api.md`):
+- `plugins/pluginHooks.ts`: the hook registries. A server job reaches them through the job channel (`network-jobs.md`):
   the client lists its registered hooks at job creation (`registeredHooks`), and the server calls back by hook name; a
   set's membership is read when the callback runs.
 - `storage/pluginStorageStore.svelte.ts`: the only runtime writer of `pluginCustomStorage` (the boot installs it as the

@@ -19,7 +19,7 @@
   - `util/upstream/` (the upstream RisuAI `.bin` compatibility check)
 - Not here:
   - Test commands, Vitest/Playwright, and browser checks → [test-harness](test-harness.md).
-  - `globalApi.svelte.ts` `fetchNative` → [global-api](global-api.md).
+  - `globalApi.svelte.ts` `fetchNative` → [network-jobs](network-jobs.md).
   - Server process, routes, and Docker → [self-host-server](self-host-server.md).
 
 ## Files
@@ -253,7 +253,7 @@ the loader's `REAL`, `EXTRACT`, and `OVERRIDES` tiers in its own.
 
 ### Worker Web Push
 
-[Web Push](global-api.md) in the worker:
+[Web Push](network-jobs.md) in the worker:
 
 - `push` shows every completion (also with a window in front: Safari requires it) with the logo, the payload's chat tag
   (`risuai-chat-completion:<hash>`, one per chat, so a chat's later notice replaces only its own; a missing or foreign

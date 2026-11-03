@@ -30,7 +30,7 @@
 - Not here:
   - The `credentials` collection, `llmSecrets.credentials` → `persistence.md` (the write-only record:
     `server-resources.md`); [save path](resource-sync.md#credential-writes).
-  - Transport (`globalFetch`/`fetchNative`) → `global-api.md`.
+  - Transport (`globalFetch`/`fetchNative`) → `network-jobs.md`.
   - MCP tool definitions → `mcp.md`.
   - Prompt assembly → `chat-pipeline.md`.
 
@@ -107,7 +107,7 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   `projectId?`), or `refused` with an English message (`messages.ts` `errors.credential*`) naming the model and the
   key's name, never its value.
 - `server/src/llm/auxOps.ts`: the `/proxy2` auxiliary operations (`self-host-server.md`): the media, memory, model
-  discovery, account, and count calls the tab makes with a stored key (`global-api.md` `auxFetch`).
+  discovery, account, and count calls the tab makes with a stored key (`network-jobs.md` `auxFetch`).
 - `planAuxOp` (`auxOps.ts`) optionally takes the stored profile's credential decision: five NanoGPT rows use slot
   `nanogpt`, Ollama cloud tags `ollama`, OpenRouter models/providers `openrouter`. A profile on any other row or a
   different slot refuses (400); invalid bindings use generation's refusal message, never a default key. The app resolves

@@ -20,7 +20,7 @@
   - `src/lib/ChatScreens/AssetInput.svelte`
 - Not here:
   - Lore activation at prompt time → `chat-pipeline.md`.
-  - Asset byte storage (`saveAsset`) → `global-api.md`.
+  - Asset byte storage (`saveAsset`) → `assets.md`.
   - Bot preset codecs (`downloadPreset`/`importPreset` in `presets.svelte.ts`) → `settings-i18n.md`.
   - The Realm hub → `backup-sync-hub.md`.
 
@@ -99,7 +99,7 @@
   list's end.
 - `makeGroupImage` skips member images that fail to load, builds the grid from the images that load, and clears its
   loading status after saving.
-- `customNotificationMessage` (a character's or a group's completion text, [Web Push](global-api.md)) is outside the
+- `customNotificationMessage` (a character's or a group's completion text, [Web Push](network-jobs.md)) is outside the
   card-license guard: it is local, and `createBaseV2`/`createBaseV3` and the card import never carry it.
 
 ### Lorebook editor

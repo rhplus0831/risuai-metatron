@@ -11,7 +11,7 @@ Sources: the owner's 2026-11-03 question (let a stable client, a PC, process the
 started, since plugin hooks need a tab and the phone's screen turns off) and its assessment: the shape is the
 "virtual client" of 2026-11-01 with a real tab in place of a headless browser, built on the owner-socket contract
 the job channel already has; the [server generation guide](../structure/server-generation.md) (Generation
-channels, Job chat and barriers), the [global API guide](../structure/global-api.md) (Generation job client, Job
+channels, Job chat and barriers), the [network and jobs guide](../structure/network-jobs.md) (Generation job client, Job
 channel), the [chat pipeline guide](../structure/chat-pipeline.md) (Stop for a job this tab does not follow,
 Replays and uncertain creates), the [resource sync guide](../structure/resource-sync.md) (Live updates), and the
 [plugins guide](../structure/plugin-sandbox.md) (Job owner presence) at `186b9da71`. The 2026-11-04
@@ -24,7 +24,7 @@ limitation (Goal, D2, Q4), with D3's deadline budget, D4's acceptance alternativ
 mapping, and the Reroll Candidates Slice 1 overlaps (**Slices**) corrected.
 
 Owning guides when sliced: [server generation](../structure/server-generation.md) (the owner and viewer
-sockets, takeover, the handoff offers), [global API](../structure/global-api.md) (the tab's follow roles, the
+sockets, takeover, the handoff offers), [network and jobs](../structure/network-jobs.md) (the tab's follow roles, the
 worker policy, the offers store), [chat pipeline](../structure/chat-pipeline.md) (what the creator's tab shows
 after a handoff), [resource sync](../structure/resource-sync.md) (the new live-update frames and the client
 register message), [settings and i18n](../structure/settings-i18n.md) (the device toggles and name),
@@ -625,7 +625,7 @@ following a job already clears its foreign mark; the test pins it), `src/ts/netw
 that reaches a viewer follow anyway is answered `failed`/`protocol` and logged; the server ignores it; a viewer
 applies the display notices as the owner does), the Display page beside
 `NotificationToggle.svelte` (the two toggles and the name field; `src/lib/Setting/Pages/Display/`),
-`src/lang/en.ts` and `ko.ts` (`serverJob.handoff.*`), the global-api guide (Generation job client, Job channel,
+`src/lang/en.ts` and `ko.ts` (`serverJob.handoff.*`), the network-jobs guide (Generation job client, Job channel,
 State), the chat-pipeline guide (Stop for a job this tab does not follow, Replays and uncertain creates: the
 one case a tab attaches to a job it did not create), the settings-i18n guide, the plugins guide (Job owner
 presence: a hook may run in a tab that does not show the chat; `getRootDocument` finds no message DOM there; a
@@ -660,7 +660,7 @@ Files: `server/src/routes/events.ts` (the `register` message, the registrations,
 `hello.clients`, the caps), `shared/events.ts`, `src/ts/network/eventFeed.ts` (send `register` after `hello`
 and on change; `connectedClients`), `src/ts/network/handoff.ts` (the name, the request call, the 10 s toast),
 `src/lib/ChatScreens/DefaultChatScreen.svelte` (the "Hand off to…" and "Take back" controls beside Stop),
-`src/lang/en.ts` and `ko.ts`, the resource-sync guide (Live updates: the one client message), the global-api
+`src/lang/en.ts` and `ko.ts`, the resource-sync guide (Live updates: the one client message), the network-jobs
 guide, the chat-pipeline guide.
 
 - Tests (`server/src/tests/events.test.ts`, `src/ts/network/eventFeed.test.ts`, `handoff.test.ts`, a

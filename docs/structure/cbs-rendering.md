@@ -91,8 +91,8 @@
 ### Inlays
 
 `parseInlayAssets` (inside `ParseMarkdown`) expands `{{inlay::id}}`, `{{inlayed::id}}`, and `{{inlayeddata::id}}` from
-`getInlayMedia` (the asset key only, no bytes). Images use `getFileSrc` in both of its modes
-([global API](global-api.md)). Audio and video have two modes:
+`getInlayMedia` (the asset key only, no bytes). Images use `getFileSrc` in both of its modes ([assets](assets.md)).
+Audio and video have two modes:
 
 - Direct mode (`globalApi.svelte.ts` `getDirectAssetSrc` answers a URL: worker use enabled, the `directAssets`
   capability, and a controlling worker at the call): `/api/asset/<hex(utf-8 key)>`, the same URL `getFileSrc` gives. No
