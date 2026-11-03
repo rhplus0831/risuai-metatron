@@ -1,8 +1,8 @@
 # Reroll Candidates Plan
 
 Status: drafted 2026-11-03, no slice landed. Decisions D1–D12 are recommendations for the owner; the
-**Open questions** Q1–Q4 wait for the owner. Code anchors were checked at `8f0db0fb7`; verify them again
-before editing (STRUCTURE.md protocol step 5).
+**Open questions** Q1–Q4 were answered by the owner on 2026-11-03 (the recommended option each time). Code
+anchors were checked at `8f0db0fb7`; verify them again before editing (STRUCTURE.md protocol step 5).
 
 Sources: the owner's 2026-11-03 choice of this plan as the next one after the asset lifecycle plan;
 [PocketRisu/RisuBard picks](../research/pocketrisu-risubard-picks.md) §1.1 item 1 (per-reroll scriptstate
@@ -299,6 +299,8 @@ scriptstateAfter: checkpoint.after }` into `candidates` (refreshing `candidates[
 
 ## Open questions
 
+All four were answered on 2026-11-03 with the recommended option; they are kept here as the record of why.
+
 - **Q1. Older messages' candidates.** Recommended: keep them as data, switchable only while the message is
   the newest reply (bounded by D4's 16 per message), so a user can look back at what else was offered.
   Alternative: at the commit boundary (D6's write) prune every older message to its selected candidate,
@@ -447,7 +449,7 @@ src/ts/process/serverGeneration.test.ts src/lib/ChatScreens/Chat.controls.test.t
 
 ## Later
 
-- A single-candidate delete control and the "refuse when full" answer of Q3 if the owner wants it.
+- A single-candidate delete control and the "refuse when full" alternative of Q3 (Q3 reversed).
 - A boot sweep that writes back the previous candidate of a carrier whose generation never ended (D8's
   process-death case), if it shows up in practice.
 - Bundle candidates for multi-reply tails, if group chats need swipes: the carrier would be the turn's

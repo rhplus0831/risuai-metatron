@@ -1,8 +1,8 @@
 # Asset Lifecycle Plan
 
 Status: drafted 2026-11-03, no slice landed. Decisions D1–D12 are recommendations for the owner; the
-**Open questions** Q1–Q3 wait for the owner. Code anchors were checked at `8f0db0fb7`; verify them again
-before editing (STRUCTURE.md protocol step 5).
+**Open questions** Q1–Q3 were answered by the owner on 2026-11-03 (the recommended option each time). Code
+anchors were checked at `8f0db0fb7`; verify them again before editing (STRUCTURE.md protocol step 5).
 
 Sources: the owner's 2026-11-03 review of the research backlog, which picked this plan because five notes
 converge on it: [PocketRisu and RisuBard picks](../research/pocketrisu-risubard-picks.md) §1.2 item 6 (the
@@ -215,10 +215,10 @@ since }] }` (the candidate list capped at 2,000 entries with a total), `owners: 
   confirms with the count and bytes, and the snapshot list with Take, Pin, Label, Restore, and Delete.
   `loadInternalBackup` on the User page stays as it is. Rejected: a settings page of its own (the registry's
   sectioned pages already give search and jumps; a new page needs a menu index and routes).
-- **D10. Manual deletion in this plan; automatic deletion opt-in later (Q2).** The slices ship the scan
+- **D10. Manual deletion in this plan; automatic deletion opt-in later (Q2, answered: later).** The slices ship the scan
   (automatic, read-only) and the sweep (user-started). An automatic sweep, if the owner wants it, is one
   `providers` field `assetAutoSweep` (default off) that makes the daily scan's complete run end with a sweep
-  under D6's rules; it is **Later** unless Q2 says now, in which case it joins Slice 2. Rejected: automatic
+  under D6's rules; Q2 kept it in **Later**, so no slice ships it. Rejected: automatic
   deletion on by default (the adopted policy says opt-in).
 - **D11. Deleted hashes and the browser's immutable cache.** A sweep deletes only keys no root named for at
   least the grace period, so no live record renders them; a tab that still shows one holds a page it has not
@@ -239,6 +239,8 @@ since }] }` (the candidate list capped at 2,000 entries with a total), `owners: 
   room (F08's budget idea; not a goal).
 
 ## Open questions
+
+All three were answered on 2026-11-03 with the recommended option; they are kept here as the record of why.
 
 - **Q1. The grace period.** Recommended: 7 days, PocketRisu's value, as the default of `RISU_ASSET_GRACE_DAYS`
   (minimum 1). A shorter default saves little (the clocks only start at the first complete scan) and shrinks
@@ -372,7 +374,7 @@ plan touched, the audit note of Slice 1 extended with the sweep's cost.
 1 → 2 → 3 → 4 → 5. Slice 1 is invisible to the tab (a new read-only route and a nightly read-only scan) and
 starts the grace clocks, so the day Slice 2 lands there are already deletable keys to test against. Slice 3
 could go before Slice 2 if the owner wants pins first; both edit `backups.ts`, so one at a time. Slice 4 is
-the first user-visible change. If Q2 says automatic deletion now, it rides in Slice 2.
+the first user-visible change. Q2 kept automatic deletion in **Later**, so no slice carries it.
 
 ## Verification
 
@@ -409,7 +411,7 @@ src/ts/storage/tests/resourceClient.test.ts src/ts/setting/settingsPageSections.
 
 ## Later
 
-- The opt-in automatic sweep (`assetAutoSweep`, D10) if Q2 defers it.
+- The opt-in automatic sweep (`assetAutoSweep`, D10), deferred by Q2.
 - A daily snapshot tier (keep one per day for D days) beside pins, if the 10-minute cadence and 20 kept
   rotate away states users want.
 - Calling `store.checkpoints.sweep` from the daily tick, so a long-running server frees a deleted chat's
