@@ -1,8 +1,8 @@
 # Render Work Budget Plan
 
 Status: drafted 2026-11-03, no slice landed. Decisions D1–D9 are recommendations for the owner; the
-**Open questions** Q1–Q4 are open. Code anchors were checked at `7e184d3c8`; verify them again before editing
-(STRUCTURE.md protocol step 5).
+**Open questions** Q1–Q4 were answered by the owner on 2026-11-03 (the recommended option each time). Code
+anchors were checked at `7e184d3c8`; verify them again before editing (STRUCTURE.md protocol step 5).
 
 Sources: the owner's 2026-11-03 review of the
 [rendering performance investigation](../research/rendering-performance-investigation.md) (inspected at
@@ -278,8 +278,8 @@ anchors below are by identifier.
   changes); F8 in `src/ts/gui/highlight.ts` (`highlighter` deletes the owned categories absent from
   `formatedRanges`, `removeHighlight` clears the registry entries of that id, and a delayed highlight callback
   after `TextAreaInput.svelte`'s destroy does nothing). The full per-chat message index the investigation also
-  names is not taken: every write path of the chat store would have to maintain it. If the owner declines (Q3),
-  the three move to `found-issues.md` under one heading in the same commit as this plan's first slice.
+  names is not taken: every write path of the chat store would have to maintain it. Q3 kept Slice 0 in the plan;
+  had it been declined, the three would have moved to `found-issues.md` under one heading.
 - **D9. Measurement is a driver beside the existing ones, and its numbers live in an audit document.**
   `util/playwright/measureRenderWork.mjs` starts the dev stack with `startStack` (the dev modules keep their
   function names, which the counts below need) and seeds one character whose rows repeat a 500-rule sheet, hold
@@ -301,6 +301,8 @@ anchors below are by identifier.
   dev stack does not serve).
 
 ## Open questions
+
+All four were answered on 2026-11-03 with the recommended option; they are kept here as the record of why.
 
 - **Q1. Retry policy.** Recommended: D2's bounded transient retry (two retries, 250 ms then 1,000 ms, only
   while the run is live, only for marked I/O failures). Alternative: no retry in `markParsing` at all; a
