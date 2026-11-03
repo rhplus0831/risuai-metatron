@@ -17,7 +17,7 @@
   - `src/etc/docs/regex.cbs` (example script documentation)
 - Not here:
   - Prompt adapters and job orchestration: `server/src/prompt/{scripts,triggers,commands}.ts` → `server-generation.md`.
-  - `edittrans` regex application → `media-aux.md` (`translator.ts:applyEdittransRegex`, the one regex the tab still
+  - `edittrans` regex application → `translation.md` (`translator.ts:applyEdittransRegex`, the one regex the tab still
     runs: plain `RegExp` replacement on translation text, no Lua or trigger).
   - Module-provided scripts are collected by `process/modules.ts` → `characters-modules.md`.
 
@@ -64,7 +64,7 @@
 ## Flows
 
 The tab owns the editors and starts jobs. Lua and trigger effects execute on the server; the shared regex engine runs in
-the server's script worker. The translator's `edittrans` regex is the client-side exception (`media-aux.md`).
+the server's script worker. The translator's `edittrans` regex is the client-side exception (`translation.md`).
 
 | Hook                                                               | Where                                                      |
 | ------------------------------------------------------------------ | ---------------------------------------------------------- |

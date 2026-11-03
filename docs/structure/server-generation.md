@@ -6,7 +6,7 @@
   job channel, the integration of the prompt, Lua, LLM, and translation runtimes, transforms, the memory task and token
   routes, and the live-update feed.
 - Contracts shared with the tab stay with [chat-pipeline](chat-pipeline.md); each domain's semantics stay with its
-  owner, listed in [Known Hazards](#known-hazards), and translation with [media and auxiliary work](media-aux.md).
+  owner, listed in [Known Hazards](#known-hazards), and translation with [translation](translation.md).
 - Neighbors: [self-host server](self-host-server.md) owns the process, middleware, limiters, and auth;
   [server resources](server-resources.md) owns the store and its routes, and the feed publishes that store's commits.
 
@@ -17,7 +17,7 @@
 - `jobs/` owns admission, locks, and the client channel; `prompt/` contains the generation pipeline and helpers; `lua/`
   and `scripts/` provide the worker-backed script runtime.
 - `llm/` adapts providers and credentials; `translation/runner.ts` stores server-side translations
-  ([media and auxiliary work](media-aux.md)); `data/generationReceipts.ts` keeps the [job receipts](#job-receipts);
+  ([translation](translation.md)); `data/generationReceipts.ts` keeps the [job receipts](#job-receipts);
   `data/vectorCache.ts` stores embeddings ([memory](memory.md)).
 - Dispatch and assembly entrypoints: `jobs/commandRunner.ts` (`createGenerationRunner`, `runCommand`),
   `prompt/runner.ts` (`runPromptJob`, `runPromptSend`), and `prompt/assemble.ts` (`assemblePrompt`, `AssemblyHost`).

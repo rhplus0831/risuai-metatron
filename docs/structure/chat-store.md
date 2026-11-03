@@ -203,7 +203,7 @@
 
 ### Stored translations
 
-- `Message.translation` ([translation](media-aux.md)) shows only while its `sourceHash` equals
+- `Message.translation` ([translation](translation.md)) shows only while its `sourceHash` equals
   `translationSourceHash(data)` (`storedTranslation`), so an edit makes it stale without clearing it.
 - On an existing message only `setMessageTranslation` changes it: op `setTranslation`, never coalesced. The input is
   checked as its JSON copy, and a hash that does not match the current text is not taken and returns false. Tab edits go

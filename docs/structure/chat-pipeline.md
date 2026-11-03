@@ -257,8 +257,8 @@ stage.
 ### Reply tail and sequences
 
 - Before a completed send ends, the server can hand off the replies and input for detached translation
-  ([media and auxiliary work](media-aux.md)). Job event and callback contract: [generation](server-generation.md).
-  HypaV3 work during a send: [memory](memory.md).
+  ([translation](translation.md)). Job event and callback contract: [generation](server-generation.md). HypaV3 work
+  during a send: [memory](memory.md).
 - The tab's barrier reads the job chat whole once when it still does not hold the receipt (no or an older remembered
   copy, an unapplied patch, or a copy refused by the acknowledged floor), admitting it with the job's held streaming
   metadata before running the hook ([store](chat-store.md#callback-hydration)).

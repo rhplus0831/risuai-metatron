@@ -216,7 +216,7 @@
   `groupHealthState` on a character or folder, and `customPrompt` looks neutral.
 - `OpenChatPanel.svelte`: chat-bound editors capture a `ChatRef` and are recreated for another chat; binding pickers and
   dialogs use that ref. New-chat defaults and translation behavior are documented in [persistence](persistence.md) and
-  [media-aux](media-aux.md).
+  [translation](translation.md).
 - `DevTool.svelte`: prompt preview via `sendChat(-1, {preview})`. The instruct preview takes the character and user
   names of the chat it was started for, before the await.
 - `Toggles.svelte`: per-chat prompt toggles resolve current chat values, legacy globals, and kind defaults;

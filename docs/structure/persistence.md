@@ -244,7 +244,7 @@ them up, and a backup does not carry them.
 - `tfCache` (Cache API): Transformers.js model files (`runTransformers`, `runEmbedding`, `runVITS`, the ONNX
   registration in `CharConfig.svelte`).
 - `LLMTranslateCache` (LocalForage): translations keyed `llm:<hash>:<source>`, hashing the pipeline signature, the
-  languages, and the translator note ([translation](media-aux.md)); bare-source entries are never read or migrated.
+  languages, and the translator note ([translation](translation.md)); bare-source entries are never read or migrated.
 - `localStorage`: `risu-selection`, `risu-selected-chats`, the plugin `SafeLocalStorage` (`safe_plugin_*`, documented to
   plugins as device-specific).
 - `sessionStorage`: `risu-selection`, `risu-generation-client` and `risu-generation-jobs` (a reloaded tab reattaches:
@@ -296,7 +296,7 @@ the order.
 ### Chat fields
 
 - `ChatMeta` is defined in `shared/chats.ts`; fields are stored largely as sent, with defaults at their readers. The
-  translation lists are owned by [translation](media-aux.md). Non-obvious field rules:
+  translation lists are owned by [translation](translation.md). Non-obvious field rules:
 - `loreOverrides?` (`shared/lore/overrides.ts`) is not defaulted on write: readers use `?? []`. `normalizeChatMeta`
   refuses a present value that is not an array of `{ entry: { id: non-empty string, … }, off: boolean }`
   (`assertLoreOverrides`) and keeps only the first override per `entry.id`, the one the merge applies. The upstream

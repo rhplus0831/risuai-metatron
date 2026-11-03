@@ -25,7 +25,7 @@ far-row containment unchecked), and the mount hold of `0aad24ce5` (rows added ab
 stops scrolling, the UI guide's Limitation on scroll-animation jumps); the
 [CBS and rendering guide](../structure/cbs-rendering.md) (Display, Display transform, Script transform client,
 Shared styles, Caches, Invariants, Known Hazards), the [UI and theming guide](../structure/ui-theming.md) (Chat
-screen, Transcript rows and the mount hold, Message row, Tests), the [media guide](../structure/media-aux.md)
+screen, Transcript rows and the mount hold, Message row, Tests), the [translation guide](../structure/translation.md)
 (Translator, LLM translation, Stored translation, Flows), and the
 [test harness guide](../structure/test-harness.md) (Browser stack, Measurement scripts, Test rules, Timeouts) at
 `7e184d3c8`; the 2026-11-04 [design audit](../audit/plan-design-audit-2026-11-04.md) (its Render Work Budget
@@ -37,7 +37,7 @@ Owning guides when sliced: [CBS and rendering](../structure/cbs-rendering.md) (t
 through `ParseMarkdown`, the transient boundaries, the transform client's subscribers, cancelled settlement and
 in-flight join, the CSS scope cache in Caches, the two small items of Slice 0),
 [UI and theming](../structure/ui-theming.md) (the row's render run and its abort, the probe's ownership, the
-screenshot's pages and Blob export), [media](../structure/media-aux.md) (`translateHTML`'s signal, the global
+screenshot's pages and Blob export), [translation](../structure/translation.md) (`translateHTML`'s signal, the global
 worker cap, the rendered path's in-flight map and its generations), [test harness](../structure/test-harness.md)
 (the measurement driver and its CDP recipes).
 

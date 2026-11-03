@@ -14,14 +14,15 @@
     the editor: [characters-modules](characters-modules.md)), `PersonaSettings.svelte`, `listedPersona.svelte`,
     `Advanced/SettingsExportButtons.svelte`, `Advanced/CustomModelsSettings.svelte`, `ApiKeysSettings.svelte`
     (`llm-requests.md`), `PluginSettings.svelte`, `Pages/Translation/TranslatorPresetSettings.svelte`,
-    `Pages/Model/AuxModelSelectors.svelte` (the last two belong to [media-aux](media-aux.md))
+    `Pages/Model/AuxModelSelectors.svelte` (`TranslatorPresetSettings` belongs to [translation](translation.md),
+    `AuxModelSelectors` to [media-aux](media-aux.md))
   - `src/lang/*`
   - `src/lib/UI/PromptDataItem.svelte`
   - `src/lib/Others/PromptDiffModal.svelte`
 - Not here:
   - DB defaults and migration rules → `persistence.md`.
   - The prompt item runtime → `chat-pipeline.md`.
-  - Translator presets → `media-aux.md`.
+  - Translator presets → `translation.md`.
 
 ## Files
 

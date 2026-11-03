@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat as ChatRecord, MessageTranslation } from "../../../shared/database.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 
-// A chat row on the stored-translation path (`media-aux.md`): the LLM translator on
+// A chat row on the stored-translation path (`translation.md`): the LLM translator on
 // `llmTranslationTarget: "message"` shows the held message's fresh stored translation through the
 // normal display path, re-deriving it when the chat's refresh brings one (no remount), keeps the
 // row's show/hide choice across a remount, requests a translation only when none is fresh, and edits

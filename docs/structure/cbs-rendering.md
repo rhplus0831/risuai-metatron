@@ -18,8 +18,8 @@
 - Not here:
   - Regex scripts that run inside rendering → `scripts-triggers.md`.
   - The chat component tree → `ui-theming.md`.
-  - Translation of rendered HTML → `media-aux.md`.
-  - Bilingual sentence grouping before interleaving → `media-aux.md` (`parser/sentenceBreaks.ts`).
+  - Translation of rendered HTML → `translation.md`.
+  - Bilingual sentence grouping before interleaving → `translation.md` (`parser/sentenceBreaks.ts`).
   - Chat-toggle writes and saved toggle presets → `persistence.md` (`src/ts/toggles/`, `shared/togglePresets.ts`).
 
 ## Files
@@ -111,7 +111,7 @@
 
 - `parser/transformClient.ts`: client of the server script transform (`POST /api/transform`, `server-generation.md`);
   the only script stage of a render. There is no browser Lua or trigger runtime and no browser regex stage of a render;
-  the translator's `edittrans` regex is the one regex the tab still runs (`media-aux.md`).
+  the translator's `edittrans` regex is the one regex the tab still runs (`translation.md`).
 - `captureTransform(chatID, { chatRef?, pluginContext? })` reads the call's context before its first await: the chat,
   the message id at `chatID`, the chat's display ids, the plugin call context, the message's lock, its Re-render
   generation, the tab cache generation, `chatInstallVersion` and `chatHasUnackedWork`.
@@ -172,8 +172,8 @@
 - `gui/codearea/cbsMonaco.ts`: `registerCBSMonaco` is empty, so Monaco has no CBS language support.
 - `PartialEditController.svelte`: hover and drag-select editing of rendered messages. Dispatches `save`, which
   `Chat.svelte:handlePartialEditSave` handles; a translation edit goes through the awaitable `saveTranslation` prop
-  instead when the parent passes one (`media-aux.md`, the stored path), and the draft stays when that write is refused.
-  Escape cancels and Ctrl/Meta+Enter saves, neither while an IME composes (`src/ts/ime.ts` `isImeComposing`).
+  instead when the parent passes one (`translation.md`, the stored path), and the draft stays when that write is
+  refused. Escape cancels and Ctrl/Meta+Enter saves, neither while an IME composes (`src/ts/ime.ts` `isImeComposing`).
 
 ## Flows
 

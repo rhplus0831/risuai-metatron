@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-// The Translation page's items (`media-aux.md`): `lang.llmTranslationTarget` is shown for the LLM
+// The Translation page's items (`translation.md`): `lang.llmTranslationTarget` is shown for the LLM
 // translator only; `legacyTranslation` for every translator but the LLM one on `"message"` (it
 // drives the rendered path); `translateBeforeHTML` and `autoTranslateCachedOnly` only for the LLM
 // translator on `"rendered"`. The conditions read `ctx.settings.memoryTranslateMedia` alone, so a
