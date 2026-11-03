@@ -202,7 +202,18 @@ type Module = typeof import("./serverCommands");
 let commands: Module;
 
 const follows = () => stubs.follows as Follow[];
-const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+// Taken before any test fakes the timers, so a flush under fake timers cannot wait forever.
+const realSetTimeout = setTimeout;
+/**
+ * One event-loop turn; under fake timers the fake clock's due timers run first. A zero-delay timer
+ * that one of those schedules is not due yet: advance the fake clock for it.
+ */
+const flush = async () => {
+    if (vi.isFakeTimers()) {
+        await vi.advanceTimersByTimeAsync(0);
+    }
+    await new Promise<void>((resolve) => realSetTimeout(resolve, 0));
+};
 const done: GenerationTerminalEvent = { type: "done", epoch: EPOCH, revision: "e:1:2" };
 const failed: GenerationTerminalEvent = { type: "error", epoch: EPOCH, message: "boom", status: 500, reason: "failed" };
 const status: GenerationStatus = {
@@ -279,6 +290,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
 });
@@ -1715,6 +1727,8 @@ describe("the end read from the job's status, and the chat read after the follow
     });
 
     it("a lost follow leaves `followedJobs` before its recovery read, so a completion push meanwhile reads the chat again: one chat's recovery reads run one at a time, the newer after the older's copy settled and marking the chat stale again first", async () => {
+        // The recovery reads' 10 s deadlines stay on the fake clock: no read here may lose to one.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         stubs.read.mockRejectedValue(new ResourceRequestError(0, "offline"));
         let answerFirst!: (current: boolean) => void;
         stubs.refresh.mockReturnValueOnce(new Promise<boolean>((resolve) => (answerFirst = resolve)));
@@ -1749,6 +1763,8 @@ describe("the end read from the job's status, and the chat read after the follow
     });
 
     it("readChatAgain reads a chat again once, pinned meanwhile, with no notice and no record, and a gone job's pending recovery keeps its notice", async () => {
+        // The recovery reads' 10 s deadlines stay on the fake clock: no read here may lose to one.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         // A gone job's recovery read is out when the chat is viewed: the view's read waits behind it,
         // and the recovery's `endedAway` toast still shows once its own read took.
         let answerGone!: (current: boolean) => void;
@@ -1879,6 +1895,8 @@ describe("the end read from the job's status, and the chat read after the follow
     });
 
     it("does not read a chat this tab does not hold, and runs one chat's recovery reads one at a time: a newer recovery ends the older's reporting and reads after its copy settled, marking the chat stale again first", async () => {
+        // The recovery reads' 10 s deadlines stay on the fake clock: no read here may lose to one.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         stubs.markStale.mockReturnValueOnce(false);
         stubs.read.mockResolvedValue(null);
         const unheld = commands.followJobToEnd("j", ref);
