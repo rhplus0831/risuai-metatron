@@ -18,6 +18,12 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   puts the chat variables back to the state before the discarded reply, switching candidates
   switches to that candidate's variable state, only the newest reply keeps the snapshots, and a
   discarded candidate is never memory input; D1–D12 recommended, Q1–Q4 answered, no slice scheduled.
+- [Render Work Budget](render-work-budget.md): a superseded or unmounted chat row's render run is aborted
+  through one signal (parser, transform, translation and retry stop instead of being hidden), deterministic
+  parser errors never retry while transient I/O failures retry twice with a delay, transform batches and
+  rendered translations count subscribers and cancel only when the last one leaves, identical post-CBS CSS is
+  scoped once in a bounded cache, and the screenshot export sizes its output once, releases each source, pages
+  large exports and downloads a Blob; D1–D9 recommended, Q1–Q4 open, no slice scheduled.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
