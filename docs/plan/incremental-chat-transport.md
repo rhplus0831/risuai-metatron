@@ -360,11 +360,15 @@ not re-propose it.
   server (the server keeps no per-tab state on the feed).
 - **D6. An over-cap entry names its rows; a loaded chat reads them by id.** When no body fits, the entry carries
   `rows: { changed: string[]; removed: string[]; count: number; meta: boolean }` (ids only, the information
-  `chatFeedChange` already holds). A loaded, idle chat held at exactly `baseRevision` with `meta: false` reads
-  the changed rows through a new `chatRows` entry of `POST /api/resources/read`
-  (`{ characterId, id, revision, messageIds }`, answered as `{ revision, rows: { id, after, message }[] }` at
-  that revision), and applies them with `removed` and `count` as a patch; every other case reads the chat whole
-  as today. When the chat moved on past `revision`, the answer is a distinct `{ moved: true }` entry with the
+  `chatFeedChange` already holds). A loaded, idle chat held at exactly `baseRevision` reads the changed rows
+  through a new `chatRows` entry of `POST /api/resources/read` (`{ characterId, id, revision, messageIds, meta }`,
+  answered as `{ revision, rows: { id, after, message }[], metaFields? }` at that revision, where `metaFields`
+  carries the chat's changed metadata by field, as a `delta` body does, when the manifest said `meta: true`),
+  and applies rows and metadata together with `removed` and `count` as a patch; every other case (not loaded,
+  not idle, another revision) reads the chat whole as today. The metadata ride along because the Reroll
+  Candidates plan's begin group and candidate switch change `candidates` and `scriptstate` in one write: a
+  manifest with `meta: true` that fell to a whole read would make every reroll on a loaded observer a whole
+  read, which is the traffic this slice removes. When the chat moved on past `revision`, the answer is a distinct `{ moved: true }` entry with the
   current revision, never `unanswered`, which `readRefs` re-sends and then fails as "no progress", failing every
   other entry of that read with it; a `moved` answer makes the client read the chat whole once. The server
   selects by the `(chatSeq, id)` key and `messages_position` for `after`. Not gated: after D2, an over-cap entry
@@ -372,7 +376,9 @@ not re-propose it.
   rows (candidates up to its per-message cap, the array set whole at each begin, end and switch) make that a
   normal case on a loaded chat, so Slice 4 is scheduled after Slice 1 unconditionally (Q2's answer superseded).
   Rejected: answering a moved chat as `unanswered` (the 2026-11-03 choice: `readRefs` throws before any
-  whole-chat fallback); gating the slice on the over-cap share Slice 1 measured (the 2026-11-03 Q2 answer:
+  whole-chat fallback); a row read only for `meta: false` manifests, whole read otherwise (the first 2026-11-04
+  text: a reroll's begin group always changes the metadata too, so the reroll plan's dependency on this slice
+  would have been empty); gating the slice on the over-cap share Slice 1 measured (the 2026-11-03 Q2 answer:
   reroll carriers make the case routine, and the probes had no input for the gate, D9).
 - **D7. Caps and budgets are unchanged.** `MAX_FEED_PATCH_BYTES`, `MAX_FEED_PUBLICATION_PATCH_BYTES`, the 4 MiB
   socket admission and `MAX_REMOTE_READS` stay. `rowDelta` and the `rows` manifest are optional feed payloads
@@ -581,7 +587,7 @@ generation guide (Live-update hello).
 ### Slice 4: the over-cap row manifest and the by-id row read (D6, D7, D8; needs 1)
 
 Files: `shared/resources.ts` (`ChangeSet.chats[].rows`, `ResourceReadEntries.chatRows`, the answer with its
-`moved` form), `server/src/data/chatStore.ts` (the manifest in `chatFeedChange`, `readRows`),
+`moved` form), `server/src/data/chatStore.ts` (the manifest in `chatFeedChange`, `readRows` with the metadata fields),
 `server/src/routes/resources.ts` (the read entry under the read budget), `src/ts/storage/resourceClient.ts`
 (`readRefs` with `chatRows`; `moved` is an answer, not `unanswered`), `src/ts/storage/resourceSync.svelte.ts`
 and `src/ts/storage/chatStore.svelte.ts` (the row read in place of the whole read for a loaded chat at the base;
@@ -593,8 +599,9 @@ resources guide (Resource routes, Read budget).
   the manifest and no payload; a loaded chat at the base reads the named rows once and applies them; a row with
   a field over the cap (a reroll carrier's `candidates` as a fixture) is read by id; a chat that moved on is
   answered `moved` and the client reads it whole once, with `readRefs` not failing as "no progress", also when
-  the read carries other entries; `meta: true` reads whole; the read budget counts rows; an older client (no
-  `chatRows`) reads whole as today.
+  the read carries other entries; a `meta: true` manifest (a reroll begin group fixture: `candidates` plus a
+  `scriptstate` merge in one write) is answered with the rows and `metaFields` and applied without a whole read;
+  the read budget counts rows; an older client (no `chatRows`) reads whole as today.
 - Measurement: Slice 1's `sync-traffic-measure.mjs` line rerun with the same fixture: the over-cap entries
   become row reads.
 

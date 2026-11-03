@@ -1,11 +1,12 @@
 # Asset Lifecycle Plan
 
-Status: drafted 2026-11-03, revised 2026-11-04 after the design audit
+Status: drafted 2026-11-03, revised 2026-11-04 after the design audit and again after its adversarial challenge
 ([plan design audit](../audit/plan-design-audit-2026-11-04.md), items AL1–AL5, X7, X8, and the same day's
-independent cross-audit of the sweep's check-to-unlink gap), no slice landed. Decisions D1–D14 are
-recommendations for the owner; the **Open questions** Q1–Q3 were answered by the owner on 2026-11-03 (the
-recommended option each time; Q1's minimum is superseded by D4's 3-day floor). Code anchors re-checked at
-`215cbce1d`; verify them again before editing (STRUCTURE.md protocol step 5).
+independent cross-audit of the sweep's check-to-unlink gap; the challenge's findings are cited as "challenge
+F1"–"F6"), no slice landed. Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q3
+were answered by the owner on 2026-11-03 (the recommended option each time; Q1's minimum is superseded by D4's
+3-day floor). Code anchors re-checked at `1550ebdd3`; verify them again before editing (STRUCTURE.md protocol
+step 5).
 
 Sources: the owner's 2026-11-03 review of the research backlog, which picked this plan because five notes
 converge on it: [PocketRisu and RisuBard picks](../research/pocketrisu-risubard-picks.md) §1.2 item 6 (the
@@ -48,7 +49,8 @@ non-selected candidate's keys and inlay ids without naming the field, and Slice 
 [Incremental Chat Transport](incremental-chat-transport.md) adds a `changes` log to `resources.sqlite` (up to
 about 4 MB at its 20,000-row bound), which every snapshot copies: the 40 copies D8 and Q3 allow hold up to
 160 MB of it. Slice 3 shares `shared/resources.ts` with Transport Slices 1, 3, and 4 and
-`src/ts/storage/resourceClient.ts` with Transport Slices 3 and 4: not in parallel with them.
+`src/ts/storage/resourceClient.ts` with Transport Slices 3 and 4, and Slice 2 shares
+`server/src/data/resourceStore.ts` with Transport Slices 1 and 3: neither runs in parallel with those.
 
 ## Goal
 
@@ -74,19 +76,25 @@ of `resources.sqlite`, multi-user servers.
 
 ## Current state
 
-The baseline is `215cbce1d` on `dev` (2026-11-04; first drafted against `8f0db0fb7`). This plan does not
+The baseline is `1550ebdd3` on `dev` (2026-11-04; first drafted against `8f0db0fb7`). This plan does not
 re-propose it.
 
 - **Assets are content-named files that nothing deletes.** A logical key `assets/<sha256>.<ext>` (or
   `assets/inlay_<sha256>.<ext>`, or a custom id) lives at `save/assets/<encodeFileName(name)>`
   (`server/src/routes/storage.ts`, `resolveStorageKey`; the codec, around 46 and 82–118, stores a name of at
-  most `MAX_FILE_NAME_BYTES`, 255). Writes stage under `save/.tmp/` and publish by rename
+  most `MAX_FILE_NAME_BYTES`, 255). The codec accepts any UTF-8 name, quotes, backslashes, and control
+  characters included (`saveAsset` in `src/ts/globalApi.svelte.ts` takes a custom id), while the store writes
+  every JSON column as `JSON.stringify` output (`serialize`, `server/src/data/resourceStore.ts` around
+  3238–3268), which escapes `"`, `\`, and control characters: such a key's raw column text is not the key.
+  `/`, letters, and digits are never escaped. Writes stage under `save/.tmp/` and publish by rename
   (`writeStorageFile`; the batch route `POST /api/assets/write` the same, record by record). The only delete is
   `GET /api/remove`, which no client calls. `src/ts/process/files/inlays.ts` states the policy at its header:
   committed blobs are never deleted because retained snapshots may reference them, and `removeInlayAsset`
-  deletes only the metadata record. Its only caller is the Playground inlay explorer
-  (`src/lib/Playground/PlaygroundInlayExplorer.svelte`); deleting a character removes its chats and the
-  character (`server/src/data/resourceStore.ts` around 2460), never an `inlays` record.
+  deletes only the metadata record. The inlay writer relies on that policy: `storeMedia` (around 316–329)
+  uploads only when the tab's in-memory `blobCache` lacks the key, which no metadata delete clears, and
+  `writeMedia` (around 331–345) then writes the record. `removeInlayAsset`'s only caller is the Playground
+  inlay explorer (`src/lib/Playground/PlaygroundInlayExplorer.svelte`); deleting a character removes its chats
+  and the character (`server/src/data/resourceStore.ts` around 2460), never an `inlays` record.
 - **Imports reuse files without writing them.** `writeContentAsset` (the CharX, PNG, and Realm card imports)
   and `publishStagedContentAsset` (the PNG reader's staged image, which otherwise publishes by a rename of its
   own) in `server/src/http/contentAsset.ts` (around 35–46 and 67–78), and the module import
@@ -123,20 +131,29 @@ re-propose it.
   is that record's own `asset` (`assets/inlay_<sha256>.<ext>`). `{{asset::name}}`, `{{img::}}`, and the other
   by-name CBS forms resolve through the character's or module's typed list (`src/ts/parser/parser.svelte.ts`),
   so they carry no key. The tab's direct URL is `/api/asset/` plus the hex of the whole key
-  (`src/ts/globalApi.svelte.ts` around 175), which never contains `assets/`. Besides message rows, a chat's
-  `chats.meta` text holds everything of the chat but its messages (`server/src/data/chatStore.ts` around
-  58–66 and 662): local lore, `scriptstate`, the note, `hypaV3Data`, and more. The structured memory tables
-  (`memory_pages`, `memory_events`, `memory_threads`, `memory_runs`, and a rebuild's `memory_staged_*` copies,
-  `chatStore.ts` around 163–264) hold records as JSON text. Checkpoint pages hold message `data` verbatim, the
-  captured chat fields, and memory chunks (`server/src/data/checkpointStore.ts` header), so whatever a
-  message or chat held, a checkpoint holds.
+  (`src/ts/globalApi.svelte.ts` around 175), which never contains `assets/`; `decodeKeyHeader` accepts either
+  hex case (`server/src/routes/storage.ts` around 49–68). The service worker answers `/sw/img/<hex>` from
+  `risuCache` and, on a miss from an allowed subresource, through `/api/asset/<hex>` (`public/sw.js` around
+  244–250), so that spelling names a key too. Besides message rows, a chat's `chats.meta` text holds
+  everything of the chat but its messages (`server/src/data/chatStore.ts` around 58–66 and 662): local lore,
+  `scriptstate`, the note, `hypaV3Data`, and more. The structured memory tables (`memory_pages`,
+  `memory_events`, `memory_threads`, `memory_runs`, and a rebuild's `memory_staged_*` copies, `chatStore.ts`
+  around 163–264) hold records as JSON text in `data`; pages, events, and threads also have a scalar `title`,
+  while `memory_runs` and `memory_staged_runs` have `result` and `data` and no `title` (around 197 and 258;
+  `memoryStore.ts` marks runs `titled: false`). Checkpoint pages hold message `data` verbatim, the captured
+  chat fields, and memory chunks (`server/src/data/checkpointStore.ts` header, around 47–55), so whatever a
+  message or chat held, a checkpoint holds; a page's text is JSON, and a memory chunk is a JSON array of
+  strings, each a row's `data` text, so its records are serialized twice.
 - **Prepared exports hold file paths.** `server/src/routes/backupsUpstreamExport.ts` builds a staged export
   whose `assets` list names each referenced asset's file, then waits up to `UPSTREAM_EXPORT_STAGED_TTL_MS`
-  (10 minutes, `shared/upstreamExportReport.ts`) for the download, which reads those files. A prepare learns
-  its keys only when its worker ends, and a download takes the export out of the waiting list (`take`)
-  before it streams. The version-2 export (`POST /api/backups/export`) streams in one request after an
-  `exclusive` database copy and holds nothing between requests. Realm and upstream imports stage under
-  `.tmp/` and write their assets at commit.
+  (10 minutes, `shared/upstreamExportReport.ts`) for the download, which reads those files. A prepare copies
+  the database under `exclusive` and learns its keys only when its worker ends (around 219–275); the worker
+  has no deadline of its own, only the request's abort and shutdown. A download takes the export out of the
+  waiting list (`take`, around 387) before it streams, and its `finalize` removes the staging folder when the
+  stream ends or the client leaves (around 388–420). The version-2 export (`POST /api/backups/export`)
+  streams in one request after an `exclusive` database copy, reads its key list (every file on disk, or a
+  partial selection) after that copy (`server/src/routes/backups.ts` around 223–275), and holds nothing
+  between requests. Realm and upstream imports stage under `.tmp/` and write their assets at commit.
 - **Thumbnails are derived.** `server/src/http/assetThumbnails.ts` caches WebP variants under
   `save/cache/thumbnails/<sha256(key)>/`; `removeKey` drops a key's directory and `/api/remove` calls it; a
   sweep after listen drops entries whose source is gone or changed (`server/src/app.ts`, `startBackgroundTasks`).
@@ -154,7 +171,15 @@ re-propose it.
   48 hours after it was made (`src/ts/storage/draftJournal.ts`, `JOURNAL_ENTRY_TTL_MS`). A plugin's
   `saveAsset` returns a key the plugin may keep only in its own storage (`src/ts/plugins/apiV3/v3.svelte.ts`).
 - **No disk preflight anywhere.** No server module calls `statfs`; a restore, an import, or the snapshot tick
-  on a full disk fails mid-way.
+  on a full disk fails mid-way. `restoreValidated` (`server/src/routes/backups.ts` around 466–478), which the
+  snapshot restore, the version-2 import, and the upstream commit (`server/src/routes/backupsUpstream.ts`
+  around 455) all call, takes the safety snapshot of the live database before anything else, then links each
+  staged asset in and installs (`replaceAll`, whose rows grow the live database). Before it, the restore links
+  the snapshot under `.tmp/` (`pin`, a full copy where the link is refused, `snapshots.ts` around 133) and
+  writes a normalized staged copy; the version-2 import saves the archive (around 403), extracts its database
+  (around 408), writes the normalized staged copy (around 410), and copies each new asset to a staged file
+  that is linked in and removed; the upstream commit's database and assets were staged under `.tmp/` by its
+  prepare and are linked in.
 - **Server-read settings.** A setting the server reads lives in the `providers` section and is read through
   `readProviders()` in `server/src/app.ts` (`requestHistoryLimit` is the pattern); device-local preferences
   live in `localStorage`. Job receipts live in `save/data/generation-jobs.sqlite`, a file of their own in no
@@ -165,48 +190,71 @@ re-propose it.
 - **D1. References are discovered by scanning, not by an index maintained on write.** A mark run reads every
   table and column of the live store that can hold a key: `resources.data`; `messages.data` (a reroll
   candidate's text included); `chats.meta`; `checkpointPages.text` of the pages a `checkpointPageRefs` row
-  names, and `chatCheckpoints.name` and `preview` (`fields` holds only page hashes); and `title` and `data`
-  of `memory_pages`, `memory_events`, `memory_threads`, `memory_runs`, `memory_staged_pages`,
-  `memory_staged_events`, `memory_staged_threads`, and `memory_staged_runs` (`memoryStore.ts` creates no
-  table of its own). Left out because they hold ids, outcome codes, or a projection: `messages.generationHistory`,
-  `chatGroups.result`, `chatSummaries.text` (a projection of `chats.meta`), `memory_rebuilds.plan`, and
-  `chatOrders.ids`. Each read is prefiltered in SQL with `instr(col, 'assets/') > 0 OR instr(col,
-'/api/asset/') > 0` (D14's id pass adds `instr(col, '{{inlay') > 0`). The scan is string-level over the
-  raw column text, with no JSON parse: D2's matcher runs on the text itself, so scalar text columns and JSON
-  columns are treated alike. It runs on a second, read-only `node:sqlite` connection to the same WAL
-  database, closed at dispose, in synchronous chunks of rows that yield to the event loop between chunks, and
-  it never holds a transaction across an await, on either connection: the store's one connection opens
-  `BEGIN IMMEDIATE` for every write (`resourceStore.ts` around 1041) and refuses an asynchronous transaction
-  body (around 1842). Each chunk reads what was committed when it ran, so a run records `store.writeCount()`
-  as it starts, and the sweep re-marks in D13's synchronous turn when it moved. Snapshots are read the same way (a
-  table an older snapshot lacks is skipped, not a failure). A snapshot is immutable, so its reference set
-  (D2's tails and D14's inlay ids) is computed once, at the first run that sees it, and stored by snapshot
-  id; the live store is scanned on every run. Checkpoint pages no live checkpoint names are not roots, and
-  the daily tick (D4) calls `store.checkpoints.sweep` before its scan, so a deleted chat's pages also stop
-  taking space without a restart. Rejected: a reference index updated by every write path (chat writes,
-  resource patches, checkpoint captures, Lua inlays, imports, restores). A writer the index misses deletes
-  data silently, which is the opposite of fail-closed, and the index would have to be rebuilt after every
-  restore anyway. Rejected: the first draft's list of named tables (every `resources`, `messages`, and
-  `checkpointPages` row and the memory page tables), which left out `chats.meta` and most memory tables, so a
-  key pasted into a chat's local lore or kept in a chat variable was unreferenced (audit AL4). Rejected: one
-  read transaction over the whole scan on the store's connection (held across awaits it collides with every
-  write's `BEGIN IMMEDIATE`; run in one synchronous turn it blocks the event loop for the scan's length; audit
-  AL5). The scan's cost on a large store is measured in Slice 1 and recorded in `docs/audit/asset-scan-<date>.md`;
-  the prefilter keeps it to the rows that can hold a key.
-- **D2. What counts as a reference in text (RisuNest open item 4).** The mark is string-level and
-  over-approximating. After each occurrence of `assets/` in a scanned column, the scanner takes the bounded
-  tail that follows (at most `MAX_FILE_NAME_BYTES` of text, `server/src/routes/storage.ts` around 82–118: no
-  logical name the codec stores is longer) and records it; every prefix of that tail the codec accepts
-  (`encodeFileName` gives a name that `decodeFileName` turns back) is a possible key. Each `/api/asset/<hex>`
-  is decoded to its key and recorded the same way. A snapshot's stored reference set is its set of tails,
-  independent of what is on disk, and each run intersects the tails of every root with the keys on disk by
-  prefix: a disk key is referenced when some tail starts with its name. So a key that a snapshot named while
-  the file was missing, and that was republished after the snapshot was indexed, is still found. This
-  subsumes the typed walk (the same strings), catches the image key inside `{{inlayed::…}}`, HTML written by
-  regex scripts or `backgroundHTML`, a reroll candidate's text, and lorebook, chat-lore, variable, or module
+  names, and `chatCheckpoints.name` and `preview` (`fields` holds only page hashes); `title` and `data` of
+  `memory_pages`, `memory_events`, `memory_threads`, `memory_staged_pages`, `memory_staged_events`, and
+  `memory_staged_threads`; and `data` of `memory_runs` and `memory_staged_runs`, which have `result` and
+  `data` and no `title` (`server/src/data/chatStore.ts` around 197 and 258; `memoryStore.ts` creates no table
+  of its own). Slice 1 checks this list against the schema `openChatSchema` creates (`chatStore.ts` around
+  162–284); a read that throws on a present table, a missing column included, is a D5 reason, never a skipped
+  table. Left out because they hold ids, outcome codes, or a projection: `messages.generationHistory`,
+  `chatGroups.result`, `chatSummaries.text` (a projection of `chats.meta`), `memory_threads.state` and the run
+  tables' `result` (status values), `memory_rebuilds.plan`, and `chatOrders.ids`. Each read is prefiltered in
+  SQL with `instr(col, 'assets/') > 0 OR instr(col, '/api/asset/') > 0 OR instr(col, '/sw/img/') > 0` (D14's
+  id pass adds `instr(col, '{{inlay') > 0`). The prefilter is a superset of what the recognizer accepts: every
+  column holds `JSON.stringify` output (Current state), which escapes only `"`, `\`, control characters, and
+  lone surrogates, and none of `assets/`, `/api/asset/`, `/sw/img/`, and `{{inlay` holds one, so a decoded
+  string that contains one of them holds it verbatim in the raw text; the hex after a path is the recognizer's
+  concern, not the prefilter's. One reference recognizer (D2) serves the mark, D6's re-mark, and D13's final
+  check, and it runs on **decoded** values: a JSON column (`resources.data`, `messages.data`, `chats.meta`,
+  `chatCheckpoints.preview`, the memory tables' `data`, and checkpoint page text) is parsed and every string
+  value at any depth is scanned, and the strings of a checkpoint memory chunk (a page a checkpoint's memory
+  manifest lists), each a row's `data` text serialized once more, are parsed again; a scalar text column
+  (`chatCheckpoints.name`, the memory tables' `title`) is scanned as it is. A stored JSON text that does not
+  parse is a D5 reason naming its row. The scan runs on a second, read-only `node:sqlite` connection to the
+  same WAL database, closed at dispose, in synchronous chunks of rows that yield to the event loop between
+  chunks, and it never holds a transaction across an await, on either connection: the store's one connection
+  opens `BEGIN IMMEDIATE` for every write (`resourceStore.ts` around 1041) and refuses an asynchronous
+  transaction body (around 1842). Each chunk reads what was committed when it ran, so a run records
+  `store.writeCount()` as it starts, and the sweep re-marks in D13's synchronous turn when the count differs
+  from that one (D6). Snapshots are read the same way (a table an older snapshot lacks is skipped, not a
+  failure). A snapshot is immutable, so its reference set (D2's tails and D14's inlay ids) is computed once,
+  at the first run that sees it, and stored by snapshot id; the live store is scanned on every run. Checkpoint
+  pages no live checkpoint names are not roots, and the daily tick (D4) calls `store.checkpoints.sweep` before
+  its scan, so a deleted chat's pages also stop taking space without a restart. Rejected: a reference index
+  updated by every write path (chat writes, resource patches, checkpoint captures, Lua inlays, imports,
+  restores). A writer the index misses deletes data silently, which is the opposite of fail-closed, and the
+  index would have to be rebuilt after every restore anyway. Rejected: the first draft's list of named tables
+  (every `resources`, `messages`, and `checkpointPages` row and the memory page tables), which left out
+  `chats.meta` and most memory tables, so a key pasted into a chat's local lore or kept in a chat variable was
+  unreferenced (audit AL4). Rejected: one read transaction over the whole scan on the store's connection (held
+  across awaits it collides with every write's `BEGIN IMMEDIATE`; run in one synchronous turn it blocks the
+  event loop for the scan's length; audit AL5). Rejected: the first revision's string-level scan of the raw
+  column text with no JSON parse (challenge F1: `encodeFileName` accepts a key with a quote, a backslash, or a
+  control character, and `JSON.stringify` escapes it, `resourceStore.ts` around 3258, so the raw tail differs
+  from the key, the key is unmarked, and a snapshot's stored set keeps the miss for good). Rejected: `title`
+  for every memory table (the first revision; challenge F6: the run tables have none, so the read throws
+  `no such column` and every run is incomplete). The scan's cost on a large store, the parse included, is
+  measured in Slice 1 and recorded in `docs/audit/asset-scan-<date>.md`; the prefilter keeps it to the rows
+  that can hold a key.
+- **D2. What counts as a reference in text (RisuNest open item 4).** The recognizer is string-level and
+  over-approximating, and it reads decoded strings (D1), never serialized text. After each occurrence of
+  `assets/` in a string, it takes the bounded tail that follows (at most `MAX_FILE_NAME_BYTES`, 255 UTF-8
+  bytes, of decoded text, `server/src/routes/storage.ts` around 82–118: no logical name the codec stores is
+  longer, since both file-name forms are at least as long as the name's bytes) and records it; every prefix of
+  that tail the codec accepts (`encodeFileName` gives a name that `decodeFileName` turns back) is a possible
+  key. Each `/api/asset/<hex>` and `/sw/img/<hex>` (the service worker's spelling, which it answers through
+  the signed route, `public/sw.js` around 244–250) has its run of hex digits, either case, decoded as
+  `decodeKeyHeader` does (`storage.ts` around 49–68; the longest even-length run, cut at its first byte that
+  is not valid UTF-8 and bounded like a tail), and the decoded text is recorded as a tail the same way, so a
+  hex run followed by more hex digits still yields its key by prefix. A snapshot's stored reference set is its
+  set of tails, independent of what is on disk, and each run intersects the tails of every root with the keys
+  on disk by prefix: a disk key is referenced when some tail starts with its name. So a key that a snapshot
+  named while the file was missing, and that was republished after the snapshot was indexed, is still found.
+  This subsumes the typed walk (the same strings), catches the image key inside `{{inlayed::…}}`, HTML written
+  by regex scripts or `backgroundHTML`, a reroll candidate's text, and lorebook, chat-lore, variable, or module
   text that pasted a key. By-name CBS forms need no handling: they resolve through typed lists that are
   themselves scanned. The inlay forms `{{inlay::id}}`, `{{inlayed::id}}`, and `{{inlayeddata::id}}` name
-  records, not files: the scanner records the id up to the next `}}`, as the tab's parser reads it
+  records, not files: the recognizer records the id up to the next `}}`, as the tab's parser reads it
   (`src/ts/parser/parser.svelte.ts` around 848), for D9's attribution and D14. The typed walk
   (`collectAssetReferences`, extended with owner ids) is still run, for attribution only (D9). Rejected: a
   typed walk alone (misses the Lua key form and any text a plugin or script wrote), a CBS-aware parse of
@@ -216,26 +264,32 @@ re-propose it.
   and names a key that does not exist, leaving the real one unmarked (audit AL3). Prefix matching
   over-matches instead: text naming `assets/a.png` also keeps a disk key `assets/a.p`, which keeps data, the
   safe direction. Rejected: storing the matched disk keys per snapshot (a key missing at indexing time and
-  republished later would never match the immutable snapshot again).
+  republished later would never match the immutable snapshot again). Rejected: recognizing only
+  `/api/asset/` with lowercase hex (the first revision; challenge F1: the service worker fetches
+  `/sw/img/<hex>` through the signed route on a cache miss, and `decodeKeyHeader` decodes uppercase hex, so
+  either spelling in live text names a key).
 - **D3. Roots.** An asset is referenced when any of these names it: the live store (D1's columns, all kinds,
   including `inlays` records, whose `asset` stays alive as any resource's key does; D14 reports the records
   no text names); every listed snapshot in `save/backups/`, pinned or not, safety snapshots included; every
-  prepared upstream export until its download, cancel, or TTL (`backupsUpstreamExport.ts` exposes
-  `heldAssetKeys()`); the recent-use lease (D7); and youth: a file whose mtime is within the grace period.
-  The mark takes the restore's hard link of each snapshot (`pin`, renamed `stageCopy` by D8) under
-  `save/.tmp/` before indexing it and removes the link after, so a rotation tick cannot remove the file
+  export for its whole operation (D7's operation lifetimes: an upstream export from its prepare's database
+  copy through its waiting time to the end of its download stream, its cancel, or its TTL, and a version-2
+  export from its `exclusive` copy to the end of its stream; both register in the one `heldAssetKeys()` that
+  `backupsUpstreamExport.ts` exposes); the recent-use lease (D7); and youth: a file whose mtime is within the
+  grace period. The mark takes the restore's hard link of each snapshot (`pin`, renamed `stageCopy` by D8)
+  under `save/.tmp/` before indexing it and removes the link after, so a rotation tick cannot remove the file
   mid-read; a snapshot rotated away before the link is taken is no longer a root and does not make the run
   incomplete, while one that exists but cannot be opened does (D5). The link is taken outside `exclusive`,
-  since `pin` takes that lock itself. Accepted limitation of the export root: a prepare learns its keys only
-  when its worker ends, a download in flight has already left the waiting list, and the version-2 export
-  streams files after its `exclusive` copy; each names only keys a live record named minutes earlier, so
-  youth and the grace period cover them. Non-roots: the thumbnail cache (derived; `thumbnails.removeKey`
-  runs with the delete), Realm and upstream import staging (under `.tmp/`, not `assets/`; the commit's
-  writes are young files or go through D7's contract), the browser's caches and client state (D11), and
-  generation jobs (an inlay a job writes is a young file and then an `inlays` record). Restore and import
-  need no special root: they install under `withMaintenance`, which holds `exclusive` as the sweep's batches
-  do, and they start a new epoch, so D6 accepts no run made before them; a restored snapshot is a listed
-  root.
+  since `pin` takes that lock itself. Non-roots: the thumbnail cache (derived; `thumbnails.removeKey` runs
+  with the delete), Realm and upstream import staging (under `.tmp/`, not `assets/`; the commit's writes are
+  young files or go through D7's contract), the browser's caches and client state (D11), and generation jobs
+  (an inlay a job writes is a young file and then an `inlays` record). Restore and import need no special
+  root: they install under `withMaintenance`, which holds `exclusive` as the sweep's batches do, and they
+  start a new epoch, so D6 accepts no run made before them; a restored snapshot is a listed root. Rejected:
+  the first revision's accepted limitation that youth and the grace period cover a prepare whose worker has
+  not ended, a download in flight (which has left the waiting list), and the version-2 export's stream
+  (challenge F4: a key a live record named minutes earlier need not be a young file, and its ledger `since`
+  changes only at a complete scan, so a scan during the stream could find it unreferenced and long past the
+  grace).
 - **D4. The grace period and the unreferenced ledger.** A new database `save/data/asset-lifecycle.sqlite`
   (beside `save/data/generation-jobs.sqlite`, outside snapshots, so a restore never rolls the ledger back)
   holds `snapshotRefs(snapshotId, tail)` and `snapshotInlays(snapshotId, id)`, `unreferenced(key, since,
@@ -257,38 +311,43 @@ bytes)`, `orphanInlays(id, since)` (D14), and `runs(startedAt, complete, reasons
   resurrect old `since` stamps), and a minimum of 1 day (below the journal's 48 hours; audit AL raw §10).
 - **D5. Fail-closed.** A run's result is `complete: false` with reasons when any root could not be read in
   full: a listed snapshot that exists but cannot be opened or walked (the report names it, so the user can
-  delete it with Slice 3's Delete), a store table read that throws, the assets directory not listable. A
-  snapshot rotated away before the mark linked it is not a reason (D3). An incomplete run still updates the
-  report's sizes and shares but writes nothing to `unreferenced` or `orphanInlays` and makes
-  `POST /api/assets/sweep` a 409 `Reference set incomplete`. A file whose name the codec cannot round-trip
-  (`decodeFileName` returns null) is listed as "unmanaged bytes" and is never a candidate. A key whose owner
-  the typed walk does not know is still a reference (D2); unknown owners only affect attribution. Rejected:
-  the first draft's "export staging not answering" reason (the staging is synchronous and in memory; it
-  always answers).
+  delete it with Slice 3's Delete), a store table read that throws (a missing column of a present table
+  included) or a stored JSON text that does not parse (D1), an export whose key set the mark waited for past
+  the bound (D7), the assets directory not listable. A snapshot rotated away before the mark linked it is not
+  a reason (D3). An incomplete run still updates the report's sizes and shares but writes nothing to
+  `unreferenced` or `orphanInlays` and makes `POST /api/assets/sweep` a 409 `Reference set incomplete`. A file
+  whose name the codec cannot round-trip (`decodeFileName` returns null) is listed as "unmanaged bytes" and is
+  never a candidate. A key whose owner the typed walk does not know is still a reference (D2); unknown owners
+  only affect attribution. Rejected: the first draft's "export staging not answering" reason (the staging is
+  synchronous and in memory; it always answers).
 - **D6. Sweep mechanics.** The report is the dry run: it lists the candidates (deletable keys, bytes, how long
   unreferenced) and the orphan inlay records (D14). `POST /api/assets/sweep`
   `{ dryRun: boolean, keys?: string[], inlays?: string[] }` (`dryRun: true` answers what would be deleted
   without touching anything; `keys` narrows a run to a selection; `inlays` names orphan records to remove)
   requires the latest run to be complete, made by this process on the current epoch, and no older than one
   hour, else 409. The run's identity is in memory (a counter of this process's runs and `store.epoch()`),
-  never a persisted `writeCount`, which starts again in every process (`resourceStore.ts` around 966–974).
-  The sweep is also a 409 until the process has been up for `ASSET_LEASE_MS` of monotonic time, so every
-  lease promised before a restart has expired (D7). Deletion goes in batches of 50 keys, each batch a turn
-  of `snapshots.exclusive` (it never overlaps a restore's or an import's install or a rotation): the
-  snapshots are listed again and any taken after the mark is indexed from its file (rotation and removal run
-  under the same lock, so no link is needed, and `stageCopy` must not be called while holding it); the
-  batch's key locks (D7) are taken; then D13's synchronous turn re-marks the live store when
-  `store.writeCount()` moved since the mark started or since the last re-mark, and per key checks that it
-  is still in the candidate set, not leased, and its mtime still older than `grace`, and unlinks it;
-  `assetVerification.forgetVerification`, `thumbnails.removeKey`, and the ledger row removal follow after
-  the turn, and the key locks are released. The answer is
+  never a persisted `writeCount`, which starts again in every process (`resourceStore.ts` around 966–974). The
+  sweep is also a 409 until the process has been up for `ASSET_LEASE_MS` of monotonic time, so every lease
+  promised before a restart has expired (D7). Deletion goes in batches of 50 keys, each batch a turn of
+  `snapshots.exclusive` (it never overlaps a restore's or an import's install or a rotation): the snapshots
+  are listed again and any taken after the mark is indexed from its file (rotation and removal run under the
+  same lock, so no link is needed, and `stageCopy` must not be called while holding it); the batch waits for
+  any export that has copied the database and not yet produced its key set (D7); the batch's key locks (D7)
+  are taken; then D13's synchronous turn re-marks the live store when `store.writeCount()` differs from the
+  count the mark recorded as it started, a baseline no narrowed re-mark moves (D13), and per key checks that
+  it is still in the candidate set, not leased, and its mtime still older than `grace`, and unlinks it;
+  `assetVerification.forgetVerification`, `thumbnails.removeKey`, and the ledger row removal follow after the
+  turn, and the key locks are released. The answer is
   `{ deleted, freedBytes, removedInlays, skipped: [{ key, reason }] }`; a filesystem error skips the key with
   its reason and continues (unlike `/api/remove`). Rejected: `withMaintenance` for the sweep (it aborts every
   generation job and answers 503 to every write for the sweep's length; the exclusive batches, D13's
   synchronous turn, and the per-key lock give the needed ordering without that). Rejected: accepting a
-  persisted run or a run made right after a restart (the first draft let the user scan and sweep at once
-  after a restart, inside the lost leases' hour, and a persisted `writeCount` can equal the new process's
-  count by accident; audit AL2). Rejected: batches of 200 (the synchronous turn would last four times as long).
+  persisted run or a run made right after a restart (the first draft let the user scan and sweep at once after
+  a restart, inside the lost leases' hour, and a persisted `writeCount` can equal the new process's count by
+  accident; audit AL2). Rejected: batches of 200 (the synchronous turn would last four times as long).
+  Rejected: comparing with the count of the last batch's re-mark (the first revision; challenge F2: a re-mark
+  narrowed to one batch's keys moved that count for every key, so a reference to a later batch's key written
+  before the first batch was never re-marked, and the key was deleted).
 - **D7. Concurrency with uploads and reads: one publish contract.** Three rules close the window between
   "unreferenced" and a new reference. Youth: the mtime rule of D3 covers every write that publishes a file.
   The lease: an in-memory, bounded map of key → last use, bumped whenever D7's helper finds or publishes a
@@ -306,18 +365,43 @@ bytes)`, `orphanInlays(id, since)` (D14), and `runs(startedAt, complete, reasons
   upstream imports' asset install runs inside `withMaintenance`, which holds `exclusive`, so the sweep's
   batches are already ordered with it. The tab's batch import (`src/ts/storage/assetClient.ts`
   `writeAssets`, around 394–430) asks `/api/assets/missing` per write batch rather than once up front, so a
-  present key's lease starts when its own batch is sent. The bulk import's records that name the keys
-  commit when its queue drains (`src/ts/storage/assetQueue.ts`), so an import whose remaining uploads outlast
-  `ASSET_LEASE_MS` after a present key's batch can still lose that key; this is the accepted limitation,
-  since the key had to be unreferenced past the grace period and the sweep is user-started. The lease is
-  lost at restart; D6's uptime gate covers that. Rejected: making `/api/assets/write` refuse during a sweep
-  (it is a 503 the client retries, but a client that got "present" from the missing check does not write at
-  all). Rejected: a lock around the two publish renames only, with the lease bumped only by the missing
-  check (imports reuse a present file with its old mtime, no lease, and no lock, so a re-import during a
-  sweep loses the image the new record names; audit AL1), and a lease bumped after an unlocked presence
-  check (the check and the delete can interleave). Rejected: "the lease is lost at restart, which is
-  acceptable: the first scheduled scan is an hour after start" (a user-started scan right after a restart is
-  complete; audit AL2).
+  present key's lease starts when its own batch is sent. The tab's inlay writer does not take its cache for
+  server presence: `storeMedia` (`src/ts/process/files/inlays.ts` around 316–329) skips the upload when its
+  `blobCache` holds the key, a shortcut only today's never-delete policy makes safe, so on a cache hit it asks
+  `/api/assets/missing` for the key before `writeMedia` (around 331–345) writes a new record (the present
+  answer is a claim) and uploads the call's own bytes when the server answers missing. Operation lifetimes,
+  since an operation that names keys can outlive one batch's lease: an import re-asks `/api/assets/missing`
+  for every key its record names right before the record write, one cheap call per import that claims each
+  present key again and repairs a missing one by re-upload. `saveAssets` (`src/ts/storage/assetQueue.ts`
+  around 249) keeps each item's `load`, not its bytes, and after its queue drains asks the missing check once
+  for every key it returns, re-loads and re-writes each key answered missing, then returns; its callers (the
+  card imports in `src/ts/characterCards.ts`, the module import in `src/ts/process/modules.ts`, the model
+  import in `src/ts/process/transformers.ts`) write their record right after it, inside the fresh lease, with
+  no upload or user prompt between. The server module import (`server/src/routes/importModule.ts` around
+  125–146) does the same before it returns the module: each key it filled goes through `claimAssetKey`
+  again, with the record re-read from the uploaded file (open until `finalize`) as the bytes to publish when
+  the file is gone. An export's keys are a root from its start through the end of its stream: an upstream
+  export's from its prepare's database copy, through its waiting time, to its download stream's `finalize`
+  (the download no longer drops them from `heldAssetKeys()` when `take` removes the export from the waiting
+  list), its cancel, or its TTL; a version-2 export's from its `exclusive` copy to its stream's end. While an
+  export has copied the database and not yet produced its key set, the mark waits for it before it reads
+  `heldAssetKeys()`, and so does each sweep batch inside its `exclusive` turn (the worker takes no lock, so
+  the wait cannot deadlock, and an export whose copy queues behind the batch copies what the batch left). The
+  prepare has no deadline of its own (Current state), so the wait is bounded by
+  `UPSTREAM_EXPORT_STAGED_TTL_MS`: past it the run is incomplete (D5), or the batch skips every key it holds
+  with the reason. The lease is lost at restart; D6's uptime gate covers that. Rejected: making `/api/assets/write`
+  refuse during a sweep (it is a 503 the client retries, but a client that got "present" from the missing
+  check does not write at all). Rejected: a lock around the two publish renames only, with the lease bumped
+  only by the missing check (imports reuse a present file with its old mtime, no lease, and no lock, so a
+  re-import during a sweep loses the image the new record names; audit AL1), and a lease bumped after an
+  unlocked presence check (the check and the delete can interleave). Rejected: "the lease is lost at restart,
+  which is acceptable: the first scheduled scan is an hour after start" (a user-started scan right after a
+  restart is complete; audit AL2). Rejected: the first revision's accepted limitation that an import whose
+  remaining uploads outlast `ASSET_LEASE_MS` after a present key's batch can lose that key (challenge F4:
+  nothing at the record write checked the key again, and the server module import had the same gap between
+  its early skip and the module it returns). Rejected: a `blobCache` hit as server presence in the inlay
+  writer (challenge F3: after the sweep deleted the media, a new inlay record named the gone file with no
+  upload, missing check, or claim, and another tab or a reload could not render it).
 - **D8. Pinned and labeled snapshots.** `snapshots.ts` gains `setPinned(id, pinned, label?)` and `remove(id)`;
   retention counts unpinned snapshots only (`keep` of them), a pinned snapshot is never rotated, and
   `remove` refuses a pinned id (409) until it is unpinned. Pins and labels live in `save/backups/pins.json`
@@ -364,50 +448,73 @@ records: [{ id, asset, bytes, since }] }` (D14, capped the same way), `owners: [
   fallback cache (`risuCache`) is unaffected. Re-uploading the same bytes recreates the same key, so a cached
   URL never shows wrong content. No server-side tombstone or 410 list (D4). Keys held only in browser state
   are not roots either: a draft journal entry replays for up to 48 hours, which D4's 3-day floor covers, and
-  a key a plugin keeps only in its own storage is covered by nothing. The guide records both under
+  a key a plugin keeps only in browser-only state is covered by nothing (the plugin storage API itself is
+  server-backed, a `resources` record D1 scans). The guide records both under
   Limitations with a decision pointer.
 - **D12. Disk preflight.** A helper `freeBytes(path)` over `fs.statfs` (Node 24) backs the report's `disk`
-  and a preflight in the heavy operations: `POST /api/backups/:id/restore` (the staged copy the restore
-  runner writes, about the snapshot's size, plus the safety snapshot of the live database, plus the
-  install's growth, about the snapshot's size again: about twice the snapshot plus the live database);
+  and a preflight in the heavy operations. Each preflight sits at a checkpoint and sums the allocations still
+  to come from there, files already on disk excluded (Current state lists the steps):
+  `POST /api/backups/:id/restore` before `stageCopy` (the normalized staged copy, about the snapshot's size;
+  the live database's safety snapshot, which `restoreValidated` takes first; and the install's growth, about
+  the snapshot's size again), plus the snapshot's size when `stageCopy`'s hard link is refused and it falls
+  back to a copy (`server/src/data/snapshots.ts` around 133), checked again there before the copy;
   `POST /api/backups/import` in two steps, since it saves the uploaded archive before it can read sizes
   (`server/src/routes/backups.ts` around 396–405): before saving, the upload's `Content-Length` (a request
-  without one skips this step), then, once the archive is parsed and before the install, its database
-  (staged and installed) plus the live database (the safety snapshot) plus its assets not yet on disk; the
-  upstream commit (the archive's database plus its assets not yet on disk); the upstream export prepare (the
-  database copy plus the encoded save); and the snapshot tick (the database's size; a short tick logs once
-  and skips, it never throws). The threshold is the estimate plus 5 percent and a floor of 64 MiB; a short
-  answer is 507 `Insufficient Storage` with `{ needed, free }` before that step writes anything. A `statfs`
-  failure (unsupported filesystem) disables the preflight for that operation with one log line: it is a
-  guard for a user-started operation, not a deletion, so it fails open. Rejected: a byte budget that deletes
-  to make room (F08's budget idea; not a goal), and the first draft's estimates (twice the snapshot for a
-  restore, which leaves out the live database's safety snapshot, and one check before an import's staging,
-  which cannot know the database's size before the archive is saved; audit AL raw §14).
+  without one skips this step), then, once the archive is parsed and before its database is extracted (around
+  408), the extracted source database plus the normalized staged copy plus the live database's safety
+  snapshot plus the install's growth plus its assets not yet on disk, the saved archive excluded; the upstream
+  commit (the live database's safety snapshot, which `restoreValidated` takes first,
+  `server/src/routes/backupsUpstream.ts` around 455, plus the install's growth, about the staged database's
+  size; its staged database and assets are already under `.tmp/` and are linked in); the upstream export
+  prepare (the database copy plus the encoded save); and the snapshot tick (the database's size; a short tick
+  logs once and skips, it never throws). The threshold is the estimate plus 5 percent and a floor of 64 MiB;
+  the margin is slack for estimation error (WAL growth, file-system overhead), never a substitute for a
+  mandatory copy, so every copy an operation must write is in its estimate. A short answer is 507
+  `Insufficient Storage` with `{ needed, free }` before that step writes anything. A `statfs` failure
+  (unsupported filesystem) disables the preflight for that operation with one log line: it is a guard for a
+  user-started operation, not a deletion, so it fails open. Rejected: a byte budget that deletes to make room
+  (F08's budget idea; not a goal), and the first draft's estimates (twice the snapshot for a restore, which
+  leaves out the live database's safety snapshot, and one check before an import's staging, which cannot know
+  the database's size before the archive is saved; audit AL raw §14). Rejected: the first revision's
+  estimates for the upstream commit (the archive's database plus its assets not yet on disk, which left out
+  the safety snapshot of a live database that can be far larger than the imported one) and for the version-2
+  import's second check (its database staged and installed, placed before the install: that left out the
+  extracted source database and came too late to guard extraction and staging; challenge F5).
 - **D13. The sweep's last check and its unlink run in one synchronous turn.** Store writes take no asset
   lock: a chat write that names `assets/K` commits synchronously whenever the event loop reaches it, so a
   write that lands after a batch's recheck and before its `unlink` names a deleted file, with no upload,
   missing check, or read involved (the cross-audit's finding). The store is synchronous (one `DatabaseSync`),
   so no write can interleave with a synchronous turn. Each sweep batch (D6), inside its `snapshots.exclusive`
   turn, holding its keys' locks, and after indexing any snapshot taken since the mark, runs one synchronous
-  turn on the store's own connection: if `store.writeCount()` moved since the mark (or since the last
-  batch's re-mark), it re-marks the live store synchronously, narrowed to the batch's keys when that is
-  cheaper than the full scan (D1's columns with one prefilter per key, `instr(col, 'assets/<name>') > 0 OR
-instr(col, '/api/asset/<hex>') > 0`, which also catches every longer tail D2's prefix rule matches; D14's
-  ids the same way); the export staging and the lease are in memory; then for each key it reads the mtime
-  with `statSync`, checks the lease and the candidate set, and calls `unlinkSync`, and D14's orphan records
-  still orphaned are removed by a synchronous store write in the same turn. `thumbnails.removeKey`,
-  `assetVerification.forgetVerification`, and the ledger row removal follow asynchronously after the turn;
-  they concern a file that is already gone. The turn's bound is one batch's synchronous filesystem work (at
-  most 50 `statSync` and `unlinkSync` calls) plus the narrowed re-mark, measured with the scan in the audit
-  note Slice 1 starts; reads wait for that turn too, and writes queue behind it and land after it, never
-  fail. A write that commits after the turn and names a key it deleted is ordered after the delete of a key
-  no root named for the grace period, the same as a write naming any missing file; a write naming a key of a
-  later batch moves `writeCount`, so that batch's re-mark sees it. Rejected: a recheck per key with no
-  ordering point (the gap stays between the last check and `unlink`), `withMaintenance` (D6), and a write
-  hold, `store.withWritesHeld(fn)` with a `store.writable()` that writers await (every asynchronous writer
-  would have to await admission before its synchronous write: about 80 call sites in some 15 files across
-  the routes, the generation job, the translation runner, checkpoint captures, and the memory writers, and a
-  writer that skipped it would be a silent hole).
+  turn on the store's own connection: if `store.writeCount()` differs from the count the mark recorded as it
+  started, it re-marks the live store synchronously with D2's recognizer, narrowed to the batch's keys when
+  that is cheaper than the full scan. A narrowed re-mark certifies only the keys it read and never moves the
+  run's baseline; only a full live re-mark may reset it, to the count that re-mark ran at, so a later batch
+  compares with the mark's count again and re-marks too. The narrowed re-mark reads D1's columns through a
+  per-key prefilter that is a superset of the recognizer's input: `instr(col, '<p>') > 0`, where `<p>` is
+  `assets/<name>` cut before its first character `JSON.stringify` escapes, or
+  `instr(lower(col), '/api/asset/<hex>') > 0` or `instr(lower(col), '/sw/img/<hex>') > 0` with the key's
+  lowercase hex; each passes every longer tail or hex run D2's prefix rule matches, and the recognizer then
+  decides on the decoded values as in the mark (D14's ids the same way, cut the same way). The export staging
+  and the lease are in memory; then for each key it reads the mtime with `statSync`, checks the lease and the
+  candidate set, and calls `unlinkSync`, and D14's orphan records still orphaned are removed by a synchronous
+  store write in the same turn. `thumbnails.removeKey`, `assetVerification.forgetVerification`, and the ledger
+  row removal follow asynchronously after the turn; they concern a file that is already gone. The turn's bound
+  is one batch's synchronous filesystem work (at most 50 `statSync` and `unlinkSync` calls) plus the narrowed
+  re-mark, measured with the scan in the audit note Slice 1 starts; reads wait for that turn too, and writes
+  queue behind it and land after it, never fail. A write that commits after the turn and names a key it
+  deleted is ordered after the delete of a key no root named for the grace period, the same as a write naming
+  any missing file; a write naming a key of a later batch moves `writeCount` away from the mark's count,
+  whether it landed before the first batch or between two, so that batch re-marks and sees it. Rejected: a
+  recheck per key with no ordering point (the gap stays between the last check and `unlink`),
+  `withMaintenance` (D6), and a write hold, `store.withWritesHeld(fn)` with a `store.writable()` that writers
+  await (every asynchronous writer would have to await admission before its synchronous write: about 80 call
+  sites in some 15 files across the routes, the generation job, the translation runner, checkpoint captures,
+  and the memory writers, and a writer that skipped it would be a silent hole). Rejected: the first revision's
+  literal final check on the raw text, `instr(col, 'assets/<name>') > 0 OR instr(col, '/api/asset/<hex>') > 0`
+  (challenge F1: an escaped key's raw text is not `assets/<name>`, uppercase hex decodes through
+  `decodeKeyHeader`, `storage.ts` around 49–68, and `/sw/img/` was absent, so the final check could pass a key
+  the mark keeps), and a baseline taken from the last batch's re-mark (challenge F2; D6).
 - **D14. Orphan inlay records.** An `inlays` record keeps its `asset` alive as any resource does (D3), but
   nothing removes records when the text that named them goes: a character delete removes its chats and no
   `inlays` record, and only the Playground inlay explorer calls `removeInlayAsset`. So the run also lists
@@ -448,15 +555,18 @@ time.
 ### Slice 1: the mark, the ledger, the report (D1–D5, D9's route, D12's helper, D14's report; needs nothing)
 
 Files: new `server/src/data/assetLifecycle.ts` (the lifecycle database, the read-only connection and its
-chunked scan, the tails and inlay ids, the per-snapshot index read through `pin`'s link, the typed
+chunked scan, the one recognizer over decoded values (the tails, both hex forms, and the inlay ids, shared
+with Slice 2's re-mark), the per-snapshot index read through `pin`'s link, the typed
 attribution walk over `collectAssetReferences` extended with owner ids, the run record and the in-memory run
 identity, the orphan inlay records, the clocks with the development offset, the daily scan that calls
 `store.checkpoints.sweep` first), new `shared/assetLifecycle.ts` (the report shape, the route paths,
 `ASSET_LEASE_MS`, the grace default and minimum), new `server/src/routes/assetLifecycle.ts`
 (`GET /api/assets/report`, `POST /api/assets/scan`, `checkAuth`, no-store, the storage limiter), new
-`server/src/http/diskSpace.ts` (`freeBytes`), `server/src/routes/backupsUpstreamExport.ts` (`heldAssetKeys()`),
-`server/src/routes/backups.ts` (`listAssetKeys` gains sizes and the unmanaged list, or a sibling
-`listAssetFiles`), `server/src/data/snapshots.ts` (nothing new: `list`, `resolve`, and `pin` are what the index
+`server/src/http/diskSpace.ts` (`freeBytes`), `server/src/routes/backupsUpstreamExport.ts` (`heldAssetKeys()`
+over waiting exports, prepares from their database copy, and downloads until `finalize`; the wait for a
+prepare's key set), `server/src/routes/backups.ts` (`listAssetKeys` gains sizes and the unmanaged list, or a
+sibling `listAssetFiles`; the version-2 export holds its keys in `heldAssetKeys()` from its copy to its
+stream's end), `server/src/data/snapshots.ts` (nothing new: `list`, `resolve`, and `pin` are what the index
 uses), `server/src/listenConfig.ts` (`RISU_AGENT_DEV_ASSET_CLOCK_OFFSET_MS` under the loopback gate),
 `server/src/app.ts` (wiring, the daily scan beside the thumbnail sweep, `dispose` waits for a running scan and
 closes its connection), the self-host server guide (Storage routes, Disk layout: `data/asset-lifecycle.sqlite`,
@@ -466,12 +576,21 @@ entry about retained snapshots becomes a Limitation naming D3, which Slice 2 rew
 scan's cost on a seeded store).
 
 - Tests (new `server/src/tests/assetLifecycle.test.ts` with a seeded store, real snapshot files, and an
-  injected clock; `server/src/tests/backups.test.ts`; `server/src/tests/app.test.ts`;
-  `server/src/tests/listenConfig.test.ts`): a key named only by a typed field, only by `{{inlayed::assets/…}}`
-  in a message, only inside a non-selected candidate's text in a message row, only by a chat's `localLore`,
-  only by a chat's `scriptstate`, only by a `memory_events` row, only by a `/api/asset/<hex>` URL, only by a
-  checkpoint page, only by a snapshot, only by a prepared export, and only by a young file is referenced, and
-  a key named by none is unreferenced with `since` set once; a referenced key leaves the ledger; a tail
+  injected clock; `server/src/tests/backups.test.ts`; `server/src/tests/upstreamExportRoute.test.ts`;
+  `server/src/tests/app.test.ts`; `server/src/tests/listenConfig.test.ts`): a key named only by a typed field,
+  only by `{{inlayed::assets/…}}` in a message, only inside a non-selected candidate's text in a message row,
+  only by a chat's `localLore`, only by a chat's `scriptstate`, only by a `memory_events` row, only by a
+  `memory_staged_runs` row, only by a `/api/asset/<hex>` URL, only by a `/sw/img/<hex>` URL, only by an
+  `/api/asset/` URL in uppercase hex, only by a checkpoint page, only by a checkpoint memory chunk (the second
+  serialization layer), only by a snapshot, only by a prepared export, only by an upstream export whose
+  download is streaming (after `take`, until its `finalize`), only by a version-2 export while it streams,
+  and only by a young file is referenced, and a key named by none is unreferenced with `since` set once; a
+  key with a quote, one with a backslash, and one with a newline, each named only by a typed field and so
+  stored escaped, are referenced, live and in a snapshot's stored set; a mark started while a prepare's worker
+  runs (a latch) waits for its key set and marks its keys, and a prepare still running past the bound makes
+  the run incomplete; both run tables are read with `data` alone, and a read that throws on a present table (a
+  test schema without a scanned column) or a stored JSON text that does not parse makes the run incomplete
+  with the reason; a referenced key leaves the ledger; a tail
   `assets/a.png"}}` marks the disk keys `assets/a.png` and `assets/a.p` and no key that is not on disk; a
   snapshot indexed while its key was missing marks that key once it is republished; a snapshot is scanned
   once and its set reused while a new snapshot is scanned on the next run; a checkpoint page no checkpoint
@@ -489,39 +608,61 @@ scan's cost on a seeded store).
 ### Slice 2: deletion, the publish contract, the synchronous delete turn, the disk preflight (D6, D7, D12, D13, D14's removal; needs 1)
 
 Files: `server/src/data/assetLifecycle.ts` (the sweep: batches of 50 under `snapshots.exclusive`, the run
-identity and uptime checks, the snapshot re-listing, the synchronous turn with the narrowed re-mark on a moved
-`writeCount`, `statSync`, and `unlinkSync`, the asynchronous cleanup after it, the orphan inlay removal),
-`server/src/routes/assetLifecycle.ts` (`POST /api/assets/sweep`), `server/src/data/resourceStore.ts` (a
-synchronous read of D1's columns on the store's connection, narrowed by a per-key prefilter),
-`server/src/routes/storage.ts` (`claimAssetKey`, the `assetLocks` map, the lease bumps in
-`/api/assets/missing` and `/api/asset/*`, both publish renames), `server/src/http/contentAsset.ts`
-(`writeContentAsset`'s skip and `publishStagedContentAsset`'s skip and rename through `claimAssetKey`),
-`server/src/routes/importModule.ts` (the module import's skip through `claimAssetKey`), new
-`server/src/http/assetLeases.ts` (the bounded lease map, if `storage.ts` would grow past its budget),
-`src/ts/storage/assetClient.ts` (`writeAssets` asks the missing check per write batch),
-`server/src/routes/backups.ts`, `server/src/routes/backupsUpstream.ts`,
-`server/src/routes/backupsUpstreamExport.ts`, `server/src/data/snapshots.ts` (the preflights of D12),
-`src/ts/process/files/inlays.ts` (the header and `removeInlayAsset`'s comment: blobs are deleted by the
-server's sweep once unreferenced past the grace period, never here), the self-host server guide (Storage
-routes, Flows: the sweep, the lease, and the synchronous delete turn, Invariants: every publish and every
-reuse of a key goes through `claimAssetKey`, Known Hazards: the D11 Limitation; the thumbnail cache's "no byte
-cap" Issue stays), the server resources guide (the Limitation Slice 1 wrote about retained snapshots
-rewritten: they hold their assets until rotated or deleted, and the sweep reclaims them after; Maintenance:
-the sweep's batches use `exclusive` and one synchronous turn, not maintenance; the restore's and imports'
-preflight), `docs/audit/asset-scan-<date>.md` (the synchronous turn's cost on the seeded store), the global
-API guide (Asset client: a present answer from the missing check is a one-hour lease, asked per batch).
+identity and uptime checks, the snapshot re-listing, the wait for an export's key set, the synchronous turn
+with the narrowed re-mark whenever `writeCount` differs from the mark's, `statSync`, and `unlinkSync`, the
+asynchronous cleanup after it, the orphan inlay removal), `server/src/routes/assetLifecycle.ts`
+(`POST /api/assets/sweep`), `server/src/data/resourceStore.ts` (a synchronous read of D1's columns on the
+store's connection, narrowed by a per-key prefilter), `server/src/routes/storage.ts` (`claimAssetKey`, the
+`assetLocks` map, the lease bumps in `/api/assets/missing` and `/api/asset/*`, both publish renames),
+`server/src/http/contentAsset.ts` (`writeContentAsset`'s skip and `publishStagedContentAsset`'s skip and
+rename through `claimAssetKey`), `server/src/routes/importModule.ts` (the module import's skip through
+`claimAssetKey`, and every filled key claimed again before the result line, re-read from the uploaded file
+when gone), new `server/src/http/assetLeases.ts` (the bounded lease map, if `storage.ts` would grow past its
+budget), `src/ts/storage/assetClient.ts` (`writeAssets` asks the missing check per write batch),
+`src/ts/storage/assetQueue.ts` (`saveAssets` keeps each item's `load` and ends with one missing check over
+every key it returns, re-writing a key answered missing; its callers in `src/ts/characterCards.ts`,
+`src/ts/process/modules.ts`, and `src/ts/process/transformers.ts` are checked for an upload or a prompt
+between it and the record write, and such a step moves before it), `server/src/routes/backups.ts`,
+`server/src/routes/backupsUpstream.ts`, `server/src/routes/backupsUpstreamExport.ts`,
+`server/src/data/snapshots.ts` (the preflights of D12, and `pin`'s check before its fallback copy),
+`src/ts/process/files/inlays.ts` (a behavior change: `storeMedia` asks the missing check on a `blobCache` hit
+too and uploads the bytes when the server answers missing, before `writeMedia` writes a new record; the header
+and `removeInlayAsset`'s comment: blobs are deleted by the server's sweep once unreferenced past the grace
+period, never here), the self-host server guide (Storage routes, Flows: the sweep, the lease, and the
+synchronous delete turn, Invariants: every publish and every reuse of a key goes through `claimAssetKey`,
+Known Hazards: the D11 Limitation; the thumbnail cache's "no byte cap" Issue stays), the server resources
+guide (the Limitation Slice 1 wrote about retained snapshots rewritten: they hold their assets until rotated
+or deleted, and the sweep reclaims them after; Maintenance: the sweep's batches use `exclusive` and one
+synchronous turn, not maintenance; the restore's and imports' preflight), `docs/audit/asset-scan-<date>.md`
+(the synchronous turn's cost on the seeded store), the global API guide (Asset client: a present answer from
+the missing check is a one-hour lease, asked per batch and again for every key at an import's end; the inlay
+writer's cache hit is no proof of presence). Not in parallel with Incremental Chat Transport Slices 1 and 3
+(`server/src/data/resourceStore.ts`).
 
 - Tests (`server/src/tests/assetLifecycle.test.ts`, `assets.test.ts`, `assetRoute.test.ts`, `backups.test.ts`,
-  `snapshots.test.ts`, `importModule.test.ts`, `resourceStore.test.ts`,
-  `src/ts/storage/tests/assetClient.test.ts`, with injected clocks and `statfs`): a candidate past both clocks
+  `snapshots.test.ts`, `importModule.test.ts`, `resourceStore.test.ts`, `upstreamExportRoute.test.ts`,
+  `upstreamImportRoute.test.ts`, `src/ts/storage/tests/assetClient.test.ts`,
+  `src/ts/storage/tests/assetQueue.test.ts`, `src/ts/process/files/tests/inlays.test.ts`, with injected clocks
+  and `statfs`): a candidate past both clocks
   is deleted with its thumbnail directory and verification entry, and the ledger row goes; a candidate whose
   file was republished (young mtime) is skipped with the reason; a key the missing check answered present
   within the hour is skipped; a key referenced by a write that landed after the mark is skipped because the
   re-mark sees it; a snapshot taken after the mark that names a candidate is indexed inside the batch and the
   key is skipped; a chat write naming a candidate of a later batch, queued behind a batch's synchronous turn
   (latch), lands after it and is not refused, and that key is not deleted by the next batch because the
-  re-mark sees it; a write that committed before the turn makes the re-mark keep the key; the narrowed re-mark
-  keeps a key named only by a longer tail or only by a `/api/asset/<hex>` URL; a re-import that finds a
+  re-mark sees it; with 51 candidates, a chat write naming the 51st committed after the mark and before the
+  first batch keeps that key although batch 1's narrowed re-mark read only its own 50 (the baseline stays the
+  mark's count), and after a full re-mark a batch with no write since skips its re-mark; a write that
+  committed before the turn makes the re-mark keep the key; the narrowed re-mark keeps a key named only by a
+  longer tail, only by a `/api/asset/<hex>` URL, only by a `/sw/img/<hex>` URL, only by uppercase hex, or
+  only as an escaped key (a quote, a backslash, a newline) written after the mark; in a tab whose
+  `blobCache` holds an inlay's media, after the sweep deleted that file, saving the same bytes under a new id
+  uploads them before the new record is written, and with the file present uploads nothing and claims the
+  key; `saveAssets` asks the missing check for every key after its queue drains and re-writes, before it
+  returns, a key deleted after its batch was sent; the server module import claims every filled key again
+  before its result line and republishes one deleted after its skip; a sweep batch that starts while an
+  export prepare's worker runs (a latch) waits for its key set and skips its keys, and a key held by an
+  upstream export whose download is streaming is skipped until its `finalize`; a re-import that finds a
   candidate's bytes present (through `writeContentAsset`, through `publishStagedContentAsset`, and through the
   module import) takes the key's lock and lease, so the sweep skips the key as leased, and a re-import that
   waits on the lock while the sweep deletes the key publishes the bytes again; a publish that arrives while
@@ -533,9 +674,13 @@ API guide (Asset client: a present answer from the missing check is a one-hour l
   after the mark names, and the removed record's asset is unreferenced at the next run, not deleted at once; a
   filesystem error on one key is a skip, not a 500, and the batch continues; `writeAssets` with two write
   batches asks the missing check before each; the restore answers 507 from a short injected `statfs` when the
-  free space covers twice the snapshot but not the live database's safety snapshot too; the backup import
-  answers 507 from its declared `Content-Length` before saving and again from the parsed sizes before the
-  install; the upstream commit and the export prepare answer 507 with `{ needed, free }` and write no staging;
+  free space covers twice the snapshot but not the live database's safety snapshot too, and checks again
+  before `pin`'s fallback copy when the link is refused; the backup import answers 507 from its declared
+  `Content-Length` before saving and, before extracting its database, when the free space covers the staged
+  and installed copies and the safety snapshot but not the extracted source database too; the upstream
+  commit answers 507 when the free space covers the staged database's install but not the live database's
+  safety snapshot (a small import over a large live database); the export prepare answers 507 with
+  `{ needed, free }` and writes no staging;
   the snapshot tick skips and logs once on a short disk and resumes when space returns.
 
 ### Slice 3: snapshot pins, labels, manual snapshots, deletion (D8; needs 1; 2 and 3 in either order, one at a time)
@@ -593,7 +738,9 @@ guide this plan touched, the audit note of Slice 1 extended with the sweep's cos
   the lease, Scan, and delete the orphan inlay record; Delete removes the profile image and its thumbnail
   directory, and the next Scan shows the inlay's media unreferenced and not yet deletable; restart with an
   offset past a second grace, Scan, and Delete removes the inlay's media; a tab that rendered the image
-  before the delete still shows it from its cache and shows a broken image after a reload (D11); a pinned
+  before the delete still shows it from its cache, and shows a broken image once the browser's HTTP cache is
+  cleared (CDP `Network.clearBrowserCache`) or the URL is requested uncached, since a plain reload keeps the
+  immutable entry (`server/src/routes/storage.ts` around 567) (D11); a pinned
   manual snapshot taken before a third key's character is deleted keeps that key alive through a Scan, the
   restore of that snapshot brings the character back with its image intact, and deleting the character
   again, then unpinning and deleting the snapshot, frees the key at the next Scan.
@@ -617,9 +764,11 @@ first if the owner wants pins first. Slice 4 is the first user-visible change. Q
 - Focused: `pnpm --silent test:agent server/src/tests/assetLifecycle.test.ts server/src/tests/snapshots.test.ts
 server/src/tests/backups.test.ts server/src/tests/assets.test.ts server/src/tests/assetRoute.test.ts
 server/src/tests/app.test.ts server/src/tests/listenConfig.test.ts server/src/tests/importModule.test.ts
-server/src/tests/resourceStore.test.ts` for the server;
+server/src/tests/resourceStore.test.ts server/src/tests/upstreamExportRoute.test.ts
+server/src/tests/upstreamImportRoute.test.ts` for the server;
   `pnpm --silent test:agent src/lib/Setting/Pages/Advanced/StoragePanel.test.ts src/ts/storage/tests/assetLifecycleClient.test.ts
-src/ts/storage/tests/assetClient.test.ts src/ts/storage/tests/resourceClient.test.ts
+src/ts/storage/tests/assetClient.test.ts src/ts/storage/tests/assetQueue.test.ts
+src/ts/process/files/tests/inlays.test.ts src/ts/storage/tests/resourceClient.test.ts
 src/ts/setting/settingsPageSections.test.ts` for the tab (file names as the slices create them).
 - `e2e`: `e2e/settingsPages.spec.ts` after Slice 4 (every settings page mounts without a write); the
   slow tests of the backup routes if `backups.test.ts` gains a `slow` case for a large seeded store (then

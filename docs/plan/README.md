@@ -4,31 +4,38 @@ Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) records completed plans,
 historical paths/commits, retrieval commands, and pending manual follow-ups. All five
 plans below were revised on 2026-11-04 after the
-[plan design audit](../audit/plan-design-audit-2026-11-04.md).
+[plan design audit](../audit/plan-design-audit-2026-11-04.md); Job Handoff, Asset Lifecycle and Reroll
+Candidates were then challenged again and revised a second time the same day.
 
 - [Job Handoff](job-handoff.md): another tab of the same user (a PC marked as a worker) takes over
   the owner role of a running generation job when the creating tab goes silent, asked at creation, or
-  picked by name; a takeover is a ticketed attach against an open offer, request lanes follow the owner,
-  a delivered text-transform callback is re-delivered while an effectful one settles as disconnected,
-  every socket of a job shares one chat baseline so the creator keeps watching the stream, notices go by
-  kind (dialogs to the owner, display effects to every socket, device effects to the creator), and the
-  creator replays skipped listeners when no owner is attached at the end; D1–D8 recommended, Q1–Q3
-  answered (Q3 superseded by the notice groups), no slice scheduled.
+  picked by name; a takeover is a ticketed attach against an open offer whose owner switch takes effect
+  only when no callback delivered to the old owner is outstanding (a callback in flight on a device that
+  then sleeps is never re-delivered and settles by the owner-absent policy, which the creator is told),
+  request lanes follow the owner, every socket of a job shares one chat baseline so the creator keeps
+  watching the stream, notices go by kind (dialogs to the owner, display effects to every socket, device
+  effects to the creator), and the creator replays skipped listeners when no owner is attached at the
+  end; D1–D8 recommended, Q1–Q4 answered (Q3 superseded by the notice groups), no slice scheduled.
 - [Asset Lifecycle](asset-lifecycle.md): the server marks every stored asset from one retention graph (every
   text column of the live store, chat metadata and the memory tables included, the checkpoint pages a checkpoint
-  names, every retained snapshot, prepared exports, recent uploads and a one-hour lease) by bounded-tail prefix
-  matching, reports disk use as logical size, deduplicated size, per-owner shares and orphan inlay records, runs
+  names, every retained snapshot, exports from their copy to the end of their stream, recent uploads and a
+  one-hour lease) with one recognizer over decoded string values (bounded `assets/` tails by prefix, the
+  `/api/asset/` and `/sw/img/` hex forms in either case), reports disk use as logical size, deduplicated size, per-owner shares and orphan inlay records, runs
   a daily read-only scan, and deletes unreferenced assets only after a grace period (3 days minimum, 7 default),
-  fail-closed, in a synchronous recheck-and-unlink turn under a per-key lock that every publish path shares,
-  started by the user after a complete run of this server process; snapshots gain pins, labels, manual takes,
+  fail-closed, in a synchronous recheck-and-unlink turn against the mark's own write count, under a per-key
+  lock that every publish path and every import's final record write shares, started by the user after a
+  complete run of this server process; snapshots gain pins, labels, manual takes,
   and deletion; heavy operations get a disk preflight; D1–D14 recommended, Q1–Q3 answered (Q1's minimum
   superseded), no slice scheduled.
 - [Reroll Candidates](reroll-candidates.md): the alternatives of the newest reply persist on the
-  message as `candidates` with the selected index under a per-message size budget; a reroll regenerates
+  message as `candidates` with stable ids, a list revision and the selected index under a per-message size
+  budget; a reroll regenerates
   that message in place as a server job (the candidate push and the per-key variable restore precede the
   `begin`, and an end without a reply writes the previous candidate back in the generation's final write
-  with the attempt's own variable writes rolled back); a candidate switch is a server op evaluated from
-  the stored row that moves the variables and the checkpoint with it; the extra samples of one request
+  with the attempt's own variable writes rolled back from a per-key ledger the store keeps while the
+  carrier is locked, leaving another writer's values); a candidate switch is a server op that names the candidate by id
+  and the list by revision, evaluated from the stored row, and moves the variables and the checkpoint's
+  `after` with it while the turn's `before` is kept; the extra samples of one request
   become candidates; only the newest reply keeps the snapshots and a discarded candidate is never memory
   input; the tab takes the in-place path only when the server's `hello` advertises it; Slice 2 depends on
   Incremental Chat Transport Slice 4; D1–D14 recommended, Q1–Q4 answered, no slice scheduled.
