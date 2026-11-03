@@ -163,7 +163,7 @@
   `setTranslation`, single `remove`, and `meta` apply to a stale revision while their message exists, with a base at or
   above the [restore floor](#restore-floor). `replace`, `delete`, bulk `remove`, reorders, and a `begin` of an unknown
   generation need the current revision.
-- `remove` may carry `retract`, [a person's yes](structured-memory-lifecycle.md#retraction-and-edits): under Structured
+- `remove` may carry `retract`, [a person's yes](structured-memory/lifecycle.md#retraction-and-edits): under Structured
   Memory `removeMessages` asks first and may remove later.
 - `setMessage` sends the whole row, so on a stale revision it reverts fields another writer changed: it needs the
   current revision for fields it does not own (not enforced).
@@ -254,7 +254,7 @@
   whole list ([plugins](plugins-mcp.md)).
 - A structured chat's `hypaV3Data` is a read's projection, which the mirror holds and no send carries (`sendChat`,
   `keepsHeldHypaV3Data`). A plugin read's refresh replaces it with no write (`installChatProjection`):
-  [the rules](structured-memory.md#the-hypav3-projection).
+  [the rules](structured-memory/projection.md#the-hypav3-projection).
 - `createChatFieldDraft`: an independent, lazily started `{ value, key }` editing copy of a selected-chat array field.
   Synchronization reads without writing; nested edits save through the supplied `setChatMeta` writer.
 - `loreWriteFenced(ref)` (over `localSends` and `generatingChatKeys`, also checked before structural override actions):

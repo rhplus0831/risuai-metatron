@@ -8,14 +8,13 @@
   (`rebuildWork`, `commitOfRebuild`, `swapRebuild`, `noteRebuildStop`), the `rebuild` surface of
   `server/src/data/memoryStore.ts`, and the controls in `src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte`
   and `memoryRecordPress.ts`.
-- See [structured memory](structured-memory.md) for records and a memory write, and
-  [the archive](../archived-plan/README.md) for the design and remaining work.
+- See [structured memory](records.md) for records and a memory write, and [the archive](../../archived-plan/README.md)
+  for the design and remaining work.
 - Not here:
-  - The writer's windows, runs, admission, and pages → [structured memory writer](structured-memory-writer.md).
-  - The memory task service's queue, retention, and ends → [memory](memory.md#background-memory-task).
-  - Reconciliation, retraction, adoption, and the hold → [structured memory lifecycle](structured-memory-lifecycle.md).
-  - The rest of the panel → [structured memory read path](structured-memory-read.md#the-memory-panel).
-  - Snapshots, the checkpoint tables, and transactions → [server resources](server-resources.md).
+  - The records, the projection, the writer, the lifecycle, the read path with the rest of the panel, and the page tools
+    → [the area README](README.md).
+  - The memory task service's queue, retention, and ends → [memory](../memory.md#background-memory-task).
+  - Snapshots, the checkpoint tables, and transactions → [server resources](../server-resources.md).
 
 ## Files
 
@@ -51,9 +50,9 @@ transcript can reproduce; `backfill` takes the turns no event cites and adds to 
    reach), no service, a live task, a run already there, and no window.
 2. `begin` and `MemoryTasks.rebuild` are one synchronous step. A refused queue abandons what began.
 3. Work: `rebuildWork` takes the plan once and goes on from the run's `cursor`. Each window reads the chat as stored
-   (`rebuildWindow`, [screened](structured-memory-read.md#reply-screening) replies left out), so an edited message is
-   read as it is now, and one with no message left moves the cursor with no call. The writer runs on `rebuildStore`,
-   `manual: true`, unchanged but for `historical`.
+   (`rebuildWindow`, [screened](read.md#reply-screening) replies left out), so an edited message is read as it is now,
+   and one with no message left moves the cursor with no call. The writer runs on `rebuildStore`, `manual: true`,
+   unchanged but for `historical`.
 4. Commit: `commitOfRebuild` checks the task's fence, the hold on the live records, then `commitWindow` on the staged
    store under the window's own last message, inclusive, so no stored ceiling can go missing. No chat is written, so
    there is no receipt and no revision for the tab's fence. A closing commit, one with a `recorded` run, moves the
@@ -65,7 +64,7 @@ transcript can reproduce; `backfill` takes the turns no event cites and adds to 
    and error on the row, because a terminal is retained only `terminalRetentionMs`. A person's pause, a chain,
    maintenance, and an epoch change keep none.
 7. Resume: `{ resume: true }`, admitted the same way, with the settings as they stand. A failed window replays through
-   [the writer's replay rule](structured-memory-writer.md#a-writer-run), which reads the staged runs.
+   [the writer's replay rule](writer.md#a-writer-run), which reads the staged runs.
 8. At the cursor's end `swapRebuild`, in one synchronous step: the fence, the hold, `rebuildChanges`, `swap`, a task
    `done` (`rebuilt`). `nothingRecorded`, a run with no staged event, leaves everything and stops.
 
@@ -91,10 +90,10 @@ toggle, or the stop reason. A chat with no run answers `abandoned: false` and ca
 The seed goes in at the start, so the writer works with it. `seededPage` keeps a page with a section marked `locked`,
 `pinned`, `suppressed`, or `userCorrected`, or a person's grade, or a `contextMode` other than `auto` off the scene: its
 identity, those sections, their headings' history, no links. A page a person merged or split (`reshaped`,
-[the page tools](structured-memory-pages.md#what-a-merge-or-split-does-to-history)) seeds with all its sections and
-history, because the arrangement is theirs. Its patches land on the same id and a lock refuses them by the usual rule.
-Any other page is written anew, which is how a language change retitles it. A thread with no `openedBy`, which a person
-added, is seeded too. A page in the trash stays live, untouched: the swap removes only ids of `contents.pages`.
+[the page tools](pages.md#what-a-merge-or-split-does-to-history)) seeds with all its sections and history, because the
+arrangement is theirs. Its patches land on the same id and a lock refuses them by the usual rule. Any other page is
+written anew, which is how a language change retitles it. A thread with no `openedBy`, which a person added, is seeded
+too. A page in the trash stays live, untouched: the swap removes only ids of `contents.pages`.
 
 No event is seeded. `rebuildChanges` decides at the swap, so a retraction during the run counts:
 
@@ -110,9 +109,8 @@ No event is seeded. `rebuildChanges` decides at the swap, so a retraction during
 - Pages and threads not in the staged set go. A carried event may then name a page that is gone, and a `provenance` an
   event that is: dangling ids are legal.
 
-`hypaV3Data` is never written. An adopted chat's stored summaries stay until
-[the reset](structured-memory.md#the-reset), the projection stands aside as for any stored value, and a decline stays,
-since `write` leaves it alone.
+`hypaV3Data` is never written. An adopted chat's stored summaries stay until [the reset](projection.md#the-reset), the
+projection stands aside as for any stored value, and a decline stays, since `write` leaves it alone.
 
 ### Backfill
 
@@ -169,7 +167,7 @@ abandons.
 nothing. `calls` are windows, so it is the least a press spends: a window can add a patch call and compaction calls.
 `record` counts the marked events and stops at `maxWriterWindows`. `estimatedTokens` is `memoryCostTokens`, the windows'
 UTF-8 bytes over 3 plus `MEMORY_CALL_OVERHEAD_TOKENS` per call: analysis input only,
-[an estimate](../audit/structured-memory-2026-11-03.md), because a route has no job scope to reach a real tokenizer.
+[an estimate](../../audit/structured-memory-2026-11-03.md), because a route has no job scope to reach a real tokenizer.
 
 Rebuild and backfill always ask. `pressMemoryRecord` asks at 2 calls or more, and when the read fails, naming the cost
 as unknown. `recordTurns` takes the cadence for the windows.
@@ -263,7 +261,7 @@ same buttons. It starts nothing. A chat with no such run has nothing to compare,
 
 - A snapshot's size includes a stopped run's staged rows, prompts in `input` included, until the run ends.
 - A rebuild's runs join the Log whole and are never pruned, so a long chat's rebuild adds about its prompts in storage,
-  which every checkpoint save then reads ([Limitations](structured-memory-lifecycle.md#limitations)).
+  which every checkpoint save then reads ([Limitations](lifecycle.md#limitations)).
 - `seq` is storage order, so after a backfill the last stored event is an old one: `admissionState` and `previousTitle`
   read it, and the next ordinary window can compare against it. The read path sorts by place.
 - A swap holds the event loop for one parse of the chat's pages and events, in one synchronous step.

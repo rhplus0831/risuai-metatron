@@ -122,7 +122,7 @@ changing a path or its admission policy. Routing is non-strict (a trailing slash
      `/api/chat-checkpoints*`, `/api/backups*`, and `/api/import/*`.
    - [Server generation](server-generation.md#files): `/api/generations*`, `/api/transform*`, `/api/translate/message`,
      `/api/memory/tasks*`, `/api/llm/*`, `/api/tokens/*`, and `/api/events/ws`.
-   - [Structured memory](structured-memory.md#the-read-routes): `/api/memory/structured/*`.
+   - [Structured memory](structured-memory/records.md#the-read-routes): `/api/memory/structured/*`.
 
 ### Rate limits
 

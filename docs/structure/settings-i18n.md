@@ -185,7 +185,7 @@ These are hybrids of handwritten controls and registry items.
 - `MemorySettings` is a handwritten page for memory providers, presets, and the embedding model, with registered items
   from `memorySettingsData.ts`. It owns the `supaMemoryKey` input and HypaV3 budget controls.
 - `structuredMemory` selects by `ui.memoryAlgorithmType`, read ahead of the flags it clears. Its branch shares the
-  preset picker, budget mode, and memory maximum as snippets ([writer settings](structured-memory-writer.md#state)).
+  preset picker, budget mode, and memory maximum as snippets ([writer settings](structured-memory/writer.md#state)).
 - Summarization, budget, and task behavior belong to [memory](memory.md). The prompt-preset max-context override read by
   this page is in [State](#state).
 

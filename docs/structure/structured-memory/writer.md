@@ -9,14 +9,13 @@
   `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob,testRun}.ts`, the
   writer's task kind in `server/src/prompt/memory/memoryTasks.ts`, and `structuredMemoryStep` in
   `server/src/prompt/assemble.ts`.
-- See [structured memory](structured-memory.md) for how the algorithm is selected, and
-  [the archive](../archived-plan/README.md) for the design and remaining work.
+- See [structured memory](records.md) for how the algorithm is selected, and
+  [the archive](../../archived-plan/README.md) for the design and remaining work.
 - Not here:
-  - Record shapes and limits, the tables and store, read routes, the Markdown package, and the HypaV3 projection →
-    [structured memory](structured-memory.md).
-  - The read path, and the receipts and panel in the tab → [structured memory read path](structured-memory-read.md).
-  - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](memory.md).
-  - The resource store's connection, epoch, and transactions → [server resources](server-resources.md).
+  - The records, the projection, the read path, the lifecycle, the rebuild, and the page tools →
+    [the area README](README.md).
+  - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](../memory.md).
+  - The resource store's connection, epoch, and transactions → [server resources](../server-resources.md).
 
 ## Files
 
@@ -43,7 +42,7 @@
   writer's one write on either path; `writerRequestDb` and `writerHostDeps`, what its requests ignore of the preset;
   `adoptionHold` and `chatAdoptionHold`; `writerPaused`, re-exported from `shared/`.
 - `server/src/prompt/memory/structured/recordJob.ts`: `runMemoryRecord`, the `memoryRecord` command; `recordGapInJob`, a
-  send's approved gap. `testRun.ts`: `runMemoryTest`, [the test run](structured-memory-read.md#the-test-run).
+  send's approved gap. `testRun.ts`: `runMemoryTest`, [the test run](read.md#the-test-run).
 - `server/src/prompt/memory/memoryTasks.ts`: the task kind inside the shared service: `StructuredMemoryWriter`
   (`structuredWriter` replaces `createStructuredWriter`, in tests), `StructuredMemoryWriterResult`,
   `StructuredMemoryCommit`, `MemoryTaskLimits.maxWriterWindows`.
@@ -93,22 +92,21 @@ place in the stored list, not the eligible one, and `hash` from `messageSourceHa
 ### The writer task
 
 1. Selection: `db.memoryAlgorithmType === "structuredMemory"` runs `structuredMemoryStep` ahead of the flag chain. The
-   step reads ([the read path](structured-memory-read.md#the-read-path)), then returns the hand-off with `due` from
-   `confirmedWindows` at `limit: 1`.
+   step reads ([the read path](read.md#the-read-path)), then returns the hand-off with `due` from `confirmedWindows` at
+   `limit: 1`.
 2. Hand-off: for an input job with a service and a chat snapshot read with its source generation, due or not, since
    `handOffMemory` hands off a not-due input when a manual start waits. It asks no blocking reason, unlike HypaV3.
    - Gap: an input job whose trim dropped more than `gapConfirmTokens` asks `memoryGap`, with the windows a manual start
      would run as `plannedCalls`. It asks nothing with no such window, since history cited by a stale or retracted event
      counts as recorded, or with a local summarizer. `generate` is [the gap run](#the-gap-run), then the step reads and
      selects again without asking.
-   - A [held chat](structured-memory-lifecycle.md#the-adoption-choice) (`MemoryRecords.adoptionHeld`) is asked no gap
-     and hands off nothing, so a waiting manual start stays for after the choice. Its reply's receipt is `notAutomatic`,
+   - A [held chat](lifecycle.md#the-adoption-choice) (`MemoryRecords.adoptionHeld`) is asked no gap and hands off
+     nothing, so a waiting manual start stays for after the choice. Its reply's receipt is `notAutomatic`,
      `awaitingAdoption`, ahead of every other reason.
-3. Start: the service's shared checks ([memory](memory.md#background-memory-task), `createMemoryTasks`), with
+3. Start: the service's shared checks ([memory](../memory.md#background-memory-task), `createMemoryTasks`), with
    `notStructuredMemory` when `memoryAlgorithmType` no longer selects it. A Plugin `memory` slot, a `request` trigger,
    or a local summarizer ends the task `skipped` with `pluginModel`, `requestTrigger`, or `localSummarization`. What a
-   person reads of that is the reply's own [receipt](structured-memory-read.md#receipts), which does not wait for a
-   task.
+   person reads of that is the reply's own [receipt](read.md#receipts), which does not wait for a task.
 4. Work: the fresh scope's chat and the stored events give the windows, up to `maxWriterWindows`. The hand-off gives an
    automatic task only its ceiling. `total` counts the windows the task runs and `done` those the writer returned
    recorded. Nothing open is `done` with 0 of 0.
@@ -124,20 +122,20 @@ throws once ended), the gate is open, the service is open with the input's epoch
 `staleInput`), then `commitWindow`: the window still reads from the chat as stored under the ceiling it was computed
 with (`windowStillConfirmed`, else `windowChanged`), no generation job owns one of its messages (`messagesLocked`, else
 `windowChanged`), the chat is not held (else `windowChanged`, because a `meta` write can land after `openRun`'s look),
-the chat holds no [rebuild's run](structured-memory-rebuild.md#during-a-run) (else `windowChanged`, because a job can
-get past admission after an algorithm switch), and the memory revision is current (else `revisionConflict`). A refusal
-writes nothing. Around it, `retireRerecorded` turns a repair's closing write into the swap: the new event takes the old
-one's `pinned`, `suppressed`, and `userCorrected`, and the old one is written `retracted` in the same change set, with
-[its sections flagged](structured-memory-lifecycle.md#retraction-and-edits). An old event gone, unmarked, or retracted
-refuses the commit `windowChanged`, because a confirmed delete has no fence to wait for. `recordJob.ts` wraps its commit
-the same way, so a failed run leaves the old event and its mark, and each retry works it out again.
+the chat holds no [rebuild's run](rebuild.md#during-a-run) (else `windowChanged`, because a job can get past admission
+after an algorithm switch), and the memory revision is current (else `revisionConflict`). A refusal writes nothing.
+Around it, `retireRerecorded` turns a repair's closing write into the swap: the new event takes the old one's `pinned`,
+`suppressed`, and `userCorrected`, and the old one is written `retracted` in the same change set, with
+[its sections flagged](lifecycle.md#retraction-and-edits). An old event gone, unmarked, or retracted refuses the commit
+`windowChanged`, because a confirmed delete has no fence to wait for. `recordJob.ts` wraps its commit the same way, so a
+failed run leaves the old event and its mark, and each retry works it out again.
 
 ### A writer run
 
 `createStructuredWriter` makes one analysis call per window, one patch call when a candidate was accepted, and one
 compaction call per section that patch left past its budget. `memory_runs` is its whole state. It reads and writes
-through the `memory` it is given: the live records, or [a rebuild's staged set](structured-memory-rebuild.md#a-run),
-where a `historical` write [leaves current state alone](structured-memory-rebuild.md#backfill).
+through the `memory` it is given: the live records, or [a rebuild's staged set](rebuild.md#a-run), where a `historical`
+write [leaves current state alone](rebuild.md#backfill).
 
 1. Hold and pause: a held chat ends any run `skipped` (`awaitingAdoption`), a manual one too, with no call and no row.
    This one check covers a task, a job, and the gap run, whatever queued them. `consecutiveFailures` `failed` rows at
@@ -170,7 +168,7 @@ where a `historical` write [leaves current state alone](structured-memory-rebuil
 
 ### Record now
 
-A press past one window asks first, with [the cost preview](structured-memory-rebuild.md#the-cost-preview).
+A press past one window asks first, with [the cost preview](rebuild.md#the-cost-preview).
 
 "Record now" and resume are the `memoryRecord` command (`messageId` or none), a job and not a call on the service: the
 service keeps no input across a restart, where `start` would only wait for the next send, and only a job's scope can
@@ -212,8 +210,8 @@ reply. It shares `runWindows` with record now, inside the send's job.
 `assembleAnalysisPrompt` parses the default ChatML frame and the preset's `instructions` with the slots in place, so CBS
 runs on them alone, then fills the slots in one pass over the parsed messages. Chat text never reaches CBS, cannot start
 a ChatML message, and a value holding a slot's name stays as it is. Message text stays raw so a quote can match, with
-inlays shown as `[Image]`. Under `fineTuning` the frame is [the preset's](structured-memory-read.md#prompt-fine-tuning).
-The language is the chat's override, the owner's, the preset's, then `db.language`.
+inlays shown as `[Image]`. Under `fineTuning` the frame is [the preset's](read.md#prompt-fine-tuning). The language is
+the chat's override, the owner's, the preset's, then `db.language`.
 
 `castSlice` fills the `cast` slot, at most `promptPages` rows, in this order: `always` pages, the scene's
 `participants`, then pages whose title or alias is a case-insensitive substring of a window message. The scene page has
@@ -266,7 +264,7 @@ one change set: created pages, the scene page when the chat has none, patches, l
 
 - History: each section change adds one entry with the replaced content, its kind, and the event, to
   `pageHistoryEntries`; a new page has one `heading: null` `create` entry. `before` keeps the section's marks with its
-  content, so a [revert](structured-memory.md#the-revert-route) gives it back as it stood.
+  content, so a [revert](records.md#the-revert-route) gives it back as it stood.
 - Highlighting: the stamp carries the rule, the chat's mode else the preset's, and a run with `input.rebuild` uses
   `none`. `all` highlights every writer entry; `important` a kind in `highlightKinds`, and a `change` only from
   `highlightChangeGrade`, the higher of the event's and the page's grade. An identical upsert never is. No page history
@@ -363,27 +361,27 @@ with its hashes and `historyId`. The text diff is the Pages tab's history; the r
 
 ## State
 
-- The records a writer run leaves, and the tables holding them: [structured memory](structured-memory.md#memory-tables).
+- The records a writer run leaves, and the tables holding them: [structured memory](records.md#memory-tables).
 - The writer's settings are the selected memory preset's `settings.structured`, so they copy, export, and import with
   the preset. A chat's `structuredMemoryLanguage` wins over its owner's, and the owner's over the preset's `language`,
   where `""` follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
 - `MemorySettings.svelte` exposes only the fields something reads, and shares with HypaV3 only the preset picker, the
-  budget mode, and the memory maximum. `screening`: [its rules](structured-memory-read.md#reply-screening). So a
-  preset's `summarizationModel` and `alwaysToggleOn` still apply with no control here.
+  budget mode, and the memory maximum. `screening`: [its rules](read.md#reply-screening). So a preset's
+  `summarizationModel` and `alwaysToggleOn` still apply with no control here.
 - `cadenceTokens` is the `tokens` cadence's threshold under a `tokens` budget mode, and `cadenceRatio` its share of the
   max context under a `ratio` one; each mode keeps the other's field.
 
 ## Coupling
 
-- The writer is a task kind of the [memory task service](memory.md#background-memory-task): queue, retention, leases,
+- The writer is a task kind of the [memory task service](../memory.md#background-memory-task): queue, retention, leases,
   and ends are shared, and the service's doc comment holds both kinds' rules. A cadence change moves
   `memorySettingsFingerprint`, so a queued writer input ends `skipped` (`staleInput`).
 - The tab's fence (`src/ts/process/memoryTasks.svelte.ts`) applies to both kinds; `parseEntry` keeps a status's `kind`.
 - The overrides are `keep` in `CHECKPOINT_CHAT_FIELDS`: a settings choice stays with the current chat when a checkpoint
   loads. Upstream has none of this: `METATRON_CHAT_FIELDS` and `METATRON_CHARACTER_FIELDS` strip the overrides, and
   `upstreamHypaV3Presets` leaves `structured` out.
-- `memoryRecord` is a [generation](server-generation.md) `command` job; `recordJob.ts` shares the runner's job helpers
-  (`createJobMemoryHost`, `jobMemoryTaskBase`, and the like).
+- `memoryRecord` is a [generation](../server-generation.md) `command` job; `recordJob.ts` shares the runner's job
+  helpers (`createJobMemoryHost`, `jobMemoryTaskBase`, and the like).
 - `analysis.ts` and `patches.ts` share `answerJson`, `readList`, and `readConfidence`; `sectionVectorText` is the text a
   retrieval of sections must embed.
 

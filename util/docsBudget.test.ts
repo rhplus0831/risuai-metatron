@@ -207,6 +207,20 @@ describe("documentation budgets", () => {
         }
     });
 
+    it("holds an area folder's README to the budgets but not to the guide outline", () => {
+        const readme = "docs/structure/area/README.md";
+        const nested = "docs/structure/area/topic.md";
+        const index =
+            "# Area\n\n## Scope\n\nText.\n\n## Guides\n\n| Task | Guide |\n| --- | --- |\n| Topic | [topic](topic.md) |\n";
+        expect(checkDocs(measureDocs(tree({ [readme]: index, [nested]: guide() })))).toEqual([]);
+        expect(checkDocs(measureDocs(tree({ [readme]: index, [nested]: "# Topic\n\n## Guides\n" })))).toEqual([
+            finding(nested, 3, "sections"),
+        ]);
+        expect(checkDocs(measureDocs(tree({ [readme]: headingAtSize("# Area", 8_001) })))).toEqual([
+            finding(readme, 1, "leaf"),
+        ]);
+    });
+
     it("checks a final level-one heading against the leaf budget", () => {
         for (const bytes of [8_000, 8_001]) {
             const text = guide() + headingAtSize("# Appendix", bytes);

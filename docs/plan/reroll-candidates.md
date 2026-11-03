@@ -31,7 +31,7 @@ chat and barriers), the [scripts and triggers guide](../structure/scripts-trigge
 variables are `chat.scriptstate['$'+key]`; Limitations: the shared pending metadata write), the [persistence
 guide](../structure/persistence.md) (Shared shapes, Chat fields, Messages, the compatibility rule), the [chat
 store guide](../structure/chat-store.md) (By-id ops, Map merges, Job hydration), the [structured memory writer
-guide](../structure/structured-memory-writer.md) (The writer's windows), the [memory
+guide](../structure/structured-memory/writer.md) (The writer's windows), the [memory
 guide](../structure/memory.md) (Selection, Memory writes), and the [backup and sync hub
 guide](../structure/backup-sync-hub.md) (Upstream database export) at `8f0db0fb7`; the 2026-11-04 [design
 audit](../audit/plan-design-audit-2026-11-04.md) (its Reroll Candidates section RC1–RC7 and the cross-plan
@@ -47,7 +47,7 @@ generation, the snapshots, the write-back), [chat pipeline](../structure/chat-pi
 controls, what the per-chat bundle history still covers), [scripts and
 triggers](../structure/scripts-triggers.md)
 (what a reroll does to variables), [chat store](../structure/chat-store.md) (the `selectCandidate` op),
-[structured memory writer](../structure/structured-memory-writer.md) and [memory](../structure/memory.md)
+[structured memory writer](../structure/structured-memory/writer.md) and [memory](../structure/memory.md)
 (the commit boundary), [backup and sync hub](../structure/backup-sync-hub.md) (the export mapping and the
 import conversion), [test harness](../structure/test-harness.md) (the e2e spec).
 

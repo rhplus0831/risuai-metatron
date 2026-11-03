@@ -196,7 +196,7 @@
   the pane's edge.
 - `statusSets` reads `refusedChatKeys(refusedItems())` from the save adapter's reactive refusal inventory, the chat keys
   of `src/ts/process/chatStatus.svelte.ts`, `summarizingChats()` from `src/ts/process/memoryTasks.svelte.ts`, and
-  `memoryHealthStates()` ([the health badge](structured-memory-read.md#the-health-badge)) reactively.
+  `memoryHealthStates()` ([the health badge](structured-memory/read.md#the-health-badge)) reactively.
   `characterStatuses` aggregates once per change.
 - Top-level characters and members of open folders read their character's status. Collapsed folders use `folderStatus`
   over their members; an open folder has no badge on its own row. `pinnedStatuses` resolves each pinned chat separately.

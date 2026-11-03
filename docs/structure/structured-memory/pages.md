@@ -9,13 +9,8 @@
   `server/src/routes/structuredMemory.ts`, the tool controls of `src/lib/Others/StructuredMemory/PagesTab.svelte`, and
   the tool and import calls of `src/ts/process/structuredMemory.svelte.ts`.
 - Not here:
-  - Record shapes, the tables and store, the edit and revert routes, and how the package is written →
-    [structured memory](structured-memory.md).
-  - What the writer does to a page → [structured memory writer](structured-memory-writer.md).
-  - The panel, its other tabs, and a section's edit → [structured memory read path](structured-memory-read.md).
-  - What a copy, a branch, a checkpoint, and a chat file carry →
-    [structured memory lifecycle](structured-memory-lifecycle.md).
-  - What a rebuild seeds → [structured memory rebuild](structured-memory-rebuild.md#what-a-rebuild-keeps).
+  - The records and how the package is written, the projection, what the writer does to a page, the panel and its other
+    tabs, what a copy or a chat file carries, and what a rebuild seeds → [the area README](README.md).
 
 ## Files
 
@@ -39,9 +34,9 @@
 
 `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/page-tools`, `{ revision, tool }`, capped at 64 KiB, answers
 `StructuredMemoryPageToolAnswer`: the page the tab shows next, null after a purge. Its checks and order are
-[the edit route's](structured-memory.md#the-edit-route), so a running or stopped rebuild refuses it 409 `fenced`. A tool
-that changes nothing goes through as an empty change set, so a stale one is still refused. A refusal from the pages is
-400 with text, and the tab shows that text. A gone page is 404 `recordGone`.
+[the edit route's](records.md#the-edit-route), so a running or stopped rebuild refuses it 409 `fenced`. A tool that
+changes nothing goes through as an empty change set, so a stale one is still refused. A refusal from the pages is 400
+with text, and the tab shows that text. A gone page is 404 `recordGone`.
 
 ### The trash
 
@@ -80,8 +75,8 @@ they stand, and the aliases, untruncated. Events stay on the old page: nothing s
 
 - A `merge` entry stands on every heading a merge touched on the target, and a `split` entry on every heading that left
   the old page. Neither has an `eventId`, so neither can be reverted, and each is a later entry of its heading, which
-  makes [`revertChange`](structured-memory.md#the-revert-route) refuse every older one `superseded`. The bounded history
-  drops oldest first, so a blocker outlives what it blocks.
+  makes [`revertChange`](records.md#the-revert-route) refuse every older one `superseded`. The bounded history drops
+  oldest first, so a blocker outlives what it blocks.
 - The source's history does not move to the target. A moved `before` under a target heading would put the source's text
   over the target's on a branch cut.
 - `reshaped` marks a merge target, an old page, and a new page, and it outlives the history. A rebuild seeds such a page
@@ -136,8 +131,8 @@ The grammar, in `parseMemoryPackage`:
 
 - Trash is kept deliberately. A checkpoint, snapshot, and backup keep it, walking rows through `recordRow`. A rebuild
   leaves it live, since `rebuildChanges` removes only ids of `contents.pages`. A copy, branch, chat file, and package
-  leave it behind, each built from `contents.pages`, and events keep its id, which
-  [a restore](structured-memory-lifecycle.md) calls legal. The projection reads events.
+  leave it behind, each built from `contents.pages`, and events keep its id, which [a restore](lifecycle.md) calls
+  legal. The projection reads events.
 - `/inherit`, `/restore`, and `/import` count `contents.trash` as a row, so no write reaches a trashed row by id.
   `/adopt` does not, matching `adoptionHold`, so a chat with only trash can still be adopted.
 - A trashed name is unknown to the writer, which may create that name again.

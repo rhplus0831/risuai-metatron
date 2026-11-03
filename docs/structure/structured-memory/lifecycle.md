@@ -10,29 +10,23 @@
   `server/src/prompt/memory/structured/edits.ts`, `src/ts/process/chatMemoryInherit.svelte.ts`, the reconciliation rules
   of `shared/structuredMemory.ts`, the memory parts of `server/src/data/checkpointStore.ts`,
   `server/src/data/resourceStore.ts`, `shared/chatCheckpoints.ts`, and `src/ts/characters.ts`.
-- See [structured memory](structured-memory.md) for the records these rules act on, the tables and store, and the edit
-  route that carries a repair, and [the archive](../archived-plan/README.md) for the design and remaining work.
+- See [structured memory](records.md) for the records these rules act on, the tables and store, and the edit route that
+  carries a repair, and [the archive](../../archived-plan/README.md) for the design and remaining work.
 - Not here:
-  - Record shapes and limits, the tables and store, the read routes, the edit route and the section and thread edits it
-    applies, the Markdown package, a memory write, and the HypaV3 projection →
-    [structured memory](structured-memory.md).
-  - The writer's settings, windows, task kind, runs, analysis prompt, admission, and record now →
-    [structured memory writer](structured-memory-writer.md).
-  - The read path's lanes, card, manifest, and report, the receipts, and the memory panel in the tab →
-    [structured memory read path](structured-memory-read.md).
-  - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](memory.md).
+  - The records, the projection and the reset, the writer, the read path, the rebuild, and the page tools →
+    [the area README](README.md).
+  - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](../memory.md).
   - Checkpoint tables, snapshots, and the resource store's connection, epoch, and transactions →
-    [server resources](server-resources.md).
+    [server resources](../server-resources.md).
 
 ## Files
 
-- `shared/structuredMemory.ts`, the reconciliation part (the rest is in
-  [structured memory](structured-memory.md#files)):
+- `shared/structuredMemory.ts`, the reconciliation part (the rest is in [structured memory](records.md#files)):
   - Reconciliation: `reconcileMemoryEvents`, `memoryAnchorState`, `memoryRerecordTarget`, `storedMemorySources`.
 - `server/src/prompt/memory/structured/reconcile.ts`: the server's side: `reconcileEvents`, `retireRerecorded`,
   `withUnsupportedSections`, `automaticRerecords`, and `reconcileMessageChanges`.
 - `server/src/prompt/memory/structured/edits.ts`, the repairs: `applyEventRepair`, `flagUnsupportedSections`. The rest
-  is in [structured memory](structured-memory.md#files).
+  is in [structured memory](records.md#files).
 - `server/src/prompt/memory/structured/inherit.ts`: what a copied or branched chat starts with, pure:
   `inheritedRecords`, `MemoryInheritance`.
 - `server/src/prompt/memory/structured/restore.ts`: what the restore route takes of a chat file, pure:
@@ -42,14 +36,14 @@
 - `server/src/data/checkpointStore.ts` and `shared/chatCheckpoints.ts`: what a checkpoint holds of them,
   `CHECKPOINT_MEMORY_FIELD`, `CheckpointMemoryManifest`, and `readMemory` ([A checkpoint](#a-checkpoint)).
 - `server/src/data/resourceStore.ts`, the checkpoint's part: `CheckpointTransaction.restoreMemory`. The rest is in
-  [structured memory](structured-memory.md#files).
+  [structured memory](records.md#files).
 - `server/src/routes/structuredMemory.ts`: the inherit route ([Copies and branches](#copies-and-branches)), the restore
   route ([Chat files](#chat-files)), the adopt and decline routes
   ([Adopting HypaV3 summaries](#adopting-hypav3-summaries)), and the repair half of the edit route. The rest is in
-  [structured memory](structured-memory.md#files).
+  [structured memory](records.md#files).
 - `src/ts/process/structuredMemory.svelte.ts`: `inheritStructuredMemory`, `readStructuredMemoryFile`,
   `exportChatMemory`, `chatFileMemory`, `restoreStructuredMemory`, `adoptStructuredMemory`, `declineStructuredMemory`,
-  `resetStructuredMemorySummaries`. The rest is in [structured memory](structured-memory.md#files).
+  `resetStructuredMemorySummaries`. The rest is in [structured memory](records.md#files).
 - `src/ts/process/chatMemoryInherit.svelte.ts`: `createInheritingChat`, `restoreChatMemory`, the wait and the notices.
   Its own file, because they read the chat store and the save loop, and `structuredMemory.svelte.ts` stays free of both.
 - `src/ts/characters.ts`: `exportChat`, `exportAllChats`, and `importChat`'s `addChats` ([Chat files](#chat-files)).
@@ -74,8 +68,7 @@ What moves every source alike is not stale, because a chat that lost its first m
 a message deleted or inserted before the event, or a whole block moved. Neither is a smaller gap, a disabled source, or
 one source moved. A retracted event and one stored `stale` stay as they are.
 
-An event's repairs go through [the edit route](structured-memory.md#the-edit-route) as
-`{ kind: "event", eventId, repair }`:
+An event's repairs go through [the edit route](records.md#the-edit-route) as `{ kind: "event", eventId, repair }`:
 
 - `retract`: `status: "retracted"`. It can be applied to any event but a retracted one, takes the mark with it, and
   flags the sections it leaves unsupported ([Retraction and edits](#retraction-and-edits)).
@@ -85,12 +78,12 @@ An event's repairs go through [the edit route](structured-memory.md#the-edit-rou
   nothing of the messages, so another tab's edit cannot be accepted unseen.
 - `rerecord`: sets `rerecord` and changes nothing else, so the old event stays until the new one commits. It is refused
   when `memoryRerecordTarget` is null: the newest message of the event a send reads is not a reply. The tab then presses
-  record now, and [the writer's windows](structured-memory-writer.md#the-writers-windows) do the rest.
+  record now, and [the writer's windows](writer.md#the-writers-windows) do the rest.
 
 `keptState` and `rerecord` are fields of the stored record, so a checkpoint keeps them with its exact row text. Loading
 one starts nothing: a restored mark is read as any other, by a press or
-[the next automatic task](structured-memory-writer.md#the-writers-windows). A restored `keptState` holds while the
-messages it named are back.
+[the next automatic task](writer.md#the-writers-windows). A restored `keptState` holds while the messages it named are
+back.
 
 ### Retraction and edits
 
@@ -106,7 +99,7 @@ A chat write reaches the records through a notice, not through the write itself,
 - `reconcileMessageChanges` (subscribed in `app.ts`, with or without a task service) answers in one synchronous step at
   the revision it read. An event citing a `retracted` id is retracted by `applyEventRepair`, the panel's write. Any
   other event citing a `rewritten` id gains `rerecord` and nothing else, so it stays until
-  [a re-record commits](structured-memory-writer.md#the-writer-task). It writes nothing when nothing is affected.
+  [a re-record commits](writer.md#the-writer-task). It writes nothing when nothing is affected.
 - It checks no fence, unlike the edit route: a running writer gets `revisionConflict` and admits from fresh records, or
   `windowChanged` when its source moved, and a re-record whose event no longer wants it is refused at its commit.
 
@@ -239,9 +232,9 @@ while records newer than the chat would put pages ahead of their messages. `expo
 from the detached chats. `exportChatMemory` then changes the exported copy only:
 
 - `hypaV3Data` goes when it is sealed (`isSealedHypaV3Data`), on every path, the failed read included: a sealed value is
-  a [projection](structured-memory.md#the-hypav3-projection), which a tab can hold also after another algorithm was
-  selected, and it never reaches a file. An unsealed value stays whatever the selected algorithm: a chat can hold real
-  summaries beside records, and they are live after a switch back to HypaV3.
+  a [projection](projection.md#the-hypav3-projection), which a tab can hold also after another algorithm was selected,
+  and it never reaches a file. An unsealed value stays whatever the selected algorithm: a chat can hold real summaries
+  beside records, and they are live after a switch back to HypaV3.
 - `generationInfo.memory` goes from every message when the chat holds a row of any kind, runs included, since a chat
   with only failed runs can hold paused receipts. A receipt is a display copy of a run, and runs do not cross: the panel
   would offer Resume on an empty Log, and a failed restore would show `recorded`. The rest of `generationInfo` stays,
@@ -296,7 +289,7 @@ In the tab only `importChat`'s `ver: 2` branch reaches records:
 ### Adopting HypaV3 summaries
 
 A chat with HypaV3 summaries and no records can take them as events, with no model call and no cost to preview.
-`StructuredMemoryPanel` offers it ([the memory panel](structured-memory-read.md#the-memory-panel)), and
+`StructuredMemoryPanel` offers it ([the memory panel](read.md#the-memory-panel)), and
 `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/adopt`, with no body, answers `StructuredMemoryAdoptAnswer`.
 
 The route decides, whatever the tab offered:
@@ -331,15 +324,15 @@ After it:
   ones. `coveredMessages` takes active events only, so a stale one lets no message leave the prompt.
 - The stored value holds summaries, so `overlayMemoryProjection` and the upstream export stand aside, and plugins read
   the real `hypaV3Data` until a reset empties it. From then on they read
-  [the projection](structured-memory.md#the-hypav3-projection), `pinned` as `isImportant`.
+  [the projection](projection.md#the-hypav3-projection), `pinned` as `isImportant`.
 - The next send can embed the new events, as any send embeds its records. Only adopting is free of model calls.
 
 ### The adoption choice
 
 A chat with no page, event, or thread and no decline, whose stored `hypaV3Data` `adoptedEvents` would make an event of,
 is held (`adoptionHold`, runs not counting), so blank summaries hold nothing. Nothing records until a person adopts or
-declines in the panel ([the writer](structured-memory-writer.md#a-writer-run) enforces it), which keeps D11's one owner.
-While held the projection stands aside as for any stored summaries, so a plugin reads the real value.
+declines in the panel ([the writer](writer.md#a-writer-run) enforces it), which keeps D11's one owner. While held the
+projection stands aside as for any stored summaries, so a plugin reads the real value.
 
 `POST .../decline`, with no body, answers `StructuredMemoryDeclineAnswer`. Its checks and write are one step, as for
 adopting. Only a held chat writes `adoptionDeclined`, one-way, moving the memory revision; a real value in a tab stays,
@@ -351,8 +344,8 @@ it outlives a load from before it. An inherit carries it, with no record or none
 same summaries. A chat file drops it, because a file can be passed on, so an imported chat with summaries and no records
 is held. The restore route leaves one in place.
 
-A reset of an adopted chat's stored summaries is [its own step](structured-memory.md#the-reset), because the projection
-takes over from it.
+A reset of an adopted chat's stored summaries is [its own step](projection.md#the-reset), because the projection takes
+over from it.
 
 ## State
 
@@ -370,28 +363,24 @@ takes over from it.
 ## Coupling
 
 - A chat write reaches the records through `applyGroup`'s `ChatMessageChanges` and `onMessagesChanged`, which the chat
-  store owns; [chat store](chat-store.md) holds the `retract` mark a `remove` carries.
+  store owns; [chat store](../chat-store.md) holds the `retract` mark a `remove` carries.
 - `reconcileMessageChanges` is subscribed in `app.ts`. It holds no fence, so a running writer meets it as
-  `revisionConflict` or `windowChanged`, and a re-record is committed by
-  [the writer task](structured-memory-writer.md#the-writer-task).
-- The tab reads the reconciled copy for [the memory panel](structured-memory-read.md#the-memory-panel), and a send reads
-  it for [the read path](structured-memory-read.md#the-read-path); both take the rule from `shared/`, with `hashOf`
-  injected.
-- A repair is a case of the edit route's closed union: [the edit route](structured-memory.md#the-edit-route) owns the
-  fence, the revision check, and the answer.
-- A checkpoint's memory follows the [checkpoint tables](server-resources.md#checkpoint-tables) and the load's
-  transaction in [server resources](server-resources.md#snapshots-and-restore).
+  `revisionConflict` or `windowChanged`, and a re-record is committed by [the writer task](writer.md#the-writer-task).
+- The tab reads the reconciled copy for [the memory panel](read.md#the-memory-panel), and a send reads it for
+  [the read path](read.md#the-read-path); both take the rule from `shared/`, with `hashOf` injected.
+- A repair is a case of the edit route's closed union: [the edit route](records.md#the-edit-route) owns the fence, the
+  revision check, and the answer.
+- A checkpoint's memory follows the [checkpoint tables](../server-resources.md#checkpoint-tables) and the load's
+  transaction in [server resources](../server-resources.md#snapshots-and-restore).
 - The inherit route and `createInheritingChat` are reached from the chat list's copy and branch sites, and the store
-  write is [a memory write](structured-memory.md#a-memory-write).
-- The restore route is reached from `importChat` alone, [a memory write](structured-memory.md#a-memory-write) too, and
-  is the one route that writes records the tab sent ([Invariants](structured-memory.md#invariants)).
-- The adopt route is reached from the panel alone, and
-  [the writer's windows](structured-memory-writer.md#the-writers-windows) read what it writes as recorded through
-  `sources`, so an event's shape is the only contract between them.
-- A chat file and [the HypaV3 projection](structured-memory.md#the-hypav3-projection): an exported copy drops
-  `hypaV3Data` by the seal alone (`exportChatMemory`), so the projection a tab's read overlays must stay sealed, and an
-  unsealed one would be exported as real summaries. An import of an older file that holds a sealed value drops it in
-  `createChat`.
+  write is [a memory write](records.md#a-memory-write).
+- The restore route is reached from `importChat` alone, [a memory write](records.md#a-memory-write) too, and is the one
+  route that writes records the tab sent ([Invariants](records.md#invariants)).
+- The adopt route is reached from the panel alone, and [the writer's windows](writer.md#the-writers-windows) read what
+  it writes as recorded through `sources`, so an event's shape is the only contract between them.
+- A chat file and [the HypaV3 projection](projection.md#the-hypav3-projection): an exported copy drops `hypaV3Data` by
+  the seal alone (`exportChatMemory`), so the projection a tab's read overlays must stay sealed, and an unsealed one
+  would be exported as real summaries. An import of an older file that holds a sealed value drops it in `createChat`.
 
 ## Invariants
 
@@ -403,7 +392,7 @@ takes over from it.
 - A new reconciliation reason: add it to the ordered list in `reconcileMemoryEvents`, where the first that holds wins,
   and read it only through the reconciled copy, never stored.
 - A new repair: add it to the `repair` cases `applyEventRepair` applies, through
-  [the edit route](structured-memory.md#the-edit-route), and send any retraction through `withUnsupportedSections`.
+  [the edit route](records.md#the-edit-route), and send any retraction through `withUnsupportedSections`.
 - A new field on a record a copy must carry: `inheritedRecords` keeps every field as stored but `createdRevision` and
   `rerecord`, so decide whether the new one is a fact about the source chat, as `rerecord` is.
 - A new thing a checkpoint holds: it needs its own chunks in the manifest under `CHECKPOINT_MEMORY_FIELD`, a check in
@@ -454,14 +443,14 @@ takes over from it.
 - A checkpoint save reads and hashes every record's text in one synchronous step, however little changed, and runs are
   never pruned while each holds whole prompts. So a save's event-loop hold grows with the chat's memory, on every
   automatic checkpoint and every load's safety checkpoint:
-  [about 500 ms for 79 MB of runs](../audit/structured-memory-2026-11-03.md). A load parses every record on top.
+  [about 500 ms for 79 MB of runs](../../audit/structured-memory-2026-11-03.md). A load parses every record on top.
   Decision: Structured Memory slice 5d, plan.
 - A tab closed before [the inherit](#copies-and-branches) posts leaves the new chat with no records and no notice:
   nothing retries it. Decision: Structured Memory slice 5c, plan.
 - A send that reaches the new chat before the inherit is fenced or finds records, so that chat keeps a gap. Decision:
   Structured Memory slice 5c, plan.
-- A copied or branched chat's receipts still read as they did, with no run behind them
-  ([Gotchas](structured-memory-read.md#gotchas)). Decision: Structured Memory slice 5c, plan.
+- A copied or branched chat's receipts still read as they did, with no run behind them ([Gotchas](read.md#gotchas)).
+  Decision: Structured Memory slice 5c, plan.
 - A change the bounded history no longer holds cannot be rewound, so that section keeps its text, which can still reach
   the prompt, flagged `unsupported`. Provenance is bounded too: a change `sectionEvidence` also dropped leaves nothing
   to flag it by. A page whose `create` entry aged out crosses too. A person's edit after the branch point has no place
@@ -473,7 +462,7 @@ takes over from it.
 - [Adoption](#adopting-hypav3-summaries) refuses a chat that holds a record, such as one recorded before the hold or a
   summary written after the first record: nothing merges them with events. Decision: Structured Memory slice 6a, plan.
 - Under `doNotSummarizeUserMessage` a summary cites only replies, so an adopted chat's user messages stay uncovered
-  until [a backfill](structured-memory-rebuild.md#backfill). Decision: Structured Memory slice 6a, plan.
+  until [a backfill](rebuild.md#backfill). Decision: Structured Memory slice 6a, plan.
 - A declined chat is never reset, since its summaries have no other copy, so its plugins keep reading them without any
   later event. Selecting HypaV3 and using its modal is the way out. A held chat's send has no summaries or card, so its
   older history trims until the choice. Decision: Structured Memory slice 6c, plan.

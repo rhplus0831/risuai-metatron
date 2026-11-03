@@ -253,7 +253,7 @@ and commit contract is owned by [backup-sync-hub](backup-sync-hub.md#realm-downl
 - `importChat` captures the selected character's id before the file dialog, resolves it again afterwards (a deleted one
   stops with `importTargetGone`), and switches to the imported chat only while that character is still selected.
 - A chat's JSON file carries its structured memory beside `data`, which `importChat` restores behind the action:
-  [Chat files](structured-memory-lifecycle.md#chat-files).
+  [Chat files](structured-memory/lifecycle.md#chat-files).
 - `importUserPersona` saves the PNG icon first, then adds the persona (a fresh id) to the live list, so a collection
   another client replaced meanwhile keeps both the new list and the icon.
 

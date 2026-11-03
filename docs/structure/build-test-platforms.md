@@ -68,8 +68,9 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
     first heading counts only toward `ceiling`.
   - `item`: a list item or table row over 600 characters, measured on the joined text with code spans included.
   - `paren-depth`: parentheses three deep outside code spans.
-  - `sections`: a guide's `##` headings are not the nine of **Doc Maintenance** in order. `hazards`: a `Known Hazards`
-    `###` other than `Issues`, `Limitations`, `Gotchas`, in that order.
+  - `sections`: a guide's `##` headings are not the nine of **Doc Maintenance** in order; an area folder's `README.md`
+    is an index with no outline. `hazards`: a `Known Hazards` `###` other than `Issues`, `Limitations`, `Gotchas`, in
+    that order.
   - `unresolved-link`: a relative `.md` link or `#anchor` that does not resolve, with anchors computed as GitHub does.
     `self-link`: a link to its own file without an anchor.
   - `label`: a T5 label, matched on the joined item, so a wrap cannot split it (in `STRUCTURE.md`, prose only: T5 quotes

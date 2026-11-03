@@ -7,7 +7,8 @@
 //     a file's first heading is in no leaf and counts only toward the guide budget;
 //   - `item`: a list item or table row over the item budget;
 //   - `paren-depth`: a heading, item, row, or paragraph with parentheses nested too deep outside code spans;
-//   - `sections` and `hazards`: a guide's `##` headings, or its `Known Hazards` `###` headings, off the fixed outline;
+//   - `sections` and `hazards`: a guide's `##` headings, or its `Known Hazards` `###` headings, off the fixed outline
+//     (`STRUCTURE.md` and an area folder's `README.md` are indexes with no outline);
 //   - `unresolved-link`: a relative `.md` or `#anchor` link that does not resolve;
 //   - `self-link`: a link to the file it is in, with no anchor;
 //   - `label`: a work-tracking label, matched on joined segment text so a line wrap cannot split one. In a guide
@@ -350,7 +351,9 @@ function hazardProblems(sections) {
 
 function measureFile(root, rel, readAnchors) {
     const { bytes, segments, sections } = parseGuide(readFileSync(path.join(root, rel), "utf8"));
-    const isGuide = rel !== INDEX_DOC;
+    // `STRUCTURE.md` and an area folder's `README.md` are indexes: the budgets, links, and labels apply, the guide
+    // outline does not.
+    const isGuide = rel !== INDEX_DOC && path.posix.basename(rel) !== "README.md";
     const longItems = [];
     const deepSegments = [];
     const unresolvedLinks = [];

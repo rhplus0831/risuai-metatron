@@ -193,7 +193,7 @@ never meets `unanswered`.
 - The charge is stored bytes from SQL before anything is parsed, not wire bytes: a record's `octet_length(data)`; a
   chat's `meta` plus its message rows, two queries; a collection's order text plus one aggregate over its chats and one
   over their messages; a summary collection's order text plus its `chatSummaries` rows as stored. A
-  [projection](structured-memory.md#the-hypav3-projection) read adds the chats' `memory_events` bytes.
+  [projection](structured-memory/projection.md#the-hypav3-projection) read adds the chats' `memory_events` bytes.
 - The budget is soft: an answer's first group is served whatever its size, so a chat or a collection that outgrew it
   stays readable, and a chat or a collection is never split. Internal `readRefs` callers are unbudgeted. A character's
   group is read in one synchronous step; rounds are not one snapshot.
@@ -232,7 +232,7 @@ leave absence as absence (upstream reads it as now).
   stay out of the HTTP results.
 - The server-specific checkpoints live in `checkpointService.ts`: a load checks the current chat and generation locks,
   takes a safety checkpoint, applies the replacement and
-  [the memory records](structured-memory-lifecycle.md#a-checkpoint) transactionally, sets the restore floor, and
+  [the memory records](structured-memory/lifecycle.md#a-checkpoint) transactionally, sets the restore floor, and
   invalidates retained memory-task input.
 - Automatic checkpoints run only after a job ends with a final `done`, when the chat policy's user-turn threshold is
   met; the count comes from the `messages_role` index (`countUserTurns`), so a turn that is not due reads no message
@@ -307,7 +307,7 @@ finishes, its worker included, and `dispose` waits for it.
   before maintenance (the hash pass is a new window); a change answers 412 or `409 changedSinceReview` and hands the
   import back with a fresh TTL.
 - Export reads the snapshot without checkpoint tables, so upstream saves hold no named checkpoint history. A failed
-  memory walk does not stop it ([projection](structured-memory.md#the-hypav3-projection)).
+  memory walk does not stop it ([projection](structured-memory/projection.md#the-hypav3-projection)).
 
 ### File imports
 
@@ -347,7 +347,7 @@ settings sections and collections, no `root` record; tables as in version 2).
   is outside the layout check, a snapshot's copy is not restored, and a restore leaves it empty (deleting the chats
   cascades).
 - The `memory_*` tables are created the same way, but a restore carries them as an optional group, like the
-  [checkpoint tables](#checkpoint-tables) ([structured memory](structured-memory.md#memory-tables)).
+  [checkpoint tables](#checkpoint-tables) ([structured memory](structured-memory/records.md#memory-tables)).
 
 ### Summary projection
 
@@ -374,7 +374,7 @@ snapshot with any of them has them checked and restored (`walkCheckpointSnapshot
 - `chatCheckpoints` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `id`, `kind`
   (`manual`, `auto`, `safety`), `name`, `createdAt`, `revision`, `chatRevision`, `userTurns`, `messageCount`, `preview`
   JSON, `pages` JSON (the ordered message page hashes), `fields` JSON (captured field → page hash, plus
-  [the memory manifest](structured-memory-lifecycle.md#a-checkpoint)), unique `(chatSeq, id)`).
+  [the memory manifest](structured-memory/lifecycle.md#a-checkpoint)), unique `(chatSeq, id)`).
 - `checkpointPages` (`hash` primary key, `text`).
 - `checkpointPageRefs` (`checkpointSeq` referencing `chatCheckpoints.seq` with `ON DELETE CASCADE`, `hash`, indexed).
 - `chatCheckpointPolicy` (`chatSeq` primary key referencing `chats.seq` with `ON DELETE CASCADE`, `autoEvery`,

@@ -89,7 +89,7 @@ Bare paths are under `src/ts/process/`.
 - An `editRequest` that changes the list or a recheck removal of an entry without a whole source makes
   `attributionExact` false. `trim` exists without memory only (`contextTrim`).
 - `memory.coverage` is `"unknown"` for other memory. Structured Memory starts as
-  [its report](structured-memory-read.md#the-read-path) says. HypaV3 starts `"gap"` for uncovered trim, else `"unknown"`
+  [its report](structured-memory/read.md#the-read-path) says. HypaV3 starts `"gap"` for uncovered trim, else `"unknown"`
   for stored summaries ahead of history, else `"covered"`. Later raw-history loss demotes only `"covered"`; returned
   memory with no traced memory-only survivor, or any untraced survivor, forces `"unknown"`.
 
@@ -309,7 +309,7 @@ page is away does not count. Kept terminal receipts and shutdown outcomes are ow
 - `chatStatus.svelte.ts` holds per-tab sources keyed by `${chaId}\u0000${chatId}`: `generatingChatKeys()`
   (`followedJobs` plus `lockedChatKeys()`), `recoveryChatKeys` (lost chat → job id), and `unseenChatKeys` (up to 256
   chats whose reply ended while not visible). The memory health facts and the over-cap mark sit there too
-  ([the health badge](structured-memory-read.md#the-health-badge)).
+  ([the health badge](structured-memory/read.md#the-health-badge)).
 - `watchChatVisibility`, started once from `bootstrap.ts`, clears recovery and unseen for the chat whose transcript is
   shown (`visibleChatKey`), even when a lost follow adds a mark without a visibility change. New follows clear that
   chat's recovery; deleted chats' recovery is pruned.
