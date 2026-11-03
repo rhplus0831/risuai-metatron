@@ -17,7 +17,7 @@
 
 - `data/resourceStore.ts`, `chatStore.ts`, `kinds.ts`, `normalize/`, `snapshots.ts`, `archive.ts`, `checkpointStore.ts`,
   and `checkpointService.ts` own the database and its disk lifecycle. The store publishes on the
-  [feed](server-generation.md#coalescing-and-publish-order).
+  [feed](live-update-feed.md#coalescing-and-publish-order).
 
 ### Backup and import internals
 
@@ -228,7 +228,7 @@ leave absence as absence (upstream reads it as now).
 - Group ids: a chat group whose id its chat incarnation remembers returns its earlier result without applying again or
   publishing a chat feed ref. Duplicate tracking stays internal; the HTTP response shape is unchanged. A newly applied
   group publishes its chat ref as usual.
-- [Own chat changes](server-generation.md#own-chat-changes) and [feed entries](server-generation.md#feed-chat-entries)
+- [Own chat changes](live-update-feed.md#own-chat-changes) and [feed entries](live-update-feed.md#feed-chat-entries)
   stay out of the HTTP results.
 - The server-specific checkpoints live in `checkpointService.ts`: a load checks the current chat and generation locks,
   takes a safety checkpoint, applies the replacement and
@@ -415,8 +415,8 @@ default) replaces `FULL` on this connection only, for SD cards and slow local vo
 - [Self-host server](self-host-server.md): [Routes](self-host-server.md#routes),
   [Rate limits](self-host-server.md#rate-limits), [Request bodies](self-host-server.md#request-bodies), and its
   [Invariants](self-host-server.md#invariants) for file publication and the one-process rule.
-- [Server generation](server-generation.md): the store publishes each commit to its
-  [feed](server-generation.md#publication-budget), jobs write through the store under its
+- [Live-update feed](live-update-feed.md#publication-budget): the store publishes each commit to it.
+  [Server generation](server-generation.md): jobs write through the store under its
   [token rule](server-generation.md#invariants), and `onChatInvalidated` has one production listener,
   `memoryTasks.invalidate` (`app.ts`). The transform loader does not subscribe: `prompt/displayScope.ts` keys its
   transcript cache by `chatSourceGeneration`.
@@ -427,7 +427,7 @@ default) replaces `FULL` on this connection only, for SD cards and slow local vo
 - Mutations carry the current resource epoch; stale epochs fail without writing. Resource revisions, chat groups,
   restore floors, generation write fences, and optimistic recovery are detailed in
   [chat store](chat-store.md#restore-floor). The resource store publishes a change only after commit
-  ([Publication budget](server-generation.md#publication-budget)).
+  ([Publication budget](live-update-feed.md#publication-budget)).
 - Restore and import install under maintenance, after a safety snapshot, with reads open. The store replaces its
   resource state atomically, in one transaction: a rollback leaves rows, epoch, write count, memos, and the feed as they
   were, and a commit makes every earlier token stale and publishes one `epoch` event.

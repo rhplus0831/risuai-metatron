@@ -330,7 +330,7 @@ page is away does not count. Kept terminal receipts and shutdown outcomes are ow
 - A streamed reply stays locked until the server releases its generation; the mirror batches text updates once per
   frame. See [chat store](chat-store.md#locks-and-streaming) for hydration, rendering, and edit rules.
 - `refreshChatAfterWrite` adopts an eligible server by-id write into the job scope; otherwise the server reloads the
-  chat. Its preconditions and immutable-copy contract are in [generation](server-generation.md#own-chat-changes).
+  chat. Its preconditions and immutable-copy contract are in [generation](live-update-feed.md#own-chat-changes).
 
 ## Coupling
 
@@ -444,7 +444,7 @@ In `shared/lore/activation.ts`.
 
 - A reroll's restore cannot see another tab's job that holds no lock yet and was not met at this tab's create: the
   restored replies land while that job runs, like any other edit (see
-  [server generation's own chat changes](server-generation.md#own-chat-changes)).
+  [server generation's own chat changes](live-update-feed.md#own-chat-changes)).
 - Stop stays visible between a followed job's `done` and its socket close, when aborting the ended job does nothing.
 - A boot resume that discovers its chat but cannot load it shows Stop during the load retries, until the follow ends as
   lost.

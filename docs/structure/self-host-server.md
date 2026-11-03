@@ -121,7 +121,8 @@ changing a path or its admission policy. Routing is non-strict (a trailing slash
    - [Server resources](server-resources.md#files): `/api/resources*`, `/api/llm-secrets/*`, `/api/chats/search`,
      `/api/chat-checkpoints*`, `/api/backups*`, and `/api/import/*`.
    - [Server generation](server-generation.md#files): `/api/generations*`, `/api/transform*`, `/api/translate/message`,
-     `/api/memory/tasks*`, `/api/llm/*`, `/api/tokens/*`, and `/api/events/ws`.
+     `/api/memory/tasks*`, `/api/llm/*`, and `/api/tokens/*`.
+   - [Live-update feed](live-update-feed.md#files): `/api/events/ws`.
    - [Structured memory](structured-memory/records.md#the-read-routes): `/api/memory/structured/*`.
 
 ### Rate limits

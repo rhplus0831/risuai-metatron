@@ -20,16 +20,18 @@ cursor") and the Per-Event Server Work plan's **Later** ("a by-id read for an ov
 refused"), both in [the archive](../archived-plan/README.md) (Remaining Follow-Ups); the [rendering performance
 investigation](../research/rendering-performance-investigation.md) F1 (stream ingress after a history-sized
 lookup); the [resource sync guide](../structure/resource-sync.md) (Feed connection, Live updates, Chat live
-updates, Transport, Limitations), the [server generation guide](../structure/server-generation.md) (Live-update
-hello, Frame admission, Own chat changes, Feed chat entries, Publication budget, Job chat and barriers), the
+updates, Transport, Limitations), the [live-update feed guide](../structure/live-update-feed.md)
+(Live-update hello, Frame admission, Own chat changes, Feed chat entries, Publication budget), the
+[server generation guide](../structure/server-generation.md) (Job chat and barriers), the
 [chat store guide](../structure/chat-store.md) (Job chunks, Summaries and refresh) and the [server resources
 guide](../structure/server-resources.md) (Resource routes, Store tables) at `215cbce1d`; the design audit's
 [per-plan report](../audit/plan-design-audit-2026-11-04/incremental-chat-transport.md) and [cross-plan
 report](../audit/plan-design-audit-2026-11-04/cross-plan.md).
 
 Owning guides when sliced: [resource sync](../structure/resource-sync.md) (the cursor replay on reconnect, the
-new feed entry forms a tab applies, the by-id row read), [server generation](../structure/server-generation.md)
-(`hello.cursor`, the feed entry builder, the job socket's streamed rows and query flags), [server
+new feed entry forms a tab applies, the by-id row read), [live-update feed](../structure/live-update-feed.md)
+(`hello.cursor`, the feed entry builder), [server generation](../structure/server-generation.md) (the job
+socket's streamed rows and query flags), [server
 resources](../structure/server-resources.md) (the change log table, the `since` listing, the row read), [chat
 store](../structure/chat-store.md) (the message index, what a streamed row means to the owner),
 [persistence](../structure/persistence.md) (the shared types in `shared/resources.ts` and `shared/events.ts`),

@@ -175,7 +175,8 @@ completed plans and retrieval commands.
 | Backups/upstream compatibility, Realm hub/creator blocking, settings report                           | [backup-sync-hub](docs/structure/backup-sync-hub.md)             |
 | Hono process, routes/auth, static serving, asset storage, proxies, push, Docker                       | [self-host-server](docs/structure/self-host-server.md)           |
 | Server resource store, chat tables, checkpoints, snapshots, backups, file imports                     | [server-resources](docs/structure/server-resources.md)           |
-| Generation jobs, live-update feed, job channel, transforms, LLM and token routes                      | [server-generation](docs/structure/server-generation.md)         |
+| Generation jobs, job channel, transforms, LLM and token routes                                        | [server-generation](docs/structure/server-generation.md)         |
+| Live-update feed: socket, hello, frame admission, chat entries, publication budget                    | [live-update-feed](docs/structure/live-update-feed.md)           |
 | Scripts/config, build, dev runner, worker/PWA, upstream check, releases                               | [build-test-platforms](docs/structure/build-test-platforms.md)   |
 | Test wrapper, test rules, slow tests, network guard, Playwright stack, browser checks                 | [test-harness](docs/structure/test-harness.md)                   |
 
@@ -273,8 +274,9 @@ coupling links.
   `server/src/http/{spool,fileImport,contentAsset,recordStream}.ts`,
   `server/src/routes/{resources,resourceBoot,llmSecrets,messageSearch,chatCheckpoints}.ts`,
   `server/src/routes/{backups,backupsUpstream,backupsUpstreamExport,importModule,importCharx,importPng,importRealm}.ts`.
-- **server-generation**: `server/src/jobs/`, `server/src/data/{changeFeed,generationReceipts}.ts`,
-  `server/src/routes/{events,generations,transform,translate,memoryTasks,tokens}.ts`, remaining `server/src/prompt/`.
+- **live-update-feed**: `server/src/data/changeFeed.ts`, `server/src/routes/events.ts`.
+- **server-generation**: `server/src/jobs/`, `server/src/data/generationReceipts.ts`,
+  `server/src/routes/{generations,transform,translate,memoryTasks,tokens}.ts`, remaining `server/src/prompt/`.
 - **self-host-server**: remaining `server/`, `shared/assetMime.ts`, `Dockerfile`, `server.sh`, `server.bat`.
 - **test-harness**: `vitest.*`, `playwright.config.ts`, `e2e/`, `util/playwright/`, `util/agentTest.mjs`,
   `util/agentTestReporter.ts`, `util/agentTestResults.mjs`, `util/agentE2e.mjs`, `util/requireHuman.mjs`,

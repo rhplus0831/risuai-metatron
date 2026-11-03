@@ -378,7 +378,7 @@ recorded sizes (input 6,013,785 bytes against 6,014,093, largest patch 60,146 by
 entries also carry `summaryBase`. From a test, not the probe: admission by the frame's own UTF-8 bytes
 (`server/src/tests/events.test.ts` "admits non-hello frames by UTF-8 bytes, including exactly 4 MiB, without queuing
 rejected frames"). Open: a frame's refs and lock lists stay unbounded and frames are not split, so there is no
-per-frame bound on them ([server generation](../../structure/server-generation.md) Known Hazards, Limitations).
+per-frame bound on them ([live-update feed](../../structure/live-update-feed.md) Known Hazards, Limitations).
 
 ### SD02 — Vector eviction is a synchronous run of autocommits
 
