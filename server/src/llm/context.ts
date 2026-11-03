@@ -60,7 +60,7 @@ export type RequestContext = {
     redactText: (text: string) => string;
     /** `tokenizeNum` with the main model's tokenizer (`db.aiModel`), as the client counts. */
     tokenizeNum: (text: string) => Promise<ArrayLike<number>>;
-    /** `strongBan` (`src/ts/tokenizer.ts`), its cache on the server. */
+    /** `strongBan` (once in the client's `src/ts/tokenizer.ts`), its cache on the server. */
     strongBan: (text: string, bias: { [key: number]: number }) => Promise<{ [key: number]: number }>;
     /**
      * `risuChatParser(text)` (with `{ chatRef }` when given), evaluated in the client's tab in call

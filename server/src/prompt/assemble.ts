@@ -294,7 +294,7 @@ export type AssembledPrompt =
     | { type: "alert"; error: string; code?: GenerationErrorCode };
 
 /**
- * `additionalInformations` of `src/ts/process/embedding/addinfo.ts`: the three paragraphs of the
+ * `additionalInformations` of the former `src/ts/process/embedding/addinfo.ts`: the three paragraphs of the
  * character's `additionalText` nearest to the chat's first four messages.
  */
 async function additionalInformations(host: AssemblyHost, char: character, chats: Chat): Promise<string> {
@@ -345,7 +345,7 @@ function getAuthorNoteDefaultText(db: Database): string {
     return "";
 }
 
-/** `getGenerationModelString` of `src/ts/process/models/modelString.ts`. */
+/** `getGenerationModelString` of the former `src/ts/process/models/modelString.ts`. */
 export function getGenerationModelString(db: Database, name?: string): string {
     switch (name ?? db.aiModel) {
         case "reverse_proxy":

@@ -126,9 +126,9 @@ async function runCommand(job: RunningJob, deps: GenerationRunnerDeps): Promise<
  * the client's order, runs `onButtonClick` with the button's data or `onFormSubmit` with the form's
  * key and values as metadata on a fresh engine (no Lua global survives between runs), all under one
  * aggregate budget. A trigger stops the loop when the chat is gone. A load failure ends the job with its error
- * (the client's `doString` throws out of the loop), as do a spent budget and a worker failure; a
- * failure inside the handler is logged and the next trigger runs (the client's catch); a fatal host
- * failure (a write conflict, a lost owner, an abort) ends the job. `accepted` carries no message;
+ * (as the client's former `doString` threw out of the loop), as do a spent budget and a worker
+ * failure; a failure inside the handler is logged and the next trigger runs (as the client's former
+ * catch did); a fatal host failure (a write conflict, a lost owner, an abort) ends the job. `accepted` carries no message;
  * queued sequence parts run after the handlers and supply the final reply when there is one.
  */
 async function runLuaInteractionTrigger(

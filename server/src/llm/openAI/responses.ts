@@ -1,4 +1,4 @@
-// Port of `src/ts/process/request/openAI/responses.ts` (the client's dependencies are `arg.ctx`'s).
+// Port of the former `src/ts/process/request/openAI/responses.ts` (the client's dependencies are `arg.ctx`'s).
 import { messages as language } from "../messages.ts";
 import { LLMFlags } from "../../../../shared/llm.ts";
 import { textifyReadableStream } from "../transport.ts";

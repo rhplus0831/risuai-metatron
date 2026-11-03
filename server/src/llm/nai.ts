@@ -1,4 +1,4 @@
-// Port of `src/ts/process/models/nai.ts` (the database and user name from the request context).
+// Port of the former `src/ts/process/models/nai.ts` (the database and user name from the request context).
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { TextContext } from "./stringlize.ts";
 

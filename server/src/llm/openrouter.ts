@@ -1,7 +1,7 @@
 import type { RequestContext } from "./context.ts";
 
 /**
- * The client's `getFreeOpenRouterModels` (`src/ts/model/openrouter.ts`) on the server: the
+ * The client's former `getFreeOpenRouterModels` (once in `src/ts/model/openrouter.ts`) on the server: the
  * OpenRouter list fetched with the stored key, the longest-context model whose priced name ends in
  * `Free`. The client's `getOpenRouterModels` swallows every error into an empty list, so with no
  * free model this throws reading `[0].id`, as the client does.

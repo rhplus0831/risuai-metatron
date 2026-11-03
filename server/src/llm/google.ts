@@ -1,4 +1,4 @@
-// Port of `src/ts/process/request/google.ts` (the client's dependencies are `arg.ctx`'s). The
+// Port of the former `src/ts/process/request/google.ts` (the client's dependencies are `arg.ctx`'s). The
 // Vertex access token comes from the server's cache (`ctx.vertexAccessToken`), and the inlays it
 // writes are written in the client's tab (`ctx.inlays`).
 import { randomUUID } from "node:crypto";

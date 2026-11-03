@@ -1,4 +1,4 @@
-// Port of `src/ts/process/request/anthropic.ts` (the client's dependencies are `arg.ctx`'s).
+// Port of the former `src/ts/process/request/anthropic.ts` (the client's dependencies are `arg.ctx`'s).
 import { randomUUID } from "node:crypto";
 import { Sha256 } from "@aws-crypto/sha256-js";
 import { HttpRequest } from "@smithy/protocol-http";

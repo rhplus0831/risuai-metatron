@@ -134,7 +134,7 @@ export type JobRunState = {
     runSignal: AbortSignal;
     /** The regex scripts' result cache of the job (the client keeps one per tab). */
     scriptCache: ReturnType<typeof createScriptCache>;
-    /** The dynamic-asset matches of the job (the client's `bestMatchCache`, one per tab). */
+    /** The dynamic-asset matches of the job (the client's former `bestMatchCache`, one per tab). */
     assetMatches: Map<string, string>;
     /**
      * The emotions shown last per character (the tab's `CharEmotion` names when the job was created,
@@ -423,8 +423,8 @@ export function createRunSetup(
         runLua: async (code, options) => {
             const outcome = await runLua(code, options);
             if (outcome.error) {
-                // A failure inside the handler is the script's own (logged, as `runScripted` catches
-                // it); a load failure, a spent budget, or a pool failure ends the job.
+                // A failure inside the handler is the script's own (logged, as the client's former
+                // `runScripted` caught it); a load failure, a spent budget, or a pool failure ends the job.
                 if (outcome.error.failedAt !== "dispatch" || outcome.error.timedOut) {
                     throw new GenerationRunnerError(500, `Lua: ${outcome.error.message}`, { stage: "script" });
                 }

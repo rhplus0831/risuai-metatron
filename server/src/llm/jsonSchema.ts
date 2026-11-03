@@ -1,4 +1,4 @@
-// Port of `src/ts/process/templates/jsonSchema.ts`. The client parses CBS with `risuChatParser`
+// Port of the former `src/ts/process/templates/jsonSchema.ts`. The client parses CBS with `risuChatParser`
 // (no chat target: the tab's chat); here `parseCbs` asks the client's tab, so the helpers that
 // parse are async.
 import type { RequestContext } from "./context.ts";

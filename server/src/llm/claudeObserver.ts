@@ -1,5 +1,6 @@
 /**
- * The Claude cache-warming observer (`registerClaudeObserver` in `src/ts/observer.svelte.ts`) as one
+ * The Claude cache-warming observer (the client's former `registerClaudeObserver`, once in
+ * `src/ts/observer.svelte.ts`) as one
  * server service: after a request with `claudeRetrivalCaching`, the last body (with `max_tokens`
  * 10) is sent again every 4.5 minutes, at most five times, each retried up to three times on an
  * HTTP error. The client kept one per tab; the server keeps one for all tabs, and its warming

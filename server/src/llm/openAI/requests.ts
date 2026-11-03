@@ -1,4 +1,4 @@
-// Port of `src/ts/process/request/openAI/requests.ts`: the client's database, fetch helpers, alert,
+// Port of the former `src/ts/process/request/openAI/requests.ts`: the client's database, fetch helpers, alert,
 // tokenizer, tool seam, and CBS parser are the request context's (`arg.ctx`).
 import { messages as language } from "../messages.ts";
 import { LLMFlags, LLMFormat, LLMProvider } from "../../../../shared/llm.ts";
