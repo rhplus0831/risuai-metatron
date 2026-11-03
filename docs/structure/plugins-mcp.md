@@ -496,7 +496,6 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
   getters pin the chats, await `loadChats`, and copy from the chat module, so `getDatabase` with `characters` loads
   every chat that is not loaded, and idle chats can be evicted afterwards. It reads through the store, not detached:
   unsaved local changes are in the copy.
-- The chat getters first [refresh the chats' projections](structured-memory.md#the-hypav3-projection).
 - `getChatFromIndex`, `setChatToIndex`, `parseRisuChat`, and `sendChat` capture their chat by id first and await
   `ensureChatLoaded`. The character setters capture their targets, pin and load the chats, then apply synchronously.
 - Plugins hand back whole objects, but [chats are saved as changes](chat-store.md#whole-chat-writers).
