@@ -53,6 +53,7 @@ git show 73c12d29c:docs/plan/job-protocol.md
 git show 2a8f7b93a:docs/plan/boot-bytes.md
 git show aff71b423:docs/plan/per-event-server-work.md
 git show 0009c22f3:docs/plan/server-byte-budgets.md
+git show 78dbb078f:docs/plan/server-plugin-runtime.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -109,6 +110,7 @@ it is not a current architecture guide.
 | Server Byte Budgets                      | `0009c22f3`: `docs/plan/server-byte-budgets.md`                           | [server](../structure/self-host-server.md), [persistence](../structure/persistence.md), [diagnostics](../structure/diagnostics.md), [backup sync hub](../structure/backup-sync-hub.md), [build/test platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                                                         |
 | Guide Budgets                            | `9a1bf0afe`: `docs/plan/guide-budgets.md`                                 | [STRUCTURE](../../STRUCTURE.md), [build/test platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                                                                                                                                                |
 | Structured Memory                        | `0cd49a3d3`: `docs/plan/structured-memory.md`                             | [structured memory](../structure/structured-memory.md), [writer](../structure/structured-memory-writer.md), [read path](../structure/structured-memory-read.md), [lifecycle](../structure/structured-memory-lifecycle.md), [rebuild](../structure/structured-memory-rebuild.md), [pages](../structure/structured-memory-pages.md)                                                                                                                                                            |
+| Server Plugin Runtime (retired unbuilt)  | `78dbb078f`: `docs/plan/server-plugin-runtime.md`                         | None: no slice landed; [plugins and MCP](../structure/plugins-mcp.md) keeps the tab runtime and the skip-and-replay path                                                                                                                                                                                                                                                                                                                                                                     |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1030,6 +1032,17 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - Rollback cost: an older build refuses a snapshot with the `memory_state` column, reads a
     trashed page as live, and refuses a chat file holding `merge` or `split` history entries.
   - Found by the run: 17 entries under Structured Memory in `docs/research/found-issues.md`.
+- Server Plugin Runtime:
+  - Retired by the owner on 2026-11-03 before any slice landed. It proposed an opt-in
+    QuickJS-wasm runtime in the script worker pool (`//@runtime server`) running the hook half
+    of API 3.0 plugins inside a generation job; D1–D10 stayed recommendations and Q1–Q3
+    (engine package, server `chatOutput` deadline, operator default) were never answered.
+  - Nothing in the code depends on it: plugins run only in the tab, an absent owner's reply
+    hooks follow skip-and-replay (`e294d957a`), and the
+    [Job Handoff plan](../plan/job-handoff.md) covers the absent-tab case by handing the owner
+    role to another tab.
+  - Its design notes (why `node:vm` and `isolated-vm` were rejected, the host API subset, the
+    `getRuntimeInfo().runtime` discriminator) are in the archived file if the idea returns.
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.

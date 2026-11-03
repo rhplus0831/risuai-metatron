@@ -21,12 +21,12 @@ register message), [settings and i18n](../structure/settings-i18n.md) (the devic
 [plugins and MCP](../structure/plugins-mcp.md) (Job owner presence: what a hook may assume about the tab it
 runs in), [test harness](../structure/test-harness.md) (the browser check).
 
-Relation to the [server plugin runtime plan](server-plugin-runtime.md): complementary, not competing. That plan
-runs the hook half of a plugin on the server for authors who opt in; this one moves the whole tab role to another
-tab for every plugin, including DOM-bound plugins, `bodyIntercepter`, and plugin providers, as long as a worker
-tab is alive. A server-spawned headless browser, ranked last on 2026-11-01, would be one more worker client of
-this protocol if it is ever wanted (see **Later**). Both plans edit `shared/jobs.ts` and
-`server/src/jobs/channel.ts`: do not run their slices in parallel worktrees.
+Relation to the server plugin runtime plan (retired unbuilt on 2026-11-03, see
+[the archive](../archived-plan/README.md)): that plan would have run the hook half of a plugin on the server
+for authors who opted in; this one moves the whole tab role to another tab for every plugin, including
+DOM-bound plugins, `bodyIntercepter`, and plugin providers, as long as a worker tab is alive. A server-spawned
+headless browser, ranked last on 2026-11-01, would be one more worker client of this protocol if it is ever
+wanted (see **Later**).
 
 ## Goal
 
