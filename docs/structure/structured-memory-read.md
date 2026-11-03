@@ -199,9 +199,9 @@ the rest read.
   and leaving is its `dropped`, emptied when the owner's `supaMemory` is off. Tokens are counted on those rows alone,
   and only when their texts change, so a reply streaming into the window starts no count.
 - Coverage groups consecutive rows of one state and renders 200 rows at a time. One group opens at a time.
-- The Log reads a round at a time, and a 409 on a later round restarts the list. A row expands to `MemoryRun.analysis`,
-  each item next to its quote, with what the receipt's `unverified` names marked. That list names an item by kind and
-  text, so of two equal quotes both are marked.
+- The Log reads a round at a time; a 409 on a later round restarts the list. A row expands to `MemoryRun.analysis`, each
+  item by its quote, marked when the receipt's `unverified` names it. That list names items by kind and text, so of two
+  equal quotes both are marked. An unreadable `answer` shows too.
 - A stored run is data of any shape (`memoryRunView`), and all model and message text renders as plain text. The export
   is `{ logVersion, revision, runs }` as JSON, read whole at one revision and restarted on a 409 as the package is.
 

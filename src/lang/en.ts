@@ -2668,6 +2668,7 @@ export const languageEnglish = {
             noModel: "No model",
             seconds: (milliseconds: number) => `${(milliseconds / 1000).toFixed(1)} s`,
             noExtraction: "This run left no extraction.",
+            answer: "The model's answer, which could not be read",
             storyTime: "Story time",
             participants: "Participants",
             keyLines: "Key lines",

@@ -1964,6 +1964,8 @@ export type MemoryRunView = {
     /** The run's stored reason code, else its receipt's. */
     reason?: string;
     error?: string;
+    /** The model's answer a failed run could not read. */
+    answer?: string;
     /** The event the run committed, which can differ from what it extracted. */
     eventId?: string;
     /** Null for a run with no extraction. */
@@ -2069,6 +2071,7 @@ export function memoryRunView(run: unknown): MemoryRunView {
         result: storedText(stored.result) ?? "",
         ...present("reason", storedText(stored.reason) ?? storedText(receipt.reason)),
         ...present("error", storedText(stored.error)),
+        ...present("answer", storedText(stored.answer)),
         ...present("eventId", storedText(stored.eventId)),
         event: isPlainObject(analysis.event) ? runEventView(analysis.event, quotes) : null,
         candidates: storedItems(analysis.pageCandidates).map((candidate) => {

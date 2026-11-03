@@ -176,11 +176,16 @@ function readPatch(value: unknown): MemoryPatch | undefined {
 }
 
 /**
- * A patch call's answer as bounded patches (`answerJson`). An answer with no `patches` list cannot be
- * used; a malformed element is left out and counted, and one past `patchesPerCall` is not read.
+ * A patch call's answer as bounded patches (`answerJson`). An answer that is not JSON, or has no
+ * `patches` list, cannot be used, and the error says which; a malformed element is left out and counted,
+ * and one past `patchesPerCall` is not read.
  */
 export function parsePatches(text: string): ParsedPatches {
-    const parsed = answerJson(text);
+    const json = answerJson(text);
+    if (!json.ok) {
+        return { ok: false, error: `The model's answer is not valid JSON: ${json.error}` };
+    }
+    const parsed = json.value;
     if (!isPlainObject(parsed) || !Array.isArray(parsed.patches)) {
         return { ok: false, error: 'The model\'s answer has no valid "patches" list' };
     }

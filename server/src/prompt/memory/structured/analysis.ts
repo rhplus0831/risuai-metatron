@@ -337,17 +337,74 @@ function readScene({ scene }: Record<string, unknown>, warnings: Warning[]): Mem
     return { participants: readIds("scene.participants", participants, warnings), place, time, state };
 }
 
+/** Reasoning a model writes around its answer, which is never part of it. */
+const THOUGHTS = /<(Thoughts|think|thinking)>[\s\S]*?<\/\1>/gi;
+
+/** The escapes JSON spells by letter; any other control character takes its `\u` form. */
+const CONTROL_ESCAPES: Readonly<Record<string, string>> = {
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+};
+
 /**
- * The JSON of a model's answer; undefined when it holds none. Thoughts go first; then the text from the
- * first brace to the last is the JSON, which leaves a Markdown fence and any words around the object
- * behind.
+ * `json` with the two slips a model makes that have only one reading: a raw control character inside a
+ * string, such as the line break of a list in a section body, is escaped, and a comma before a closing
+ * bracket is dropped. A quote left unescaped inside a string has no single reading, so it stays and the
+ * parse still fails: a guess could end a body early and store the rest as something else.
  */
-export function answerJson(text: string): unknown {
-    const answer = text.replace(/<Thoughts>[\s\S]*?<\/Thoughts>/g, "");
+function repairJson(json: string): string {
+    let out = "";
+    let inString = false;
+    // Where in `out` a comma stands with only whitespace after it, outside a string.
+    let comma = -1;
+    for (let i = 0; i < json.length; i++) {
+        const char = json[i];
+        if (inString) {
+            if (char === "\\") {
+                out += char + (json[i + 1] ?? "");
+                i++;
+            } else if (char < " ") {
+                out += CONTROL_ESCAPES[char] ?? `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`;
+            } else {
+                inString = char !== '"';
+                out += char;
+            }
+            continue;
+        }
+        if ((char === "}" || char === "]") && comma >= 0) {
+            out = out.slice(0, comma) + out.slice(comma + 1);
+        }
+        if (char === ",") {
+            comma = out.length;
+        } else if (!/\s/.test(char)) {
+            comma = -1;
+            inString = char === '"';
+        }
+        out += char;
+    }
+    return out;
+}
+
+/**
+ * The JSON of a model's answer, or the parser's message for why it holds none. Thoughts go first; then the
+ * text from the first brace to the last is the JSON, which leaves a Markdown fence and any words around
+ * the object behind. Text that does not parse is parsed once more after `repairJson`, and a failure
+ * there reports the first parse's message, whose position is in the text as the model wrote it.
+ */
+export function answerJson(text: string): { ok: true; value: unknown } | { ok: false; error: string } {
+    const answer = text.replace(THOUGHTS, "");
+    const json = answer.slice(answer.indexOf("{"), answer.lastIndexOf("}") + 1);
     try {
-        return JSON.parse(answer.slice(answer.indexOf("{"), answer.lastIndexOf("}") + 1));
-    } catch {
-        return undefined;
+        return { ok: true, value: JSON.parse(json) };
+    } catch (error) {
+        try {
+            return { ok: true, value: JSON.parse(repairJson(json)) };
+        } catch {
+            return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
     }
 }
 
@@ -358,10 +415,11 @@ export function answerJson(text: string): unknown {
  * naming the field; a malformed list element is left out and counted.
  */
 export function parseAnalysis(text: string): ParsedAnalysis {
-    const parsed = answerJson(text);
-    if (parsed === undefined) {
-        return { ok: false, reason: "invalidJson", error: "The model's answer is not valid JSON" };
+    const json = answerJson(text);
+    if (!json.ok) {
+        return { ok: false, reason: "invalidJson", error: `The model's answer is not valid JSON: ${json.error}` };
     }
+    const parsed = json.value;
     const root = isPlainObject(parsed) && isPlainObject(parsed.event) ? parsed.event : parsed;
     if (!isPlainObject(parsed) || !isPlainObject(root)) {
         return { ok: false, reason: "invalidJson", error: "The model's answer is not a JSON object" };

@@ -151,9 +151,9 @@ where a `historical` write [leaves current state alone](structured-memory-rebuil
 4. Snapshot: a `pending` row holds the exact input, and the run's `language`, before any call. An input too large for a
    record fails the run (`inputTooLarge`) with no call.
 5. Call: `host.request`, on `writerHostDeps`: temperature 0, and no `jsonSchemaEnabled` or `extractJson`, which shape
-   the chat's replies. A provider failure, an unusable answer, or a `MemoryHostFailure` ends the run `failed` with a
-   redacted error and a failed receipt, and the task with it. Any other throw is an ended task: the row stays `pending`
-   for the next run, and `commit` refuses, which is how output after the deadline is discarded.
+   the chat's replies. A provider failure, an unusable answer (kept as `answer`), or a `MemoryHostFailure` ends the run
+   `failed` with a redacted error and a failed receipt, and the task with it. Any other throw is an ended task: the row
+   stays `pending` for the next run, and `commit` refuses, which is how output after the deadline is discarded.
 6. Patch call: [below](#the-patch-call), on the same host and rules as step 5. It runs after admission and has no
    `pending` write of its own, because a retry replays only the analysis. A failed one ends the run `failed`
    (`patchFailed`) with no event, since an event would close the window for good; the row keeps `analysis` and

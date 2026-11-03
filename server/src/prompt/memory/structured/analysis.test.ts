@@ -52,6 +52,14 @@ describe("analysis admission", () => {
         ]);
     });
 
+    it("names the parser's reason when the answer is not JSON", () => {
+        expect(parseAnalysis('{"title": "The "promise""}')).toEqual({
+            ok: false,
+            reason: "invalidJson",
+            error: expect.stringMatching(/^The model's answer is not valid JSON: \S/),
+        });
+    });
+
     it("rejects missing or mistyped required fields with the offending field name", () => {
         for (const field of [
             "title",

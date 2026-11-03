@@ -91,7 +91,7 @@ export function compactionTargets(
 export function readCompaction(target: CompactionTarget, text: string): ReadCompaction {
     const { page, heading, body: from } = target;
     const parsed = answerJson(text);
-    const body = isPlainObject(parsed) ? parsed.body : undefined;
+    const body = parsed.ok && isPlainObject(parsed.value) ? parsed.value.body : undefined;
     if (typeof body !== "string" || body.trim() === "") {
         return { ok: false, warning: sectionWarning("compactionFailed", page, heading) };
     }

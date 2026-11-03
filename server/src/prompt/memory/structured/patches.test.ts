@@ -113,6 +113,41 @@ it.each([
     ]);
 });
 
+it("reads raw line breaks in bodies, a comma before a closing bracket, and JSON inside thoughts", () => {
+    // As a model writes a list body: the break between items is a raw one, not `\n`.
+    const listBody = '"- Mira: her sister.\n- Oren:\tan old friend."';
+    const keptBody = String.raw`"keeps \"quotes\", \\n, and ,] as written"`;
+    const answer = [
+        '<think>A draft: {"patches": [</think>',
+        `{"patches": [{"pageId": "p", "heading": "relationships", "op": "upsert", "body": ${listBody}},`,
+        `{"pageId": "p", "heading": "knowledge", "op": "upsert", "body": ${keptBody},},]}`,
+    ].join("\n");
+    expect(parsePatches(answer)).toEqual({
+        ok: true,
+        warnings: [],
+        patches: [
+            {
+                pageId: "p",
+                heading: "relationships",
+                op: "upsert",
+                body: "- Mira: her sister.\n- Oren:\tan old friend.",
+            },
+            { pageId: "p", heading: "knowledge", op: "upsert", body: 'keeps "quotes", \\n, and ,] as written' },
+        ],
+    });
+});
+
+it("tells an answer that is not JSON from one with no patches list", () => {
+    expect(parsePatches('{"patches": [{"body": "She said "no" twice"}]}')).toEqual({
+        ok: false,
+        error: expect.stringMatching(/^The model's answer is not valid JSON: \S/),
+    });
+    expect(parsePatches('{"edits": []}')).toEqual({
+        ok: false,
+        error: 'The model\'s answer has no valid "patches" list',
+    });
+});
+
 it("shows whole sections within the patch budget and marks omitted headings", () => {
     const full = page("full");
     full.sections = Array.from({ length: LIMITS.promptPatchChars / LIMITS.sectionBodyChars }, (_, i) =>

@@ -718,11 +718,13 @@ export function createStructuredWriter(
         }
         const startedAt = now();
         let run = opened.run;
-        const fail = (reason: string, text: string): StructuredMemoryWriterResult => {
+        /** Ends the run `failed`; `answer` is the model's answer when reading it is what failed. */
+        const fail = (reason: string, text: string, answer?: string): StructuredMemoryWriterResult => {
             const error = clampText(host.redact(text), LIMITS.runErrorChars);
-            const failed = failedRun({ ...run, durationMs: now() - startedAt }, reason, error);
-            const answer = commitFresh(store, arg, opened.revision, () => ({ runs: [failed] }));
-            return answer.outcome === "committed" ? { outcome: "failed", error } : answer;
+            const kept = answer === undefined ? {} : { answer: clampText(host.redact(answer), LIMITS.runAnswerChars) };
+            const failed = failedRun({ ...run, durationMs: now() - startedAt, ...kept }, reason, error);
+            const committed = commitFresh(store, arg, opened.revision, () => ({ runs: [failed] }));
+            return committed.outcome === "committed" ? { outcome: "failed", error } : committed;
         };
         /** One model call: its text, or why it gave none, as a stored code and the unredacted error. */
         const call = async (formated: OpenAIChat[]): Promise<{ text: string } | { reason: string; error: string }> => {
@@ -762,7 +764,7 @@ export function createStructuredWriter(
         }
         const parsed = parseAnalysis(answered.text);
         if (!parsed.ok) {
-            return fail(parsed.reason, parsed.error);
+            return fail(parsed.reason, parsed.error, answered.text);
         }
         const { warnings } = parsed;
         run = { ...run, analysis: parsed.analysis };
@@ -833,7 +835,7 @@ export function createStructuredWriter(
             }
             const patched = parsePatches(patchAnswer.text);
             if (!patched.ok) {
-                return fail("patchFailed", patched.error);
+                return fail("patchFailed", patched.error, patchAnswer.text);
             }
             run = { ...run, patches: patched.patches };
             patchWarnings = patched.warnings;

@@ -4129,14 +4129,22 @@ describe("structured memory tasks", () => {
                 expect(request.body).toEqual(firstBody);
                 request.answer(JSON.stringify(answer));
                 const patchRequest = await nextPatch(t, request.index + 1, terminal);
+                // An unusable answer past `runAnswerChars`, so the kept copy shows the cut.
+                const unusable = '{"wrong": []}' + "x".repeat(LIMITS.runAnswerChars);
                 if (failure === "provider failure") patchRequest.fail("Patch provider failed");
-                else patchRequest.answer(failure === "empty answer" ? " " : '{"wrong": []}');
+                else patchRequest.answer(failure === "empty answer" ? " " : unusable);
                 expect((await terminal).status).toMatchObject({ state: "failed", done: 0 });
                 await t.service.drain();
                 expect(runRecord(t)).toMatchObject({
                     result: "failed",
                     receipt: { state: "failed", reason: "patchFailed" },
                 });
+                if (failure === "unusable JSON") {
+                    expect(runRecord(t).error).toContain('no valid "patches" list');
+                    expect(runRecord(t).answer).toBe(unusable.slice(0, LIMITS.runAnswerChars));
+                } else {
+                    expect(runRecord(t)).not.toHaveProperty("answer");
+                }
                 expect(contents(t).events).toEqual([]);
                 expect(contents(t).pages).toEqual([]);
                 if (attempt === 0)
@@ -4942,6 +4950,7 @@ describe("structured memory tasks", () => {
             result: "failed",
             error: expect.stringContaining('"summary"'),
             outputTokens: output.length,
+            answer: output,
             receipt: { state: "failed", reason: "invalidField" },
         });
         expect(contents(t).events).toEqual([]);

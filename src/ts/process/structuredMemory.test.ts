@@ -575,6 +575,7 @@ it("reads malformed stored runs without throwing or inventing an extraction", ()
             inputTokens: {},
             analysis: { event: [] },
             receipt: { unverified: "wrong" },
+            answer: 3,
         },
     ]) {
         expect(memoryRunView(run)).toMatchObject({
@@ -586,7 +587,9 @@ it("reads malformed stored runs without throwing or inventing an extraction", ()
         });
         expect(memoryRunView(run)).not.toHaveProperty("inputTokens");
         expect(memoryRunView(run)).not.toHaveProperty("model");
+        expect(memoryRunView(run)).not.toHaveProperty("answer");
     }
+    expect(memoryRunView({ answer: '{"patches": [' }).answer).toBe('{"patches": [');
 });
 
 it("extracts every final message carrying an included item's encoded tag in prompt order regardless of memo", () => {

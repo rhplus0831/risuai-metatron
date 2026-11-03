@@ -194,6 +194,8 @@ export const STRUCTURED_MEMORY_LIMITS = {
     idChars: 512,
     /** A failed run's stored error. */
     runErrorChars: 2000,
+    /** The model's answer a failed run keeps when it could not read that answer. */
+    runAnswerChars: 20000,
     /** Entries each page keeps; the oldest go first. */
     pageHistoryEntries: 60,
     /** Pages the writer's prompt lists. */
@@ -552,6 +554,11 @@ export interface MemoryRun {
     patchInput?: string;
     /** The patch call's answer as parsed. */
     patches?: MemoryPatch[];
+    /**
+     * The answer a failed run could not read, as the model wrote it, redacted and cut to `runAnswerChars`,
+     * so a person can see what broke; absent on any other run.
+     */
+    answer?: string;
     eventId?: string;
     receipt?: MemoryReceipt;
     /** The preset's own prompt replaced the default one for this run. */

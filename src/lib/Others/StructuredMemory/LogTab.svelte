@@ -192,6 +192,12 @@
     {:else}
         <p class="text-textcolor2">{text.noExtraction}</p>
     {/if}
+    {#if view.answer !== undefined}
+        <h3 class="font-semibold">{text.answer}</h3>
+        <pre
+            class="p-2 overflow-auto font-mono text-xs whitespace-pre-wrap break-words rounded-md max-h-80 bg-darkbg"
+            data-memory-run-answer>{view.answer}</pre>
+    {/if}
     {#if view.candidates.length > 0}
         <h3 class="font-semibold">{text.candidates}</h3>
         {#each view.candidates as candidate}
