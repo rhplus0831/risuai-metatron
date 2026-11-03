@@ -117,6 +117,7 @@ export function createFollowStub(jobId: string) {
 export function createGenerationJobsMock(overrides: Partial<GenerationJobsModule> = {}): GenerationJobsModule {
     const defaults = {
         generationPluginWorkActive: vi.fn<GenerationJobsModule["generationPluginWorkActive"]>(() => false),
+        holdGenerationPluginWork: vi.fn<GenerationJobsModule["holdGenerationPluginWork"]>(() => () => {}),
         onGenerationPluginWork: vi.fn<GenerationJobsModule["onGenerationPluginWork"]>(() => () => {}),
         channelCallbacksRunning: vi.fn<GenerationJobsModule["channelCallbacksRunning"]>(() => false),
         noteChannelCallbacks: vi.fn<GenerationJobsModule["noteChannelCallbacks"]>(),

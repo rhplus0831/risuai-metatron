@@ -316,6 +316,10 @@ status carried by a failed WebLLM request.
   never-dispatched root gets no `cancel` and no drain hold.
 - Delivered callbacks keep their drain holds; socket departure never releases them or changes `/drained`. There is no
   job-wide absence abort: callback-free sequence parts and detached memory tasks keep running.
+- On `disconnected`, request hooks (`editinput`, `editprocess`, `replacerbeforeRequest`, `bodyIntercepter`) end the job.
+  A completed reply's hooks skip and the job goes on: `editoutput` and `replacerafterRequest` keep the text (later
+  scripts still run); `chatOutput` and image callbacks run nothing. The first three are kept in order as `done.skipped`
+  (`JobRunState.skippedHooks`); the tab runs the listeners late once it holds that revision (`replaySkippedListeners`).
 - On attach, buffered notices, outstanding request replays, and first deliveries of requests promoted by an expiry are
   sent in their original request/notice order. A promoted request joins that ordered batch and is sent once.
 

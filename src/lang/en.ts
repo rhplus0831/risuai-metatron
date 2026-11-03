@@ -1699,6 +1699,7 @@ export const languageEnglish = {
         requestIdReused: "This request id was already used for a different action. Send again to start a new request.",
         lost: "The connection to the server job was lost; reload the chat to see its changes",
         endedAway: "The response job ended while this page was away; the chat was reloaded",
+        hooksSkipped: "Plugin processing skipped while this page was away: {hooks}",
         sequenceStopped: "/multisend stopped after {sent} of {total} parts: {reason}",
         sequenceReasons: {
             shutdown: "the server is shutting down",

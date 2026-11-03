@@ -4,7 +4,13 @@ import { upsertPlugin } from "../storage/collectionStore.svelte";
 import { alertConfirm, alertError } from "../alert";
 import { selectSingleFile } from "../util";
 import { hotReloading } from "../stores.svelte";
-import { getV3PluginInstance, loadV3Plugins, onPluginWorkChange, pluginWorkIdle } from "./apiV3/v3.svelte";
+import {
+    getV3PluginInstance,
+    loadV3Plugins,
+    onPluginWorkChange,
+    pluginGuestsSettled,
+    pluginWorkIdle,
+} from "./apiV3/v3.svelte";
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
 import { clearPluginHooks } from "./pluginHooks";
 import { onRemoteRecordApplied } from "../storage/resourceSync.svelte";
@@ -565,6 +571,17 @@ function queueDeferredCheck() {
 
 export async function loadPlugins(): Promise<void> {
     await reloadPlugins();
+}
+
+/**
+ * Resolves once the plugin loads queued so far have run and every loaded guest has reported its
+ * startup: the hook registries then hold what this tab's plugins register at their start. A load
+ * queued later (a deferred reload) is not waited for; a caller that must not race one holds plugin
+ * work first.
+ */
+export async function pluginsStarted(): Promise<void> {
+    await pluginReload;
+    await pluginGuestsSettled();
 }
 
 /** Only boot captures startup promises; other callers keep the public Promise<void> contract. */

@@ -704,6 +704,11 @@ function trackHostHook<T>(run: () => T): T {
  * (`anyLocalSend`), no job that may still call its hooks (`generationPluginWorkActive`), no host-side hook
  * running, and every loaded sandbox idle (`SandboxHost.isIdle`).
  */
+/** Resolves once every loaded guest has reported its startup (ready, failed, or stopped). */
+export function pluginGuestsSettled(): Promise<void> {
+    return Promise.allSettled(v3PluginInstances.map(({ host }) => host.startup)).then(() => undefined);
+}
+
 export function pluginWorkIdle(): boolean {
     return (
         !get(anyLocalSend) &&

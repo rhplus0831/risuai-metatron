@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Chat, character } from "../../../shared/database.ts";
-import type { GenerationCommand } from "../../../shared/jobs.ts";
+import type { GenerationCommand, SkippedHook } from "../../../shared/jobs.ts";
 import type { triggerscript } from "../../../shared/triggers.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import { runMemoryRebuild } from "../prompt/memory/structured/rebuild.ts";
@@ -234,8 +234,14 @@ async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, nam
 async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, commandState: JobRunState): Promise<void> {
     const { characterId, chatId } = job.context;
     const parts = commandState.sequence.flatMap(({ clear, parts }) => parts.map((part) => ({ clear, part })));
+    /** The command's own skipped reply hooks (a Lua request's), then each part's (its own state). */
+    const skipped: SkippedHook[] = [...commandState.skippedHooks];
     if (parts.length === 0) {
-        job.emit({ type: "done", revision: deps.store.chatRevision(characterId, chatId) });
+        job.emit({
+            type: "done",
+            revision: deps.store.chatRevision(characterId, chatId),
+            ...(skipped.length > 0 ? { skipped } : {}),
+        });
         return;
     }
     const sequence = job.sequence;
@@ -253,6 +259,7 @@ async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, comman
             revision: chat.revision,
             ...(present ? { messageId } : {}),
             sequence: { total, sent, ...(stopped ? { stopped } : {}) },
+            ...(skipped.length > 0 ? { skipped } : {}),
         });
     };
     sequence.progress({ total, sent });
@@ -302,6 +309,7 @@ async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, comman
         flushChatMetadata(send);
         sequence.releaseRemovedReplies();
         messageId = result.messageId;
+        if (result.skipped) skipped.push(...result.skipped);
         if (!result.stopped) sent += 1;
         sequence.progress({ total, sent });
         job.emit({

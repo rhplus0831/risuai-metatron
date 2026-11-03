@@ -452,7 +452,11 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         settle(
             request,
             disconnected
-                ? { outcome: "disconnected", error: "No owner was connected before the deadline" }
+                ? {
+                      outcome: "disconnected",
+                      error: "No owner was connected before the deadline",
+                      ...(request.delivered ? { delivered: true as const } : {}),
+                  }
                 : { outcome: "timedOut", error: "No answer before the deadline" },
             true,
         );

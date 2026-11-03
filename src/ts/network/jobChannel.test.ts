@@ -33,6 +33,10 @@ const deps = vi.hoisted(() => ({
     heldChat: vi.fn<(ref: { chaId: string; chatId: string }) => string | null>(),
     heldRecord: vi.fn<(kind: string, id: string) => string | null>(),
     contexts: [] as unknown[],
+    /** `capturePluginContext`: the call context of a chat (the skipped-listener replay's). */
+    captured: vi.fn<(ref: { chaId: string; chatId: string }) => unknown>(),
+    /** `pluginsStarted`: the plugins' startup the replay waits for before reading the registry. */
+    pluginsStarted: vi.fn<() => Promise<void>>(),
     selection: null as { characterId: string | null } | null,
     /** The chats the mocked chat module holds, by character (the selected one at `chatPage`). */
     chats: {} as Record<string, { chatPage?: number; chats: { id: string; message?: { chatId: string }[] }[] }>,
@@ -127,9 +131,11 @@ vi.mock("../plugins/apiV3/pluginContext", () => ({
         deps.contexts.push(context);
         return hook(...args);
     },
+    capturePluginContext: (ref: { chaId: string; chatId: string }) => deps.captured(ref),
     PluginTargetGoneError: class PluginTargetGoneError extends Error {},
 }));
 vi.mock("../process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: deps.mcps }));
+vi.mock("../plugins/plugins.svelte", () => ({ pluginsStarted: () => deps.pluginsStarted() }));
 vi.mock("../util", () => ({ sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)) }));
 vi.mock("../../lang", () => ({ language: {} }));
 vi.mock("../storage/database.svelte", () => ({}));
@@ -290,6 +296,8 @@ beforeEach(async () => {
     deps.heldChat.mockReset().mockReturnValue(rev(1, 1));
     deps.heldRecord.mockReset().mockReturnValue(rev(1, 1));
     deps.contexts.length = 0;
+    deps.captured.mockReset().mockImplementation((ref) => ({ ...targets, chatRef: { ...ref } }));
+    deps.pluginsStarted.mockReset().mockResolvedValue(undefined);
     deps.mcps.clear();
     deps.sayTTS.mockReset();
     deps.showCompletion.mockReset();
@@ -1403,6 +1411,70 @@ describe("the reply tail's callbacks", () => {
         } finally {
             chat.message.splice(0, chat.message.length, ...original);
         }
+    });
+
+    // The listeners a server job skipped while the tab was away (`done.skipped`) run late for each
+    // reply, under the chat's captured context (no callback), each entry's failure logged.
+    it("replaySkippedListeners waits for the plugins' startup, then runs the listeners of every skipped chatOutput entry in order with the chat's captured context, logs a gone speaker, and runs nothing with no listener or no context", async () => {
+        const calls: { messageIndex: number; chatIndex: number }[] = [];
+        // A boot resume reaches the replay before the guests registered: the listener is registered
+        // only once the startup wait resolves.
+        deps.pluginsStarted.mockImplementationOnce(async () => {
+            hooks.chatOutput.add((arg: unknown) => {
+                const { messageIndex, chatIndex } = arg as { messageIndex: number; chatIndex: number };
+                calls.push({ messageIndex, chatIndex });
+            });
+        });
+        const ref = { chaId: "c", chatId: "k" };
+        const done = (skipped: unknown[]) =>
+            ({ type: "done", epoch: EPOCH, revision: null, skipped }) as Parameters<
+                Channel["replaySkippedListeners"]
+            >[1];
+        await channel.replaySkippedListeners(
+            ref,
+            done([
+                { name: "editoutput" },
+                { name: "chatOutput", payload: { messageId: "m2", speakerId: "c" } },
+                { name: "chatOutput", payload: { messageId: "m1", speakerId: "nobody" } },
+                { name: "chatOutput", payload: { messageId: "m1", speakerId: "c" } },
+            ]),
+        );
+        expect(calls).toEqual([
+            { messageIndex: 1, chatIndex: 0 },
+            { messageIndex: 0, chatIndex: 0 },
+        ]);
+        // The chat's own context, with no callback to attribute an aux request to.
+        expect(deps.contexts).toEqual([
+            { ...targets, chatRef: ref },
+            { ...targets, chatRef: ref },
+        ]);
+        expect(deps.captured).toHaveBeenCalledExactlyOnceWith(ref);
+        expect(deps.pluginsStarted).toHaveBeenCalledTimes(1);
+        expect(console.error).toHaveBeenCalledWith("[Channel]", expect.objectContaining({ failure: "hook" }));
+        expect(tx.answers).toEqual([]);
+
+        // No context for the chat (it is not listed): nothing runs.
+        calls.length = 0;
+        deps.captured.mockReturnValue(undefined);
+        await channel.replaySkippedListeners(
+            ref,
+            done([{ name: "chatOutput", payload: { messageId: "m2", speakerId: "c" } }]),
+        );
+        expect(calls).toEqual([]);
+
+        // No listener registered, or nothing skipped: the context is not even captured, and with
+        // nothing skipped the startup is not even waited for (one wait: the no-listener case).
+        deps.captured.mockClear();
+        deps.pluginsStarted.mockClear();
+        hooks.chatOutput.clear();
+        await channel.replaySkippedListeners(
+            ref,
+            done([{ name: "chatOutput", payload: { messageId: "m2", speakerId: "c" } }]),
+        );
+        await channel.replaySkippedListeners(ref, done([{ name: "editoutput" }]));
+        await channel.replaySkippedListeners(ref, { type: "done", epoch: EPOCH, revision: null });
+        expect(deps.captured).not.toHaveBeenCalled();
+        expect(deps.pluginsStarted).toHaveBeenCalledTimes(1);
     });
 
     it("imggen runs stableDiff for the job's chat with a check that throws once the callback is cancelled, and answers whether an image was shown", async () => {

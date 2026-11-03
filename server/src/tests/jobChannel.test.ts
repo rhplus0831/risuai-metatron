@@ -303,7 +303,8 @@ describe("the hub: deadlines", () => {
         const detached = link.channel.callback("editoutput", { text: "x" }, { timeoutMs: 100 });
         const detachedId = h.last("callback").id;
         await h.tick(100);
-        expect(await detached).toMatchObject({ outcome: "disconnected" });
+        // Delivered (an earlier socket took it): the result says so, since the tab may have run it.
+        expect(await detached).toEqual({ outcome: "disconnected", error: expect.any(String), delivered: true });
         // A callback's default is 60 s; a question's 120 s. The expired callback was delivered
         // (an earlier socket took it), so the lane waits for the tab's drain report first.
         const slow = link.channel.callback("editoutput", { text: "y" });
@@ -401,8 +402,9 @@ describe("the hub: deadlines", () => {
         expect(h.hydrations).toEqual(["a"]);
 
         await h.tick(1);
+        // Never delivered (no owner took them): no `delivered` flag.
         for (const request of [first, ...queued]) {
-            expect(await h.state(request)).toMatchObject({ outcome: "disconnected" });
+            expect(await h.state(request)).toEqual({ outcome: "disconnected", error: expect.any(String) });
         }
         // Only the dispatched root was hydrated or sent, and only it receives a cancel.
         const expiredEvents = [firstEvent, { type: "cancel", epoch: "e", id: firstEvent.id, job: "a" }];

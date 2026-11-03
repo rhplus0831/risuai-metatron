@@ -6,6 +6,7 @@ import { get } from "svelte/store";
 import type { ChannelChunk, ChatResyncRequest, ReplyResyncRequest } from "../../../shared/jobs.ts";
 import type {
     CallbackFailure,
+    CallbackPayloads,
     CallbackTargets,
     ChannelAnswer,
     GenerationCallbackEvent,
@@ -13,6 +14,7 @@ import type {
     GenerationHooks,
     GenerationNotice,
     GenerationQuestionEvent,
+    GenerationTerminalEvent,
     HydrationReceipt,
     MemoryProgress,
     ScriptHookMode,
@@ -47,7 +49,7 @@ import { language } from "../../lang";
 import type { MCPClientLike } from "../process/mcp/internalmcp";
 import { registeredCustomPluginMCPs } from "../process/mcp/pluginmcp";
 import type { character } from "../storage/database.svelte";
-import { invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
+import { capturePluginContext, invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../plugins/pluginHooks";
 import {
     type ChatRef,
@@ -922,52 +924,9 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                 if (objectUrl) URL.revokeObjectURL(objectUrl);
             }
         }
-        case "chatOutput": {
-            // The `chatOutput` listeners of a server send's reply, in order. Each gets the speaker and
-            // the chat as they are now (a plain copy) and indices looked up again: an earlier listener
-            // may have changed, reordered, or deleted them. A listener's throw is logged and the next
-            // one runs, as in the tab's own send.
-            const { chaId, chatId } = context.chatRef;
-            const messageId = String(payload.messageId);
-            const speakerId = String(payload.speakerId);
-            const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-            // The speaker's chats (another character in a group) are pinned and loaded before each
-            // listener: its copy carries them all, and an earlier listener may have changed them.
-            const releaseSpeaker = pinChats(speakerId);
-            try {
-                // The live set, as the tab's own send walks it: a listener an earlier one removed does not
-                // run, one it added does.
-                for (const listener of pluginHooks.chatOutput) {
-                    stillWanted();
-                    await loadChats(speakerId);
-                    stillWanted();
-                    // The plugin's `characterIndex` is the list position (the plugin index API's mapping).
-                    const characterIndex = characterList().findIndex((entry) => entry?.chaId === chaId);
-                    const owner = characterList()[characterIndex];
-                    const chatIndex = owner ? chatList(owner.chaId).findIndex((entry) => entry.id === chatId) : -1;
-                    const chat = chatIndex === -1 ? undefined : findChat({ chaId, chatId });
-                    const speaker = characterList().find((entry) => entry?.chaId === speakerId);
-                    if (!owner || !chat || !speaker) {
-                        throw new CallbackFailed("hook", "The chat the output listeners run for is gone");
-                    }
-                    try {
-                        await invokeHook(listener, context, {
-                            // The legacy shape a plugin listener gets: the speaker with its chats.
-                            char: withChatsCopy(plain(speaker)),
-                            chat: plain(chat),
-                            characterIndex,
-                            chatIndex,
-                            messageIndex: chat.message.findIndex((message) => message.chatId === messageId),
-                        });
-                    } catch (error) {
-                        console.error(error);
-                    }
-                }
-            } finally {
-                releaseSpeaker();
-            }
+        case "chatOutput":
+            await runChatOutputListeners(context, payload as CallbackPayloads["chatOutput"], stillWanted);
             return true;
-        }
         case "imggen": {
             // The image view of a server send's reply: `stableDiff` with the tab's image settings and
             // keys; its prompt request runs for the job's chat, preset, and persona.
@@ -1114,6 +1073,94 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                     reader.releaseLock();
                 } catch {}
             }
+        }
+    }
+}
+
+/**
+ * The `chatOutput` listeners of a server send's reply, in order. Each gets the speaker and the chat
+ * as they are now (a plain copy) and indices looked up again: an earlier listener may have changed,
+ * reordered, or deleted them. A listener's throw is logged and the next one runs, as in the tab's
+ * own send. Throws `CallbackFailed` (`hook`) when the chat or the speaker is gone.
+ */
+async function runChatOutputListeners(
+    context: PluginCallContext,
+    payload: CallbackPayloads["chatOutput"],
+    stillWanted: () => void,
+): Promise<void> {
+    const { chaId, chatId } = context.chatRef;
+    const messageId = String(payload.messageId);
+    const speakerId = String(payload.speakerId);
+    const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+    // The speaker's chats (another character in a group) are pinned and loaded before each
+    // listener: its copy carries them all, and an earlier listener may have changed them.
+    const releaseSpeaker = pinChats(speakerId);
+    try {
+        // The live set, as the tab's own send walks it: a listener an earlier one removed does not
+        // run, one it added does.
+        for (const listener of pluginHooks.chatOutput) {
+            stillWanted();
+            await loadChats(speakerId);
+            stillWanted();
+            // The plugin's `characterIndex` is the list position (the plugin index API's mapping).
+            const characterIndex = characterList().findIndex((entry) => entry?.chaId === chaId);
+            const owner = characterList()[characterIndex];
+            const chatIndex = owner ? chatList(owner.chaId).findIndex((entry) => entry.id === chatId) : -1;
+            const chat = chatIndex === -1 ? undefined : findChat({ chaId, chatId });
+            const speaker = characterList().find((entry) => entry?.chaId === speakerId);
+            if (!owner || !chat || !speaker) {
+                throw new CallbackFailed("hook", "The chat the output listeners run for is gone");
+            }
+            try {
+                await invokeHook(listener, context, {
+                    // The legacy shape a plugin listener gets: the speaker with its chats.
+                    char: withChatsCopy(plain(speaker)),
+                    chat: plain(chat),
+                    characterIndex,
+                    chatIndex,
+                    messageIndex: chat.message.findIndex((message) => message.chatId === messageId),
+                });
+            } catch (error) {
+                console.error(error);
+            }
+        }
+    } finally {
+        releaseSpeaker();
+    }
+}
+
+/**
+ * The `chatOutput` listeners a server job skipped because this tab was away when its replies
+ * completed (`done.skipped`), run now for each reply, in order, with the chat's own ids as the call
+ * context (no live callback: an aux request from a listener names no parent). The caller has made
+ * the chat current first and holds plugin work (`holdGenerationPluginWork`), so no deferred reload
+ * empties the registry meanwhile; the plugins' startup is awaited (`pluginsStarted`: a boot resume
+ * reaches here before the guests have registered their listeners). A chat or speaker gone meanwhile
+ * is logged, and the other hooks of the list (`editoutput`, `replacerafterRequest`) have nothing to
+ * run late. Nothing runs with no listener registered or no plugin context for the chat.
+ */
+export async function replaySkippedListeners(
+    ref: ChatRef,
+    terminal: Extract<GenerationTerminalEvent, { type: "done" }>,
+): Promise<void> {
+    const replies = (terminal.skipped ?? []).filter((entry) => entry.name === "chatOutput");
+    if (replies.length === 0) {
+        return;
+    }
+    const { pluginsStarted } = await import("../plugins/plugins.svelte");
+    await pluginsStarted();
+    if (pluginHooks.chatOutput.size === 0) {
+        return;
+    }
+    const context = capturePluginContext(ref);
+    if (!context) {
+        return;
+    }
+    for (const entry of replies) {
+        try {
+            await runChatOutputListeners(context, entry.payload, () => {});
+        } catch (error) {
+            console.error("[Channel]", error);
         }
     }
 }

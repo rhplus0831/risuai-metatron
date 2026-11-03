@@ -704,8 +704,12 @@ describe("a running sequence part", () => {
         await h.jobs.drain();
     });
 
-    it("ends with the missing-owner reason when the next part needs a script callback", async () => {
-        const h = fixture({ hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] } });
+    // A part has no input, so its request hook is the `beforeRequest` replacer: part two's was answered
+    // before the owner left, so the first part nobody can answer is the third.
+    it("ends with the missing-owner reason at the first part whose request hook nobody can answer (replacerbeforeRequest)", async () => {
+        const h = fixture({
+            hooks: { ...NO_GENERATION_HOOKS, replacers: { beforeRequest: true, afterRequest: false } },
+        });
         const held = holdSecond(h);
         const id = h.create();
         const owner = await h.follow(id);
@@ -713,7 +717,12 @@ describe("a running sequence part", () => {
             const event = JSON.parse(String(raw));
             if (event.type === "callback")
                 owner.ws.send(
-                    JSON.stringify({ type: "answer", id: event.id, outcome: "answered", value: event.payload.text }),
+                    JSON.stringify({
+                        type: "answer",
+                        id: event.id,
+                        outcome: "answered",
+                        value: event.payload.messages,
+                    }),
                 );
         });
         h.start.resolve();
@@ -741,10 +750,57 @@ describe("a running sequence part", () => {
         expect(h.jobs.status(id, "owner")?.terminal).toMatchObject({
             type: "error",
             message: expect.stringContaining("disconnected"),
-            sequence: { total: 3, sent: 1 },
+            sequence: { total: 3, sent: 2 },
         });
+        // Part three's hook failed before its request went out: its user message is in, no reply.
         expect(h.providerCalls).toHaveLength(2);
-        expect(textOf(h.messages())).not.toContain("user:three");
+        expect(textOf(h.messages())).toContain("user:three");
+        expect(textOf(h.messages())).not.toContain("reply-3");
+    });
+
+    it("goes on past the missing owner when the next parts need only a reply hook: each editoutput skips at its deadline and the sequence completes with the skips recorded", async () => {
+        const h = fixture({ hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] } });
+        const held = holdSecond(h);
+        const id = h.create();
+        const owner = await h.follow(id);
+        owner.ws.on("message", (raw) => {
+            const event = JSON.parse(String(raw));
+            if (event.type === "callback")
+                owner.ws.send(
+                    JSON.stringify({ type: "answer", id: event.id, outcome: "answered", value: event.payload.text }),
+                );
+        });
+        h.start.resolve();
+        await held.entered;
+        await owner.until((events) => sequenceEvents(events).length === 1);
+        await owner.close();
+        // Each remaining part's callback registers its timer before the clock moves (as above).
+        let waiting = deferred();
+        const setTimer = globalThis.setTimeout;
+        vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+            handler: (...args: any[]) => void,
+            ms?: number,
+            ...args: any[]
+        ) => {
+            const timer = setTimer(handler, ms, ...args);
+            if (ms === CALLBACK_TIMEOUT_MS) waiting.resolve();
+            return timer;
+        }) as typeof setTimeout);
+        held.release();
+        for (const round of [1, 2]) {
+            await waiting.promise;
+            waiting = deferred();
+            h.setNow(1_000_000 + round * CALLBACK_TIMEOUT_MS);
+            await vi.advanceTimersByTimeAsync(CALLBACK_TIMEOUT_MS);
+        }
+        await h.jobs.drain();
+        expect(h.jobs.status(id, "owner")?.terminal).toMatchObject({
+            type: "done",
+            sequence: { total: 3, sent: 3 },
+            skipped: [{ name: "editoutput" }, { name: "editoutput" }],
+        });
+        expect(h.providerCalls).toHaveLength(3);
+        expect(textOf(h.messages())).toContain("user:three");
     });
 
     it("gives part two its own thirty-minute deadline even when the job is older", async () => {

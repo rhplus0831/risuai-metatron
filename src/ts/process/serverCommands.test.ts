@@ -76,6 +76,11 @@ const stubs = vi.hoisted(() => ({
     loadChat: vi.fn<() => Promise<unknown>>(async () => ({})),
     /** `recordClientEvent`: the follow's diagnostics. */
     record: vi.fn<(input: unknown) => void>(),
+    /** `replaySkippedListeners`: the listeners a `done` lists as skipped, run after the chat read. */
+    replay: vi.fn<(ref: unknown, terminal: unknown) => Promise<void>>(),
+    /** `holdGenerationPluginWork`: the hold a follow takes for listeners it runs late, and its release. */
+    hold: vi.fn<() => () => void>(),
+    unhold: vi.fn(),
 }));
 /** The seeded chat's binding: the one prompt and model preset (`preset`) and the selected persona. */
 const BOUND = { modelPresetId: "preset", promptPresetId: "preset", bindedPersona: "selected" };
@@ -108,6 +113,7 @@ vi.mock("src/lang", () => ({
             },
             lost: "job lost",
             endedAway: "ended away",
+            hooksSkipped: "hooks skipped: {hooks}",
             sequenceStopped: "/multisend stopped after {sent} of {total} parts: {reason}",
             sequenceReasons: { chatBindingMismatch: "binding changed" },
             discarded: { send: "discarded: send", button: "discarded: button", trigger: "discarded: trigger" },
@@ -137,11 +143,15 @@ vi.mock("../alert", async () =>
         alertToast: stubs.alertToast,
     }),
 );
+vi.mock("../network/jobChannel", () => ({
+    replaySkippedListeners: (ref: unknown, terminal: unknown) => stubs.replay(ref, terminal),
+}));
 vi.mock("../network/generationJobs", async () => {
     const { createGenerationJobsMock, createFollowStub } = await import("../network/tests/generationJobsMock");
     return createGenerationJobsMock({
         abortGenerationJob: (jobId: string) => stubs.abort(jobId),
         applyGenerationEvent: stubs.apply,
+        holdGenerationPluginWork: () => stubs.hold(),
         createGenerationJob: stubs.create,
         followGenerationJob: (jobId: string, onEvent: (event: GenerationEvent) => void) => {
             const stub = createFollowStub(jobId);
@@ -246,6 +256,9 @@ beforeEach(async () => {
     stubs.markStale.mockReset().mockReturnValue(true);
     stubs.stale.mockReset().mockReturnValue(true);
     stubs.sleep.mockReset().mockResolvedValue(undefined);
+    stubs.replay.mockReset().mockResolvedValue(undefined);
+    stubs.unhold.mockReset();
+    stubs.hold.mockReset().mockImplementation(() => stubs.unhold);
     vi.spyOn(console, "error").mockImplementation(() => {});
     // The records the chat's binding names (`chatBinding` checks that they exist): the prompt preset
     // `preset` (and the model preset of the same id it implies), the personas `selected` and `bound`.
@@ -1396,6 +1409,84 @@ describe("the end read from the job's status, and the chat read after the follow
         follows().at(-1)!.end(null);
     };
     const unseen = async () => get((await import("src/ts/process/chatStatus.svelte")).unseenChatKeys);
+
+    it("runs the listeners a `done` lists as skipped once this tab holds its revision (after a read when it does not, a socket terminal included), under a plugin-work hold from before the terminal's application until after; names the other skipped hooks once in a toast; runs none after a read that did not take", async () => {
+        const held = `${EPOCH}:1:1`;
+        const newer = `${EPOCH}:1:2`;
+        stubs.held.mockReturnValue(held);
+        // The read brings this tab's copy to the terminal's revision.
+        stubs.refresh.mockImplementation(async () => {
+            stubs.held.mockReturnValue(newer);
+            return true;
+        });
+        const listeners = { name: "chatOutput", payload: { messageId: "reply", speakerId: "c" } } as const;
+        const done = {
+            type: "done",
+            epoch: EPOCH,
+            revision: newer,
+            messageId: "reply",
+            skipped: [listeners, { name: "editoutput" }, { name: "replacerafterRequest" }, { name: "editoutput" }],
+        } satisfies GenerationTerminalEvent;
+        stubs.read.mockResolvedValueOnce(kept(done));
+        const end = commands.followJobToEnd("j", ref);
+        await closeLatest();
+        expect(await end).toEqual(done);
+        // The listeners need the reply: they run after the chat read brought it.
+        expect(stubs.replay).toHaveBeenCalledExactlyOnceWith(ref, done);
+        expect(stubs.refresh.mock.invocationCallOrder[0]).toBeLessThan(stubs.replay.mock.invocationCallOrder[0]);
+        // Plugin work is held from before the terminal's application (no reload empties the
+        // registry meanwhile) until the listeners ran.
+        expect(stubs.hold).toHaveBeenCalledTimes(1);
+        expect(stubs.hold.mock.invocationCallOrder[0]).toBeLessThan(stubs.apply.mock.invocationCallOrder[0]);
+        expect(stubs.unhold).toHaveBeenCalledTimes(1);
+        expect(stubs.unhold.mock.invocationCallOrder[0]).toBeGreaterThan(stubs.replay.mock.invocationCallOrder[0]);
+        expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("hooks skipped: editoutput, replacerafterRequest");
+        expect(stubs.alertError).not.toHaveBeenCalled();
+
+        // A socket terminal (applied as it came) whose final hydration did not take: this tab is
+        // behind the terminal's revision, so the chat is read first; listeners only, nothing to name.
+        for (const mock of [stubs.replay, stubs.alertToast, stubs.refresh, stubs.markStale, stubs.hold, stubs.unhold]) {
+            mock.mockClear();
+        }
+        stubs.held.mockReturnValue(held);
+        const live = commands.followJobToEnd("j2", ref);
+        await flush();
+        endWith(follows().at(-1)!, { ...done, skipped: [listeners] });
+        await live;
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        expect(stubs.replay).toHaveBeenCalledExactlyOnceWith(ref, { ...done, skipped: [listeners] });
+        expect(stubs.hold.mock.invocationCallOrder[0]).toBeLessThan(stubs.apply.mock.invocationCallOrder.at(-1)!);
+        expect(stubs.unhold).toHaveBeenCalledTimes(1);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+
+        // The read did not take within the deadline: the listeners do not run (the chat is read
+        // again later, without the job), and the hold is still released.
+        for (const mock of [stubs.replay, stubs.hold, stubs.unhold]) {
+            mock.mockClear();
+        }
+        stubs.held.mockReturnValue(held);
+        stubs.refresh.mockReset().mockResolvedValue(false);
+        stubs.read.mockResolvedValueOnce(kept(done));
+        const stale = commands.followJobToEnd("j3", ref);
+        await closeLatest();
+        await stale;
+        expect(stubs.replay).not.toHaveBeenCalled();
+        expect(stubs.unhold).toHaveBeenCalledTimes(1);
+
+        // A done without the field, the common case: nothing runs, nothing is held, nothing is shown.
+        for (const mock of [stubs.alertToast, stubs.hold]) {
+            mock.mockClear();
+        }
+        stubs.refresh.mockReset().mockResolvedValue(true);
+        stubs.read.mockResolvedValueOnce(kept({ type: "done", epoch: EPOCH, revision: newer, messageId: "reply" }));
+        const plain = commands.followJobToEnd("j4", ref);
+        await closeLatest();
+        await plain;
+        expect(stubs.replay).not.toHaveBeenCalled();
+        expect(stubs.hold).not.toHaveBeenCalled();
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+    });
 
     it("applies a kept `done` as the job's end: the unseen reply marked, the chat read again only when the terminal's revision is newer than the held one, no notice", async () => {
         // Real revision tokens, so the comparison is the shared one (not "incomparable, so newer").
