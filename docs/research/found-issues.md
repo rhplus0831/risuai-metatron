@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, and six plan-leftover collections from memory the same day; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -8,12 +8,13 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (1)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (5)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
 - [Server routes and resource store](#server-routes-and-resource-store) (3)
+- [Request history and diagnostics](#request-history-and-diagnostics) (1)
 - [Display transform](#display-transform) (1)
 - [Chat screen and input](#chat-screen-and-input) (2)
-- [Client and plugins](#client-and-plugins) (5)
+- [Client and plugins](#client-and-plugins) (7)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
@@ -50,6 +51,21 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 **Why it matters:** a reader changing the floor finds a circular pointer instead of the rule.
 **Suggested handling:** read the checks in `server/src/data/chatStore.ts`, state the order once in `chat-store.md` `### Restore floor`, paying for the bytes in the same edit, and keep the link one way.
 
+### Phase 6 review leftovers
+
+Raised in the Phase 6 slice 6–11 reviews (2026-10-05..07) and judged out of scope or pre-existing; kept in memory until 2026-11-03. The `stores.svelte.ts` ↔ `parser/transformClient.ts` import cycle is in `app-shell.md` Known Hazards and is not repeated here.
+
+- Vitest-only module-effect race: when `database.svelte` or `stores.svelte` loads first in a test, their module-level effects read state that is not initialized yet; native ESM in the app is not affected. A test that reaches the settings views cannot use `@vitest-environment node` (the records need Svelte's client `$state`); flat fixtures use `src/ts/storage/tests/installFlatDatabase.ts`.
+- Preset reorder criterion missed: reordering 50 presets took 17.9 ms against a 16.0 ms baseline (+12 %, target within 10 %); a plain-row projection was not tried (`docs/audit/preset-reorder-2026-10-05.md`).
+- Slice 9a: the facade's `chats` view (`setCharacterChatView`, `records.svelte.ts`) builds a fresh array per read, so loops go through `findChat`; the resources route's non-array body message does not name `chatSummaryCollections` (tests pin it); async plugin setters can see a gone preset selection repaired to the first preset between call and apply.
+- Slice 9b: the own-save echo of an unloaded chat's list field costs one summary-list read; a noticed loaded idle chat is read whole before the trim may evict it; `installRead` and `adoptChatRead` (`chatStore.svelte.ts`) disagree on incomparable revisions (only test tokens like `"r1"`); store-backed test harness boots still read `{ chats: true }`.
+- Hazard-entry notes: `llm-requests.md` leaves three OpenAI-format credential sends untested (key map, preset proxy key, custom model key); for a V3 provider model `Plugin Error from <provider>` names `currentPluginProvider` (`src/ts/process/request/request.ts` ~771), which can differ from the failing provider; the M16 "stale module" can be a different module when a replacement reorders the list.
+
+Identifiers re-checked 2026-11-03 (`setCharacterChatView`, `installRead`, `adoptChatRead`, `Plugin Error from`); the timings were not re-measured.
+
+**Why it matters:** each is small; together they are the known soft spots of the store facade and its tests.
+**Suggested handling:** check the code when working nearby; an item confirmed with an owning guide moves to that guide's Known Hazards.
+
 ## Server jobs and prompt assembly
 
 ### Tool schemas are outside the assembly token budget
@@ -58,6 +74,20 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 **Why it matters:** with many or large tool definitions a send near the budget could be refused by the provider although the meter shows room.
 **Suggested handling:** measure with a real tool set and tokenizer; if the gap is real, charge an estimate of the schemas in the recheck (the token-counting follow-up group of the Deep Audit Fixes plan).
+
+### No-memory trim question gaps
+
+The no-memory trim question (aad461e63, 2026-10-11; `server/src/prompt/runner.ts` ~1086 compares `memoryTrimAck` with `supaMemoryOnCount`) shipped with gaps accepted at its review: the late removable-message cleanup in `assemblePrompt` (`v.removable`, `server/src/prompt/assemble.ts` ~2131), which runs after formatting, can still drop history without asking (offering "turn memory on" there would re-run memory and formatting mid-assembly); when the question goes unanswered (timeout or a lost owner) the job error the user sees is English, since the server has no localized channel for terminal errors; `supaMemory` turned on by a plugin (`setCharacter`) or a raw record write does not bump `supaMemoryOnCount`, so a chat's "don't ask again" survives it (Lua has no `supaMemory` setter); the dialog was never checked by hand. Identifiers re-checked 2026-11-03; kept in memory until then.
+
+**Why it matters:** a user can still see a silent trim or an English error from a feature meant to ask first.
+**Suggested handling:** raise when a silent trim or an English job error is reported; the cleanup gap needs a design, the other two are small.
+
+### Blank history entries and the meters
+
+a412bc2d8 (2026-10-27, `blankEntry` → `{ empty: true }` in `server/src/prompt/assemble.ts` ~2599) leaves a greeting or message that editprocess scripts blank out of the context report's history counts. Two meter edges were left: `contextTrim` (`assemble.ts` ~2930) returns no `trim` ledger when a blank greeting or message sits in the first eight queue entries (it is "absent from the final prompt"), so a no-memory chat with a blank greeting gets no displacement estimate (including it would count an invisible entry as a displaced message); HypaV3 `trimUncoveredHistory` (`server/src/prompt/memory/hypav3.ts` ~1522, `gapTokens`) counts a blank entry's tokens into the gap, so a trim that drops only blank history reports a coverage gap and an input job may ask the gap question. Identifiers re-checked 2026-11-03; kept in memory until then.
+
+**Why it matters:** a chat whose greeting a script blanks shows a missing estimate or a spurious gap.
+**Suggested handling:** teach both meters the `empty` source before counting.
 
 ## Server routes and resource store
 
@@ -81,6 +111,25 @@ Since `limitedBody` counts the bytes that arrive (Server Byte Budgets slice 1, `
 
 **Why it matters:** the bytes of a deleted chat's pages stay in the database file and in every snapshot's copy until a restart (a restore drops them).
 **Suggested handling:** if orphan growth ever matters, call the sweep from a maintenance tick or after a chat delete; otherwise the wrapper is test-only and could move.
+
+## Request history and diagnostics
+
+### Request history accepted trade-offs
+
+From slices 2–10 of the Request History and Diagnostics plan (2026-10-13..15, archived); all accepted trade-offs or minors, not defects. Kept in memory until 2026-11-03. The decided Limitations (unsynced appends, synchronous shares, redaction reach) are in `diagnostics.md` Known Hazards and are not repeated.
+
+- Capture: a stream capture flushed by an abort, a cancel or a read error is not trimmed for a trailing credential prefix (`Redactor.trimPartial` runs only when the 4 MiB bound cut it, `server/src/llm/requests.ts` ~627) and can end in U+FFFD; an adapter's `addLog` (the Anthropic batch) counts logged text, not wire bytes; exchanges are stored in completion order, not start order.
+- Store: an invalid `firstByte`/`completedAt` falls back to `now()`; `setShared` returns the matched count, not the changed count; a failed ROLLBACK closing the store is untested; a missing JWT is a 400, not a 401 (server-wide).
+- Viewer (`src/lib/Others/RequestLogs/`): re-expanding a row loads a fresh detail while the list row keeps its old summary until the list reloads; `LogField`'s copy feedback depends on `copyText`'s boolean and its fallback failure was not browser-checked. The viewer, the failure alert's two buttons, the popup's job filter and the Diagnostics panel were never opened in a browser, and no report was pulled over sftp.
+- Structured failures: a memory request's failure is `assembly` with no `requestId`; OpenAI Responses turns a streamed error event into answer text, so it gets no code; `APP_PATH` in `server/src/diagnostics/log.ts` (:59) would accept a `node_modules/*/shared/*.ts` frame.
+- Journal: `script` events are deferred (swallowed Lua/trigger failures produce no event); symlink checks guard stray entries, not a writer racing in the folder; a failure that `startServer`'s own catch takes is not recorded; there is no global-middleware early-return or >5 s slow-answer `http` test; one failed state write can count two failures.
+- Browser collector: no build-membership check on browser frames (an app script rewriting `error.stack` could name an app-shaped file); V8 `at async <url>` frames are dropped (`FRAME` in `shared/diagnostics.ts` ~300); WebKit `[native code]` lines give no frames; folding collapses alternating `hidden`/`visible` within 16 events / 10 min and keeps the first `at`; the SW hooks in `bootstrap.ts` `registerSw` are untested.
+- Report and sharing: the server's report check is of shape, not provenance; a report naming a model that later left `BASE_LLM_MODELS` is refused (documented v1 exception); a prune failure after a save is counted but not shown; no boot-time reconciliation of `sharedAt` marks against `shared/` files (files are authoritative, withdrawal idempotent); if `deleteAll` fails after the copies were removed, the marks stay; the older-copy 500 is mapped in the viewer by comparing the server's English message (`requestHistoryShareOlderCopiesRemain`), not a status field; `eventsFor` does not detect pruned day files; the second redaction cannot catch a retired key or an expired Vertex token and leaves out the auxiliary `secrets` section. Never run: the Docker plus chrooted-sftp permission check (only `shared/` readable, not `save/data/`).
+
+Identifiers re-checked 2026-11-03 (`trimPartial`, `APP_PATH`, `FRAME`, `copyText`, `sharedAt`, the English-message mapping); the behaviors were not re-run.
+
+**Why it matters:** a security review of the history folder or the diagnostics report should know which gaps were chosen.
+**Suggested handling:** read before such a review; delete items as they settle, and move confirmed ones to `diagnostics.md` or `llm-requests.md` Known Hazards.
 
 ## Display transform
 
@@ -148,6 +197,25 @@ declaration comes from upstream. Found by the stale-comment sweep of 2026-11-03.
 
 **Why it matters:** a plugin author following the declaration gets a request without the header and no error.
 **Suggested handling:** decide whether to keep upstream's declaration; if not, mark the API as not implemented there.
+
+### Stop B leftovers
+
+Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until 2026-11-03; re-checked by identifier that day.
+
+- Capture-phase key listeners still see keys behind the restore notice (`src/lib/Others/TerminalNotice.svelte` calls only `stopPropagation`, :34); a plugin's `document` listener with `capture` is the example.
+- `getFileSrc` object URLs: `holdFileSrc` releases only the asset lists' `LazyFileSrc` previews; every plain `getFileSrc` read (parser HTML, chat rows, icons) pins its URL for the page, and every file gets `image/png` (`src/ts/globalApi.svelte.ts` :348); video and audio rely on the `<source type>` the parser writes. The same pinning is the open D2b item of the asset-scale work (parser `fileSrcCache`, inlays `mediaObjectUrls`).
+- Load flakes seen only under parallel full suites (load average 28–32 on 2026-10-18/19), each passing alone: `server/src/tests/cbsLimitsHost.test.ts` "does not yield between quick effects…" (:557), `server/src/tests/lore.test.ts`'s worker-timeout case, `src/ts/storage/tests/resourceSyncFieldCache.test.ts`, and the cold `boot()` of the first cases of `chatStore.test.ts` and `resourceSyncChats.test.ts` hitting the 5,000 ms default (a warm-up import in `beforeAll` would remove it). `util/playwright/checkStopDMatrix.mjs`, listed then, no longer exists. Not re-run since; the whole-suite lock of 2026-10-30 reduces the parallel case.
+- `addCharacter` stamps `creation_date` on a re-add (accepted at slice 5b). The first-visit default writes of some settings pages are already in `settings-i18n.md` Known Hazards.
+
+**Why it matters:** the capture gap lets a plugin act behind a blocking notice; the pinned URLs grow with assets rendered; the flakes return whenever suites run in parallel.
+**Suggested handling:** mention when working nearby and check the code first; treat the flakes as known unless one fails alone.
+
+### Lorebook filter accepted limits
+
+Search plan slice 2c (2026-10-20, `src/lib/SideBars/LoreBook/LoreBookList.svelte`; the contract is `characters-modules.md` "Lorebook filter") left: an entry added while the query is non-empty (host "+" or a forced folder's "+") has empty fields and is hidden at once; the module list's query does not reset if a remote replacement retargets the module wrapper while ModuleMenu stays mounted (the owner key is a constant for `externalLoreBooks`; normal module navigation remounts); a folder opened only by the filter (`filterOpens` → `forceOpen`, :164 and :629) collapses when a later query stops showing it, dropping details opened inside it meanwhile; drag recovery after clearing (`onEnd` guard, :277) is untested; no browser check was run. Re-checked by identifier 2026-11-03; kept in memory until then.
+
+**Why it matters:** an entry added under a filter seems to vanish, and an opened detail can close under the user.
+**Suggested handling:** clear the query on add, or show the new entry regardless; keep a filter-opened folder open while it has an open detail.
 
 ## Build, drivers, and e2e
 
