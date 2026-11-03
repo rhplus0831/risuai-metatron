@@ -8,14 +8,14 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (5)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
-- [Server routes and resource store](#server-routes-and-resource-store) (4)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (1)
+- [Server routes and resource store](#server-routes-and-resource-store) (3)
 - [Display transform](#display-transform) (1)
 - [Chat screen and input](#chat-screen-and-input) (2)
-- [Client and plugins](#client-and-plugins) (8)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (11)
-- [Guides](#guides) (14)
+- [Client and plugins](#client-and-plugins) (5)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
+- [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (17)
 
@@ -43,13 +43,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 **Why it matters:** a stalled link leaves that discard waiting without a bound.
 **Suggested handling:** wrap both reads in the chat module's deadline helper.
 
-### characterStore header still lists Lua and triggers as writers
-
-The header comment of the character mutations in `src/ts/storage/characterStore.svelte.ts:40` names `plugins, MCP, Lua, triggers, imports` as external contracts. Scripting moved to the server, so no browser Lua or trigger caller remains. Found by Guide Budgets slice 2; re-checked 2026-11-01.
-
-**Why it matters:** it misleads a reader about who writes characters.
-**Suggested handling:** fix the comment's list; check each name against the callers first.
-
 ### No guide states the restore floor's check order
 
 `docs/structure/chat-store.md` `### Restore floor` links to `server-resources.md#chat-writes-and-checkpoints` for the check, and `server-resources.md:424` sends floor details back to `chat-store.md#restore-floor`. Neither states the order of the checks, and `reason: "generating"` handling has no rule in any guide. Found by Guide Budgets slice 2.
@@ -65,13 +58,6 @@ The header comment of the character mutations in `src/ts/storage/characterStore.
 
 **Why it matters:** with many or large tool definitions a send near the budget could be refused by the provider although the meter shows room.
 **Suggested handling:** measure with a real tool set and tokenizer; if the gap is real, charge an estimate of the schemas in the recheck (the token-counting follow-up group of the Deep Audit Fixes plan).
-
-### memoryTasks header says the hand-off comes after done
-
-`server/src/prompt/memory/memoryTasks.ts:146` says a job hands the memory input "after `done`", but `server/src/prompt/runner.ts` hands off right before it emits `done`; `docs/structure/memory.md` `Background memory task` says "Right before". Found by Guide Budgets slice 5a.
-
-**Why it matters:** the guide sends readers to this header for the task's rules, so the wrong word reads as the ordering contract.
-**Suggested handling:** change the word to "before".
 
 ## Server routes and resource store
 
@@ -95,13 +81,6 @@ Since `limitedBody` counts the bytes that arrive (Server Byte Budgets slice 1, `
 
 **Why it matters:** the bytes of a deleted chat's pages stay in the database file and in every snapshot's copy until a restart (a restore drops them).
 **Suggested handling:** if orphan growth ever matters, call the sweep from a maintenance tick or after a chat delete; otherwise the wrapper is test-only and could move.
-
-### Normalizer comments still say the startup pass runs on every start
-
-`server/src/data/kinds.ts:37-39` (the `ResourceKind` doc comment) says a normalizer runs "in the store's startup pass" and that a non-idempotent one "rewrites the record on every start"; `shared/characters.ts:6`, `server/src/data/normalize/characters.ts:8` and `docs/structure/persistence.md:237` use the same wording. Since the normalization stamp (slice 4, `e743a93e3`) an open with its own stamp skips the record scan, so this holds only for a run of the pass (a new commit, a dirty or identity-less run, a `replaceAll`). Noticed by slice 4; the files were outside its list.
-
-**Why it matters:** a non-idempotent normalizer no longer shows up as a rewrite on each restart, only on a new commit, so the comment's warning misleads.
-**Suggested handling:** reword the four places to "in a run of the normalization pass" when one is next touched.
 
 ## Display transform
 
@@ -144,13 +123,6 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 **Why it matters:** the comments send a reader to a hazard that does not exist and may justify a repeat-until-gone test workaround that is no longer needed.
 **Suggested handling:** confirm the snapshot makes the skip impossible, then drop the citation and the workaround.
 
-### mcplib test calls settled behavior a recorded hazard
-
-`src/ts/process/mcp/tests/mcplib.test.ts:13` calls a stream ending without an answer a recorded hazard in `plugins-mcp.md`. The guide records it as settled behavior (JSON-RPC error -32000), and `mcplibStreams.test.ts` covers it. Found by Guide Budgets slice 5b.
-
-**Why it matters:** a reader of the test looks for an open hazard that was closed.
-**Suggested handling:** reword the header comment.
-
 ### RPack mocks rest on a byte map fetch that is gone
 
 About 11 test files mock `src/ts/rpack/rpack_js.js` with a comment that the real RPack fetches its byte map as a Vite asset (`src/ts/translator/presetsCodec.test.ts:33`, `src/ts/characterCardsImport.test.ts:59`, `src/ts/storage/tests/presetIds.test.ts:46`). `rpack_js.js` now re-exports `shared/rpack.ts`, whose map is inlined and which is synchronous. Found by Guide Budgets slice 5b.
@@ -165,26 +137,17 @@ About 11 test files mock `src/ts/rpack/rpack_js.js` with a comment that the real
 **Why it matters:** an author told to use a header cannot find it in the author guide.
 **Suggested handling:** add both headers to `plugins.md` with their parsing rules.
 
-### socketLiveness says tests replace livenessClock
+### saveSecretHeader's declaration describes a feature that does nothing
 
-`src/ts/network/socketLiveness.ts:8` says stamps read `livenessClock.now()` "(tests replace it)". No test does: `socketLiveness.test.ts` fakes `Date`. Found by Guide Budgets slice 5c, which dropped the same claim from `global-api.md`.
+`src/ts/plugins/apiV3/risuai.d.ts` (~1633) tells plugin authors to save a header with `saveSecretHeader` and use it
+through `{ secretHeader: 'Header-Name' }` in `nativeFetch`'s headers. The host's `saveSecretHeader`
+(`src/ts/plugins/apiV3/v3.svelte.ts` ~2581) only logs a not-implemented warning and stores nothing, and `nativeFetch`
+has no `secretHeader` branch (`new Headers(options.headers ?? {})` would stringify the object). The declared
+`(key, prefix, value)` also differs from the implemented `(key, value)` (`plugins-mcp.md` notes the arity only). The
+declaration comes from upstream. Found by the stale-comment sweep of 2026-11-03.
 
-**Why it matters:** it sends a test writer to a seam nobody uses.
-**Suggested handling:** fix the comment.
-
-### Setting keywords are called a future feature
-
-`src/ts/setting/types.ts:172` says "Search keywords for future search feature", but settings search already reads `keywords`. Found by Guide Budgets slice 5c.
-
-**Why it matters:** a reader may treat the field as unused and drop it.
-**Suggested handling:** fix the comment.
-
-### safeBoot header cites the wider Boot section
-
-`src/ts/safeBoot.ts:2` cites `app-shell.md` Boot; since Guide Budgets slice 5d the guide has `### Safe boot` under `Flows`. The old citation still resolves.
-
-**Why it matters:** the header sends a reader to the wider section first.
-**Suggested handling:** change the word when `safeBoot.ts` is next touched.
+**Why it matters:** a plugin author following the declaration gets a request without the header and no error.
+**Suggested handling:** decide whether to keep upstream's declaration; if not, mark the API as not implemented there.
 
 ## Build, drivers, and e2e
 
@@ -208,20 +171,6 @@ About 11 test files mock `src/ts/rpack/rpack_js.js` with a comment that the real
 
 **Why it matters:** a red spec unrelated to the change under test reads like a regression of that change, and the terminal notice's Enter handling is no longer guarded.
 **Suggested handling:** seed the chat with its three bindings the way `chatBinding.spec.ts` does and check the spec passes.
-
-### Guide-budget reflow is not in the blame ignore list
-
-`.git-blame-ignore-revs` lists whole-repository format commits, but not `e0624f671` (`docs(structure): wrap STRUCTURE.md and the guides at 120 columns`, Guide Budgets slice 1), which rewrapped 18 Markdown files.
-
-**Why it matters:** `git blame` on a guide lands on the reflow for most lines.
-**Suggested handling:** add the hash with a comment line.
-
-### requireHuman notice names the old guide
-
-`util/requireHuman.mjs:19` prints `see docs/structure/build-test-platforms.md` for `test:agent`'s flags, which moved to `docs/structure/test-harness.md` in Guide Budgets slice 4.
-
-**Why it matters:** an agent stopped by the human gate reads this notice first, and it takes one extra hop.
-**Suggested handling:** change the path; check whether a test pins the notice text first.
 
 ### Delegate profile test policy names the old guide
 
@@ -250,20 +199,6 @@ About 11 test files mock `src/ts/rpack/rpack_js.js` with a comment that the real
 
 **Why it matters:** the comment and the guide disagree on what the browser check expects.
 **Suggested handling:** run the check's scenario to see which holds, then fix the comment or add the failure to the Gotcha.
-
-### personaBinding spec comment reads as plugin coverage
-
-`e2e/personaBinding.spec.ts:250` describes a plugin's `setDatabase({ selectedPersona })`, but the test calls `selectPersona` directly. Found by Guide Budgets slice 5b.
-
-**Why it matters:** the comment reads as e2e coverage of the plugin host's index-to-id resolution, which the spec does not drive.
-**Suggested handling:** reword the comment; add a plugin-driven case only if that path needs a browser check.
-
-### settingsPages spec header overstates first visits
-
-`e2e/settingsPages.spec.ts:7` says each page mounts without writing anything, while the spec's own comment and the `settings-i18n.md` Issue say a first visit may save defaults. Found by Guide Budgets slice 5c.
-
-**Why it matters:** the header overstates what the e2e proves about first-visit writes.
-**Suggested handling:** fix the comment.
 
 ## Guides
 

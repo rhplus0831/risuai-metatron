@@ -50,14 +50,12 @@ import {
 import { GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
 
 /**
- * What a job reads (the prompt runner's `PromptScope` builds on it), loaded at the job's
- * start and kept apart in two parts:
+ * What a job reads, loaded at the job's start and kept apart in two parts:
  *
  * - frozen identity and configuration: `db` (the database projection the CBS evaluator and lore
- *   activation read, assembled as the client's `assembleDatabase` and forwarding layer serve it for
- *   the job's prompt and model presets and personas, with every credential field `""` as in the
- *   client's mirror), the two presets, the profiles and the personas, and `request` (the request
- *   layer's own settings, credentials included).
+ *   activation read, assembled for the job's prompt and model presets and personas, with every
+ *   credential field `""` as in the client's mirror), the two presets, the profiles and the
+ *   personas, and `request` (the request layer's own settings, credentials included).
  *   Settings changed while the job runs do not reach it;
  * - the live overlay: the job's chat and the characters, which `refreshChat` and `refreshCharacter`
  *   read again after the job's own writes and after a callback that may have written. After the

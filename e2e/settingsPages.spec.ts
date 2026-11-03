@@ -4,7 +4,7 @@ import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 // Every settings page still loads and saves through the facade: the settings records are the source
 // of truth and the settings views (`settingsViews.svelte.ts`) read and write them, so every
 // settings page reads and binds through record wrappers. Each page (and, in the legacy GUI, every
-// accordion it holds) mounts without a page error and without writing anything; an edit made
+// accordion it holds) mounts without a page error (a first visit may still save defaults); an edit made
 // through the page's own controls (a section field bound with `bind:checked`, a nested section
 // field bound with `bind:value`) is saved and survives a reload. The supporter page (77) is left
 // out: it fetches from public services, which this context refuses.

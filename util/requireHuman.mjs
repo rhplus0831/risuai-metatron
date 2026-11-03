@@ -16,7 +16,7 @@ export function humanGateMessage(command) {
     return [
         `[tests] ${command} is for people and CI, not for agents: none of CI, HUMAN, or AGENT_TEST is set.`,
         "  Agents: run `pnpm --silent test:agent` (failures only, cached per working tree; `--all`, `--tags-filter=slow`,",
-        "          `--force`, `--verbose`, and file filters are accepted; see docs/structure/build-test-platforms.md).",
+        "          `--force`, `--verbose`, and file filters are accepted; see docs/structure/test-harness.md).",
         "  People: set HUMAN=1, for example `export HUMAN=1` in your shell profile or `HUMAN=1 pnpm test`.",
         "",
     ].join("\n");

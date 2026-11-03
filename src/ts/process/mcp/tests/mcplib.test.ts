@@ -10,8 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // missing, empty, or non-string token, or for an answer without a usable access token); and
 // retirement (`destroy()`: no request, refresh, discovery, or stream reader started afterwards,
 // late answers refused, a cached list refused) against the session reset after a 401 that keeps the
-// client usable. Not asserted: the cleanup of a stream that ends without its answer (a recorded
-// hazard, `plugins-mcp.md`). The framer alone: `server/src/tests/mcpSse.test.ts`.
+// client usable. Not asserted here: a stream that ends without its answer (JSON-RPC error -32000,
+// `plugins-mcp.md`; `mcplibStreams.test.ts` covers it). The framer alone: `server/src/tests/mcpSse.test.ts`.
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: any };
 type Reply = {

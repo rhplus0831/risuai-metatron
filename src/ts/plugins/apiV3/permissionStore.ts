@@ -10,7 +10,8 @@ import { getResource, putResource, ResourceConflictError } from "../../storage/r
 /**
  * v3 plugin permission grants, kept in the server-owned `pluginPermissions` resource. The record is
  * outside the settings records, so no plugin database API, snapshot, or `pluginCustomStorage` write reaches
- * it; only the host's consent flow calls `recordPermissionGrants`. Grants are append-only.
+ * it; only the host's consent flow and the legacy browser-permission import (`browserLocalImport.ts`) call
+ * `recordPermissionGrants`. Grants are append-only.
  */
 
 type Loaded = { revision: string | null; data: PluginPermissionGrants };

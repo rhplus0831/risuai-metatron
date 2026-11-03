@@ -107,7 +107,7 @@ let characterChatView: CharacterChatView | null = null;
 
 /**
  * Registers the facade view of a character's chats (`chatStore.svelte.ts`): what a character element
- * wrapper answers for `chats` and `chatPage` until `aggregate-removal`. Not an own key of the wrapper,
+ * wrapper answers for `chats` and `chatPage`. Not an own key of the wrapper,
  * so snapshots, spreads, and the save projection are chat-free; writing either is refused.
  */
 export function setCharacterChatView(view: CharacterChatView | null) {

@@ -13,8 +13,7 @@ import { createNodeCbsEvaluator } from "./cbsHost.ts";
 /**
  * The shared regex engine under plain Node: the script loop as `processScriptFull`
  * ran it on the client (flags, `<order n>` and the other `<...>` actions, the `@@` directives, the
- * skipped scripts), the effects applied where their script matched, and the cache helpers. The
- * client wrapper around it is covered by `src/ts/process/scripts.test.ts`.
+ * skipped scripts), the effects applied where their script matched, and the cache helpers.
  */
 const script = (fields: Partial<customscript>): customscript => ({
     comment: "",

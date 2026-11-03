@@ -6,7 +6,7 @@ import { characterList } from "../storage/characterStore.svelte";
 import { addRerolls } from "./prereroll";
 import { runServerJob, type ServerCommandOutcome } from "./serverCommands";
 
-/** What a send asks of the server (`sendChat`'s argument as the flag branch reads it). */
+/** What a send asks of the server (`sendChat`'s argument). */
 export type ServerSendArg = {
     target?: ChatRef;
     signal?: AbortSignal;
@@ -14,7 +14,7 @@ export type ServerSendArg = {
     continueMessageId?: string;
     preview?: boolean;
     previewPrompt?: boolean;
-    /** The chat input the job's input stage appends (`sendMain` behind the flag), with its message id. */
+    /** The chat input the job's input stage appends (from `sendMain`), with its message id. */
     input?: string;
     userMessageId?: string;
     /** This action's request id, reused only while its previous attempt remains uncertain. */
@@ -58,7 +58,7 @@ export type ServerSendResult = {
  * record and its revision unchanged. A preview's `done.result` is returned (for
  * `previewChat`); a reply's reroll alternatives go to `addRerolls` under the
  * reply's generation (a continue keeps none, as its alternatives are never looked up on the client
- * either). `ok` is the browser path's result: the job ended with `done` and counted as sent (not
+ * either). `ok` says the job ended with `done` and counted as sent (not
  * `stopped`). `refusal` says why a send did not run. The target chat needs to be listed, not
  * loaded: `runServerJob` loads it, and it stays pinned until the reply's alternatives are read
  * here.

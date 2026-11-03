@@ -1222,7 +1222,7 @@ export function withChatsCopy<T extends { chaId: string; lastInteraction?: unkno
 }
 
 /**
- * A character in the legacy shape the shared CBS evaluator reads (until `aggregate-removal`): a live
+ * A character in the legacy shape the shared CBS evaluator reads: a live
  * record already answers `chats`/`chatPage` (the facade view), any other object with a `chaId` gets
  * a shallow copy carrying the same view: its loaded chats (read-only by contract) and the selected
  * chat's index among them (`compatChatPage`). The shared readers find a chat by its ref's id or as

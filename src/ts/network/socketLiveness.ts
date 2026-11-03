@@ -5,7 +5,7 @@
  * with no frame for three heartbeats is taken as dead, and a page that comes back replaces its
  * sockets instead of waiting for them.
  *
- * Stamps read `livenessClock.now()` (tests replace it); the timers are plain `setTimeout` and
+ * Stamps read `livenessClock.now()`; the timers are plain `setTimeout` and
  * `setInterval`.
  */
 

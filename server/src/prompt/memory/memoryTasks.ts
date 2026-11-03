@@ -221,7 +221,7 @@ const statusKind = (input: AnyMemoryTaskInput) =>
     input.kind === "structuredMemory" ? { kind: "structuredMemory" as const } : {};
 
 /**
- * The detached memory task service: a job hands it its chat's memory input after `done`, and a task
+ * The detached memory task service: a job hands it its chat's memory input right before `done`, and a task
  * works from the input's kind. A HypaV3 task writes the summaries the input's lookahead plan needs,
  * one per commit. A Structured Memory task runs the writer over the windows that the chat as stored
  * and its stored coverage leave open, so a restart that loses the queue loses nothing: the next send

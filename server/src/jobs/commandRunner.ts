@@ -30,8 +30,8 @@ export type { GenerationRunnerDeps } from "./runSetup.ts";
 /**
  * The server's generation runner: `command` jobs run here (Lua buttons, forms, and manual triggers),
  * but for a start of the memory writer (`recordJob.ts`), a test run of it (`testRun.ts`), or a chat's
- * rebuild (`rebuild.ts`); every other kind is a send, a continue, or a preview
- * (`src/server/prompt/runner.ts`).
+ * rebuild (`rebuild.ts`); every other kind (a send, a continue, a reroll, a group chat's send, or a
+ * preview) is a prompt job (`prompt/runner.ts` `runPromptJob`).
  */
 export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRunner {
     return async (job) => {

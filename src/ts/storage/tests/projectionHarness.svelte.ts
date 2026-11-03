@@ -531,7 +531,7 @@ async function cycle(): Promise<FlushReport> {
 //   leaf value refuses the whole write;
 // - `OaiCompAPIKeys.<id>` (and a whole `OaiCompAPIKeys` map, entry by entry): as a flat credential;
 // - the entry maps (`presets`, `customModels`) are not in the mirror record: a write of them is
-//   refused; a preset's key goes through the facade's `proxyKey` (`forwarding.svelte.ts`);
+//   refused; a preset's key goes through the facade's `proxyKey`;
 //   `customModels.<id>.key` is not modeled;
 // - `delete` of any credential path (a flat field, a leaf, a container holding a leaf, the map or
 //   one of its entries) is refused: use `clearSecret`.

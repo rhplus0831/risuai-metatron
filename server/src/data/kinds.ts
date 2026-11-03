@@ -34,9 +34,10 @@ import { ResourceValidationError } from "./resourceStore.ts";
 
 /**
  * A resource kind: its name, the schema version stored with each record, and a pure normalizer that
- * runs on every write and in the store's startup pass. `normalize` returns the value to persist, or
+ * runs on every write and in the store's normalization pass. `normalize` returns the value to persist, or
  * throws `ResourceValidationError` to reject the write with a 400; it must be idempotent (normalizing
- * its own output returns the same JSON), or the startup pass rewrites the record on every start. A
+ * its own output returns the same JSON), or each run of the normalization pass (an open whose
+ * normalization stamp differs) rewrites the record. A
  * singleton kind has exactly one record, `SINGLETON_RESOURCE_ID`, which cannot be deleted. A
  * `materialize` kind is a singleton the store creates as `normalize(undefined)` whenever it is missing
  * (at startup and after a restore), so a client always finds it.

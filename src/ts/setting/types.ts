@@ -169,7 +169,7 @@ export interface SettingItem {
     /** Type-specific options */
     options?: SettingOptions;
 
-    /** Search keywords for future search feature */
+    /** Extra words the settings search matches for this item */
     keywords?: string[];
 
     /** Custom CSS classes for the main container or label */

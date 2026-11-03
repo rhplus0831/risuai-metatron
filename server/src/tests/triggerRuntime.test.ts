@@ -24,7 +24,7 @@ import type { HostContext } from "../scripts/workerPool.ts";
 // The server trigger runtime (`server/src/prompt/triggers.ts`), the port of the client's
 // `runTrigger`, over controlled job services, the real regex engine (`runRegexOp`, which the worker
 // runs), and the real command executor for the `/trigger` route. Expected values are derived from
-// the client's effect switch (`src/ts/process/triggers.ts`), not from the port: variables and their
+// the client's effect switch (the former `src/ts/process/triggers.ts`), not from the port: variables and their
 // precedence, the immediate `scriptstate`/note writes (none in display runs), control flow, the
 // manual-name and mode filters, the allowlists and the bare returns, the array, dictionary, string,
 // and calculator effects with the client's fallback values, the evaluation order of an output name
@@ -1008,7 +1008,10 @@ describe("the regex sites", () => {
     });
 
     describe("v2ReplaceString", () => {
-        /** The client's replacer (`src/ts/process/triggers.ts` `v2ReplaceString`), the oracle for the worker-based port. */
+        /**
+         * The client's replacer (`v2ReplaceString` of the former `src/ts/process/triggers.ts`), the oracle for the
+         * worker-based port.
+         */
         const clientReplace = (
             source: string,
             pattern: string,

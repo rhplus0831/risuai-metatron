@@ -1396,7 +1396,7 @@ function clientCbsHost(): CbsHost {
         getTriggerId: () => get(CurrentTriggerIdStore),
         getViewport: () => ({ width: window.innerWidth, height: window.innerHeight }),
         getBrowserLanguage: () => navigator.language,
-        // The shared evaluator reads the legacy shape (its chats) until `aggregate-removal`.
+        // The shared evaluator reads the legacy shape (a character carrying its chats).
         findCharacterById: (id) => withCompatChats(findCharacterbyId(id)) as character,
     };
 }

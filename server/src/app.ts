@@ -335,10 +335,10 @@ export function createServerContext(options: {
             diagnostics.record({ kind: "lifecycle", phase: "maintenanceEnd", replaced: resources.epoch() !== epoch });
     });
     const maxImportBytes = options.maxImportBytes ?? parseMaxImportBytes(process.env.RISU_MAX_IMPORT_BYTES);
-    // The server translations' maintenance listener is the first one (the runner is built below; a
-    // maintenance runs only once the context exists): admission closes and every run ends (503)
-    // before the jobs' listener waits for their end, and before the request layer's pause fails a
-    // run's request.
+    // The server translations' maintenance listener comes right after the diagnostics one (the
+    // runner is built below; a maintenance runs only once the context exists): admission closes and
+    // every run ends (503) before the jobs' listener waits for their end, and before the request
+    // layer's pause fails a run's request.
     snapshots.onMaintenance(async () => {
         translationRunner.pause("The server data is being replaced");
         return () => translationRunner.resume();

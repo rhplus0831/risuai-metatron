@@ -1,5 +1,5 @@
 /**
- * Safe boot (`app-shell.md` Boot): plugins, or custom CSS and GUI HTML, off for this page load.
+ * Safe boot (`app-shell.md` "Safe boot"): plugins, or custom CSS and GUI HTML, off for this page load.
  * Asked for with `?safe` (`?safe=all`, `?safe=plugins`, `?safe=css`, or a list), or entered by
  * itself after `SAFE_BOOT_THRESHOLD` consecutive boots that did not settle. Nothing is written to
  * the server and no persisted field changes: the state lives in this module for the page load, plus

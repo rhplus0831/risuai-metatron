@@ -366,9 +366,9 @@ the order.
   (`normalize(project(assemble(normalized))) === normalized`); otherwise every boot writes it. So the client applies no
   default to those fields, and boot code must not rewrite them.
 - Character defaults live in `normalizeCharacter` (`shared/characters.ts`). The server applies it on every write and in
-  its startup pass; the client when a character enters (`prepareNewCharacter`, with the creation steps), to a whole
-  replacement (`replaceCharacterFields`), and raw before a save whose projection lacks a default (`canonicalCharacter`,
-  no mark), so the text sent is the server's normalized text.
+  its normalization pass; the client when a character enters (`prepareNewCharacter`, with the creation steps), to a
+  whole replacement (`replaceCharacterFields`), and raw before a save whose projection lacks a default
+  (`canonicalCharacter`, no mark), so the text sent is the server's normalized text.
 - No default is applied at boot or on selection. Neither selection nor an ordinary send writes `lastInteraction` or
   moves the character revision, except the `supaMemory` turn-on.
 - Every write of a character's own fields is saved, whichever character is selected. Membership changes only through

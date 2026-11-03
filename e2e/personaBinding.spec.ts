@@ -247,9 +247,9 @@ test("two clients keep their own persona selection across reloads while the pers
     expect(viewA.selected).toBe(u2);
     expect(viewA.personaPrompt).toBe("Two, edited in A.");
 
-    // A plugin's `setDatabase({ selectedPersona })` is an index into the list, which the plugin host
-    // resolves to the persona's id (`selectPersona`); it selects on this client only, and it survives
-    // a reload here while B is untouched.
+    // `selectPersona`, where the plugin host resolves a plugin's `setDatabase({ selectedPersona })`
+    // index (called directly here, not through a plugin): it selects on this client only, and it
+    // survives a reload here while B is untouched.
     await pageA.evaluate(async () => {
         const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
         const { selectPersona } = await import("/src/ts/storage/selection.svelte.ts");

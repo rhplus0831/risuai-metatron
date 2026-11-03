@@ -38,7 +38,7 @@ import { settings } from "./settingsViews.svelte";
 export { selectCharacter };
 
 /**
- * The character mutations: the external contracts (plugins, MCP, Lua, triggers, imports)
+ * The character mutations: the external contracts (plugins, MCP, imports)
  * write characters only through these functions. Each validates its whole input and prepares a
  * detached copy before the mirror changes (a refusal throws `MutationValidationError` and changes
  * nothing) and writes the character record by `chaId`. The characters are write-through

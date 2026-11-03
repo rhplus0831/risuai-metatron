@@ -1086,9 +1086,8 @@ describe("a request's row (over the request layer)", () => {
         });
         expect(JSON.parse(exchange.body)).toMatchObject({ model: "mock-model", stream: true });
         expect(JSON.parse(exchange.header)).toMatchObject({ Authorization: "[redacted]" });
-        // One fetch, one exchange: the adapter's post-fetch `addLog({ response: "Streaming" })`
-        // placeholder (`openAI/requests.ts`) must not be a second one beside the teed body, as the
-        // Gemini one was removed.
+        // One fetch, one exchange: the teed body is the call's only response, with no post-fetch
+        // "Streaming" placeholder beside it.
         expect(row.exchanges!.map((e) => e.response)).toEqual([sseText(frames)]);
         expect(row.exchangeCount).toBe(1);
         expect(row.requestBytes).toBe(utf8(calls[0].body));
