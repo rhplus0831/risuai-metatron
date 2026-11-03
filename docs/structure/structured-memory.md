@@ -12,7 +12,7 @@
   panel parts: [the read path guide](structured-memory-read.md)).
 - The Memory settings page selects it, ahead of the flags. Production has its [writer](structured-memory-writer.md), and
   `assemblePrompt` runs [the read path](structured-memory-read.md). The page exposes only the preset fields something
-  reads. Its design and remaining work are in [Active Plans](../plan/README.md).
+  reads. Its design and remaining work are in [the archive](../archived-plan/README.md).
 - Not here:
   - The writer's settings, windows, task kind, runs, analysis prompt, admission, and record now →
     [structured memory writer](structured-memory-writer.md).

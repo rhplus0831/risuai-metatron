@@ -108,6 +108,7 @@ it is not a current architecture guide.
 | Per-Event Server Work                    | `aff71b423`: `docs/plan/per-event-server-work.md`                         | [persistence](../structure/persistence.md), [server](../structure/server-generation.md), [chat pipeline](../structure/chat-pipeline.md)                                                                                                                                                                                                                                                                                                                                                      |
 | Server Byte Budgets                      | `0009c22f3`: `docs/plan/server-byte-budgets.md`                           | [server](../structure/self-host-server.md), [persistence](../structure/persistence.md), [diagnostics](../structure/diagnostics.md), [backup sync hub](../structure/backup-sync-hub.md), [build/test platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                                                         |
 | Guide Budgets                            | `9a1bf0afe`: `docs/plan/guide-budgets.md`                                 | [STRUCTURE](../../STRUCTURE.md), [build/test platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                                                                                                                                                |
+| Structured Memory                        | `0cd49a3d3`: `docs/plan/structured-memory.md`                             | [structured memory](../structure/structured-memory.md), [writer](../structure/structured-memory-writer.md), [read path](../structure/structured-memory-read.md), [lifecycle](../structure/structured-memory-lifecycle.md), [rebuild](../structure/structured-memory-rebuild.md), [pages](../structure/structured-memory-pages.md)                                                                                                                                                            |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1015,6 +1016,20 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     a second reader pass over the smallest guides for the prose rules.
   - Found by the run: 33 entries in `docs/research/found-issues.md`, under Client and plugins,
     Build, drivers, and e2e, and Guides, among others.
+- Structured Memory:
+  - All 31 slices landed on 2026-11-02 and 2026-11-03 (plan-runner); `dev` moved to `0cd49a3d3`.
+    Owner decisions made during the run are dated in the archived plan's slice text: a stopped
+    rebuild keeps generation locked, a patch may replace a corrected section, custom prompts must
+    quote their required slots, import goes only into an empty chat, and screening reaches the
+    writer only.
+  - Q2 (replace HypaV3 by default) stays open until a real-model A/B from the recipe in
+    `docs/audit/structured-memory-2026-11-03.md`; `MEMORY_CALL_OVERHEAD_TOKENS` 3,000 waits on
+    the same check.
+  - Untested: 69 device, browser, and real-model checks listed per slice in the run's final
+    report, among them Firefox and Safari, Android PWA, a real V3 plugin, and real provider costs.
+  - Rollback cost: an older build refuses a snapshot with the `memory_state` column, reads a
+    trashed page as live, and refuses a chat file holding `merge` or `split` history entries.
+  - Found by the run: 17 entries under Structured Memory in `docs/research/found-issues.md`.
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.

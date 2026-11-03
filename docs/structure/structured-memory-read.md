@@ -9,7 +9,7 @@
   `src/lib/ChatScreens/MemoryReceiptLine.svelte`, `src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`, and the
   receipt and panel parts of `src/ts/process/structuredMemory.svelte.ts`.
 - See [structured memory](structured-memory.md) for the records the read path reads and how the algorithm is selected,
-  and [Active Plans](../plan/README.md) for the design and remaining work.
+  and [the archive](../archived-plan/README.md) for the design and remaining work.
 - Not here:
   - Record shapes and limits, the tables and store, read routes, the Markdown package, and the HypaV3 projection →
     [structured memory](structured-memory.md).

@@ -8,8 +8,8 @@
   (`rebuildWork`, `commitOfRebuild`, `swapRebuild`, `noteRebuildStop`), the `rebuild` surface of
   `server/src/data/memoryStore.ts`, and the controls in `src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte`
   and `memoryRecordPress.ts`.
-- See [structured memory](structured-memory.md) for records and a memory write, and [Active Plans](../plan/README.md)
-  for the design and remaining work.
+- See [structured memory](structured-memory.md) for records and a memory write, and
+  [the archive](../archived-plan/README.md) for the design and remaining work.
 - Not here:
   - The writer's windows, runs, admission, and pages → [structured memory writer](structured-memory-writer.md).
   - The memory task service's queue, retention, and ends → [memory](memory.md#background-memory-task).

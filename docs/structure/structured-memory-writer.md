@@ -9,8 +9,8 @@
   `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob,testRun}.ts`, the
   writer's task kind in `server/src/prompt/memory/memoryTasks.ts`, and `structuredMemoryStep` in
   `server/src/prompt/assemble.ts`.
-- See [structured memory](structured-memory.md) for how the algorithm is selected, and [Active Plans](../plan/README.md)
-  for the design and remaining work.
+- See [structured memory](structured-memory.md) for how the algorithm is selected, and
+  [the archive](../archived-plan/README.md) for the design and remaining work.
 - Not here:
   - Record shapes and limits, the tables and store, read routes, the Markdown package, and the HypaV3 projection →
     [structured memory](structured-memory.md).

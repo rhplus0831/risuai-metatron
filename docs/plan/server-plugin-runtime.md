@@ -376,9 +376,8 @@ plugins; the handler set's version includes the server registrations), `src/ts/p
 worktree (no shared file). Slice 4 is the first user-visible change; before it, nothing a tab or a plugin
 sees differs except `getRuntimeInfo().runtime` and the plugin page's header reading.
 
-Overlap with the active plan: [Structured Memory](structured-memory.md) is not sliced yet and names none
-of these files; `server/src/jobs/runSetup.ts` and `server/src/prompt/runner.ts` would be shared if its job
-step lands first, so serialize real edits there.
+Structured Memory, which overlapped this plan, landed on 2026-11-03 ([the archive](../archived-plan/README.md)); its
+memory jobs also pass through `server/src/prompt/runner.ts`, so re-read that file before slicing.
 
 ## Verification
 
