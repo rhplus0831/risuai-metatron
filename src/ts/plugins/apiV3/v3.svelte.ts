@@ -660,7 +660,7 @@ const unloadV3Plugin = async (pluginName: string) => {
     notifyPluginWork();
 };
 
-// Plugin work (`plugins-mcp.md`): a reload after a remote plugin change waits
+// Plugin work (`plugin-sandbox.md`): a reload after a remote plugin change waits
 // until `pluginWorkIdle`, and listeners of `onPluginWorkChange` hear whenever it may have become true.
 const pluginWorkListeners = new Set<() => void>();
 // Host-side hook invocations still running (a wrapped hook, a provider awaiting its permission prompt).

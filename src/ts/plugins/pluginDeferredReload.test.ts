@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// The reload after a remote `plugins` change (`plugins-mcp.md` Deferred reload): `loadPlugins`
+// The reload after a remote `plugins` change (`plugin-sandbox.md` Deferred reload): `loadPlugins`
 // registers the remote listener once; a change to the load signature of the enabled 3.0 plugins
 // requests one reload, which waits until `pluginWorkIdle` (running work is never interrupted),
 // checks idleness again on the `pluginReload` chain, loads the newest list, and skips a

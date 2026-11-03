@@ -58,7 +58,7 @@ function onChannel(work: (channel: typeof import("./jobChannel")) => void) {
 }
 
 /*
- * Plugin work of this tab's jobs (`plugins-mcp.md`): a job calls the hooks it listed at its
+ * Plugin work of this tab's jobs (`plugin-sandbox.md`): a job calls the hooks it listed at its
  * creation until it ends, so a plugin reload waits while any of these is held. A job is held from
  * before its hooks are listed (`createGenerationJob`) or from its follow (`followGenerationJob`),
  * and while it is saved for this tab (a reload resumes it), until `releaseGenerationJob`; a busy

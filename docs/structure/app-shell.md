@@ -160,7 +160,7 @@ boot turns them off for one page load, client only: nothing is written to the se
   as none). `markSafeBootContentStage` reads it and writes `count + 1` just before the theme, so a boot that fails
   earlier (an unreachable server, the service worker's reload) does not count.
 - Failure latch: a rejected boot plugin load, the `loadData` catch, or a plugin this boot started whose script threw or
-  did not run (`SandboxHost.startup` is `failed`, [plugins](plugins-mcp.md)) fails the attempt; nothing clears it in
+  did not run (`SandboxHost.startup` is `failed`, [plugins](plugin-sandbox.md)) fails the attempt; nothing clears it in
   this page load.
 - A guest unloaded before it reported (a toggle, a reload) follows its replacement after the `pluginReload` chain
   finishes, repeatedly until it reports or the settle window ends. No replacement counts as started only when that name
@@ -174,8 +174,8 @@ boot turns them off for one page load, client only: nothing is written to the se
   user content and did not settle (killed, failed, or reloaded within the window) make the third safe; a safe boot that
   settles clears the record, so the next reload is normal.
 - Effects, this page load only: `plugins` off → `loadPlugins` loads nothing and registers no remote listener, so the
-  deferred plugin reload never runs and the plugin settings save without loading ([plugins](plugins-mcp.md)); `css` off
-  → `SafeModeStore` set before `updateTextThemeAndCSS` (custom CSS empty) and `Chat.svelte` renders the classic row
+  deferred plugin reload never runs and the plugin settings save without loading ([plugins](plugin-sandbox.md)); `css`
+  off → `SafeModeStore` set before `updateTextThemeAndCSS` (custom CSS empty) and `Chat.svelte` renders the classic row
   instead of the `customHTML` theme's GUI HTML while it is set. The `toggleCSS` hotkey still flips `SafeModeStore` both
   ways.
 - Notice: one `alertNormal` dialog (the alert queue) at the content stage when anything is off, naming what is off, why

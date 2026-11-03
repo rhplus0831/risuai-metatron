@@ -1282,7 +1282,7 @@ describe("sendChat admission", () => {
 });
 
 describe("unload and reload", () => {
-    /** `loadV3Plugins` can skip every other running instance (recorded in `plugins-mcp.md`); repeat until ours is gone. */
+    /** `loadV3Plugins` can skip every other running instance (recorded in `plugin-sandbox.md`); repeat until ours is gone. */
     async function reload(plugin: any) {
         for (let attempt = 0; attempt < 10 && getV3PluginInstance(plugin.name); attempt += 1) {
             await loadV3Plugins([]);

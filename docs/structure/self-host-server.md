@@ -314,8 +314,8 @@ midway.
 - `/hub-proxy/*` targets the configured Realm hub only and does not forward `risu-auth`.
 - Server local-network streaming runs as a generation job over WebSocket. Its target must pass the server's
   local-network URL policy; job deletion, deadline, garbage collection, shutdown, or client disconnect aborts the
-  upstream stream. See [LLM requests](llm-requests.md) for request dispatch and [plugins and MCP](plugins-mcp.md) for
-  plugin providers.
+  upstream stream. See [LLM requests](llm-requests.md) for request dispatch and [plugins](plugin-sandbox.md) for plugin
+  providers.
 
 ## State
 

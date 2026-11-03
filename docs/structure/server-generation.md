@@ -415,8 +415,8 @@ status carried by a failed WebLLM request.
 - [Self-host server](self-host-server.md): [Routes](self-host-server.md#routes),
   [Rate limits](self-host-server.md#rate-limits), and [Proxying](self-host-server.md#proxying) for the local-network URL
   and abort policy of a streaming job.
-- [Scripts and triggers](scripts-triggers.md): Lua worker gates and trigger effects; [plugins and MCP](plugins-mcp.md):
-  the server MCP registry and plugin providers.
+- [Scripts and triggers](scripts-triggers.md): Lua worker gates and trigger effects; [MCP](mcp.md): the MCP registry;
+  [plugins](plugin-sandbox.md): plugin providers.
 
 ## Invariants
 
@@ -452,7 +452,7 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 
 Runtime limits of other subsystems live with their owners: [chat-pipeline](chat-pipeline.md),
 [LLM requests](llm-requests.md), [memory](memory.md) (the vector cache included),
-[scripts and triggers](scripts-triggers.md), [plugins and MCP](plugins-mcp.md), and [CBS/rendering](cbs-rendering.md).
+[scripts and triggers](scripts-triggers.md), [plugins](plugin-sandbox.md), and [CBS/rendering](cbs-rendering.md).
 
 ### Issues
 

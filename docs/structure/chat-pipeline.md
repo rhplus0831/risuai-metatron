@@ -23,7 +23,7 @@
   - Token counting (`shared/tokenizerChoice.ts`, `shared/prompt/{chatTokens,imageTokens}.ts`, `src/ts/tokenizer.ts`,
     `src/ts/tokenCountField.ts`) → `llm-requests.md`.
   - Message-search panel presentation → `ui-theming.md`; endpoint implementation details → `server-resources.md`.
-  - PDF conversion used by MCP filesystem tools → `plugins-mcp.md`.
+  - PDF conversion used by MCP filesystem tools → `mcp.md`.
   - Regex and trigger internals → `scripts-triggers.md`.
   - Rendering → `cbs-rendering.md`.
   - TTS and image generation → `media-aux.md`.
@@ -492,7 +492,7 @@ In `shared/lore/activation.ts`.
   stays until a click looks the chat up. It only shows the extra Stop and never blocks Send.
 - `editChat`/`editChatSync` (`src/ts/storage/chatEdits.ts`) capture the baseline before their edit works on its copy, so
   they keep another writer's change to a field the edit left alone; where both changed one field, the edit's value wins.
-  A plugin's whole-chat setter captures its baseline only at the call ([plugins and MCP](plugins-mcp.md)).
+  A plugin's whole-chat setter captures its baseline only at the call ([plugins](plugin-sandbox.md)).
 - `DevTool.svelte`'s autopilot sends each line as a job in the chat selected when it started; a group's speakers are
   chosen by the server.
 - Group prompt assembly names a speaker it cannot resolve (`host.findCharacter`) `Unknown Character` in the group

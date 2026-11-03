@@ -18,7 +18,7 @@
   - `src/ts/3d/*` (unused)
   - `src/lib/UI/3DLoader.svelte` (unused)
   - `src/lib/Playground/*`, except `PlaygroundMenu` (→ `ui-theming.md`), `PlaygroundEmbedding` (→ `memory.md`),
-    `PlaygroundMCP` (→ `plugins-mcp.md`), and `PlaygroundRegex`/`Syntax`/`Parser` (→ `scripts-triggers.md`)
+    `PlaygroundMCP` (→ `mcp.md`), and `PlaygroundRegex`/`Syntax`/`Parser` (→ `scripts-triggers.md`)
   - `src/lib/Setting/Pages/Translation/TranslatorPresetSettings.svelte`
   - `src/lib/Setting/Pages/Model/AuxModelSelectors.svelte`
 - Not here:

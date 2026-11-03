@@ -120,7 +120,7 @@ before the mirror changes (a refusal throws `MutationValidationError` and change
   the record and its key entry; every binding naming it stays and refuses its requests.
 - `copyModelProfile` copies the binding, never a key; `deleteModelProfile` never removes the last one, and slots naming
   it stay dangling and refuse their requests. These writes queue each record once per call (`batchRecordWrites`).
-- `pluginStorageStore.svelte.ts`: the only runtime writer of `pluginCustomStorage` ([plugins](plugins-mcp.md)); each
+- `pluginStorageStore.svelte.ts`: the only runtime writer of `pluginCustomStorage` ([plugins](plugin-sandbox.md)); each
   writer is one `batchRecordWrites` scope. A read never creates the record.
 - `shared/mutationValidation.ts` (the server's RisuAccess host uses it too): `requireJsonData` takes JSON up to 256
   levels, no class instances, cycles, or non-finite numbers; `writeEntries` makes an inherited-name key such as

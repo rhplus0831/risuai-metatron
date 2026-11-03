@@ -309,8 +309,8 @@ the barrier, request state, the root lane, and each hook's call context. A new c
   every 50 ms (`PROVIDER_CHUNK_INTERVAL_MS`) and at the end, before the answer `{ success: true, streamed: true }`. A
   failed stream is read whole into the answer. Either reader is cancelled when the callback ends first.
 - `mcpList` and `mcpTool` answer for an MCP that lives in the tab: a `plugin:` MCP as it is registered now, or
-  `internal:fs`/`internal:googlesearch` through `readyTabClient` (`plugins-mcp.md`; the handshake may show a directory
-  picker or a credential prompt). A client's throw is a `hook` failure.
+  `internal:fs`/`internal:googlesearch` through `readyTabClient` (`mcp.md`; the handshake may show a directory picker or
+  a credential prompt). A client's throw is a `hook` failure.
 - A duplicate or same-page `replay` resends the cached answer and never runs twice; a `replay` the page has no state
   for, as after a reload, is refused (`failed`/`protocol`).
 - A cancelled callback that settled, or one whose answer crossed the cancel, is reported drained
@@ -425,7 +425,7 @@ Alerts:
   `loadAssetsInBatches` → `loadAssets` → `readAssets` ([Asset client](#asset-client)).
 - Job client and channel: `shared/jobs.ts` is the message contract. The server job, the channel, and call dispatch
   (`server/src/jobs/channel.ts`) are in [server generation](server-generation.md#generation-channels); plugin hooks and
-  the API a plugin sees are in [plugins and MCP](plugins-mcp.md).
+  the API a plugin sees are in [plugins](plugin-sandbox.md).
 
 ## Invariants
 

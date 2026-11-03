@@ -163,7 +163,8 @@ completed plans and retrieval commands.
 | Model catalogues/profiles/slots, credentials, adapters, streaming, token counts                      | [llm-requests](docs/structure/llm-requests.md)                   |
 | CBS, markdown/sanitization, chat variables, partial edit, highlighting                               | [cbs-rendering](docs/structure/cbs-rendering.md)                 |
 | Regex, triggers v2, Lua editors/shared engines                                                       | [scripts-triggers](docs/structure/scripts-triggers.md)           |
-| Plugin v3 sandbox/providers/hooks, MCP                                                               | [plugins-mcp](docs/structure/plugins-mcp.md)                     |
+| Plugin v3 sandbox, host API, hooks, providers, plugin storage, permissions, plugin reload            | [plugin-sandbox](docs/structure/plugin-sandbox.md)               |
+| MCP client registry, remote and internal clients, RisuAccess, tool dispatch                          | [mcp](docs/structure/mcp.md)                                     |
 | Cards/characters/groups, modules, personas, lore editor                                              | [characters-modules](docs/structure/characters-modules.md)       |
 | Chat/sidebar UI, GUI primitives, portals, theme                                                      | [ui-theming](docs/structure/ui-theming.md)                       |
 | Settings registry/pages, preset editing/pickers, prompt editor, i18n                                 | [settings-i18n](docs/structure/settings-i18n.md)                 |
@@ -226,10 +227,11 @@ coupling links.
   `server/src/diagnostics/`, `server/src/routes/{requestHistory,diagnostics}.ts`, `src/ts/diagnostics/`,
   `src/ts/network/requestHistory.ts`, `src/lib/Others/RequestLogs/`,
   `src/lib/Setting/Pages/Advanced/DiagnosticsPanel.svelte`.
-- **plugins-mcp**: `src/ts/process/mcp/`, `server/src/mcp/`, `shared/mcp/`, `src/ts/process/dynamicutils/pdf.ts`,
-  `shared/plugins.ts`, `src/ts/storage/pluginStorageStore.svelte.ts`, `src/ts/plugins/`, `plugins.md`,
-  `src/lib/Setting/Pages/PluginSettings.svelte`, `src/lib/Others/Plugin*.svelte`,
-  `src/lib/Playground/PlaygroundMCP.svelte`, `public/plugin_start.7z`.
+- **plugin-sandbox**: `shared/plugins.ts`, `src/ts/storage/pluginStorageStore.svelte.ts`, `src/ts/plugins/`,
+  `plugins.md`, `src/lib/Setting/Pages/PluginSettings.svelte`, `src/lib/Others/Plugin*.svelte`,
+  `public/plugin_start.7z`.
+- **mcp**: `src/ts/process/mcp/`, `server/src/mcp/`, `shared/mcp/`, `src/ts/process/dynamicutils/pdf.ts`,
+  `src/lib/Playground/PlaygroundMCP.svelte`.
 - **characters-modules**: `src/ts/process/{processzip,modules}.ts`, `shared/{charxImport,moduleImport,rpack}.ts`,
   `src/ts/{characterCards,characters,persona,pngChunk,interchangeability,assetList}.ts`,
   `src/lib/SideBars/CharConfig.svelte`, `src/lib/SideBars/LoreBook/`, `src/lib/Setting/Pages/Module/`,

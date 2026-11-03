@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type GenerationHooks, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 
-// The jobs' plugin-work lease (`plugins-mcp.md` Deferred reload): a reload after a remote plugin
+// The jobs' plugin-work lease (`plugin-sandbox.md` Deferred reload): a reload after a remote plugin
 // change waits while `generationPluginWorkActive()` and hears each change through
 // `onGenerationPluginWork`. A job is held from its creation request (before the hooks are listed)
 // or its follow until `releaseGenerationJob`; a saved job counts; each busy attempt holds its own

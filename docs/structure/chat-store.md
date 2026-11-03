@@ -251,7 +251,7 @@
 - `replaceChat` applies only what a diff cannot express (reordered survivors, on an unchanged chat with no generation;
   else the order change drops with a warning). Message patches are checked before the mirror changes: an invalid one (an
   unset `data`, a role neither `user` nor `char`) refuses the whole result. `reconcileCharacterChats` takes a plugin's
-  whole list ([plugins](plugins-mcp.md)).
+  whole list ([plugins](plugin-sandbox.md)).
 - A structured chat's `hypaV3Data` is a read's projection, which the mirror holds and no send carries (`sendChat`,
   `keepsHeldHypaV3Data`). A plugin read's refresh replaces it with no write (`installChatProjection`):
   [the rules](structured-memory/projection.md#the-hypav3-projection).

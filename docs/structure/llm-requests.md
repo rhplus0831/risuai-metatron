@@ -31,7 +31,7 @@
   - The `credentials` collection, `llmSecrets.credentials` → `persistence.md` (the write-only record:
     `server-resources.md`); [save path](resource-sync.md#credential-writes).
   - Transport (`globalFetch`/`fetchNative`) → `global-api.md`.
-  - MCP tool definitions → `plugins-mcp.md`.
+  - MCP tool definitions → `mcp.md`.
   - Prompt assembly → `chat-pipeline.md`.
 
 ## Files
@@ -133,7 +133,7 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   captures the chat/preset/persona and tokenizer scope before awaiting the resource flush, then posts serializable
   request args and tool descriptors. It consumes result and stream events, handles log/inlay/tool records, and answers
   MCP/CBS callbacks; cancelling the response aborts the request, and a stream without a terminal is an error. Only a
-  plugin callback carries its `channelCall` parentage (see [plugins](plugins-mcp.md)).
+  plugin callback carries its `channelCall` parentage (see [plugins](plugin-sandbox.md)).
 - The provider adapters exist only on the server (`server/src/llm/`); the tab has no copy. `process/stringlize.ts`
   `unstringlizeChat` serves the tab's plugin provider path.
 - `request/shared.ts` `applyParameters`: the preset's parameters, for every mode. A preset's stored `seperateParameters`

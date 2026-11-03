@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { warmModules } from "src/ts/storage/tests/mutationStoresHarness";
 
-// Safe boot's plugin side (`plugins-mcp.md`): `loadPluginsForBoot` captures
+// Safe boot's plugin side (`plugin-sandbox.md`): `loadPluginsForBoot` captures
 // the startup of the guests its own serialized load started (not whatever a later reload applied), a
 // replaced boot guest is followed to its replacement after the `pluginReload` chain, a guest stopped
 // because its plugin was disabled or removed counts as started, and with plugins off nothing loads,

@@ -14,7 +14,7 @@ the job channel already has; the [server generation guide](../structure/server-g
 channels, Job chat and barriers), the [global API guide](../structure/global-api.md) (Generation job client, Job
 channel), the [chat pipeline guide](../structure/chat-pipeline.md) (Stop for a job this tab does not follow,
 Replays and uncertain creates), the [resource sync guide](../structure/resource-sync.md) (Live updates), and the
-[plugins and MCP guide](../structure/plugins-mcp.md) (Job owner presence) at `186b9da71`. The 2026-11-04
+[plugins guide](../structure/plugin-sandbox.md) (Job owner presence) at `186b9da71`. The 2026-11-04
 revision applies the owner's decisions on the audit's
 [per-plan report](../audit/plan-design-audit-2026-11-04/job-handoff.md) and on an independent second review of
 its corrections. The second 2026-11-04 revision applies the owner's decisions on an adversarial challenge of
@@ -28,7 +28,7 @@ sockets, takeover, the handoff offers), [global API](../structure/global-api.md)
 worker policy, the offers store), [chat pipeline](../structure/chat-pipeline.md) (what the creator's tab shows
 after a handoff), [resource sync](../structure/resource-sync.md) (the new live-update frames and the client
 register message), [settings and i18n](../structure/settings-i18n.md) (the device toggles and name),
-[plugins and MCP](../structure/plugins-mcp.md) (Job owner presence: what a hook may assume about the tab it
+[plugins](../structure/plugin-sandbox.md) (Job owner presence: what a hook may assume about the tab it
 runs in), [test harness](../structure/test-harness.md) (the browser check).
 
 Relation to the server plugin runtime plan (retired unbuilt on 2026-11-03, see

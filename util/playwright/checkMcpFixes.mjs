@@ -473,7 +473,7 @@ try {
         stored,
     );
     // The server drops the access token. The call that meets the 401 resets the session and repeats
-    // once without it (a recorded hazard, `plugins-mcp.md`: that call fails); the next call
+    // once without it (a recorded hazard, `mcp.md`: that call fails); the next call
     // handshakes again and logs in with the rotated token.
     mcp.valid = null;
     mcp.sessionHeaders.length = 0;

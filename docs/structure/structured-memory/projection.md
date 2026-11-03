@@ -165,7 +165,7 @@ plugin read past `MEMORY_RECHECK_WINDOW_MS` follows the records. Local work dela
   upstream export's projection, and alone among the walk's readers it does not stop on a problem in them
   (`memoryFailed`).
 - The field's writes go through [the chat store](../chat-store.md), where `keepsHeldHypaV3Data` lives; the plugin reads
-  that wait on the refresh are [plugins-mcp](../plugins-mcp.md)'s.
+  that wait on the refresh are [plugins](../plugin-sandbox.md)'s.
 - The reset writes a `meta` `unset` through `applyChanges`, so the live-update feed publishes it like any chat write.
 
 ## Invariants

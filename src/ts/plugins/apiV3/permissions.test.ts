@@ -311,7 +311,7 @@ describe("provider permission", () => {
 
 /**
  * Unloads every running plugin. `loadV3Plugins` maps over the live instance list while each
- * unload splices it, so one pass can skip entries (pre-existing; recorded in `plugins-mcp.md`).
+ * unload splices it, so one pass can skip entries (pre-existing; recorded in `plugin-sandbox.md`).
  */
 async function unloadAll() {
     for (let attempt = 0; attempt < 10 && getV3PluginInstance(`perm-test-${counter}`); attempt += 1) {
