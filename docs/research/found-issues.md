@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -17,6 +17,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (11)
 - [Guides](#guides) (14)
 - [Test timing](#test-timing) (1)
+- [Structured Memory](#structured-memory) (17)
 
 ## Chat store, sync, and change feeds
 
@@ -288,3 +289,138 @@ Untagged gate tests that depend on real wall-clock or scheduler time (invariant 
 
 **Why it matters:** each is a load-sensitive failure waiting for a slow CI runner; the timing plans' policy (`docs/structure/test-harness.md` `Tests`) asks for controlled clocks or the `slow` tag.
 **Suggested handling:** when one of these files is next touched, control its clock (inject the deadline or fake the timers) or tag the case `slow`; `pnpm --silent test:agent --slow-tests` lists the ones over 1 s.
+
+## Structured Memory
+
+Moved from the Structured Memory plan run on 2026-11-03. Each entry was re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here.
+
+### Memory task wording still says summaries
+
+The memory task service has a `structuredMemory` kind since slice 2b, yet comments still describe every task as HypaV3: `shared/events.ts` (~21), `src/ts/network/eventFeed.ts` (~38), `server/src/jobs/runSetup.ts` (~64), `server/src/app.ts` (~451, ~1007), `src/lib/SideBars/chatStatus.ts` (~15). `summarizingChats` in `src/ts/process/memoryTasks.svelte.ts` counts a writer task as summarizing, and `src/lib/ChatScreens/ContextMeter.svelte`'s task block shows "Background summary", "the new summaries are stored", and "summarizing 0/1" for the writer (seen in a browser 2026-11-02). The HypaV3 modal's status helper keeps HypaV3 wording, but Structured Memory chats open their own panel.
+
+**Why it matters:** an agent reads a task as HypaV3, and a user who cannot verify memory is told the wrong activity.
+**Suggested handling:** read `MemoryTaskStatus.kind` in the meter's task block and chip, and widen the comments.
+
+### Record now in a job is seen by one tab
+
+`server/src/prompt/memory/structured/recordJob.ts`: the blocking in-job path opens job-scoped progress only and sets no memory task status or `memoryTaskFenced` fence, so another tab's panel stays editable while it runs (the queued path does publish). `MemoryReceiptLine.svelte` `press` also shows "Recording requested" after any `done`, including one sent after the in-job run already finished, and a window that ends `skipped` puts its raw reason code into the English job error (`runWindows`). Slice 2d.
+
+**Why it matters:** D3 wants every tab read-only while the writer runs; the toast and the code read oddly.
+**Suggested handling:** publish a status for the in-job run, let `done` say which path ran, and map the reason through the language file.
+
+### Receipt on a message with no generation info
+
+`writer.ts` `commitWindow` writes `generationInfo: { memory }` on a window message that had none, so with `requestInfoInsideChat` `Chat.svelte` shows a model button labelled "Unknown". `genInfo`, which holds `MemoryReceiptLine`, is not rendered in the `mobilechat` and `cardboard` themes, so no receipt line shows there. Slice 2d.
+
+**Why it matters:** a stray button in one setting, and no receipt at all in two themes.
+**Suggested handling:** skip the model button when only `memory` is present; decide where the line goes in those themes.
+
+### Embedding refusal masks a later assembly error
+
+`server/src/prompt/runner.ts` (~1462, ~1466) shows `refusal?.message ?? assembled.error`. Structured Memory's retrieval catches an embedding failure and the send goes on, but the local-model refusal stays recorded, so a send that later fails on context size reports the embedding refusal. Found 2026-11-01.
+
+**Why it matters:** the user reads the wrong reason for a failed send.
+**Suggested handling:** clear or ignore a refusal the memory step already survived.
+
+### Panel writer line and stale views
+
+In `src/ts/process/structuredMemory.svelte.ts` and `StructuredMemoryPanel.svelte`:
+
+- `memoryWriterNotice` reads `pluginModel` and `requestTrigger` only from the newest reply's receipt, because `jobMemoryBlockingReason` needs a job scope no route has, so before the first send the panel does not say "not recording automatically".
+- A checkpoint load refreshes the chat resource but not the panel's contents, so an open panel shows the records from before the load until refreshed. A stale edit is refused 409, so nothing is lost.
+- A copied or branched chat keeps `generationInfo.memory` while its runs stay behind (`structured/inherit.ts`), so a copied paused receipt can offer Resume on an empty Log.
+- `pressReset` reads the chat again only on `reset: true`. When the route committed but the answer was lost, the repeat answers `reset: false`, and the tab keeps the old value until the feed's notice comes.
+
+**Why it matters:** the panel says something untrue until a refresh or a send.
+**Suggested handling:** a scope-loading status read for the first item, a refresh on the chat's change frame, stripping copied receipts (or ignoring run-less ones), and reading on any reset answer.
+
+### Cast slice matches substrings
+
+`castSlice` (`server/src/prompt/memory/structured/pages.ts`) lists a page when its title or alias is a case-insensitive substring of a window message, so an alias "Al" matches "also". The read path uses `searchMatch`.
+
+**Why it matters:** an extra prompt row, never a wrong record; the writer and the read path disagree on "named".
+**Suggested handling:** use `searchMatch` in `castSlice`.
+
+### Lore search depth skips a short chat's first messages
+
+`searchMatch` (`shared/lore/activation.ts`) slices `messages.slice(messages.length - searchDepth, messages.length)`. A negative start counts from the end, so three messages and depth 5 start at index 1 and skip message 0 (`[0,1,2].slice(-2, 3)` is `[1, 2]`). The pages lane avoids it by passing exactly the rows it wants. Found 2026-11-02.
+
+**Why it matters:** a key only in the first messages of a short chat does not activate.
+**Suggested handling:** clamp the start to 0 and update `server/src/tests/fixtures/baseline/`, after checking upstream parity.
+
+### Snapshot layout check is copied
+
+`memoryStateLayout` in `server/src/data/memoryStore.ts` copies the layout block at the head of `walkCheckpointSnapshot` (`server/src/data/checkpointStore.ts`): name match, ordinary table, exact columns, all or none. Slice 1c could not edit `checkpointStore.ts`.
+
+**Why it matters:** two copies of a check on crafted snapshot files can drift apart.
+**Suggested handling:** one helper beside `snapshotRows` in `resourceStore.ts`.
+
+### Hand-written resourceSync mocks
+
+`src/lib/ChatScreens/Chat.test.ts` keeps a hand-written `vi.mock` of `src/ts/storage/resourceSync.svelte`, and other files mock it too, though `src/ts/tests/bootMocks.ts` has a typed factory. Slice 5c met three tests failing at run time on a missing `beginMutationScope`.
+
+**Why it matters:** STRUCTURE.md V7: a new export should break the type check, not a run.
+**Suggested handling:** move those mocks onto the shared factory.
+
+### Projection refresh leftovers
+
+Left by slice 5g. A journal recovery that replays a real `hypaV3Data` while Structured Memory is selected is dropped (`src/ts/storage/journalRecovery.ts` `applyChatOps` through `setChatMeta`) with the plugin-worded `structuredMemory.projectionWriteRefused` notice. The body-cap comment above `limitBody` in `server/src/app.ts` omits the revisions route's 256 KiB. The `chatOutput` payload (`src/ts/network/jobChannel.ts`) copies held chats with no projection refresh. `src/ts/plugins/apiV3/hostApiMemory.test.ts` reads `MEMORY_REFRESH_DEADLINE_MS` and `MEMORY_PROJECTIONS_PER_READ` out of `v3.svelte.ts` by regular expression.
+
+**Why it matters:** a wrong actor in a rare notice, a stale comment, a stale payload, and a brittle test.
+**Suggested handling:** a recovery wording, the comment in the next `app.ts` change, and moving the constants to `shared/structuredMemory.ts`.
+
+### Rebuild lock refusal has no code
+
+`server/src/jobs/generationJobs.ts` refuses a job during a rebuild with a plain-text 409, and the tab's `registryRefusal` knows only coded refusals, so a create retried after a lost answer shows the generic lost message. Slice 6b, by reading.
+
+**Why it matters:** rare, and the panel shows the run anyway.
+**Suggested handling:** give the refusal a code and words in `src/lang/en.ts`.
+
+### Adopted summaries
+
+Left by slice 6a. An adopted summary's `pinned` selects nothing in any lane (`adopt.ts` maps `isImportant` to it; `retrieve.ts` and `step.ts` never read it). A summary over the card budget is excluded while its messages still leave the prompt. A stored-stale adopted event kept by a person reads active while retrieval answers `not-relevant`, and a copy drops any event with an unanchored source.
+
+**Why it matters:** an important HypaV3 summary stops being sent every time.
+**Suggested handling:** decide what `pinned` means for an adopted event before changing the lanes.
+
+### Highlight and revert leftovers
+
+Left by slice 7b. `retract` stays in `MEMORY_HISTORY_CHANGE_KINDS`, `STRUCTURED_MEMORY_HIGHLIGHT_KINDS`, and the default `highlightKinds`, though only a restored entry can carry it and the settings offer no box. `mayCompact`'s `userCorrected` check is reached only by a disputed join, which `disputed` already refuses. A new page's receipt row has no highlight and no revert. Changing a chat's highlight mode moves `memorySettingsFingerprint`, so a queued writer input ends `skipped` (`staleInput`).
+
+**Why it matters:** dead values and checks, and one lost queued run per mode change.
+**Suggested handling:** drop `retract` with `normalizeStructuredMemorySettings` dropping a stored one; leave highlight out of the fingerprint if a replay may ignore it.
+
+### Prompt test run leftovers
+
+Left by slice 7c. `server/src/prompt/memory/structured/testRun.ts` is missing from `STRUCTURE.md`'s Path Ownership for structured-memory-writer, though the writer guide lists it. `TEST_REFUSALS.gap` is unreachable, since `jobMemoryBlockingReason` answers only `pluginModel` and `requestTrigger`. The result screen says "Outcome: Recorded" for a test that saved nothing.
+
+**Why it matters:** misrouted questions, dead code, and a word that reads as a save.
+**Suggested handling:** add the path, drop or narrow the record, and word the outcome for a test.
+
+### Page tool leftovers
+
+Left by slice 7d. `splitPage` and `splitTimeline` in `src/ts/process/structuredMemory.test.ts` are not whole package readers (key-line quote lines and collapsed headings break them); `parseMemoryPackage` is. `parseMemoryPackage` accepts `trashedAt` on a non-scene page, which the package never writes. `contents.trash` has no budget or expiry and the table of contents grows with it. `pages.test.ts` has no test of the page tools; they run only through `structuredMemoryRoutes.test.ts`.
+
+**Why it matters:** test helpers that pass by luck, and a trash that only grows.
+**Suggested handling:** test through `parseMemoryPackage`, drop `trashedAt` on import, and decide on a trash bound.
+
+### Health badge leftovers
+
+Left by slice 7e. `memoryHealthStates` (`src/ts/process/chatStatus.svelte.ts`) walks every character's chats on each recompute in three consumers (`Sidebar`, `MainMenu`, `DefaultChatScreen`). It does not exclude group chats, so a pinned group chat can show `customPrompt` though the writer refuses group chats (unconfirmed in a browser). The contents route calls `readHealth` with no byte budget.
+
+**Why it matters:** repeated walks, and a badge on a chat the writer never serves.
+**Suggested handling:** one shared derived, a group exclusion, and a budget on the contents read; measure first.
+
+### Evaluation findings
+
+Measured by slice 8 on scripted fixtures (`docs/audit/structured-memory-2026-11-03.md`); nothing was changed, and Q2 stays open until a real A/B.
+
+- `MEMORY_CALL_OVERHEAD_TOKENS` (1,500) is low: overhead was about 2,100 per call in English and 2,800–3,700 in Korean, and actual analysis input was 1.13–2.32 times the preview. Proposal: 3,000, bytes÷3 kept, after a real-model check.
+- `selectMemory` takes 520–584 ms on a 1,000-turn send, mostly tokenizing (296–356 ms) and cache reads; `addText`'s quadratic scan costs 60 ms at 4,000 texts.
+- An unchanged checkpoint save holds about 500 ms on a 2,000-run chat. A hash cache is not worth it; dropping `input` from recorded runs is (whole-row readers not traced).
+- `getChatFromIndex` over 67 or more loaded chats spends the shared per-IP authenticated bucket, and a neighbour route was refused until the reset (loopback surrogate only).
+- `readHealth`'s page-byte budget bounds neither events nor runs: 635 ms for 64 chats of 5,000 each.
+- At a 16k context the `threads` lane starves once events carry three quotes, and a two-event comparison loses one event in a long chat, also at 32k.
+
+**Why it matters:** cost previews people pay by, and stalls on long chats.
+**Suggested handling:** take each as a proposal when Structured Memory is next touched, and re-run `node util/memoryEval.mjs` after a read-path change.
