@@ -278,7 +278,10 @@ anchors below are by identifier.
   changes); F8 in `src/ts/gui/highlight.ts` (`highlighter` deletes the owned categories absent from
   `formatedRanges`, `removeHighlight` clears the registry entries of that id, and a delayed highlight callback
   after `TextAreaInput.svelte`'s destroy does nothing). The full per-chat message index the investigation also
-  names is not taken: every write path of the chat store would have to maintain it. Q3 kept Slice 0 in the plan;
+  names is not taken here: every write path of the chat store would have to maintain it. The
+  [Incremental Chat Transport plan](incremental-chat-transport.md) D1 takes it in a validated form (a position
+  is trusted only while the row at it still has the id); its Slice 0 supersedes this memo, whichever lands
+  first. Q3 kept Slice 0 in the plan;
   had it been declined, the three would have moved to `found-issues.md` under one heading.
 - **D9. Measurement is a driver beside the existing ones, and its numbers live in an audit document.**
   `util/playwright/measureRenderWork.mjs` starts the dev stack with `startStack` (the dev modules keep their
@@ -501,7 +504,8 @@ src/lib/ChatScreens/PartialEditController.test.ts src/ts/gui/highlight.test.ts` 
   measures worse than the queue occupancy it saves.
 - Q2 reversed: the selected-range export.
 - The whole per-chat message index (F1's full form) with its invalidation on hydration, replacement, deletion
-  and reorder, if the validated memo of Slice 0 is not enough for the stored-translation lookup
-  (`storedTranslation.svelte.ts` `heldMessage`) the investigation also names.
+  and reorder: taken by the [Incremental Chat Transport plan](incremental-chat-transport.md) D1 (its Slice 0),
+  which also serves the stored-translation lookup (`storedTranslation.svelte.ts` `heldMessage`) the
+  investigation names.
 - The `measureChats.mjs` settling delay and wheel input the investigation found, if that driver is run again
   for the production frame numbers.

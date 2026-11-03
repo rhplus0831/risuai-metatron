@@ -24,6 +24,13 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   rendered translations count subscribers and cancel only when the last one leaves, identical post-CBS CSS is
   scoped once in a bounded cache, and the screenshot export sizes its output once, releases each source, pages
   large exports and downloads a Blob; D1–D9 recommended, Q1–Q4 answered, no slice scheduled.
+- [Incremental Chat Transport](incremental-chat-transport.md): every by-id message lookup in the chat
+  store goes through one validated per-chat position index, a streaming checkpoint reaches other tabs
+  as the text added since the previous one instead of the whole reply row, the owner's job `chatPatch`
+  names a streamed row by its stream sequence instead of carrying it, a reconnect after an away-time
+  change replays a bounded epoch-scoped change log through `?since=<cursor>` with the whole listing as
+  the fallback, and an over-cap change of a loaded chat reads its rows by id when measurement keeps
+  that slice; D1–D10 recommended, Q1–Q4 answered, no slice scheduled.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
