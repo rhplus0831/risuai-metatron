@@ -13,6 +13,11 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   disk use as logical size, deduplicated size, and per-owner shares, and deletes unreferenced assets only
   after a grace period, fail-closed, rechecked under a per-key lock, started by the user; snapshots gain
   pins, labels, manual takes, and deletion; D1–D12 recommended, Q1–Q3 open, no slice scheduled.
+- [Reroll Candidates](reroll-candidates.md): the alternatives of the newest reply persist on the
+  message as `candidates` with the selected index, a reroll regenerates that message in place and
+  puts the chat variables back to the state before the discarded reply, switching candidates
+  switches to that candidate's variable state, only the newest reply keeps the snapshots, and a
+  discarded candidate is never memory input; D1–D12 recommended, Q1–Q4 open, no slice scheduled.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
