@@ -12,10 +12,13 @@
 //   - `self-link`: a link to the file it is in, with no anchor;
 //   - `label`: a work-tracking label, matched on joined segment text so a line wrap cannot split one. In a guide
 //     the whole text counts; in `STRUCTURE.md` only prose, because its rules quote the labels and link the plans.
+// It also prints, without failing, one `near` line per file over the guide target and per heading over the leaf
+// target, each with the bytes left under its budget: the targets are where a trim or a split lands, so a guide
+// keeps room for the changes that follow instead of sitting at the budget, where every edit fails the gate.
 //
 // `--report` exits 0 whatever it finds and prints
-//   - a table of the guides: bytes, `###` headings, largest leaf, items over the length budget, parenthesis
-//     depth, unresolved links;
+//   - a table of the guides: bytes, headroom under the guide budget, `###` headings, largest leaf, items over the
+//     length budget, parenthesis depth, unresolved links;
 //   - the `##` and `###` sections of each file with their bytes and own bytes;
 //   - each finding as `path:line`: long items, deep parentheses, unresolved links, section order, hazard
 //     headings, self-links, labels;
@@ -28,6 +31,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const GUIDE_BYTES_BUDGET = 40_000;
 export const LEAF_BYTES_BUDGET = 8_000;
+/** Where a trim or a split lands: over a target the check warns (`near`), over a budget it fails. */
+export const GUIDE_BYTES_TARGET = 36_000;
+export const LEAF_BYTES_TARGET = 7_000;
 export const ITEM_CHARS_BUDGET = 600;
 export const PAREN_DEPTH_BUDGET = 2;
 
@@ -376,7 +382,9 @@ function measureFile(root, rel, readAnchors) {
     return {
         path: rel,
         bytes,
+        headroom: GUIDE_BYTES_BUDGET - bytes,
         overBudget: bytes > GUIDE_BYTES_BUDGET,
+        overTarget: bytes > GUIDE_BYTES_TARGET,
         h3Count: sections.filter((section) => section.level === 3).length,
         sections,
         largestLeaf,
@@ -420,7 +428,12 @@ export function measureDocs(root) {
             bytes: guides.reduce((sum, guide) => sum + guide.bytes, 0),
             h3Count: guides.reduce((sum, guide) => sum + guide.h3Count, 0),
             guidesOverBudget: guides.filter((guide) => guide.overBudget).length,
+            guidesOverTarget: guides.filter((guide) => guide.overTarget).length,
             largestLeaf: largest,
+            leavesOverTarget: guides.reduce(
+                (sum, guide) => sum + guide.sections.filter((section) => section.ownBytes > LEAF_BYTES_TARGET).length,
+                0,
+            ),
             listItemsOver: countKind(longItems, "item"),
             tableRowsOver: countKind(longItems, "row"),
             deepSegments: guides.reduce((sum, guide) => sum + guide.deepSegments.length, 0),
@@ -438,10 +451,18 @@ export function checkDocs(measure) {
     const findings = [];
     const add = (file, line, rule, message) => findings.push({ path: file, line, rule, message });
     for (const file of [...measure.guides, measure.index]) {
-        if (file.overBudget) add(file.path, 1, "ceiling", `${file.bytes} bytes, budget ${GUIDE_BYTES_BUDGET}`);
+        if (file.overBudget) {
+            add(file.path, 1, "ceiling", `${file.bytes} bytes, budget ${GUIDE_BYTES_BUDGET}, ${-file.headroom} over`);
+        }
         for (const { line, heading, ownBytes } of file.sections) {
             if (ownBytes > LEAF_BYTES_BUDGET) {
-                add(file.path, line, "leaf", `"${heading}" ${ownBytes} bytes, budget ${LEAF_BYTES_BUDGET}`);
+                const over = ownBytes - LEAF_BYTES_BUDGET;
+                add(
+                    file.path,
+                    line,
+                    "leaf",
+                    `"${heading}" ${ownBytes} bytes, budget ${LEAF_BYTES_BUDGET}, ${over} over`,
+                );
             }
         }
         for (const { line, kind, length } of file.longItems) {
@@ -461,13 +482,39 @@ export function checkDocs(measure) {
     return findings;
 }
 
-/** What the check prints for `checkDocs` findings. */
-export function formatCheck(findings) {
-    if (findings.length > 0) {
-        const lines = findings.map(({ path: file, line, rule, message }) => `${file}:${line} ${rule} ${message}`);
-        return `${lines.join("\n")}\n[check:docs] FAIL: ${findings.length} finding(s)\n`;
+/**
+ * What is over a target but within its budget, as `near` warnings in the shape of `checkDocs` findings, each
+ * with the bytes left under the budget. A file or heading over its budget has a finding instead.
+ */
+export function nearTarget(measure) {
+    const warnings = [];
+    const add = (file, line, message) => warnings.push({ path: file, line, rule: "near", message });
+    for (const file of [...measure.guides, measure.index]) {
+        if (file.overTarget && !file.overBudget) {
+            add(file.path, 1, `${file.bytes} bytes, target ${GUIDE_BYTES_TARGET}, ${file.headroom} under the budget`);
+        }
+        for (const { line, heading, ownBytes } of file.sections) {
+            if (ownBytes > LEAF_BYTES_TARGET && ownBytes <= LEAF_BYTES_BUDGET) {
+                const left = LEAF_BYTES_BUDGET - ownBytes;
+                add(
+                    file.path,
+                    line,
+                    `"${heading}" ${ownBytes} bytes, target ${LEAF_BYTES_TARGET}, ${left} under the budget`,
+                );
+            }
+        }
     }
-    return "[check:docs] OK\n";
+    return warnings;
+}
+
+/** What the check prints for `checkDocs` findings and `nearTarget` warnings: the warnings never fail it. */
+export function formatCheck(findings, warnings = []) {
+    const lines = [...findings, ...warnings].map(
+        ({ path: file, line, rule, message }) => `${file}:${line} ${rule} ${message}`,
+    );
+    const near = warnings.length > 0 ? `, ${warnings.length} near the budget` : "";
+    const verdict = findings.length > 0 ? `FAIL: ${findings.length} finding(s)${near}` : `OK${near}`;
+    return `${[...lines, `[check:docs] ${verdict}`].join("\n")}\n`;
 }
 
 /** Fixed-width lines for `rows` of cells: the first column left-aligned, the others right-aligned. */
@@ -488,6 +535,7 @@ function guideRow(guide) {
     return [
         guide.path,
         guide.bytes,
+        guide.headroom,
         guide.overBudget ? "yes" : "no",
         guide.h3Count,
         guide.largestLeaf?.bytes ?? 0,
@@ -508,6 +556,7 @@ export function formatReport(measure) {
     const header = [
         "guide",
         "bytes",
+        "headroom",
         `>${GUIDE_BYTES_BUDGET}`,
         "###",
         "largestLeaf",
@@ -586,7 +635,9 @@ export function formatReport(measure) {
         `[check:docs] total bytes: ${totals.bytes}`,
         `[check:docs] ### headings: ${totals.h3Count}`,
         `[check:docs] guides over ${GUIDE_BYTES_BUDGET} bytes: ${totals.guidesOverBudget}`,
+        `[check:docs] guides over ${GUIDE_BYTES_TARGET} bytes, the target: ${totals.guidesOverTarget}`,
         `[check:docs] largest leaf: ${leaf ? `${leaf.bytes} bytes, ${leaf.path} "${leaf.heading}"` : "none"}`,
+        `[check:docs] leaves over ${LEAF_BYTES_TARGET} bytes, the target: ${totals.leavesOverTarget}`,
         `[check:docs] list items over ${ITEM_CHARS_BUDGET}: ${totals.listItemsOver}`,
         `[check:docs] table rows over ${ITEM_CHARS_BUDGET}: ${totals.tableRowsOver}`,
         `[check:docs] items over ${ITEM_CHARS_BUDGET}, both kinds: ${totals.listItemsOver + totals.tableRowsOver}`,
@@ -612,7 +663,8 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
         process.stdout.write(formatReport(measure));
     } else {
         const findings = checkDocs(measure);
-        (findings.length > 0 ? process.stderr : process.stdout).write(formatCheck(findings));
+        const output = formatCheck(findings, nearTarget(measure));
+        (findings.length > 0 ? process.stderr : process.stdout).write(output);
         if (findings.length > 0) process.exitCode = 1;
     }
 }

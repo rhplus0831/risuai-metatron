@@ -8,10 +8,13 @@ import {
     formatCheck,
     formatReport,
     GUIDE_BYTES_BUDGET,
+    GUIDE_BYTES_TARGET,
     GUIDE_SECTIONS,
     ITEM_CHARS_BUDGET,
     LEAF_BYTES_BUDGET,
+    LEAF_BYTES_TARGET,
     measureDocs,
+    nearTarget,
     PAREN_DEPTH_BUDGET,
 } from "./docsBudget.mjs";
 
@@ -34,8 +37,8 @@ function headingAtSize(heading: string, bytes: number) {
     return prefix + fillBytes(bytes - Buffer.byteLength(prefix) - 2) + "\n\n";
 }
 
-function guideAtSize(bytes: number) {
-    const text = guide(Object.fromEntries(SECTIONS.map((section) => [section, "x".repeat(4_000)])));
+function guideAtSize(bytes: number, perSection = 4_000) {
+    const text = guide(Object.fromEntries(SECTIONS.map((section) => [section, "x".repeat(perSection)])));
     // Spread the file across headings so only the file budget can fail.
     return text.replace("# Guide\n\n", `# Guide\n\n${fillBytes(bytes - Buffer.byteLength(text) - 2)}\n\n`);
 }
@@ -95,6 +98,32 @@ describe("documentation budgets", () => {
             expect(measure.guides[0].largestLeaf).toMatchObject({ bytes, line: 5 });
             expect(checkDocs(measure)).toEqual(bytes === 8_000 ? [] : [finding(GUIDE, 5, "leaf")]);
         }
+    });
+
+    it("warns, without failing, on a guide or a leaf heading over its target", () => {
+        expect(GUIDE_BYTES_TARGET).toBe(36_000);
+        expect(LEAF_BYTES_TARGET).toBe(7_000);
+        for (const bytes of [36_000, 36_001, 40_000]) {
+            const measure = measureDocs(tree({ [GUIDE]: guideAtSize(bytes, 3_800) }));
+            expect(checkDocs(measure)).toEqual([]);
+            expect(nearTarget(measure)).toEqual(bytes === 36_000 ? [] : [finding(GUIDE, 1, "near")]);
+        }
+        // Over the budget, the `ceiling` finding stands alone.
+        expect(nearTarget(measureDocs(tree({ [GUIDE]: guideAtSize(40_001) })))).toEqual([]);
+        // `## Scope` plus its blank lines is 12 bytes of the leaf.
+        for (const bytes of [7_000, 7_001, 8_000, 8_001]) {
+            const measure = measureDocs(tree({ [GUIDE]: guide({ Scope: "x".repeat(bytes - 12) }) }));
+            expect(checkDocs(measure)).toEqual(bytes === 8_001 ? [finding(GUIDE, 3, "leaf")] : []);
+            expect(nearTarget(measure)).toEqual(bytes === 7_000 || bytes === 8_001 ? [] : [finding(GUIDE, 3, "near")]);
+        }
+        const warnings = nearTarget(measureDocs(tree({ [GUIDE]: guideAtSize(36_001, 3_800) })));
+        expect(formatCheck([], warnings)).toBe(
+            "docs/structure/example.md:1 near 36001 bytes, target 36000, 3999 under the budget\n" +
+                "[check:docs] OK, 1 near the budget\n",
+        );
+        expect(formatCheck([{ path: GUIDE, line: 1, rule: "ceiling", message: "x" }], warnings)).toMatch(
+            /\n\[check:docs\] FAIL: 1 finding\(s\), 1 near the budget\n$/,
+        );
     });
 
     it("measures wrapped items, unwrapped items and table rows with code spans included", () => {
@@ -205,9 +234,10 @@ describe("documentation budgets", () => {
 
         const report = formatReport(measure);
         expect(report).toMatch(/^\[check:docs\] Guides\n/);
-        expect(report).toMatch(/^\s+guide\s+bytes\s+>40000\s+###\s+largestLeaf\s+items>600/m);
-        expect(report).toMatch(new RegExp(`^  docs/structure/example\\.md\\s+${Buffer.byteLength(text)}\\s`, "m"));
-        expect(report).toMatch(/^  STRUCTURE\.md\s+1000\s/m);
+        expect(report).toMatch(/^\s+guide\s+bytes\s+headroom\s+>40000\s+###\s+largestLeaf\s+items>600/m);
+        const bytes = Buffer.byteLength(text);
+        expect(report).toMatch(new RegExp(`^  docs/structure/example\\.md\\s+${bytes}\\s+${40_000 - bytes}\\s`, "m"));
+        expect(report).toMatch(/^  STRUCTURE\.md\s+1000\s+39000\s/m);
         expect(report).toContain("[check:docs] Sections\n");
         expect(report).toMatch(/^    ## Scope\s+\d+\s+\d+/m);
         expect(report).toMatch(/^  docs\/structure\/example\.md:5 \S+ 601$/m);
@@ -216,6 +246,8 @@ describe("documentation budgets", () => {
         expect(totals).toMatch(/^\[check:docs\] Totals \(guides only, STRUCTURE\.md excluded\)\n/);
         expect(totals).toContain("[check:docs] guides: 1\n");
         expect(totals).toContain(`[check:docs] total bytes: ${Buffer.byteLength(text)}\n`);
+        expect(totals).toContain("[check:docs] guides over 36000 bytes, the target: 0\n");
+        expect(totals).toContain("[check:docs] leaves over 7000 bytes, the target: 0\n");
         expect(totals).toContain("[check:docs] list items over 600: 1\n");
         expect(totals).toContain("[check:docs] unresolved links: 1\n");
         expect(totals).toMatch(/\[check:docs\] labels: 0\n$/);

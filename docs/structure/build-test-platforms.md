@@ -34,7 +34,7 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
 | `dev`                     | Vite only; requires a running `server`.                                                            |
 | `build`                   | Vite with source maps, then `util/compressDist.mjs` for Brotli/gzip siblings.                      |
 | `check`                   | `svelte-check` for the client, then `tsc -p server/tsconfig.json` for server/shared code.          |
-| `check:docs`              | `util/docsBudget.mjs`: guide budgets, outline, and Markdown links; no tests.                       |
+| `check:docs`              | `util/docsBudget.mjs`: guide budgets and targets, outline, and Markdown links; no tests.           |
 | `server`                  | Node runs `server/src/main.ts` with type stripping.                                                |
 | `dev:agent` / `dev:human` | Isolated agent stack or normal-login human stack; see [Dev runner](#dev-runner).                   |
 | `format` / `format:check` | Repository-wide Prettier write/check; use targeted `pnpm exec prettier --write <files>` for edits. |
@@ -63,9 +63,9 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
 
 - `pnpm check:docs` (`util/docsBudget.mjs`, plain Node over the Markdown, with a line-based parse) checks `STRUCTURE.md`
   and every guide, printing one `path:line rule message` per finding. Every file has the same budgets. These fail:
-  - `ceiling`: a file over 40,000 bytes.
-  - `leaf`: over 8,000 bytes between a heading and the next heading of any level. Text before a file's first heading
-    counts only toward `ceiling`.
+  - `ceiling`: a file over 40,000 bytes, with the overage.
+  - `leaf`: over 8,000 bytes between a heading and the next heading of any level, with the overage. Text before a file's
+    first heading counts only toward `ceiling`.
   - `item`: a list item or table row over 600 characters, measured on the joined text with code spans included.
   - `paren-depth`: parentheses three deep outside code spans.
   - `sections`: a guide's `##` headings are not the nine of **Doc Maintenance** in order. `hazards`: a `Known Hazards`
@@ -74,7 +74,10 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
     `self-link`: a link to its own file without an anchor.
   - `label`: a T5 label, matched on the joined item, so a wrap cannot split it (in `STRUCTURE.md`, prose only: T5 quotes
     the labels).
-- `--report` prints the sizes and every finding and exits 0; use plain `pnpm check:docs` as the gate.
+- `near` does not fail: a file over 36,000 bytes or a heading over 7,000, the targets of **Doc Maintenance**, printed
+  with the bytes left under the budget, so a guide that needs a split shows up before the next change fails the gate.
+- `--report` prints the sizes, each file's headroom under 40,000 bytes, and every finding, and exits 0; use plain
+  `pnpm check:docs` as the gate.
 - Source paths and identifiers in code spans are not validated. Confirm them with targeted `rg` searches; the link rule
   checks only relative Markdown destinations and heading anchors.
 

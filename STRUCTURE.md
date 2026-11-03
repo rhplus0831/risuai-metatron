@@ -321,6 +321,10 @@ Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_sta
   (continuation lines and code spans included), and parentheses at most two deep outside code spans. They are the same
   for every guide and this file: `pnpm check:docs` fails on any of them, and
   [build-test-platforms](docs/structure/build-test-platforms.md) `Files` lists its rules.
+- Targets: 36,000 bytes per guide and 7,000 under a leaf heading. The check reports a file or a heading over its target
+  as `near`, with the bytes left under the budget, and does not fail. A trim or a split lands the guide at or under its
+  target, not just under the budget, and a change that would carry a guide past its target splits the guide or moves the
+  topic to its owner instead of shaving sentences elsewhere to fit.
 - A guide's `Tests` section names the harnesses, fakes, and fixtures (what they stand in for, what they control), the
   focused commands for the area, the `slow` and `e2e` memberships, and the gaps (`Not tested`), one bullet per harness.
   It does not list a test file's cases: the file is the inventory, and V4 finds it after a rename.
