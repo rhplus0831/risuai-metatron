@@ -50,26 +50,27 @@ function readPasswordState(file: string): PasswordState {
     return password.trim() ? { state: "set", value: password } : { state: "damaged" };
 }
 
-function readKnownPublicKeys(file: string): string[] {
+function readKnownPublicKeys(file: string): Set<string> {
     let text: string;
     try {
         text = readFileSync(file, "utf-8");
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            return [];
+            return new Set();
         }
         throw error;
     }
     try {
         const hashes: unknown = JSON.parse(text);
         if (Array.isArray(hashes) && hashes.every((hash) => typeof hash === "string")) {
-            return hashes;
+            // A file from before repeat logins were skipped can hold one key many times.
+            return new Set(hashes);
         }
     } catch {}
     const corruptPath = `${file}.corrupt-${Date.now()}`;
     renameSync(file, corruptPath);
     console.warn(`Malformed registered public key file moved to ${corruptPath}; starting with no known keys.`);
-    return [];
+    return new Set();
 }
 
 /**
@@ -129,7 +130,7 @@ export function createAuthStore(
             if (jsonPayload.exp < now) {
                 return "expired";
             }
-            if (!knownPublicKeysHashes.includes(hashJSON(jsonPayload.pub))) {
+            if (!knownPublicKeysHashes.has(hashJSON(jsonPayload.pub))) {
                 return "unknown_key";
             }
             //only support ECDSA for now
@@ -222,8 +223,12 @@ export function createAuthStore(
             if (typeof body.password === "string" && isStoredPassword(body.password)) {
                 const hash = hashJSON(body.publicKey);
                 await writer.run(KNOWN_KEYS_KEY, async () => {
-                    const next = [...knownPublicKeysHashes, hash];
-                    await writeFileDurable(knownPublicKeysPath, JSON.stringify(next), { fs });
+                    // A tab logging in again with its registered key changes nothing.
+                    if (knownPublicKeysHashes.has(hash)) {
+                        return;
+                    }
+                    const next = new Set([...knownPublicKeysHashes, hash]);
+                    await writeFileDurable(knownPublicKeysPath, JSON.stringify([...next]), { fs });
                     knownPublicKeysHashes = next;
                 });
                 return c.json({ status: "success" });

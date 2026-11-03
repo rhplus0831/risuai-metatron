@@ -100,9 +100,11 @@ describe("shutdown admission for auth and push writes", () => {
             };
             if (method === "DELETE") expect(await s.context.push.register(sub)).toBe("ok");
             await s.context.diagnostics.settled();
+            // A key not registered yet: a login with a known key writes nothing to hold dispose.
+            const newcomer = await createSigner();
             const payload =
                 route === "/api/login"
-                    ? { password: "pw", publicKey: signer.publicJwk }
+                    ? { password: "pw", publicKey: newcomer.publicJwk }
                     : setup
                       ? { password: "new password" }
                       : method === "PUT"

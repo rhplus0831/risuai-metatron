@@ -10,7 +10,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (5)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
-- [Server routes and resource store](#server-routes-and-resource-store) (5)
+- [Server routes and resource store](#server-routes-and-resource-store) (4)
 - [Display transform](#display-transform) (1)
 - [Chat screen and input](#chat-screen-and-input) (2)
 - [Client and plugins](#client-and-plugins) (8)
@@ -95,13 +95,6 @@ Since `limitedBody` counts the bytes that arrive (Server Byte Budgets slice 1, `
 
 **Why it matters:** the bytes of a deleted chat's pages stay in the database file and in every snapshot's copy until a restart (a restore drops them).
 **Suggested handling:** if orphan growth ever matters, call the sweep from a maintenance tick or after a chat delete; otherwise the wrapper is test-only and could move.
-
-### Every login appends its key hash again
-
-`server/src/routes/auth.ts` login (the `KNOWN_KEYS_KEY` operation, ~224) appends `hashJSON(body.publicKey)` to the known-key list without checking that it is already there, so a tab that logs in again with the same key adds a duplicate, the file grows without a bound, and `verifyJwt`'s `includes` (~132) scans it for every request. Noticed 2026-10-31 while slice 6 serialized logins; the serialized operation kept the behavior.
-
-**Why it matters:** a durable write per repeat login, and a linear check on the serving path, that a set or a dedupe would avoid.
-**Suggested handling:** skip the write when the hash is known; a small fix.
 
 ### Normalizer comments still say the startup pass runs on every start
 

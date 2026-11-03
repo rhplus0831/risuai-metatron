@@ -1407,6 +1407,38 @@ describe("serialized auth persistence", () => {
         }
     });
 
+    it("writes nothing when a tab logs in again with its registered key, and keeps one copy of a key the file repeats", async () => {
+        const save = mkdtempSync(path.join(os.tmpdir(), "risu-auth-repeat-"));
+        const [a, b] = await Promise.all([createSigner(), createSigner()]);
+        const hashOf = (signer: typeof a) =>
+            createHash("sha256").update(JSON.stringify(signer.publicJwk)).digest("hex");
+        const file = path.join(save, "server", "known_public_key_hashes.json");
+        mkdirSync(path.join(save, "server"));
+        writeFileSync(file, JSON.stringify([hashOf(a), hashOf(a)]));
+        let writes = 0;
+        const fs: DurableFs = {
+            ...fsPromises,
+            async open(target, flags, mode) {
+                if (flags === "wx") writes++;
+                return fsPromises.open(target, flags, mode);
+            },
+        };
+        try {
+            const { auth, app } = authApp(save, fs, "pw");
+            const login = (signer: typeof a) =>
+                app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
+            expect((await login(a)).status).toBe(200);
+            expect((await login(a)).status).toBe(200);
+            expect(writes).toBe(0);
+            expect(await auth.isAuthorizedToken(await a.jwt())).toBe(true);
+            expect((await login(b)).status).toBe(200);
+            expect(writes).toBe(1);
+            expect(JSON.parse(readFileSync(file, "utf8"))).toEqual([hashOf(a), hashOf(b)]);
+        } finally {
+            rmSync(save, { recursive: true, force: true });
+        }
+    });
+
     it("gives concurrent password setup one durable winner and answers already set to the loser", async () => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const save = mkdtempSync(path.join(os.tmpdir(), "risu-password-operations-"));

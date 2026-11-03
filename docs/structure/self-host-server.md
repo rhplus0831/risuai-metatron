@@ -344,9 +344,9 @@ Everything lives under `save/`. `data/`, `backups/`, and `cache/thumbnails/` are
 - `POST /api/set_password` is one operation on the ordered writer (key `auth:password`): the state check, the
   validation, the durable write, then the install, so of two concurrent calls one wins and the other answers
   `already set`.
-- `server/known_public_key_hashes.json`: an array of strings. A login's new key is one operation (key `auth:keys`): it
-  derives the next list from the current one, writes it durably, and installs it, so two concurrent logins keep both
-  keys; the login answers 200 after the write and 500 when it failed.
+- `server/known_public_key_hashes.json`: an array of strings, read into a set. A login's new key is one operation (key
+  `auth:keys`): it derives the next list from the current one, writes it durably, and installs it, so two concurrent
+  logins keep both keys; the login answers 200 after the write and 500 when it failed. A known key writes nothing.
 - A missing key file means no known keys; malformed JSON or another shape (including an empty file) is renamed beside it
   to `known_public_key_hashes.json.corrupt-<Date.now()>`, with a warning naming that path. Startup continues with no
   known keys, so every tab logs in again with the password; other read errors throw. Deleting only `password` lets you
