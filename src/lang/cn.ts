@@ -1203,7 +1203,7 @@ export const languageChinese = {
     useTokenizerCaching: "Tokenizer 缓存",
     hypaMemoryV2Modal: "Hypa V2 模态框",
     hypaMemoryV3Modal: "Hypa V3 模态框",
-    showMenuHypaMemoryModal: "显示菜单 Hypa 模态框",
+    showMenuHypaMemoryModal: "显示菜单 HypaV2 模态框",
     promptInfoInsideChat: "添加提示信息到聊天",
     promptTextInfoInsideChat: "添加提示文本到聊天",
     promptInfoEmptyMessage: "此消息没有可用的提示信息。",

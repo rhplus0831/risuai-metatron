@@ -1272,7 +1272,7 @@ export const languageSpanish = {
     useTokenizerCaching: "Caché de Tokenizador",
     hypaMemoryV2Modal: "Modal Hypa V2",
     hypaMemoryV3Modal: "Modal Hypa V3",
-    showMenuHypaMemoryModal: "Mostrar Menú Modal Hypa",
+    showMenuHypaMemoryModal: "Mostrar Menú Modal HypaV2",
     promptInfoInsideChat: "Agregar Info de Prompt al Chat",
     promptTextInfoInsideChat: "Agregar Texto de Prompt al Chat",
     promptInfoEmptyMessage: "No hay información de prompt disponible para este mensaje.",

@@ -796,6 +796,35 @@ it("opens structured memory from the menu ahead of older flags and preserves the
     hypaV3ModalOpen.set(false);
 });
 
+it("shows the structured memory and HypaV3 menu rows without the menu toggle, and HypaV2 only with it", async () => {
+    const { target, menu, click } = await mountComposer();
+    const { settings } = await import("src/ts/storage/settingsViews.svelte");
+    const { hypaV3ModalOpen } = await import("src/ts/stores.svelte");
+    const { get } = await import("svelte/store");
+    settings.ui.showMenuHypaMemoryModal = false;
+    settings.memoryTranslateMedia.supaModelType = "subModel";
+    for (const [algorithm, v2, v3, label] of [
+        ["structuredMemory", false, false, language.structuredMemory.panel.title],
+        ["hypaV3", false, true, language.hypaMemoryV3Modal],
+    ] as const) {
+        settings.ui.memoryAlgorithmType = algorithm;
+        settings.memoryTranslateMedia.hypav2 = v2;
+        settings.memoryTranslateMedia.hypaV3 = v3;
+        hypaV3ModalOpen.set(false);
+        flushSync();
+        menu();
+        click([...target.querySelectorAll("span")].find((node) => node.textContent.trim() === label)!.parentElement);
+        expect(get(hypaV3ModalOpen)).toBe(true);
+    }
+    settings.ui.memoryAlgorithmType = "hypaV2";
+    settings.memoryTranslateMedia.hypav2 = true;
+    settings.memoryTranslateMedia.hypaV3 = false;
+    flushSync();
+    menu();
+    expect(target.textContent).not.toContain(language.hypaMemoryV2Modal);
+    hypaV3ModalOpen.set(false);
+});
+
 it("renders a memory health badge with the context meter off and opens the panel on press", async () => {
     const { target, click } = await mountComposer();
     const { settings } = await import("src/ts/storage/settingsViews.svelte");

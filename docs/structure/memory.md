@@ -284,6 +284,8 @@ it matches a removable entry), so a prompt still over the context with them ends
   through `supaMemoryOnCount` in `shared/characters.ts`).
 - Stores: `hypaV3ModalOpen`, `hypaV3ProgressStore`, `memoryProgressStore` (per job). The tab's task statuses and fences:
   `src/ts/process/memoryTasks.svelte.ts` (module state, keyed by `chatStatusKey`).
+- The chat menu's memory row (`memoryMenuKind` in `DefaultChatScreen`) always shows for structured memory and HypaV3;
+  `showMenuHypaMemoryModal` gates only HypaV2's row.
 - Server process memory: the memory task registry (running, queued, and retained inputs, `pendingManual`, terminal
   statuses, leases) and the chats' source generations; neither survives a restart.
 

@@ -3053,7 +3053,7 @@ export const languageEnglish = {
     useTokenizerCaching: "Tokenizer Caching",
     hypaMemoryV2Modal: "Hypa V2 Modal",
     hypaMemoryV3Modal: "Hypa V3 Modal",
-    showMenuHypaMemoryModal: "Show Menu Hypa Modal",
+    showMenuHypaMemoryModal: "Show Menu HypaV2 Modal",
     promptInfoInsideChat: "Add Prompt Info to Chat",
     promptTextInfoInsideChat: "Add Prompt Text to Chat",
     promptInfoEmptyMessage: "No prompt information is available for this message.",

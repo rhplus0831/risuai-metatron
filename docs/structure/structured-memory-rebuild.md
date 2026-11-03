@@ -239,9 +239,8 @@ same buttons. It starts nothing. A chat with no such run has nothing to compare,
 
 ### Limitations
 
-- A stopped run keeps the lock until a person resumes or abandons, across restarts too. A chat whose panel is out of
-  reach because the chat menu's memory entry is off, in a group, needs that setting turned on first. Decision:
-  Structured Memory slice 6b, plan.
+- A stopped run keeps the lock until a person resumes or abandons, across restarts too. Decision: Structured Memory
+  slice 6b, plan.
 - A backfill adds events and new pages and leaves current state alone: existing pages, the scene, and threads learn
   nothing from it. A rebuild refreshes them. Decision: Structured Memory slice 6b, plan.
 - A rebuild forgets reverts on sections with no mark: such a section is written anew, its history goes, and the writer

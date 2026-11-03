@@ -1260,7 +1260,7 @@ export const languageVietnamese = {
     useTokenizerCaching: "Lưu trữ đệm Tokenizer",
     hypaMemoryV2Modal: "Hypa V2 Modal",
     hypaMemoryV3Modal: "Hypa V3 Modal",
-    showMenuHypaMemoryModal: "Hiển thị Menu Hypa Modal",
+    showMenuHypaMemoryModal: "Hiển thị Menu HypaV2 Modal",
     promptInfoInsideChat: "Thêm thông tin lời nhắc vào trò chuyện",
     promptTextInfoInsideChat: "Thêm văn bản lời nhắc vào trò chuyện",
     promptInfoEmptyMessage: "Không có thông tin lời nhắc cho tin nhắn này.",

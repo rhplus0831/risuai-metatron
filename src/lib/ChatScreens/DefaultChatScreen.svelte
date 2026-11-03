@@ -134,6 +134,17 @@
     const subModel = $derived(getModelInfoForMode("submodel").id);
     /** The memory menu row opens the panel, whatever older flags the settings still hold. */
     const structuredMemorySelected = $derived(settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
+    /**
+     * Which memory view the menu row opens. Structured memory and HypaV3 always get the row; HypaV2's alert
+     * stays behind `showMenuHypaMemoryModal`.
+     */
+    const memoryMenuKind = $derived.by(() => {
+        if (structuredMemorySelected) return "structuredMemory";
+        const media = settings.memoryTranslateMedia;
+        if (!((media.supaModelType !== "none" && media.hypav2) || media.hypaV3)) return null;
+        if (media.hypav2) return settings.ui.showMenuHypaMemoryModal ? "hypaV2" : null;
+        return "hypaV3";
+    });
     /** The open chat's memory health state, shown above the composer and opening the panel like the menu row. */
     const memoryHealth = $derived.by(() => {
         const ref = currentChatRef();
@@ -1364,38 +1375,34 @@
                                 </div>
                             {/each}
 
-                            {#if settings.ui.showMenuHypaMemoryModal}
-                                {#if structuredMemorySelected || (settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2) || settings.memoryTranslateMedia.hypaV3}
-                                    <div
-                                        class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                                        onclick={() => {
-                                            if (structuredMemorySelected) {
-                                                $hypaV3ModalOpen = true;
-                                            } else if (settings.memoryTranslateMedia.hypav2) {
-                                                const ref = currentChatRef();
-                                                if (ref && !findChat(ref)?.hypaV2Data) {
-                                                    setChatMeta(ref, {
-                                                        hypaV2Data: { lastMainChunkID: 0, mainChunks: [], chunks: [] },
-                                                    });
-                                                }
-                                                showHypaV2Alert();
-                                            } else if (settings.memoryTranslateMedia.hypaV3) {
-                                                $hypaV3ModalOpen = true;
+                            {#if memoryMenuKind}
+                                <div
+                                    class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                    onclick={() => {
+                                        if (memoryMenuKind === "hypaV2") {
+                                            const ref = currentChatRef();
+                                            if (ref && !findChat(ref)?.hypaV2Data) {
+                                                setChatMeta(ref, {
+                                                    hypaV2Data: { lastMainChunkID: 0, mainChunks: [], chunks: [] },
+                                                });
                                             }
+                                            showHypaV2Alert();
+                                        } else {
+                                            $hypaV3ModalOpen = true;
+                                        }
 
-                                            openMenu = false;
-                                        }}
-                                    >
-                                        <BrainIcon />
-                                        <span class="ml-2">
-                                            {structuredMemorySelected
-                                                ? language.structuredMemory.panel.title
-                                                : settings.memoryTranslateMedia.hypav2
-                                                  ? language.hypaMemoryV2Modal
-                                                  : language.hypaMemoryV3Modal}
-                                        </span>
-                                    </div>
-                                {/if}
+                                        openMenu = false;
+                                    }}
+                                >
+                                    <BrainIcon />
+                                    <span class="ml-2">
+                                        {memoryMenuKind === "structuredMemory"
+                                            ? language.structuredMemory.panel.title
+                                            : memoryMenuKind === "hypaV2"
+                                              ? language.hypaMemoryV2Modal
+                                              : language.hypaMemoryV3Modal}
+                                    </span>
+                                </div>
                             {/if}
 
                             {#if settings.memoryTranslateMedia.translator !== ""}

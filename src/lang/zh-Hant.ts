@@ -1303,7 +1303,7 @@ export const languageChineseTraditional = {
     useTokenizerCaching: "使用 Tokenizer 快取",
     hypaMemoryV2Modal: "Hypa V2 視窗",
     hypaMemoryV3Modal: "Hypa V3 視窗",
-    showMenuHypaMemoryModal: "在選單顯示 Hypa 視窗",
+    showMenuHypaMemoryModal: "在選單顯示 HypaV2 視窗",
     promptInfoInsideChat: "將提示詞資訊儲存至對話",
     promptTextInfoInsideChat: "將提示詞文字儲存至對話",
     promptInfoEmptyMessage: "此訊息沒有可用的提示詞資訊",

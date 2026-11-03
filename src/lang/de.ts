@@ -1285,7 +1285,7 @@ export const languageGerman = {
     useTokenizerCaching: "Tokenizer-Caching verwenden",
     hypaMemoryV2Modal: "Hypa V2 Modal",
     hypaMemoryV3Modal: "Hypa V3 Modal",
-    showMenuHypaMemoryModal: "Menü Hypa Modal anzeigen",
+    showMenuHypaMemoryModal: "Menü HypaV2 Modal anzeigen",
     promptInfoInsideChat: "Anweisungsinformationen zum Chat hinzufügen",
     promptTextInfoInsideChat: "Anweisungstext zum Chat hinzufügen",
     promptInfoEmptyMessage: "Für diese Nachricht sind keine Anweisungsinformationen verfügbar.",
