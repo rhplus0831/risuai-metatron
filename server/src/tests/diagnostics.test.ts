@@ -35,7 +35,7 @@ import { type DiagnosticsRecorder, errorFields, logEvent, recordSafely } from ".
 import { createGenerationJobs, GenerationRunnerError, markFailure, type RunningJob } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
 import { createHistoryObserver } from "../llm/historyObserver.ts";
-import { createResourceTestClient, createTestServer, sleep, TEST_INDEX_HTML, waitFor } from "./testSupport.ts";
+import { createResourceTestClient, createTestServer, TEST_INDEX_HTML, waitFor } from "./testSupport.ts";
 
 // The server's diagnostics journal (`server/src/diagnostics/journal.ts`) and its wiring. The journal:
 // one projected event per line in `events/<UTC day>.jsonl`, the 300-event ring and the last 20 job
@@ -869,7 +869,7 @@ describe("the recorder helpers", () => {
 describe("the job registry", () => {
     const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
     /** A store with one bound chat and a registry recording to `diagnostics`; the runner is set per job. */
-    function setup(diagnostics: DiagnosticsRecorder) {
+    function setup(diagnostics: DiagnosticsRecorder, now?: () => number) {
         const dir = tempDir("risu-diagnostics-jobs-");
         const lock = createGenerationLock();
         const store = createResourceStore({ file: path.join(dir, "data", "resources.sqlite"), kinds, guard: lock });
@@ -884,6 +884,7 @@ describe("the job registry", () => {
             authorize: async () => true,
             runner: (job) => runner(job),
             diagnostics,
+            ...(now ? { now } : {}),
         });
         cleanups.push(async () => {
             jobs.beginShutdown();
@@ -949,9 +950,10 @@ describe("the job registry", () => {
 
     it("records `accepted` at admission and `done` or `error` (with the failure fields and the duration) at the end, and counts the live jobs", async () => {
         const { events, journal } = openJournal();
-        const { jobs, create, ended } = setup(journal);
+        let clock = DAY_ONE;
+        const { jobs, create, ended } = setup(journal, () => clock);
         const done = create(async (job) => {
-            await sleep(20);
+            clock += 20;
             job.emit({ type: "done", revision: job.context.chatRevision });
         });
         expect(jobs.live()).toBe(1);
@@ -996,7 +998,7 @@ describe("the job registry", () => {
         ]);
         expect(recorded[0]).toEqual({ at: DAY_ONE, kind: "job", phase: "accepted", jobId: done, jobKind: "command" });
         expect(recorded[1]).toMatchObject({ phase: "done", jobKind: "command" });
-        expect(recorded[1].durationMs).toBeGreaterThanOrEqual(15);
+        expect(recorded[1].durationMs).toBe(20);
         expect(recorded[3]).toMatchObject({
             phase: "error",
             reason: "failed",
@@ -1228,9 +1230,10 @@ describe("the server context", () => {
         const { rootDir, context } = s;
         cleanups.push(() => rmSync(rootDir, { recursive: true, force: true }));
         await s.create("characters", "a", { chaId: "a" });
+        vi.useFakeTimers({ toFake: ["Date"] });
         context.startBackgroundTasks();
         const first = readState(dir);
-        await sleep(5);
+        vi.setSystemTime(Date.now() + 5);
         await context.dispose();
         const events = context.diagnostics.recent();
         expect(events.at(-1)).toMatchObject({ kind: "lifecycle", phase: "shutdown" });

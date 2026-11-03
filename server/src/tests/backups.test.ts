@@ -27,7 +27,6 @@ import {
     hex,
     parseArchive,
     type ResourceTestClient,
-    sleep,
     TEST_INDEX_HTML,
     testRestoreRunner,
     type TestServerOptions,
@@ -46,6 +45,7 @@ afterAll(() => {
     vi.restoreAllMocks();
 });
 afterEach(async () => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -146,8 +146,10 @@ describe("GET /api/backups", () => {
     it("lists the completed snapshots newest first and requires auth", async () => {
         const s = await defaultServer();
         expect(await listBackups(s)).toEqual([]);
+        // A snapshot's name and `createdAt` come from the clock: the second one is taken a second later.
+        vi.useFakeTimers({ toFake: ["Date"] });
         const first = await s.context.snapshots.snapshotNow();
-        await sleep(2);
+        vi.setSystemTime(Date.now() + 1_000);
         const second = await s.context.snapshots.snapshotNow();
         writeFileSync(path.join(backupsDir(s), ".resources-20300101T000000000Z-01234567.sqlite.tmp"), "x");
         writeFileSync(path.join(backupsDir(s), "resources.sqlite"), "x");
@@ -338,13 +340,15 @@ describe("maintenance", () => {
         expect(await readAsset(s, "assets/x.png")).toBe("png");
         expect((await s.request("/api/list")).status).toBe(200);
         expect((await s.request("/api/backups")).status).toBe(200);
-        // A restore or an export arriving meanwhile queues behind the lock instead.
+        // A restore or an export arriving meanwhile queues behind the lock instead: the restore's
+        // `pin` takes the lock, so once it is called the restore waits there.
+        const pinned = vi.spyOn(s.context.snapshots, "pin");
         let queuedRestore: Response | null = null;
         const queuedExport = s.json("/api/backups/export", {});
         const queuedRestoring = restore(s, "resources-20300101T000000000Z-01234567").then(
             (res) => (queuedRestore = res),
         );
-        await sleep(20);
+        await waitFor(() => pinned.mock.calls.length === 1);
         expect(queuedRestore).toBeNull();
 
         release.resolve();
@@ -613,8 +617,9 @@ describe("POST /api/backups/export", () => {
         const reader = res.body!.getReader();
         expect((await reader.read()).done).toBe(false);
         await reader.cancel();
-        await waitFor(() => readdirSync(tmpDir(s)).length === 0);
-        await sleep(20);
+        // The export's tracked operation ends with its finalizer, so every removal has run once this settles.
+        await s.context.snapshots.stop();
+        expect(readdirSync(tmpDir(s))).toEqual([]);
         expect(rm.mock.calls.filter(([target]) => path.basename(String(target)).startsWith("export-"))).toHaveLength(1);
     });
 
@@ -711,7 +716,7 @@ describe("POST /api/backups/export", () => {
         controller.abort();
         let stopped = false;
         const stopping = s.context.snapshots.stop().then(() => (stopped = true));
-        await sleep(20);
+        await nextTurn();
         expect(stopped).toBe(false);
         release.resolve();
         const res = await pending;
@@ -1729,7 +1734,6 @@ describe("shutdown admission", () => {
             expect(res.headers.get("retry-after"), res.url).toBe("5");
             expect(await res.json(), res.url).toEqual({ error: "The server is shutting down" });
         }
-        await sleep(20);
         expect(readdirSync(tmpDir(s))).toEqual([]);
         expect(assetFiles(s)).toEqual([]);
         // New resource requests, reads included, are refused too; the store stays open only for
@@ -1742,6 +1746,9 @@ describe("shutdown admission", () => {
         expect(before.map((b) => b.id)).toContain(snapshot.id);
         holding.resolve();
         await disposing;
+        // Dispose waited for every admitted operation: none of the refused ones started work meanwhile.
+        expect(readdirSync(tmpDir(s))).toEqual([]);
+        expect(assetFiles(s)).toEqual([]);
     });
 });
 

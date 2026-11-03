@@ -17,7 +17,6 @@ import {
     ResourceValidationError,
 } from "../data/resourceStore.ts";
 import { INJECTED_COPY_FAILURE, installSnapshot, stageSnapshot, withFailingInstallCopy } from "./stagedRestore.ts";
-import { sleep } from "./testSupport.ts";
 import { verifyStagedFile } from "../data/restore/stageValidatedSnapshot.ts";
 
 const root: ResourceKind = { name: "root", schemaVersion: 1, normalize: (input) => input };
@@ -768,12 +767,17 @@ describe("transaction", () => {
     it("rolls back a body that returns a promise or a thenable and rejects the continuation's write", async () => {
         const store = memoryStore();
         const late: string[] = [];
+        let bothLate!: () => void;
+        const lateWritten = new Promise<void>((resolve) => (bothLate = resolve));
         const lateWrite = (id: string) => {
             try {
                 store.put(root, id, 2, null);
                 late.push(`${id}: wrote`);
             } catch (error) {
                 late.push(`${id}: ${(error as Error).message}`);
+            }
+            if (late.length === 2) {
+                bothLate();
             }
         };
         const asyncBody = async () => {
@@ -798,7 +802,7 @@ describe("transaction", () => {
         };
         expect(() => store.transaction(thenableBody)).toThrow("Resource transactions must be synchronous");
 
-        await sleep(10);
+        await lateWritten;
         expect(late).toEqual([
             "a-late: Resource transaction already ended",
             "b-late: Resource transaction already ended",
@@ -813,6 +817,8 @@ describe("transaction", () => {
     it("rejects a timer write the body scheduled, even after the commit", async () => {
         const store = memoryStore();
         const late: string[] = [];
+        let timerRan!: () => void;
+        const timerWrite = new Promise<void>((resolve) => (timerRan = resolve));
         store.transaction(() => {
             store.put(root, "a", 1, null);
             setTimeout(() => {
@@ -822,10 +828,11 @@ describe("transaction", () => {
                 } catch (error) {
                     late.push((error as Error).message);
                 }
+                timerRan();
             }, 0);
         });
         expect(store.get(root, "a")!.data).toBe(1);
-        await sleep(10);
+        await timerWrite;
         expect(late).toEqual(["Resource transaction already ended"]);
         expect(store.get(root, "timer")).toBeNull();
         expect(store.put(root, "timer", 2, null).data).toBe(2);
