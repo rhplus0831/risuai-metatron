@@ -1376,11 +1376,18 @@ function isProjection(field: string, value: unknown): boolean {
  * Whether a stored `value` of a chat field leaves the projection `held` in place: stored data never
  * holds one, and a stored value with no summaries owns nothing (`hypaV3DataHoldsSummaries`), absent or
  * empty alike. A value with summaries, or a read's sealed one, takes over.
+ *
+ * This rule applies to a job's copy and a patch's `meta` or field changes. Whole reads (`applyRemoteChat`,
+ * `installRead`) take the field as answered instead: an absent field cannot preserve an old projection.
  */
 function keepsProjection(field: string, held: unknown, value: unknown): boolean {
     return isProjection(field, held) && !isSealedHypaV3Data(value) && !hypaV3DataHoldsSummaries(value);
 }
 
+/**
+ * A whole chat for a stored-data boundary, with any sealed `hypaV3Data` left out. This also guards the
+ * recovered create converted to a replacement on refusal retry; its copy can predate the current mirror.
+ */
 function withoutProjection(chat: Chat): Chat {
     if (!isSealedHypaV3Data(chat.hypaV3Data)) {
         return chat;
@@ -1389,7 +1396,13 @@ function withoutProjection(chat: Chat): Chat {
     return stored;
 }
 
-/** A chat as it leaves the tab or enters the journal: `projectChat` without a projection. */
+/**
+ * A chat built from the mirror for a write or journal snapshot: `projectChat` without a projection. Creates,
+ * replacements, journal snapshots and retries of refused mirror writes all use this shape.
+ * `projectChat` retains the value for `captureChatBaseline`, so a write's diff compares what it read.
+ * Recovered resends replay their exact ops without passing through here.
+ * `server/src/data/chatStore.ts` also strips sealed fields from writes a stale tab or recovered resend carries.
+ */
 function sendChat(chat: Chat): Chat {
     return withoutProjection(projectChat(chat));
 }
@@ -3615,7 +3628,12 @@ const SERVER_META_DEFAULTS: Readonly<Record<string, () => unknown>> = {
 /** The chats that showed the notice of a refused `hypaV3Data`, so a plugin writing on every send stacks no toasts. */
 const refusedProjectionChats = new Set<string>();
 
-/** Tells of a `hypaV3Data` dropped from a write whose other fields still apply. */
+/**
+ * Tells of a `hypaV3Data` dropped from a write whose other fields still apply: `console.warn` on each
+ * notice, and one `alertToast` per chat until reload. This refusal throws nothing: the field alone is
+ * dropped and the rest of the same write applies. `src/ts/plugins/apiV3/v3.svelte.ts`'s `warnRefused`
+ * handles a thrown `MutationValidationError`, which stops that setter's write; it rolls nothing back.
+ */
 function noticeRefusedProjection(key: string) {
     console.warn(
         "[Plugin] Refused a change to hypaV3Data, which Structured Memory projects from its records; the previous value was kept",
@@ -3637,13 +3655,14 @@ function noticeRefusedProjection(key: string) {
  * (`hypaV3DataHoldsSummaries`).
  *
  * - A sealed value is never taken: it is a projection, this chat's or another's, or an older one a
- *   plugin read before a refresh. It raises the notice only when something in it was changed.
+ *   plugin read before a refresh. It raises the notice only when its seal is no longer intact and the
+ *   value differs from `baseline`; an unchanged copy of an already altered baseline is silent too.
  * - An absent value leaves the field in place when it is the projection's, or a projection held or
  *   started from: a plugin's object without the field loses nothing. A real value goes as it always did.
  * - An unsealed value goes unless the field is the projection's, when a change is dropped with the
  *   notice, so it never becomes a stored owner. A new chat has no records. With another algorithm
  *   selected it is a real write, which replaces a projection held from before: HypaV3 owns the chat
- *   from then on.
+ *   from then on when the value holds summaries.
  */
 function keepsHeldHypaV3Data(key: string, incoming: unknown, held: Chat | undefined, baseline: unknown): boolean {
     const differs = () => JSON.stringify(incoming) !== JSON.stringify(baseline);

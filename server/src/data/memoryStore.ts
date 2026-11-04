@@ -1236,9 +1236,10 @@ function lastMemoryManifest(messages: readonly Message[]): MemoryManifest | null
 }
 
 /**
- * A chat's `hypaV3Data` as its stored `events` and `messages` make it, unsealed: reconciled first, so a
- * source that changed never reads as active, then in the order of each event's earliest source by
- * current position, because every HypaV3 reader takes `summaries` as chronological while `seq` is
+ * A chat's `hypaV3Data` as its stored `events` and `messages` make it, unsealed: reconciled first.
+ * `shared/structuredMemory.ts`'s `reconcileMemoryEvents` turns an active event with a changed source
+ * stale unless a person kept its current source state (`keptState`). Events then follow the current position of their
+ * earliest source, because every HypaV3 reader takes `summaries` as chronological while `seq` is
  * storage order and a re-record lands last. An event with no source in `messages` goes last, and ties
  * keep `seq` order. A malformed stored event can throw; the callers each decide what that means.
  */

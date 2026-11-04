@@ -942,6 +942,10 @@ function chatsOfRead(chaIds: readonly (string | undefined)[], context: PluginCal
  * not on the server yet is left out, and so never counts as checked. Whatever fails, a deadline included,
  * leaves the held value in place and counts as a check: this never rejects, so it never changes what the
  * read would otherwise answer or throw.
+ *
+ * `src/ts/process/structuredMemory.svelte.ts` supplies both reads; `src/ts/storage/chatStore.svelte.ts`
+ * fences each answer through `installChatProjection`. A moved chat skipped by the projection cap keeps
+ * its held memory token, so a later check still finds it moved; server tokens are not cached separately.
  */
 async function refreshChatProjections(refs: readonly ChatRef[]): Promise<void> {
     try {

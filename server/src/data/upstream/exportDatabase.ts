@@ -1049,6 +1049,8 @@ type UpstreamChatMemory = { name: string; events: readonly string[] | null };
 /**
  * Gives a chat whose stored `hypaV3Data` holds no summaries the projection of its records. One that
  * cannot be made leaves the chat as stored, and is reported.
+ * The value from `server/src/data/memoryStore.ts` stays unsealed: both an upstream restore and a
+ * re-import through `server/src/data/upstream/importDatabase.ts` take plain HypaV3 data as real summaries.
  */
 function projectUpstreamMemory(
     chat: Root,

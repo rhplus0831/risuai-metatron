@@ -1002,6 +1002,7 @@ export type StructuredMemoryRevisionsAnswer = { revisions: (string | null)[] };
 /**
  * A `hypaV3Data` that carries a seal (`sealHypaV3Data`). `structuredMemoryRevision` is the memory revision
  * the value was read at, on any value a read answers, so a whole read gives a tab its own baseline.
+ * The tab keeps no independent memory token: `src/ts/storage/chatStore.svelte.ts` reads it from this value.
  */
 export type SealedHypaV3Data = SerializableHypaV3Data & {
     structuredMemoryProjection: string;
@@ -1071,7 +1072,7 @@ export function itemTag({ lane, id }: Pick<MemoryManifestItem, "lane" | "id">): 
  * verifiably used, by position in the returned `summaries`: `flow` as recent, `events` as similar, and
  * an event in both lanes in both lists. `lastImportantSummaries` and `lastRandomSummaries` stay empty:
  * a metric records why the send selected a record, no lane selects by importance, and a pin set after
- * the send must not rewrite that.
+ * the send must not rewrite that. No lane selects at random either; `lastDeferredSummaries` is absent.
  */
 export function projectHypaV3Data(
     events: readonly MemoryEvent[],
@@ -1128,8 +1129,9 @@ export function projectHypaV3Data(
 
 /**
  * Whether a stored `hypaV3Data` owns the field: it holds a summary. An empty value says nothing of a
- * chat's memory (opening the HypaV3 modal stores one, and a reset leaves one), so a chat's records take
- * over from it as if the field were absent.
+ * chat's memory: opening the HypaV3 modal stores one, and its Reset leaves one
+ * (`src/lib/Others/HypaV3Modal.svelte`). A chat's records take over from an empty value as if the field
+ * were absent. The structured memory reset in `server/src/routes/structuredMemory.ts` unsets the field.
  */
 export function hypaV3DataHoldsSummaries(value: unknown): boolean {
     return isPlainObject(value) && Array.isArray(value.summaries) && value.summaries.length > 0;
