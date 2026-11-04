@@ -37,10 +37,18 @@ export function openPopupEditorSession(value: string, language = "markdown"): nu
     return sessionId;
 }
 
+/**
+ * Whether `sessionId` is the latest session opened. A close leaves it current, so its opener can still write the text
+ * back after the editor closed; only a newer open ends it.
+ */
 export function isPopupEditorSessionCurrent(sessionId: number): boolean {
     return currentSessionId === sessionId;
 }
 
+/**
+ * A field's async completion or teardown (`src/lib/UI/GUI/TextAreaInput.svelte`, `TextAreaResizable.svelte`) closes
+ * only the session it opened: once a newer session replaced it, this returns false and the newer editor stays open.
+ */
 export function closePopupEditorSession(sessionId: number): boolean {
     if (!isPopupEditorSessionCurrent(sessionId)) return false;
     popUpEditorStore.open = false;

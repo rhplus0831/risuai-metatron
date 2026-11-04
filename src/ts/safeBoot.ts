@@ -1,16 +1,39 @@
-/**
- * Safe boot (`app-shell.md` "Safe boot"): plugins, or custom CSS and GUI HTML, off for this page load.
- * Asked for with `?safe` (`?safe=all`, `?safe=plugins`, `?safe=css`, or a list), or entered by
- * itself after `SAFE_BOOT_THRESHOLD` consecutive boots that did not settle. Nothing is written to
- * the server and no persisted field changes: the state lives in this module for the page load, plus
- * one `localStorage` record of the boots that reached user content and did not settle.
- */
 import { language } from "src/lang";
 import { alertNormal } from "./alert";
 import { SafeModeStore } from "./stores.svelte";
 
+/**
+ * Safe boot: plugins, or custom CSS and GUI HTML, off for this page load.
+ * Asked for with `?safe` (`?safe=all`, `?safe=plugins`, `?safe=css`, or a list), or entered by
+ * itself after `SAFE_BOOT_THRESHOLD` consecutive boots that did not settle. Nothing is written to
+ * the server and no persisted field changes: the state lives in this module for the page load, plus
+ * one `localStorage` record of the boots that reached user content and did not settle.
+ *
+ * - Categories: `plugins` and `css` (custom CSS and custom GUI HTML, through `SafeModeStore`; the `toggleCSS` hotkey
+ *   can turn them back on during a safe boot). A bare `?safe` and `?safe=all` mean both; `?safe=plugins`,
+ *   `?safe=css`, or a comma list pick; unknown names are ignored. The query is read once, by `beginSafeBoot` at the
+ *   start of `loadData`; the router's boot replace writes the path without it, so a reload after a settled boot
+ *   starts normally.
+ * - The counter: the record `SAFE_BOOT_KEY` = `{ count, at }`, read and written inside `try`. A failed or malformed
+ *   read counts as no record, and a failed write leaves no counter for this boot (`?safe` still works). A boot counts
+ *   only from its content stage, so one that fails earlier (an unreachable server, the service worker's reload) does
+ *   not count.
+ * - The trip: when the record this boot reads at its content stage holds `count >= SAFE_BOOT_THRESHOLD` and this
+ *   boot's increment was written, both categories turn off before the theme runs. A failed write leaves only the
+ *   `?safe` categories off, so a stale count cannot force later boots into safe mode while writes fail. Two boots
+ *   that reached user content and did not settle make the third safe. A boot that settles removes only the record it
+ *   wrote, so another tab's newer write or a storage error can leave one in place.
+ * - The notice: one `alertNormal` at the content stage when anything is off, naming what is off, why when the
+ *   counter tripped it, and how to leave. A boot that fails before its content stage with `?safe` categories already
+ *   off shows it from its catch (`bootErrorWithSafeBootHint`).
+ */
+
 export type SafeBootCategory = "plugins" | "css";
 
+/**
+ * The `localStorage` key of the attempt record, the only thing safe boot persists. The tabs sharing this origin's
+ * `localStorage` share it, and its read and write are not atomic.
+ */
 export const SAFE_BOOT_KEY = "risu.safeBoot.attempts";
 /** Consecutive unsettled boots after which the next one is safe. */
 export const SAFE_BOOT_THRESHOLD = 2;
@@ -79,6 +102,11 @@ export type SafeBootDeps = {
 
 export type SafeBoot = ReturnType<typeof createSafeBoot>;
 
+/**
+ * The safe-boot controller, with its effects injected through `SafeBootDeps` (the query, the storage, the clock, the
+ * timer, `SafeModeStore`, the notice) so the tests run it. The module's own instance below does nothing until
+ * `beginSafeBoot()`.
+ */
 export function createSafeBoot(deps: SafeBootDeps) {
     let begun = false;
     const off = new Set<SafeBootCategory>();
@@ -246,11 +274,24 @@ const safeBoot = createSafeBoot({
     notify: (message) => alertNormal(message),
 });
 
+/** Reads `?safe` at the start of `loadData` (`src/ts/bootstrap.ts`), before anything can replace the URL. */
 export const beginSafeBoot = () => safeBoot.begin();
-/** Whether `category` is off for this page load. */
+/**
+ * Whether `category` is off for this page load. `src/ts/plugins/plugins.svelte.ts` loads no plugin and runs no
+ * deferred reload while `plugins` is off, and `src/lib/Setting/Pages/PluginSettings.svelte` says so.
+ */
 export const safeBootOff = (category: SafeBootCategory) => safeBoot.isOff(category);
+/** Counts this boot and may trip safe boot; `loadData` calls it just before the theme (`updateTextThemeAndCSS`). */
 export const markSafeBootContentStage = () => safeBoot.markContentStage();
+/**
+ * Fails this boot's attempt, so it never settles: `loadData` calls it for a rejected plugin load and in its catch.
+ * A plugin that fails to start fails the attempt through the settle window's `guests`.
+ */
 export const latchSafeBootFailure = (reason: string) => safeBoot.fail(reason);
+/**
+ * Starts the settle window, once `loadData` has set `loadedStore`. A settled boot removes the attempt record only if
+ * it still holds the value this boot wrote (compared by value), so another tab's newer attempt stays counted.
+ */
 export const startSafeBootSettleWindow = (check: {
     loaded(): boolean;
     guests: Promise<boolean>;

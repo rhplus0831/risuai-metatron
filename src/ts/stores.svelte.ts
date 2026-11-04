@@ -8,6 +8,21 @@ import { createAlertQueue } from "./alertQueue";
 import { moduleUpdate } from "./process/modules";
 import { resetTransformEffects } from "./parser/transformClient";
 
+/**
+ * The global UI stores: the screen state the router follows (`src/ts/router/router.svelte.ts`), the overlays, and the
+ * plugin extension points. Navigation selection (the selected character, whether its chat is open) is not here but in
+ * `src/ts/storage/selection.svelte.ts`.
+ *
+ * Some stores are declared elsewhere and re-exported here: `settingsOpen`, `gridOpenStore`, `bookmarkListOpen`, and
+ * `hypaV3ModalOpen` in `screenVisibility.ts`, the popup editor session in `popupEditorSession.svelte.ts`, and
+ * `PlaygroundStore` in `src/ts/storage/selection.svelte.ts`. A module that needs only those writables imports those
+ * files directly to avoid this module's effects; importing them through this module still evaluates it.
+ *
+ * Evaluating this module starts its effects: the `resize` listener feeding `SizeStore` and `DynamicGUI`, the
+ * `CustomCSSStore` subscription that writes the `#customcss` style element, the `ReloadGUIPointer` subscriber, and
+ * the root effect that reruns `moduleUpdate` (`src/ts/process/modules.ts`).
+ */
+
 function updateSize() {
     SizeStore.set({
         w: window.innerWidth,
@@ -21,9 +36,17 @@ export const SizeStore = writable({
     h: 0,
 });
 
+/**
+ * Set true by `loadData` (`src/ts/bootstrap.ts`) once the records are installed, the boot maintenance ran, and the
+ * theme is set up. A caught plugin-load failure still sets it, and a later startup failure does not reset it; a boot
+ * that throws before then leaves it false. `App.svelte` shows its loading branch (after the April Fools page) until
+ * then.
+ */
 export const loadedStore = writable(false);
+/** The narrow layout (viewport width 1024 px or less, kept by the resize listener): the sidebar overlays the chat. */
 export const DynamicGUI = writable(false);
 export const sideBarClosing = writable(false);
+/** Whether the sidebar is shown; it starts open only on a viewport wider than 1024 px. It has no route. */
 export const sideBarStore = writable(window.innerWidth > 1024);
 export const CurrentTriggerIdStore = writable<string | null>(null);
 export const CharEmotion = writable({} as { [key: string]: [string, string, number][] });
@@ -35,6 +58,7 @@ export {
     isPopupEditorSessionCurrent,
     closePopupEditorSession,
 } from "./popupEditorSession.svelte";
+/** The sidebar's character-editing tab instead of the chat tab; set at boot when `settings.ui.botSettingAtStart`. */
 export const botMakerMode = writable(false);
 export const moduleBackgroundEmbedding = writable("");
 /**
@@ -49,6 +73,12 @@ export const openModelPresetList = writable<PickerListState>(false);
 export const openPersonaList = writable<PickerListState>(false);
 /** The chat whose binding dialog is open (`ChatBindingDialog.svelte`), or null. */
 export const chatBindingDialog = writable<ChatRef | null>(null);
+/**
+ * The settings page (`src/ts/settingsMenu.ts` names some; `src/ts/router/routes.ts` `SETTINGS_PAGES` gives each a
+ * slug for `/settings/:page`). -1 is the settings list, which the router normalizes to the model page on a wide
+ * screen. Closing settings does not reset it, so reopening through `settingsOpen` reuses it; applying a settings URL
+ * may replace it.
+ */
 export const SettingsMenuIndex = writable(-1);
 export {
     MODEL_SETTINGS_MENU,
@@ -61,6 +91,12 @@ export {
     VOICE_SETTINGS_MENU,
     INTERACTION_SETTINGS_MENU,
 } from "./settingsMenu";
+/**
+ * A remount token (some callers set a random value): `{#key}` blocks in `src/lib/ChatScreens/Chat.svelte` and
+ * `BackgroundDom.svelte` key on it. The subscriber below skips only its initial callback, so every value change clears
+ * `ReloadChatPointer` and resets the script transform effects (`resetTransformEffects`,
+ * `src/ts/parser/transformClient.ts`).
+ */
 export const ReloadGUIPointer = writable(0);
 /** Re-render counters of chat rows, by `reloadChatKey` (the message id, so an index shift keeps them). */
 export const ReloadChatPointer = writable({} as Record<string, number>);
@@ -74,10 +110,19 @@ export function reloadChatKey(messageId: string | undefined, idx: number): strin
 export const ScrollToMessageStore = $state({ value: -1 });
 /** Set when a notification opens a chat (`openRoute`): the chat screen shows its newest message from the start. */
 export const ShowLatestMessageStore = $state({ value: false });
+/** The Realm browser in place of the home screen (`MainMenu.svelte` → `RealmMain`); its route is `/realm`. */
 export const OpenRealmStore = writable(false);
 export { PlaygroundStore } from "./storage/selection.svelte";
 export const HideIconStore = writable(false);
+/**
+ * The custom CSS in effect, written into the `#customcss` style element by the subscription below.
+ * `updateTextThemeAndCSS` (`src/ts/gui/colorscheme.ts`) sets it, empty while `SafeModeStore` is set.
+ */
 export const CustomCSSStore = writable("");
+/**
+ * Custom CSS and custom GUI HTML off (the `customHTML` theme's rows render as the classic row). Safe boot sets it for
+ * its `css` category (`src/ts/safeBoot.ts`); the `toggleCSS` hotkey flips it both ways. Never persisted.
+ */
 export const SafeModeStore = writable(false);
 export const CharConfigSubMenu = writable(0);
 /** The alert slot: one status and a queue of dialogs, each answering its own caller (`alertQueue.ts`). */
@@ -185,6 +230,7 @@ export function createSimpleCharacter(char: AnyClientCharacter | null | undefine
 
 updateSize();
 window.addEventListener("resize", updateSize);
+/** The text under the spinner of `App.svelte`'s loading branch; `loadData` writes each boot step's name. */
 export const LoadingStatusState = $state({
     text: "",
 });
@@ -206,6 +252,11 @@ export type ChatPanelDef = {
     className?: string;
 };
 
+/**
+ * The plugin extension points, filled by plugins (`src/ts/plugins/apiV3/v3.svelte.ts`) and read by the UI and the
+ * request paths: `additionalSettingsMenu`, `additionalFloatingActionButtons`, `additionalHamburgerMenu`,
+ * `additionalChatMenu`, `chatPanelStore`, and `bodyIntercepterStore` (request body interceptors).
+ */
 export const additionalSettingsMenu = $state([] as MenuDef[]);
 export const additionalFloatingActionButtons = $state([] as MenuDef[]);
 export const additionalHamburgerMenu = $state([] as MenuDef[]);

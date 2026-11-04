@@ -65,6 +65,22 @@
     import IrisModal from "./lib/Others/IrisModal.svelte";
     import { RISU_APP_INTERNAL_DRAG_TYPE, RISU_SIDEBAR_DRAG_TYPE } from "./ts/dragTypes";
 
+    /**
+     * The root component (`src/startApp.ts` mounts it before any data loads). The screen is the first match, in this
+     * order: the April Fools page (April 1 by the local date at mount, until its link dismisses it), the loading
+     * branch (`LoadingStatusState.text`) until `loadedStore`, `settingsOpen` → `Settings`, `gridOpenStore` →
+     * `GridChars`, else `Sidebar` and `ChatScreen`. The overlays (alerts, notices, the Realm popup, the chat dialogs,
+     * picker lists, panels, popups, and modals) mount after the screen, over whichever one shows.
+     *
+     * Only the first dropped file is imported, by its lowercased name (`.risup` a prompt preset, `.risum` a module,
+     * anything else a character card), and a drag that started inside the app (`RISU_APP_INTERNAL_DRAG_TYPE`) or from
+     * the sidebar (`RISU_SIDEBAR_DRAG_TYPE`) is refused.
+     *
+     * "Keep Session Alive: Via Sound" uses one `createKeepAliveAudio` controller, held in `<script module>`. A click
+     * that bubbles to the root `main` element calls `start()` while `settings.ui.keepSessionAlive` is `"sound"` (the
+     * play runs inside a user gesture); the effect calls `stop()` in any other mode.
+     */
+
     let aprilFools = $state(new Date().getMonth() === 3 && new Date().getDate() === 1);
     let aprilFoolsPage = $state(0);
     /** The selected chat's memory run: a chat switch shows another chat's run without a new notice. */

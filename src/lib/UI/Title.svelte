@@ -2,6 +2,12 @@
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { openURL } from "src/ts/globalApi.svelte";
 
+    /**
+     * The home screen's logo, used only by `MainMenu.svelte`. The seasonal variant is sampled from the local date (and
+     * `settings.ui.language`) when the component is created: it does not follow midnight or a later language change.
+     * The Christmas variant hides a mini-game (five clicks on its Santa).
+     */
+
     let specialDay = $state("");
     const today = new Date();
     if (today.getMonth() === 11 && today.getDate() >= 19 && today.getDate() <= 25) {

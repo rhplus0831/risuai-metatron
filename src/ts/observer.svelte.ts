@@ -1,3 +1,20 @@
+/**
+ * The document observers: the Copy/Download menu of highlighted code blocks, and the BGM that message markers ask for.
+ *
+ * - A BGM marker is an element with `risu-ctrl="bgm___<volume|auto>___<src>"`. One track plays at a time. When none
+ *   plays, the first eligible marker in document order starts (the newest message, since the chat body is
+ *   column-reversed), skipping markers that do not parse and markers whose playback failed. A playing track keeps
+ *   playing while its marker stays in the DOM, even if a newer marker appears, and stops `BGM_STOP_GRACE_MS` after its
+ *   marker is gone. On `ended` the track gives up its place and the selection starts again, so the first eligible
+ *   marker plays, which is the same one only while no newer marker precedes it.
+ * - An autoplay block (`NotAllowedError`) pauses all BGM until a capture-phase `pointerup` or `keydown` on the
+ *   document finds sticky user activation (`navigator.userActivation.hasBeenActive`; any such event where that API is
+ *   missing). A source or media error skips only that marker, so another can play; it is retried only after it has
+ *   been missing from the DOM for longer than the grace period and appears again, never on gestures.
+ * - A sync is queued only for a `risu-ctrl` attribute change or an added or removed subtree matching or containing
+ *   `[risu-ctrl]`, so streamed text stays out of the document-wide scan; queued syncs coalesce into one macrotask.
+ */
+
 // Grace period before stopping BGM whose marker left the DOM. Re-rendering a message can
 // briefly remove its markers (remount, async re-parse) without meaning "stop the music".
 const BGM_STOP_GRACE_MS = 1000;
@@ -225,6 +242,7 @@ function containsControlMarker(node: Node): boolean {
     return node instanceof Element && (node.matches("[risu-ctrl]") || node.querySelector("[risu-ctrl]") !== null);
 }
 
+/** Starts the observers; idempotent. `loadData` (`src/ts/bootstrap.ts`) calls it after `startRouter`. */
 export function startObserveDom() {
     if (observingDom) {
         return;

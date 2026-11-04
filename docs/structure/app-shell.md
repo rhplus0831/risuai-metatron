@@ -6,8 +6,10 @@
   hotkeys, DOM observers, `Mutex`.
 - Paths: `index.html`, `src/main.ts`, `src/boot.ts`, `src/startApp.ts`, `src/lib/Others/NodeServerRequired.svelte`,
   `src/App.svelte`,
-  `src/ts/{bootstrap,safeBoot,stores.svelte,platform,polyfill,hotkey,defaulthotkeys,observer.svelte,mutex,keepAliveAudio}.ts`,
-  `src/ts/router/`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`, `src/lib/UI/Title.svelte`.
+  `src/ts/{bootstrap,safeBoot,stores.svelte,screenVisibility,popupEditorSession.svelte,pageVisibility.svelte,platform,polyfill,hotkey,ime,defaulthotkeys,observer.svelte,mutex,keepAliveAudio}.ts`,
+  `src/ts/router/`, `shared/hotkeys.ts`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/lib/UI/MainMenu.svelte`,
+  `src/lib/UI/Title.svelte`, `src/etc/patchNote.ts`. `bootstrap.ts` `loadData` is shared with resource sync
+  (`pnpm docs:owner`).
 - Not here: DB shape and migrations → `persistence.md`. The save loop → [save cycle](resource-sync.md#save-cycle);
   `globalFetch` → [network-jobs](network-jobs.md). Chat UI below `ChatScreen` → `ui-theming.md`. The server's
   client-route fallback (`shared/routes.ts`, `GET *` in `server/src/app.ts`) → `self-host-server.md`. The settings page
@@ -17,116 +19,66 @@
 
 ### Entry and screens
 
-- `src/main.ts`: entry. Imports `./ts/polyfill` and `core-js`, registers the `vite:preloadError` alert, then branches on
-  `isNodeServer`: true → dynamic `import("./boot")` and `boot()`; false → mounts `NodeServerRequired` and removes
-  `#preloading`. The app graph (App, bootstrap, stores, DB) is never imported without the server.
-- `src/boot.ts` `boot`: starts the diagnostics collector (`src/ts/diagnostics/collector.ts`, `diagnostics.md`) before
-  any app module loads, then dynamically imports `src/startApp.ts`; a failure while the app's modules load is an
-  unhandled rejection the collector records.
-- `src/startApp.ts` `startApp`: imports the database side effects, `mount(App)`, `loadData()` (not awaited),
-  `initHotkey()`, and removes `#preloading`.
-- `src/lib/Others/NodeServerRequired.svelte`: the notice shown when the client is opened without the self-host server
-  (static hosting, a bare `vite build` output). English only (`language.nodeServerRequiredTitle`/`Desc`), since
-  `changeLanguage` runs only after the DB loads.
-- `src/App.svelte`: the screen selection (ordered `{#if}` chain), plus drag/drop import, overlays (alerts, popups,
-  modals), and keep-alive audio.
-- `src/ts/keepAliveAudio.ts` `createKeepAliveAudio`: the audio of "Keep Session Alive: Via Sound"
-  (`settings.ui.keepSessionAlive === "sound"`). `App.svelte` holds one controller: a click in that mode calls `start()`,
-  and any other mode calls `stop()`.
-  - Chrome counts a tab as playing audio by its measured output (silence below -72.25 dBFS), not the element's `volume`,
-    and treats media of 5 s or less as transient (on Android: no media notification, no foreground service). So the
-    level is in the waveform: a generated 10 s, 20 Hz, 16-bit mono WAV (8 kHz, amplitude 0.002, about -57 dBFS) as a
-    Blob URL, looped at full volume.
-  - `start()` is a no-op while active; the element's `pause` event (the OS or another app took audio focus) or a
-    rejected `play()` makes it inactive, so the next click plays the same element again. It sets
-    `navigator.mediaSession.metadata` (title "Risuai"); `stop()` pauses and clears it.
+- `src/main.ts`: the entry and the server gate (`isNodeServer`): the dynamic `./boot` import, or only
+  `NodeServerRequired`. Its header says why the app graph stays behind that import.
+- `src/boot.ts` `boot`: the diagnostics collector (`src/ts/diagnostics/collector.ts`, [diagnostics](diagnostics.md))
+  before any app module loads, then `src/startApp.ts` `startApp` (mounts `App`, starts `loadData`, `initHotkey`).
+- `src/lib/Others/NodeServerRequired.svelte`: the notice without the self-host server, English only.
+- `src/App.svelte`: the screen selection ([Screen selection](#screen-selection)), the overlays, the drag/drop import,
+  and the one keep-alive controller.
+- `src/ts/keepAliveAudio.ts` `createKeepAliveAudio`: "Keep Session Alive: Via Sound"
+  (`settings.ui.keepSessionAlive === "sound"`); `createAudio` says why the level is in the waveform (Chrome measures the
+  output, and treats media of 5 s or less as transient).
 
 ### Router
 
-- `src/ts/router/routes.ts`: the route table (pure).
-  - The slugs (`SETTINGS_PAGES`: slug → `SettingsMenuIndex`; `PLAYGROUND_TOOLS`: slug → `PlaygroundStore` value) are the
-    only place that maps the magic numbers to URLs. Settings indices 7, 8, and 9 have no slug.
-  - The `Route` union; `formatRoute` (ids with `encodeURIComponent`) and `parseRoute` (null for anything that names no
-    route: unknown or prototype slugs, empty segments, bad encoding); `settingsPageOf`/`playgroundToolOf`.
-  - `SETTINGS_PAGE_ALIASES` maps a former slug to its page (`bot` → `memory`): `parseRoute` reads it as that page, so
-    the boot replace writes the current slug.
-- `src/ts/router/router.svelte.ts`: `startRouter` and the history model ([URL routes](#url-routes)). `HistoryPort` wraps
-  the browser (`browserHistory`: live `path`/`state`, `push`, `replace`, `entryBelow(n)` from the Navigation API,
-  fire-and-forget `traverse(key)`, `popstate`), so the tests run a fake.
+- `src/ts/router/routes.ts`: the route table (pure): `Route`, `formatRoute`, `parseRoute`, `SETTINGS_PAGES`,
+  `PLAYGROUND_TOOLS`, `SETTINGS_PAGE_ALIASES`, `settingsPageOf`, `playgroundToolOf`. The only place that maps the
+  `SettingsMenuIndex` and `PlaygroundStore` numbers to URLs.
+- `src/ts/router/router.svelte.ts`: `startRouter`, `openRoute`, and the history model ([URL routes](#url-routes)):
+  `HistoryPort` (`browserHistory` over the Navigation API; a fake in the tests), `RouteState`, `sync`,
+  `baseRouteOfState`/`layerRouteOfState`, `applyBase`/`applyLayer`.
 
 ### Bootstrap
 
-- `src/ts/bootstrap.ts`:
-  - `loadData`: boot ordering below. It reads via `loadBootSnapshot`; cache ownership and fallback rules belong to
-    [resource sync](resource-sync.md#boot-cache).
-  - `installBootRecords`: installs resource records directly into their owners, not a whole-database object
-    ([boot load](resource-sync.md#boot-load)). `applyFirstBootDefaults` chooses a supported browser UI language only on
-    first boot; there is no setup wizard or character default.
-  - `registerSw`: `ready` enables the worker, `unavailable` continues with object URLs, and a non-2xx `/sw/init` reloads
-    at most once per tab using a session marker; `reloading` returns from boot. Failures keep their diagnostics.
-- `src/ts/safeBoot.ts`: safe boot, plugins or custom CSS and GUI HTML off for this page load ([Safe boot](#safe-boot)).
-  - `createSafeBoot(deps)` is the controller with its effects injected (the query, `localStorage`, the clock, the timer,
-    `SafeModeStore`, the notice); the module's own instance does nothing until `beginSafeBoot()`.
-  - Exports: `parseSafeFlag`, `beginSafeBoot`, `safeBootOff(category)` (read by `plugins.svelte.ts` and
-    `PluginSettings.svelte`), `markSafeBootContentStage`, `latchSafeBootFailure`, `startSafeBootSettleWindow`,
-    `bootErrorWithSafeBootHint`, `safeBootUrl`; `SAFE_BOOT_KEY`, `SAFE_BOOT_THRESHOLD` (2), `SAFE_BOOT_SETTLE_MS` (10
-    s).
+- `src/ts/bootstrap.ts`: `loadData` ([Boot](#boot); the snapshot read and its cache are
+  [resource sync](resource-sync.md#boot-cache)), `installBootRecords` (resource records into their owners, not a
+  whole-database object: [boot load](resource-sync.md#boot-load)), `applyFirstBootDefaults` (the UI language only; no
+  setup wizard or character default), `registerSw` (its three outcomes), `maintainCharacters`, `watchRemoteRecords`.
+- `src/ts/safeBoot.ts`: the safe-boot controller ([Safe boot](#safe-boot)): `createSafeBoot` (effects injected, so the
+  tests run it), `parseSafeFlag`, `beginSafeBoot`, `safeBootOff`, `markSafeBootContentStage`, `latchSafeBootFailure`,
+  `startSafeBootSettleWindow`, `bootErrorWithSafeBootHint`, `safeBootUrl`; `SAFE_BOOT_KEY`, `SAFE_BOOT_THRESHOLD`,
+  `SAFE_BOOT_SETTLE_MS`.
 
 ### Stores and platform
 
-- `src/ts/stores.svelte.ts`: all global UI stores ([State](#state)). `PlaygroundStore` is re-exported from
-  `src/ts/storage/selection.svelte.ts`, so chat status can read the same writable without starting the UI stores' module
-  effects.
-- `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `isMobile`, `isIOS()`, `getRisuEnvironmentLabel`
-  (`node` or `node(dev)`), `getDetailedOSLabel`, `isInStandaloneMode` (unused).
-- `src/ts/polyfill.ts`: `safeStructuredClone` (native `structuredClone`, then an `rfdc` fallback), plus `Buffer` and
-  stream polyfills and the mobile drag/drop polyfill.
-- `src/vite-env.d.ts`: ambient declarations for the globals `Buffer`, `safeStructuredClone`, and `userScriptFetch`.
-- `src/types.d.ts`: the `DeepPartial<T>` utility type only.
-- `src/ts/mutex.ts` `Mutex`: FIFO lock. Nothing in production imports it. `runExclusive` must keep its `finally`
-  release.
+- `src/ts/stores.svelte.ts`: the global UI stores ([State](#state)) and the effects the module starts when it loads.
+- `src/ts/screenVisibility.ts` (`settingsOpen`, `gridOpenStore`, `bookmarkListOpen`, `hypaV3ModalOpen`) and
+  `src/ts/popupEditorSession.svelte.ts` (`popUpEditorStore`, `openPopupEditorSession`): stores other modules read
+  without starting those effects; `stores.svelte.ts` re-exports them, and `PlaygroundStore` from
+  `src/ts/storage/selection.svelte.ts`.
+- `src/ts/pageVisibility.svelte.ts` `isPageVisible`, `pageRecoveryVersion`; `src/ts/ime.ts` `isImeComposing`.
+- `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `isMobile`, `isIOS`, `getRisuEnvironmentLabel`,
+  `getDetailedOSLabel`, `getFallbackOSLabel`, `isInStandaloneMode` (unused).
+- `src/ts/polyfill.ts` `safeStructuredClone` and the global polyfills; `src/vite-env.d.ts` declares the globals
+  (`Buffer`, `safeStructuredClone`, `userScriptFetch`); `src/types.d.ts` holds `DeepPartial<T>` only.
+- `src/ts/mutex.ts` `Mutex`: a FIFO lock that nothing in production imports.
 
 ### Hotkeys and observers
 
-- `src/ts/hotkey.ts`:
-  - `initHotkey`: keydown dispatch switch.
-  - `hotkeyMatches`: reads the hotkey only (a missing modifier flag is "not held"); it never writes the stored list.
-  - `enabledHotkeys` (the dispatch) and `activeHotkeys` (`HotkeySettings.svelte`): the stored hotkeys without
-    `scrollToActiveChar` while `enableScrollToActiveChar` is off; `activeHotkeys` also hides `quickSettings`.
-  - `quickSettings` (Ctrl+Q, still a default): there is no quick settings panel, so it only shows
-    `language.quickSettingsRemoved` (`alertNormal`) and keeps the key from the browser.
-  - Ctrl+1..9 pick the prompt preset through `pickBinding` ([chat bindings](persistence.md)): the open chat's binding,
-    else the tab's selection at home; nothing while a picker list or the binding dialog is open.
-- `src/ts/defaulthotkeys.ts`: re-exports `defaultHotkeys` (declared in `shared/hotkeys.ts`) and the `Hotkey` type
-  declared in `shared/settings.ts`.
-- `src/ts/observer.svelte.ts`:
-  - BGM sync is queued only for `risu-ctrl` attribute changes or added/removed element subtrees matching or containing
-    `[risu-ctrl]`, keeping streamed text mutations out of the document-wide scan while preserving initial sync,
-    macrotask coalescing, document order and grace timers.
-  - `startObserveDom`: idempotent. Adds one `document` `contextmenu` delegate (Copy/Download menu for `x-hl-lang` code
-    blocks) and a `MutationObserver` on `document.body` that syncs BGM from `risu-ctrl="bgm___<volume|auto>___<src>"`
-    markers.
-  - BGM: one track at a time. When nothing is playing, it starts the first marker in document order (the newest message,
-    since the chat body is column-reversed). A playing track keeps playing while its marker stays in the DOM, even if a
-    newer marker appears, and replays on `ended`. It stops `BGM_STOP_GRACE_MS` (1 s) after its marker is gone.
-  - BGM failures: an autoplay block (`NotAllowedError`) pauses all BGM until the next activating `pointerup`/`keydown`
-    (touch grants activation only on release). A source or media error skips only that marker, so another marker can
-    still play; it is not retried on gestures, only after the marker has been missing from the DOM for more than 1 s and
-    appears again.
+- `src/ts/hotkey.ts`: `initHotkey` (the key handler and its dispatch switch), `hotkeyMatches`, `enabledHotkeys` and
+  `activeHotkeys` (`HotkeySettings.svelte`'s list), `changeToPreset` (Ctrl+1..9 through `pickBinding`,
+  [chat bindings](persistence.md)), and the `quickSettings` key, which only shows `language.quickSettingsRemoved`.
+- `shared/hotkeys.ts` `defaultHotkeys`, re-exported by `src/ts/defaulthotkeys.ts` with the `Hotkey` type of
+  `shared/settings.ts`.
+- `src/ts/observer.svelte.ts` `startObserveDom`: the BGM markers (`risu-ctrl`, `BGM_STOP_GRACE_MS`) and the `x-hl-lang`
+  code-block context menu.
 
 ### Home screen
 
-- `src/lib/UI/MainMenu.svelte`: home screen. It fetches nothing from Realm itself.
-  - Pinned chats come first (shared `SideBars/pinnedChats.ts` collector over summaries; six cards until expanded, with
-    an empty state). Cards call `globalApi.openPinnedChat`, selecting the target chat before the character and opening
-    it.
-  - Pinned cards show the same per-chat generating, recovery, or unseen badge as the sidebar rail, anchored over the
-    icon with the status in the accessible name and hover title.
-  - Recent characters (`collectHomeRecentCharacters` in `src/lib/UI/mainMenuProjection.ts`): by `characterLastChattedAt`
-    (the chats' last-message times, falling back to the frozen `lastInteraction`), newest first, without the trash and
-    `§playground`. A card calls `changeChar`; "View all" sets `gridOpenStore`.
-  - An Explore card switches to `RealmMain` via `OpenRealmStore` (hidden by `settings.ui.hideRealm`).
-- `src/lib/UI/Title.svelte`: seasonal logo and mini-game. Only used by MainMenu.
+- `src/lib/UI/MainMenu.svelte`: the home screen (pinned chats, recent characters, Explore); it fetches nothing from
+  Realm itself. The recent list is `src/lib/UI/mainMenuProjection.ts` `collectHomeRecentCharacters`.
+- `src/lib/UI/Title.svelte`: the seasonal logo and mini-game, used only by `MainMenu.svelte`.
 
 ## Flows
 
@@ -148,41 +100,23 @@
 
 ### Safe boot
 
-`safeBoot.ts`. A plugin with main-document access or a broken custom CSS or GUI HTML can make every boot unusable; safe
-boot turns them off for one page load, client only: nothing is written to the server and no persisted field changes.
+A plugin with main-document access or a broken custom CSS or GUI HTML can make every boot unusable; safe boot turns them
+off for one page load, client only: nothing is written to the server and no persisted field changes. The controller's
+rules (the `?safe` forms, the `risu.safeBoot.attempts` counter, the trip, settling, the notice) are in the
+`src/ts/safeBoot.ts` header; this is where its stages sit in the boot.
 
-- Categories: `plugins` and `css` (custom CSS and GUI HTML). `?safe` and `?safe=all` mean both; `?safe=plugins`,
-  `?safe=css`, or a comma list (`?safe=plugins,css`) pick; unknown names are ignored. The query is read once, by
-  `beginSafeBoot` at the start of `loadData`: the router's boot replace writes the path without it, so a reload after a
-  settled boot can start normally.
-- The counter: one `localStorage` record, `risu.safeBoot.attempts` = `{ count, at }`, read and written in `try` (an
-  unavailable or throwing store leaves a normal boot without the counter; `?safe` still works; a malformed record reads
-  as none). `markSafeBootContentStage` reads it and writes `count + 1` just before the theme, so a boot that fails
-  earlier (an unreachable server, the service worker's reload) does not count.
-- Failure latch: a rejected boot plugin load, the `loadData` catch, or a plugin this boot started whose script threw or
-  did not run (`SandboxHost.startup` is `failed`, [plugins](plugin-sandbox.md)) fails the attempt; nothing clears it in
-  this page load.
-- A guest unloaded before it reported (a toggle, a reload) follows its replacement after the `pluginReload` chain
-  finishes, repeatedly until it reports or the settle window ends. No replacement counts as started only when that name
-  is no longer an enabled API 3.0 plugin; otherwise it fails. Reloads of guests that already reported are not judged.
-- Settled: `SAFE_BOOT_SETTLE_MS` (10 s) after `loadedStore` turned true, with no failure latched and every plugin this
-  boot started reported as started (a guest still silent then fails the attempt). The settled boot removes the record,
-  but only the one it wrote itself (compared by value), so a newer attempt of another tab stays counted.
-- Trip: `markSafeBootContentStage` sees a previous `count >= SAFE_BOOT_THRESHOLD` (2) and successfully writes the
-  increment: this boot turns both categories off before the theme runs. A failed write leaves only explicit `?safe`
-  categories off, so a stale count cannot force later boots into safe mode while writes fail. Two boots that reached
-  user content and did not settle (killed, failed, or reloaded within the window) make the third safe; a safe boot that
-  settles clears the record, so the next reload is normal.
-- Effects, this page load only: `plugins` off → `loadPlugins` loads nothing and registers no remote listener, so the
-  deferred plugin reload never runs and the plugin settings save without loading ([plugins](plugin-sandbox.md)); `css`
-  off → `SafeModeStore` set before `updateTextThemeAndCSS` (custom CSS empty) and `Chat.svelte` renders the classic row
-  instead of the `customHTML` theme's GUI HTML while it is set. The `toggleCSS` hotkey still flips `SafeModeStore` both
-  ways.
-- Notice: one `alertNormal` dialog (the alert queue) at the content stage when anything is off, naming what is off, why
-  when the counter tripped it, and how to leave (keep the page open another 10 s after the app finishes loading, then
-  reload without `?safe` to try a normal start; a failed start may leave automatic safe boot on). A boot that fails
-  before its content stage shows it from the catch. The boot's error alert always gains a line with the safe-boot
-  address (`/?safe` on this origin, plain text).
+- `loadData` calls `beginSafeBoot` first (`?safe` is read before the router's boot replace drops it),
+  `markSafeBootContentStage` just before the theme (a boot that fails earlier does not count), and
+  `startSafeBootSettleWindow` once `loadedStore` is true. Its catch alerts `bootErrorWithSafeBootHint`, which adds the
+  safe-boot address (`/?safe`) to every boot error.
+- A failure is latched by a rejected `loadPluginsForBoot`, the `loadData` catch, or a plugin this boot started whose
+  script threw or did not run (`SandboxHost.startup` is `failed`, [plugins](plugin-sandbox.md)). A guest unloaded before
+  it reported follows its replacement after the `pluginReload` chain (`captureBootGuests` in
+  `src/ts/plugins/plugins.svelte.ts`); a guest still silent when the settle window ends fails the attempt.
+- `plugins` off: `loadPlugins` loads nothing and registers no remote listener, so the deferred plugin reload never runs
+  and the plugin settings save without loading ([plugins](plugin-sandbox.md)). `css` off: `SafeModeStore` is set before
+  `updateTextThemeAndCSS` (custom CSS empty), and `Chat.svelte` renders the classic row instead of the `customHTML`
+  theme's GUI HTML while it is set. The `toggleCSS` hotkey still flips `SafeModeStore` both ways.
 - Not covered: modules, global regex, and Lua run on the server per job; turning them off would need a flag in the job
   request.
 
@@ -208,42 +142,27 @@ Inside `DefaultChatScreen.svelte`:
 ### URL routes
 
 The files are in [Router](#router); a new route follows [Add a screen or modal](#add-a-screen-or-modal). The stores stay
-the state; the router keeps the URL and the history in sync with them in both directions. Overlays, modals, the side
-panel, and the sidebar's open state have no route.
+the state; the router keeps the URL and the history in sync with them in both directions (the `router.svelte.ts` header
+and the comments on `sync`, `applyEntry`, and `normalize` give the step rules). Overlays, modals, the side panel, and
+the sidebar's open state have no route.
 
 - Base routes (a screen of its own): `/` home, `/realm`, `/chat/:chaId` (the closed chat), `/chat/:chaId/:chatId` (the
   open chat), `/playground`, `/playground/:tool`, `/playground/chat/:chatId` (the `§playground` character,
   `PlaygroundStore` 2).
 - Layers over a base route: `/characters` (`gridOpenStore`), `/settings` (the list, index -1; on a screen 700 px or
   wider it is the model page) and `/settings/:page`. Settings wins over the grid, and open settings closes the grid (one
-  layer at a time).
-- Entry state: `{ v: 1, layerDepth, base?, rebased?, rootPending? }`. A layer entry records how many entries it is above
-  its base route and that base, applied first on a reload.
-- Applying a URL (boot and every `popstate`, the router's own back included) sets the stores (a chat calls `selectChat`
-  before `selectCharacter`; `ensureChat` like `changeChar`), then replaces the entry with the canonical path. A URL that
-  names no record is corrected by a replace: an unknown character or slug goes home, an unknown chat id falls back to
-  the character's selected chat.
-- The sync effect runs on a change of the shown route or of the base route under a layer (store changes that keep both
-  take no step) and takes one step:
-  - between base routes: a push (opening or closing a chat too); a replace for a chat switch within one character while
-    its chat is open and for a removed character's entry; a back when the Navigation API lists the entry directly
-    beneath with the target URL;
-  - a layer opens with a push (a settings page on a narrow screen pushes the list under it); a close goes back to the
-    base entry `layerDepth` beneath when the Navigation API lists it with the base the stores show, else replaces the
-    layer entry with the base;
-  - inside settings: the mobile list → a page and the prompt preset → its template push; a desktop page switch replaces;
-    a back to the entry beneath only when it shows the target and the entry is not `rebased`; settings ↔ grid replaces;
-  - a base change under an open layer (a grid pick, the Home hotkey in settings) is written into the layer entry and
-    marks it `rebased`, so the close replaces instead of landing on the old base. A landing above depth 1 is marked
-    `rebased` too.
-- The router does not track its own back: it calls `traverseTo` and ignores the promises; the landing is applied like
-  any `popstate`. Without the Navigation API it never goes back (a close replaces).
+  layer at a time). A layer entry's `RouteState` records its depth above its base route and that base, applied first on
+  a reload.
+- Applying a URL (boot and every `popstate`, the router's own back included) sets the stores through the chat store and
+  the selection (`selectChat` before `selectCharacter`; `ensureChat` like `changeChar`), then replaces the entry with
+  the canonical path; a URL that names no record goes home or to the character's selected chat.
+- A store change of the shown route, or of the base under a layer, is written to the history: nothing, a replace, a push
+  (a settings page on a narrow screen pushes the list under it), or a back (`traverseTo`, never awaited) to an entry the
+  Navigation API lists beneath with the target. Without the Navigation API the router never goes back. A base change
+  under an open layer marks the layer entry `rebased`.
 - A layer shown at boot without its base entry beneath (a link, a bookmark, an import that finished before the router
-  started) is stamped `rootPending`; the base entry is inserted under it at the first user activation (trusted
-  capture-phase `keydown` other than Escape, `mousedown`, mouse `pointerdown`, touch or pen `pointerup`, `touchend`,
-  `click`), because Chrome's back button skips entries pushed without one.
-- Store corrections that keep the route run in their own effect: the playground value 2 with nothing selected becomes 1,
-  the settings list on a wide screen becomes the model page, open settings closes the grid.
+  started) is stamped `rootPending`; the base entry is inserted under it at the first user activation
+  (`startRootInsertion`), because Chrome's back button skips entries pushed without one.
 
 ### Escape order
 
@@ -308,22 +227,25 @@ selection lives in `src/ts/storage/selection.svelte.ts`.
 ## Invariants
 
 - Safe boot is per page load: it writes nothing to the server and no persisted field, only the `risu.safeBoot.attempts`
-  record. What it turns off stays off until the page reloads, in this tab only. Read `?safe` before anything navigates.
+  record. What it turns off stays off until the page reloads, in this tab only (the `toggleCSS` hotkey can still flip
+  `SafeModeStore`). Read `?safe` before anything navigates.
 - Do not flip `loadedStore` to true before `installBootRecords`, `maintainCharacters`, and theme setup finish. `App`
-  assumes the records are installed after that point. When `loadData` fails it only calls `alertError`, and the loading
-  screen stays up.
+  assumes the records are installed after that point. When `loadData` fails before that point it only calls
+  `alertError`, and the loading screen stays up; a rejected plugin load is latched and still sets `loadedStore`.
 - No selected character is home. Components read the selected character as
   `const currentCharacter = $derived(selectedCharacter())` and the list as `characterList()`, never by an index; a
   handler that awaits captures the `chaId` first and finds the character again after the await.
 - Call `startResourceSync()` only once, from `loadData`; it ignores a second call.
-- `isNodeServer` depends on `server/src/app.ts` (`GET /` and `/index.html`) or the Vite dev plugin `risu-node-flag`
-  injecting `globalThis.__NODE__ = true` into `index.html`. Keep everything the app needs behind the dynamic `boot.ts`
-  import so the notice path initializes nothing.
+- `isNodeServer` depends on the server's `index.html` (`serveCachedIndex` in `server/src/http/staticCache.ts`, for `/`,
+  `/index.html`, and the client routes) or the Vite dev plugin `risu-node-flag` injecting `globalThis.__NODE__ = true`.
+  Keep everything the app needs behind the dynamic `boot.ts` import so the notice path initializes nothing.
 - The stores are the screen state. Change the screen by setting them; do not call `history.pushState`/`replaceState` for
   a screen (another script's write fires no `popstate`, and the router overwrites it at the next store change). The
-  router writes paths without a query or hash: a link parameter is consumed at boot (`characterURLImport` removes
-  `?realm=`, `?charahub=`, and `#import=` with `replaceState` and reads the hash before its first `await`).
-- `startRouter()` runs once, after `loadedStore` is set and the plugins have loaded; a second call does nothing.
+  router writes paths without a query or hash: a link parameter is consumed at boot (`characterURLImport` and its
+  `getRealmInfo` remove `?realm=`, `?charahub=`, and `#import=` with `replaceState`; it reads them before its first
+  `await`).
+- `startRouter()` runs once, after `loadedStore` is set and the plugin load has finished or failed; a second call does
+  nothing.
 - New hotkey actions need:
   - an entry in `defaultHotkeys`,
   - a branch in the `initHotkey` dispatch switch,

@@ -23,16 +23,26 @@ import {
     type Route,
 } from "./routes";
 
-/*
+/**
  * The router. The stores stay the state: the router applies a URL to them at boot and on every
- * `popstate`, and a sync effect turns every settled change of them into one history step: a
- * push, a replace, or a back when the target is an entry beneath and the Navigation API lists it.
+ * `popstate`, and a sync effect follows changes of the derived base or layer route. Each change takes at most one
+ * transition, which may change nothing, replace, traverse back to an entry beneath that the Navigation API lists, or
+ * push (a settings page opened on a narrow screen pushes both the list and the page).
  * The router does not track its own back: it waits for nothing, and the landing is applied like any
  * other `popstate`. The limits this leaves are noted where they apply.
  *
  * A layer (settings, the character grid) opens over a base route. Its entry state holds how many
  * entries it is above its base route (`layerDepth`) and that base (`base`), so a close goes back to
  * the base entry when the browser still lists it, and a reload restores the base under the layer.
+ *
+ * Only the screens have routes: overlays, modals, the side panel, and the sidebar's open state do not, and a screen
+ * changes by setting its store, never by writing the history (another script's write fires no `popstate`, and the
+ * next change of the shown route overwrites it). Every path the router writes has no query or hash; the link
+ * parameters (`?realm=`, `?charahub=`, `#import=` and the other hashes) are read by `characterURLImport`
+ * (`src/ts/characterCards.ts`), which `loadData` starts before `startRouter` and which reads them before its first
+ * `await`. A URL that names no record is corrected by the boot or `popstate` replace: an unknown character or slug
+ * shows home, and an unknown chat id keeps the character's selected chat (`selectChat` in
+ * `src/ts/storage/chatStore.svelte.ts` ignores an id that is not a member).
  */
 
 /** The window history as the router uses it; the tests pass a fake. */

@@ -4,14 +4,24 @@ import { polyfill as dragPolyfill } from "mobile-drag-drop";
 import { scrollBehaviourDragImageTranslateOverride } from "mobile-drag-drop/scroll-behaviour";
 import rfdc from "rfdc";
 import { isIOS } from "./platform";
+
 /**
- * Polyfill for structuredClone.
- * Falls back to rfdc (Really Fast Deep Clone) if structuredClone throws an error.
+ * The globals the app assumes, installed by this module's side effects: `safeStructuredClone`, `Buffer` (replaced
+ * unconditionally), and the `WritableStream`, `ReadableStream`, and `TransformStream` ponyfills (only where the global
+ * is nullish). On iOS, or without native drag and drop, it also sets `globalThis.polyfilledDragDrop` and then applies
+ * the `mobile-drag-drop` polyfill; an error in the detection or the installation is ignored, and a partial effect is
+ * not rolled back. `src/main.ts` imports this module first, so the app graph loads with the globals in place; this
+ * module's own dependencies evaluate before the assignments. `src/vite-env.d.ts` declares `Buffer` and
+ * `safeStructuredClone`.
  */
 
 const rfdcClone = rfdc({
     circles: false,
 });
+/**
+ * A deep clone that also takes what `structuredClone` refuses (for example a function, or a proxy such as a `$state`
+ * value); that fallback (`rfdc`) does not support circular references.
+ */
 export function safeStructuredClone<T>(data: T): T {
     try {
         return structuredClone(data);

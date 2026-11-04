@@ -344,7 +344,16 @@ function watchSwController() {
     swControllerListenerInstalled = true;
 }
 
-/** Registers the worker, allowing at most one reload until initialization succeeds. */
+/**
+ * Registers the worker, allowing at most one reload until initialization succeeds. `ready` turns the service worker
+ * on (`setUsingSw(true)`); `unavailable` (a failed register or `/sw/init` probe, or a reload already spent) continues
+ * the boot with object URLs. A non-2xx `/sw/init` reloads the page at most once per tab: the `sessionStorage` marker
+ * `SW_INIT_RELOAD_KEY` records the reload and a successful init clears it. A failure to read or write the marker
+ * suppresses the reload; a failed removal is ignored. `reloading` makes `loadData` return before the safe-boot content
+ * stage, so the interrupted boot is not counted (the reloaded one can be). A register rejection, a probe rejection,
+ * and a non-2xx init each record a `serviceWorker` diagnostics event, and the diagnostics are flushed before the
+ * reload.
+ */
 async function registerSw(): Promise<"ready" | "unavailable" | "reloading"> {
     invalidateDirectAssets();
     watchSwController();

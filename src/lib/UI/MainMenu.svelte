@@ -26,6 +26,19 @@
     import ChatStatusBadge from "../SideBars/ChatStatusBadge.svelte";
     import { chatStatusLabel, refusedChatKeys, resolveChatStatus, type ChatStatus } from "../SideBars/chatStatus";
 
+    /**
+     * The home screen: `src/lib/ChatScreens/DefaultChatScreen.svelte` shows it with no selected character and
+     * `PlaygroundStore` 0. It fetches nothing from Realm itself.
+     *
+     * - Pinned chats share their projection (`collectPinnedChats`, `src/lib/SideBars/pinnedChats.ts`) and their status
+     *   resolution (`resolveChatStatus`, `ChatStatusBadge`) with the sidebar rail; the status is in a card's accessible
+     *   name and hover title. A card opens through `openPinnedChat` (`src/ts/globalApi.svelte.ts`), which selects the
+     *   chat before its character, so the character's previous chat is not loaded first.
+     * - Recent characters come from `collectHomeRecentCharacters` (`src/lib/UI/mainMenuProjection.ts`).
+     * - `OpenRealmStore` swaps the whole screen, logo included, for `RealmMain`; the Explore card that sets it is
+     *   hidden under `settings.ui.hideRealm`.
+     */
+
     const compatVersion = getVersionString();
 
     // The full commit goes with the copy, so a bug report names the exact build.

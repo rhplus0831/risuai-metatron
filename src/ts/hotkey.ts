@@ -38,6 +38,22 @@ import { chatCheckpointsDialog, checkpointLoadBusy } from "./checkpoints/chatChe
 import { topBindingLayer, type BindingLayer } from "./gui/dialogLayers";
 import { isImeComposing } from "./ime";
 
+/**
+ * Installs the key handling (`startApp`, `src/startApp.ts`). Call it once per document: it does not deduplicate its
+ * listeners. The capture-phase `window` keydown and keyup listeners feed the dialog key gate (`createDialogKeyGate`,
+ * `src/ts/alertQueue.ts`). The `document` keydown handler:
+ * - runs nothing behind the terminal notice or during IME composition;
+ * - while a dialog is shown or queued, stops Escape at the document and runs no hotkey: only Enter and Escape answer
+ *   the dialog;
+ * - while a checkpoint load runs with no dialog, swallows every key;
+ * - with no alert up, closes the topmost picker list or chat dialog on Escape (`topBindingLayer`,
+ *   `src/ts/gui/dialogLayers.ts`), also from a text field; any other Escape from a text field (except the input
+ *   dialog's own field) returns before the dialog, settings, and grid handling;
+ * - otherwise on Escape answers the shown dialog (when the key gate accepts the stroke), then, with no dialog and no
+ *   binding layer left, closes settings, else the grid: an Escape that answers the last dialog also closes settings,
+ *   but that stroke never closes the grid;
+ * - never fires a plain-key hotkey in a text field.
+ */
 export function initHotkey() {
     // Every stroke of Enter and Escape, seen before any element can stop it: a dialog takes a key only
     // from a stroke that began after it appeared (`createDialogKeyGate`).
@@ -449,6 +465,10 @@ export function activeHotkeys<T extends { action: string }>(
     return enabledHotkeys(hotkeys, db).filter((hotkey) => hotkey.action !== "quickSettings");
 }
 
+/**
+ * Whether `ev` is `hotkey`'s stroke. A missing modifier flag means "not held" and is never filled in: the hotkey is
+ * the stored record, and a write would save the list. Meta is not compared.
+ */
 export function hotkeyMatches(hotkey: (typeof settings.hotkeys)[number], ev: KeyboardEvent): boolean {
     if (!hotkey) {
         return false;

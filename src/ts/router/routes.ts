@@ -10,11 +10,17 @@ import {
     VOICE_SETTINGS_MENU,
 } from "../settingsMenu";
 
-/*
+/**
  * The client's route table: the paths of the screens, and the slugs of the settings pages
  * (`SettingsMenuIndex`) and playground tools (`PlaygroundStore`). These tables are the only place
- * that maps the magic numbers to names. The first segments are `CLIENT_ROUTE_SEGMENTS`
- * (`shared/routes.ts`), which the server serves the client for.
+ * that maps the magic numbers to URL slugs (`src/ts/settingsMenu.ts` names some of them as
+ * constants). The first segments are `CLIENT_ROUTE_SEGMENTS` (`shared/routes.ts`), which the server
+ * serves the client for.
+ *
+ * Every `SettingsMenuIndex` that `src/lib/Setting/Settings.svelte` renders a page for has a slug here, so a new page
+ * needs one. In `layerRouteOfState` (`router.svelte.ts`), -1 on a viewport at least 700 px wide reads as the model
+ * page, and any other index with no slug (`settingsPageOf` null) as the settings list. The module is pure: no store
+ * or DOM import.
  */
 
 /** The settings page slugs (`/settings/:page`) and their `SettingsMenuIndex`. */
@@ -69,6 +75,10 @@ const SETTINGS_PAGE_ALIASES: Readonly<Record<string, SettingsPage>> = {
 };
 export type PlaygroundTool = keyof typeof PLAYGROUND_TOOLS;
 
+/**
+ * The screens a URL names. `characters` and `settings` are layers over a base route (the router keeps the base in
+ * the layer entry's state); every other kind is a base route.
+ */
 export type Route =
     | { kind: "home" }
     | { kind: "realm" }

@@ -31,6 +31,8 @@ export class Mutex {
      *
      * This ensures no other functions will start running
      * until `callback` finishes running.
+     * It serializes the operations that share this instance. It is not reentrant: a callback must not await another
+     * acquisition of the same instance. A callback that throws still releases the lock.
      * @param callback Function to be run exclusively.
      * @returns The return value of `callback`.
      */
