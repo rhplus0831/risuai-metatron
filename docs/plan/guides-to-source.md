@@ -155,6 +155,15 @@ guides a rewrite can break and the reason wave 3 goes last: `server-resources` 3
 
 ## Slices
 
+Slices 1, 2, 3, and 5 run as one sub-slice per guide (owner, 2026-11-04), so each guide is one session and one
+commit as D1 asks: `1-self-host-server`, `1-persistence`, `1-chat-pipeline`, `1-ui-theming` serially in that order;
+in Slice 2, `2-audit` (the second `guide-reads` audit) first, then `2-<guide>` for each wave-2 guide; `3-<guide>`
+for each wave-3 guide, a `structured-memory/<page>` guide as `3-sm-<page>` with `3-sm-README` last; `5-<guide>` for
+each remaining guide, then `5-audit-ceiling` (the final audit and the ceiling decision) last. In waves 2 and 3 two
+sub-slices run at once only when no link joins their guides (Q4). Every guide sub-slice lowers
+`TREE_BYTES_RATCHET`, so a pair lands one after the other, the second rebased onto the first. A slice counts as
+landed when all of its sub-slices have.
+
 ### Slice 0: scripts, protocol, routing fixes (D2's scripts, D7's script and first audit, D9, D10; needs nothing)
 
 - `util/docsContracts.mjs`, `util/docsLedger.mjs`, `util/guideReads.mjs` with node tests under `util/`; `package.json`
