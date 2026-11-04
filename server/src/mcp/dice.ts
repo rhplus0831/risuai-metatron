@@ -61,6 +61,10 @@ export function rollDice(notation: string, random: () => number = Math.random): 
     return { total, details: details.join("; ") };
 }
 
+/**
+ * Unknown tools and `rollDice` bounds failures reject for the caller's failure policy;
+ * `server/src/mcp/jobTools.ts` turns ordinary tool failures into text for the model.
+ */
 export async function callDiceTool(toolName: string, args: unknown): Promise<RPCToolCallContent[]> {
     if (toolName === "rollDice") {
         const notation = String((args as { notation?: unknown } | null | undefined)?.notation);

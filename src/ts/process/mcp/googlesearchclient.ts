@@ -59,6 +59,11 @@ export class GoogleSearchClient extends MCPClientLike {
         return this.serverInfo;
     }
 
+    /**
+     * Reuses stored `googleSearchCredentials` when both fields are truthy. When prompting, missing,
+     * cancelled, or whitespace-only API keys and engine ids reject before either value is written;
+     * both accepted values are trimmed before the credentials are saved together.
+     */
     private async initializeCredentials(): Promise<void> {
         const storedCredentials = settings.secrets.googleSearchCredentials;
 

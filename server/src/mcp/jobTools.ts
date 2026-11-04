@@ -48,6 +48,10 @@ export type JobToolState = {
     llm: { active: number };
 };
 
+/**
+ * Allocate once per job, as `server/src/jobs/runSetup.ts` does: its runs share cached sets, the
+ * tool-call budget, and the one-at-a-time AI access counter rather than resetting them per request.
+ */
 export function createJobToolState(): JobToolState {
     return { sets: new Map(), attempts: 0, warned: false, llm: { active: 0 } };
 }

@@ -28,7 +28,9 @@ function written(write: () => boolean): RisuAccessWrite {
  * character, and that character's history is that chat, as a server job's scope does
  * (`server/src/mcp/internal.ts`). Another character's history is its selected chat in this tab.
  * `null` is a request without a chat: an empty id names no character. `undefined` (a call without a
- * request, the Playground) keeps the selection.
+ * request, the Playground) keeps the selection. A request's host is built per call by
+ * `src/ts/process/mcp/risuaccess/client.ts`; failures retain the tab's behavior: a character with
+ * no selected chat reads as an empty history when its history is resolved through that selection.
  */
 export function tabRisuAccessHostFor(chatRef: ChatRef | null | undefined): RisuAccessHost {
     return {

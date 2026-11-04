@@ -108,7 +108,8 @@ function entryPatch(entries: readonly (readonly [string, unknown])[]) {
  *   is the job's chat. Another character's history is the chat the owner's tab has selected for it
  *   (`selectedChat`), read from the store.
  * - `internal:graphmem` keeps its graph in the job chat's variable `graphmem_graph` and searches
- *   with the job's embeddings.
+ *   with the job's embeddings; `setChatVar` in `server/src/lua/bindings.ts` queues a metadata write
+ *   to the chat's `scriptstate` under `$graphmem_graph`.
  */
 export function createInternalMcps(deps: InternalToolDeps): Record<string, InternalMcp> {
     const { job, scope, store, kinds, services } = deps;

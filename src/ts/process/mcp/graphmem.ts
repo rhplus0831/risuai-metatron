@@ -22,8 +22,10 @@ const selectedGraphMemHost: GraphMemHost = {
 
 /**
  * The host for a request's chat: its variable by id, whatever the selection is (the server's job
- * host keeps the graph in the job chat the same way). The preset default is `scope`'s, else the
- * chat's display preset.
+ * host keeps `graphmem_graph` in the job chat the same way). `callMCPTool` in
+ * `src/ts/process/mcp/mcp.ts` supplies the request's captured preset scope only when its plugin
+ * context names this same chat; otherwise `getChatVarOf` in `src/ts/parser/chatVar.svelte.ts`
+ * uses the chat's display preset for preset defaults.
  */
 function chatGraphMemHost(ref: ChatRef, scope: PresetScope | undefined): GraphMemHost {
     return {
@@ -33,6 +35,10 @@ function chatGraphMemHost(ref: ChatRef, scope: PresetScope | undefined): GraphMe
     };
 }
 
+/**
+ * The tab's host of `shared/mcp/graphmem.ts`; `server/src/mcp/internal.ts` runs the same tools and
+ * logic over a job's host.
+ */
 export class GraphMemClient extends MCPClientLike {
     constructor() {
         super("internal:graphmem");

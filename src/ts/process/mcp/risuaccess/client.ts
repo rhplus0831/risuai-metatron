@@ -7,6 +7,12 @@ import { createRisuAccess } from "../../../../../shared/mcp/risuaccess/index.ts"
 import { tabRisuAccessHostFor } from "./host";
 import type { ChatRef } from "src/ts/storage/chatStore.svelte";
 
+/**
+ * `internal:risuai` stays callable without offering tools when no module or additional identifier
+ * names it in `src/ts/process/mcp/mcp.ts`. `callTool` is the Playground path: the shared handlers
+ * over `tabRisuAccessHost` in `src/ts/process/mcp/risuaccess/host.ts`; a handler's throw answers
+ * `Error: <message>`.
+ */
 export class RisuAccessClient extends MCPClientLike {
     private handlers: MCPToolHandler[];
 

@@ -25,6 +25,11 @@ export type McpRegistry = {
 
 type Entry = { client: McpClient; active: number; timer: NodeJS.Timeout | null };
 
+/**
+ * The idle period starts after the last active operation releases its hold, including on failure.
+ * Refresh reads see the current store, while `refreshChanges` only builds a write for the calling
+ * job to apply.
+ */
 export function createMcpRegistry(options: {
     store: ResourceStore;
     kinds: ResourceKindRegistry;

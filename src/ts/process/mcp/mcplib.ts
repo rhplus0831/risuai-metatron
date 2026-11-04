@@ -4,6 +4,14 @@ import { alertInput } from "../../alert";
 import { type MCPTool, MCPToolHandler } from "../../../../shared/mcp/risuaccess/host.ts";
 import { parseSseEvent, SseFramer } from "../../../../shared/mcp/sse.ts";
 
+/**
+ * Remote MCP JSON-RPC over streamable HTTP or legacy SSE, with OAuth, sessions, and paginated
+ * prompt/tool lists. Events are framed by `shared/mcp/sse.ts`, as in `server/src/mcp/client.ts`.
+ * An initialize response's `Mcp-Session-Id` is taken from either JSON or event-stream responses.
+ * Unlike the server port, requests have no timeout: an open stream without an answer can wait
+ * indefinitely. Retirement and waiter cleanup are governed by `closed`, `destroy`, and `waitFor`.
+ */
+
 export { type MCPTool, MCPToolHandler };
 
 export type MCPPrompt = {
@@ -84,6 +92,7 @@ export class MCPClient {
         stream: ReadableStream;
         abortController?: AbortController;
     }[] = [];
+    /** No app caller uses this transport; its in-flight callbacks bypass retirement and SSE cleanup. */
     customTransport?: {
         send: (message: JsonRPC) => void | Promise<void>;
         addListener: (callback: (message: JsonRPC) => void | Promise<void>) => void;
@@ -91,8 +100,9 @@ export class MCPClient {
     };
     onDestroy: (() => void) | null = null;
     /**
-     * Set by `destroy()`: the client starts no request, handshake, or login step, and an answer that
-     * arrives later publishes nothing (`assertOpen`).
+     * Set by `destroy()`: the client starts no request, handshake, login step, or stream reader.
+     * Late HTTP/SSE answers, lists, and tokens are refused by `assertOpen` with
+     * `The MCP client was closed`; a settled waiter is checked too. `reset` does not set this flag.
      */
     private closed = false;
     /** Only the current legacy GET stream may reset the session when it ends. */
@@ -117,6 +127,7 @@ export class MCPClient {
         prompts: [],
         tools: [],
     };
+    /** `src/ts/process/mcp/mcp.ts` installs this hook to write `authRefreshes` under the original MCP identifier. */
     registerRefreshToken:
         ((arg: { clientId: string; clientSecret: string; refreshToken: string; tokenUrl: string }) => void) | null =
         null;
@@ -143,7 +154,13 @@ export class MCPClient {
         }
     }
 
-    /** Registers once; every settlement removes both the document listener and the pending entry. */
+    /**
+     * Registers once; the matching answer, its stream's EOF/failure, or `reset` settles it and removes
+     * both the document listener and pending entry. Stream/session failures use JSON-RPC -32000:
+     * `The MCP stream ended without an answer`, the read error's message (fallback:
+     * `The MCP stream failed`), or `The MCP session ended` for reset/current legacy EOF.
+     * A failed legacy POST also removes its waiter; `request` refuses a settled answer after destroy.
+     */
     private waitFor(id: string | number, http: RPCRequestResult["http"] = { status: 200, headers: {} }) {
         // A replacement waiter must not strand the previous listener for the same id.
         this.pending.get(id)?.({ jsonrpc: "2.0", id, error: { code: -32000, message: "The MCP session ended" } });
@@ -181,7 +198,11 @@ export class MCPClient {
         }
     }
 
-    /** Resolves at EOF, rejects on a read failure, and always releases its reader and tracked entry. */
+    /**
+     * Resolves at EOF or cancellation and rejects on read failure. Every acquired reader is cancelled
+     * and released, and its `sses` entry removed, in `finally`. An answered streamable request aborts
+     * its stream even if the server leaves it open.
+     */
     async connectSSE(stream: ReadableStream, abortController = new AbortController()): Promise<void> {
         if (this.closed) {
             // A retired client reads no stream (its `destroy()` could not abort this one).
@@ -259,8 +280,7 @@ export class MCPClient {
 
             //@ts-expect-error JsonRPC type doesn't have method property, but JsonPing does
             if (jsonData.method === "ping") {
-                // Sending a ping reply must not prevent the reader from observing EOF or failure
-                // while the POST is still out.
+                // Do not await the ping reply: this reader must still observe EOF or failure while its POST is out.
                 void this.request(
                     "response",
                     {},
@@ -289,6 +309,17 @@ export class MCPClient {
         } catch (error) {}
     }
 
+    /**
+     * Over streamable HTTP, a 404 with a current session or 401 with a current token resets both
+     * and repeats the request. There is no retry flag: concurrent work restoring either field can
+     * make it retry again, unlike `server/src/mcp/client.ts`'s at-most-once retry.
+     *
+     * A legacy answer or session end can settle its waiter while the POST is still out. For an
+     * unanswered legacy RPC, a POST response above 299 settles the waiter with that status as its
+     * RPC error code; the waiter's HTTP metadata stays 200. While the client stays open, a fetch
+     * rejection that wins the race removes the waiter and returns `Internal Error` (RPC and HTTP
+     * code 500); a late rejection does not replace a settled answer. Notifications have no waiter.
+     */
     async request(
         method: string,
         params?: any,
@@ -391,8 +422,6 @@ export class MCPClient {
             }
 
             const fetching = fetchNative(url, requestParams);
-            // The legacy session can answer or end while its POST is still out. Neither leaves
-            // this request waiting for a POST response after its waiter has already settled.
             const response = responseWaiter ? await Promise.race([fetching, responseWaiter.answer]) : await fetching;
             if ("rpc" in response) {
                 abortController.abort();
@@ -553,7 +582,11 @@ export class MCPClient {
         }
     }
 
-    /** The legacy GET belongs to its session, including the wait for the endpoint event. */
+    /**
+     * The legacy GET owns an AbortController and an endpoint waiter that settles on connection,
+     * failure, or reset. Only this session's current legacy stream may reset the client when it ends;
+     * cleanup from an older stream must not retire its replacement.
+     */
     private async connectLegacy(headers: Record<string, string>): Promise<AbortController> {
         const session = new AbortController();
         this.legacy?.abort();
@@ -606,6 +639,11 @@ export class MCPClient {
         }
     }
 
+    /**
+     * A legacy session opened by this handshake's 404 fallback is checked for its end before
+     * initialization completes, including after the initialized notification; a legacy session
+     * an earlier handshake opened is not.
+     */
     async handshake() {
         this.assertOpen();
         let legacySession: AbortController | null = null;
@@ -697,6 +735,13 @@ export class MCPClient {
         }
     }
 
+    /**
+     * A stored refresh record is tried first: only HTTP 200 with a non-empty string `access_token`
+     * completes refresh; a non-empty new `refresh_token` replaces the stored one through
+     * `registerRefreshToken`. Other statuses or unusable bodies proceed to full login; a rejected
+     * refresh fetch rejects login instead. The server's authorization endpoint must use `http:` or
+     * `https:` before `openURL` may open it.
+     */
     async oauthLogin() {
         // A retired client starts no login step: a refresh would spend the token a newer client holds.
         this.assertOpen();
@@ -717,12 +762,9 @@ export class MCPClient {
                         client_secret: refreshTokenData.clientSecret,
                     }).toString(),
                 });
-                // A successful refresh gives the token (the check used to be inverted); anything else
-                // goes on to a full login.
                 if (tokenResponse.status === 200) {
                     const tokenData = await tokenResponse.json().catch((): null => null);
                     if (typeof tokenData?.access_token === "string" && tokenData.access_token !== "") {
-                        // A rotated refresh token replaces the stored one (the old one may be spent).
                         const rotated = tokenData.refresh_token;
                         this.assertOpen();
                         if (typeof rotated === "string" && rotated !== "" && this.registerRefreshToken) {
@@ -794,7 +836,6 @@ export class MCPClient {
             .replace(/\//g, "_");
 
         const authUrl = new URL(discoveryURLS.authorization_endpoint);
-        // The server names this address, and it is opened in a window: only a web address may be.
         if (authUrl.protocol !== "http:" && authUrl.protocol !== "https:") {
             throw new Error("The OAuth authorization endpoint is not a web address");
         }
@@ -970,7 +1011,8 @@ export class MCPClient {
     /**
      * Retires the client (the registry dropped it): it starts nothing afterwards, and requests, logins,
      * and lists it started refuse their late answers. Pending SSE answers settle, and running readers
-     * are cancelled and released. The custom transport is not fenced.
+     * are cancelled and released. Requests already sent are not generally aborted, so an in-flight
+     * refresh may still spend the stored token. The custom transport is not fenced.
      */
     destroy() {
         this.closed = true;

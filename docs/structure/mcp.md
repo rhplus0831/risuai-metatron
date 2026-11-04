@@ -20,96 +20,77 @@
 
 ### MCP registry
 
-`mcp/mcp.ts` is the client registry and tool dispatch.
-
-- `initializeMCPs`: a `stdio:` entry with `url` is treated as remote; one with `command`/`args` is rejected.
-- `readyTabClient(identifier)`: the `internal:fs` or `internal:googlesearch` client, one instance for this registry and
-  for a server job's callbacks, handshaken (concurrent first uses share one handshake, so one directory picker). The
-  registry's cleanup drops its own reference only.
-- `encodeToolCall`/`decodeToolCall`: remembered calls, in `chat.toolCalls` of the request's chat, written with
-  `mergeChatMeta` so two devices adding calls keep each other's; the server uses the same field for a job's request. A
-  call without a chat, or whose chat is gone when it is remembered, is not remembered (logged once).
-- A browser's LocalForage store `mcp-tool-calls` (an older version's, chatless calls included) is never read, so a
-  marker remembered there does not resolve (no migration).
+- `src/ts/process/mcp/mcp.ts`: the tab's client registry and tool dispatch, and the remembered calls. Look up
+  `initializeMCPs` (identifier rules), `getTools`/`callTool` (over `getMCPTools`/`callMCPTool`), `readyTabClient`,
+  `importMCPModule`, `encodeToolCall`/`decodeToolCall`, `MCPs`, `callOnlyMCPs`.
+- `src/lib/Playground/PlaygroundMCP.svelte`: the MCP Playground page; look up `refresh` and its `callMCPTool` handler.
 
 ### Remote MCP client
 
-`mcp/mcplib.ts` `MCPClient`: remote JSON-RPC over streamable HTTP or SSE, OAuth, sessions, pagination. Events are framed
-by `shared/mcp/sse.ts`, as in the server's client. A session id is taken from an `initialize` answer in JSON or as an
-event stream.
-
-- Refresh token: a stored one is used when the token endpoint answers 200 with a token, and a new `refresh_token` in
-  that answer replaces the stored one (`registerRefreshToken`); anything else goes on to a full login.
-- The authorization endpoint a server names must be `http:` or `https:` before it is opened.
-- Retirement: `destroy()` (the registry dropped the client) starts no request, handshake, login step, or stream reader
-  afterwards, and an answer that completes later (a session id, a list, a tool result, a token) is refused with
-  `The MCP client was closed`. The session reset after a 404 or 401 (`reset`) keeps the client usable.
-- Not fenced: other requests already sent when retired are not aborted (a refresh may still spend the stored token), and
-  the custom transport (`customTransport`, no caller in the app).
-- Pending SSE answers (`waitFor`, `pending`): the answer, its stream's EOF or failure, or `reset` settles them and
-  removes their document listeners. An unanswered EOF on a request's own response stream returns JSON-RPC error -32000
-  (`The MCP stream ended without an answer`), a read failure its message, and a reset or EOF on the current legacy GET
-  `The MCP session ended`; `destroy` uses reset and the closed-client guard rejects the settled answer.
-- `connectSSE` cancels and releases every reader and removes its `sses` entry in `finally`; an answered streamable
-  request aborts its stream even if the server keeps it open. A ping reply's POST does not block the reader from
-  observing EOF or failure.
-- The legacy GET has an AbortController, its endpoint waiter also settles, and only the current legacy stream may reset
-  the session on ending. The handshake refuses an ended session. A legacy waiter also settles while its POST is still
-  out, and a failed POST removes its listener.
+- `src/ts/process/mcp/mcplib.ts` `MCPClient`: remote JSON-RPC over streamable HTTP or SSE, OAuth, sessions, pagination.
+  Look up `oauthLogin` (refresh), `destroy` and `closed` (retirement), `reset`, `waitFor`, `connectSSE`,
+  `connectLegacy`, `request`.
+- `shared/mcp/sse.ts`: `SseFramer`, `parseSseEvent`, the event framing of both clients.
+- `server/src/mcp/client.ts` `McpClient`: the server's port; its header lists what differs from the tab's.
 
 ### Local MCP clients
 
-- `mcp/internalmcp.ts` `MCPClientLike`: the base class. It accepts the optional trailing context, but dispatchers pass
-  it only to plugin clients.
-- Chat clients (`internal:graphmem`, `internal:risuai`, `internal:aiaccess`) have
-  `callToolForChat(chatRef, name, args, scope?)`: `callMCPTool` calls it whenever it was given a chat argument (`null`
-  included) and `callTool(name, args)` only when it was not (`undefined`).
-- `googlesearchclient.ts`: `initializeCredentials` refuses a missing, cancelled, or blank API key or engine id before
-  anything is written, and trims accepted values before `googleSearchCredentials` is saved.
-- `graphmem.ts`, `aiaccess.ts`: the tab's hosts of `shared/mcp/`, whose tools and logic the server shares. For a request
-  the graph is the chat variable `graphmem_graph` of its chat by id (the preset default from the request's captured
-  preset when its context is for that chat, else the chat's display preset), and no chat or one that is not loaded
-  answers an `Error:` text.
-- `mcp/pluginmcp.ts`: `CustomPluginMCPClient` hands the context directly to its stored callbacks with `invokeHook`;
-  `registerMCP` wraps those callbacks per instance with `withContext` and installs unload cleanup guarded by client
-  identity. Unregister also drops that client from the tab's `MCPs`/`callOnlyMCPs`; `syncMCPs` resolves each `plugin:`
-  client from the current registration on every call.
+- `src/ts/process/mcp/internalmcp.ts` `MCPClientLike`: the base of internal and plugin clients, and the
+  `callToolForChat(chatRef, name, args, scope?)` contract of the chat clients (`internal:graphmem`, `internal:risuai`,
+  `internal:aiaccess`).
+- `src/ts/process/mcp/graphmem.ts` `GraphMemClient`, `src/ts/process/mcp/aiaccess.ts` `AIAccessClient`: the tab's hosts
+  of `shared/mcp/graphmem.ts` and `shared/mcp/aiaccess.ts`, whose tools the server shares.
+- `src/ts/process/mcp/filesystemclient.ts` `FileSystemClient` (`internal:fs`; PDFs through
+  `src/ts/process/dynamicutils/pdf.ts`), `src/ts/process/mcp/googlesearchclient.ts` `GoogleSearchClient`
+  (`internal:googlesearch`, `initializeCredentials`), `src/ts/process/mcp/dice.ts` `DiceClient`.
+- `src/ts/process/mcp/pluginmcp.ts`: `CustomPluginMCPClient`, `registerMCPModule`, `unregisterMCPModule`,
+  `registeredCustomPluginMCPs`. The plugin API's `registerMCP` (`src/ts/plugins/apiV3/v3.svelte.ts`) wraps the callbacks
+  per instance with `withContext` and installs the unload cleanup.
 
 ### RisuAccess
 
-- `mcp/risuaccess/`: the handlers are `shared/mcp/risuaccess/` over a `RisuAccessHost`, so a server job runs the same
-  tools on its store (`server/src/mcp/internal.ts`). `tabRisuAccessHost` serves `callTool` (no request: the Playground).
-- A request's call (`callToolForChat`) runs `createRisuAccess` over `tabRisuAccessHostFor(chatRef)`, built per call: an
-  empty character id names the request chat's character (`null`: none), that character's history is the request's chat,
-  and another character's history is its selected chat in this tab, as a server job resolves them. Failures stay the
-  tab's: no selected chat reads as an empty history.
-- Every write goes through `writeConfirmed`: `promptAccess` confirmation, then the [re-resolve](#invariants) (never by
-  name) and a type recheck (a group, an MCP module). A `MutationValidationError` answers an `Error:` text.
+- `shared/mcp/risuaccess/`: the tools (`CharacterHandler`, `ChatHandler`, `ModuleHandler`, `createRisuAccess`) over a
+  `RisuAccessHost` (`shared/mcp/risuaccess/host.ts`), so a server job runs the same tools on its store. Every write goes
+  through `writeConfirmed`: consent (`promptAccess`), then the [re-resolve](#invariants) and a type recheck.
+- `src/ts/process/mcp/risuaccess/`: the tab's side. `tabRisuAccessHostFor(chatRef)` (which character and history a
+  request's call names), `tabRisuAccessHost` (no request: the Playground), `RisuAccessClient`.
+
+### Server job tools
+
+- `server/src/mcp/jobTools.ts` `createJobTools`: a job's tool set and where each identifier runs; `createJobToolState`.
+- `server/src/mcp/internal.ts` `createInternalMcps`: `internal:aiaccess`, `internal:risuai`, `internal:graphmem` over
+  the job's data. `server/src/mcp/dice.ts` `callDiceTool`. `server/src/mcp/registry.ts` `McpRegistry`: the process's
+  remote clients.
+- The services those tools run on (the `createJobTools` call, the job chat's `getChatVar`/`setChatVar`, a request's tool
+  calls) are built in `server/src/lua/bindings.ts` ([scripts and triggers](scripts-triggers.md)).
 
 ## Flows
 
 ### Tool dispatch
 
-A server job does not use the tab's registry (`server/src/mcp/`, `server-generation.md`):
+A server job does not use the tab's registry (`createJobTools` has the rules; channel in
+[server generation](server-generation.md#generation-channels)):
 
 - Remote servers and `internal:dice` run on the server.
 - `internal:fs`, `internal:googlesearch`, and a `plugin:` MCP registered when the job was created run in the job's tab
   through the `mcpList` and `mcpTool` callbacks (`src/ts/network/jobChannel.ts`).
 - `internal:aiaccess`, `internal:risuai`, and `internal:graphmem` run on the server over the job's data (`shared/mcp/`).
 
-The tab's own requests (`/api/llm/request`) run their tool loops on the server too (`server/src/llm/`):
+The tab's own requests (`/api/llm/request`) run their tool loops on the server too (`server/src/llm`):
 
 - A tool call becomes an `mcpTool` callback, which the tab answers with `callTool` for the request's chat (its explicit
-  chat, else the chat selected when it began). That chat picks the module MCP servers, and `internal:graphmem` and
-  `internal:risuai` act on it whatever is selected when the callback arrives.
+  chat, else the chat selected when it began; `src/ts/process/request/transport.ts`). That chat picks the module MCP
+  servers, and `internal:graphmem` and `internal:risuai` act on it whatever is selected when the callback arrives.
 - A remembered call (`rememberToolUsage`) is stored in the tab by `encodeToolCall` from the request's `toolRecord`
-  event; the tab sends the records a prompt's markers name with the request.
+  event; the tab sends the records a prompt's markers name with the request (`collectToolRecords`).
 
 ### Callbacks in the tab
 
-- A server job's `mcpList` and `mcpTool` callbacks and a tab request's tool calls reach the registry through the job
-  channel and `transport.ts`; the plugin host passes the hook context with them
-  ([Hook entry points](plugin-sandbox.md#hook-entry-points)), and a plugin client invokes its wrapped callback with it.
+- A server job's `mcpList` and `mcpTool` callbacks (`src/ts/network/jobChannel.ts`) take `internal:fs` and
+  `internal:googlesearch` from `readyTabClient` and a `plugin:` client from its current `registeredCustomPluginMCPs`
+  registration, and call them directly; a tab request's tool calls go through `transport.ts` and `callTool`. The plugin
+  host passes the hook context with them ([Hook entry points](plugin-sandbox.md#hook-entry-points)), and a plugin client
+  invokes its wrapped callback with it.
 - The owner-presence contract a tab-side tool answers inside (pings, the silent socket, the absence bound) is
   [generation channels](server-generation.md#generation-channels)'; what a hook may assume about its tab is
   [Job owner presence](plugin-sandbox.md#job-owner-presence).
@@ -126,8 +107,8 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
 ## Coupling
 
 - MCP consumers: `request.ts` and the provider adapters, `PlaygroundMCP.svelte`, `IrisModal.svelte`/`iris.ts`.
-- The plugin host: `pluginmcp.ts` wraps a plugin's callbacks per instance with `withContext`, and a plugin's unload
-  unregisters its clients ([Load and reset](plugin-sandbox.md#load-and-reset)).
+- The plugin host: its `registerMCP` (`src/ts/plugins/apiV3/v3.svelte.ts`) wraps a plugin's callbacks per instance with
+  `withContext`, and a plugin's unload unregisters its clients ([Load and reset](plugin-sandbox.md#load-and-reset)).
 - `server/src/mcp/` runs a job's tools on the server; the job's channel and callbacks are
   [server generation](server-generation.md)'s. `shared/mcp/` holds the tools both sides run, and `shared/mcp/sse.ts`
   frames events for both clients.
@@ -135,14 +116,15 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
 ## Invariants
 
 - Tool names are resolved globally, first match wins. Adapters usually keep only text content.
-- An MCP write tool goes through a mutation module, as [a plugin's write](plugin-sandbox.md#invariants) does; a refused
-  value answers an `Error:` text and changes nothing.
-- An MCP write tool re-resolves its record by the id captured before the consent prompt, and builds its patch
+- A RisuAccess write tool goes through a mutation module, as [a plugin's write](plugin-sandbox.md#invariants) does; a
+  refused value answers an `Error:` text and changes nothing.
+- A RisuAccess write tool re-resolves its record by the id captured before the consent prompt, and builds its patch
   synchronously after that lookup.
 - A request's tool call reaches the chat clients with the request's chat: the graph, the implicit character's history,
   and nested LLM requests use that chat. AI access also passes the request's captured prompt and model preset scope;
-  null stays chatless. Only implicit targeting without a chat argument (the Playground) uses the selection; module
-  discovery keeps its own fallback.
+  null stays chatless. Only implicit targeting without a chat argument (the Playground) uses the current selection, and
+  a tab request without a chat sends its tool calls with the chat selected when it began (`requestServer` in
+  `src/ts/process/request/transport.ts`); module discovery keeps its own fallback.
 
 ## Recipes
 
@@ -172,7 +154,8 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
 - `filesystemclient.ts` advertises `fs_watch_directory` but has no dispatch for it.
 - A rotated refresh token is a whole-collection `authRefreshes` edit from the tab (and the server job's write to the
   same collection is not hydrated into the tab): another writer of the collection can make the tab's write conflict and
-  be discarded, and the next refresh then sends a token the server may have spent (a full login follows).
+  be discarded, and the next refresh then sends a token the server may have spent (an unsuccessful refresh answer goes
+  on to a full login; a rejected refresh fetch rejects the login).
 - The server MCP client fences a rotated-token write against the job and client signals. If the remote server rotates
   the old refresh token before the answer arrives, an abort or client close in that window leaves the old token stored
   while the new one is lost; the next refresh may fail and require a full login. `server/src/tests/mcp.test.ts` pins the
@@ -193,8 +176,10 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
 
 ### Gotchas
 
-- Remote MCP, in both clients (`mcplib.ts` and the server's port): a 404 with a session or a 401 with a token resets the
-  session and repeats the request once without them (the call after that handshakes again).
+- Remote MCP, in both clients (`mcplib.ts` and the server's port): over streamable HTTP, a 404 with a session or a 401
+  with a token resets the session and repeats the request without them (the call after that handshakes again); the
+  server repeats it once, the tab again if concurrent work restored a session or token. A legacy SSE POST answered above
+  299 settles its pending answer with that status as the RPC error code instead.
 - A server MCP OAuth code question is tied to the MCP client's closing signal, while the caller's abort only rejects
   that caller. It can stay open until the client closes, the job channel ends, or it times out; a queued question has no
   timeout until dispatch.

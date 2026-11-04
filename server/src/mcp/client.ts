@@ -25,15 +25,15 @@ import { parseSseEvent, SseFramer } from "../../../shared/mcp/sse.ts";
  *   and the time the legacy session stream may take to connect and name its endpoint;
  * - a session that ended while its handshake was still running is not taken as initialized (the
  *   session generation), and a client closed while an owner's question is open settles its callers;
- * - OAuth refresh uses a 200 answer's token (the tab client read it only from a failed answer), the
- *   endpoints a server names must be `http:` or `https:`, and one handshake logs in at most once.
+ * - all OAuth endpoints a server names must be `http:` or `https:`, and one handshake logs in at
+ *   most once (the tab checks only the authorization endpoint's protocol).
  *
  * Events are framed by `shared/mcp/sse.ts` (CRLF, LF, or CR line ends; `data:` with or without the
  * space), a session id is taken from an `initialize` answer in JSON or as an event stream, and a
- * refresh answer's new refresh token replaces the stored one (the tab client does the same). Kept
- * as the tab client has it: a 404 with a session or a 401 with a token resets the session and
- * repeats the request once without them. Prompts, the custom transport, and `debug` are not ported
- * (no server caller).
+ * refresh answer's new refresh token replaces the stored one (the tab client does the same).
+ * Over streamable HTTP only, a 404 with a session or a 401 with a token resets the session and
+ * retries at most once; the tab can retry again when concurrent work restores a session or token.
+ * Prompts, the custom transport, and `debug` are not ported (no server caller).
  */
 
 export const MCP_REQUEST_TIMEOUT_MS = 5 * 60_000;

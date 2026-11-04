@@ -10,6 +10,15 @@ import { type ChatRef, findChat, mergeChatMeta } from "src/ts/storage/chatStore.
 import { TAB_MCP_IDENTIFIERS } from "../../../../shared/jobs.ts";
 import type { PluginCallContext } from "../../plugins/apiV3/pluginContext";
 
+/**
+ * The tab's MCP registry: `MCPs` offers tools; `callOnlyMCPs` keeps tools callable without offering
+ * them. `internal:risuai` is call-only unless a module or `additionalMCPs` names it. Tool names are
+ * global: the first matching client wins. Client lifetime while in use is governed by `leases` below.
+ * Each `syncMCPs` resolves `plugin:` clients from the current registration, including replacements.
+ * Server jobs use `server/src/mcp/jobTools.ts` rather than this registry; the two tab clients are
+ * shared through `readyTabClient` with callbacks in `src/ts/network/jobChannel.ts`.
+ */
+
 export type MCPToolWithURL = MCPTool & {
     mcpURL: string;
 };
@@ -80,7 +89,13 @@ function releaseLeases(held: readonly AnyMCPClient[]) {
     }
 }
 
-/** Connects the MCP servers of `chatRef`'s modules (default: the selected chat's), plus `additionalMCPs`. */
+/**
+ * Connects the MCP servers of `chatRef`'s modules (default: the selected chat's), plus `additionalMCPs`.
+ * A `stdio:` JSON entry with `url` connects remotely at that URL; local `command`/`args` entries
+ * are unsupported. Invalid JSON or an entry without a truthy `url` rejects this initialization;
+ * that parsing error escapes rather than being logged and skipped. Remote URLs must start with
+ * `http://` or `https://`; an invalid prefix or failed remote handshake is logged and skipped.
+ */
 export async function initializeMCPs(additionalMCPs?: string[], chatRef?: ModuleChatRef) {
     await syncMCPs(additionalMCPs, chatRef);
 }
@@ -310,7 +325,7 @@ function isChatToolClient(client: AnyMCPClient): client is AnyMCPClient & ChatTo
 /**
  * Calls a tool on `chatRef`'s MCP servers (its own clients, leased for the call). A client whose
  * tools act on a chat runs them on `chatRef` too; without one (`undefined`, the Playground) it keeps
- * using the selection.
+ * its `callTool` behavior (selection for graph memory and RisuAccess; chatless for AI access).
  */
 export async function callMCPTool(
     methodName: string,
@@ -364,6 +379,12 @@ export async function callTool(methodName: string, args: any, chatRef?: ModuleCh
     return await callMCPTool(methodName, args, chatRef, context);
 }
 
+/**
+ * The import prompt checks literal `https:`, `http://localhost`, `http://127`, `internal:`,
+ * `stdio:`, and `plugin:` string prefixes, not parsed hosts (`http://localhost.example` passes).
+ * A `stdio:` entry can wrap any URL `initializeMCPs` accepts. Accepted input still has to pass
+ * initialization and yield server metadata before a module is saved.
+ */
 export async function importMCPModule() {
     const x = await alertInput("Please enter the URL of the MCP module to import:", [
         ["internal:aiaccess", "LLM Call Client (internal:aiaccess)"],
@@ -438,7 +459,8 @@ let droppedLogged = false;
 /**
  * Remembers a tool call and gives its marker. It is stored with the request's chat (`chat.toolCalls`),
  * where the server reads it too; a request without a chat, or whose chat is gone, remembers nothing
- * (the browser's own LocalForage store was removed).
+ * and logs the warning once per tab. `mergeChatMeta` in `src/ts/storage/chatStore.svelte.ts` adds the
+ * entry without replacing calls another device added (the same id remains last writer wins).
  */
 export async function encodeToolCall(call: toolCallData, chatRef?: ChatRef | null) {
     call.call.id = call.call.id || v4();
@@ -453,8 +475,9 @@ export async function encodeToolCall(call: toolCallData, chatRef?: ChatRef | nul
 
 /**
  * The remembered call a marker (whole, or its inner text) stands for, from the chat's own record
- * (`chatRef`). A marker remembered in the browser's former LocalForage store (before tool calls were
- * stored with the chat, or without a chat) no longer resolves.
+ * (`chatRef`). The browser's former LocalForage store `mcp-tool-calls` is never read or migrated:
+ * a marker remembered there (before calls were stored with the chat, or without a chat) no longer
+ * resolves.
  */
 export async function decodeToolCall(text: string, chatRef?: ChatRef | null): Promise<toolCallData | undefined> {
     text = text.trim();

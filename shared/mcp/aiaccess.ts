@@ -50,6 +50,12 @@ export const AIACCESS_TOOLS: MCPTool[] = [
     },
 ];
 
+/**
+ * Shared dispatch for the tab's `src/ts/process/mcp/aiaccess.ts` and `server/src/mcp/internal.ts`.
+ * The schema's model enum is not enforced here: any truthy model other than `lite` uses `model`.
+ * Host failures propagate to the caller's failure policy rather than being converted into a tool
+ * answer here.
+ */
 export async function callAiAccessTool(
     host: AiAccessHost,
     methodName: string,
