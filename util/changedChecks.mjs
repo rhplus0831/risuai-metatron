@@ -9,12 +9,17 @@
 //     parallel. A type error can surface in a file nobody touched, so a program is never narrowed to the
 //     changed files: it is only skipped when every changed path is one it cannot read (`isInert`). An
 //     unknown path runs both programs. The server `tsc` keeps an incremental cache, as `pnpm check` does.
+//     Its first line names the guides that own the changed paths (`ownersLine`, from the manifest
+//     `util/docsOwner.mjs` reads), the guides sharing a file included, then the changed paths under the owned
+//     roots (`src/`, `server/`, `shared/`, `util/`, `e2e/`, `public/`) that no rule owns. A changed path
+//     outside those roots with no rule (docs, root Markdown, the lockfile) is left out of the line.
 // `--base <ref>` picks another base. `pnpm check` and `pnpm format:check` stay the full checks; CI runs
 // those.
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { OWNED_ROOTS, ownerOf, readOwnership } from "./docsOwner.mjs";
 
 /** Paths outside both type-checked programs: docs, tooling the programs never import, and assets. */
 const INERT = [
@@ -48,6 +53,33 @@ export function typeCheckTargets(files) {
         client: reaching.length > 0,
         server: reaching.some((file) => !CLIENT_ONLY.some((pattern) => pattern.test(file))),
     };
+}
+
+/**
+ * The owner line for the changed `files` under the parsed ownership `rules`: the owning guides, sorted, those
+ * sharing a file included, then the changed paths under `OWNED_ROOTS` that no rule owns. Paths outside those roots
+ * with no owner are left out.
+ */
+export function ownersLine(rules, files) {
+    const guides = new Set();
+    const unowned = [];
+    for (const file of files) {
+        const owner = ownerOf(rules, file);
+        if (owner) [owner, ...owner.also].forEach(({ guide }) => guides.add(guide));
+        else if (OWNED_ROOTS.some((root) => file.startsWith(`${root}/`))) unowned.push(file);
+    }
+    const owners = guides.size > 0 ? [...guides].sort().join(", ") : "none";
+    return `[changed] owners: ${owners}${unowned.length > 0 ? `; no owner: ${unowned.join(", ")}` : ""}`;
+}
+
+/** `ownersLine` for the manifest under `root`, or why it cannot be read. */
+function rootOwnersLine(root, files) {
+    try {
+        const rules = readOwnership(root);
+        return rules ? ownersLine(rules, files) : "[changed] owners: no ownership manifest";
+    } catch (error) {
+        return `[changed] owners: unreadable manifest, ${error.message}`;
+    }
 }
 
 function git(root, args) {
@@ -132,6 +164,7 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     }
     const base = resolveBase(root, baseIndex === -1 ? undefined : args[baseIndex + 1]);
     const files = changedFiles(root, base);
+    if (command === "types") console.log(rootOwnersLine(root, files));
     console.log(`[changed] base ${base.slice(0, 9)}: ${files.length} changed paths`);
     process.exitCode =
         command === "format" ? await format(root, files, args.includes("--write")) : await types(root, files);

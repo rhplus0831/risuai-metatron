@@ -15,6 +15,7 @@
     "check:tests": "node util/testInventory.mjs",
     "check:docs": "node util/docsBudget.mjs",
     "docs:read": "node util/docsRead.mjs",
+    "docs:owner": "node util/docsOwner.mjs",
     "docs:contracts": "node util/docsContracts.mjs",
     "docs:ledger": "node util/docsLedger.mjs",
     "docs:reads": "node util/guideReads.mjs",

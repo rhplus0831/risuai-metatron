@@ -11,7 +11,7 @@ run.
 ## Agent Read Protocol
 
 1. Read **Repository-Wide Invariants** below.
-2. Choose one owner in **Choose By Task**, or use **Path Ownership** for a supplied path. A folder row's `README.md`
+2. Choose one owner in **Choose By Task**; for a supplied path run `pnpm docs:owner <path>`. A folder row's `README.md`
    routes on to one of its guides.
 3. List that guide's headings with their sizes (`pnpm docs:read <guide>`), read `Scope`, then the relevant subsection
    (`pnpm docs:read <guide> <heading>`), not the whole file. For an add/change task, also read `Invariants`, `Recipes`
@@ -20,9 +20,11 @@ run.
 4. Follow its `Coupling` links only when the change crosses a boundary. Do not load every guide.
 5. Confirm the named identifier with a bounded `rg -n "<identifier>" <path>` before editing.
 6. Run V1's gates and the affected guide's focused checks.
-7. Update the owning guide when moving a named file or changing a documented contract. For guide edits, run targeted
-   Prettier and `pnpm check:docs`; if the slow-test table changes, also run `pnpm check:tests`. The documentation check
-   validates Markdown links, not source paths or identifiers.
+7. Update the owning guide when moving a named file or changing a documented contract, and
+   `docs/structure/ownership.json` when a moved or new file has no rule. For guide edits, follow
+   [Doc Maintenance](docs/structure/README.md), run targeted Prettier and `pnpm check:docs`; if the slow-test table
+   changes, also run `pnpm check:tests`. The documentation check validates Markdown links, not source paths or
+   identifiers.
 
 ## Repository-Wide Invariants
 
@@ -185,111 +187,12 @@ completed plans and retrieval commands.
 
 ## Path Ownership
 
-Apply the specific ownership before the fallback directories. Guide names refer to **Choose By Task**; each guide's
-`Files` section has identifiers. For behavior sharing a UI or transport file, use **Choose By Task** and the owner's
-coupling links.
+`pnpm docs:owner <path>...` prints each path's owning guide from `docs/structure/ownership.json`, an ordered rule list
+where the first match wins; for a file two guides share, it adds the other guides and their parts. The path need not
+exist. `pnpm check:changed` prints the owners of the changed paths first.
 
-### Chat, memory, and requests
-
-- **memory**: `src/ts/process/memory/`, `server/src/prompt/memory/`,
-  `server/src/prompt/{embeddings,transformers,transformersWorker}.ts`, `server/src/data/vectorCache.ts`,
-  `shared/taskRateLimiter.ts`, `shared/{memory,hypaV3Presets}.ts`,
-  `src/ts/process/{transformers,memoryTasks.svelte}.ts`, `src/lib/Others/HypaV3*`,
-  `src/lib/Playground/PlaygroundEmbedding.svelte`.
-- **structured-memory/** ([its README](docs/structure/structured-memory/README.md) names each file's guide):
-  `shared/structuredMemory.ts`, `server/src/{data/memoryStore.ts,routes/structuredMemory.ts}`,
-  `server/src/prompt/memory/structured/`, `src/ts/process/{structuredMemory,chatMemoryInherit}.svelte.ts`,
-  `src/lib/Others/StructuredMemory/`, `src/lib/ChatScreens/MemoryReceiptLine.svelte`,
-  `src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`, and the projection parts
-  [projection](docs/structure/structured-memory/projection.md#files) lists.
-- **llm-requests**: `src/ts/process/request/`, `src/ts/process/webllm.ts`, `src/ts/model/`,
-  `shared/{llm,llmSecrets}.ts`, `shared/llm/`, `server/src/llm/`, `server/src/routes/llm.ts`,
-  `server/src/prompt/tokens.ts`, `server/src/prompt/tokenizers/`, `server/assets/token/`, `src/ts/horde/`,
-  `src/ts/{tokenizer,tokenCountField}.ts`, `shared/tokenizerChoice.ts`, `shared/prompt/{chatTokens,imageTokens}.ts`,
-  `src/lib/UI/{Model*,NanoGPT*,OpenrouterProviderList}.svelte`,
-  `src/lib/Setting/Pages/{Advanced/CustomModelsSettings,ApiKeysSettings}.svelte`,
-  `src/lib/UI/GUI/CredentialSelect.svelte`.
-- **chat-store**:
-  `src/ts/storage/{chatStore.svelte,chatEdits,chatFieldDraft.svelte,localLoreDraft.svelte,loreOverridesDraft.svelte}.ts`,
-  `src/ts/checkpoints/`, the hydration memory in `src/ts/network/jobChannel.ts`.
-- **resource-sync**: `src/ts/storage/{resourceSync.svelte,resourceClient,bootCache,recordMerge,readDeadline}.ts`,
-  `loadData` in `src/ts/bootstrap.ts`.
-- **live-updates**: `src/ts/network/{eventFeed,socketLiveness}.ts`, and the live-update part of
-  `src/ts/storage/resourceSync.svelte.ts`.
-- **draft-recovery**: `src/ts/storage/{draftJournal,journalEligibility,journalRecovery,recoveryDrafts.svelte}.ts`,
-  `chatJournal` in `chatStore.svelte.ts`, the journal part of `resourceSync.svelte.ts`.
-- **persistence**: remaining `src/ts/storage/`, `src/ts/toggles/`, `src/ts/chatLoadPages.ts`,
-  `shared/{chatCheckpoints,togglePresets}.ts`, `shared/` persisted shapes. `shared/` runtime semantics stay with their
-  domain guide.
-- **chat-pipeline**: `src/ts/messageSearch.svelte.ts`, `shared/{messageSearch,contextReport,eligibleHistory}.ts`,
-  `shared/lore/`, remaining `shared/prompt/` and `src/ts/process/`.
-- **cbs-rendering**: `shared/cbs/`, `shared/prompt/toggles.ts`, `src/ts/cbs.ts`, `src/ts/parser/`,
-  `src/ts/gui/highlight.ts`, `src/ts/gui/codearea/`, `src/lib/ChatScreens/PartialEditController.svelte`,
-  `src/lib/Others/MonacoEditor.svelte`, `src/etc/airisu.cbs`, `src/etc/docs/`.
-- **scripts-triggers**: `shared/scripts/`, `shared/triggers.ts`, `server/src/{scripts,lua}/`,
-  `src/ts/process/{regexFiles,serverCommands}.ts`, `src/lib/SideBars/Scripts/`,
-  `src/lib/Playground/Playground{Regex,Syntax,Parser}.svelte`, `public/lua/`, `src/etc/docs/regex.cbs`.
-
-### Features, shell, and UI
-
-- **diagnostics**: `shared/{requestHistory,diagnostics,diagnosticsReport}.ts`, `server/src/data/requestHistory.ts`,
-  `server/src/diagnostics/`, `server/src/routes/{requestHistory,diagnostics}.ts`, `src/ts/diagnostics/`,
-  `src/ts/network/requestHistory.ts`, `src/lib/Others/RequestLogs/`,
-  `src/lib/Setting/Pages/Advanced/DiagnosticsPanel.svelte`.
-- **plugin-sandbox**: `shared/plugins.ts`, `src/ts/storage/pluginStorageStore.svelte.ts`, `src/ts/plugins/`,
-  `plugins.md`, `src/lib/Setting/Pages/PluginSettings.svelte`, `src/lib/Others/Plugin*.svelte`,
-  `public/plugin_start.7z`.
-- **mcp**: `src/ts/process/mcp/`, `server/src/mcp/`, `shared/mcp/`, `src/ts/process/dynamicutils/pdf.ts`,
-  `src/lib/Playground/PlaygroundMCP.svelte`.
-- **characters-modules**: `src/ts/process/{processzip,modules}.ts`, `shared/{charxImport,moduleImport,rpack}.ts`,
-  `src/ts/{characterCards,characters,persona,pngChunk,interchangeability,assetList}.ts`,
-  `src/lib/SideBars/CharConfig.svelte`, `src/lib/SideBars/LoreBook/`, `src/lib/Setting/Pages/Module/`,
-  `src/lib/Setting/Pages/PersonaSettings.svelte`, `src/lib/Setting/listedPersona.svelte`,
-  `src/lib/Others/GridCatalog.svelte`, `src/lib/ChatScreens/AssetInput.svelte`, `src/ts/rpack/`,
-  `src/ts/storage/{serverImportClient,moduleImportClient,charxImportClient}.ts`.
-- **media-aux**: `src/ts/process/tts*.ts`, `src/ts/process/stableDiff.ts`, `src/ts/media/`, `src/ts/voice.ts`,
-  `src/ts/3d/`, `src/lib/UI/3DLoader.svelte`, `src/lib/Setting/Pages/Model/AuxModelSelectors.svelte`, remaining
-  `src/lib/Playground/` tools. `src/lib/Playground/PlaygroundMenu.svelte` belongs to **ui-theming**.
-- **translation**: `src/ts/translator/`, `shared/translation/`, `shared/translatorPresets.ts`,
-  `server/src/translation/`, `src/lib/Setting/Pages/Translation/TranslatorPresetSettings.svelte`.
-- **backup-sync-hub**: `src/ts/drive/`, `src/ts/{realmBlocking,realmTerms}.ts`, `src/ts/storage/realmImportClient.ts`,
-  `src/lib/UI/Realm/`, `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`, `server/src/data/upstream/` (its
-  workers and staging: **server-resources**), `shared/{upstreamBackup,upstreamExportReport}.ts`; Realm APIs such as
-  `getRisuHub` and `downloadRisuHub` in `src/ts/characterCards.ts`.
-- **assets**: `src/ts/storage/{assetClient,assetQueue}.ts`, `shared/assetBatch.ts`, and the asset functions of
-  `src/ts/globalApi.svelte.ts`.
-- **network-jobs**: remaining `src/ts/network/`, `shared/{localNetwork,notifications}.ts`, and the fetch functions of
-  `src/ts/globalApi.svelte.ts`.
-- **global-api**: the rest of `src/ts/globalApi.svelte.ts`, `src/ts/chatFold.svelte.ts`, `src/ts/util.ts`,
-  `src/ts/util/`, `src/ts/{alert,alertQueue}.ts`, `src/ts/{dragTypes,sourcemap,iris,licenses}.ts`,
-  `src/lib/Others/{AlertComp,IrisModal}.svelte`.
-- **settings-i18n**: `src/ts/setting/`, `src/ts/settingsMenu.ts`, remaining `src/lib/Setting/`, `src/lang/`,
-  `src/lib/UI/PromptDataItem.svelte`, `src/lib/Others/PromptDiffModal.svelte`.
-- **app-shell**: `index.html`, `src/{main,boot,startApp}.ts`, `src/App.svelte`,
-  `src/lib/Others/NodeServerRequired.svelte`,
-  `src/ts/{bootstrap,safeBoot,keepAliveAudio,stores.svelte,screenVisibility,pageVisibility.svelte,platform,polyfill,hotkey,ime,defaulthotkeys,observer.svelte,popupEditorSession.svelte,mutex}.ts`,
-  `src/ts/router/`, `src/lib/UI/{MainMenu,Title}.svelte`, `src/types.d.ts`, `src/vite-env.d.ts`, `src/etc/patchNote.ts`.
-- **ui-theming**: remaining `src/lib/`, `src/styles.css`, `src/ts/gui/`, `shared/greetings.ts`.
-
-### Server, build, and tests
-
-- **server-resources**:
-  `server/src/data/{resourceStore,chatStore,chats,kinds,snapshots,archive,checkpointStore,checkpointService}.ts`,
-  `server/src/data/{databaseProjection,recordPatchText}.ts`, `server/src/data/{normalize,restore}/`,
-  `server/src/http/{spool,fileImport,contentAsset,recordStream}.ts`,
-  `server/src/routes/{resources,resourceBoot,llmSecrets,messageSearch,chatCheckpoints}.ts`,
-  `server/src/routes/{backups,backupsUpstream,backupsUpstreamExport,importModule,importCharx,importPng,importRealm}.ts`.
-- **live-update-feed**: `server/src/data/changeFeed.ts`, `server/src/routes/events.ts`.
-- **server-generation**: `server/src/jobs/`, `server/src/data/generationReceipts.ts`,
-  `server/src/routes/{generations,transform,translate,memoryTasks,tokens}.ts`, remaining `server/src/prompt/`.
-- **self-host-server**: remaining `server/`, `shared/assetMime.ts`, `Dockerfile`, `server.sh`, `server.bat`.
-- **test-harness**: `vitest.*`, `playwright.config.ts`, `e2e/`, `util/playwright/`, `util/agentTest.mjs`,
-  `util/agentTestReporter.ts`, `util/agentTestResults.mjs`, `util/agentE2e.mjs`, `util/requireHuman.mjs`,
-  `util/overloadTest.mjs`, `util/testInventory.mjs`.
-- **build-test-platforms**: `package.json`, `vite.config.ts`, `tsconfig*.json`, remaining `util/`, `public/sw.js`,
-  `public/manifest.json`, `version.json`, `src/ts/buildInfo.ts`, `shared/buildInfo.ts`, `server/src/buildInfo.ts`, root
-  dotfiles.
-- Tests follow the code they exercise; browser harness ownership stays with test-harness.
+Tests follow the code they exercise, or the guide whose `Tests` names them: the manifest lists their globs before the
+fallbacks, and nothing is inferred from a test's name. Browser harness ownership stays with test-harness.
 
 Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_start.7z`, `src/etc/docs/`,
 `src/ts/rpack/`. Use a targeted path for those payloads; follow [AGENTS.md](AGENTS.md) for search flags.
@@ -312,71 +215,5 @@ Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_sta
 
 ## Doc Maintenance
 
-- Focused guides use `Scope`, `Files`, `Flows`, `State`, `Coupling`, `Invariants`, `Recipes`, `Tests`, `Known Hazards`,
-  in that order. `###` headings are free within that order: a `##` section over 8,000 bytes is divided by them, each a
-  topic an agent would look up, and a topic label is a heading, not a paragraph ending in a colon.
-- `Scope` routes the task; `Files` gives paths and lookup identifiers; `Flows` explains ordering; `State` names the
-  authoritative records and caches. Describe a contract once and link to it from other sections or guides. Preserve
-  heading anchors when moving a topic, or update all referring links.
-- A fact about one module lives in that module's source, as a doc comment above what it governs: a module header for
-  module-wide rules (`shared/sections.ts` is the shape), a comment on an export for that export's rule. The comment
-  states the invariant, the ordering rule, or the failure behavior that reading the body would not show, never a
-  paraphrase of the body, and no label T5 forbids.
-- The guide's `Files` entry for such a module is the path, its role in one clause, and the identifiers to look up; it
-  does not restate the comment. A fact that spans modules, processes, or tabs, or that an agent needs before choosing a
-  file, stays in the guide.
-- `Flows` keeps the sequences that cross a module, a process, or a tab (a write from the tab through the save loop to
-  the server and back through the feed). A sequence inside one module is its entrypoint's name and the source comment.
-- A trim, a pointer rewrite, or a move between guides carries a fact ledger in its commit message: each fact the guide
-  loses, with its destination (a source path and identifier, a guide heading, or `derivable:` and the entrypoint to
-  read). Check the ledger on the result; for parallel trims, on the combined tree before the last one lands, since two
-  trims can each leave a fact to the other.
-- Draft the ledger from `pnpm docs:contracts <owned files>`, which shows what the modules already document, and check it
-  with `pnpm docs:ledger <guide>`, which lists each old `Files` or `Flows` identifier that neither the guide nor a file
-  it names still holds.
-- Budgets: at most 40,000 bytes per guide, 8,000 under any leaf heading, 600 characters per list item or table row
-  (continuation lines and code spans included), and parentheses at most two deep outside code spans. They are the same
-  for every guide and this file: `pnpm check:docs` fails on any of them, and
-  [build-test-platforms](docs/structure/build-test-platforms.md) `Files` lists its rules.
-- The tree total (every guide and this file) stays under the ratchet in `util/docsBudget.mjs`. A change that lowers the
-  total lowers the ratchet to within 1,000 bytes of it; no change raises it.
-- A code span naming a repository path (braces expanded, globs matched) must exist, so a moved file updates its guides
-  in the same change; a path git ignores is a runtime file and is not checked.
-- Targets: 36,000 bytes per guide and 7,000 under a leaf heading. The check reports a file or a heading over its target
-  as `near`, with the bytes left under the budget, and does not fail. A trim or a split lands the guide at or under its
-  target, not just under the budget, and a change that would carry a guide past its target splits the guide or moves the
-  topic to its owner instead of shaving sentences elsewhere to fit.
-- An area of three or more guides that share records and vocabulary is a folder, `docs/structure/<area>/`, whose
-  `README.md` holds the area's scope, a task-to-guide table, and the files and identifiers the guides share, and no
-  `Flows`. **Choose By Task** and **Path Ownership** name the README, which routes on to one guide. A README has no
-  fixed outline; the budgets and targets apply to it. Any other area is one guide, or guides sharing a name prefix.
-- A guide's `Tests` section names the harnesses, fakes, and fixtures (what they stand in for, what they control), the
-  focused commands for the area, the `slow` and `e2e` memberships, and the gaps (`Not tested`), one bullet per harness.
-  It does not list a test file's cases: the file is the inventory, and V4 finds it after a rename.
-- A measurement (anything with a date, a browser or Node version, a median, or a byte or millisecond count tied to a
-  run) lives in `docs/audit/<topic>-<date>.md`. The guide keeps one sentence with the conclusion that changes how to
-  edit the code, and a link.
-- Remove inventories and step-by-step paraphrases the source already makes clear. Keep the entrypoint and the
-  non-obvious constraint, ownership boundary, or failure behavior an agent needs before editing.
-- Keep only cross-cutting rules in this file. Put subsystem contracts and focused test anchors in their owner; link
-  across domains instead of copying inventories.
-- `Known Hazards` records what can still catch someone working in the subsystem, under up to three subordinate headings,
-  in this order (omit an empty one). One bullet holds one kind: split a bullet that mixes them. Fixed issues are
-  deleted.
-  - `Issues`: remaining defects and advertised but unwired features, to fix. This is the default when no decision to
-    keep the behavior is recorded; mark an unreproduced claim `Unconfirmed:`. Delete an entry in the commit that fixes
-    it.
-  - `Limitations`: behavior the owner chose to keep, or a direct consequence of a recorded design choice. Each entry
-    names where that decision is recorded, in one clause at the end of the bullet
-    (`Decision: Durable Drafts D7, archive`), not an indented paragraph; when the decision is reversed, the entry moves
-    to `Issues`.
-  - `Gotchas`: facts that are not defects but cause mistakes: ordering and test-environment rules, unused files that
-    look live, measured costs.
-- [Found issues](docs/research/found-issues.md) is the inbox for out-of-scope findings that a session could not verify
-  or place. Once an entry is re-checked in code and has an owning guide, move it to that guide's `Issues` (or
-  `Limitations`, once the owner accepts it) and delete it from the inbox.
-- Use paths plus identifiers, without stale line numbers, test counts, or pass guarantees.
-- `db.<field>` is a flat persisted `Database` name: client views and server request projections can expose it without
-  holding a whole-database object.
-- Completed plans and phase chronology belong in [the archive](docs/archived-plan/README.md). Link current guidance to
-  current guides; mark historical paths as history.
+The rules for editing guides, from the outline and budgets to fact ledgers and `Known Hazards`, are in
+[Doc Maintenance](docs/structure/README.md).

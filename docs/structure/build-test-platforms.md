@@ -36,7 +36,7 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
 | `check`                   | `svelte-check` for the client, then `tsc -p server/tsconfig.json` for server/shared code, with an incremental cache in `node_modules/.cache/tsc/`.        |
 | `check:changed`           | `util/changedChecks.mjs types`: the same two programs in parallel, skipping one no changed path reaches; see [Changed-file checks](#changed-file-checks). |
 | `check:docs`              | `util/docsBudget.mjs`: guide budgets, targets, and the tree ratchet, outline, Markdown links, and code-span paths; no tests.                              |
-| `docs:*`                  | `docs:read`, `docs:contracts`, `docs:ledger`, `docs:reads`: the guide reader and the trim tools; see [Documentation check](#documentation-check).         |
+| `docs:*`                  | `docs:read`, `docs:owner`, `docs:contracts`, `docs:ledger`, `docs:reads`: the guide tools; see [Documentation check](#documentation-check).               |
 | `server`                  | Node runs `server/src/main.ts` with type stripping.                                                                                                       |
 | `dev:agent` / `dev:human` | Isolated agent stack or normal-login human stack; see [Dev runner](#dev-runner).                                                                          |
 | `format` / `format:check` | Repository-wide Prettier write/check; `format:check` keeps Prettier's cache in `node_modules/.cache/prettier/`.                                           |
@@ -53,6 +53,7 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
   skips `svelte-check` only when every changed path is inert (Markdown, `docs/`, `util/`, `e2e/`, assets, tool
   dotfiles), and server `tsc` also when the rest is client-only (`src/`, `public/`, client configs). The client imports
   `server/src` and `shared/`, so those run both; an unknown path runs both.
+- `types` first prints the guides owning the changed paths and the unowned source paths.
 - `svelte-check --incremental` is not used: it reported two errors the normal run does not (an unused `@ts-expect-error`
   and a `LegacyComponentType` mismatch), measured 2026-11-04 with svelte-check 4.7.
 
@@ -85,9 +86,9 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
     first heading counts only toward `ceiling`.
   - `item`: a list item or table row over 600 characters, measured on the joined text with code spans included.
   - `paren-depth`: parentheses three deep outside code spans.
-  - `sections`: a guide's `##` headings are not the nine of **Doc Maintenance** in order; an area folder's `README.md`
-    is an index with no outline. `hazards`: a `Known Hazards` `###` other than `Issues`, `Limitations`, `Gotchas`, in
-    that order.
+  - `sections`: a guide's `##` headings are not the nine of the [README](README.md) in order; an area folder's
+    `README.md` is an index with no outline. `hazards`: a `Known Hazards` `###` other than `Issues`, `Limitations`,
+    `Gotchas`, in that order.
   - `unresolved-link`: a relative `.md` link or `#anchor` that does not resolve, with anchors computed as GitHub does.
     `self-link`: a link to its own file without an anchor.
   - `label`: a T5 label, matched on the joined item, so a wrap cannot split it (in `STRUCTURE.md`, prose only: T5 quotes
@@ -96,16 +97,19 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
     path characters with a `/`, not starting with one, whose first segment is a directory of the repository root other
     than `node_modules`, `dist`, `.git`, or `.claude`. `{a,b}` expands and each expansion must exist, `*` must match
     something, a trailing `/` needs a directory. A missing path `git check-ignore` accepts is a runtime file and passes.
+  - `ownership`: `docs/structure/ownership.json` is malformed, a rule names no guide or owns no git-listed path, or a
+    git-listed path under `src`, `server`, `shared`, `util`, `e2e`, `public` has none.
   - `tree`: the guides and `STRUCTURE.md` together over `TREE_BYTES_RATCHET` in `util/docsBudget.mjs`. The verdict line
     always prints the tree total against the ratchet; a trim lowers the constant to within 1,000 bytes of the new total.
-- `near` does not fail: a file over 36,000 bytes or a heading over 7,000, the targets of **Doc Maintenance**, printed
-  with the bytes left under the budget, so a guide that needs a split shows up before the next change fails the gate.
+- `near` does not fail: a file over 36,000 bytes or a heading over 7,000, the [README](README.md) targets, printed with
+  the bytes left under the budget, so a guide that needs a split shows up before the next change fails the gate.
 - `--report` prints the sizes, each file's headroom under 40,000 bytes, and every finding, and exits 0; use plain
   `pnpm check:docs` as the gate.
 - Identifiers in code spans are not validated, nor a path without a `/` (`package.json`, `vitest.*`). Confirm them with
   targeted `rg` searches; the link rule checks only relative Markdown destinations and heading anchors.
 - The guide tools; each header comment holds its contract:
   - `pnpm docs:read <guide> [heading]` (`util/docsRead.mjs`): a guide's headings with their bytes, or one section.
+  - `pnpm docs:owner <path>...` (`util/docsOwner.mjs`): each path's owning guide; exit 1 on an unowned one.
   - `pnpm docs:contracts <file-or-dir>...` (`util/docsContracts.mjs`): each export with the `/** */` comment above it,
     the exports without one, and the documented count.
   - `pnpm docs:ledger <guide> [--base <ref>]` (`util/docsLedger.mjs`): the base's `Files` and `Flows` identifiers that
@@ -421,8 +425,8 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   against the real auth store through `GET /api/asset/<hex>`.
 - `util/agentDevHost.test.ts` and `util/agentDataSandbox.test.ts` (node) cover the `dev:agent` runner's host resolution
   and the sandbox.
-- `util/{docsBudget,docsRead,docsContracts,docsLedger,guideReads}.test.ts` (node) run the documentation scripts over
-  small fixtures in a temporary directory, through their exported functions.
+- `util/{docsBudget,docsRead,docsOwner,docsContracts,docsLedger,guideReads}.test.ts` (node) run the documentation
+  scripts over small fixtures in a temporary directory, through their exported functions.
 - Not tested: the `/sw/check` route, the `fetch` handler's default `/sw/*` and `/tf` responses, the rest of the `push`
   display (icon, title and body fallbacks), and the userscript; verify those manually.
 - Not tested: the exit codes and output streams of the documentation scripts' command lines (`util/docs*.mjs`,

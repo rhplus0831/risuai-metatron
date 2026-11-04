@@ -17,6 +17,11 @@
 //     token of path characters with a `/` and starts with a directory of the repository root (not an untracked one
 //     such as `node_modules`); `{a,b}` expands, `*` must match something, a trailing `/` needs a directory. A
 //     missing path git ignores is a runtime file and passes;
+//   - `ownership`: the ownership manifest (`docs/structure/ownership.json`, read by `util/docsOwner.mjs`) is not
+//     JSON or has a bad rule, a rule matches no tracked path or only paths an earlier rule owns, a tracked path under
+//     `src/`, `server/`, `shared/`, `util/`, `e2e/`, or `public/` has no rule, or a rule names no guide. Tracked
+//     paths are what git lists, untracked files it does not ignore included; outside a repository there are none
+//     and a missing manifest has no rules, so the rule finds nothing;
 //   - `tree`: the guides and `STRUCTURE.md` together over `TREE_BYTES_RATCHET`. A trim lowers the ratchet to within
 //     1,000 bytes of the new total; nothing raises it.
 // It also prints, without failing, one `near` line per file over the guide target and per heading over the leaf
@@ -33,9 +38,10 @@
 // `STRUCTURE.md` has its own row and is in no total. The parse is line based: enough for the Markdown these
 // files use, not CommonMark.
 import { execFileSync } from "node:child_process";
-import { existsSync, globSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, globSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { checkOwnership, OWNERSHIP_FILE } from "./docsOwner.mjs";
 
 export const GUIDE_BYTES_BUDGET = 40_000;
 export const LEAF_BYTES_BUDGET = 8_000;
@@ -48,7 +54,7 @@ export const PAREN_DEPTH_BUDGET = 2;
  * The most the guides and `STRUCTURE.md` may hold together. Lower it in the change that lowers the total, to
  * within 1,000 bytes of the new total; a change that needs it raised moves or deletes text instead.
  */
-export const TREE_BYTES_RATCHET = 1_021_000;
+export const TREE_BYTES_RATCHET = 1_014_000;
 
 export const GUIDE_DIR = "docs/structure";
 export const INDEX_DOC = "STRUCTURE.md";
@@ -511,8 +517,42 @@ function measureFile(root, rel, readAnchors, checkPath) {
 const countKind = (items, kind) => items.filter((item) => item.kind === kind).length;
 
 /**
- * The measurement of the repository at `root`, as plain data: `{ guides, index, totals }`. `guides`
- * is sorted by path; `index` is `STRUCTURE.md`, which `totals` leaves out except in `treeBytes`.
+ * The repository paths git tracks under `root`, plus untracked files it does not ignore, that exist on disk; empty
+ * when `root` is not the top of a git work tree.
+ */
+function trackedPaths(root) {
+    try {
+        const top = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+            cwd: root,
+            encoding: "utf8",
+            stdio: "pipe",
+        });
+        if (realpathSync(top.trim()) !== realpathSync(root)) return [];
+        const args = ["ls-files", "--cached", "--others", "--exclude-standard", "-z"];
+        const out = execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: "pipe", maxBuffer: 64 << 20 });
+        return [...new Set(out.split("\0").filter(Boolean))].filter((rel) => existsSync(path.join(root, rel)));
+    } catch {
+        return [];
+    }
+}
+
+/** The `ownership` problems of the manifest under `root`, against its tracked paths and the guides in `guidePaths`. */
+function ownershipProblems(root, guidePaths) {
+    const file = path.join(root, OWNERSHIP_FILE);
+    const text = existsSync(file) ? readFileSync(file, "utf8") : null;
+    const names = guidePaths.map((rel) =>
+        rel
+            .slice(GUIDE_DIR.length + 1)
+            .replace(/\.md$/, "")
+            .replace(/\/README$/, ""),
+    );
+    return checkOwnership(text, trackedPaths(root), new Set(names));
+}
+
+/**
+ * The measurement of the repository at `root`, as plain data: `{ guides, index, ownership, totals }`. `guides`
+ * is sorted by path; `index` is `STRUCTURE.md`, which `totals` leaves out except in `treeBytes`; `ownership` is the
+ * manifest's `{ line, message }` problems.
  */
 export function measureDocs(root) {
     const readAnchors = anchorReader(root);
@@ -535,6 +575,7 @@ export function measureDocs(root) {
     return {
         guides,
         index,
+        ownership: ownershipProblems(root, paths),
         totals: {
             guideCount: guides.length,
             bytes,
@@ -598,6 +639,7 @@ export function checkDocs(measure, { treeRatchet = TREE_BYTES_RATCHET } = {}) {
         for (const { line, target } of file.selfLinks) add(file.path, line, "self-link", target);
         for (const { line, kind, label } of file.labels) add(file.path, line, "label", `${kind} ${label}`);
     }
+    for (const { line, message } of measure.ownership ?? []) add(OWNERSHIP_FILE, line, "ownership", message);
     const { treeBytes } = measure.totals;
     if (treeBytes > treeRatchet) {
         const over = treeBytes - treeRatchet;
@@ -605,7 +647,8 @@ export function checkDocs(measure, { treeRatchet = TREE_BYTES_RATCHET } = {}) {
             INDEX_DOC,
             1,
             "tree",
-            `${treeBytes} bytes in the guides and ${INDEX_DOC}, ratchet ${treeRatchet}, ${over} over`,
+            `${treeBytes} bytes in the guides and ${INDEX_DOC}, ratchet ${treeRatchet}, ${over} over ` +
+                `(the ratchet rule: ${GUIDE_DIR}/README.md)`,
         );
     }
     return findings;
@@ -764,6 +807,13 @@ export function formatReport(measure) {
         "Labels",
         (file) => file.labels,
         ({ line, kind, label }) => `${line} ${kind} ${label}`,
+    );
+
+    const ownership = measure.ownership ?? [];
+    lines.push(
+        `[check:docs] Ownership: ${ownership.length}`,
+        ...ownership.map(({ line, message }) => `  ${OWNERSHIP_FILE}:${line} ${message}`),
+        "",
     );
 
     const leaf = totals.largestLeaf;

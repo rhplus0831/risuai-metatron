@@ -1,6 +1,39 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { typeCheckTargets } from "./changedChecks.mjs";
+import { ownersLine, typeCheckTargets } from "./changedChecks.mjs";
+import { parseOwnership } from "./docsOwner.mjs";
+
+describe("ownersLine", () => {
+    it("sorts and deduplicates all owning guides and lists only unowned paths under owned roots", () => {
+        const { rules } = parseOwnership(
+            JSON.stringify({
+                rules: [
+                    { match: "shared/session.ts", guide: "zeta", shared: true, part: "records" },
+                    { match: "shared/session.ts", guide: "alpha", shared: true, part: "transport" },
+                    { match: "src/owned/**", guide: "zeta" },
+                    { match: "server/owned/**", guide: "beta" },
+                ],
+            }),
+        );
+        const files = [
+            "shared/session.ts",
+            "src/owned/main.ts",
+            "server/owned/main.ts",
+            "src/uncovered.ts",
+            "server/uncovered.ts",
+            "shared/uncovered.ts",
+            "util/uncovered.mjs",
+            "e2e/uncovered.spec.ts",
+            "public/uncovered.svg",
+            "docs/unowned.md",
+        ];
+
+        expect(ownersLine(rules, files)).toBe(
+            "[changed] owners: alpha, beta, zeta; no owner: src/uncovered.ts, server/uncovered.ts, " +
+                "shared/uncovered.ts, util/uncovered.mjs, e2e/uncovered.spec.ts, public/uncovered.svg",
+        );
+    });
+});
 
 describe("typeCheckTargets", () => {
     it("skips both programs when nothing changed", () => {

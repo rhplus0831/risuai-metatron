@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -63,6 +64,25 @@ function tree(files: Record<string, string> = {}) {
 const finding = (file: string, line: number, rule: string) => expect.objectContaining({ path: file, line, rule });
 
 describe("documentation budgets", () => {
+    it("reports an ownership finding for a tracked source path the manifest does not cover", () => {
+        const root = tree({
+            "src/uncovered.ts": "",
+            "docs/structure/ownership.json": JSON.stringify({
+                rules: [{ match: "STRUCTURE.md", guide: "example" }],
+            }),
+        });
+        execFileSync("git", ["init", "--quiet"], { cwd: root, stdio: "pipe" });
+        execFileSync("git", ["add", "--", "."], { cwd: root, stdio: "pipe" });
+
+        expect(checkDocs(measureDocs(root))).toEqual([
+            expect.objectContaining({
+                path: "docs/structure/ownership.json",
+                rule: "ownership",
+                message: expect.stringContaining("src/uncovered.ts"),
+            }),
+        ]);
+    });
+
     it("passes a clean tree with the required outline and OK output", () => {
         expect(GUIDE_SECTIONS).toEqual(SECTIONS);
         const measure = measureDocs(
