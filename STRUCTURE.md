@@ -14,7 +14,8 @@ run.
 2. Choose one owner in **Choose By Task**, or use **Path Ownership** for a supplied path. A folder row's `README.md`
    routes on to one of its guides.
 3. List that guide's headings (`rg -n '^##' <guide>`), read `Scope` and `Invariants`, then the relevant subsection. For
-   an add/change task, check `Recipes` for the edit path and `Tests` for focused verification.
+   an add/change task, check `Recipes` for the edit path and `Tests` for focused verification. A `Files` entry points at
+   the module's contract comment: read that comment with the code.
 4. Follow its `Coupling` links only when the change crosses a boundary. Do not load every guide.
 5. Confirm the named identifier with a bounded `rg -n "<identifier>" <path>` before editing.
 6. Run V1's gates and the affected guide's focused checks.
@@ -316,6 +317,19 @@ Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_sta
 - `Scope` routes the task; `Files` gives paths and lookup identifiers; `Flows` explains ordering; `State` names the
   authoritative records and caches. Describe a contract once and link to it from other sections or guides. Preserve
   heading anchors when moving a topic, or update all referring links.
+- A fact about one module lives in that module's source, as a doc comment above what it governs: a module header for
+  module-wide rules (`shared/sections.ts` is the shape), a comment on an export for that export's rule. The comment
+  states the invariant, the ordering rule, or the failure behavior that reading the body would not show, never a
+  paraphrase of the body, and no label T5 forbids.
+- The guide's `Files` entry for such a module is the path, its role in one clause, and the identifiers to look up; it
+  does not restate the comment. A fact that spans modules, processes, or tabs, or that an agent needs before choosing a
+  file, stays in the guide.
+- `Flows` keeps the sequences that cross a module, a process, or a tab (a write from the tab through the save loop to
+  the server and back through the feed). A sequence inside one module is its entrypoint's name and the source comment.
+- A trim, a pointer rewrite, or a move between guides carries a fact ledger in its commit message: each fact the guide
+  loses, with its destination (a source path and identifier, a guide heading, or `derivable:` and the entrypoint to
+  read). Check the ledger on the result; for parallel trims, on the combined tree before the last one lands, since two
+  trims can each leave a fact to the other.
 - Budgets: at most 40,000 bytes per guide, 8,000 under any leaf heading, 600 characters per list item or table row
   (continuation lines and code spans included), and parentheses at most two deep outside code spans. They are the same
   for every guide and this file: `pnpm check:docs` fails on any of them, and
