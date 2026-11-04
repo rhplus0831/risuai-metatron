@@ -31,10 +31,13 @@ export type EventSockets = ReturnType<typeof createEventSockets>;
  * status (`memoryTasks`), plus an optional revision-listing `digest`, all read in the same synchronous
  * step before the socket is registered and the hello sent. Nothing is replayed: a client reconciles
  * from its advertised map when the digest matches, otherwise from a fetched revision listing.
+ * A failed `digest` logs only the error name (or the type of a non-Error throw) and omits only that
+ * field; failure of any other hello snapshot closes the socket with 1011.
  * Every published event goes to every socket in publication order, also one published
  * while another is being sent; a socket too far behind to take a frame (`MAX_BUFFERED_BYTES`) is
- * closed before it is queued. Sockets are not tracked by the snapshot manager and not gated by
- * maintenance: a restore publishes `epoch`, which reloads the clients.
+ * terminated before it is queued, and the other sockets still receive the frame. Sockets are not
+ * tracked by the snapshot manager and not gated by maintenance: a restore publishes `epoch`, which
+ * reloads the clients.
  */
 export function createEventSockets(options: {
     feed: ChangeFeed;
@@ -97,9 +100,9 @@ export function createEventSockets(options: {
         }
     }
 
-    // A frame published while another is being sent (the feed delivers nested publications at once)
-    // waits until the current one reached every socket. A frame's UTF-8 length is measured once, for
-    // every socket.
+    // A frame published while another is being sent waits until the current one reached every socket
+    // (`server/src/data/changeFeed.ts` queues nested publications). A frame's UTF-8 length is measured
+    // once, for every socket.
     const outgoing: string[] = [];
     let fanningOut = false;
     const unsubscribe = feed.subscribe((event: ChangeFeedEvent) => {

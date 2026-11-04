@@ -343,7 +343,9 @@ export type ApplyChangesTransaction = {
 /**
  * The chat changes a write made, for the writer that asked (`applyChanges` with `changes: true`):
  * aligned with `AppliedChanges.chats`, each by-id group's change as stored, undefined for a group
- * without one.
+ * without one. The feed's capped patch or delta comes from the same change in
+ * `server/src/data/chatStore.ts`; `budgetedEntries` drops payloads only from feed entries, leaving
+ * these writer changes intact.
  */
 export type WrittenChanges = { chats: (ChatWriteChange | undefined)[] };
 
@@ -1240,7 +1242,9 @@ export function createResourceStore(options: {
      * inside an open transaction share its scope. An independently committed write nested in input
      * evaluation merges into the enclosing scope on success; if that scope throws, only its nested
      * commits' refs are published. Only the outermost scope publishes, once, with its payloads within
-     * the publication budget (`budgetedEntries`). The invalidation notices of every committed
+     * the publication budget (`budgetedEntries`); nested scopes neither spend nor reset it. The scope
+     * is restored before `server/src/data/changeFeed.ts` dispatches, so a listener's write starts a
+     * later outermost publication with its own budget. The invalidation notices of every committed
      * transaction are delivered after publication, once all publishing scopes (including a feed
      * listener's writes) have ended, even when an enclosing write throws.
      */

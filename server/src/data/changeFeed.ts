@@ -20,7 +20,7 @@ export type ChangeFeed = ReturnType<typeof createChangeFeed>;
  * The listeners of committed changes. Publications during a dispatch wait until every listener has
  * received the current event. There is no replay, so a client that was disconnected reconciles from
  * the revision listing. A listener that throws is logged and never fails the write that published
- * (the write has committed already).
+ * (the write has committed already); dispatch continues with the other listeners and queued events.
  */
 export function createChangeFeed() {
     const listeners = new Set<ChangeFeedListener>();

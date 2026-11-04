@@ -419,8 +419,22 @@ export type ChatWriteChange = {
 };
 
 /**
- * What a group's feed entry carries beside its ref (`ChangeSet["chats"]`): its by-id change, as a
- * `patch` or a `delta`, and its summary knowledge. Feed-only: never in the HTTP results.
+ * What a group's feed entry carries beside its ref (`shared/resources.ts` `ChangeSet["chats"]`):
+ * its by-id change, as a `patch` or a `delta`, and its summary knowledge. Feed-only: never in HTTP
+ * results.
+ *
+ * An applied by-id group carries `summary` at its revision when the summary changed, otherwise
+ * `summaryBase`, its stored base revision. The comparison ignores revisions: projection text before
+ * the first metadata op and after the last is compared without parsing it (`freshSummaryText` may
+ * rebuild a missing or stale projection from parsed metadata). Message ops also compare
+ * `lastMessageAt` immediately before the first one, even when absent, and after the group, inside
+ * the transaction without the memo. Thus a note edit with removal of the last row, or leaving an
+ * undated last row, still detects a changed time. A changed summary without a message op reads the
+ * time once to complete it.
+ * Removing and reappending one id keeps summary knowledge but carries neither `patch` nor `delta`.
+ * Whole-chat writes, no-op groups and deletions carry neither summary field: unknown, preserving
+ * the summary-list read in `src/ts/storage/chatStore.svelte.ts`. Remembered groups publish no feed
+ * entry at all (`server/src/data/resourceStore.ts`).
  */
 export type ChatFeedPayloads = Pick<ChangeSet["chats"][number], "patch" | "delta" | "summary" | "summaryBase">;
 

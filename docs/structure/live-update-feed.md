@@ -6,114 +6,88 @@
   per socket, what a chat write publishes (the writer's own change, and the feed's chat entries with their summary and
   by-id patch or delta), how a publishing scope coalesces entries, and the publication budget one frame spends.
 - Paths: `server/src/data/changeFeed.ts`, `server/src/routes/events.ts`, the frames in `shared/events.ts`, and the feed
-  parts of `server/src/data/{resourceStore,chatStore}.ts` (`coalescedChat`, `budgetedEntries`, `applyGroup`'s entries,
-  `chatFeedChange`, `ChatWriteChange`).
+  parts of `server/src/data/resourceStore.ts` and `server/src/data/chatStore.ts` (`coalescedChat`, `budgetedEntries`,
+  `applyGroup`'s entries, `chatFeedChange`, `ChatWriteChange`).
 - Not here:
-  - The socket's client and the save loop it feeds → [resource-sync](live-updates.md#feed-connection).
+  - The socket's client and the save loop it feeds → [live updates](live-updates.md#feed-connection).
   - The store's commits, chat summaries, and the epoch → [server resources](server-resources.md).
   - Generation jobs, the job socket, and the job channel → [server generation](server-generation.md).
   - The memory task registry whose statuses the `memoryTask` frames carry → [memory](memory.md#background-memory-task).
 
 ## Files
 
-- `data/changeFeed.ts`: the feed; `routes/events.ts`: the socket, its `hello`, and frame admission; `shared/events.ts`:
-  the frames.
-- WS upgrade `/api/events/ws`: JWT in the `risu-auth` query or header (never the password), no HTTP limiter. The
-  live-update stream of `hello`, `change`, `memoryTask`, `epoch`, and `ping` frames (`shared/events.ts`), bounded by
-  [Frame admission](#frame-admission) and the [publication budget](#publication-budget).
+- `server/src/data/changeFeed.ts`: the feed (`createChangeFeed`, `ChangeFeedEvent`): publish order and listener
+  failures.
+- `server/src/routes/events.ts`: the live-update socket (`createEventSockets`): its `hello`, the fan-out, and
+  [frame admission](#frame-admission) (`send`, `MAX_BUFFERED_BYTES`). WS upgrade `/api/events/ws` (`EVENT_FEED_PATH`),
+  dispatched by `attachWebSocket` in `server/src/app.ts` outside the HTTP app, so no HTTP limiter; JWT in the
+  `risu-auth` query or header, never the password.
+- `shared/events.ts`: the frames (`EventFeedFrame`: `hello`, `change`, `memoryTask`, `epoch`, `ping`), `ChatStreaming`,
+  `ChatStreamingSnapshot`, `MemoryTaskEntry`.
+- `shared/resources.ts`: what a `change` frame carries (`ChangeSet`, `ChatDeltaBody`, `ChatMetaFields`) and its caps
+  (`MAX_FEED_PATCH_BYTES`, `MAX_FEED_PUBLICATION_PATCH_BYTES`).
+- `server/src/data/chatStore.ts`, feed parts: a by-id group's entry, built in `applyGroup` (`ChatFeedPayloads`,
+  `chatFeedChange`, `chatMetaFields`), and the writer's own change (`ChatWriteChange`).
+- `server/src/data/resourceStore.ts`, feed parts: the publishing scope (`publishing`, `recordChat`, `mergeChanges`,
+  `coalescedChat`, `budgetedEntries`), `applyChanges`' `changes` and `committed` options (`WrittenChanges`), and
+  `publishStreaming`.
 
 ## Flows
 
 ### Live-update hello
 
-The live-update `hello` samples the epoch, generation locks (`streaming`), memory task statuses (`memoryTasks`) and
-optional `digest` in one synchronous step before registering the socket. The digest is
-`revisionDigest(resources.listRevisions())` (`shared/resources.ts`); a digest failure is logged without data and omits
-only that field, while failure of another snapshot closes the socket with 1011. A client whose seeded advertised map has
-the loaded epoch and matching digest reconciles from that map; otherwise it reads `/api/resources/revisions`. Nothing is
-replayed.
+The `hello` (`createEventSockets`) samples the epoch, the generation locks (`streaming`), the memory task statuses
+(`memoryTasks`), and the optional `digest` (`revisionDigest(resources.listRevisions())`, wired in `server/src/app.ts`)
+in one synchronous step before the socket is registered; a failed digest omits only that field, any other failed
+snapshot closes the socket. Nothing is replayed: a client whose seeded advertised map has the loaded epoch and the
+matching digest reconciles from that map, otherwise it reads `/api/resources/revisions`
+([feed connection](live-updates.md#feed-connection)).
 
 ### Frame admission
 
-Every other frame is admitted by its own size (`routes/events.ts` `send`): a fan-out frame (`change`, `memoryTask`,
-`epoch`) is measured once, as the UTF-8 length of its text, and that length is used for every socket; the `ping` is
-measured the same way. The server does not enable permessage-deflate, so that length is the frame's payload. A socket
-whose `bufferedAmount` plus the frame's length would pass `MAX_BUFFERED_BYTES` (4 MiB) is terminated before the frame is
-queued, the other sockets still get the frame, and the client reconnects and [reconciles](#live-update-hello); a frame
-that reaches the bound exactly is sent. ws's `bufferedAmount` also counts the queued frame headers (2 to 10 bytes a
-frame), which the admission leaves out, so an admitted frame can leave it one header above 4 MiB. The `hello` is checked
-on `bufferedAmount` alone: its snapshots are not bounded, and a `hello` that could never be admitted would have its
-client reconnect forever. What a `change` frame's patches may add is bounded by the
+Every frame but the `hello` is admitted per socket by its own UTF-8 size, measured once for every socket (`send`,
+`MAX_BUFFERED_BYTES`, 4 MiB): a socket the frame would push past the bound is terminated before the frame is queued, the
+other sockets still get it, and its client reconnects and [reconciles](#live-update-hello). The `hello` is checked on
+the queued bytes alone. What a `change` frame's patches may add is bounded by the
 [publication budget](#publication-budget).
 
 ### Own chat changes
 
 - A server writer that passes `changes: true` with its `committed` hook to `applyChanges` gets
-  `committed(applied, written)`. `written.chats` is aligned with `applied.chats`: each by-id group's change as stored.
-- `ChatWriteChange` in `chatStore.ts` holds the stored revision right before the group, even for a stale group, and the
-  revision after it; the message count; the ids it removed that were there before it, in removal order; every row it
-  touched as its stored `data` string with the id of the row before it, in position order; the stored `meta` string when
-  it changed the metadata.
-- It is `undefined` for a group without a by-id change: a create, replace, or delete, a remove and reappend of one id, a
-  remembered group, or a group that applied nothing.
-- The change is uncapped and built only for a writer that asks: the feed keeps its capped patch or delta (taken from
-  that change, and subject to the [publication budget](#publication-budget), which leaves `written` as it is), a write
-  without the option still stops reading at the feed's byte cap, and the HTTP batch body is unchanged.
+  `committed(applied, written)`: `written.chats` holds each by-id chat group's change as stored (`ChatWriteChange`),
+  aligned with `applied.chats`, uncapped, `undefined` for a group without a by-id change. The contract is on
+  `applyChanges`, `WrittenChanges`, and `ChatWriteChange`.
+- The writer is a generation job (`server/src/jobs/generationJobs.ts`); `refreshChatAfterWrite` in
+  `server/src/jobs/jobScope.ts` lays the change onto the job's chat ([server generation](server-generation.md)).
+- The feed's capped patch or delta is taken from the same change; the [publication budget](#publication-budget) and the
+  HTTP batch body leave `written` as it is.
 
 ### Feed chat entries
 
-`ChangeSet.chats[]` (`shared/resources.ts`) is built in `chatStore.ts` `applyGroup` and kept in a feed-only map by group
-result, never in `ChatGroupResult`, the HTTP body, or `ChatWriteChange`. Every by-id group that applied something
-carries what it knows about the chat's summary, and its by-id change when that fits.
-
-- Summary: `summary` (the chat's summary at the group's revision) when the group changed it, else `summaryBase` (the
-  group's stored base revision: the summary, its `revision` aside, is the same as there).
-- Both parts are compared, never the revision: the stored projection text before and after the group (nothing is parsed
-  for it) and, for a group with a message op, `lastMessageAt` right before its first one (taken even when absent) and
-  after the group, read inside the transaction (never from the memo), so a note edit with a removal of the last row, or
-  an op that leaves no dated last row, counts.
-- A changed summary of a group without a message op reads the time once to be complete. A remove and reappend carries it
-  too. A whole-chat write, a remembered group, a no-op group, and a deletion carry neither: unknown, which keeps the
-  client's summary-list read.
-- By-id change (`chatFeedChange`): one pass over the stored parts. A `patch` with the metadata whole when it fits
-  `MAX_FEED_PATCH_BYTES`; at the first byte over, a group that changed the metadata switches to a `delta`, with the rows
-  already read and the same row iterator. Neither when that does not fit either.
-- A `delta`'s `metaFields` (`ChatMetaFields`) is the field diff of the stored metadata before and after the group (never
-  the ops: a stale group merges onto the stored base and normalization rewrites the result): top-level fields `set` or
-  `remove`d, and for a `CHAT_META_MERGE_KEYS` field that is a map on both sides its entries by `merge`/`mergeUnset` (a
-  field that becomes or stops being a map, or appears or disappears, goes through `set`/`remove`).
-- An entry carries at most one of the two; the job socket's `chatPatch` keeps the whole `meta`. A write without
-  `changes: true` still reads rows only while a form fits (an over-cap metadata is parsed for its field form, never the
-  rows past the cap).
+`ChangeSet.chats[]` (`shared/resources.ts`) is built per by-id group in `applyGroup` and kept in a feed-only map by
+group result, never in `ChatGroupResult`, the HTTP body, or `ChatWriteChange`. An entry carries the group's summary
+knowledge (`summary` or `summaryBase`, decided as `ChatFeedPayloads` says) and its by-id change when that fits: a
+`patch` with the whole `meta`, or past `MAX_FEED_PATCH_BYTES` a `delta` with `metaFields` (`chatFeedChange`,
+`chatMetaFields`), never both. The job socket's `chatPatch` keeps the whole `meta`.
 
 ### Coalescing and publish order
 
-- Coalescing (`resourceStore.ts` `coalescedChat`, for a chat recorded again in a publishing scope and for nested scopes
-  in `mergeChanges`): the later ref without a patch or delta; the later `summary`, else the earlier `summary` moved to
-  the later revision when the later entry's `summaryBase` is the earlier revision, else (both unchanged in a row) the
-  earlier `summaryBase`; otherwise neither. Entries are never changed in place, since a failed outer write merges its
-  committed nested scopes again.
-- Change feed events reach listeners in publish order, including events a listener publishes while handling another
-  event. Listener failures are logged and the feed continues draining. Committed nested writes still publish their refs
-  when an enclosing write fails during input evaluation.
+- A chat recorded again in one publishing scope, or merged from a nested scope, keeps one entry: the later ref without a
+  patch or delta, and only the summary knowledge both entries prove (`recordChat`, `mergeChanges`, `coalescedChat`).
+- Change feed events reach listeners, the socket fan-out among them, in publish order, including events a listener
+  publishes while handling another; a listener that throws is logged and the feed goes on. Committed nested writes still
+  publish their refs when an enclosing write fails during input evaluation (`publishing`).
 
 ### Publication budget
 
-- One committed outermost write is one `change` frame (`feed.publish` once), and the optional payloads of that frame
-  (record `patch`es, chat `patch`es and `delta`s, each within `MAX_FEED_PATCH_BYTES`, 64 KiB, when built, and chat
-  `summary` and `summaryBase` fields) total at most `MAX_FEED_PUBLICATION_PATCH_BYTES` (256 KiB of UTF-8 JSON,
-  `shared/resources.ts`).
-- The store applies it only when the outermost publishing scope publishes (`resourceStore.ts` `budgetedEntries`): after
-  nested scopes merged, after coalescing dropped the patches and deltas of keys recorded twice, and after a failed outer
-  write kept only its committed nested writes. A nested scope neither spends nor resets it, and a feed listener's own
-  write is a later publication with a budget of its own.
-- The walk takes the final entries in wire order (resources, then chats; chat orders carry no payload), and within a
-  chat entry its `patch` or `delta` before its `summary` or `summaryBase` (each measured as its own JSON, a
-  `summaryBase` with its quotes).
-- A payload stays when the running sum including it fits, otherwise its entry is published as a copy without it in the
-  same place (a dropped `summary` leaves neither summary field, so the entry's summary is unknown) and the walk goes on,
-  so a later smaller payload can still fit. Every candidate payload is measured, so the cost follows the payloads the
-  write built, not the frame.
+- One committed outermost publishing scope that recorded anything is one `change` frame (`feed.publish` once; a commit
+  that records nothing, such as a cold checkpoint write, publishes none), and the optional payloads of that frame
+  (record `patch`es, chat `patch`es and `delta`s, each within `MAX_FEED_PATCH_BYTES`, 64 KiB, and chat `summary` and
+  `summaryBase` fields) total at most `MAX_FEED_PUBLICATION_PATCH_BYTES` (256 KiB of UTF-8 JSON).
+- The store applies it once, when the outermost publishing scope publishes (`budgetedEntries` holds the walk order and
+  the drop rule): a nested scope neither spends nor resets it, and a feed listener's own write is a later publication
+  with a budget of its own. A dropped payload leaves its entry in place without it; a dropped `summary` leaves the
+  entry's summary unknown.
 - Refs, chat-order entries, and `streaming` lock lists are never dropped, reordered, or split, so a chat's locks stay in
   the frame of its chat ref and a lock release with no refs (`publishStreaming`) is still published.
 
@@ -130,7 +104,7 @@ carries what it knows about the chat's summary, and its by-id change when that f
 - [Server generation](server-generation.md): the job socket's `chatPatch` keeps the whole `meta` where an entry switches
   to a delta, a lock release with no refs (`publishStreaming`) is a frame of its own, and the memory task registry
   supplies the `memoryTask` frames.
-- The client, [resource-sync](live-updates.md#feed-connection), reconciles on reconnect and applies the entry forms.
+- The client, [live updates](live-updates.md#feed-connection), reconciles on reconnect and applies the entry forms.
 
 ## Invariants
 
@@ -142,7 +116,7 @@ carries what it knows about the chat's summary, and its by-id change when that f
 
 - A new frame kind: add it to `shared/events.ts`, send it through `routes/events.ts` `send` so
   [frame admission](#frame-admission) measures it, and teach the client (`src/ts/network/eventFeed.ts`,
-  [resource-sync](live-updates.md#feed-connection)) to apply it. A new optional payload of a `change` entry goes through
+  [live updates](live-updates.md#feed-connection)) to apply it. A new optional payload of a `change` entry goes through
   `budgetedEntries`, so the [publication budget](#publication-budget) counts it.
 
 ## Tests
@@ -169,6 +143,6 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 - Feed payload construction runs on the serving thread: a rename reads/parses the last row via `messages_position` for
   `lastMessageAt`; a message-op group does this before and after, inside its transaction. Decision: Per-Event Server
   Work D6, archive; ST04 in the [server migration audit](../research/deep-audit-with-fable/server-migration-audit.md).
-- Summary comparison uses stored projection text without parsing metadata. A metadata change past `MAX_FEED_PATCH_BYTES`
-  parses metadata before and after for the field diff. Decision: Server Byte Budgets D4 and Per-Event Server Work D7,
-  archive.
+- Summary comparison uses stored projection text without parsing metadata, unless that projection is missing or stale
+  (`freshSummaryText` rebuilds it from parsed metadata). A metadata change past `MAX_FEED_PATCH_BYTES` parses metadata
+  before and after for the field diff. Decision: Server Byte Budgets D4 and Per-Event Server Work D7, archive.
