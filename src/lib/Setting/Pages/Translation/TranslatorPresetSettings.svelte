@@ -19,6 +19,15 @@
     import { language } from "src/lang";
     import { createTranslatorStep, TRANSLATOR_PRESET_MAX_STEPS } from "../../../../../shared/translatorPresets.ts";
 
+    /**
+     * Edits the global translatorPresets list/selectedId, independent of a chat's preset override.
+     * Presets use `shared/translatorPresets.ts` normalization and the `.risutl` codec in
+     * `src/ts/translator/presets.ts`; disabled As-Is/exclude-thoughts options are absent, never false.
+     * Awaited dialogs capture identity then resolve by id again, so a conflict reload or deletion
+     * cannot redirect a write. `src/lib/Setting/Pages/Translation/TranslatorStepEditor.svelte` owns
+     * each step's editing and drafts; this component supplies preset/step ids for write identity.
+     */
+
     /** The selected preset, by id (`translatorPresetId`); the first one when that id is gone. */
     const current = $derived(
         getCurrentTranslatorPresetFromState({

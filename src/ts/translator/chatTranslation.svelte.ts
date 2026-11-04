@@ -13,9 +13,11 @@ import {
 import { type ChatRef, chatEntry, currentChatRef, selectedChatId, setChatMeta } from "../storage/chatStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";
 
-/*
- * A chat's translation settings on the tab, read from the chat's list entry, so they resolve for a
- * chat that is not loaded (or still loading) too.
+/**
+ * A chat's translation settings on the tab, read from the list entry in
+ * `src/ts/storage/chatStore.svelte.ts`, so an unloaded/loading chat resolves them too. Writes use
+ * that module's metadata operations; defaults and preset fallback belong to
+ * `shared/translation/chatSettings.ts`, with no global auto-translate inheritance.
  */
 
 /** The chat's translation settings (defaults when it is not a member). Tracked. */

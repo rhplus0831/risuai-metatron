@@ -33,6 +33,19 @@ import type { JobRequestSpec, LlmRequests } from "../llm/requests.ts";
 import { mainModelTakesImages, RequestTargetGoneError, tokenScopeFor } from "../llm/settings.ts";
 import type { TokenCounter } from "../prompt/tokens.ts";
 
+/**
+ * Stored-message translation, admitted through `server/src/routes/translate.ts` or a send hand-off.
+ * Send Text As-Is runs the whole source once; otherwise `shared/translation/pipeline.ts` protects
+ * empty/asset lines and runs chunks sequentially. Every part shares one deadline, CBS budget and
+ * final write. As-Is still uses the pipeline's output reasoning strip. Unlike the tab adapter in
+ * `src/ts/translator/translator.ts`, this runner never protects `<risu-style>` with placeholders.
+ * A profile step keeps profileId (a deleted profile fails with 502); every step uses the run scope's
+ * modelPresetId, including steps with an explicit profile.
+ * Exclude Chain-of-Thought strips the whole source once before either mode, and history text after
+ * freshness is checked by `shared/translation/historySlots.ts`. Blank stripped source stores ""
+ * without a request; sourceHash always belongs to the original stored text, never the stripped text.
+ */
+
 /** How long one translation may run, from its start; past it the run ends (504) and writes nothing. */
 export const TRANSLATION_DEADLINE_MS = 10 * 60_000;
 /** Translations running at once; one more is refused (429). */
@@ -55,6 +68,7 @@ export type TranslateMessageRequest = {
     force: boolean;
 };
 
+/** Runner failures returned to the route; resource epoch admission (412) belongs to the HTTP boundary. */
 export type TranslateFailureStatus = 404 | 409 | 429 | 500 | 502 | 503 | 504;
 
 /**
@@ -108,6 +122,7 @@ type Run = {
     result: Promise<TranslateMessageResult>;
 };
 
+/** Lifecycle shared by HTTP translation, detached send hand-offs, maintenance and server shutdown. */
 export type TranslationRunner = ReturnType<typeof createTranslationRunner>;
 
 /**

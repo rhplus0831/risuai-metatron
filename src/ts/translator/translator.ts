@@ -32,9 +32,20 @@ import localforage from "localforage";
 import sendSound from "../../etc/send.mp3";
 
 /**
+ * Tab translation adapters: composer input uses `translate`, which owns the non-LLM pair cache
+ * (`src/lib/ChatScreens/DefaultChatScreen.svelte` wires it to input translation). TTS (`translateVox`)
+ * and the playground call `runTranslator` directly, bypassing that pair cache. The LLM adapter owns
+ * a separate context-keyed browser cache; stored message translations belong to
+ * `src/ts/translator/storedTranslation.svelte.ts` and `server/src/translation/runner.ts`.
+ * Rendered translation keeps its captured request/transform context across awaits; request
+ * adaptation lives in `src/ts/process/request/request.ts`, prompt execution in
+ * `shared/translation/pipeline.ts`.
+ */
+
+/**
  * The non-LLM translators' in-memory translations: a source and its translation, found from either side
  * (`translate`'s `reverse`). A message translated while it streams adds its growing last paragraph on
- * every frame, so the least recently used pairs leave once the strings plus a fixed overhead for
+ * every frame, so the least recently used pairs across contexts leave once the strings plus a fixed overhead for
  * each pair's Set and two Map entries pass `MEMORY_CACHE_CHARS` (UTF-16 code units).
  */
 type MemoryCacheEntry = { context: string; origin: string; trans: string };
@@ -90,6 +101,10 @@ function writeMemoryCache(context: string, origin: string, trans: string): void 
     }
 }
 
+/**
+ * Browser-local LLM cache, independent of persisted `Message.translation`. Context lookups use
+ * full `llm:<hash>:<source>` keys; use `llmTranslationCacheKey` rather than a bare source string.
+ */
 export const LLMCacheStorage = localforage.createInstance({
     name: "LLMTranslateCache",
 });
@@ -127,6 +142,11 @@ function memoryTranslationContext() {
     return { from, target, key };
 }
 
+/**
+ * The only writer of the non-LLM memory pair cache: both directions share one configuration, and
+ * a result is cached only while that configuration still matches the one captured before the run.
+ * Direct `runTranslator` callers never populate it; LLM calls use `translateLLM`'s cache instead.
+ */
 export async function translate(text: string, reverse: boolean) {
     const context = memoryTranslationContext();
     const memoryCache = usesMemoryCache();
@@ -146,6 +166,18 @@ export async function translate(text: string, reverse: boolean) {
     return result;
 }
 
+/**
+ * Captures one detached preset and prompt/model/persona request ids for all chunks, so switching
+ * chats or deleting a preset during the run cannot change their preset or request identity.
+ * Send Text As-Is bypasses `shared/translation/pipeline.ts`'s line protection; its pipeline result
+ * is returned without further processing (the pipeline still strips reasoning from step outputs).
+ * Otherwise Exclude Chain-of-Thought strips the whole source once before cutting: prepared chunks
+ * must not be stripped again (the strip is not idempotent), and use distinct cache keys. A reported
+ * failure in those chunks restores the original whole input, including its reasoning blocks.
+ * `exarg.signal` reaches provider requests and LLM steps; an observed abort rejects without a
+ * translator alert. As-Is can still resolve if aborted during the final cache write. DeepLX's
+ * reserved-slot wait checks the signal again before dispatch.
+ */
 export async function runTranslator(
     text: string,
     reverse: boolean,
@@ -212,6 +244,10 @@ export async function runTranslator(
     }
 }
 
+/**
+ * DeepLX's wait is shared by all tab callers: unless no-wait is enabled, each request reserves the
+ * next three-second slot before awaiting, so concurrent calls cannot choose the same slot.
+ */
 async function translateMain(
     text: string,
     arg: {
@@ -369,6 +405,7 @@ async function translateMain(
     return result;
 }
 
+/** TTS's English-to-Japanese adapter; bypasses the pair cache and forwards cancellation to `runTranslator`. */
 export async function translateVox(text: string, signal?: AbortSignal) {
     return jaTrans(text, signal);
 }
@@ -377,6 +414,10 @@ async function jaTrans(text: string, signal?: AbortSignal) {
     return await runTranslator(text, true, "en", "ja", { signal });
 }
 
+/**
+ * Provider gate for `translateHTML` while a local send is active, and for composer input translation
+ * in `src/ts/process/inputTranslation.svelte.ts`, wired by `src/lib/ChatScreens/DefaultChatScreen.svelte`.
+ */
 export function isExpTranslator() {
     return (
         settings.memoryTranslateMedia.translatorType === "llm" ||
@@ -385,13 +426,32 @@ export function isExpTranslator() {
     );
 }
 
+/**
+ * Rendered-path entrypoint for `src/lib/ChatScreens/ChatBody.svelte`; captures the transform and
+ * LLM context before awaiting, sharing the latter between the active-send cache probe and the run.
+ * The non-LLM traversal skips script/style elements and `translate=no` subtrees it visits. With
+ * combineTranslation, eligible paragraphs are flattened by `getNodetextToSentence` in `src/ts/util.ts`
+ * before descendant checks: the immediate-child blacklist can miss protected descendants, whose text
+ * is then sent for translation, and inline markup can be replaced. The LLM path has no DOM skip traversal.
+ * During a local send, DeepL/DeepLX return the input unchanged. LLM needs a cache hit to proceed,
+ * but `regenerate` still issues a request after a hit; a miss returns the input.
+ * DOM jobs must all be collected before dispatch, so traversal cannot await an unflushed batch.
+ * DeepLX keeps nodes intact in sequential `■` batches with a 5,000-character target (one oversized
+ * node may exceed it), flushes the final partial batch, and retries jobs individually if the reply's
+ * separator count disagrees. Other DOM providers allow at most ten jobs in flight.
+ * Both DOM dispatch modes share result application: combined paragraph jobs may rerun editdisplay
+ * through `src/ts/parser/transformClient.ts`, then Markdown, before the final edittrans pass. The
+ * LLM path goes straight to edittrans. A missing transform skips the server display-script stage.
+ */
 export async function translateHTML(
     html: string,
     reverse: boolean,
     charArg: simpleCharacterArgument | string = "",
     chatID: number,
     regenerate = false,
-    /** A render that captured its transform context earlier (`ChatBody`); null: no context (the script stage is skipped). */
+    /**
+     * A render's previously captured transform (`ChatBody`); null skips the script stage for lack of context.
+     */
     capturedTransform?: CapturedTransform | null,
 ): Promise<string> {
     if (!html) {
@@ -673,9 +733,11 @@ function chatlessRequestIds(): ChatContextIds {
  * The `LLMTranslateCache` key prefix of a context: a hash of the pipeline signature, the languages,
  * the note, and Send Text As-Is and Exclude Chain-of-Thought each when it is on (so the keys of a
  * preset without them are those from before the two options), plus `inputPrepared` for a text the
- * caller stripped. The key's text is the caller's, before any reasoning strip. Another preset,
- * prompt, or language reads and writes other entries; entries from before the pipeline (keyed by the
- * bare source) are never read again.
+ * caller stripped. Captured request ids are not part of this signature.
+ * Entries are distinguished by these hashed execution inputs; preset and step ids or names alone
+ * do not separate them (`translatorPipelineSignature` in `shared/translation/pipeline.ts`).
+ * The key's text is the caller's, before any reasoning strip. Entries from before the pipeline,
+ * keyed by the bare source, are never read again.
  */
 function llmCacheKeyPrefix(context: LLMTranslationContext): string {
     const signature = JSON.stringify({
@@ -701,15 +763,27 @@ export function llmTranslationCacheKey(text: string): string {
     return llmCacheKeyPrefix(llmTranslationContext()) + text;
 }
 
+/** Reads a full captured cache key; null is a miss, while an empty string is a cached translation. */
 export async function readLLMCacheEntry(key: string): Promise<string | null> {
     return await LLMCacheStorage.getItem<string>(key);
 }
 
+/** Writes the full key captured by an editor, without resolving the current preset or languages again. */
 export async function writeLLMCacheEntry(key: string, value: string): Promise<void> {
     await LLMCacheStorage.setItem(key, value);
 }
 
-/** `text` translated by the pipeline of `context` (`llmTranslationContext`, read before the caller's first await). */
+/**
+ * Uses the detached context captured before the caller's first await. Cache lookup precedes input
+ * reasoning removal, which precedes style placeholders; blank stripped input caches "" without a
+ * request. Send Text As-Is bypasses placeholders. Otherwise each `<risu-style>…</risu-style>` regex
+ * match becomes an indexed `<style-data>` placeholder; `(.+?)` can span an empty block into the next.
+ * Reply placeholders are replaced with captured inner text only; the matched outer wrapper is not restored.
+ * Steps use `src/ts/process/request/request.ts` in translate mode: explicit profiles use profileId,
+ * inherited steps the translate slot, all with the captured request ids. A step failure alerts,
+ * marks `failure` and returns the caller's original text. An observed abort rejects without that
+ * alert; the final cache write has no subsequent signal check, so an abort during it can still resolve.
+ */
 async function translateLLM(
     text: string,
     context: LLMTranslationContext,
@@ -735,7 +809,8 @@ async function translateLLM(
         await writeLLMCacheEntry(cacheKey, "");
         return "";
     }
-    // Without Send Text As-Is, each `<risu-style>` block is sent as a placeholder and put back after.
+    // Without Send Text As-Is, each regex match becomes an indexed placeholder; reply substitutions
+    // restore the captured inner text without the matched outer `<risu-style>` wrapper.
     const styleDecodeRegex = /\<risu-style\>(.+?)\<\/risu-style\>/gms;
     let styleDecodes: string[] = [];
     const sourceText = context.sendTextAsIs
@@ -821,6 +896,7 @@ export async function searchLLMCache(partialKey: string): Promise<{ key: string;
     return results;
 }
 
+/** Exports all contexts with their full storage keys, including legacy entries that current lookups ignore. */
 export async function exportLLMCacheAsJSON(): Promise<Record<string, string>> {
     const result: Record<string, string> = {};
     await LLMCacheStorage.iterate<string, void>((value, key) => {
@@ -829,6 +905,10 @@ export async function exportLLMCacheAsJSON(): Promise<Record<string, string>> {
     return result;
 }
 
+/**
+ * Merges full storage keys without clearing other entries or migrating legacy keys. Writes are
+ * independent: a failed entry is counted and later entries are still tried. The caller validates data.
+ */
 export async function importLLMCacheFromJSON(data: Record<string, string>): Promise<{ count: number; failed: number }> {
     let count = 0;
     let failed = 0;
@@ -843,6 +923,7 @@ export async function importLLMCacheFromJSON(data: Record<string, string>): Prom
     return { count, failed };
 }
 
+/** Clears the browser LLM cache across contexts; stored message translations and the memory pair cache are separate. */
 export async function clearLLMCache(): Promise<void> {
     await LLMCacheStorage.clear();
 }

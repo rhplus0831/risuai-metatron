@@ -109,8 +109,8 @@ export function normalizeTranslatorSteps(source: TranslatorPresetInput): Transla
  * A translator preset with its steps normalized from `existing` (`normalizeTranslatorSteps`: its
  * steps, or one step from its `prompt` and `maxResponse`). `existing.id` is kept when it is a valid
  * record id; otherwise a new id is assigned. `sendTextAsIs` and `excludeThoughts` are each kept only
- * when it is `true` (absent otherwise). This is the server's normalizer of each preset too, so a preset the tab creates with it
- * is stored as it is.
+ * when it is `true` (absent otherwise). This is the server's normalizer of each preset too, so a
+ * preset the tab creates with it is stored as it is.
  */
 export function createTranslatorPreset(name = "New Preset", existing: TranslatorPresetInput = {}): TranslatorPreset {
     return {

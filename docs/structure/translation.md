@@ -20,252 +20,191 @@
 
 ### Translator
 
-`translator/translator.ts`:
-
-- `translate`: memory cache keyed by text and `memoryTranslationContext` (the direction-independent language pair,
-  including the model's `ja`/`en` choice, provider, input language, experimental Google flag, DeepLX URL, and DeepL
-  free/paid option), skipped for the LLM translator (`usesMemoryCache`). Forward and reverse lookups share pairs within
-  one context.
-- Only `translate` writes this cache, after `runTranslator` returns and only if the current context still matches the
-  captured one; direct `runTranslator` callers such as TTS and the playground do not populate it.
-- `writeMemoryCache` and `dropMemoryCacheEntry` count both strings plus `MEMORY_CACHE_ENTRY_OVERHEAD` (64 UTF-16 code
-  units per pair for its Set and two Map entries) toward `MEMORY_CACHE_CHARS` (4,000,000); the least recently used pairs
-  across contexts leave first, so tiny entries also consume the budget.
-- `runTranslator`: cuts the text with the server's `translateProtectingLines` (the lines between two empty or asset
-  lines go out as one chunk joined with `\n`, the protected lines kept); for the LLM translator with a preset on Send
-  Text As-Is (`sendTextAsIs`) the whole text goes to `translateLLM` in one call, its reply returned as is.
-- With Exclude Chain-of-Thought (`excludeThoughts`) and without As-Is, `runTranslator` strips the LLM translator's text
-  of its reasoning blocks (`stripTranslatorReasoning`) once, whole, before the line cut, and the chunks go to
-  `translateLLM` as prepared (`inputPrepared`: not stripped again, the strip is not idempotent, and keyed apart from raw
-  text); a chunk's failure (`translateLLM`'s `failure` flag) returns the whole text as given.
-- `runTranslator`'s optional `exarg.signal` (also accepted by `translateVox`) reaches provider requests and LLM steps;
-  an aborted call rejects without a translator alert. Calls without a signal retain their existing behavior.
-- `translateMain` dispatches to LLM, DeepL, DeepLX, experimental Google, or direct Google GTX (any other
-  `translatorType`, `"none"` included, reaches Google). Unless `noWaitForTranslate` is on, each DeepLX request takes the
-  next free slot (`waitTrans`), 3 s after the one before it, and waits for it.
-- `translateHTML`: collects DOM translation jobs before dispatch, keeping the `script`, `style`, and `translate=no`
-  skips and combined paragraphs' span restructuring. DeepLX sends sequential `■`-joined batches up to 5,000 characters,
-  including the final partial batch, and retries each chunk separately when the separator count disagrees. Other
-  providers translate jobs with at most ten requests in flight. Both paths then apply the results through the same
-  text/display-script/Markdown handling before `applyEdittransRegex`.
-- `applyEdittransRegex`: collects `presetRegex`, then module scripts, then character scripts, keeping
-  `type === 'edittrans'`.
-- Also `translateVox`, `isExpTranslator`.
-- A stored `translatorType: "bergamot"` is turned by the server normalizer into `"google"` with `translator` empty
-  (translation off, which also keeps every chat's `autoTranslate` inactive) and `useAutoTranslateInput` off, so nothing
-  is sent to an online translator until the user turns translation on again. `htmlTranslation` is a dropped field.
+- `src/ts/translator/translator.ts`: tab provider adapters and rendered translation; `translate`, `runTranslator`,
+  `translateMain`, `memoryTranslationContext`, `translateVox`, `isExpTranslator`, `translateHTML`,
+  `applyEdittransRegex`, `applyEdittransToStoredTranslation`; the `runTranslator` comment holds its chunking, Exclude
+  Chain-of-Thought, prepared-chunk cache-key and failure rules.
+- `server/src/data/normalize/memoryTranslateMedia.ts`: persisted translator normalization;
+  `normalizeMemoryTranslateMedia`. Stored `translatorType: "bergamot"` becomes `"google"` with `translator` empty and
+  `useAutoTranslateInput` off: translation and chat auto-translate remain inactive until the user enables translation
+  again. `htmlTranslation` is dropped.
 
 ### LLM translation
 
-`translateLLM` (`translator/translator.ts`) runs the preset's steps through `runTranslatorPipeline`
-(`shared/translation/pipeline.ts`).
-
-- The preset is `getCurrentTranslatorPreset`: the selected chat's translator preset, else the global selection.
-  `runTranslator` reads it once for all its chunks, and the playground passes `globalPreset` for the global one.
-- Each step is a `requestChatData(..., 'translate')` with the step's profile as `profileId` when its `model` names one
-  (else the `translate` slot); a failed step alerts and returns the source unless the caller's signal has been aborted.
-- Without Send Text As-Is, each `<risu-style>` block is sent as a `<style-data>` placeholder and restored in the reply;
-  with it, the text and the reply are kept as they are.
-- With Exclude Chain-of-Thought (`stripInput` unless the caller prepared the text), the reasoning blocks leave the text
-  after the cache read and before the placeholders; a text left blank caches and returns `""` without a request, and a
-  failure returns the text as given (and sets the caller's `failure` flag). On the rendered path `ParseMarkdown` has
-  already turned `<Thoughts>` into `<details>`, so only raw tags (the `translateBeforeHTMLFormatting` text) are
-  stripped.
-- Cache: LocalForage `LLMTranslateCache` (`LLMCacheStorage`) under `llm:<hash>:<source>`. The hash
-  (`translationSourceHash`) covers the pipeline signature, the languages, the translator note, and `sendTextAsIs` and
-  `excludeThoughts` each when it is on, plus `inputPrepared` for `runTranslator`'s prepared chunks; keys without them
-  preserve the legacy cache format. The key's text is the caller's, before any strip, except `runTranslator`'s protected
-  chunks, keyed by the chunks of the stripped text.
-- The hash inputs are read once into a detached context before any await (`llmTranslationContext`; `translateHTML` reads
-  it once for both its cached-only check while generating and the translation).
-- The context also captures the request ids every step runs with (`requestIds`: the settings views' prompt preset, model
-  preset, and persona, as a chatless request would read them; `runTranslator` captures them once for all its chunks,
-  with the preset), so a chat switch during a multi-step run does not move the later steps. They are not in the cache
-  key.
-- `llmTranslationCacheKey(text)` is the key as `translateHTML` translates now; the translation editors in `Chat.svelte`
-  keep that full key and write back to it (`readLLMCacheEntry`/`writeLLMCacheEntry`).
-- `getLLMCache(text)` and `searchLLMCache(partial)` (plugin API v3: source-text keys, current context only) read the
-  current context (the selected chat's preset). Entries keyed by the bare source are never read.
+- `src/ts/translator/translator.ts`: LLM adapter and browser cache; `translateLLM`, `llmTranslationContext`,
+  `getCurrentTranslatorPreset`, `llmTranslationCacheKey`, `readLLMCacheEntry`, `writeLLMCacheEntry`, `getLLMCache`,
+  `searchLLMCache`, `exportLLMCacheAsJSON`, `importLLMCacheFromJSON`, `clearLLMCache`.
+- `shared/translation/hash.ts`: stored-source and cache-context hashing; `translationSourceHash`.
 
 ### Presets and `.risutl`
 
-- `translator/presets.ts`: `getCurrentTranslatorPresetFromState` (the valid preset whose id is `translatorPresetId`,
-  else the first; it never writes the state) and the `.risutl` codec.
-- `TranslatorPreset {id, name, steps, sendTextAsIs?, excludeThoughts?}` is declared in `shared/settings.ts`;
-  `sendTextAsIs` and `excludeThoughts` are stored only as `true`. Steps are
-  `TranslatorStep {id, name, enabled, prompt, maxResponse, model, outputKey?}`. `createTranslatorPreset`,
-  `normalizeTranslatorSteps`, `isTranslatorPreset`, and `defaultTranslatorPrompt` live in `shared/translatorPresets.ts`.
-- The `.risutl` codec (`encodeTranslatorPresetFile`/`decodeTranslatorPresetFile`) is encrypted msgpack,
-  `type: 'translator-preset'`. It writes no id, and an import gets a fresh one.
-- `.risutl` version 1, a payload of `name`, `prompt`, `maxResponse`, is written when it holds the preset without loss
-  (Send Text As-Is and Exclude Chain-of-Thought off, one enabled step on the `translate` slot, no output key, the
-  default name `Step 1`) and decodes to one step; one carrying `sendTextAsIs` or `excludeThoughts` is refused.
-- `.risutl` version 2 is otherwise written: a payload of exactly `name` and `steps` (1–5, each exactly `name`,
-  `enabled`, `prompt`, `maxResponse`, `model`, and an optional `outputKey`; no preset or step id) and the optional
-  booleans `sendTextAsIs` and `excludeThoughts` (each written only when on).
-- `.risutl` decoding checks every level and refuses another shape (a Fastify file), an invalid output key, or one used
-  twice. A profile step keeps its profile id (it runs where that profile exists and shows as missing elsewhere). A blank
-  name imports as "Imported Preset".
+- `src/ts/translator/presets.ts`: selection adapter and cross-user `.risutl` codec;
+  `getCurrentTranslatorPresetFromState`, `encodeTranslatorPresetFile`, `decodeTranslatorPresetFile`,
+  `getTranslatorPresetDownloadName`, `translatorPresetFileExtension`, `translatorPresetImportExtensions`.
+- `shared/translatorPresets.ts`: preset creation, normalization and validation; `createTranslatorPreset`,
+  `createTranslatorStep`, `normalizeTranslatorSteps`, `isTranslatorPreset`, `defaultTranslatorPrompt`,
+  `TRANSLATOR_PRESET_MAX_STEPS`.
+- `shared/settings.ts`: persisted preset and step types; `TranslatorPreset`, `TranslatorStep`, `TranslatorStepModel`.
 
 ### Server translation
 
-- `POST /api/translate/message` (`server/src/translation/runner.ts`, `server-generation.md`; the path and body/answer
-  types in `shared/translation/route.ts`) translates a stored message's source text with the same pipeline and stores it
-  on the message (`Message.translation`, the `setTranslation` op).
-- A preset on Send Text As-Is sends the whole source through one pipeline run and stores the reply as is. Otherwise (the
-  default) `translateProtectingLines` cuts the source at empty and asset lines and runs the pipeline on each other part
-  in turn, under the message's one deadline, CBS budget, and write.
-- Unlike `translateLLM` it sends the source without `<risu-style>` protection, and runs without the tab's plugin
-  interceptor, plugin providers, and `request` trigger.
-- A step on a profile sends `profileId` (a deleted profile fails the run, 502); every step runs with the run's
-  `modelPresetId`.
-- History slots in the prompts of the steps that run are built once per message, when the first pipeline run starts,
-  from the run's chat copy (`buildTranslatorHistory`, the counts by `translatorHistorySlotCounts`), each count yielding
-  a turn and checking the run before and after it; the same history serves every part and step, in both modes.
-- A preset on Exclude Chain-of-Thought strips the reasoning blocks from the whole source once before the As-Is run or
-  the line cut (a source left blank stores an empty translation without a request) and from each history entry's source
-  and fresh translation (`transformText`, applied by `collectTranslatorHistory` after the freshness check); `sourceHash`
-  stays the stored text's.
+- `server/src/translation/runner.ts`: detached stored-message translator; `createTranslationRunner`, `handOff`,
+  `TRANSLATION_DEADLINE_MS`, `MAX_RUNNING_TRANSLATIONS`.
+- `server/src/routes/translate.ts`: authenticated HTTP boundary; `registerTranslateRoutes`
+  ([server-generation](server-generation.md)).
+- `shared/translation/route.ts`: tab/server request and answer contract; `TRANSLATE_MESSAGE_PATH`,
+  `TranslateMessageBody`, `TranslateMessageAnswer`, `isTranslateMessageAnswer`.
 
 ### Stored translation
 
-- `llmTranslationTarget` (`memoryTranslateMedia`, `"message"` by default, any other value normalized to it) picks the
-  LLM translator's path: `"message"` is the stored translation, `"rendered"` the `translateHTML` path with its browser
-  cache.
-- `translator/storedTranslation.svelte.ts`: `usesStoredTranslation()` (LLM on `"message"`), `freshTranslation(message)`
-  (the whole record while its hash matches; an empty text counts), `heldMessage`.
-- `requestStoredTranslation(ref, id, { force, follow? })`: one request per message per tab (a second call gets the
-  running one). It captures the chat's display ids (`chatDisplayIds`) and the text's hash, saves every pending change,
-  POSTs, and validates the answer (`isTranslateMessageAnswer`).
-  - The save is `flushResources`. `GenerationBlockedError` alerts `chatGenerating`; a conflict that discarded this
-    chat's work or a text or display id changed meanwhile stops with a retry message; a draft of this chat or its
-    character's chat order an earlier save left refused stops with `serverJob.refusedDraft`: the server would translate
-    its older copy.
-  - The POST carries the epoch header and has a 21-minute wait for this tab only: two server deadlines for a request
-    that waits on an older text's run, authentication and the body included, and nothing sent once it passed. The run
-    continues on the server.
-  - It maps 412 to `epochMismatch` (no other alert), 409 `generating`/`chatBindingMismatch` to their strings, `ignored`
-    to `translationSourceChanged`, and anything else to `translationFailed` with the server's error or the status.
-  - The answer is not displayed by itself: the request stays pending (at most 15 s) until the held message holds the
-    stored translation the chat's resource refresh brings, or its text changed.
-- `follow` is the server hand-off's: `followStoredTranslations` runs it for each id of a job's `translating` notice
-  (`jobChannel.ts`). It skips the save barrier and the stability checks and says nothing on `ignored` or missing display
-  ids; the unforced POST joins the run in flight, so the row shows loading until the translation arrives or the run's
-  failure is reported.
-  - Follow failures go through `follow.report`, which the job channel queues as an `alertError` notice, so one never
-    replaces a question the next send shows.
-  - A follow that arrives while a request for the message runs (a Continue's hand-off) follows again once it settles,
-    the message pending throughout. A run that already ended answers `fresh`, or the POST starts a new run (a failed one
-    is tried once more).
-  - Notices are best effort: a tab that was disconnected when the job sent one shows no loading state and no failure,
-    and gets the translation through its chat refresh.
-- The pending set and the rows' show/hide choices are reactive maps keyed by chat and message id, so a remounted row
-  keeps both.
-- `beginStoredTranslationEdit` captures an edit session (the chat, the message, the source hash, a copy of the fresh
-  translation). `saveStoredTranslationEdit` writes `setMessageTranslation` with that hash, the base's `presetId` and
-  `targetLanguage`, `translatedAt` now, and `edited: true`, and alerts and returns false when a generation locks the
-  message, it is gone, or its text changed (`translationEditStale`); true means queued.
+- `src/ts/translator/chatTranslation.svelte.ts`: tab chat settings and preset resolution; `chatTranslationSettings`,
+  `chatAutoTranslate`, `chatTranslatorPreset`, `currentTranslatorPreset`, `globalTranslatorPreset`,
+  `setChatTranslationSettings`, `initialChatTranslation`, `importedChatTranslation`.
+- `shared/translation/chatSettings.ts`: shared chat-list fields, defaults and preset fallback;
+  `CHAT_TRANSLATION_FIELD_TYPES`, `readChatTranslationSettings`, `resolveTranslatorPreset`, `selectedTranslatorPreset`.
+- `src/ts/translator/storedTranslation.svelte.ts`: tab requests, display choices and edit sessions;
+  `usesStoredTranslation`, `freshTranslation`, `heldMessage`, `requestStoredTranslation`, `followStoredTranslations`,
+  `isStoredTranslationPending`, `storedTranslationChoice`, `setStoredTranslationChoice`, `beginStoredTranslationEdit`,
+  `saveStoredTranslationEdit`.
+- `shared/translation/messageTranslation.ts`: stored-record validation and freshness; `isMessageTranslation`,
+  `storedTranslation`, `dropInvalidTranslation`.
+
+`llmTranslationTarget` selects the LLM path: `"message"` stores translations on messages; `"rendered"` uses
+`translateHTML` and its browser cache. The `memoryTranslateMedia` normalizer accepts both; other values default to
+`"message"`.
 
 ### Chat row on the stored path
 
-This is `Chat.svelte` for a row with a `messageId` in the displayed chat; the greeting and bookmark previews keep the
-rendered path.
+- `src/lib/ChatScreens/Chat.svelte`: row display and translation controls; `storedPath`, `storedWanted`,
+  `displayMessage`, `toggleStoredTranslation`, `requestRetranslation`, `getTranslationPartialEditContext`,
+  `savePartialTranslation`.
+- `src/lib/ChatScreens/ChatBody.svelte`: translation rendering; `markParsing`, `storedPath`, `storedTranslationShown`,
+  `showTranslationLoading`.
+- `src/lib/ChatScreens/PartialEditController.svelte`: partial-edit dispatch and draft retention; `translatedView`,
+  `saveTranslation`, `writeTranslation`.
 
-- The row asks for the translation by its choice, else its chat's `autoTranslate` (`chatAutoTranslate`: the flag while a
-  target language is set; it shows stored translations by default; the tab never requests one automatically; the server
-  translates a send's messages). It shows the fresh stored translation as `displayMessage`, which goes through
-  `risuChatParser` and `ChatBody` like the text.
-- The toggle hides the translation when it is on (shown, or asked for and pending); otherwise it shows it and, without a
-  fresh translation or a pending request, requests one (a locked message alerts). The toggle's `translating` animation
-  is the pending state there.
-- Retranslate (disabled while pending) confirms (`retranslateConfirm`) with the message captured before the dialog,
-  rechecks it, then requests with `force`.
-- Edit translation is enabled only with a fresh translation and nothing pending; a refused save keeps the editor open,
-  and an open editor keeps its Save and Cancel whatever the settings do meanwhile.
-- The partial editor's translated view is the shown stored translation, edited through a captured session (`stored:<n>`
-  keys). Its `saveTranslation` callback returns whether the write was taken, and a refused edit keeps its draft; a save
-  that ends after a cancel or a newer edit leaves that editor alone, and saves do not overlap.
-- `ChatBody` on the stored path (`storedPath`) renders `msgDisplay` without the rendered translation, applies the
-  `edittrans` scripts to a shown stored translation before Markdown (`applyEdittransToStoredTranslation`, as the
-  `translateBeforeHTMLFormatting` path does), and shows the loading spinner (`showTranslationLoading`) while a requested
-  translation is pending.
-- `PartialEditController` never falls back to editing the original from a translated view whose translation context is
-  missing (both paths).
+The stored path requires a `messageId` in the displayed chat. Greeting and bookmark previews keep the rendered path.
 
 ### Bilingual display
 
-- `translator/bilingualInterleave.ts` `bilingualInterleave(source, translation, { emphasize, sentenceBreaks })` pairs
-  each non-blank unit of the source (a line, or a whole code fence) with the next one of the translation, by position,
-  in `x-risu-bilingual-pair` wrappers (the de-emphasized side `x-risu-bilingual-muted`).
-- `parser/sentenceBreaks.ts` `insertSentenceParagraphBreaks` first splits prose lines every N sentences
-  (`Intl.Segmenter`, never inside an open quote, never in code, HTML, headings, lists, quotes, tables, or rules).
-- `Chat.svelte` passes `bilingualDisplay` (the stored message's text after the row's display CBS pre-pass, `displaya`,
-  as the translation gets it, and the chat's emphasis and pairing) to `ChatBody` while the stored translation is shown
-  and the chat's `bilingualDisplay` is on. `ChatBody` applies `edittrans` to the translation, interleaves, and renders
-  through the display path, so the display scripts see the wrappers between the lines.
-- Every rendered body goes through `pruneEmptyBilingualPairs` (parsed as a `<template>` fragment, so a leading `<style>`
-  is kept; untouched without a pair): sides and pairs that render nothing are dropped, and a pair showing only an image
-  keeps one unmuted side.
-- The CSS is in `src/styles.css` under `.chattext`. Partial edit is off on a row that shows a pair.
+- `src/ts/translator/bilingualInterleave.ts`: positional Markdown pairing and rendered-pair pruning;
+  `bilingualInterleave`, `BilingualInterleaveOptions`, `BILINGUAL_PAIR_CLASS`, `BILINGUAL_MUTED_CLASS`,
+  `pruneEmptyBilingualPairs`, `pruneEmptyBilingualPairsIn`.
+- `src/ts/parser/sentenceBreaks.ts`: sentence grouping before bilingual pairing; `insertSentenceParagraphBreaks`.
+- `src/styles.css`: bilingual wrapper styling under `.chattext`; `x-risu-bilingual-muted`.
+
+Partial edit is off on a row that shows a pair.
 
 ### Translator pipeline and slots
 
-- `shared/translation/pipeline.ts` (pure, shared by the tab and the server runner, so a new slot form reaches both):
-  - `translatorStepsToRun`: the enabled steps, else the first.
-  - `fillTranslatorSlots` (one pass): `{{slot}}`, `{{slot::from}}`, `{{slot::content}}`/`{{solt::content}}`,
-    `{{slot::prev}}`, `{{slot::out::KEY}}` (a `Map`, empty when unset), `{{slot::tnote}}`, and the history slots
-    `{{slot::history::N}}`/`{{slot::historytrans::N}}` from the caller's `history`, empty without one or for an invalid
-    N.
-  - `translatorHistorySlotCounts`: the valid history counts in the executed prompts, by the same one-pass match.
-  - `buildTranslatorStepMessages` (with `parseTranslatorChatML`): ChatML wins; else the system prompt, plus the previous
-    output as the user message unless the prompt holds an input slot.
-    - `stripTranslatorReasoning`: `<Thoughts>`/`<think>` blocks out of every step's output.
-  - `translatorPipelineSignature`, `runTranslatorPipeline`.
-  - `isProtectedTranslationLine` and `translateProtectingLines`: the line protection without Send Text As-Is, for the
-    server runner and the tab's `runTranslator`.
-- `shared/translation/historySlots.ts`:
-  - `translatorHistoryCount` (all digits, 1 to 50), `translatorHistoryMaxTokens` (a finite number above 0, else 2048).
-  - `collectTranslatorHistory`: an optional `transformText` on each source and translation; walking back from the row
-    before the message, `disabled: "allBefore"` ends the walk, comment or not, and disabled and comment rows are
-    skipped. `source` is the raw `data`, `translated` the fresh `storedTranslation`, an empty one included.
-  - `translatorHistoryBlock`: `role: body` then `\n\n---\n\n`, `user` or `char`.
-    - `buildTranslatorHistory`: per count, the newest N entries, the oldest whole ones dropped while their source and
-      translation blocks, an empty translation block for an entry without one, pass the budget; each entry counted once;
-      returns `TranslatorHistory`.
-- The tab passes no history, so its history slots fill in empty. CBS is never evaluated in a translator prompt.
+- `shared/translation/pipeline.ts`: shared prompt/step execution and line protection; `translatorStepsToRun`,
+  `fillTranslatorSlots`, `translatorHistorySlotCounts`, `buildTranslatorStepMessages`, `parseTranslatorChatML`,
+  `stripTranslatorReasoning`, `translatorPipelineSignature`, `runTranslatorPipeline`, `isProtectedTranslationLine`,
+  `translateProtectingLines`.
+- `shared/translation/historySlots.ts`: bounded source/translation history; `translatorHistoryCount`,
+  `translatorHistoryMaxTokens`, `collectTranslatorHistory`, `translatorHistoryBlock`, `buildTranslatorHistory`.
+
+The pure pipeline serves both tab and server, so a new slot form reaches both. Only the server builds history; the tab's
+history slots fill in empty. CBS is never evaluated in a translator prompt.
 
 ### Settings
 
-- `TranslatorPresetSettings.svelte`: `translatorPresets`, `translatorPresetId` (the selected preset's id), the selected
-  preset's Send Text As-Is and Exclude Chain-of-Thought checks (`true`, or the field deleted), and its steps
-  (`TranslatorStepEditor.svelte`, one per step): name, enabled, move up/down, remove (confirmed; not the last step),
-  model (the `translate` slot, or a model profile; a deleted one shown missing), response size, output key, and prompt.
-  - "Add step" works up to `TRANSLATOR_PRESET_MAX_STEPS` (`createTranslatorStep`). A note says the first step runs when
-    none is enabled. Deleting a model profile lists the translator presets with a step on it
-    (`translatorPresetsUsingModelProfile`, `collectionStore.svelte.ts`).
-- The Translation settings page (`TranslationSettings.svelte`, menu 21, `/settings/translation`; its items in
-  `src/ts/setting/translationSettingsData.ts`, sections Translator, Behavior, Experimental, Cache,
-  [settings-i18n](settings-i18n.md)) holds every translator setting; the Language page keeps only the UI language.
-  Behavior also holds `adv.noWaitTrans` and `acc.showTranslationLoading`, Experimental `adv.exp.googleTrans` (shown
-  while experimental features are on).
-  - `lang.llmTranslationTarget` (a select, LLM translator only) follows the preset editor;
-    `lang.translatorHistoryMaxTokens` (a number) follows it for the LLM translator on `"message"`, and writes only a
-    finite number above 0 (a cleared field writes nothing).
-  - `legacyTranslation` is shown for every translator but the LLM one on `"message"`, and
-    `translateBeforeHTMLFormatting` and `autoTranslateCachedOnly` only for the LLM translator on `"rendered"`. Hidden
-    toggles keep their values and still drive the rows that keep the rendered path. The cache buttons stay for the LLM
-    translator.
-  - Auto-translate is not on this page: it is a [chat setting](#state).
+- `src/lib/Setting/Pages/Translation/TranslatorPresetSettings.svelte`: global preset list and selection editor;
+  `current`, `addStep`, `setSendTextAsIs`, `setExcludeThoughts`.
+- `src/lib/Setting/Pages/Translation/TranslatorStepEditor.svelte`: per-step controls and drafts; `liveStep`, `setName`,
+  `setModel`, `setMaxResponse`, `setOutputKey`, `move`, `remove`, `missingProfileId`.
+- `src/ts/storage/collectionStore.svelte.ts`: model-profile deletion dependencies; `translatorPresetsUsingModelProfile`
+  lists translator presets with a step on the deleted profile.
+- `src/lib/Setting/Pages/TranslationSettings.svelte`: Translation page composition; `translationSettingsHeader`,
+  `translationSettingsSections`. Menu 21, `/settings/translation` holds all translator settings; Language keeps only the
+  UI language ([settings-i18n](settings-i18n.md)).
+- `src/ts/setting/translationSettingsData.ts`: Translation page items and sections; `translationSettingsItems`,
+  `translationSettingsSections`. Sections: Translator, Behavior, Experimental, Cache. Behavior holds `adv.noWaitTrans`
+  and `acc.showTranslationLoading`; Experimental holds `adv.exp.googleTrans`, shown while experimental features are on.
+
+`lang.llmTranslationTarget` follows the preset editor for the LLM translator; `lang.translatorHistoryMaxTokens` follows
+it on `"message"`. `legacyTranslation` shows except for LLM on `"message"`; `translateBeforeHTMLFormatting` and
+`autoTranslateCachedOnly` show only for LLM on `"rendered"`. Hidden toggles retain their values and still drive previews
+on the rendered path; cache buttons remain for LLM. Auto-translate is a [chat setting](#state).
 
 ## Flows
 
-- `ChatBody.svelte` uses `translateHTML` on the rendered path when its chat settings allow it. Streaming rows show the
-  original until streaming ends; the stored path renders the saved translation as text.
-- Input translation: `DefaultChatScreen` through `src/ts/process/inputTranslation.svelte.ts` `createInputTranslation`
-  ([chat-pipeline](chat-pipeline.md)), when `useAutoTranslateInput`.
+### Rendered translation
+
+1. `src/lib/ChatScreens/ChatBody.svelte` calls `translateHTML` according to chat settings. Streaming rows show the
+   original until streaming ends. Normally `ParseMarkdown` runs first; LLM's `translateBeforeHTMLFormatting` sends raw
+   text first. On the HTML path `<Thoughts>` is already `<details>`, so Exclude Chain-of-Thought only strips remaining
+   raw tags.
+2. `src/ts/translator/translator.ts` uses the selected chat's preset, falling back to global; the playground passes
+   `globalPreset`. Its LLM adapter runs `shared/translation/pipeline.ts` through `requestChatData` in translate mode.
+   Non-LLM providers use DOM jobs instead.
+3. Combined DOM paragraph jobs rerun `editdisplay` through the server transform (`serverProcessScript`, target kind
+   `translation`) when a captured context exists, then apply Markdown. All DOM jobs finish before `applyEdittransRegex`;
+   LLM results go directly to that regex. The regex remains in the tab; see [Invariants](#invariants).
+4. The translation editors in `src/lib/ChatScreens/Chat.svelte` capture `llmTranslationCacheKey(text)`, then read and
+   write that full key with `readLLMCacheEntry`/`writeLLMCacheEntry`, so a later settings switch cannot redirect the
+   edit.
+
+### Stored request and refresh
+
+1. `src/ts/translator/storedTranslation.svelte.ts` `requestStoredTranslation` captures `chatDisplayIds` and the source
+   hash, then saves all pending changes through `flushResources`: the server must translate this tab's text. Generation
+   locks (`GenerationBlockedError`), discarded chat work, and refused chat/chat-order drafts stop the request.
+2. After saving, a changed source reports `translationSourceChanged`; changed display ids report `chatBinding.mismatch`.
+   The epoch-bearing POST to `/api/translate/message` enters `server/src/routes/translate.ts`, then
+   `server/src/translation/runner.ts`, using the body/answer contract in `shared/translation/route.ts`.
+3. The runner translates the stored source and writes `Message.translation` with `setTranslation`. Its `chats` resource
+   event refreshes the tab's held chat. `isTranslateMessageAnswer` validates the HTTP answer; the answer is never shown
+   directly. The request remains pending until the held message contains it, disappears, or changes source, bounded by a
+   15-second refresh wait.
+
+### Send hand-off
+
+1. A finished send hands its messages to `server/src/translation/runner.ts` `handOff` without waiting for translation;
+   `translateBotOnly` limits this to replies. The job's `translating` notice reaches `src/ts/network/jobChannel.ts`,
+   which calls `followStoredTranslations` in `src/ts/translator/storedTranslation.svelte.ts` for the handed-off ids.
+2. Following skips the save barrier and stability checks: the server just wrote its copy and the next send may already
+   block a save. An unforced POST joins the run; the row stays loading until the held translation arrives or failure is
+   reported. `follow.report` queues an `alertError` notice behind any question, so it cannot replace the next send's
+   question.
+3. Notices are best effort: a tab disconnected when the job sent one has no loading state or failure notice, but still
+   gets the stored translation through its chat refresh.
+
+### Stored display and edits
+
+- `src/lib/ChatScreens/Chat.svelte` chooses explicit show/hide, else `chatAutoTranslate` while a target language is set.
+  It shows a fresh stored record as `displayMessage`, through `risuChatParser` and `ChatBody`; it never automatically
+  requests translation. `ChatBody`'s `storedPath` renders `msgDisplay` without `translateHTML`, applies
+  `applyEdittransToStoredTranslation` before Markdown when shown, and shows the pending spinner only with
+  `settings.ui.showTranslationLoading` on (settings item `acc.showTranslationLoading`).
+- A fresh translation with nothing pending enables editing. `beginStoredTranslationEdit` captures the session;
+  `saveStoredTranslationEdit` queues `setMessageTranslation`. Refusal keeps the editor open, and an open editor retains
+  Save and Cancel across settings changes.
+- `src/lib/ChatScreens/PartialEditController.svelte` uses `Chat.svelte`'s `saveTranslation` callback for the shown
+  stored translation. A false result retains its draft; saves do not overlap, and a completion after cancel or a newer
+  edit leaves that editor alone. Both translation paths refuse a missing translation context instead of editing the
+  original.
+
+### Bilingual rendering
+
+1. With a stored translation shown and chat `bilingualDisplay` on, `src/lib/ChatScreens/Chat.svelte` passes the stored
+   source after the row's display CBS pre-pass (`displaya`), plus the chat's emphasis and pairing, to `ChatBody`.
+2. `src/lib/ChatScreens/ChatBody.svelte` applies `edittrans` to the translation, calls `bilingualInterleave` (sentence
+   grouping via `src/ts/parser/sentenceBreaks.ts`), then renders through the display path. Display scripts see the pair
+   wrappers between the lines.
+3. Every rendered body is pruned: `pruneEmptyBilingualPairs` on the string path, `pruneEmptyBilingualPairsIn` on the
+   parsed-tree/style-sharing path, from `src/ts/translator/bilingualInterleave.ts`.
+
+### Input translation
+
+`DefaultChatScreen` uses `src/ts/process/inputTranslation.svelte.ts` `createInputTranslation` when
+`useAutoTranslateInput` ([chat-pipeline](chat-pipeline.md)).
 
 ## State
 
+- Browser LLM cache: LocalForage `LLMTranslateCache` (`LLMCacheStorage` in `src/ts/translator/translator.ts`) uses
+  `llm:<hash>:<source>` keys, separate from stored `Message.translation`. See `llmCacheKeyPrefix` for hash inputs and
+  legacy-key compatibility.
 - Chat translation settings: the chat fields `translatorPresetId`, `autoTranslate`, `translateBotOnly`,
   `bilingualDisplay`, `bilingualEmphasis`, `bilingualSentences`, stored as sent and carried by the chat summary (list
   fields, `CHAT_TRANSLATION_FIELD_TYPES`), read through `shared/translation/chatSettings.ts`
@@ -293,6 +232,7 @@ rendered path.
 
 - The translator depends on the parser (`ParseMarkdown`, `applyMarkdownToNode`, `postTranslationParse`,
   `risuChatParser`), `requestChatData`, the script transform (`serverProcessScript`), platform flags, and localforage.
+- Plugin API v3 cache lookups (`getLLMCache`, `searchLLMCache`) take source text in the current translation context.
 - The Translation settings page and its items are registered by [settings-i18n](settings-i18n.md); the chat's
   translation fields travel with the chat summary ([chat-store](chat-store.md)), and the composer's input translation is
   [chat-pipeline](chat-pipeline.md)'s.
@@ -310,11 +250,13 @@ rendered path.
   used output key stay local drafts, shown with a hint and dropped for good once the stored value they were typed over
   (for a key, also the other steps' keys) changes; a cleared or invalid response size is not written, and the field
   shows the stored size again when committed. So the tab's copy stays the server's normalized text.
-- `translateHTML` must preserve markup boundaries and the `translate=no`/`script`/`style` skips. It applies `edittrans`
-  after translating (`applyEdittransRegex`: the one regex the tab still runs, a plain `RegExp` replacement with no Lua
-  or trigger). Its `editdisplay` call runs on the server (`serverProcessScript`, target kind `translation`), with the
-  context captured when `translateHTML` starts; without a context (a chat not saved on the server yet) the translated
-  text stays as it is.
+- `translateHTML`'s non-LLM traversal skips `script`/`style` elements and `translate=no` subtrees it visits. With
+  `combineTranslation`, eligible paragraphs are flattened before descendant checks, so protected descendants can be
+  translated and inline markup replaced. The LLM path has no DOM skip traversal. Both apply `edittrans` afterward
+  (`applyEdittransRegex`: the one regex the tab still runs, a plain `RegExp` replacement with no Lua or trigger).
+- Combined DOM jobs run `editdisplay` on the server (`serverProcessScript`, target kind `translation`), with the context
+  captured when `translateHTML` starts. Without a context (a chat not saved on the server yet), that stage leaves
+  translated text unchanged.
 
 ## Recipes
 
