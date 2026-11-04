@@ -1,6 +1,6 @@
 # Guides To Source Plan
 
-Status: drafted 2026-11-04 after the chat-store pilot (`c0f4cabae`), no slice landed. Decisions D1–D11 are
+Status: drafted 2026-11-04 after the chat-store pilot (`c0f4cabae`); landed: 0 (`2b6450a82`). Decisions D1–D11 are
 recommendations for the owner; the **Open questions** Q1–Q4 were answered by the owner on 2026-11-04 (the
 recommended option each time). Code anchors and measurements are
 at `c0f4cabae` on `dev`; verify them again before editing (STRUCTURE.md protocol step 5).
