@@ -1,16 +1,33 @@
-// Trigger script shapes persisted in characters, modules, and shared cards. Never rename
-// `type` discriminators (STRUCTURE D5).
+/**
+ * Trigger script shapes persisted in characters, modules, and shared cards. Never rename
+ * `type` discriminators (STRUCTURE D5).
+ *
+ * A v2 trigger has a flat effect array. Trigger-list index 0 is reserved for the entry whose
+ * first effect is the `v2Header` sentinel. Blocks use `indent`, `v2Else`, and editor-generated
+ * `v2EndIndent` entries. The runtime in `server/src/prompt/triggers.ts` uses an `endOfLoop`
+ * `v2EndIndent` at indent n to jump back to the `v2Loop`/`v2LoopNTimes` at indent n - 1;
+ * counted loops exit when their count is exhausted. `v2BreakLoop` jumps forward to the next
+ * `endOfLoop` closing entry at any indent. That runtime and the editor in
+ * `src/lib/SideBars/Scripts/TriggerV2List.svelte` both read the display and request allowlists.
+ */
 
 export interface triggerscript {
     comment: string;
+    /** Runs in display or request mode filter effects through that mode's allowlist. */
     type: "start" | "manual" | "output" | "input" | "display" | "request";
-    // Retained for shared-format compatibility. Newly created triggers use `[]`;
-    // imported values are preserved and not evaluated.
+    /**
+     * Retained for shared-format compatibility. Newly created triggers use `[]`; imported arrays
+     * are preserved. `server/src/prompt/triggers.ts` skips a trigger with non-empty conditions.
+     */
     conditions: unknown[];
     effect: triggerEffect[];
     lowLevelAccess?: boolean;
 }
 
+/**
+ * `triggerCode` holds the legacy `triggercode`/`triggerlua` shapes; of those two, only `triggerlua`
+ * executes in `server/src/prompt/triggers.ts`. Native effects use `triggerEffectV2`.
+ */
 export type triggerEffect = triggerCode | triggerEffectV2;
 export type triggerEffectV2 =
     | triggerV2Header
@@ -968,10 +985,13 @@ const safeSubset = [
     "v2DeclareLocalVar",
 ];
 
-/** The effects a display-mode trigger runs (`TriggerV2List.svelte` filters the editor by it too). */
+/**
+ * The effects a display-mode trigger runs. `server/src/prompt/triggers.ts` silently skips effects
+ * missing from this list; `src/lib/SideBars/Scripts/TriggerV2List.svelte` filters the editor by it.
+ */
 export const displayAllowList = ["v2GetDisplayState", "v2SetDisplayState", ...safeSubset];
 
-/** The effects a request-mode trigger runs. */
+/** The effects a request-mode trigger runs; `server/src/prompt/triggers.ts` silently skips the rest. */
 export const requestAllowList = [
     "v2GetRequestState",
     "v2SetRequestState",

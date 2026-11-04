@@ -9,6 +9,7 @@ import { createLuaBudget, createScriptWorkerPool, type LuaHost, type LuaTask } f
  * `node server/src/scripts/smoke.ts [rootDir]`. Prints one line per check and a JSON summary, and
  * exits 1 when a check fails. Timings are measurements; the bounds are generous.
  */
+
 type Check = { name: string; ok: boolean; ms: number; detail: unknown };
 
 const rootDir = process.argv[2] ?? process.cwd();

@@ -21,6 +21,18 @@
     import { onDestroy, onMount } from "svelte";
     import { RISU_EFFECT_DRAG_TYPE, RISU_TRIGGER_DRAG_TYPE } from "src/ts/dragTypes";
 
+    /**
+     * The v2 trigger editor's palette is `effectCategories`; `makeDefaultEditType` supplies the
+     * initial fields. `checkSupported` filters display/request triggers by `displayAllowList` /
+     * `requestAllowList` in `shared/triggers.ts`; other modes hide Special effects and offer
+     * Low Level effects only with `lowLevelAble`.
+     *
+     * `deleteEffect`, `copyEffect`, `getInsertIndent`, and `getBlockRange` must keep paired
+     * `v2EndIndent` entries and indentation intact through block edits, copies, and moves.
+     * Saving a new `v2If`, `v2IfAdvanced`, `v2Loop`, `v2Else`, or `v2LoopNTimes` generates its
+     * closing `v2EndIndent` at indent + 1, with `endOfLoop` for either loop type.
+     */
+
     interface Props {
         value?: triggerscript[];
         lowLevelAble?: boolean;

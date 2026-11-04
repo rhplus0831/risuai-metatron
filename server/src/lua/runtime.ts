@@ -3,9 +3,9 @@ import { performance } from "node:perf_hooks";
 import { LuaFactory, type LuaEngine } from "wasmoon";
 
 /**
- * The Lua engine lifecycle inside one script worker, ported from the previous attempt's runtime
- * (`risuai-fastify` `server/fastify/src/prompt/luaRuntime.ts`) without its bindings. The worker owns
- * one wasm module and runs one Lua task at a time.
+ * The Lua engine lifecycle inside one script worker. The worker owns one wasm module and runs
+ * one Lua task at a time. `LUA_PRELUDE` supplies wrappers for async and JSON-based host APIs;
+ * the job's host bindings come from `server/src/lua/bindings.ts`.
  *
  * The budget: one count hook per wasm module, installed on every engine's states, raises inside
  * the Lua state that runs (`L`) when the run is aborted or its budget is spent. Every thread and
@@ -17,6 +17,7 @@ import { LuaFactory, type LuaEngine } from "wasmoon";
  * its host calls spawned; a host wait leaves the thread idle, so it is not charged. A C-level
  * runaway (a pathological pattern) never reaches the hook; the pool's watchdog terminates the worker.
  */
+
 export const DEFAULT_LUA_CPU_MS = 3000;
 export const LUA_MEMORY_MAX_BYTES = 64 * 1024 * 1024;
 export const MAX_SLEEP_MS = 2000;
@@ -217,7 +218,8 @@ end
 
 /**
  * The client's `luaCodeWrapper` (the former `src/ts/process/scriptings.ts`) without the trailing user code,
- * plus the server's JSON wrappers of the table-taking functions.
+ * plus the server's JSON wrappers of the table-taking functions. `logMain` stringifies its
+ * argument and caps it without JSON encoding; the Lua `log` wrapper JSON-encodes first.
  */
 export const LUA_PRELUDE = `
 json = require 'json'
@@ -844,7 +846,9 @@ function accessOf(state: RunState, id: unknown): HostAccess {
 /**
  * The host functions this runtime owns, declared once per engine; the run's state is bound before
  * its code runs. `sleep` and `request` are served on the main thread (the request window is the
- * server's), with the client's id checks.
+ * server's). `request(id, url)` returns nil immediately without egress when the id lacks low-level
+ * access. `logMain` stringifies its argument and applies per-message and per-run caps without JSON
+ * encoding; the Lua `log` wrapper in `LUA_PRELUDE` JSON-encodes first.
  */
 function declareBuiltins(engine: LuaEngine, sleepCaps: SleepCaps): (state: RunState) => void {
     let state: RunState | null = null;

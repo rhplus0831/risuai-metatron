@@ -59,6 +59,15 @@ import type { McpRegistry } from "../mcp/registry.ts";
 import { createCbsEvaluator } from "../../../shared/cbs/evaluator.ts";
 
 /**
+ * Lua and native trigger host bindings for one job. Character effects and Lua character setters
+ * patch one field of the run's character by id, never the tab's selected index or the whole working
+ * copy. `server/src/prompt/triggers.ts` warns and skips a character effect when that character
+ * is gone; a patch the store refuses is latched as `LuaJobFatalError` and ends the job.
+ * That runtime's `v2SetLorebookActivation` warns and changes no lore entry for a non-integer,
+ * negative, or missing lore index.
+ */
+
+/**
  * A failure that ends the job whatever the script does with it: a write conflict, a barrier
  * failure, a channel timeout or disconnect, an abort, a protocol failure. The binding latches it
  * outside Lua (a script's `pcall` cannot swallow it) and raises it into the script; the runner
@@ -154,7 +163,7 @@ export type LuaBindingServices = {
     /** The stored-merge `setChatVarOf` of the job's chat: true when it changed. */
     setChatVar(key: string, value: string, ctx?: HostContext): boolean;
     getChatVar(key: string): string;
-    /** Patches the run's character; false when it is gone. */
+    /** Patches the run's character; false when it is gone, a latched `LuaJobFatalError` on a refused write. */
     patchCharacter(patch: Record<string, unknown>, ctx: HostContext): boolean;
     /** Sets `personaPrompt` of the persona `personaId`; false when it is gone. */
     patchPersonaPrompt(personaId: string, value: string, ctx: HostContext): boolean;
@@ -297,8 +306,13 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
  * and write through `job.write`; variable keys and note setters coalesce in the live scope until a
  * microtask or job barrier flushes them. After each write the scope adopts its stored data and
  * revision and sends it to the tab. A refused write of a message another generation owns is skipped with a warning, as
- * the client's `liveWrite`; any other conflict is fatal. Character functions address the run's
- * character, read live from the store.
+ * the client's `liveWrite`; any other conflict is fatal. `getName`, `getDescription`,
+ * `getCharacterFirstMessage`, `getBackgroundEmbedding`, and their setters address the run's
+ * character. Reads refresh it from the store unless `deps.frozen`; frozen display bindings in
+ * `server/src/prompt/transform.ts` use the scope's snapshot. With access allowed, these getters
+ * return `""` when no character resolves, otherwise the stored field (possibly undefined), except
+ * `getDescription` throws "Character is a group" for a group target. Their setters leave a
+ * missing character unwritten.
  */
 export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     const { job, scope, store, kinds } = deps;
@@ -1457,6 +1471,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             return target ? target.desc : "";
         },
+        /** With access allowed, a non-string description throws "Invalid data type" without writing. */
         setDescription: ([, desc], ctx) => {
             if (!isSafe(ctx)) {
                 return undefined;
@@ -1512,6 +1527,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             return applied;
         },
+        /**
+         * Searches the chat's `localLore`, owner `globalLore` with chat `loreOverrides` merged by
+         * `shared/lore/overrides.ts`, and the job's module lore. Native lore effects in
+         * `server/src/prompt/triggers.ts` address the raw character lore instead.
+         */
         getLoreBooksMain: ([, search]) => {
             const selectedChar = engineCharacter() as character | groupChat;
             if (selectedChar.type !== "character") {
@@ -1535,6 +1555,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             return JSON.stringify(found);
         },
+        /** Writes only chat `localLore`, leaving character and module lore untouched. */
         upsertLocalLoreBookMain: ([, name, content, optionsJson], ctx) => {
             if (!isSafe(ctx)) {
                 return undefined;

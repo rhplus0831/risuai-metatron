@@ -45,6 +45,7 @@ import {
  * - `size` workers stay once started; while every worker is busy the pool grows to `maxSize`, and a
  *   worker above `size` exits after `idleMs` idle. The queue holds at most `MAX_QUEUED_TASKS`.
  */
+
 export const DEFAULT_LUA_BUDGET_MS = 30_000;
 export const DEFAULT_REGEX_DEADLINE_MS = 1000;
 export const DEFAULT_LUA_WALL_MS = 10 * 60_000;
@@ -170,7 +171,7 @@ type Slot = {
     dead: boolean;
 };
 
-/** `public/lua/json.lua` for `pnpm runserver`, `dist/lua/json.lua` in the image (the tokenizer rule). */
+/** `public/lua/json.lua` for `pnpm server`, `dist/lua/json.lua` in the image (the tokenizer rule). */
 export function resolveJsonLuaPath(rootDir: string): string {
     const candidates = ["public/lua/json.lua", "dist/lua/json.lua"].map((rel) => path.join(rootDir, rel));
     const found = candidates.find((candidate) => existsSync(candidate));

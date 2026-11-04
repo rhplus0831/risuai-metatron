@@ -2,35 +2,37 @@ import { isCbsPlainText } from "../cbs/evaluator.ts";
 import type { customscript } from "../database.ts";
 
 /**
- * The regex script engine, shared by the client and the server: flags and `<order n>`, the `@@`
- * directives, and the script loop. It writes nothing itself: `@@emo` and `@@inject` go to
- * `applyEffect` at the point they match, so a later script's CBS reads what the effect wrote, and
- * come back as the ordered `effects` of the run. Lua edit hooks, the display trigger, plugin
- * handlers, and dynamic assets stay with the caller.
+ * The regex script engine run by the server's script workers in `server/src/scripts/worker.ts`.
+ * It writes nothing itself: `@@emo` and `@@inject` go to `applyEffect` where they match, inside
+ * that script's `try`, so a later script's CBS reads the effect's write and a throwing sink skips
+ * the rest of that script only. Effects also return in order as `RegexScriptEffect` values.
+ * Lua edit hooks, the display trigger, plugin handlers, and dynamic assets stay with the caller.
  */
+
 export type RegexScriptMode = "editinput" | "editoutput" | "editprocess" | "editdisplay";
 
 export type RegexScriptEffect =
     /** An `@@emo <name>` script matched. */
     | { kind: "emotion"; name: string }
-    /** An `@@inject` script matched: the message at `chatID` becomes `text`. */
+    /** A matched `@@inject` offers the current `text` to the caller for the message at `chatID`. */
     | { kind: "inject"; text: string };
 
 export type RegexScriptRun = {
     mode: RegexScriptMode;
     /** The message index the text belongs to, or -1 (no `@@inject`, no `@@repeat_back`). */
     chatID: number;
-    /** CBS for this run's chat: the client's `risuChatParser(text, { chatID, cbsConditions, chatRef })`. */
+    /** CBS for this run's chat, served by `server/src/prompt/scripts.ts`. */
     parse: (text: string) => string;
     /**
      * `@@repeat_back`: the text of the previous message with the role of the one at `chatID`, or
-     * the chat's first message. It may throw, as the client's lookup does; the script is skipped.
+     * the chat's first message. A throwing source lookup stops the current script.
      */
     repeatBackSource: () => string;
     /**
      * Applies an effect where its script matched, inside the script's `try` (a throw skips the
-     * rest of that script, as an inline write did). The client writes `CharEmotion` and the
-     * message here; a caller that only collects `effects` leaves it out.
+     * rest of that script). The adapters in `server/src/prompt/scripts.ts` and
+     * `server/src/prompt/transform.ts` decide which effects write or collect results; a caller
+     * that only collects `effects` leaves this out.
      */
     applyEffect?: (effect: RegexScriptEffect) => void;
 };
@@ -85,7 +87,24 @@ function parseScripts(scripts: customscript[]): ParsedScript[] {
     return parsed;
 }
 
-/** Runs `scripts` of `run.mode` over `data`, in their order; a script that throws is skipped. */
+/**
+ * Runs scripts of `run.mode`. A throw stops that script there; earlier changes and effects stay,
+ * including move rewrites made before `parse` throws. `<order n>` and `<...>` actions are read
+ * only with `ableFlag` and a flag containing `<`. Input order is retained unless some script has
+ * an order, when scripts sort by descending order.
+ *
+ * Native flags are sanitized to `dgimsuvy` and deduplicated, with `u` if none remain. An enabled
+ * empty flag, including one emptied by action extraction, first falls back to legacy `g`.
+ * Move actions remove the first `g` before sanitation; repeated `g`s can leave it enabled.
+ *
+ * The plain replacement path (`replaceAndParse`) skips `parse` only when `replaced === data`
+ * (including a match replaced with the same string) and `isCbsPlainText` in
+ * `shared/cbs/evaluator.ts` finds no `{{`, `{#`, or case-insensitive `<user>`/`<char>`/`<bot>`.
+ * Skipping that host parse also skips its CBS budget check. Changed plain replacements and
+ * matched move results always pass through `parse`. The check sees the current text, including
+ * constructs introduced by an earlier script. An unmatched `@@`/action branch does not parse
+ * its result; `<cbs>` may already have parsed its pattern before matching.
+ */
 export function runRegexScripts(
     data: string,
     scripts: customscript[],
@@ -208,7 +227,7 @@ export function runRegexScripts(
                         const lastChat = run.repeatBackSource();
 
                         // `match` answers null when the previous message does not match; reading
-                        // `r[0]` then throws and skips the script, as on the client.
+                        // `r[0]` then throws and stops the script, as on the client.
                         const r = lastChat.match(reg)!;
                         if (!v) {
                             data = data + r[0];

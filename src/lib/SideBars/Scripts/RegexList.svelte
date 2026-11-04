@@ -6,6 +6,13 @@
     import { onDestroy, onMount } from "svelte";
     import { DownloadIcon, HardDriveUploadIcon, PlusIcon } from "@lucide/svelte";
     import { exportRegex, importRegex } from "src/ts/process/regexFiles";
+
+    /**
+     * Sortable regex list with file import and export through `src/ts/process/regexFiles.ts`.
+     * Drag order sets the script array's execution order unless an enabled `<order n>` overrides
+     * it in `shared/scripts/regex.ts`.
+     */
+
     interface Props {
         value?: customscript[];
         buttons?: boolean;

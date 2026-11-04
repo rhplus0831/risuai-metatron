@@ -18,48 +18,37 @@
 - Not here:
   - Prompt adapters and job orchestration: `server/src/prompt/{scripts,triggers,commands}.ts` → `server-generation.md`.
   - `edittrans` regex application → `translation.md` (`translator.ts:applyEdittransRegex`, the one regex the tab still
-    runs: plain `RegExp` replacement on translation text, no Lua or trigger).
+    runs: `RegExp` replacement on translation text with `<cbs>` input and the move actions, no Lua or trigger).
   - Module-provided scripts are collected by `process/modules.ts` → `characters-modules.md`.
 
 ## Files
 
-- `shared/scripts/regex.ts`: the regex engine (the server's workers run it).
-  - `runRegexScripts(data, scripts, { mode, chatID, parse, repeatBackSource, applyEffect? })` returns
-    `{ data, effects }`: flags, `<order n>` and the other `<...>` actions, the `@@` directives, and the script loop (a
-    script that throws is skipped).
-    - It writes nothing itself: `@@emo` and `@@inject` go to `applyEffect` where their script matched, inside that
-      script's `try` (so a later script's CBS reads the write, and a throwing sink skips the rest of that script only),
-      and are also returned as the ordered `effects` (`{ kind: "emotion", name }`, `{ kind: "inject", text }`).
-    - `parse` is the run's CBS; ordinary replacements skip it only when the result is unchanged (`replaced === data`, so
-      a match replacing with the same string counts too) and `isCbsPlainText` in `shared/cbs/evaluator.ts` finds no CBS
-      constructs (`{{`, `{#`, or case-insensitive `<user>`/`<char>`/`<bot>`). Skipping that host parse also skips its
-      CBS budget check; changed text and moved results still pass through CBS. This examines the current text, including
-      constructs introduced by an earlier script.
-    - `repeatBackSource` answers `@@repeat_back`'s previous message.
-  - `RegexScriptMode` = `editinput|editoutput|editprocess|editdisplay`.
-  - `regexScriptCacheKey` and `createScriptCache` (the final output, 1,000 entries).
-- `regexFiles.ts`: `exportRegex`/`importRegex` for the regex editors; export without an explicit list falls back to the
-  legacy `settings.globalscript` record.
-- `shared/triggers.ts`: the trigger model (`triggerscript`, `triggerEffect` = `triggerCode | triggerEffectV2`, the
-  `triggerV2*` effect types) and the allowlists `displayAllowList`/`requestAllowList` (with their side-effect-free
-  subset; the server runtime and `TriggerV2List.svelte` both read them).
-  - `triggerscript.conditions` is `unknown[]`, kept for shared-format compatibility with upstream readers. Newly created
-    triggers write `[]`; imported arrays are preserved, and the runtime skips triggers with non-empty conditions.
-- `serverCommands.ts`: the tab's side of a server command job (`runServerButton`, `runServerManualTrigger`, both
-  returning the outcome) and of a send job (`runServerJob`), and the job follow (`followJobToEnd`, `resumeServerJobs`,
-  and `readChatAgain`/`refreshChatAfterPush`, the chat read again for a viewed lost chat or a completion push).
-  - `followedJobs` is the reactive registry of those follows by job id, with a chat key once known;
-    `followedJobsOf(jobs, ref)` returns that chat's job ids.
-  - A Lua button's or manual trigger's command job on the selected chat shows Stop, which aborts it from the chat
-    screen.
-- `SideBars/Scripts/RegexData.svelte`, `RegexList.svelte`: the regex editor. Flags are native `g/i/m/u/s` plus
-  `<move_top>`, `<move_bottom>`, `<repeat_back>`, `<cbs>`, `<no_end_nl>`, `<order n>`.
-- `SideBars/Scripts/TriggerList.svelte`: picks the editor mode (v2 or Lua). Any other non-empty list (legacy v1 data,
-  `triggercode`) shows `triggerLegacyUnsupported` and is replaced when switching mode.
-- `TriggerV2List.svelte`: the v2 editor.
-  - `effectCategories`, `checkSupported`, `makeDefaultEditType`.
-  - Block edit helpers: `deleteEffect`, `copyEffect`, `getInsertIndent`, `getBlockRange`.
-  - Save-time `v2EndIndent` generation.
+Each module's contract is its header comment (a Svelte component's, the JSDoc block at the top of its `<script>`).
+
+- `shared/scripts/regex.ts`: the regex engine the server's script workers run. `runRegexScripts` (flags, `<order n>`,
+  the `@@` directives, the CBS skip rule), `RegexScriptRun` (`parse`, `repeatBackSource`, `applyEffect`),
+  `RegexScriptEffect`, `RegexScriptMode`, `regexScriptCacheKey`, `createScriptCache`.
+- `shared/triggers.ts`: the trigger model and the v2 layout. `triggerscript` (`conditions`), `triggerEffect` =
+  `triggerCode | triggerEffectV2`, the `triggerV2*` effect types (`v2Header`, `v2Else`, `v2EndIndent`, `endOfLoop`),
+  `displayAllowList`/`requestAllowList` over `safeSubset`. The runtime that executes them is
+  `server/src/prompt/triggers.ts` ([server-generation](server-generation.md)).
+- `server/src/scripts/workerPool.ts`: the script worker pool (`createScriptWorkerPool`, `createLuaBudget`,
+  `resolveJsonLuaPath`, the `MAX_*` bounds). `server/src/scripts/worker.ts`: one worker (`REGEX_SCRIPTS_MODE`,
+  `RegexScriptsInput`, `runRegexOp`, `RegexOp`). `server/src/scripts/smoke.ts`: the pool's smoke checks.
+  `public/lua/json.lua`: the JSON library the workers load.
+- `server/src/lua/runtime.ts`: the Lua engine in a worker (`createLuaRuntime`, `LUA_PRELUDE`, `declareBuiltins`).
+  `server/src/lua/bindings.ts`: a job's Lua and trigger host functions (`createLuaBindings`, `LuaJobFatalError`).
+  `server/src/lua/egress.ts`: Lua `request`'s guard (`serverLuaRequest`, `validateEgressUrl`).
+- `src/ts/process/regexFiles.ts`: `exportRegex`/`importRegex` for the regex editors.
+- `src/ts/process/serverCommands.ts`: the tab's side of command and send jobs and their follow. `runServerButton`,
+  `runServerManualTrigger`, `runServerJob`, `followJobToEnd`, `resumeServerJobs`, `readChatAgain`,
+  `refreshChatAfterPush`, `followedJobs`, `followedJobsOf`, `stopChatJob`.
+- `src/lib/SideBars/Scripts/RegexData.svelte`, `src/lib/SideBars/Scripts/RegexList.svelte`: the regex editor.
+- `src/lib/SideBars/Scripts/TriggerList.svelte`: picks the editor mode (v2 or Lua); `triggerLegacyUnsupported`.
+- `src/lib/SideBars/Scripts/TriggerV2List.svelte`: the v2 editor. `effectCategories`, `checkSupported`,
+  `makeDefaultEditType`, and the block helpers `deleteEffect`, `copyEffect`, `getInsertIndent`, `getBlockRange`.
+- `src/lib/Playground/PlaygroundSyntax.svelte`, `src/lib/Playground/PlaygroundParser.svelte`: the CBS and
+  `ParseMarkdown` playgrounds.
 
 ## Flows
 
@@ -71,17 +60,17 @@ the server's script worker. The translator's `edittrans` regex is the client-sid
 | the `input` trigger, then `editinput`                              | the send job's input stage (`server/src/prompt/runner.ts`) |
 | `start` trigger, `editprocess`, `editoutput`, `output` trigger     | the send job (`assemblePrompt`, the tail)                  |
 | `editdisplay` (Lua `editDisplay`, the display trigger, CBS, regex) | `/api/transform` (`ParseMarkdown`, `transformClient.ts`)   |
-| the `request` trigger                                              | every request of a server job (`runSetup.ts`)              |
+| the `request` trigger                                              | a server job's requests, each attempt (`runSetup.ts`)      |
 | `manual` trigger                                                   | a `command` job (`runServerManualTrigger`)                 |
 | Lua `onButtonClick`                                                | a `command` job (`runServerButton`)                        |
 | Lua `onFormSubmit`                                                 | a `command` job (`Chat.svelte` `handleFormTriggerWithin`)  |
 
-The tab's own LLM requests (translation, suggestions, the HypaV3 modal, plugins) run no `request` trigger.
+The tab's own LLM requests (translation, suggestions, the HypaV3 modal, plugins) run no `request` trigger, nor does a
+group chat's job (`setRequestTrigger` in `server/src/jobs/runSetup.ts`).
 
-v2 layout:
-
-- A flat effect array. Index 0 of the trigger list is the `v2Header` sentinel.
-- Blocks are expressed with `indent`, `v2Else`, and generated `v2EndIndent` entries. Loops jump using `endOfLoop`.
+A command job of a Lua button or manual trigger on the selected chat shows Stop in
+`src/lib/ChatScreens/DefaultChatScreen.svelte`: `followedJobsOf` makes it stoppable and `abortChat` aborts it
+(`abortGenerationJob`); `stopChatJob` is the button for a job another tab started.
 
 ## State
 

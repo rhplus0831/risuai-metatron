@@ -38,6 +38,19 @@ import {
 import { compareRevision } from "../../../shared/resources.ts";
 import { replaySkippedListeners } from "../network/jobChannel";
 
+/**
+ * The tab's server command jobs (`runServerButton`, `runServerManualTrigger`, returning
+ * `ServerCommandOutcome`) and send jobs (`runServerJob`) share `followJobToEnd` and
+ * `resumeServerJobs`. `readChatAgain` and `refreshChatAfterPush` recover a viewed lost chat or
+ * read a chat after a completion push.
+ *
+ * Command callers pass a captured chat ref: `src/lib/ChatScreens/Chat.svelte` captures
+ * `displayedChat` before dispatch. `runServerJob` takes the chat's binding ids before flushing.
+ * Job events and questions depend on `src/ts/network/generationJobs.ts` and
+ * `src/ts/network/jobChannel.ts`, chat hydration on `src/ts/storage/chatStore.svelte.ts`, and
+ * preflight saves on `flushResources` in `src/ts/storage/resourceSync.svelte.ts`.
+ */
+
 /** Whether a terminal lists listeners for the tab to run late (`replaySkippedListeners`). */
 function listsSkippedListeners(
     terminal: GenerationTerminalEvent | "lost",
@@ -126,7 +139,13 @@ function withError(message: string, error: unknown): string {
 const following = new Map<string, Promise<GenerationTerminalEvent | "lost">>();
 const replayedStatuses = new Map<string, GenerationStatus>();
 
-/** The followed jobs whose chats are known, keyed by job id so overlapping follows stay visible. */
+/**
+ * The reactive registry of followed jobs whose chats are known, keyed by job id so overlapping
+ * follows stay visible. `src/lib/ChatScreens/DefaultChatScreen.svelte` uses `followedJobsOf` to
+ * make a followed job of the selected chat (command jobs included) stoppable through
+ * `abortGenerationJob` in `src/ts/network/generationJobs.ts`. Its separate `stopChatJob` button
+ * stops a job another tab started. `src/ts/process/chatStatus.svelte.ts` also reads this registry.
+ */
 export const followedJobs = writable<ReadonlyMap<string, string>>(new Map());
 
 /** The jobs this tab follows for a chat. */

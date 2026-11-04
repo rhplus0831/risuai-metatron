@@ -12,6 +12,14 @@
     import Accordion from "src/lib/UI/Accordion.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
 
+    /**
+     * Edits one regex script, offering `editinput`, `editoutput`, `editprocess`, `editdisplay`,
+     * `edittrans`, and `disabled`. Flags are native `g/i/m/u/s` plus `<move_top>`, `<move_bottom>`,
+     * `<repeat_back>`, `<cbs>`, and `<no_end_nl>`; the order input writes `<order n>`.
+     * Execution gates custom flags on `ableFlag` in `shared/scripts/regex.ts`; its cache key
+     * still expands a literal `<cbs>` input regardless of `ableFlag`.
+     */
+
     interface Props {
         value: customscript;
         onRemove?: () => void;

@@ -5,9 +5,13 @@ import { downloadFile } from "../globalApi.svelte";
 import { type customscript } from "../storage/database.svelte";
 import { selectSingleFile } from "../util";
 
-// The regex script file export and import of the editors (character, module, global regex). The
-// regex scripts themselves run on the server (`/api/transform` and the generation job).
+/**
+ * Regex script file import and export for the character, module, and preset editors. The shared
+ * engine runs on the server through `server/src/scripts/worker.ts`; `edittrans` is applied in
+ * the tab by `src/ts/translator/translator.ts`.
+ */
 
+/** Without an explicit list, exports the legacy `settings.globalscript`, which is not an execution source. */
 export function exportRegex(s?: customscript[]) {
     const script = s ?? settings.globalscript;
     const data = Buffer.from(
@@ -21,6 +25,11 @@ export function exportRegex(s?: customscript[]) {
     alertNormal(language.successExport);
 }
 
+/**
+ * Appends a file's scripts to the supplied list in place and returns it (a new list if omitted).
+ * A file without `{ type: "regex", data }` alerts and returns the list unchanged. The payload is
+ * not validated as an array of scripts; parse or iteration failures alert through the same catch.
+ */
 export async function importRegex(o?: customscript[]): Promise<customscript[]> {
     o = o ?? [];
     const filedata = (await selectSingleFile(["json"])).data;

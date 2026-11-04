@@ -8,6 +8,13 @@
     import { hubURL } from "src/ts/characterCards";
     import TriggerV2List from "./TriggerV2List.svelte";
 
+    /**
+     * The first trigger's first effect selects the editor: `v2Header` for v2, `triggerlua` for Lua.
+     * Other non-empty lists, including legacy v1 data and `triggercode`, show
+     * `triggerLegacyUnsupported`. Switching modes replaces a non-empty list only after
+     * `triggerSwitchWarn` confirmation.
+     */
+
     interface Props {
         value?: triggerscript[];
         lowLevelAble?: boolean;
