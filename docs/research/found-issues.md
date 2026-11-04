@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, and six plan-leftover collections from memory the same day; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, and the seventh (the Guides To Source run) on 2026-11-05; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -8,17 +8,17 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (5)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
-- [Server routes and resource store](#server-routes-and-resource-store) (3)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (7)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (8)
+- [Server routes and resource store](#server-routes-and-resource-store) (4)
 - [Request history and diagnostics](#request-history-and-diagnostics) (1)
 - [Display transform](#display-transform) (1)
-- [Chat screen and input](#chat-screen-and-input) (2)
-- [Client and plugins](#client-and-plugins) (7)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
-- [Guides](#guides) (1)
+- [Chat screen and input](#chat-screen-and-input) (4)
+- [Client and plugins](#client-and-plugins) (23)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (11)
+- [Guides](#guides) (4)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (17)
+- [Structured Memory](#structured-memory) (19)
 
 ## Chat store, sync, and change feeds
 
@@ -66,6 +66,22 @@ Identifiers re-checked 2026-11-03 (`setCharacterChatView`, `installRead`, `adopt
 **Why it matters:** each is small; together they are the known soft spots of the store facade and its tests.
 **Suggested handling:** check the code when working nearby; an item confirmed with an owning guide moves to that guide's Known Hazards.
 
+### The feed's removed ids include ids the same group inserted
+
+`server/src/data/chatStore.ts` `applyGroup` builds the feed change with the raw `removedIds` (`chatFeedChange(..., removedIds, ...)`, ~2172 and ~2182), while `chatWriteChange` drops ids the group itself inserted (`!insertedHere.has(id)`, ~1603). An append and a removal of one id inside one group therefore lists that id in the feed's `patch`/`delta` `removed` but not in `ChatWriteChange.removed`, and neither comment says so. Found by a lookup trial of the Guides To Source run (2026-11-05); unconfirmed, since the client's patch apply in `src/ts/storage/chatStore.svelte.ts` was not checked. Owners: live-update-feed and server-resources.
+
+**Why it matters:** a client applying the patch removes an id its base never held; harmless if unknown ids are ignored, a spurious mismatch or wasted bytes otherwise.
+
+**Suggested handling:** check the client's patch apply, then either filter `insertedHere` for the feed too or document the asymmetry on `ChatFeedPayloads`.
+
+### A remote settings record does not re-apply the theme
+
+`src/ts/gui/colorscheme.ts` `updateColorScheme` writes the scheme's CSS variables and the root's `color-scheme`; boot (`src/ts/bootstrap.ts` ~134), the display settings, and the plugin API call it, but the remote record apply (`src/ts/storage/resourceSync.svelte.ts` → `src/ts/storage/records.svelte.ts`) replaces the settings without calling it, and the bootstrap remote-record listener handles only inlay invalidation and character order. `updateTextThemeAndCSS`, `updateAnimationSpeed` and `updateGuisize` likely behave the same. Found by a static read in the Guides To Source run (2026-11-04); unconfirmed in a browser. Owners: ui-theming (Theme), with resource-sync for the apply path.
+
+**Why it matters:** a theme change in one tab or device leaves another showing the old colors while its settings say otherwise, until a reload.
+
+**Suggested handling:** confirm with two tabs on `pnpm dev:agent`, then decide whether the remote apply should call the display update functions.
+
 ## Server jobs and prompt assembly
 
 ### Tool schemas are outside the assembly token budget
@@ -89,6 +105,46 @@ a412bc2d8 (2026-10-27, `blankEntry` → `{ empty: true }` in `server/src/prompt/
 **Why it matters:** a chat whose greeting a script blanks shows a missing estimate or a spurious gap.
 **Suggested handling:** teach both meters the `empty` source before counting.
 
+### Unreferenced client copies of server prompt helpers
+
+These client exports have no caller in `src/`, `shared/` or `server/`, while a send uses the server's copy: `groupOrder` in `src/ts/process/group.ts` (~79; live in `server/src/prompt/runner.ts`), `runInlayScreen` in `src/ts/process/inlayScreen.ts` (~16; live in `server/src/prompt/postProcess.ts`, while `updateInlayScreen` there is still used), and `stringlizeChatOba` and the empty `multiChatReplacer` in `src/ts/process/stringlize.ts` (the server copies in `server/src/llm/stringlize.ts` are equally unused). The Guides To Source run (2026-11-04) marked them unreferenced in their comments only. Owner: chat-pipeline.
+
+**Why it matters:** dead copies look live and invite edits that change nothing.
+
+**Suggested handling:** delete them in a cleanup; `vi.mock("./process/inlayScreen")` in tests mocks only `updateInlayScreen`.
+
+### Server chat template comment narrows when it throws
+
+`server/src/llm/chatTemplate.ts` (~6–8) says a template that names the character with none selected throws, but `renderChatTemplate` in `shared/prompt/chatTemplate.ts` (~106) reads `characterName()` and `userName()` on every render, so with no character it throws whatever the template text. The client wrapper's comment (`src/ts/process/templates/chatTemplate.ts`) was corrected in the Guides To Source run (2026-11-04); this one was left. Owner: llm-requests.
+
+**Why it matters:** a source comment that is the file's contract states a narrower rule than the code.
+
+**Suggested handling:** fix the comment at the next edit of the file.
+
+### `{{// ...}}` stays literal in rendered and prompt text
+
+`shared/cbs/registry.ts` registers `//` (~2483) as `doc_only`, so `shared/cbs/evaluator.ts`'s matcher finds no callback and `{{// note}}` is left in the text of any parse; the evaluator's `commentMode` (~793) is never set true. Only `shared/lore/activation.ts` strips `{{//...}}`, from lore key matching. Upstream behaves the same. Found in the Guides To Source run (2026-11-05), whose old guide claimed the scanner handles comments; intent unrecorded. Owner: cbs-rendering.
+
+**Why it matters:** card authors may expect a comment to vanish from what the model or the reader sees.
+
+**Suggested handling:** ask the owner whether comments should be stripped; a change keeps client/server parity (`server/src/tests/fixtures/cbs-parity.json`).
+
+### The regex cache key runs CBS for a disabled flag
+
+`shared/scripts/regex.ts` `regexScriptCacheKey` (~285) expands `script.in` through `parse` whenever `script.flag` contains `<cbs>`, without checking `ableFlag`, while `parseScripts` reads `<...>` actions only with `ableFlag`. A probe in the Guides To Source run (2026-11-05) with `ableFlag: false` saw `{{setvar::x::1}}` evaluated during key building. The key is built on the server (`server/src/prompt/scripts.ts`). Owner: scripts-triggers.
+
+**Why it matters:** a disabled custom flag still evaluates CBS (side effects and budget) on every cache lookup, and the key differs from what runs.
+
+**Suggested handling:** test `ableFlag` before parsing in the key, with a test of the side effect.
+
+### v2BreakLoop may stop at an inner loop's end
+
+`server/src/prompt/triggers.ts` `case "v2BreakLoop"` (~854) scans forward to the first `v2EndIndent` with `endOfLoop`, at any indent, while the backward loop jump matches `indent - 1`. A break in an outer loop placed before a nested loop would then stop at the inner loop's closing entry and jump back into the inner loop instead of leaving the outer one. Read in code by a lookup trial of the Guides To Source run (2026-11-05); unconfirmed, no test reproduces it. Owner: scripts-triggers (the runtime file is server-generation's).
+
+**Why it matters:** a trigger author's `break` could loop or skip effects in nested loops.
+
+**Suggested handling:** write a nested-loop trigger test first; if it fails, match the break's indent the way the loop jump does.
+
 ## Server routes and resource store
 
 ### Routes still measure a body the limiter already counted
@@ -111,6 +167,14 @@ Since `limitedBody` counts the bytes that arrive (Server Byte Budgets slice 1, `
 
 **Why it matters:** the bytes of a deleted chat's pages stay in the database file and in every snapshot's copy until a restart (a restore drops them).
 **Suggested handling:** if orphan growth ever matters, call the sweep from a maintenance tick or after a chat delete; otherwise the wrapper is test-only and could move.
+
+### The LLM answer route comment names one 404 and no cap
+
+The comment above `registerLlmRoutes` in `server/src/routes/llm.ts` (~236) says `POST /api/llm/request/:id/answer` is 404 "for an unknown request" and the request route 429 "past the per-client cap". In code, `answer` in `server/src/llm/requests.ts` also gives 404 for another client's request and for one that has ended, and the cap is `MAX_REQUESTS_PER_CLIENT` (32, ~40). Found in the Guides To Source run (2026-11-05); server-generation's guide keeps both facts in its LLM and token routes entry because llm-requests owns the file.
+
+**Why it matters:** a later trim of that guide entry would leave the narrower comment as the only statement.
+
+**Suggested handling:** at the next llm-requests edit, extend the comment and let server-generation's entry point there.
 
 ## Request history and diagnostics
 
@@ -156,14 +220,30 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 **Why it matters:** a few lines of a correction typed on one device vanish without a notice when another device writes the same message.
 **Suggested handling:** register open editor drafts as refresh holds (the read waits until the editor closes, as pending work does), or keep drafts by chat and message id across the remount and show the changed base explicitly.
 
+### The chat file picker offers mpeg and avi, which store nothing
+
+`src/ts/process/files/multisend.ts` `postChatFile` offers `mpeg` and `avi` (~241) and hands media to `postInlayAsset` in `src/ts/process/files/inlays.ts`, whose `inlayVideoExts` (~45) holds only `webm`, `mp4` and `mkv`: the pick returns null, and the user sees nothing attached and no error. `writeInlayImage` rejections (no pixels, a load failure) are also not caught on the screen's picker and paste path. The comment above `postChatFile` now states the gap; found in the Guides To Source run (2026-11-04). Owner: chat-pipeline.
+
+**Why it matters:** a silent failure on realistic input.
+
+**Suggested handling:** drop `mpeg`/`avi` from the picker, or add them to the stored video types and `shared/assetMime.ts`.
+
+### `/?` help omits two commands
+
+The hand-written help text of the `"?"` case in `src/ts/process/command.ts` `processCommand` (~278) lists neither `/multisend` nor `/test_lorebook`, which the same switch handles (~239, ~265). Found in the Guides To Source run (2026-11-04). Owner: chat-pipeline.
+
+**Why it matters:** users cannot discover those commands from `/?`.
+
+**Suggested handling:** add their entries to the help text.
+
 ## Client and plugins
 
 ### Chinese browsers never match the first-boot language list
 
-`src/ts/bootstrap.ts:274` compares `navigator.language?.split("-")[0]` with `BROWSER_UI_LANGUAGES` (`["de", "en", "ko", "cn", "vi", "zh-Hant"]`, :263). A `zh-CN` or `zh-TW` browser yields `zh`, so `cn` and `zh-Hant` cannot match at first boot. Read in source by Guide Budgets slice 5c, not run.
+`src/ts/bootstrap.ts:279` compares `navigator.language?.split("-")[0]` with `BROWSER_UI_LANGUAGES` (`["de", "en", "ko", "cn", "vi", "zh-Hant"]`, :268). A `zh-CN` or `zh-TW` browser yields `zh`, so `cn` and `zh-Hant` cannot match at first boot. Read in source by Guide Budgets slice 5c and again in the Guides To Source run (2026-11-05), not run. app-shell owns `bootstrap.ts`; settings-i18n's "Expose a new language" recipe tells authors to add a code to `BROWSER_UI_LANGUAGES`, which reads as if a code like `zh-Hant` works there.
 
 **Why it matters:** those users start in the default language although the list advertises their language.
-**Suggested handling:** map `zh-*` to `cn` or `zh-Hant` before the lookup, with a bootstrap test.
+**Suggested handling:** map `zh-CN`/`zh-SG`/`zh` to `cn` and `zh-TW`/`zh-HK`/`zh-Hant` to `zh-Hant` before the lookup, with a bootstrap test, and fix the recipe's wording in the same change.
 
 ### Plugin tests cite a skip no guide records
 
@@ -217,6 +297,141 @@ Search plan slice 2c (2026-10-20, `src/lib/SideBars/LoreBook/LoreBookList.svelte
 **Why it matters:** an entry added under a filter seems to vanish, and an opened detail can close under the user.
 **Suggested handling:** clear the query on add, or show the new entry regardless; keep a filter-opened folder open while it has an open detail.
 
+### A dropped .risupreset goes to the card import
+
+The drop handler in `src/App.svelte` (~135) checks `.risup`, then `.risum`, and sends anything else to `importCharacterProcess`, so a dropped `.risupreset` preset is alerted `noData`, while `characterURLImport` in `src/ts/characterCards.ts` (~782) accepts both extensions. Found in the Guides To Source run (2026-11-05). Owners: app-shell, with characters-modules for drops and deep links.
+
+**Why it matters:** dragging a valid preset file in fails.
+
+**Suggested handling:** route `.risupreset` with `.risup`, and update the handler's comment.
+
+### importPreset crashes on an unknown preset version
+
+`src/ts/storage/presets.svelte.ts` `importPreset` sets `pre` for a `.risup`/`.risupreset` only when the decoded `presetVersion` is 0 or 2 and `type === "preset"` (~201). Otherwise `pre` stays undefined, the `pre?.promptTemplate` check passes, and the NovelAI test `pre.presetVersion` (~214) throws a TypeError. Found in the Guides To Source run (2026-11-04). Owner: persistence.
+
+**Why it matters:** a newer or malformed upstream preset gives an unexplained crash instead of a refusal; nothing is imported.
+
+**Suggested handling:** refuse the file with an `src/lang/en.ts` message when `pre` is unset.
+
+### CharX import error paths
+
+Two error paths of a CharX import report the wrong thing. Found in the Guides To Source run (2026-11-05); owner characters-modules.
+
+- `src/ts/characterCards.ts` `importCharxCard` (~377) reads `md.trigger` right after `readModule(moduleData)`, which returns undefined (after alerting `noData`) when it refuses the embedded `module.risum`, so a TypeError follows: the module dialog catches it as a second `noData`, `importCharacter` shows the TypeError text, and the drop handler in `src/App.svelte` leaves the rejection unhandled.
+- The module dialog's `.charx` branch (`importModule` in `src/ts/process/modules.ts`, ~579) alerts `noData` for `false`, which `importCharxCard` returns when the user declines the card's `lowLevelAccess` question; the comment above it records the behavior.
+
+**Why it matters:** a bad embedded module gives a double or raw error, and a deliberate decline is reported as an invalid file.
+
+**Suggested handling:** return early when `readModule` gives undefined, and treat `false` as a silent cancel in the module dialog.
+
+### The card export dialog's backdrop calls window.close
+
+The `cardexport` branch of `src/lib/Others/AlertComp.svelte` (~942) has a backdrop `onclick={close}` with no local `close`, so the handler is the global `window.close`, which Svelte's delegated click calls with the element as receiver: Chromium throws `TypeError: Illegal invocation` and the dialog stays until its X button or Escape. Other dialogs' backdrops answer through `alertStore.answer(...)`; a cancel (`{ type: "cancel", type2 }`) was likely meant. Probed by a reviewer in the Guides To Source run (2026-11-05). Owner: global-api.
+
+**Why it matters:** low: the waiting caller still settles through X or Escape, but every backdrop click throws.
+
+**Suggested handling:** answer a cancel from the backdrop, with a test in `src/ts/alertCardExport.test.ts`.
+
+### PopupButton menus take two clicks to reopen
+
+The document click listener `close` in `src/lib/UI/PopupList.svelte` (~33) clears only `popupStore.children` and leaves `popupStore.openId` at the button's id, so the next click of the same button in `src/lib/UI/PopupButton.svelte` (~22) sees `openId === buttonId` and only clears it; the menu opens on the second click. Read in code in the Guides To Source run (2026-11-04); not reproduced in a browser. Owner: ui-theming (Dialogs, popovers, and portals).
+
+**Why it matters:** a visible glitch on every `PopupButton` menu (character and chat menus) after an outside-click close.
+
+**Suggested handling:** confirm in `pnpm dev:agent`, then reset `openId` in `close` (or compare against `children` too).
+
+### CBS highlighting stops after the 255th character
+
+`src/ts/gui/highlight.ts` `simpleCBSHighlightParser` keeps each `{{` start offset in `depthStarts = new Uint8Array(100)` (~349), so an offset past 255 wraps: a CBS call after the 255th character of an editor's text is not highlighted, or is highlighted in the wrong place. Reproduced with a probe in the Guides To Source run (2026-11-05): `{{char}}` alone highlights, the same after 300 `x` does not. Owner: cbs-rendering; not yet in its Known Hazards.
+
+**Why it matters:** every long prompt or lorebook editor loses CBS highlighting past the first ~255 characters.
+
+**Suggested handling:** use an `Int32Array` or a plain array, and add a `highlight.ts` test (the file has none).
+
+### util and globalApi helper gaps
+
+Three helpers misbehave on inputs no current caller is known to pass. Probed by reviewers in the Guides To Source run (2026-11-05); owner global-api.
+
+- `replaceAsync` in `src/ts/util.ts` (~1053) collects replacements with `string.matchAll(regexp)`, which starts at `regexp.lastIndex`, then substitutes with `string.replace(regexp, ...)`, which scans from 0: a `/g` regexp with `lastIndex` 1 turns `"aa"` with replacer `X` into `"Xundefined"`. The comment now states the lastIndex-0 precondition; callers pass fresh literals, so unconfirmed in production.
+- `selectFileByDom` (~144) settles only on `change`, so a native cancel leaves the promise pending forever, and an empty change returns `[]` before removing its `<input>`. `selectSingleFile` (~51) then reads `file.name` of `selectSingleFileHandle`'s null and rejects with a TypeError instead of "no file".
+- `toGetter` in `src/ts/globalApi.svelte.ts` (~1413): the proxy's `set` passes the proxy as receiver to `Reflect.set` (~1448), so writing an ordinary data property leaves the real object unchanged. Unconfirmed whether any caller writes through it.
+
+**Why it matters:** a reused regexp corrupts output silently, a cancelled picker leaves its caller waiting, and a write through a `toGetter` proxy is lost.
+
+**Suggested handling:** reset or clone the regexp inside `replaceAsync`; add a `cancel` listener, remove the input on every settle, and return null from `selectSingleFile`; check `toGetter`'s callers and drop the receiver if writes should forward.
+
+### loadFileSrc can return /sw/img on an uncontrolled page
+
+`src/ts/globalApi.svelte.ts` `loadFileSrc` (~360) returns `/sw/img/<hex>` on a `knownSwPaths` hit or a `risuCache` hit while `usingSw` is true, without asking the worker. On a page no worker controls (the controller was lost or never claimed it) nothing serves that URL: the server has no `/sw/img` route (`server/src/tests/diagnostics.test.ts` lists `/sw/` as worker-only), and only a miss reaches `/sw/register`, whose failure gives the `blob:` fallback. The comment and the assets guide say an uncontrolled page gets a `blob:` URL. Found by a lookup trial of the Guides To Source run (2026-11-05); unconfirmed, and rare because worker activation clears the `/sw/img` entries. Owner: assets.
+
+**Why it matters:** an image rendered from such a URL is broken until a reload.
+
+**Suggested handling:** reproduce with a lost controller and a cached entry, then check `navigator.serviceWorker.controller` before returning a `/sw/img` URL.
+
+### Image compression passes quality 75
+
+`src/ts/media/compressImage/lossyCompression.ts` `doLossyCompression` calls `canvas.toDataURL("image/webp", 75)` and the JPEG fallback with `75` (~37, ~41). The canvas API takes 0–1, so the browser ignores the value and uses its default (about 0.92), which compresses less than the likely intended 0.75. The source comment now states the literal. Found in the Guides To Source run (2026-11-05). Owner: media-aux.
+
+**Why it matters:** card and module export images are larger than intended when `db.imageCompression` is on.
+
+**Suggested handling:** change to `0.75` with a test only if the owner wants the intended compression, since it changes exported bytes.
+
+### The inlay explorer leaks a pending preview URL
+
+`src/lib/Playground/PlaygroundInlayExplorer.svelte` `getPreviewURL` (~34) awaits the blob, then creates and caches an object URL unconditionally; `onDestroy` (~145) and deletion revoke only URLs already in `previewURLs`. A preview still loading when the component is destroyed or the inlay deleted leaks one object URL (probe: one created, none revoked). Found in the Guides To Source run (2026-11-05); the component contract now states it. Owner: media-aux; related to the asset-scale `mediaObjectUrls` leftovers.
+
+**Why it matters:** a small leak per abandoned preview, felt only in long sessions browsing many inlays.
+
+**Suggested handling:** check a destroyed or deleted flag after the await and revoke instead of caching.
+
+### MCP full login stores an undefined refresh token
+
+`src/ts/process/mcp/mcplib.ts` `oauthLogin`'s full-login branch (~901) registers `refreshToken: tokenData.refresh_token` unchecked, unlike the refresh branch. `addAuthRefresh` (`src/ts/storage/collectionStore.svelte.ts`) accepts it, so a server that issues no refresh token leaves an entry whose next refresh sends the string "undefined", then a full login after the non-200. `server/src/mcp/client.ts` (~816) omits a missing token but then refreshes with `""`. Found by a lookup trial of the Guides To Source run (2026-11-05); not reproduced. Owner: mcp.
+
+**Why it matters:** one wasted token request per handshake and a bogus stored record that confuses diagnostics.
+
+**Suggested handling:** store and use a refresh entry only when the token is a non-empty string.
+
+### Combined-paragraph translation sends protected text
+
+`src/ts/translator/translator.ts` `translateHTML`, non-LLM path with `combineTranslation` on (~524): an eligible `<p>` is flattened by `getNodetextToSentence` (`src/ts/util.ts`) after a blacklist check of its immediate children only, so `<p>public <span translate="no">PRIVATE</span></p>` sends `public PRIVATE`, and a nested script's text can be sent. Reproduced by a probe in the Guides To Source run (2026-11-05); `docs/structure/translation.md` Invariants (~253) now state the real behavior, but it is not in its Known Hazards. Owner: translation.
+
+**Why it matters:** text marked `translate=no`, or script contents, reaches an online translator.
+
+**Suggested handling:** check descendants in the combined path, or record it in translation.md Known Hazards > Issues.
+
+### blockPlugins misses the legacy plugin format
+
+`src/ts/process/request/request.ts:647` refuses a `blockPlugins` request only when `targ.modelInfo.id` starts with `pluginmodel:::`. The legacy `custom` model ("Plugin Legacy", `LLMFormat.Plugin`, `shared/llm/models.ts` ~549) and a reverse-proxy profile whose `customAPIFormat` is the Plugin format pass and reach `requestPlugin`, which calls `currentPluginProvider`. So a v3 plugin's `runLLMModel` without `allowPlugins` can still invoke a plugin provider. Found by a control-flow probe in the Guides To Source run (2026-11-05), not an app run. Owner: llm-requests; plugin-sandbox's `runLLMModel` comment states the prefix-only scope.
+
+**Why it matters:** `blockPlugins` reads as "no plugin provider", and a provider re-entered from another plugin's call can recurse or surprise permissions.
+
+**Suggested handling:** check `LLMFormat.Plugin` after model resolution instead of the id prefix, with a test through `requestChatData`.
+
+### Custom models cannot set poolSupported
+
+The flag buttons of `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte` (~183–204) cover every `LLMFlags` value except `poolSupported` (11, `shared/llm.ts`), so an `xcustom:::` model can never declare it; llm-requests' Known Hazards bullet on missing options lists formats and tokenizers but not this flag. Found in the Guides To Source run (2026-11-05); intent unrecorded. Owner: llm-requests.
+
+**Why it matters:** a custom endpoint that supports pooling cannot say so, and the hazard list reads as complete.
+
+**Suggested handling:** confirm whether the flag is meant for custom models, then add the button or the hazard clause.
+
+### Settings search lists remPunc under Structured Memory
+
+`src/ts/setting/searchIndex.ts` `supaMemoryBranch` (~126) transcribes `MemorySettings.svelte`'s Hanurai, HypaV2, HypaV3 and SupaMemory chain but not the page's leading Structured Memory branch (`ui.memoryAlgorithmType`). A mixed record (Structured Memory selected, `supaModelType` not `none`, legacy flags false) lists `adv.remPunc` as available, and the jump lands on a page that does not render it. Found and confirmed in the Guides To Source run (2026-11-05); not a routine UI path, since the page's own switch normally clears those fields. Owner: settings-i18n.
+
+**Why it matters:** a search result jumps to a page that does not show it.
+
+**Suggested handling:** add the Structured Memory test to `supaMemoryBranch`, with a `searchIndex.test.ts` case.
+
+### Switching a prompt item to chatML leaves its text unset
+
+The type `SelectInput`'s `onchange` in `src/lib/UI/PromptDataItem.svelte` (~268) sets `text`/`role` only for plain, jailbreak and cot, `depth` for cache and ranges for chat, so switching to `chatML` leaves `text` undefined although `PromptItemChatML.text` is required (`shared/prompt.ts`). `normalizePromptTemplate` (`shared/presets.ts`) repairs it only on import and server normalization. Found in the Guides To Source run (2026-11-05); runtime impact unverified. Owner: settings-i18n.
+
+**Why it matters:** the textarea may show `undefined`, or the prompt builder may read a missing string.
+
+**Suggested handling:** check what the editor and `src/ts/process/prompt.ts` do with a missing `text`, then initialize it in the `onchange` if needed.
+
 ## Build, drivers, and e2e
 
 ### checkJobProtocol's first run after a source change fails its SIGKILL case
@@ -268,6 +483,43 @@ Search plan slice 2c (2026-10-20, `src/lib/SideBars/LoreBook/LoreBookList.svelte
 **Why it matters:** the comment and the guide disagree on what the browser check expects.
 **Suggested handling:** run the check's scenario to see which holds, then fix the comment or add the failure to the Gotcha.
 
+### docs:contracts takes a typedef for the module header
+
+`util/docsContracts.mjs`'s header rule (~14: the first `/** */` block after the imports) makes `pnpm docs:contracts util/agentDataSandbox.mjs` report "module header: line 9", the `/** @typedef ... AgentDataSandboxMode */` block, while the real contract is the leading `//` block above the imports, which the tool never counts; the util scripts therefore show "module header: none". Found in the Guides To Source run (2026-11-05). Owner: build-test-platforms.
+
+**Why it matters:** the header counts feed every slice's documented share: a typedef inflates it and `//` headers deflate it.
+
+**Suggested handling:** skip a lone `@typedef` block, and count a leading `//` block in `.mjs` scripts as the header.
+
+### docs:ledger counts broad Scope globs as named files
+
+`util/docsLedger.mjs` `namedTargets` (~118) and `resolveNamed` (~185) take every path span of the working guide, globs matched, as a file a dropped identifier may live in. A broad Scope glob (`self-host-server.md`'s `server/{src/**,tsconfig.json,ssl/*}` matched 428 files) lets `pnpm docs:ledger` pass for almost any identifier some server file mentions. In the Guides To Source run (2026-11-04) a strict pass without the glob found one real miss. Owner: build-test-platforms.
+
+**Why it matters:** the ledger is the mechanical guarantee that a guide trim lost no fact, and several guides have similar globs.
+
+**Suggested handling:** add a `--strict` flag that ignores glob spans, or run such a pass by hand on trims of glob-scoped guides.
+
+### docs:read and guide-reads script gaps
+
+Found in the Guides To Source run (2026-11-04/05); owner build-test-platforms.
+
+- `util/docsRead.mjs` `sectionText` (~57) strips backticks from the headings but not from the query, so a heading passed as the listing prints it (``'Not in `sendChat`'``) "matches no heading"; agents copy the backticks, at the cost of a call and a reprinted heading list.
+- `resolveGuide` (~12) tries the name as given first, so `pnpm docs:read README.md` prints the repository-root README instead of `docs/structure/README.md` (Doc Maintenance); bare `README` works. `util/guideReads.mjs` mirrors this now.
+- `util/guideReads.mjs` `scanTranscripts` (~497) validates a guide name only for `docs:read` events, so a Bash command naming a fixture path such as `docs/structure/a.md` becomes a guide row (`a` and `g`, 3 of 12,273 in `docs/audit/guide-reads-2026-11-05-wave3.md`). Validating against git history would drop 63 real counts of 18 retired guides, so the fix needs another signal, such as the tool result showing the file was missing.
+- A `docs:read` of a guide's title heading covers only the title in `countEvent` (`under`, ~253), since child labels omit the title, so every `##` would show as untouched; no audit so far had such a query.
+
+**Why it matters:** the first two cost lookups and can skip the guide-edit rules; the last two would skew a later audit's rows and untouched lists.
+
+**Suggested handling:** strip backticks from the query and prefer `docs/structure/README.md` for `README.md` (with node tests, updating `guideOfArgument`); for an audit rerun, note the bogus rows and count title queries first, or cover every heading when the resolved section is level 1.
+
+### public/sw.js has an empty unused check()
+
+`public/sw.js` declares `async function check(){ }` (~331, between `getSource` and `registerCache`) with no caller; it looks like part of the `/sw/check` route, which `checkCache` serves. Found in the Guides To Source run (2026-11-05). Owner: build-test-platforms.
+
+**Why it matters:** dead code a reader can mistake for live.
+
+**Suggested handling:** delete it at the next worker edit.
+
 ## Guides
 
 ### Archive README cites a gone emotion table hazard
@@ -276,6 +528,37 @@ Search plan slice 2c (2026-10-20, `src/lib/SideBars/LoreBook/LoreBookList.svelte
 
 **Why it matters:** the archive sends a reader to a hazard that is gone.
 **Suggested handling:** a one-clause correction, only when the archive is touched anyway.
+
+### Choose By Task rows missing routing words
+
+Lookup trials of the Guides To Source run (2026-11-04/05) hesitated or guessed at these `STRUCTURE.md` Choose By Task rows; each chose right or recovered through a guide's links, and the slices could not edit `STRUCTURE.md`.
+
+- cbs-rendering ("CBS, markdown/sanitization, ...") does not say display transforms; only server-generation's row says "transforms", though the tab-side client and retries live in cbs-rendering (`src/ts/parser/transformClient.ts`, `displayTransformRecovery.svelte.ts`). Add "display transform client and retries".
+- Only network-jobs names "Web Push"; a push-diagnostics question (`public/sw.js` `showPushNow`, `workerRecords.ts`, `BROWSER_PUSH_PHASES`) belongs to diagnostics. Add "push diagnostics" to the diagnostics row.
+- memory ("SupaMemory, HypaV2/V3, Hanurai, embeddings") does not name HypaV3 job modes (blocking or select-only, the gap question), which also match server-generation's "Generation jobs". Add "HypaV3 job modes".
+- app-shell ("Boot, screen selection, ...") lacks "safe boot", and plugin-sandbox is a plausible wrong turn for a plugin failing at startup. Add "safe boot".
+- assets' "Asset sources and thumbnails" competes with self-host-server for thumbnail HTTP answers (`/api/asset/*?w=`, `x-risu-thumbnail`, `thumbnailRedirect` in `server/src/routes/storage.ts`). Add "thumbnail HTTP responses" to the self-host row, or narrow the assets row to the client.
+- test-harness's "network guard, Playwright stack" and `docs/structure/test-harness.md`'s `Tests > Network guard` (~287) cover only the Vitest guard; the Playwright egress tripwire is `egressGuard` in `util/playwright/stack.mjs`, routed from Files > Browser stack. Point Playwright egress there from the heading's first line.
+
+**Why it matters:** the row is the first routing step, and a misroute costs a guide read.
+
+**Suggested handling:** add the words at the next `STRUCTURE.md` edit (and the test-harness pointer at its next edit).
+
+### Protocol step 1 reads the Invariants on every lookup
+
+`STRUCTURE.md:13` (Agent Read Protocol step 1) says to read Repository-Wide Invariants unconditionally. In a writer lookup trial of the Guides To Source run (2026-11-05) a fresh agent answering two read-only questions spent about 9.5 KB (about 11% of its reading) on it and used none of it. D9 of that plan already limits a guide's `Invariants` to add and change tasks.
+
+**Why it matters:** every session reads `STRUCTURE.md` first, so the cost repeats on every lookup.
+
+**Suggested handling:** apply the same split to step 1 when the protocol is next edited.
+
+### chat-pipeline links a reroll hazard to the wrong section
+
+`docs/structure/chat-pipeline.md:399` (Known Hazards > Issues: a reroll's restore cannot see another tab's job that holds no lock yet) says "see [server generation's own chat changes](live-update-feed.md#own-chat-changes)", but that section describes `applyChanges` `changes: true` and `ChatWriteChange`, nothing about a lockless job meeting a restore; the label suggests it once pointed into `server-generation.md`. Line 285's link (labelled "generation") reaches `refreshChatAfterWrite`'s contract only through the section's `server/src/jobs/jobScope.ts` pointer. Found in the Guides To Source run (2026-11-05). Owner: chat-pipeline.
+
+**Why it matters:** a reader following the hazard's link finds no explanation.
+
+**Suggested handling:** point the link at the server-generation section on job creation and lock acquisition (or drop the "see"), and relabel line 285's link.
 
 ## Test timing
 
@@ -288,7 +571,7 @@ Untagged gate tests that depend on real wall-clock or scheduler time (invariant 
 
 ## Structured Memory
 
-Moved from the Structured Memory plan run on 2026-11-03. Each entry was re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here.
+Moved from the Structured Memory plan run on 2026-11-03. Each entry was re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here. The last two entries came from the Guides To Source run on 2026-11-05.
 
 ### Memory task wording still says summaries
 
@@ -420,3 +703,24 @@ Measured by slice 8 on scripted fixtures (`docs/audit/structured-memory-2026-11-
 
 **Why it matters:** cost previews people pay by, and stalls on long chats.
 **Suggested handling:** take each as a proposal when Structured Memory is next touched, and re-run `node util/memoryEval.mjs` after a read-path change.
+
+### Writer and lifecycle page slips
+
+Found by lookup trials and challengers of the Guides To Source run (2026-11-05), each predating that day's rewrites; owners are the named pages.
+
+- `docs/structure/structured-memory/writer.md:72` links adopted sources counting as recorded to `lifecycle.md#the-adoption-choice` (the hold rules), but the fact (`recordedMessages` reads sources in any status) is under `#adopting-hypav3-summaries`.
+- `writer.md:186` (The gap run) says "an edit during the run can leave one send with a slightly stale prompt". A memory edit is refused 409 `fenced` for the whole gap run (`chatHeld` in `server/src/app.ts`), so it means a message edit; a trial read it as contradicting the fence.
+- `writer.md:9` lists `testRun` in its Scope `Paths`, while the test run's contract is read's (`read.md` "The test run") and `read.md:8`'s `Paths` omits `server/src/prompt/memory/structured/testRun.ts`; the folder README already routes `testRun` to read.
+- `lifecycle.md`'s Files entries for `server/src/data/checkpointStore.ts` (~37) and `src/ts/storage/chatStore.svelte.ts` (~53) carry no `Owner:` marker, though `pnpm docs:owner` gives them to server-resources and chat-store and the same page marks `memoryStore.ts` and `writer.ts`. A reader starting from `docs:owner` gets no hint of the lifecycle page either.
+
+**Why it matters:** each sends a reader to the wrong section or guide, or lets them take the page as the owner.
+
+**Suggested handling:** retarget the anchor, say "a message edit", move `testRun` from writer's Scope `Paths` to read's, and add the `Owner:` markers (or a shared-part rule) at the next edit of each page.
+
+### Two memory comments blur their scope
+
+`server/src/prompt/memory/structured/pages.ts:52` (module header, page tools) says "A merge moves every reference to the source onto the target in the same change set", but the route adapter (`server/src/routes/structuredMemory.ts` ~1032) passes only `contents.pages` as `records.pages()`, so a page already in the trash keeps its link to the merged source; the `mergedPages` comment and pages.md were corrected, the header left. `server/src/data/resourceStore.ts:2162` (`store.memory.rebuild.rebuilding`: "the chat holds a run under this algorithm") does not say `structuredMemorySelected()` reads the one global `memoryAlgorithmType`, so a switch releases every chat's run lock at once; a trial read it as per chat. Found in the Guides To Source run (2026-11-05). Owners: structured-memory (the writer page held the header that day), and server-resources.
+
+**Why it matters:** a reader of the comment alone gets the scope wrong.
+
+**Suggested handling:** say "live pages" in the header and "the global algorithm setting" in the `rebuilding` comment at the next edit of each file.
