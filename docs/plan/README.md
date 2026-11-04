@@ -6,7 +6,7 @@ historical paths/commits, retrieval commands, and pending manual follow-ups. The
 plans below were revised on 2026-11-04 after the
 [plan design audit](../audit/plan-design-audit-2026-11-04.md); Job Handoff, Asset Lifecycle and Reroll
 Candidates were then challenged again and revised a second time the same day. Guides To Source was
-drafted that day after its pilot landed.
+drafted that day after its pilot landed. Plugin Storage and Data API was drafted on 2026-11-05.
 
 - [Guides To Source](guides-to-source.md): the guides become a map of contracts, coupling, and hazards
   instead of a second copy of the code: a fact about one module moves into a doc comment above what it
@@ -67,6 +67,18 @@ drafted that day after its pilot landed.
   open) against a map frozen at `hello` with the whole listing as the fallback, both sockets carry `proto=1`,
   and an over-cap change of a loaded chat reads its rows by id (Slice 4, no longer gated: Reroll Candidates
   depends on it); D1–D10 recommended, Q1–Q4 answered (Q2 and Q4 superseded), no slice scheduled.
+- [Plugin Storage and Data API](plugin-storage.md): plugin data becomes visible, owned, and cheap to move: a plugin
+  data page lists and deletes what every storage namespace holds and permission grants become revocable (a reset per
+  plugin, revoked on removal); a `pluginStorage` write sends the changed key as a nested patch one level down and a
+  plugin toggle sends that plugin by name; `pluginStorage` gets an owner (the plugin's name) in a new reserved
+  dictionary with legacy read-through, claim-on-write and a per-owner `clear()`, while `safeLocalStorage` and
+  `getLocalPluginStorage()` stay the documented shared channels; a `pluginCustomStorage` write keeps reserved
+  dictionaries it leaves out; `getDatabase` with characters reads unloaded chats by ref in batches as detached copies
+  after this tab's saves settle (never installed, pinned or evicted; hooks and doubtful characters keep the current
+  path; an equality test against the old path is the acceptance check) and reuses copies whose held revision has not
+  moved, `setDatabase` loads only characters whose chats changed, new plugins get a summaries option and a paged chat
+  read, and a browser spec checks the sandbox; drafted 2026-11-05, D1–D12 recommended, Q1–Q5 answered, no
+  slice scheduled.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
