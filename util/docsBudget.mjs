@@ -12,7 +12,13 @@
 //   - `unresolved-link`: a relative `.md` or `#anchor` link that does not resolve;
 //   - `self-link`: a link to the file it is in, with no anchor;
 //   - `label`: a work-tracking label, matched on joined segment text so a line wrap cannot split one. In a guide
-//     the whole text counts; in `STRUCTURE.md` only prose, because its rules quote the labels and link the plans.
+//     the whole text counts; in `STRUCTURE.md` only prose, because its rules quote the labels and link the plans;
+//   - `missing-path`: a code span naming a repository path that does not exist. A span is a path when it is one
+//     token of path characters with a `/` and starts with a directory of the repository root (not an untracked one
+//     such as `node_modules`); `{a,b}` expands, `*` must match something, a trailing `/` needs a directory. A
+//     missing path git ignores is a runtime file and passes;
+//   - `tree`: the guides and `STRUCTURE.md` together over `TREE_BYTES_RATCHET`. A trim lowers the ratchet to within
+//     1,000 bytes of the new total; nothing raises it.
 // It also prints, without failing, one `near` line per file over the guide target and per heading over the leaf
 // target, each with the bytes left under its budget: the targets are where a trim or a split lands, so a guide
 // keeps room for the changes that follow instead of sitting at the budget, where every edit fails the gate.
@@ -26,7 +32,8 @@
 //   - the totals of the guides, last, so they are the tail of the output.
 // `STRUCTURE.md` has its own row and is in no total. The parse is line based: enough for the Markdown these
 // files use, not CommonMark.
-import { readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, globSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -37,6 +44,11 @@ export const GUIDE_BYTES_TARGET = 36_000;
 export const LEAF_BYTES_TARGET = 7_000;
 export const ITEM_CHARS_BUDGET = 600;
 export const PAREN_DEPTH_BUDGET = 2;
+/**
+ * The most the guides and `STRUCTURE.md` may hold together. Lower it in the change that lowers the total, to
+ * within 1,000 bytes of the new total; a change that needs it raised moves or deletes text instead.
+ */
+export const TREE_BYTES_RATCHET = 1_073_000;
 
 export const GUIDE_DIR = "docs/structure";
 export const INDEX_DOC = "STRUCTURE.md";
@@ -88,6 +100,15 @@ function replaceCodeSpans(text, replace) {
 }
 
 const stripCodeSpans = (text) => replaceCodeSpans(text, () => "");
+/** The contents of the code spans in `text`, in order. */
+function codeSpans(text) {
+    const spans = [];
+    replaceCodeSpans(text, (content) => {
+        spans.push(content);
+        return "";
+    });
+    return spans;
+}
 /** `text` as prose: code spans and link destinations are not prose. */
 const proseText = (text) => stripCodeSpans(text).replace(INLINE_LINK, "$2");
 
@@ -309,6 +330,85 @@ function linkProblem(rel, destination, readAnchors) {
     return target.anchor && !anchors.has(target.anchor) ? "no such anchor" : null;
 }
 
+const PATH_SPAN = /^[\w@.{},*/-]+$/;
+/** Root directories whose contents are not tracked, so a path under one is not checked. */
+const UNCHECKED_ROOTS = new Set(["node_modules", "dist", ".git", ".claude"]);
+
+/** `pattern` with its `{a,b}` groups expanded, outermost first, in order; a brace group without a comma stays literal. */
+export function expandBraces(pattern) {
+    const open = pattern.indexOf("{");
+    if (open < 0) return [pattern];
+    const choices = [];
+    let depth = 0;
+    let start = open + 1;
+    let close = -1;
+    for (let i = open; i < pattern.length && close < 0; i++) {
+        const char = pattern[i];
+        if (char === "{") depth++;
+        else if (char === "}" && --depth === 0) close = i;
+        else if (char === "," && depth === 1) {
+            choices.push(pattern.slice(start, i));
+            start = i + 1;
+        }
+    }
+    if (close < 0 || choices.length === 0) return [pattern];
+    choices.push(pattern.slice(start, close));
+    const head = pattern.slice(0, open);
+    const tail = pattern.slice(close + 1);
+    return choices.flatMap((choice) => expandBraces(`${head}${choice}${tail}`));
+}
+
+/** Whether git ignores `pattern` under `root`: a runtime file a guide may name. False outside a repository. */
+function gitIgnores(root, pattern) {
+    try {
+        execFileSync("git", ["check-ignore", "-q", "--", pattern], { cwd: root, stdio: "ignore" });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Why the repository path `span` names under `root` is missing, or null when every expansion exists or is a
+ * runtime file git ignores.
+ */
+function pathProblem(root, span) {
+    const wantsDir = span.endsWith("/");
+    for (const pattern of expandBraces(wantsDir ? span.slice(0, -1) : span)) {
+        const matches = pattern.includes("*")
+            ? globSync(pattern, { cwd: root })
+            : existsSync(path.join(root, pattern))
+              ? [pattern]
+              : [];
+        if (matches.length === 0) return gitIgnores(root, pattern) ? null : `no such path: ${pattern}`;
+        if (wantsDir && !matches.every((match) => statSync(path.join(root, match)).isDirectory())) {
+            return `not a directory: ${pattern}`;
+        }
+    }
+    return null;
+}
+
+/**
+ * Checks the repository paths that code spans name, once each: null for a span that is not a path or whose
+ * path exists, else why it is missing. A path is one token of path characters holding a `/`, not starting with
+ * one, without `...`, whose first segment is a tracked directory of the root.
+ */
+function pathChecker(root) {
+    const cache = new Map();
+    const rootDirs = new Set(
+        readdirSync(root, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name),
+    );
+    return (span) => {
+        if (!PATH_SPAN.test(span) || !span.includes("/") || span.includes("...") || span.startsWith("/")) return null;
+        const first = span.slice(0, span.indexOf("/"));
+        if (!rootDirs.has(first) || UNCHECKED_ROOTS.has(first)) return null;
+        if (!cache.has(span)) cache.set(span, pathProblem(root, span));
+        return cache.get(span);
+    };
+}
+
 /** Whether a link from `rel` to `destination` names `rel` itself with no anchor. */
 function isSelfLink(rel, destination) {
     const target = linkTarget(destination);
@@ -349,7 +449,7 @@ function hazardProblems(sections) {
     return problems;
 }
 
-function measureFile(root, rel, readAnchors) {
+function measureFile(root, rel, readAnchors, checkPath) {
     const { bytes, segments, sections } = parseGuide(readFileSync(path.join(root, rel), "utf8"));
     // `STRUCTURE.md` and an area folder's `README.md` are indexes: the budgets, links, and labels apply, the guide
     // outline does not.
@@ -357,6 +457,7 @@ function measureFile(root, rel, readAnchors) {
     const longItems = [];
     const deepSegments = [];
     const unresolvedLinks = [];
+    const missingPaths = [];
     const selfLinks = [];
     const labels = [];
     let maxParenDepth = 0;
@@ -365,6 +466,10 @@ function measureFile(root, rel, readAnchors) {
             const reason = linkProblem(rel, destination, readAnchors);
             if (reason) unresolvedLinks.push({ line, target: destination, reason });
             if (isSelfLink(rel, destination)) selfLinks.push({ line, target: destination });
+        }
+        for (const span of codeSpans(text)) {
+            const reason = checkPath(span);
+            if (reason) missingPaths.push({ line, span, reason });
         }
         for (const [label] of (isGuide ? text : proseText(text)).matchAll(LABEL)) {
             labels.push({ line, kind, label });
@@ -395,6 +500,7 @@ function measureFile(root, rel, readAnchors) {
         maxParenDepth,
         deepSegments,
         unresolvedLinks,
+        missingPaths,
         sectionProblems: isGuide ? sectionProblems(sections) : [],
         hazardProblems: isGuide ? hazardProblems(sections) : [],
         selfLinks,
@@ -406,15 +512,17 @@ const countKind = (items, kind) => items.filter((item) => item.kind === kind).le
 
 /**
  * The measurement of the repository at `root`, as plain data: `{ guides, index, totals }`. `guides`
- * is sorted by path; `index` is `STRUCTURE.md`, which `totals` leaves out.
+ * is sorted by path; `index` is `STRUCTURE.md`, which `totals` leaves out except in `treeBytes`.
  */
 export function measureDocs(root) {
     const readAnchors = anchorReader(root);
+    const checkPath = pathChecker(root);
     const paths = readdirSync(path.join(root, GUIDE_DIR), { recursive: true })
         .filter((name) => name.endsWith(".md"))
         .map((name) => `${GUIDE_DIR}/${name.split(path.sep).join("/")}`)
         .sort();
-    const guides = paths.map((rel) => measureFile(root, rel, readAnchors));
+    const guides = paths.map((rel) => measureFile(root, rel, readAnchors, checkPath));
+    const index = measureFile(root, INDEX_DOC, readAnchors, checkPath);
     const largest = guides
         .filter((guide) => guide.largestLeaf)
         .reduce(
@@ -423,12 +531,14 @@ export function measureDocs(root) {
             null,
         );
     const longItems = guides.flatMap((guide) => guide.longItems);
+    const bytes = guides.reduce((sum, guide) => sum + guide.bytes, 0);
     return {
         guides,
-        index: measureFile(root, INDEX_DOC, readAnchors),
+        index,
         totals: {
             guideCount: guides.length,
-            bytes: guides.reduce((sum, guide) => sum + guide.bytes, 0),
+            bytes,
+            treeBytes: bytes + index.bytes,
             h3Count: guides.reduce((sum, guide) => sum + guide.h3Count, 0),
             guidesOverBudget: guides.filter((guide) => guide.overBudget).length,
             guidesOverTarget: guides.filter((guide) => guide.overTarget).length,
@@ -441,6 +551,7 @@ export function measureDocs(root) {
             tableRowsOver: countKind(longItems, "row"),
             deepSegments: guides.reduce((sum, guide) => sum + guide.deepSegments.length, 0),
             unresolvedLinks: guides.reduce((sum, guide) => sum + guide.unresolvedLinks.length, 0),
+            missingPaths: guides.reduce((sum, guide) => sum + guide.missingPaths.length, 0),
             sectionProblems: guides.reduce((sum, guide) => sum + guide.sectionProblems.length, 0),
             hazardProblems: guides.reduce((sum, guide) => sum + guide.hazardProblems.length, 0),
             selfLinks: guides.reduce((sum, guide) => sum + guide.selfLinks.length, 0),
@@ -449,8 +560,11 @@ export function measureDocs(root) {
     };
 }
 
-/** What fails for a `measureDocs` result, as `{ path, line, rule, message }` findings, each file's in rule order. */
-export function checkDocs(measure) {
+/**
+ * What fails for a `measureDocs` result, as `{ path, line, rule, message }` findings, each file's in rule order,
+ * the tree's last. `treeRatchet` stands in for `TREE_BYTES_RATCHET`.
+ */
+export function checkDocs(measure, { treeRatchet = TREE_BYTES_RATCHET } = {}) {
     const findings = [];
     const add = (file, line, rule, message) => findings.push({ path: file, line, rule, message });
     for (const file of [...measure.guides, measure.index]) {
@@ -479,8 +593,20 @@ export function checkDocs(measure) {
         for (const { line, target, reason } of file.unresolvedLinks) {
             add(file.path, line, "unresolved-link", `${target} (${reason})`);
         }
+        for (const { line, span, reason } of file.missingPaths)
+            add(file.path, line, "missing-path", `${span} (${reason})`);
         for (const { line, target } of file.selfLinks) add(file.path, line, "self-link", target);
         for (const { line, kind, label } of file.labels) add(file.path, line, "label", `${kind} ${label}`);
+    }
+    const { treeBytes } = measure.totals;
+    if (treeBytes > treeRatchet) {
+        const over = treeBytes - treeRatchet;
+        add(
+            INDEX_DOC,
+            1,
+            "tree",
+            `${treeBytes} bytes in the guides and ${INDEX_DOC}, ratchet ${treeRatchet}, ${over} over`,
+        );
     }
     return findings;
 }
@@ -510,13 +636,17 @@ export function nearTarget(measure) {
     return warnings;
 }
 
-/** What the check prints for `checkDocs` findings and `nearTarget` warnings: the warnings never fail it. */
-export function formatCheck(findings, warnings = []) {
+/**
+ * What the check prints for `checkDocs` findings and `nearTarget` warnings: the warnings never fail it. `tree`
+ * (`{ bytes, ratchet }`) adds the tree total to the verdict, so a trim sees how far the ratchet can come down.
+ */
+export function formatCheck(findings, warnings = [], tree = null) {
     const lines = [...findings, ...warnings].map(
         ({ path: file, line, rule, message }) => `${file}:${line} ${rule} ${message}`,
     );
     const near = warnings.length > 0 ? `, ${warnings.length} near the budget` : "";
-    const verdict = findings.length > 0 ? `FAIL: ${findings.length} finding(s)${near}` : `OK${near}`;
+    const total = tree ? `, tree ${tree.bytes} of ${tree.ratchet}` : "";
+    const verdict = findings.length > 0 ? `FAIL: ${findings.length} finding(s)${near}${total}` : `OK${near}${total}`;
     return `${[...lines, `[check:docs] ${verdict}`].join("\n")}\n`;
 }
 
@@ -611,6 +741,11 @@ export function formatReport(measure) {
         ({ line, target, reason }) => `${line} ${target} (${reason})`,
     );
     findings(
+        "Missing paths",
+        (file) => file.missingPaths,
+        ({ line, span, reason }) => `${line} ${span} (${reason})`,
+    );
+    findings(
         "Section order",
         (file) => file.sectionProblems,
         ({ line, message }) => `${line} ${message}`,
@@ -646,6 +781,8 @@ export function formatReport(measure) {
         `[check:docs] items over ${ITEM_CHARS_BUDGET}, both kinds: ${totals.listItemsOver + totals.tableRowsOver}`,
         `[check:docs] segments above depth ${PAREN_DEPTH_BUDGET}: ${totals.deepSegments}`,
         `[check:docs] unresolved links: ${totals.unresolvedLinks}`,
+        `[check:docs] missing paths: ${totals.missingPaths}`,
+        `[check:docs] tree bytes, ${INDEX_DOC} included: ${totals.treeBytes} (ratchet ${TREE_BYTES_RATCHET})`,
         `[check:docs] section order problems: ${totals.sectionProblems}`,
         `[check:docs] hazard heading problems: ${totals.hazardProblems}`,
         `[check:docs] self-links: ${totals.selfLinks}`,
@@ -666,7 +803,8 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
         process.stdout.write(formatReport(measure));
     } else {
         const findings = checkDocs(measure);
-        const output = formatCheck(findings, nearTarget(measure));
+        const tree = { bytes: measure.totals.treeBytes, ratchet: TREE_BYTES_RATCHET };
+        const output = formatCheck(findings, nearTarget(measure), tree);
         (findings.length > 0 ? process.stderr : process.stdout).write(output);
         if (findings.length > 0) process.exitCode = 1;
     }

@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
     checkDocs,
+    expandBraces,
     formatCheck,
     formatReport,
     GUIDE_BYTES_BUDGET,
@@ -180,6 +181,40 @@ describe("documentation budgets", () => {
     it("rejects an unresolved anchor", () => {
         const text = guide({ Scope: "[Present](#scope) and [Missing](#missing)" });
         expect(checkDocs(measureDocs(tree({ [GUIDE]: text })))).toEqual([finding(GUIDE, 5, "unresolved-link")]);
+    });
+
+    it("rejects a code span naming a missing repository path, with braces expanded and globs matched", () => {
+        expect(expandBraces("src/{a,b/{c,d}}.ts")).toEqual(["src/a.ts", "src/b/c.ts", "src/b/d.ts"]);
+        const present = "`src/{a,b}.ts`, `src/c*.ts`, `src/`, `src/a.ts` `other/x.ts` `/api/x` `a.b` `src/...`";
+        const missing = "`src/{a,missing}.ts`, `src/d*.ts`, `src/a.ts/`";
+        const root = tree({
+            [GUIDE]: guide({ Files: present, Flows: missing }),
+            "src/a.ts": "",
+            "src/b.ts": "",
+            "src/c1.ts": "",
+        });
+        const findings = checkDocs(measureDocs(root));
+        expect(findings).toEqual([
+            finding(GUIDE, 11, "missing-path"),
+            finding(GUIDE, 11, "missing-path"),
+            finding(GUIDE, 11, "missing-path"),
+        ]);
+        expect(findings.map((entry) => entry.message)).toEqual([
+            "src/{a,missing}.ts (no such path: src/missing.ts)",
+            "src/d*.ts (no such path: src/d*.ts)",
+            "src/a.ts/ (not a directory: src/a.ts)",
+        ]);
+    });
+
+    it("rejects the guides and STRUCTURE.md together over the tree ratchet, and prints the tree in the verdict", () => {
+        const measure = measureDocs(tree());
+        const { treeBytes } = measure.totals;
+        expect(treeBytes).toBe(measure.totals.bytes + measure.index.bytes);
+        expect(checkDocs(measure, { treeRatchet: treeBytes })).toEqual([]);
+        expect(checkDocs(measure, { treeRatchet: treeBytes - 1 })).toEqual([finding("STRUCTURE.md", 1, "tree")]);
+        expect(formatCheck([], [], { bytes: treeBytes, ratchet: treeBytes })).toBe(
+            `[check:docs] OK, tree ${treeBytes} of ${treeBytes}\n`,
+        );
     });
 
     it("rejects a link to its own file without an anchor", () => {

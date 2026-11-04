@@ -14,6 +14,7 @@
     "check:changed": "node util/changedChecks.mjs types",
     "check:tests": "node util/testInventory.mjs",
     "check:docs": "node util/docsBudget.mjs",
+    "docs:read": "node util/docsRead.mjs",
     "test": "vitest run --tags-filter=!slow",
     "test:agent": "node util/agentTest.mjs",
     "test:overload": "node util/overloadTest.mjs",

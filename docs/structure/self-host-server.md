@@ -336,26 +336,27 @@ Everything lives under `save/`. `data/`, `backups/`, and `cache/thumbnails/` are
 
 `routes/auth.ts` `createAuthStore` loads the auth files at startup (`readPasswordState`, `readKnownPublicKeys`).
 
-- `server/password`: the client-side SHA-256 digest via `/api/crypto`. Only a missing file opens setup (`ENOENT`; other
-  read errors throw). An empty or whitespace-only file logs a warning and keeps setup and password login closed until
-  the operator fixes or deletes it; registered JWT keys still work, and `/api/test_auth` checks them rather than
+- `save/server/password`: the client-side SHA-256 digest via `/api/crypto`. Only a missing file opens setup (`ENOENT`;
+  other read errors throw). An empty or whitespace-only file logs a warning and keeps setup and password login closed
+  until the operator fixes or deletes it; registered JWT keys still work, and `/api/test_auth` checks them rather than
   returning `unset`.
 - `RISU_PASSWORD_SHA256` can seed a missing file durably at startup, never overwrites an existing file (even an empty
   one, with a warning that the seed was ignored), and changing the variable never rotates an existing password.
 - `POST /api/set_password` is one operation on the ordered writer (key `auth:password`): the state check, the
   validation, the durable write, then the install, so of two concurrent calls one wins and the other answers
   `already set`.
-- `server/known_public_key_hashes.json`: an array of strings, read into a set. A login's new key is one operation (key
-  `auth:keys`): it derives the next list from the current one, writes it durably, and installs it, so two concurrent
-  logins keep both keys; the login answers 200 after the write and 500 when it failed. A known key writes nothing.
+- `save/server/known_public_key_hashes.json`: an array of strings, read into a set. A login's new key is one operation
+  (key `auth:keys`): it derives the next list from the current one, writes it durably, and installs it, so two
+  concurrent logins keep both keys; the login answers 200 after the write and 500 when it failed. A known key writes
+  nothing.
 - A missing key file means no known keys; malformed JSON or another shape (including an empty file) is renamed beside it
   to `known_public_key_hashes.json.corrupt-<Date.now()>`, with a warning naming that path. Startup continues with no
   known keys, so every tab logs in again with the password; other read errors throw. Deleting only `password` lets you
   set a new one but does not revoke registered clients; delete this file too for that.
-- `server/web_push_vapid.json` (mode 600): the Web Push VAPID pair. Replacing it (or the `RISU_WEB_PUSH_VAPID_*`
+- `save/server/web_push_vapid.json` (mode 600): the Web Push VAPID pair. Replacing it (or the `RISU_WEB_PUSH_VAPID_*`
   variables) leaves every browser subscribed with the old key: each subscribes again the next time it opens the app, or
   an open tab's page is shown again.
-- `server/push_subscriptions.json` (mode 600):
+- `save/server/push_subscriptions.json` (mode 600):
   `{ version: 1, subscriptions: [{ endpoint, keys: { p256dh, auth }, expirationTime, failureCount, lastError?, updatedAt }] }`;
   `updatedAt` is the last registration refresh, at most once per 24 h for an unchanged healthy entry. Skipped
   registrations leave the stamp and list order unchanged; the 50-entry cap drops the least recently refreshed.

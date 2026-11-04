@@ -13,9 +13,10 @@ run.
 1. Read **Repository-Wide Invariants** below.
 2. Choose one owner in **Choose By Task**, or use **Path Ownership** for a supplied path. A folder row's `README.md`
    routes on to one of its guides.
-3. List that guide's headings (`rg -n '^##' <guide>`), read `Scope` and `Invariants`, then the relevant subsection. For
-   an add/change task, check `Recipes` for the edit path and `Tests` for focused verification. A `Files` entry points at
-   the module's contract comment: read that comment with the code.
+3. List that guide's headings with their sizes (`pnpm docs:read <guide>`), read `Scope` and `Invariants`, then the
+   relevant subsection (`pnpm docs:read <guide> <heading>`), not the whole file. For an add/change task, check `Recipes`
+   for the edit path and `Tests` for focused verification. A `Files` entry points at the module's contract comment: read
+   that comment with the code.
 4. Follow its `Coupling` links only when the change crosses a boundary. Do not load every guide.
 5. Confirm the named identifier with a bounded `rg -n "<identifier>" <path>` before editing.
 6. Run V1's gates and the affected guide's focused checks.
@@ -334,6 +335,10 @@ Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_sta
   (continuation lines and code spans included), and parentheses at most two deep outside code spans. They are the same
   for every guide and this file: `pnpm check:docs` fails on any of them, and
   [build-test-platforms](docs/structure/build-test-platforms.md) `Files` lists its rules.
+- The tree total (every guide and this file) stays under the ratchet in `util/docsBudget.mjs`. A change that lowers the
+  total lowers the ratchet to within 1,000 bytes of it; no change raises it.
+- A code span naming a repository path (braces expanded, globs matched) must exist, so a moved file updates its guides
+  in the same change; a path git ignores is a runtime file and is not checked.
 - Targets: 36,000 bytes per guide and 7,000 under a leaf heading. The check reports a file or a heading over its target
   as `near`, with the bytes left under the budget, and does not fail. A trim or a split lands the guide at or under its
   target, not just under the budget, and a change that would carry a guide past its target splits the guide or moves the

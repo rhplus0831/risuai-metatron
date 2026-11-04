@@ -13,7 +13,7 @@
   - `util/risuUserscript.user.js`
   - `util/agentDev.mjs`, `util/agentDevHost.mjs`, `util/agentDataSandbox.mjs` (the `dev:agent` / `dev:human` full-stack
     runner)
-  - `util/docsBudget.mjs` (the `check:docs` documentation check)
+  - `util/docsBudget.mjs` (the `check:docs` documentation check), `util/docsRead.mjs` (the `docs:read` guide reader)
   - `util/ci/check.sh` and `.github/workflows/ci.yml` (the CI gate and its GitHub Actions workflow)
   - `util/heap/` (V8 heap snapshot analysis)
   - `util/upstream/` (the upstream RisuAI `.bin` compatibility check)
@@ -35,7 +35,8 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
 | `build`                   | Vite with source maps, then `util/compressDist.mjs` for Brotli/gzip siblings.                                                                             |
 | `check`                   | `svelte-check` for the client, then `tsc -p server/tsconfig.json` for server/shared code, with an incremental cache in `node_modules/.cache/tsc/`.        |
 | `check:changed`           | `util/changedChecks.mjs types`: the same two programs in parallel, skipping one no changed path reaches; see [Changed-file checks](#changed-file-checks). |
-| `check:docs`              | `util/docsBudget.mjs`: guide budgets and targets, outline, and Markdown links; no tests.                                                                  |
+| `check:docs`              | `util/docsBudget.mjs`: guide budgets, targets, and the tree ratchet, outline, Markdown links, and code-span paths; no tests.                              |
+| `docs:read`               | `util/docsRead.mjs <guide> [heading]`: a guide's headings with their bytes, or one section; see [Documentation check](#documentation-check).              |
 | `server`                  | Node runs `server/src/main.ts` with type stripping.                                                                                                       |
 | `dev:agent` / `dev:human` | Isolated agent stack or normal-login human stack; see [Dev runner](#dev-runner).                                                                          |
 | `format` / `format:check` | Repository-wide Prettier write/check; `format:check` keeps Prettier's cache in `node_modules/.cache/prettier/`.                                           |
@@ -91,12 +92,23 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
     `self-link`: a link to its own file without an anchor.
   - `label`: a T5 label, matched on the joined item, so a wrap cannot split it (in `STRUCTURE.md`, prose only: T5 quotes
     the labels).
+  - `missing-path`: a code span naming a repository path that does not exist. A span is a path when it is one token of
+    path characters with a `/`, not starting with one, whose first segment is a directory of the repository root other
+    than `node_modules`, `dist`, `.git`, or `.claude`. `{a,b}` expands and each expansion must exist, `*` must match
+    something, a trailing `/` needs a directory. A missing path `git check-ignore` accepts is a runtime file and passes.
+  - `tree`: the guides and `STRUCTURE.md` together over `TREE_BYTES_RATCHET` in `util/docsBudget.mjs`. The verdict line
+    always prints the tree total against the ratchet; a trim lowers the constant to within 1,000 bytes of the new total.
 - `near` does not fail: a file over 36,000 bytes or a heading over 7,000, the targets of **Doc Maintenance**, printed
   with the bytes left under the budget, so a guide that needs a split shows up before the next change fails the gate.
 - `--report` prints the sizes, each file's headroom under 40,000 bytes, and every finding, and exits 0; use plain
   `pnpm check:docs` as the gate.
-- Source paths and identifiers in code spans are not validated. Confirm them with targeted `rg` searches; the link rule
-  checks only relative Markdown destinations and heading anchors.
+- Identifiers in code spans are not validated, nor a path without a `/` (`package.json`, `vitest.*`). Confirm them with
+  targeted `rg` searches; the link rule checks only relative Markdown destinations and heading anchors.
+- `pnpm docs:read <guide>` (`util/docsRead.mjs`) prints a guide's headings with their own bytes and, for a heading with
+  subsections, the total; `pnpm docs:read <guide> <heading>` prints that section through its subsections. The guide is a
+  name (`chat-store`, `structured-memory/read`), an area folder (`structured-memory`, its README), `STRUCTURE`, or a
+  path; a heading matches by whole text, then prefix, then substring, and an ambiguous query lists its matches. No
+  guide, or an unknown one, lists the guide names.
 
 ### Config files
 
@@ -407,7 +419,9 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
 - `util/agentDevHost.test.ts` and `util/agentDataSandbox.test.ts` (node) cover the `dev:agent` runner's host resolution
   and the sandbox.
 - `util/docsBudget.test.ts` (node) runs the documentation check over small guide trees in a temporary directory, through
-  its exported functions.
+  its exported functions; `util/docsRead.test.ts` (node) covers the guide reader's resolution, outline, and section
+  matching the same way.
+- Not tested: the exit codes and output streams of the `util/docsRead.mjs` command line.
 - Not tested: the `/sw/check` route, the `fetch` handler's default `/sw/*` and `/tf` responses, the rest of the `push`
   display (icon, title and body fallbacks), and the userscript; verify those manually.
 - Not tested: the exit codes and output streams of the `util/docsBudget.mjs` command line.
