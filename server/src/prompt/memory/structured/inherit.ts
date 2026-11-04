@@ -24,15 +24,16 @@ import type { MemoryChanges, MemoryEventWrite } from "../../../data/memoryStore.
  *   the stored gaps are what show an insertion, so a current position would make such an event read whole.
  * - An event crosses when it has sources and every one maps. It crosses as stored, marks and `status`
  *   included: `recordedMessages` counts a retracted event, so leaving one out would let the writer record
- *   again what a person retracted, and a remapped `keptState` only reads stale, which asks a person. Only
- *   `rerecord` stays behind: it is a request about the source chat, and on a copy the next automatic
- *   hand-off would spend a model call nobody asked for. The event still reads `changed`, so the panel
- *   offers the repair.
+ *   again what a person retracted. `keptState` stays verbatim: remapped ids no longer match that
+ *   acknowledgment; an active event with otherwise-whole anchors still reads active under
+ *   `reconcileMemoryEvents` in `shared/structuredMemory.ts`. Only `rerecord` stays behind: it is a request
+ *   about the source chat, and on a copy the next automatic hand-off would spend a model call nobody
+ *   asked for. A changed source still reads `changed`, so the panel offers the repair.
  * - An event that does not cross is behind when a source that did not map names a message the source chat
  *   holds and the new chat does not: that is what lies after the branch point. Any other just stays out,
  *   so a plain copy, whose messages are all there, drops dead evidence and undoes nothing.
  * - Only a behind event undoes anything. A section's body is replaced whole while its `provenance`
- *   accumulates, and a send shows a section whatever its flags say, so a section is rewound by the page's
+ *   accumulates, and a send does not hide an unsupported section, so a section is rewound by the page's
  *   own history rather than flagged. A change the bounded history lost cannot be undone: that text stays,
  *   and a section that still names a behind event is `unsupported`, as is one left with no standing
  *   evidence. No body is blanked and nothing is `suppressed`: `changeSection` keeps trust flags, so a
@@ -121,8 +122,11 @@ function sortEvents(
 }
 
 /**
- * The section `before` holds, as a cut at `at` restores it: `live` keeps its heading and its marks, which
- * are a person's, and loses `disputed` and `unsupported`, which spoke of the body it no longer has.
+ * The section `before` holds, as a cut at `at` restores it. The live lock and trust marks survive, but
+ * its `disputed` and `unsupported` spoke of a different body and are discarded. A `before` carrying
+ * `shared/structuredMemory.ts`'s `MemoryHistorySnapshot` marks restores those too: they can override
+ * live trust marks or bring back historical `disputed` and `unsupported`. A missing live section
+ * defaults to unlocked.
  */
 function restoredSection(
     heading: string,

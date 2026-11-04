@@ -83,7 +83,10 @@ const shaped =
 
 const isTexts = listOf(isText);
 
-/** A string `messageId` with a whole anchor or none: a string hash with a position, or both null. */
+/**
+ * A string `messageId` with a whole anchor or none: a string `hash` with a safe-integer `index`,
+ * or `hash` and `index` both null.
+ */
 const isSource: Check = (value) => {
     if (!isPlainObject(value) || typeof value.messageId !== "string") {
         return false;

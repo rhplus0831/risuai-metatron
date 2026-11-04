@@ -738,6 +738,8 @@ function checkMemoryChunk(kind: MemoryRecordKind, text: string, hash: string): M
  * A memory chunk's rows pass the check a snapshot's memory rows do (`checkMemoryRow`). Its size is not
  * held to the page limits, which a single record may legally pass, and its records are not compared
  * with the checkpoint's messages: a record's sources can legitimately disagree with them.
+ * Row claims span all chunks of each kind in a checkpoint, so splitting records between chunks cannot
+ * hide a duplicate id or a second scene page.
  */
 export function walkCheckpointSnapshot(
     source: DatabaseSync,

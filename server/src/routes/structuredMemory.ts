@@ -313,8 +313,10 @@ type RoundRead = {
  *   branched chat the records of the character's chat it came from, as far as its messages support them
  *   (`structured/inherit.ts`), answered `StructuredMemoryInheritAnswer`. The server builds them from the
  *   source chat, whose runs stay behind, and the tab sends no record. A new chat that holds a row of any
- *   kind, trash included, which is what a repeat finds, answers `inherited: false` and writes nothing. A
- *   source's decline of adoption crosses in the write that takes its records, also with no record to take,
+ *   kind, trash included, which is what a repeat finds, answers `inherited: false` and writes nothing.
+ *   This target-row check precedes reading the source chat: a repeat answers 200 `inherited: false`
+ *   even when the source is gone, while an empty target with a missing source answers 404 `chatGone`.
+ *   A source's decline of adoption crosses in the write that takes its records, also with no record to take,
  *   so a copy of a declined chat is not held; a repeat finds it there and writes nothing. `inherited` says
  *   whether records crossed: a source that holds no page, event, or thread answers false, and so does one
  *   the new chat's messages support none of. 400 for a `sourceChatId` that is no id or is the chat itself,

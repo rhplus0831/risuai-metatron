@@ -126,9 +126,8 @@ refreshes from records. Local work delays the whole read without losing the mark
 
 - The projection's return type and metric names come from `shared/memory.ts`. `HypaV3Modal.svelte` and
   `remapHypaV3Metrics` read each metric array independently, so an index may sit in two arrays.
-- `readSnapshotFile` of [server resources](../server-resources.md#snapshots-and-restore) walks the memory tables for the
-  upstream export's projection, and alone among the walk's readers it does not stop on a problem in them
-  (`memoryFailed`).
+- `readSnapshotFile` of [server resources](../server-resources.md#validation) walks the memory tables for the upstream
+  export's projection, and alone among the walk's readers it does not stop on a problem in them (`memoryFailed`).
 - The field's writes go through [the chat store](../chat-store.md), where `keepsHeldHypaV3Data` lives; the plugin reads
   that wait on the refresh are [plugins](../plugin-sandbox.md)'s.
 - The reset writes a `meta` `unset` through `applyChanges`, so the live-update feed publishes it like any chat write.

@@ -1139,6 +1139,8 @@ export function readStructuredMemoryCoverage(ref: ChatRef): Promise<StructuredMe
  * and a chat that holds only runs no more; every other round names the contents' revision. A change of the
  * chat's memory during the read restarts it with nothing kept, and a chat that keeps changing is refused
  * `changed`.
+ * The `/package` and `/threads` rounds belong to that same revision: an export gets all three record
+ * kinds together or none, never a partial collection.
  *
  * A chat the server does not hold has no records, because an export can come ahead of its save, or in
  * place of it: `RefusedDataBanner` exports what the server refused. That holds only until the contents
@@ -1196,10 +1198,10 @@ export async function readStructuredMemoryFile(
  *
  * A sealed `hypaV3Data` goes whatever the read answered: a tab's read can carry a projection, also after
  * another algorithm was selected, and the seal, not the algorithm, tells it from real summaries. Those stay,
- * beside records too, because a chat can hold both. With a row of any kind the receipts go too
- * (`generationInfo.memory`, the rest stays): a receipt is a display copy of a run, runs stay out of the
- * file, and it would offer Resume on an empty Log or say `recorded` of a restore that failed. Hashes do
- * not read it.
+ * beside records too, because a chat can hold both. On a successful read with a row of any kind the
+ * receipts go too (`generationInfo.memory`, the rest stays): a receipt is a display copy of a run, runs
+ * stay out of the file, and it would offer Resume on an empty Log or say `recorded` of a restore that
+ * failed. Hashes do not read it.
  */
 export function exportChatMemory(
     chat: Chat,

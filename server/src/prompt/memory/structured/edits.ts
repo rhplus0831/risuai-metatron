@@ -215,6 +215,11 @@ export function applyThreadEdit(thread: MemoryThread, { state }: ThreadEdit): Me
  * `edit` over `event`, the event as stored: the event to store, or null for no change. A
  * `MemoryEditRefusal` says why it does not fit, `changed` when a `keep` names a state the chat has left.
  * `messages` are the chat as stored, which a `retract` does not read, and `hashOf` hashes one of them.
+ *
+ * A keep acknowledges the message state the person saw, not just the memory revision: another tab can
+ * change messages without changing that revision. It retains the recorded sources, since a missing
+ * message has no new anchor. An already-active reconciled event needs no keep and returns null, even
+ * with a `rerecord` mark; only a keep that writes a repair clears that mark and `staleReason`.
  */
 export function applyEventRepair<M extends Pick<Message, "chatId" | "role" | "disabled">>(
     event: MemoryEvent,
