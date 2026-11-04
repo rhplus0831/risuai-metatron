@@ -51,12 +51,13 @@ import type { WriterMemory } from "./writer.ts";
  *   pages and a lock binds it. No event is seeded: carrying is decided at the swap (`rebuildChanges`), so a
  *   retraction that lands during the run counts, and the writer reads only what the run wrote.
  * - A backfill stands behind records that already exist, so each of its windows is a historical write
- *   (`writer.ts`) on a copy of the live pages, and its swap adds events and new pages and nothing else.
+ *   (`server/src/prompt/memory/structured/writer.ts`) on a copy of the live pages, and its swap adds events
+ *   and new pages and nothing else.
  *   Rebuilding is what refreshes pages.
  * - Neither touches `hypaV3Data` or any chat: no receipt is written, so a stopped run leaves nothing on
  *   messages, and an adopted chat's stored summaries wait for a reset.
- * - The rest of a run is the memory task service's (`rebuildWork`), its start and resume a command job
- *   (`runMemoryRebuild`), and the lock on the chat is the run row (`generationJobs.ts`).
+ * - The rest of a run is `rebuildWork` in `server/src/prompt/memory/memoryTasks.ts`, its start and resume a
+ *   command job (`runMemoryRebuild`), and its lock the run row (`server/src/jobs/generationJobs.ts`).
  */
 
 /** A chat's pages, events, and threads, whole. */
@@ -137,6 +138,8 @@ const sectionMarked = ({ locked, pinned, suppressed, userCorrected }: MemorySect
  * a marked section seeds the scene page: its `always` is code's, not a choice. A page a person merged or
  * split (`reshaped`) seeds with all of its sections and history: the arrangement is theirs, and a page
  * seeded without it would be written anew or, with nothing marked, removed at the swap.
+ * A non-scene page also seeds when its grade is a person's (`gradeByUser`) or its `contextMode` is not
+ * `auto`, even with no marked section: these are choices the rebuild must not discard.
  */
 function seededPage(page: MemoryPage): MemoryPage | null {
     const sections = page.reshaped ? page.sections : page.sections.filter(sectionMarked);
@@ -162,6 +165,8 @@ function seededPage(page: MemoryPage): MemoryPage | null {
  * (`seededPage`) and the threads a person added, so a page it does not name is written anew and a language
  * change retitles it. A backfill takes the live pages verbatim, so its cast is real, and no thread, since it
  * moves none.
+ * Seeded pages keep their ids for patches by `server/src/prompt/memory/structured/writer.ts`; their locks
+ * still bind that writer.
  */
 export function rebuildSeed(
     mode: StructuredMemoryRebuildMode,
@@ -219,7 +224,13 @@ function withMarkedSections(staged: MemoryPage, live: MemoryPage): MemoryPage {
     };
 }
 
-/** A staged event as it goes live: what overlapping live events give it, and no revision, which the store stamps. */
+/**
+ * A staged event as it goes live, with no revision, which the store stamps. `pinned`, `suppressed` and
+ * `userCorrected` are the union from standing overlapping live events, carried ones included, so a
+ * partially rebuilt suppressed event cannot expose its surviving text. Adoption lineage is separate:
+ * `ADOPTED_WRITER_RUN` or `adoptedSummaries` on any overlapping event, retracted ones included, keeps
+ * the stored summaries resettable through later rebuilds.
+ */
 function swappedEvent(
     { createdRevision, ...event }: MemoryEvent,
     overlapping: readonly MemoryEvent[],
@@ -254,6 +265,8 @@ function swappedEvent(
  *
  * A backfill writes the staged events and the pages that are not live: a page that is stays as it stands,
  * with any flag it gained during the run, and a link a historical event would add to it is dropped.
+ * Trashed pages stay untouched: `live.pages` comes from `contents.pages`, which excludes trash in
+ * `server/src/data/memoryStore.ts`, so their ids are never removed here.
  */
 export function rebuildChanges(
     mode: StructuredMemoryRebuildMode,

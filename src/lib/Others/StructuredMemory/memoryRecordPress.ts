@@ -124,8 +124,10 @@ async function runRebuildCommand(
 }
 
 /**
- * A press of Rebuild or Fill gaps: what it would cost, the question, which always comes, and then the
- * command, in windows of one turn under the `everyTurn` cadence and of two under any other.
+ * A press of Rebuild or Fill gaps: preview through `readStructuredMemoryCost` in
+ * `src/ts/process/structuredMemory.svelte.ts`, then confirmation before the command. A zero-window
+ * preview only shows the nothing-to-record toast; an unreadable preview asks with an unknown cost.
+ * Windows hold one turn under the `everyTurn` cadence and two under any other.
  */
 export async function pressMemoryRebuild(
     owner: AnyClientCharacter,
