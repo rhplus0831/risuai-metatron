@@ -10,6 +10,15 @@ import {
 } from "./prompt/toggles.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
+/**
+ * The toggle presets (the `togglePresets` collection): saved prompt-toggle values. A preset's
+ * `values` and `kinds` are keyed by the bare toggle key; a chat stores the same value under
+ * `toggle_<key>` (`toggleStorageKey`). The functions that take definitions take the joined text of
+ * the preset's, modules', and character's definitions (`toggleDefinitionsText`,
+ * `shared/prompt/toggles.ts`) and count only value toggles, each key's first definition winning
+ * (`valueToggles`).
+ */
+
 /** Saved prompt-toggle values and kinds, both keyed by the bare toggle key. */
 export type TogglePreset = {
     id: string;

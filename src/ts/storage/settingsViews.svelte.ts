@@ -707,6 +707,11 @@ function buildPresetView<T>(
     return Object.freeze(view) as T;
 }
 
+/**
+ * The selected prompt preset's view (the rules are the module header's). A read writes no record:
+ * a missing value is a fresh copy of its default, and the first-record fallback changes only the
+ * tab's selection.
+ */
 export const activePreset: ActivePreset = buildPresetView<ActivePreset>(
     ACTIVE_PRESET_FIELDS,
     resolvePreset,
@@ -799,6 +804,10 @@ function buildActivePersona(): ActivePersona {
     return Object.freeze(view) as ActivePersona;
 }
 
+/**
+ * The selected persona's view. A missing or non-string `name`, `icon`, `note`, or `personaPrompt`
+ * reads as its `PERSONA_DEFAULTS` value; `largePortrait` reads as stored.
+ */
 export const activePersona: ActivePersona = buildActivePersona();
 
 /** The selected preset's record (its wrapper), resolved as `activePreset` reads it; `undefined` when there is none. */

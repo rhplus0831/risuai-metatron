@@ -5,6 +5,20 @@ import { readWithDeadline } from "./readDeadline";
 import { readRefs } from "./resourceClient";
 import { settings } from "./settingsViews.svelte";
 
+/**
+ * The character order repairs (the `characterOrder` collection, written through its settings view,
+ * one write per repair). The tab remembers every character id a repair walk observed
+ * (`knownCharacters`, trashed ones included) and forgets one absent from both the list and the
+ * resulting order; an id never observed keeps its place, since another tab's order can arrive before
+ * its characters. The entrypoints:
+ * - `checkCharOrder`: the local repair, after every add, remove, restore, and import here;
+ * - `checkCharOrderAtBoot`: the boot's complete inventory, the only repair that drops never-observed
+ *   ids;
+ * - `queueRemoteCharOrderRepair`: after another writer's order reaches the mirror (registered by
+ *   `src/ts/bootstrap.ts` `watchRemoteRecords`); it only appends, and the server's copy of each
+ *   candidate decides.
+ */
+
 /** Character ids a repair has observed in this tab, including trashed characters. */
 const knownCharacters = new Set<string>();
 

@@ -35,8 +35,6 @@ import {
 } from "./records.svelte";
 import { settings } from "./settingsViews.svelte";
 
-export { selectCharacter };
-
 /**
  * The character mutations: the external contracts (plugins, MCP, imports)
  * write characters only through these functions. Each validates its whole input and prepares a
@@ -48,6 +46,8 @@ export { selectCharacter };
  * its chats to it (`installCharacterChats`), then queues their creates for saving and journaling
  * (`adoptCharacter`). The records hold no chats.
  */
+
+export { selectCharacter };
 
 type AnyCharacter = character | groupChat;
 
@@ -382,7 +382,9 @@ export function selectedCharacter(): AnyClientCharacter | undefined {
 
 // The memory preset that turns memory on for every chat does so when a character is selected (a
 // turn-on that counts, as the toggle's: `supaMemoryOnCount`), under HypaV3 or Structured Memory, which
-// share the preset.
+// share the preset: when HypaV3 is on (`memoryTranslateMedia.hypaV3`) or the Structured Memory
+// algorithm is selected (`ui.memoryAlgorithmType`), the selected HypaV3 preset has `alwaysToggleOn`,
+// and the character's `supaMemory` is not already `true`.
 onCharacterSelected((chaId) => {
     untrack(() => {
         const found = findCharacter(chaId);

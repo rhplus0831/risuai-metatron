@@ -15,10 +15,14 @@
 
 ## Files
 
+Each entry is the path, its role, and the identifiers to look up; the rules are the doc comments on those identifiers
+and the module headers.
+
 ### Shared shapes
 
 `shared/` compiles in the client and the strict server (`server/tsconfig.json`). Node runs it directly, and the
-`Dockerfile` runtime stage copies it. Old client modules re-export what moved here, so importers keep their paths.
+`Dockerfile` runtime stage copies it. Old client modules re-export what moved here (`src/ts/storage/database.svelte.ts`,
+`src/ts/storage/mutationValidation.ts`, `src/ts/chatLoadPages.ts`), so importers keep their paths.
 
 - Rules: STRUCTURE T2, and only type declarations, `as const` objects, primitive constants, plain constant arrays, and
   small pure functions with no runtime dependencies; imports only between `shared/` files.
@@ -26,155 +30,79 @@
   `prompt/{chatTemplate,templateCheck,chatTokens}.ts`, and `tokenizerChoice.ts` reach application state only through an
   injected object and may import pure packages that run in both runtimes (`@risuai/ccardlib`, `@huggingface/jinja`).
   Domain guides own their semantics.
-- `chats.ts`: the chat wire contract; a conflict's `reason` is `generating` (a generation lock) or `expired` (a possibly
-  forgotten group id). `chatCheckpoints.ts`: `CHECKPOINT_CHAT_FIELDS` classifies every `ChatMeta` key as `capture`,
-  `keep`, or `split`. `jobs.ts`: the generation job contract ([server](server-generation.md)).
-- `resources.ts`: wire types. `compareRevision` orders two tokens of one epoch by `(seq, revision)` for hydration;
-  `revisionDigest` is an order-independent fingerprint. Resource ownership is in [Resources](#resources).
-- `sections.ts`: the [field-to-resource map](#invariants). `modelPresetRootValue` derives one model root for the server
-  and views; `forwardPresetRoots` gives a job's or request's preset roots (slot model ids, main-profile fields, and
-  prompt `maxContext` override from `maxContextOverrideOf`).
-- `presets.ts`: the schema of both preset records: `PRESET_DEFAULTS` (every field's fresh-boot default),
-  `PRESET_FIELD_KINDS`, and the partition `MODEL_PRESET_FIELDS` (slots, toggle), `MODEL_PROFILE_FIELDS`,
-  `PROMPT_PRESET_FIELDS`, `PRESET_RECORD_FIELDS` ([profiles and slots](llm-requests.md)).
-- `PROMPT_PRESET_LOCAL_FIELDS` (`archived`, list metadata) is kept by `normalizePreset`, served by no root view or
-  `activePreset`, and not exported. `normalizePreset` keeps prompt fields only; `normalizeModelPreset` tags slots, main
-  and sub always a profile; `normalizeModelProfiles` is never empty (`DEFAULT_MODEL_PROFILE_ID`).
-- `personas.ts` `normalizePersonas`: never empty, the four persona fields strings, unique ids (the server's normalizer
-  runs it). `ids.ts` `newId`: a v4 UUID from `crypto.getRandomValues`, which works outside a secure context.
-- `translatorPresets.ts` `normalizeTranslatorSteps`: 1 to 5 steps, the old `{ prompt, maxResponse }` shape as one step;
-  `sendTextAsIs` and `excludeThoughts` kept only as `true`.
-- `togglePresets.ts`: `normalizeTogglePresets` gives a possibly empty list with unique ids, bare-key string values and
-  known kinds, deterministic timestamp fallbacks; `captureToggleValues`, `toggleValuesForChat`, and
-  `compareTogglePreset` work on joined definition text, first key winning.
+- `shared/chats.ts`: the chat wire contract (`ChatMeta`, the conflict `reason`). `shared/chatCheckpoints.ts`:
+  `CHECKPOINT_CHAT_FIELDS`. `shared/jobs.ts`: the generation job contract ([server](server-generation.md)).
+- `shared/resources.ts`: the resource wire types (`compareRevision`, `parseRevisionToken`, `revisionDigest`); which kind
+  holds what is under [Resources](#resources).
+- `shared/sections.ts`: the [field-to-resource map](#invariants); `modelPresetRootValue`, `forwardPresetRoots`,
+  `maxContextOverrideOf`.
+- `shared/presets.ts`: the schema of both preset records: `PRESET_DEFAULTS`, `PRESET_FIELD_KINDS`,
+  `PRESET_NULLABLE_FIELDS`, the partition `MODEL_PRESET_FIELDS`, `MODEL_PROFILE_FIELDS`, `PROMPT_PRESET_FIELDS`,
+  `PRESET_RECORD_FIELDS`, and `PROMPT_PRESET_LOCAL_FIELDS`; `normalizePreset`, `normalizeModelPreset`,
+  `normalizeModelProfiles`, `presetFieldValue` (shared with the server; [profiles and slots](llm-requests.md)).
+- Normalizers and helpers: `shared/personas.ts` (`normalizePersonas`, `PERSONA_DEFAULTS`), `shared/ids.ts` (`newId`),
+  `shared/translatorPresets.ts` (`normalizeTranslatorSteps`, `createTranslatorPreset`), `shared/togglePresets.ts`
+  (`normalizeTogglePresets`, `captureToggleValues`, `toggleValuesForChat`, `compareTogglePreset`),
+  `shared/characters.ts` (`normalizeCharacter`), `shared/chatBinding.ts` (`resolveChatBinding`),
+  `shared/chatLoadPages.ts`.
+- `shared/mutationValidation.ts`: the checks and errors of the mutation modules and the server's RisuAccess host
+  (`requireJsonData`, `writeEntries`, `MutationValidationError`, `MutationTargetGoneError`).
 
 ### Settings records
 
-- `selection.svelte.ts`: `presetId`, `modelPresetId`, `personaId`, `loreBookPage` per client, under `risu-selection` in
-  `sessionStorage` (this tab's, read first) and `localStorage` (a new tab's start), never on the server; `characterId`
-  and `chatOpen` are per tab, held by the URL. `loadSelection` runs before the installation; `persistSelection` stores
-  one for the next load without applying it.
-- `settingsViews.svelte.ts`: the selected presets and persona over the records. Every access resolves anew, a read
-  writes no record, and writes resolve untracked.
-- A preset field reads from the selected preset that owns it: `activePreset` (prompt fields), `activeModelPreset`
-  (slots, toggle), `profileForSlot(slot)`/`activeMainProfile`/`activeSubProfile` (never redirecting a missing profile),
-  and the derived model roots through `modelPresetRootValue`, written through `writeModelRoot` under the plugin
-  [write rules](llm-requests.md#invariants).
-- `presetFieldValue` (shared with the server): a missing value reads as its `PRESET_DEFAULTS` value, a `null` in an
-  object or array field outside `PRESET_NULLABLE_FIELDS` as a fresh default, any other `null` as `null`. A missing or
-  non-string persona field reads as its `PERSONA_DEFAULTS` value.
-- The open chat's [binding](#chat-binding) comes first: a bound id naming a record wins, then the tab's selection. The
-  chat module registers that reader (`setOpenChatBindingSource`), since it imports the views. A tab id naming no record
-  falls back to the first record on read and becomes the selection, never the chat's; a write while it names none is
-  dropped.
-- `currentPresetRecord` and its kin have that fallback; `presetRecordForWrite` and its kin lack it and follow the same
-  order, so a settings page edits what the open chat uses. `tabSelectionIds()`/`tabPersonaRecord()` ignore the chat.
-  `selectedPresetIndex`/`selectedPersonaIndex`: the legacy `botPresetsId`/`selectedPersona`, 0 with none.
-- A captured `PresetScope` pair (`readPresetFieldOf`, `writePresetField`, `missingPresetTarget`) resolves by id, never
-  redirected; `scopedPresetRoot` throws `PresetTargetGoneError` for a gone preset.
-  `readSettingsRoot`/`writeSettingsRoot` reach a field by its flat root name.
-- `presets.svelte.ts`: `changeToPreset(id)` only selects: every field lives in its preset. `copyPreset` and
-  `importPreset` give fresh ids on every path and drop `archived`. An import ignores the model fields and a `proxyKey`,
-  except that the file's `maxContext` seeds an unset `maxContextOverrideSize`, the override left off unless the file
-  turns it on.
-- `downloadPreset(id)`: `name`, `image`, and the prompt fields; no id, `archived`, or credential; one model field,
-  upstream's `maxContext`, the main model's effective size (`maxContextOverrideOf`, else the main profile's when above
-  0, else 4000). `applyPresetTemplate` keeps the selected preset's id, name, image, and `archived`. `copyModelPreset`
-  names the same profiles. `removeModelPreset` never removes the last one.
-- `llmSecrets.svelte.ts`: `llmSecretState` holds the masked record last answered, a version per credential path, and the
-  queue of credential writes (`setSecret`, `clearSecret`, `deleteEntrySecret` for a deleted named key's entry). A
-  write's plaintext lives only in its queued op until it is sent.
-- `secretStatus(path)` is the masked leaf with the queued writes applied in queue order (`pending` while one is
-  unacknowledged). `setMaskedSecrets(masked, invalidate)` bumps a path's version when its status changed, for each path
-  in `invalidate` (an acknowledged write's target), and for every path on `"all"` (a changed reread or a remote reload).
-- `mirrorFields`: what the tab's record holds: the readable siblings, every credential field `""`, `OaiCompAPIKeys`
-  `{}`. `llmSecretsText`: the sibling-only text the adapter writes and compares.
-- `snapshots.svelte.ts`: builders of the legacy flat shape, each a fresh plain copy, never reactive, cached, or written
-  back: `rootSnapshot` (`undefined` kept as an own key), `buildDatabaseSubset` (the plugin `getDatabase`),
-  `buildSettingsReport`, `buildBackupInventory`.
-- `serverAuth.ts`: ES256 JWT over a non-extractable P-256 key; parallel requests share one check, and setting the
-  password on a fresh server also registers this browser's key. `authFetch`'s `beforeDispatch` runs after signing, right
-  before the request, and a throw stops it.
-- `exportAsDataset.ts`: chats and lore as `dataset.json`. `chatLoadPages.ts`: defaults of 30 initial pages, 15
-  additional.
+- `src/ts/storage/selection.svelte.ts`: this client's preset, model preset, persona, and lore page selection, in the
+  browser only (`selection`, `loadSelection`, `persistSelection`); the character and the open chat are per tab, in the
+  URL.
+- `src/ts/storage/settingsViews.svelte.ts`: the selected presets and persona over the records (`settings`,
+  `activePreset`, `activeModelPreset`, `activePersona`, `profileForSlot`, `activeMainProfile`, `activeSubProfile`). The
+  active preset and persona views follow the open chat's [binding](#chat-binding) first, then the tab's selection, so a
+  settings page edits what the open chat uses; the chat module registers that reader (`setOpenChatBindingSource`). A
+  preset field the record lacks, or holds as `null`, reads through `presetFieldValue` (`shared/presets.ts`).
+- Record lookups in `settingsViews.svelte.ts`: `currentPresetRecord` (falls back to the first record) and
+  `presetRecordForWrite` (no fallback), `tabSelectionIds`, `tabPersonaRecord`, `selectedPresetIndex`,
+  `selectedPersonaIndex`, the captured `PresetScope` (`readPresetFieldOf`, `writePresetField`, `missingPresetTarget`,
+  `scopedPresetRoot`), `readSettingsRoot`, `writeSettingsRoot`, and `writeModelRoot` (the plugin
+  [write rules](llm-requests.md#invariants)).
+- `src/ts/storage/presets.svelte.ts`: the preset list operations (`changeToPreset`, `copyPreset`, `importPreset`,
+  `downloadPreset`, `applyPresetTemplate`, `copyModelPreset`, `removeModelPreset`).
+- `src/ts/storage/llmSecrets.svelte.ts`: the tab's side of the write-only `llmSecrets` record: the masked status and the
+  queue of credential writes (`llmSecretState`, `setSecret`, `clearSecret`, `deleteEntrySecret`, `secretStatus`,
+  `setMaskedSecrets`, `mirrorFields`, `llmSecretsText`).
+- `src/ts/storage/snapshots.svelte.ts`: the legacy flat-shape builders (`rootSnapshot`, `buildDatabaseSubset`,
+  `buildSettingsReport`, `buildBackupInventory`).
+- `src/ts/storage/serverAuth.ts`: the tab's ES256 JWT auth (`authFetch`). `src/ts/storage/exportAsDataset.ts`: chats and
+  lore as `dataset.json`.
 
 ### Mutation modules
 
-The external contracts (plugins, MCP, imports) write only through these. Each validates its whole input and detaches it
-before the mirror changes (a refusal throws `MutationValidationError` and changes nothing; a record gone by id throws
-`MutationTargetGoneError` or returns `false`), then writes by id.
+The external contracts (plugins, MCP, imports) write these records only through the modules below and the chat module; a
+refusal changes nothing (`shared/mutationValidation.ts`).
 
-- `characterStore.svelte.ts`: `characterList()` (creation order), `characterSnapshot(chaId)` (detached, without chats).
-  `addCharacter` gives the chats ids and queues their creates (`adoptCharacter`), then joins the order.
-  `updateCharacter` refuses `CHARACTER_FIXED_FIELDS`. `removeCharacters` (the boot's trash pruning) makes one list
-  change, keeps generating characters, and repairs the order once.
-- Selecting a character turns on `supaMemory` when the HypaV3 preset has `alwaysToggleOn`.
-- `collectionStore.svelte.ts` `updateSettings(patch, { presetId?, modelPresetId? })`: section fields into their section,
-  preset fields into the named preset, else the one a view reads now (a gone one refused), a model root through
-  `writeModelRoot`. The `llmSecrets` fields, `proxyKey`, the persona fields, and the selection indexes are refused.
-- `addAuthRefresh`: one OAuth refresh entry per MCP server `url`, a new login replacing it. A server job's login writes
-  the same collection without a `resource` event; live updates carry it, and a tab that saved its own list meanwhile
-  conflicts and loses the entry it added, so that server asks for a login again.
-- `addCredential` stores metadata only, under a fresh id, the two Vertex fields only on `vertex`; the value goes through
-  `setSecret` on `{ kind: "entry", field: "credentials", id }`. A credential's type is fixed. `deleteCredential` takes
-  the record and its key entry; every binding naming it stays and refuses its requests.
-- `copyModelProfile` copies the binding, never a key; `deleteModelProfile` never removes the last one, and slots naming
-  it stay dangling and refuse their requests. These writes queue each record once per call (`batchRecordWrites`).
-- `pluginStorageStore.svelte.ts`: the only runtime writer of `pluginCustomStorage` ([plugins](plugin-sandbox.md)); each
-  writer is one `batchRecordWrites` scope. A read never creates the record.
-- `shared/mutationValidation.ts` (the server's RisuAccess host uses it too): `requireJsonData` takes JSON up to 256
-  levels, no class instances, cycles, or non-finite numbers; `writeEntries` makes an inherited-name key such as
-  `constructor` an own key through a rebuilt object.
+- `src/ts/storage/characterStore.svelte.ts`: characters (`characterList`, `characterSnapshot`, `selectedCharacter`,
+  `addCharacter`, `adoptCharacter`, `updateCharacter`, `CHARACTER_FIXED_FIELDS`, `replaceCharacterAt`,
+  `removeCharacter`, `removeCharacters`, `selectCharacter`).
+- `src/ts/storage/collectionStore.svelte.ts`: settings and collection writes (`updateSettings`, `addAuthRefresh`,
+  `addCredential`, `deleteCredential`, `copyModelProfile`, `deleteModelProfile`, `incrementStatic`). A deleted
+  credential or profile leaves the bindings naming it, which refuse their requests
+  ([LLM requests](llm-requests.md#invariants)).
+- `src/ts/storage/pluginStorageStore.svelte.ts`: `pluginCustomStorage` ([plugins](plugin-sandbox.md)).
 
 ### Record wrappers
 
-`records.svelte.ts` is the source of truth of the sections, the settings collections, `presets`, `modules`, `plugins`,
-`pluginStorage`, and the characters, each a deep write-through record.
+`src/ts/storage/records.svelte.ts` is the source of truth of the sections, the settings collections, `presets`,
+`modules`, `plugins`, `pluginStorage`, and the characters, each a deep write-through record; its module header holds the
+wrapper rules.
 
-- `trackedRecord(kind)` wraps the `$state` data: a nested read returns a wrapper; a write, `delete`, or `defineProperty`
-  at any depth writes the data and queues the save in the same task (`setRecordWriteListener`, the adapter's `markKey`).
-  Nothing is wrapped while a record is absent (`hasRecord`).
-- Identity: the root resolves by kind on every access, `BY_ID_FIELDS` elements by id, others by object
-  (`DetachedWrapperError` for a gone one, `DuplicateIdError` for an ambiguous id). A same-record wrapper assigned stores
-  its current object, a foreign one a detached copy.
-- Credentials never enter a record. On `llmSecrets` every credential path, and a named key's `key` on any element or
-  list written (a non-empty one routed with the element's id, a blank or absent one ignored, a leaf `""` clears), go to
-  `setSecret`/`clearSecret` or are refused (`CredentialRefusedError`) before anything changes. The inline keys
-  `customModels[].key`, `modelPresets[].proxyKey`, a profile's `key`/`proxyKey`, and old `llmSecrets` maps are refused.
-- `initializeRecords` (an installation) and `applyRaw` (a server copy) never queue; `replaceRecord` and every wrapper
-  write do. `batchRecordWrites(fn)` queues once per kind. `moveRecordListItem` and `replaceRecordList` change a list in
-  one write.
-- A character leaving the list loses its canonical node; its meta stays, so a same-id re-add stamps the same one. A
-  retained wrapper throws `DetachedWrapperError` while the id is absent, then follows a re-add by id, as another object
-  than the fresh wrapper.
-- A list that shrinks locally drops its index children. `trimRootList` cuts a root list's original array to the live
-  elements after the pending Svelte flush, since Svelte never writes that array; the `$state` list stays the same
-  object, or unread reactions would keep the old list's sources.
-- After a raw change `unpinBelow` releases the objects the cached nodes hold; the nodes stay and follow their paths, so
-  retained and fresh wrappers stay one object. Not during a mutator, for an object displaced in the current task, or
-  after a local change, whose moved element is followed by identity.
-- Still retained: a throwing mutator's shrink; a local replacement's old value until its node's next read; removed
-  elements' nodes in the other by-id lists; nested containers' and in-place replaced elements' original Svelte targets
-  (bounded by the data installed). A `length` set through `defineProperty` is not pruned.
-- Two tracked module revisions, independent of saving, advance under `untrack` at the write, before batched dispatch, on
-  a never-reset counter: `moduleMembershipRevision` (replacements, order, `id`/`namespace`/`mcp` writes, a rebuilt
-  element whatever its written field) and `moduleAssetsRevision` (asset writes and replacements).
-- `moduleFieldPlain` and `characterFieldPlain` return a shared detached copy (a verified frozen list as itself),
-  read-only by contract, memoized by `$state` proxy identity and field stamp, never by id or raw target. A field may be
-  read from `proxy[STATE]` only while its stamp equals the meta lifetime: Svelte does not update the raw target. Reading
-  writes no record state. Uncacheable data is copied on every read, and each of its wrapper writes advances the assets
-  revision.
-- Asset lists are immutable: a module's `assets` (`[name, path, ext]` tuples), a character's `additionalAssets` and
-  `emotionImages` (tuples) and `ccAssets` (flat records). Each is frozen, entries then list, on entering the record and
-  remembered as verified per shape; a list of another shape stays mutable and wrapped. Svelte proxies such a list once,
-  never its entries, and a wrapper read returns the list itself (`frozenAssetOf`).
-- The raw paths (`applyRaw`, `initializeRecords`, `applyRawCharacter`, `patchRawCharacter`) freeze handed-over data in
-  place: a caller that keeps editing its input passes a copy. Local writes freeze an owned copy (`adoptModuleValue`,
-  `freshAssetList`), so no live object of a record is ever frozen.
-- An edit replaces the whole list (`module.assets = next`), reusing verified entries. A write into a frozen target
-  through any path throws a `TypeError` before anything changes (`refuseFrozen`: Svelte's traps would change their
-  sources first). `isFrozenAssetList` lets readers key caches by identity (`characterAssetNames`, the parser's fuzzy
-  index), retained wrappers excluded.
+- Writes and saving: `trackedRecord`, `hasRecord`, `setRecordWriteListener` (the adapter's `markKey`),
+  `initializeRecords` and `applyRaw` (never queue), `replaceRecord`, `batchRecordWrites`, `moveRecordListItem`,
+  `replaceRecordList`.
+- Identity and retention: `BY_ID_FIELDS`, `DetachedWrapperError`, `DuplicateIdError`, `trimRootList`, `unpinBelow`.
+- Credentials never enter a record: `CredentialRefusedError`, for writes through the views and wrappers only.
+- Module caches: `moduleMembershipRevision`, `moduleAssetsRevision`, `moduleFieldPlain`, `characterFieldPlain`.
+- Asset lists (a module's `assets`, a character's `additionalAssets`, `emotionImages`, `ccAssets`) are frozen in the
+  record: an edit replaces the whole list, and the raw paths (`applyRawCharacter`, `patchRawCharacter`) freeze
+  handed-over data in place, so a caller that keeps editing its input passes a copy (`frozenAssetOf`,
+  `isFrozenAssetList`, `refuseFrozen`, `adoptModuleValue`, `freshAssetList`).
 
 ## Flows
 
@@ -200,18 +128,15 @@ Kinds (`shared/resources.ts`):
 
 ### Browser-local import
 
-`importBrowserLocalData` (`browserLocalImport.ts`), every boot before plugins load, moves data older versions kept only
-in the browser to the server.
+`importBrowserLocalData` (`src/ts/storage/browserLocalImport.ts`), awaited by every boot before plugins load, moves the
+data older versions kept only in the browser to the server: LocalForage `inlay`, `plugin`, `plugin_permissions`,
+`iris_dialogues`, and `google-search-credentials`. Its module header holds the per-entry order (the server's copy wins;
+write, read back, then delete only a local entry still holding the imported value, which another tab may have changed).
 
-- LocalForage `inlay` (old data-URI values included), `plugin` (`safe_plugin_*`), `plugin_permissions`,
-  `iris_dialogues`, and `google-search-credentials`, each into its record.
-- Per entry: a copy the server holds wins; otherwise it is written and read back. Only then is the local entry deleted,
-  and only while it still holds the imported value (`sameLocalValue`, Blob-aware).
-- An inlay whose metadata exists without its file (a partial restore) is repaired from the local bytes when they are the
-  file the metadata names, else kept. A non-JSON value stays. A failed step leaves its entries for the next boot; a
-  restore stops the run.
-- `risuSaveCache` and the `risuauth` `localStorage` key are removed. Deleting `firefox-translations-models` (the
-  Bergamot translator's models) is attempted without waiting: another tab can block it, and a later boot tries again.
+- A restore meanwhile (412) stops the import; any other failed step leaves its entries for the next boot.
+- An inlay whose server metadata lacks its file is repaired from the browser's bytes only when they are the file the
+  metadata names (`repairInlayMedia`, `src/ts/process/files/inlays.ts`); otherwise the browser copy stays.
+- Deleting `firefox-translations-models` is not awaited: another tab can block it, and a later boot retries.
 
 ### Access
 
@@ -253,24 +178,18 @@ them up, and a backup does not carry them.
 
 ### Character order repair
 
-`characterOrder.ts`. Every walk remembers all held ids, trash included, and forgets ids absent from both the list and
-the order.
+`src/ts/storage/characterOrder.ts` (its module header): `checkCharOrder` after a change in this tab,
+`checkCharOrderAtBoot` over the boot's complete inventory, `queueRemoteCharOrderRepair` for another writer's order.
 
-- `checkCharOrder` (re-exported by `globalApi.svelte.ts`) appends live unordered characters except `§playground` and
-  removes only held trash or observed ids now absent; unknown ids keep their place and folder. `checkCharOrderAtBoot`
-  has the complete inventory: it alone drops never-observed ids, and it resets the observed set.
-- Another writer's order (a conflict reload, a feed patch, a whole read) goes to `queueRemoteCharOrderRepair`
-  (`watchRemoteRecords`), not `checkCharOrder`. In a microtask after the apply step, the live characters the order lists
-  nowhere are read from the server (`readRefs`, 1,000 refs per read), each appended at the root when the server holds an
-  untrashed copy, or none while this tab holds no saved revision (its own create, refused with the order write batched
-  with it).
-- It never removes or moves an entry, so an id this tab has not read yet (a capped read applies the order first) keeps
-  its folder, also through a later `checkCharOrder`.
-- This tab's copy only picks candidates and can veto (a character trashed here); the server's copy decides, since this
-  tab's may be older.
-- A read is dropped when another order arrived or the order changed here; the repair restarts from the newest order
-  until an attempt ends with it unchanged. It writes once, only when it appends, so its write comes back with nothing to
-  append.
+- Another writer's order (a conflict reload, a live update, a whole read) reaches `onRemoteRecordApplied`, which the
+  boot (`watchRemoteRecords`) routes to `queueRemoteCharOrderRepair`, not to `checkCharOrder`. In a microtask after the
+  apply step it reads the live characters that order lists nowhere from the server (`readRefs`) and appends at the root
+  each one the server holds untrashed, or holds none of while the save adapter has no saved revision of it (this tab's
+  create, refused together with its order write): the server's copy decides, since this tab's may be older.
+- A read during which another order arrived or the order changed here is dropped, and the repair restarts from the
+  newest order.
+- It never removes or moves an entry, so an id this tab has not read yet keeps its folder, and it writes only when it
+  appends.
 
 ### Selection and deletion
 
@@ -476,6 +395,10 @@ the order.
 - `setCharacterOrder` refuses a folder without a `data` list, while `checkCharOrder` reads one as empty. The repairs
   remove empty folders before filtering members, so a folder their filtering empties survives one call and goes on the
   next.
+- A server job's MCP login writes the `authRefreshes` collection (`refreshChanges` in `server/src/mcp/registry.ts`)
+  without a `resource` event, so live updates carry it; a tab that saved its own list meanwhile conflicts, reloads the
+  server's list, and loses its own addition, so the server that addition named asks for a login again
+  (`addAuthRefresh`).
 - The sidebar hides a held deletion or trash at once, resolving only own ids; its drag targets use persisted order
   positions, hidden slots included.
 - Records have no resolve cache (one halved the cost, but its invalidation rule was never proven). Their cost shows in

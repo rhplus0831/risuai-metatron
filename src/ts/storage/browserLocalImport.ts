@@ -241,7 +241,10 @@ function isGoogleCredentials(value: unknown): value is NonNullable<Database["goo
     );
 }
 
-/** Runs every import step; one failing step does not stop the others (except a restore). */
+/**
+ * Runs every import step; one failing step does not stop the others (except a restore). Boot
+ * (`src/ts/bootstrap.ts`) awaits it before loading plugins, so a plugin reads its moved values.
+ */
 export async function importBrowserLocalData() {
     const steps: [string, () => Promise<void>][] = [
         ["inlays", importInlays],

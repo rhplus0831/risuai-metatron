@@ -290,10 +290,23 @@ let moduleRevisionCounter = 0;
 let modulesRevision = $state(0);
 let assetsRevision = $state(0);
 
+/**
+ * The modules' membership revision, tracked. It advances synchronously at the write, untracked and
+ * before the batched save dispatch, independent of saving, on a counter no reset rewinds: on an
+ * installation, a server copy, or a replacement of the `modules` record, a root list change, a write
+ * of an element's `id`, `namespace`, or `mcp`, and a rebuilt element whatever field was written.
+ * `src/ts/process/modules.ts` `getModules` keys its cache by it.
+ */
 export function moduleMembershipRevision(): number {
     return modulesRevision;
 }
 
+/**
+ * The modules' assets revision, tracked, advancing like `moduleMembershipRevision`: on every
+ * installation, server copy, replacement, or root list change, a write of an element's `assets`, and
+ * every wrapper write while the record is uncacheable. `src/ts/process/modules.ts` `getModuleAssets`
+ * depends on it.
+ */
 export function moduleAssetsRevision(): number {
     return assetsRevision;
 }
@@ -881,6 +894,16 @@ function assertNoLlmCredential(value: unknown) {
 // - `credentials[].key` (`SECRET_ENTRY_MAPS`): see
 //   `prepareEntryCredentials`.
 
+/**
+ * Thrown before anything changes when a write through a view or record wrapper would put a credential
+ * into a record or cannot route it to `setSecret`: among others a credential value other than a
+ * string, `null`, or `undefined`, a whole `llmSecrets` replacement that carries one (the record holds
+ * the mirror form only), a removed credential map in `llmSecrets` (`customModels`, `modelPresets`), a
+ * removed inline key (`customModels[].key`, `modelPresets[].proxyKey`, a profile's `key` or
+ * `proxyKey`), or a credential `delete` (use `clearSecret`). It covers only writes through the views
+ * and wrappers: `collectionStore.svelte.ts` `updateSettings` refuses the `llmSecrets` fields itself
+ * (`MutationValidationError`).
+ */
 class CredentialRefusedError extends TypeError {
     constructor(message: string) {
         super(message);
@@ -1647,7 +1670,11 @@ function frozenAssetOf(value: object): object | null {
     return target;
 }
 
-/** A verified frozen asset list (or its Svelte proxy), never a record wrapper that can retarget. */
+/**
+ * A verified frozen asset list (or its Svelte proxy), never a record wrapper that can retarget: a
+ * reader may key a cache by its identity (`src/ts/assetList.ts` `characterAssetNames`, the parser's
+ * asset index in `src/ts/parser/parser.svelte.ts`).
+ */
 export function isFrozenAssetList(value: unknown): boolean {
     if (!isObject(value) || nodeOf.has(value)) {
         return false;
@@ -2136,6 +2163,16 @@ function trimOriginal(kind: string) {
  * The nodes stay, so a retained wrapper and a fresh one remain one object; until
  * then they would keep the replaced data alive. Never after a local change, where a moved element
  * is followed by identity.
+ *
+ * What no release reaches: a throwing mutator's shrink, until the next shrink or replacement; a local
+ * replacement's old value, which its node holds until that node's next read; the nodes of elements
+ * removed from a by-id list other than the character list (`BY_ID_FIELDS`: only
+ * `forgetCharacterNodes` drops nodes from an id map); and the original Svelte targets of nested
+ * objects and arrays, and of root arrays whose elements were replaced without a later shrink, which
+ * keep the values they were installed with (only a root array's shrink rewrites its original target,
+ * `trimRootList`), so bounded by the data installed. A `length` truncation through the generic
+ * `defineProperty` path (`Reflect.defineProperty`) skips the shrink cleanup (`afterShrink`); the
+ * entry lists (`isEntryList`) route a value descriptor through `writeThrough`, which runs it.
  */
 function unpinBelow(node: TrackedNode, self = false) {
     if (mutatorDepth > 0) {

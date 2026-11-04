@@ -24,11 +24,11 @@ import { selectModelPreset, selectPreset, selection } from "./selection.svelte";
 import { activeMainProfile, currentPresetRecord, settings } from "./settingsViews.svelte";
 import { maxContextOverrideOf } from "../../../shared/sections.ts";
 
-/*
- * The preset actions of the preset lists (moved out of `database.svelte.ts`; split into prompt and
- * model presets): copy, switch, apply a template, export, and import, over the `presets` record (prompt presets) and the
- * `modelPresets` collection (`settingsViews.svelte.ts`). Every preset field lives in its own preset
- * (the views write them there directly), so a switch only changes this tab's selection.
+/**
+ * The preset actions of the preset lists: copy, switch, apply a template, export, and import, over
+ * the `presets` record (prompt presets) and the `modelPresets` collection
+ * (`settingsViews.svelte.ts`). Every preset field lives in its own preset (the views write them
+ * there directly), so a switch only changes this tab's selection.
  */
 
 /** Adds a copy of prompt preset `id` under a new id; the copy starts active (never archived). */
@@ -111,6 +111,13 @@ function isPositiveSize(value: unknown): value is number {
     return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
+/**
+ * Exports prompt preset `id` as a `.json` or `.risup` file (`return`: the data and the `.risup`
+ * bytes, nothing downloaded): `name`, `image`, and every `PROMPT_PRESET_FIELDS` field; no id,
+ * `archived`, or credential. Its one model field is upstream RisuAI's `maxContext`: the preset's
+ * context size override (`maxContextOverrideOf`), else the main profile the views resolve now
+ * (`activeMainProfile`) when its `maxContext` is above 0, else the `PRESET_DEFAULTS` value.
+ */
 export async function downloadPreset(id: string, type: "json" | "risupreset" | "return" = "json") {
     const source = settings.presets.find((preset) => preset.id === id);
     if (!source) {
@@ -163,6 +170,14 @@ export async function downloadPreset(id: string, type: "json" | "risupreset" | "
     };
 }
 
+/**
+ * Imports a prompt preset file (`f`, else one the user picks) as a new prompt preset through
+ * `addPreset`, so it gets a fresh id on every path, even when the file carries one, and starts active
+ * (`archived` dropped). A NovelAI preset (`presetVersion` 3 or later) and a SillyTavern preset are
+ * converted. The file's model fields and a `proxyKey` are ignored (`normalizePreset` drops them),
+ * except that a RisuAI file's `maxContext` seeds an unset `maxContextOverrideSize`; the override
+ * stays off unless the file turns `maxContextOverride` on.
+ */
 export async function importPreset(
     f: {
         name: string;

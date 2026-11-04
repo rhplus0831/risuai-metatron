@@ -585,7 +585,11 @@ export function setAuxModelSlot(
     return true;
 }
 
-/** Adds named credential metadata under a fresh record id. Set its key separately through `setSecret`. */
+/**
+ * Adds named credential metadata under a fresh record id: `name`, `type`, and, on a `vertex`
+ * credential only, `clientEmail` and `projectId` (dropped on any other type; any other field is
+ * refused). Set its key separately through `setSecret` on `{ kind: "entry", field: "credentials", id }`.
+ */
 export function addCredential(input: unknown): string {
     requireObject("credential", input);
     requireJsonData("credential", input);
