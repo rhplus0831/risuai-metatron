@@ -5,6 +5,7 @@ const countOf = (count: number, noun: "turn" | "message") => `${count} ${noun}${
 const memoryCostText = (calls: number, tokens: number) =>
     `This takes at least ${calls === 1 ? "1 model call" : `${calls} model calls`} and about ${tokens} input tokens. That is an estimate of each window's first call alone: a window can also add a page update call and compaction calls.`;
 
+/** Complete UI string catalog and source type; other `src/lang/` locales supply `DeepPartial` overrides. */
 export const languageEnglish = {
     formating: {
         main: "Main Prompt",
@@ -329,6 +330,7 @@ export const languageEnglish = {
             "- **Trigger Scripts**: Similarity conditions in trigger scripts\n" +
             "- **File Attachments**: Searching within PDF/TXT/XML attachments\n" +
             "- **Playground**: Embedding testing in Playground",
+        /** Keep this help and its `src/lang/ko.ts` override aligned with `src/ts/keepAliveAudio.ts`. */
         keepSessionAlive:
             "Helps keep the tab active in the background. Refresh the page if changes do not take effect.\n\n" +
             "- **Via Sound**: Continuously loops an inaudible 20 Hz tone. On Android, this shows a media notification and may pause playback in other music apps.\n",
@@ -1085,6 +1087,10 @@ export const languageEnglish = {
     setNodePassword: "Set your password to security",
     inputNodePassword:
         "Input your password. if you can't remember, remove save/server/password in your server files and restart the server.",
+    /**
+     * HTTP-status fallbacks for `src/ts/storage/serverAuth.ts`, where server error text takes precedence.
+     * `src/lang/ko.ts` overrides these functions; the other bundled locales inherit English.
+     */
     serverAuth: {
         loginFailed: (status: number) => `Login failed (${status})`,
         passwordSetupFailed: (status: number) => `Password setup failed (${status})`,

@@ -6,6 +6,13 @@
     import { language } from "src/lang";
     import { untrack } from "svelte";
 
+    /**
+     * Uses the common value sources in `src/ts/setting/utils.ts`. At mount and when visible option values
+     * change, a defined value missing from nonempty options takes the nearest numeric option when the
+     * value and at least one option are numeric, else the last visible option. Value reads/writes are
+     * untracked, so while mounted a preset switch with the same options keeps even a hidden value.
+     */
+
     interface Props {
         item: SettingItem;
         ctx: SettingContext;
@@ -27,9 +34,8 @@
     // that shows the same options leaves it equal, so the reset below does not run again.
     let visibleValues = $derived(JSON.stringify(processedOptions.map((o) => o.value)));
 
-    // Reset value if current selection becomes hidden. Only the visible values are tracked; the value is
-    // read untracked, as in `SettingSelect`, so this runs when the visible options change, never on a
-    // switch of the selected preset alone (a preset holding a hidden option keeps its value).
+    // Runs at mount and when visible values change. Only those values are tracked; value reads/writes
+    // are untracked, as in `SettingSelect`, so a preset switch with equal options keeps hidden values.
     $effect(() => {
         void visibleValues;
         untrack(() => {

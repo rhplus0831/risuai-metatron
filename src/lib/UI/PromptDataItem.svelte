@@ -11,6 +11,10 @@
     import TextInput from "./GUI/TextInput.svelte";
     import { RISU_PROMPT_DRAG_TYPE } from "src/ts/dragTypes";
 
+    /**
+     * Edits one `PromptItem` from `src/ts/process/prompt.ts`, including its type and type-specific fields.
+     */
+
     interface Props {
         promptItem: PromptItem;
         onRemove?: () => void;

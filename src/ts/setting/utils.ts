@@ -36,6 +36,7 @@ export function languageText(key: string | undefined): string {
     return (key && (language as any)[key]) || "";
 }
 
+/** The current language's `labelKey`, then `fallbackLabel`, else an empty label. */
 export function getLabel(item: SettingItem): string {
     return languageText(item.labelKey) || (item.fallbackLabel ?? "");
 }
@@ -61,6 +62,10 @@ export function settingContext(parts: {
     };
 }
 
+/**
+ * Value precedence: `getValue`, then `bindPath`, then `bindKey`. Bindings read their root through
+ * `readSettingsRoot` in `src/ts/storage/settingsViews.svelte.ts`.
+ */
 export function getSettingValue(item: SettingItem, ctx: SettingContext): any {
     if (item.getValue) {
         return item.getValue(ctx);
@@ -79,6 +84,11 @@ export function getSettingValue(item: SettingItem, ctx: SettingContext): any {
     return undefined;
 }
 
+/**
+ * Write through `setValue`, else `bindPath`, else `bindKey`, then call `onChange`. Bindings use
+ * `src/ts/storage/settingsViews.svelte.ts`'s root readers/writers; dotted paths create missing objects
+ * and mutate the resolved root's leaf. Unlike `updateSettingValue`, this does not skip equal values.
+ */
 export function setSettingValue(item: SettingItem, newValue: any, ctx: SettingContext): void {
     if (item.setValue) {
         item.setValue(newValue, ctx);
@@ -132,6 +142,10 @@ export function sectionHasVisibleItems(section: SettingSection, ctx: SettingCont
     return section.items.some((item) => checkCondition(item, ctx));
 }
 
+/**
+ * Every page's leaf arrays, including Language and Translation, each item once. The optional
+ * label/keyword filter has no UI caller; `src/ts/setting/searchIndex.ts` searches the unfiltered catalog.
+ */
 export function getFullSettingsData(searchTerm = "") {
     const full = accessibilitySettingsItems.concat(
         advancedSettingsItems,

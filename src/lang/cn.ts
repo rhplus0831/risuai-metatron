@@ -1,3 +1,4 @@
+/** Simplified Chinese `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageChinese = {
     formating: {
         main: "主提示词",

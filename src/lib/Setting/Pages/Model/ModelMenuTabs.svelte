@@ -15,10 +15,12 @@
     } from "src/ts/stores.svelte";
 
     /**
-     * The Model menu's heading and tabs: the model preset (`ModelSettings`), the connections
-     * (`ModelProfilesSettings`), and the API keys (`ApiKeysSettings`). Each tab keeps its own menu
-     * index, so a caller can still open one tab directly.
+     * Heading and tabs shared by `src/lib/Setting/Pages/ModelSettings.svelte`,
+     * `src/lib/Setting/Pages/ModelProfilesSettings.svelte` (Connections), and
+     * `src/lib/Setting/Pages/ApiKeysSettings.svelte`. One sidebar entry covers their three menu indexes;
+     * selecting a tab sets `SettingsMenuIndex`, so each can also be opened directly.
      */
+
     const tabs = $derived([
         { menu: MODEL_SETTINGS_MENU, label: language.modelPresetTab },
         { menu: MODEL_PROFILES_SETTINGS_MENU, label: language.modelProfiles.title },

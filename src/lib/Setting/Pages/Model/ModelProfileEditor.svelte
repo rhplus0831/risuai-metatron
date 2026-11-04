@@ -37,6 +37,14 @@
     import { modelParameterItems } from "src/ts/setting/botSettingsParamsData";
     import { currentJump } from "src/ts/setting/settingJump.svelte";
 
+    /**
+     * Edit `profileId` through `profileForSlot` in `src/ts/storage/settingsViews.svelte.ts`: model,
+     * `src/lib/UI/GUI/CredentialSelect.svelte`, reverse proxy, OpenRouter, local URLs, Ollama/NanoGPT,
+     * chat format, system replacement, custom flags, tools, maxContext, and image output.
+     * At mount, an available `currentJump()` from `src/ts/setting/settingJump.svelte.ts` naming
+     * `profile.chatFormat` starts Chat Formatting open.
+     */
+
     interface Props {
         profileId: string;
     }

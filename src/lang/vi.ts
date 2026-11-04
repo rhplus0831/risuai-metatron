@@ -1,3 +1,4 @@
+/** Vietnamese `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageVietnamese = {
     formating: {
         main: "Lời nhắc chính",

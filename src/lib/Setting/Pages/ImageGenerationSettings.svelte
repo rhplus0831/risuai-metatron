@@ -19,6 +19,13 @@
     import CredentialStatusLink from "../CredentialStatusLink.svelte";
     import { scrollToCredential, takeCredentialRequest } from "src/ts/setting/credentialLinks";
 
+    /**
+     * Image-provider controls and the owning `NAIApiKey` input. WaveSpeed LoRA rows are an editing copy,
+     * published only by an edit or an unsupported-model reset. Divergent incoming values keep a divergent
+     * local draft and flag a conflict; an edit (republish), Use saved, or matching incoming values clear it.
+     * A `secrets` revision alone is no conflict.
+     */
+
     // The NovelAI key is edited only here; NovelAI TTS links to it. A link shows it even while
     // another image provider is selected.
     const revealNovelAIKey = takeCredentialRequest("NAIApiKey");

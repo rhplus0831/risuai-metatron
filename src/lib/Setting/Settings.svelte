@@ -72,10 +72,19 @@
 
     /**
      * The sidebar, in groups. An entry opens its first menu index and is highlighted on any of them:
-     * Model covers its three tabs (`Model/ModelMenuTabs.svelte`), Prompt its template editor (13).
-     * Labels are read at render, so a language switch shows in the next render. Plugin-added menus
-     * follow the last group.
+     * Model covers three tabs (`src/lib/Setting/Pages/Model/ModelMenuTabs.svelte`), Prompt its template
+     * editor (13). Labels are read at render, so a language switch shows in the next render.
+     * Plugin-added menus follow Chat setup, Features, Interface, Data, and Advanced & about.
+     *
+     * The `language.settingsSearch` field replaces groups with hit labels, breadcrumbs and unavailable
+     * reasons for a nonblank query. Click opens a hit; Enter opens the first, Escape clears (both ignore
+     * IME composition). The component owns the query across phone page round trips, until settings close.
+     *
+     * Pages key on menu and `jumpVersion()` from `src/ts/setting/settingJump.svelte.ts`, so every search
+     * jump remounts. The attachment scrolls/rings available item or section hits; unavailable hits show
+     * `hiddenNote`/`noMainProfileNote` without opening a section/row. Each jump then calls `finishJump`.
      */
+
     interface NavEntry {
         menus: number[];
         icon: Component;
@@ -183,8 +192,9 @@
 
     /**
      * Runs on each mount of the keyed page, after the page initialized (its tab, its accordions'
-     * `startOpen`, the Connections selection): an available hit scrolls to and rings its row or section,
-     * an unavailable one shows the note; the jump then finishes. Untracked, so it runs once per mount.
+     * `startOpen`, the Connections selection): an available item/section hit scrolls and highlights;
+     * an unavailable hit shows a note; an available page/tab hit only navigates. The jump then finishes.
+     * Untracked, so it runs once per mount.
      */
     const runJump: Attachment<HTMLDivElement> = (page) => {
         let active = true;

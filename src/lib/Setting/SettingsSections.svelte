@@ -6,6 +6,14 @@
     import SettingRenderer from "./SettingRenderer.svelte";
     import { currentJump } from "src/ts/setting/settingJump.svelte";
 
+    /**
+     * `SettingSection[]` groups rendered by `src/lib/Setting/SettingRenderer.svelte`, using the same
+     * context and `sectionHasVisibleItems` from `src/ts/setting/utils.ts`; all-hidden groups vanish.
+     * Ordinary groups use `<section>`; collapsible groups use a div and a closed styled
+     * `src/lib/UI/Accordion.svelte`. Both carry `data-settings-section`; an available `currentJump()`
+     * captured at mount starts its collapsible group open while that jump remains pending.
+     */
+
     interface Props {
         sections: SettingSection[];
     }

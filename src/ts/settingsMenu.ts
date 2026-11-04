@@ -1,5 +1,8 @@
-// The named `SettingsMenuIndex` values, apart from `stores.svelte.ts` so the route table
-// (`router/routes.ts`) can read them without the store graph. `stores.svelte.ts` re-exports them.
+/**
+ * Named `SettingsMenuIndex` values, re-exported by `src/ts/stores.svelte.ts`. Kept outside the store
+ * graph for `src/ts/router/routes.ts`, which owns URL slugs. `src/lib/Setting/Settings.svelte` also
+ * selects pages by numeric indexes, including 13 for the prompt template editor.
+ */
 
 /** The Model menu's Preset tab: the model preset (`ModelSettings.svelte`). */
 export const MODEL_SETTINGS_MENU = 1;

@@ -1,3 +1,4 @@
+/** Spanish `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageSpanish = {
     formating: {
         main: "Prompt Principal",

@@ -1,13 +1,15 @@
-// The settings deep link: opening a search hit records a jump and remounts the target page, so the
-// mount-time consumers (Display's `takeRequestedDisplayTab`, `Accordion`'s `startOpen`, the Prompt
-// page's tab, the Connections selection) apply on every jump, also to the page already shown.
-// `Settings.svelte` keys its page by the menu and `jumpVersion()`, and runs the jump (scroll or the
-// unavailable note) once the page mounted.
 import { tick } from "svelte";
 import { get } from "svelte/store";
 import { SettingsMenuIndex, settingsOpen } from "../stores.svelte";
 import { requestDisplayTab } from "./displaySettingsData.svelte";
 import type { SettingHit, SettingOpener, SettingUnavailableReason } from "./searchIndex";
+
+/**
+ * In-app settings deep links, without a URL form. `src/lib/Setting/Settings.svelte` keys pages by menu
+ * and `jumpVersion()`: each jump remounts its page and applies mount-time state. An available item
+ * or section hit scrolls and highlights; an unavailable hit shows a note; an available page or tab
+ * hit only navigates.
+ */
 
 /** A recorded jump: the hit's destination, copied at `openSetting`. */
 export interface SettingJump {
@@ -24,7 +26,7 @@ export interface SettingJump {
     reason?: SettingUnavailableReason;
 }
 
-/** How long the row's highlight ring stays (as in the chat's message jump). */
+/** Row/section highlight lifetime in milliseconds (2 seconds). */
 export const SETTING_HIGHLIGHT_MS = 2000;
 const HIGHLIGHT_CLASSES = ["ring-2", "ring-primary-500"];
 
@@ -33,7 +35,7 @@ let version = $state(0);
 /** The jump the next mount of its page applies; not reactive, nothing renders from it. */
 let pending: SettingJump | null = null;
 
-/** The current jump version (reactive): `Settings.svelte` keys its page by it. */
+/** Reactive page-key version for `src/lib/Setting/Settings.svelte`; only `openSetting` changes it. */
 export function jumpVersion(): number {
     return version;
 }
@@ -65,12 +67,12 @@ export function openSetting(hit: SettingHit): number {
     return version;
 }
 
-/** The pending jump while its page is the one shown (exact menu), else null. Not reactive. */
+/** Pending jump only on its exact menu, else null; nonreactive, captured once by mount-time consumers. */
 export function currentJump(): SettingJump | null {
     return pending !== null && pending.menu === get(SettingsMenuIndex) ? pending : null;
 }
 
-/** Clear the pending jump when it is still `jumpVersion`'s; never changes `jumpVersion()`. */
+/** Clear only the matching pending version; leaves `jumpVersion()` intact, so the prepared page stays mounted. */
 export function finishJump(jumpVersion: number): void {
     if (pending?.version === jumpVersion) pending = null;
 }
@@ -93,7 +95,7 @@ function highlight(element: HTMLElement): void {
  * After a tick, scroll the item's row (`[data-setting-id]`, its first child with a box) into view and
  * ring it for `SETTING_HIGHLIGHT_MS`. `root` scopes the lookup (the mounted page); `isCurrent` is
  * asked after the tick, before any DOM work, so an outdated jump touches nothing. Returns whether it
- * highlighted a row.
+ * highlighted a row; a missing wrapper or no child with a box touches nothing.
  */
 export async function scrollToSetting(
     itemId: string,

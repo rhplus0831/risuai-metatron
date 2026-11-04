@@ -1,10 +1,3 @@
-/**
- * Settings Structure Types
- *
- * This module defines the schema for data-driven settings UI.
- * Settings are defined as data and rendered automatically by SettingRenderer.
- */
-
 import type {
     ActiveModelPreset,
     ModelProfileView,
@@ -17,7 +10,13 @@ import type { CustomComponentId, CustomComponentProps } from "./customComponents
 import type { LLMModel } from "../model/types";
 
 /**
- * Context passed to condition functions for visibility checks
+ * Schema for the data-driven settings UI. `bindKey` and `bindPath`'s first segment must be a
+ * `SettingsRootKey` served by `src/ts/storage/settingsViews.svelte.ts`; other roots fail type checking.
+ */
+
+/**
+ * Context for conditions and wrappers: `settings`, `activePreset`, `activeModelPreset`, and
+ * `activePersona` from `src/ts/storage/settingsViews.svelte.ts`, plus the target profile and model info.
  */
 export interface SettingContext {
     /** The settings record views (`settings.<section>.<field>`, the collections). */
@@ -26,7 +25,7 @@ export interface SettingContext {
     preset: ActivePreset;
     /** The selected model preset, by its own slot fields. */
     modelPreset: ActiveModelPreset;
-    /** The main slot's profile, with schema defaults for a missing profile. */
+    /** The editor's target profile, defaulting to the main slot's; missing profiles read schema defaults. */
     modelProfile: ModelProfileView;
     /** The selected persona. */
     persona: ActivePersona;
@@ -232,7 +231,7 @@ export interface SettingSection {
 }
 
 /**
- * Category definition for grouping settings
+ * Category definition for grouping settings; currently unused.
  */
 export interface SettingCategory {
     id: string;

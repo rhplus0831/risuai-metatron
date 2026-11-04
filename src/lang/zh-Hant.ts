@@ -1,3 +1,4 @@
+/** Traditional Chinese `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageChineseTraditional = {
     formating: {
         main: "主要提示詞",

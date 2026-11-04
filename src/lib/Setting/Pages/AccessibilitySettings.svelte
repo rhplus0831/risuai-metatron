@@ -8,6 +8,11 @@
     import { requestDisplayTab } from "src/ts/setting/displaySettingsData.svelte";
     import SettingRenderer from "../SettingRenderer.svelte";
     import SettingsSections from "../SettingsSections.svelte";
+
+    /**
+     * Header and sectioned accessibility controls, followed by a Display menu (3) link that requests
+     * Layout & sizing through `requestDisplayTab` in `src/ts/setting/displaySettingsData.svelte.ts`.
+     */
 </script>
 
 <SettingRenderer items={accessibilitySettingsHeader} />

@@ -52,6 +52,13 @@
     import StructuredMemoryPrompts from "./StructuredMemoryPrompts.svelte";
     import { memorySettingsSections, memorySupaMemoryItems } from "src/ts/setting/memorySettingsData";
 
+    /**
+     * Handwritten memory providers, presets, and embedding model, with registry controls from
+     * `src/ts/setting/memorySettingsData.ts`; owns `supaMemoryKey` and the HypaV3 budget controls.
+     * Structured Memory reads `ui.memoryAlgorithmType` before the legacy flags it clears; its branch
+     * shares the preset picker, budget mode, and memory maximum through snippets.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
 
     // Summarization (HypaV2's and SupaMemory's OpenAI 3.5 Instruct, `supaMemory.ts`/`hypav2.ts`) and

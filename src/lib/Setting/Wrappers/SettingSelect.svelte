@@ -7,6 +7,13 @@
     import Help from "src/lib/Others/Help.svelte";
     import { language } from "src/lang";
 
+    /**
+     * At mount and when visible option values change, a defined value missing from nonempty options
+     * is replaced by the last visible option. Value reads/writes are untracked, so while mounted a
+     * preset switch with the same options keeps even a hidden value.
+     * An option's `labelKey` has no label fallback; missing translations rely on `src/lang/index.ts`'s merge.
+     */
+
     interface Props {
         item: SettingItem;
         ctx: SettingContext;
@@ -21,7 +28,7 @@
 
     let visibleValues = $derived(JSON.stringify(processedOptions.map((o) => o.value)));
 
-    // Only visible values trigger a reset; rebuilding the context with equal options keeps the stored value.
+    // Runs at mount and when visible values change; an equal context rebuild keeps the stored value.
     $effect(() => {
         void visibleValues;
         untrack(() => {

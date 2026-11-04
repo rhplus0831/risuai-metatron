@@ -5,10 +5,15 @@
     import { CREDENTIAL_OWNERS, openCredentialOwner, type SharedCredential } from "src/ts/setting/credentialLinks";
 
     /**
-     * A shared credential where its owning page is not: the key's status as `SecretInput` shows it
-     * (set, with its last characters when long enough; not set; saving) and a link that opens the
+     * A shared credential where its owning page is not: the status `src/lib/UI/GUI/SecretInput.svelte` shows
+     * (set, with its last characters when long enough; not set; saving) and an "Edit in …" button opening the
      * owner with the field shown. Nothing here edits the key.
+     * Plain `secrets.NAIApiKey` uses `shared/llmSecrets.ts`'s `maskedLeaf`. Consumers:
+     * `src/lib/Setting/Pages/VoiceSettings.svelte` (OpenAI, NovelAI),
+     * `src/lib/Setting/Pages/ImageGenerationSettings.svelte` (DALL-E's OpenAI, Imagen's Google),
+     * `src/lib/Playground/PlaygroundEmbedding.svelte` (`supaMemoryKey`).
      */
+
     interface Props {
         credential: SharedCredential;
         label: string;

@@ -33,6 +33,11 @@
      * The prompt preset's page: the selected prompt preset's sampling parameters, prompts and
      * template, bias, regex, module integration, and icon. The parameters shown follow the selected
      * model preset's model.
+     * Parameters renders `allBasicParameterItems` from `src/ts/setting/botSettingsParamsData.ts` plus
+     * handwritten model controls; Prompt is handwritten, Others mixes handwritten controls with
+     * `src/ts/setting/promptSettingsData.ts`'s sections. A search jump sets the tab at mount, including
+     * unavailable hits; the legacy GUI stacks every tab. Image/bias imports capture the preset id
+     * before the dialog and write only if that record still exists afterward.
      */
 
     let mainPromptTokens = $state(0);

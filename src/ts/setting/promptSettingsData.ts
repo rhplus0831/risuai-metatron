@@ -1,9 +1,11 @@
 import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
 
-// The Prompt page's Others tab (`PromptPresetSettings.svelte`) below its handwritten accordions: the
-// prompt options moved from Advanced. They are global (`providers` and `ui` fields), not fields of
-// the prompt preset the page edits, so their section says it applies to every preset.
+/**
+ * Registry items below the handwritten Others-tab accordions in
+ * `src/lib/Setting/Pages/PromptPresetSettings.svelte`: global `providers`/`ui` options shared by every preset.
+ */
+
 export const promptSettingsItems: SettingItem[] = [
     {
         id: "adv.addPrompt",

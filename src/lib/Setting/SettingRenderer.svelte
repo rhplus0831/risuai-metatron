@@ -6,6 +6,13 @@
     import { settingRegistry } from "src/ts/setting/settingRegistry";
     import { checkCondition, settingContext } from "src/ts/setting/utils";
 
+    /**
+     * Registry renderer: `src/ts/setting/utils.ts`'s `settingContext` uses the live views and supplied
+     * model info, or main/sub slot info from `src/ts/model/modellist.ts`. Rows passing `checkCondition`
+     * use `settingRegistry[item.type]`, keyed by id. Their `data-setting-id` anchor is `display: contents`;
+     * search highlights its first boxed child (`src/ts/setting/settingJump.svelte.ts`).
+     */
+
     interface Props {
         items: SettingItem[];
         /** An explicit editor target; omitted pages use the main slot's profile. */

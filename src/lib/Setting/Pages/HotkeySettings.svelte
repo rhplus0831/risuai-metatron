@@ -2,6 +2,12 @@
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import { activeHotkeys } from "src/ts/hotkey";
+
+    /**
+     * Menu 15 at every width (`src/lib/Setting/Settings.svelte`); below 768 px shows
+     * `language.screenTooSmall`. The table uses `src/ts/hotkey.ts`'s `activeHotkeys`, excluding
+     * `quickSettings`; its Ctrl+Q handler only shows `language.quickSettingsRemoved`.
+     */
 </script>
 
 {#if window.innerWidth < 768}

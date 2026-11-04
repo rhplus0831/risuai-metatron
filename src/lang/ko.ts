@@ -2,6 +2,7 @@
 const memoryCostText = (calls: number, tokens: number) =>
     `모델 호출이 최소 ${calls}번, 입력 토큰이 약 ${tokens}개 필요합니다. 각 구간의 첫 호출만 어림한 값이며, 구간마다 페이지 업데이트 호출과 압축 호출이 더 생길 수 있습니다.`;
 
+/** Korean `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageKorean = {
     formating: {
         main: "메인 프롬프트",

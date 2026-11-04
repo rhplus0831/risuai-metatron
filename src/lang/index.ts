@@ -7,8 +7,16 @@ import { languageVietnamese } from "./vi";
 import { languageChineseTraditional } from "./zh-Hant";
 import { languageSpanish } from "./es";
 
+/**
+ * Bundled UI locales. Manual selection needs a locale here, a `changeLanguage` branch, and an option
+ * in `src/ts/setting/languageSettingsData.svelte.ts`; `BROWSER_UI_LANGUAGES` in `src/ts/bootstrap.ts`
+ * only controls first-boot browser base-code matching.
+ */
+
+/** Current UI strings, replaced by `changeLanguage`; English defines the complete type. */
 export let language: typeof languageEnglish = languageEnglish;
 
+/** Merge a recognized locale over a fresh English clone; English and unknown codes use English directly. */
 export function changeLanguage(lang: string) {
     if (lang === "cn") {
         language = merge(safeStructuredClone(languageEnglish), languageChinese);

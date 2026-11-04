@@ -9,6 +9,8 @@
     import CredentialStatusLink from "../CredentialStatusLink.svelte";
     import { voiceSettingsItems } from "src/ts/setting/voiceSettingsData";
 
+    /** TTS and Emotion Images settings controls. */
+
     const uid = $props.id();
 </script>
 

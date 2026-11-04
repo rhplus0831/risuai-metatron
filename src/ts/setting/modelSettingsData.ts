@@ -1,10 +1,11 @@
 import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
 
-// The Model page's Preset tab (`ModelSettings.svelte`) below its handwritten controls: the request
-// and provider options moved from Advanced. They are global (`providers` fields and the custom model
-// list), not fields of the model preset the tab edits, so their sections say they apply to every
-// preset.
+/**
+ * Registry items below the handwritten controls in `src/lib/Setting/Pages/ModelSettings.svelte`'s
+ * Preset tab: global provider settings and the custom model list, shared by every model preset.
+ */
+
 export const modelSettingsItems: SettingItem[] = [
     {
         id: "adv.retries",

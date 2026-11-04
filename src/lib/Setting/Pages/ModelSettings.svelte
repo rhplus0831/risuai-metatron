@@ -19,6 +19,13 @@
     import { modelAdditionalParamsItems, modelSettingsSections } from "src/ts/setting/modelSettingsData";
     import { currentJump } from "src/ts/setting/settingJump.svelte";
 
+    /**
+     * Model preset page: main/sub pickers (`src/lib/Setting/Pages/Model/ProfileSlotSelect.svelte`),
+     * aux slots (`src/lib/Setting/Pages/Model/AuxModelSelectors.svelte`), Vertex region, global request
+     * toggles including streaming, and Additional Params. At mount, an available `currentJump()` from
+     * `src/ts/setting/settingJump.svelte.ts` naming `model.additionalParams` starts that accordion open.
+     */
+
     const models = $derived(
         (["model", "submodel", "memory", "translate", "emotion", "otherAx"] as const).map((mode) =>
             getModelInfoForMode(mode),

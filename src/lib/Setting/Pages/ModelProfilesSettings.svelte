@@ -23,6 +23,12 @@
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import { currentJump } from "src/ts/setting/settingJump.svelte";
 
+    /**
+     * Connections (`MODEL_PROFILES_SETTINGS_MENU` in `src/ts/settingsMenu.ts`): editor selection is
+     * module state, surviving tab remounts and falling back to the first profile when missing.
+     * A `currentJump()` profile id from `src/ts/setting/settingJump.svelte.ts` selects it at mount.
+     */
+
     // The editor selection does not change any preset's slot choices; a removed profile falls back
     // to the first.
     const profiles = $derived(settings.modelProfiles ?? []);

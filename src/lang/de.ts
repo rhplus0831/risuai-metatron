@@ -1,3 +1,4 @@
+/** German `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageGerman = {
     formating: {
         main: "Haupt-Anweisung",

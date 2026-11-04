@@ -33,6 +33,17 @@
     import { pickBinding } from "src/ts/storage/chatBindingPick";
     import { selectPreset, selection } from "src/ts/storage/selection.svelte";
 
+    /**
+     * Prompt/model preset picker. A supplied `chatRef` fixes the target and closes the list if that
+     * chat disappears (`src/ts/storage/chatStore.svelte.ts`). Both lists pick, reorder, copy, add,
+     * rename, and delete, preserving the last preset; prompt presets also import/export, diff, archive,
+     * and show Ctrl+1..9 numbering handled by `src/ts/hotkey.ts`.
+     *
+     * Archiving only changes list metadata, leaving selection and bindings intact; archived presets
+     * remain selectable. Numbers count active rows; the archived view hides numbers, add, and import.
+     * Drag/drop and diff picks carry ids and resolve current positions on action. Drops use shown rows.
+     */
+
     let editMode = $state(false);
     let isDragging = $state(false);
     /** The drop slot under the pointer, as a position in the shown rows (`visibleEntries`). */
