@@ -358,12 +358,20 @@ function belowAckedRevision(key: string, revision: string): boolean {
     return floor !== undefined && (compareRevision(revision, floor) ?? -1) < 0;
 }
 
-/** How many times the chat gained its first held revision (reactive; `savedVersions`). */
+/**
+ * How many times the chat gained its first held revision (reactive; `savedVersions`): a first save landed,
+ * or a landed create was recognized; not the boot seed or a restore. The chat screen renders the chat's
+ * rows again on it, since a row rendered before had no server transform context.
+ */
 export function chatSaveVersion(ref: ChatRef): number {
     return savedVersions[keyOf(ref.chaId, ref.chatId)] ?? 0;
 }
 
-/** The chat's installed-state version (reactive); local edits and stream chunks do not advance it. */
+/**
+ * The chat's installed-state version (reactive): moves when `ackChatWork` empties the chat's work (not a
+ * stale acknowledgement, which only marks a refresh) and on every installed copy (a patch or a job
+ * hydration of another revision); local edits and stream chunks do not advance it.
+ */
 export function chatInstallVersion(ref: ChatRef): number {
     return installVersions[keyOf(ref.chaId, ref.chatId)] ?? 0;
 }
@@ -494,12 +502,16 @@ export type StreamingEntry = { messageId: string; mode: Chat["activeStreamingDis
  * display optimization (client-only; replaces the persisted flags), and the generation that set it
  * (null: set by `setStreamingState`). Set on the generation's first stream update with the
  * configured mode, cleared when that generation's lock is released; a job in another chat has its
- * own entry.
+ * own entry; a later generation in the chat takes the entry over.
  */
 const streamingChats: Record<string, StreamingEntry & { generationId: string | null }> = $state({});
 
 /** An unloaded chat's summary: list metadata and the derived time of its last message. */
 type ChatEntryMeta = {
+    /**
+     * Derived, never written: kept across summary ingestion, whole-chat copies, and eviction; never laid
+     * from a pending summary over a loaded chat.
+     */
     lastMessageAt?: number;
     name: string;
     pinned?: boolean;
@@ -573,11 +585,19 @@ const lastUse = new Map<string, number>();
 let useCounter = 0;
 let trimTimer: ReturnType<typeof setTimeout> | null = null;
 /** The loads of unloaded chats in flight, per chat key, with the owner lifetime they were issued in. */
+/**
+ * The loads in flight, per chat: concurrent loads of one chat share its read, and a reset of the
+ * character's chats (`chatOwnerToken`) ends the load with nothing.
+ */
 const loading = new Map<string, { lifetime: string; promise: Promise<DeepReadonly<Chat> | undefined> }>();
 /** How many times a load reads a chat again when the server answers older than the held revision. */
 const MAX_LOAD_READS = 3;
 /** Chats per read request of a load (well inside the server's per-request cap). */
 const LOAD_CHUNK = 500;
+/**
+ * One read request of a load (`deadlineChatRead`) aborts after this and rejects with `chatLoadTimedOut`;
+ * the shared load drops, so the next request reads again.
+ */
 const CHAT_READ_DEADLINE_MS = 60_000;
 
 /**
@@ -1250,7 +1270,9 @@ export function chatCount(chaId: string): number {
 /**
  * The newest last-message time among a character's chats (reactive). Loaded chats use their own
  * final message, including an undated one; summaries serve unloaded chats only. The frozen legacy
- * value is a fallback only when no chat supplies a finite time, never part of the maximum.
+ * value is a fallback only when no chat supplies a finite time, never part of the maximum, and the
+ * stored `lastInteraction` is never written or migrated from it (`withChatsCopy` fills a derived copy
+ * for plugins).
  */
 export function characterLastChattedAt(chaId: string, fallback?: unknown): number {
     const holding = holdingAt(chaId);
@@ -1687,7 +1709,8 @@ function assertUnlocked(ref: ChatRef, messageIds: readonly (string | undefined)[
 /**
  * Streamed messages whose newest text waits for the next frame: the mirror takes at most one
  * stream update per frame, so the chat screen parses a streaming message once per frame, not once
- * per chunk. The text itself is the message's stream buffer (`serverGenerations`).
+ * per chunk. The text itself is the message's stream buffer (`serverGenerations`). `hydrateChat` first
+ * flushes its chat's held updates and `endServerJob` its job's, so later events apply in order.
  */
 const heldStreamText = new Map<string, ChatRef & { messageId: string }>();
 /** A frame flush is scheduled: until it runs, a stream update after the first is held. */
@@ -2102,7 +2125,8 @@ function dropFeedLocksOf(
  * stays. Every other lock of that job in the chat is released (the reply is final in the copy; if the
  * copy could not be applied for local work, the chat is marked for an idle refresh). Another job's
  * locks and newer streamed text are kept. A copy older than the held revision, or of another epoch,
- * changes nothing, its job metadata included. Returns whether it applied.
+ * changes nothing, its job metadata included; a copy that could not be applied releases locks but
+ * records no watermark. Returns whether it applied.
  */
 export function hydrateChat(
     server: { characterId: string; id: string; revision: string; data: Chat },
@@ -3202,7 +3226,8 @@ export function appendMessage(
 /**
  * Replaces one message by its id (`message.chatId`) with a whole row (op `setMessage`): on an older
  * revision it reverts the fields another writer changed meanwhile, so a change of some fields is a
- * `patchMessage`.
+ * `patchMessage`. The held translation is kept, as the server's `setMessage` keeps it; `createChat`,
+ * `appendMessage`, and `replaceChat` take in what their messages carry (`prepareMessages`).
  */
 export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
     const chat = requireChat(ref);
@@ -4596,7 +4621,8 @@ function prepareCharacterChats(chats: Chat[], character: { firstMsgIndex?: unkno
  * until the server acknowledges the old character's deletion (`ackCharacterDelete`), so a re-add
  * after a deletion that failed or was refused reconciles the same way. Unsent work is superseded,
  * but an unacknowledged create keeps its payload for replay before the replacement or deletion, also
- * one the deletion's collection settled (`parkedResends`, restored here first).
+ * one the deletion's collection settled (`parkedResends`, restored here first). A reused id whose old
+ * delete is in flight is created after that delete settles.
  * The caller has finished every check that can refuse the character first, and drops the held chats
  * (`forgetCharacterChats`) if insertion throws; the save loop then forgets the absent owner's work.
  *
@@ -5970,6 +5996,10 @@ function applyRemoteChat(server: RemoteChat) {
     remoteListener?.({ chaId: server.characterId, chatId: server.id });
 }
 
+/**
+ * Whether a held chat may take a server copy now: no pending or in-flight work, generation of this
+ * tab, deferral, quarantine, or unexpired retry block.
+ */
 function canRefreshChat(ref: ChatRef): boolean {
     const key = keyOf(ref.chaId, ref.chatId);
     return (
@@ -6383,7 +6413,9 @@ export function canApplyRemoteCollection(chaId: string): boolean {
  * is not acknowledged, are marked as gone from the server's order (`absentChats`): reorders leave
  * them out. A chat's notice is dropped only when the adopted state covers it. Nothing is queued.
  * Returns false when the character's order work is busy or a held chat the list lacks changed while
- * it was read (`issued`; the caller reads the list again later).
+ * it was read (`issued`; the caller reads the list again later). A list that would empty the
+ * character's chats is left as it is; an empty list on both sides holds its order, so this client's
+ * chat is saved.
  *
  * With `keepPendingOrder` (the membership refresh after this client's own acknowledgement), a queued
  * reorder does not refuse the list: the chats this client listed keep its order, the chats new to it

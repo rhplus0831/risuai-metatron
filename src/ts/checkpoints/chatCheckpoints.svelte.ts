@@ -20,6 +20,32 @@ import {
 } from "../storage/resourceSync.svelte";
 import { authFetch } from "../storage/serverAuth";
 
+/**
+ * The checkpoint client (`/api/chat-checkpoints`). Requests use `authFetch`; a mutation sends
+ * `RESOURCE_EPOCH_HEADER` and checks `assertSaveAdmission` in `beforeDispatch`, so none is dispatched
+ * after a restore halt (a failure before dispatch is `not-sent`/`admission`). A 412 `EpochMismatch`, or
+ * an answer naming another epoch, throws `epochMismatch(epoch)`, which runs the restore halt: the caller
+ * sees the throw, except inside the flush or the refresh, where it is caught after the halt.
+ *
+ * - Save and load share `prepare`: `generating` while `isChatGenerating(ref)`, `refused` while
+ *   `refusedItems()` names the chat or its character's order, then `await flushResources()`,
+ *   `discarded` when its report names `chats/<chaId>/<chatId>` or `chats/<chaId>`, then both refusals
+ *   again. A `GenerationBlockedError` is `generating` with `noticeShown` when `generatingNoticeCount()`
+ *   moved (the caller must not show `chatGenerating` twice); any other flush failure is `saveFailed`.
+ * - `saveCheckpoint` checks `busy` only at entry. `loadCheckpoint` refuses `busy` while
+ *   `checkpointLoadBusy`, holds that guard through preparation and refresh, takes `heldChatRevision(ref)`
+ *   after preparation (`null`: `unsaved`), and sends one `POST .../load` with it as `chatBaseRevision`.
+ *   On 200 it re-reads through `loadChat(ref)`: `loaded` needs the refresh not to throw, a well-formed
+ *   `chatRevision`, and a held revision equal or newer; every other 200 is `refresh-pending`. A 409
+ *   `generating` returns without a refresh; a 409 with a string `error` and a null or string `revision`
+ *   re-reads and returns `conflict`, so the caller may retry; 400/404/413 return
+ *   `invalid`/`missing`/`tooLarge`; a malformed 409, a network failure after dispatch, a 5xx, or any
+ *   other answer re-reads and returns `unknown`. A failed refresh leaves the outcome intact.
+ * - Rename, delete, and `writeCheckpointPolicy` skip the preparation. Rename and delete send the row's
+ *   `revision` as `baseRevision` (409 for a stale row).
+ */
+
+/** The chat whose checkpoint dialog is open (null: closed); held here, outside `stores.svelte.ts`. */
 export const chatCheckpointsDialog = writable<ChatRef | null>(null);
 const loading = writable(false);
 /** Shared modal guard, held from before the flush until the load's refresh finishes. */
