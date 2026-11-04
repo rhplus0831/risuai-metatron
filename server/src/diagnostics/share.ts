@@ -25,7 +25,7 @@ export type RequestShares = {
     list(): RequestHistoryShareEntry[] | null;
     /** Removes every shared copy (before a "Delete all"); whether every one is gone. */
     removeAll(): boolean;
-    /** The barrier a route awaits before `share`: every event accepted before the call is on disk. */
+    /** The barrier a route awaits before `share`: earlier queued appends finish, without a retention guarantee. */
     settled(): Promise<void>;
 };
 
@@ -39,6 +39,7 @@ export type RequestShares = {
  *   stored with content off is its summary only (no error text, prompt, or exchanges). `events` are
  *   the journal's server events of the job (its `jobId`) or of its requests (`requestId`), and
  *   `failure` the fields of the last `job` error among them (a translation run has no `job` events).
+ *   `eventsPartial` includes a journal line dropped in the interval, even if the ring still has it.
  * - Redaction, a second time: every string of the copy goes through a redactor built now from every
  *   LLM credential the store holds (`secrets`), the named header values of an exchange's header are
  *   masked first, and every captured response and every field the row records as cut lose a trailing
@@ -48,14 +49,16 @@ export type RequestShares = {
  *   header that is not a stored credential) is not caught here either. When the credentials cannot
  *   be read, nothing is shared.
  * - Order: the copy is written as a new file beside the older ones, then the rows are marked
- *   (`sharedAt`); only then are the older copies removed. A mark that fails removes the new copy, so
- *   the files and the marks agree as they did before. Failed removal of an older copy keeps the new
- *   copy and marks but answers an error. A withdrawal removes the files first (they are
- *   what the developer can read), then clears the marks.
+ *   (`sharedAt`); only then are the older copies removed. A mark that fails attempts to remove the
+ *   new copy; failed cleanup can leave that copy unmarked and answers 500 asking for withdrawal.
+ *   Failed removal of an older copy keeps the new copy and marks but answers an error. A withdrawal
+ *   removes the files first (they are what the developer can read), then clears the marks.
+ *   A partial filesystem failure can remove some copies while leaving every mark in place.
  * - `share` and `withdraw` are synchronous from their first read to their last write (`SHARE_MAX_BYTES`
  *   bounds the work), so two shares never interleave and a withdrawal or a "Delete all" cannot undo
- *   part of one. The route awaits `settled` before it calls `share`, never inside it, so a share holds
- *   the events accepted before it was asked.
+ *   part of one. The route awaits `settled` before it calls `share`, never inside it, so earlier
+ *   queued appends finish before the share reads retained files/ring events. Dropped or failed writes
+ *   no longer in the ring can leave the share incomplete; `eventsPartial` covers drops in the interval.
  */
 export function createRequestShares(options: {
     history: RequestHistory;

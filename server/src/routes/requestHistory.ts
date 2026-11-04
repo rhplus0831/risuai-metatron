@@ -55,28 +55,32 @@ const PAGE_SIZE = /^[0-9]{1,4}$/;
 /**
  * The LLM request history, for the app's own viewer: JWT, the shared limiter. Not a resource: no
  * epoch, no maintenance gate (a restore leaves the history as it is). The app's admission
- * middleware refuses these routes during shutdown and makes every answer `no-store`; the store's
- * availability is checked again after the JWT check, in the same synchronous block as the read or
- * the delete (the store closes at dispose).
+ * middleware refuses these routes during shutdown and makes every answer `no-store`; row reads and
+ * writes check the store's availability after JWT, in the same synchronous block as the operation
+ * (the store closes at dispose). The filesystem-only shares list does not need an available store.
  *
  * - `GET /api/request-history?cursor&limit&chaId&chatId&jobId&status`: `{ items, next }`, summaries
  *   newest first; `next` is the cursor of the next page, null on the last. An empty parameter is
  *   absent; a malformed cursor, page size, or status is a 400.
  * - `GET /api/request-history/:id`: the row with its content (prompt, exchanges, error,
  *   truncation); 404 when there is none.
- * - `DELETE /api/request-history`: removes every shared copy first (500, and nothing deleted, when
- *   one cannot be removed), then every row; 204, or 500 when the delete failed.
+ * - `DELETE /api/request-history`: removes every shared copy before deleting rows; 204 on success.
+ *   A partial file-removal failure answers 500 and leaves every row, but some files may be gone.
+ *   A database failure after removal leaves the rows with every support file already removed
+ *   (500, or 503 if the store closed).
  * - `PUT /api/request-history/share`: body `{ jobId | requestId, shared }` (JSON, 4 KiB,
  *   its own limit after the auth; 400 for anything else). Shares the job's requests to the
  *   diagnostics folder (`diagnostics/share.ts`) or withdraws the share, and answers
  *   `RequestHistoryShareResult`: 404 when there is no such request to share, 413 when its requests
- *   are too large, 500 when the copy or the mark could not be written or a withdrawal could not
- *   remove the copy.
+ *   exceed `SHARE_MAX_BYTES` (32 MiB of stored row bytes, from `server/src/diagnostics/share.ts`),
+ *   500 when the copy or the mark could not be written or a withdrawal could not remove the copy.
+ *   A body over the separate 4 KiB cap also answers 413.
  * - `GET /api/request-history/shares`: `{ items }`, the shares the folder holds (also those whose
  *   rows the caps removed), newest first; 500 when `shared/` could not be read.
  *
- * Each answers 503 while the store is unavailable (it failed to open, or it is closed). The writes
- * (the share route and "Delete all") check shutdown again right before they write, after every await.
+ * Row reads and writes answer 503 while the store is unavailable (it failed to open, or it is closed).
+ * The writes (the share route and "Delete all") check shutdown again right before they write,
+ * after every await.
  */
 export function registerRequestHistoryRoutes(
     app: Hono<AppEnv>,
@@ -158,7 +162,7 @@ export function registerRequestHistoryRoutes(
             return c.json({ error: "Expected { jobId | requestId, shared }" }, 400);
         }
         const { shared, ...query } = body;
-        // A share holds every event accepted before it was asked; `share` itself never awaits.
+        // Finish earlier queued appends before reading retained events; `share` itself never awaits.
         if (shared) {
             await shares.settled();
         }

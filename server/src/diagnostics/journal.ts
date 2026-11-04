@@ -92,6 +92,7 @@ export type DiagnosticsStateSources = {
     liveJobs?: () => unknown;
 };
 
+/** The server's checked event journal, state publications, reports, and explicit support copies. */
 export type DiagnosticsJournal = DiagnosticsRecorder & {
     /** The ring (the last 300 events), oldest first, as copies. */
     recent(): DiagnosticEvent[];
@@ -107,19 +108,20 @@ export type DiagnosticsJournal = DiagnosticsRecorder & {
     writeStateSync(): void;
     /**
      * A fault that ends the process: raises the fence, then appends what is still queued and the fault's
-     * event, and publishes the state, all before it returns.
+     * event, and publishes the state, all before it returns. Both fatal paths in `server/src/main.ts`
+     * call this: the uncaught-exception monitor and the HTTP server's error handler.
      */
     recordFatal(input: DiagnosticEventInput): void;
-    /** Resolves once every append accepted before this call has landed. */
+    /** Waits for earlier queued appends to finish, without guaranteeing their retention; immediate past the fence. */
     settled(): Promise<void>;
     /** Starts the 10-minute `state.json` timer. Idempotent. */
     start(): void;
     /** Stops the timers and the state writes they would make; `record` and `writeState` still work. Idempotent. */
     close(): void;
     /**
-     * The end of a graceful shutdown: closes the timers, waits for the queues (at most
-     * `drainDeadlineMs`), then raises the fence as `recordFatal` does, so what is left is flushed, not
-     * lost, and publishes the final state last. Idempotent.
+     * The end of a graceful shutdown: closes the timers, waits for both event and state queue keys
+     * (at most `drainDeadlineMs`, default 1 s), then raises the fence as `recordFatal` does and
+     * publishes the final state after the takeover's writes. Idempotent.
      */
     finish(): Promise<void>;
     stats(): { eventBytes: number; writeFailures: number; dropped: number };
@@ -129,7 +131,8 @@ export type DiagnosticsJournal = DiagnosticsRecorder & {
      * The server events `match` accepts, from the day files of `fromMs`'s UTC day (an hour before it)
      * on, and the ring; oldest first. `partial` when a day file or `events/` could not be read, a line
      * was skipped, or the queue cap dropped an append in that interval. An append still queued is read
-     * from the ring (`settled` first, for all of them). Never throws.
+     * from the ring; await `settled` first to finish earlier queued appends. Dropped or failed writes
+     * no longer in the ring can leave gaps. Never throws.
      */
     eventsFor(
         match: (event: DiagnosticEvent) => boolean,
@@ -242,18 +245,22 @@ class RefusedPathError extends Error {
  * - The fence: `recordFatal` and `finish` raise `terminal` and take over on the calling stack. What
  *   is queued is appended synchronously in order, a fault's event after it, and the state is published,
  *   so all of it lands before the process ends. Past the fence, a queued operation does nothing, one in
- *   flight stops at its next check and touches no count, and `record` and `writeState` work
- *   synchronously. The synchronous path never prunes: a prune could delete the fault's event when its
+ *   flight stops at its next check without updating event-file byte totals, and `record` and
+ *   `writeState` work synchronously. Late I/O errors can still increment `writeFailures`.
+ *   The synchronous path never prunes: a prune could delete the fault's event when its
  *   day file alone passes the cap (the next creation's scan prunes). Every step that can undo or
  *   replace bytes on disk (a partial append's truncation, a prune's unlink, the publishing rename) runs
  *   on the JS thread behind that check, never as a submitted call, which could land after the
- *   takeover's own writes. A publication stopped by the fence removes its temp file.
+ *   takeover's own writes. A publication stopped by the fence attempts to remove its temp file;
+ *   failed cleanup is counted and may leave it behind. A line whose first write was already submitted
+ *   at the fence is never replayed by takeover; the outstanding write may complete after the fault's
+ *   event or leave an incomplete line.
  * - Reports and shared copies stay synchronous (`writeAtomic`): a share runs as one synchronous step
  *   (`share.ts`), and making them asynchronous would take a queue across a whole share.
- * - Trust: the folder is the server's own; a group may read it (directories 0750, files 0640, set on
- *   what the journal creates; existing entries keep their modes). Inside it nothing is followed: a
- *   symlinked or non-directory `events/` stops every operation below it, a day file that is not a
- *   regular file is refused (`lstat`, then `O_NOFOLLOW | O_NONBLOCK` and `fstat`, on both append
+ * - Trust: the folder is the server's own; a group may read it. New directories and files use
+ *   0750/0640; an existing empty day file also gets 0640 on append. Other existing entries keep their
+ *   modes. Inside it nothing is followed: a symlinked or non-directory `events/` stops every operation
+ *   below it. A non-regular day file is refused (`lstat`, then `O_NOFOLLOW | O_NONBLOCK` and `fstat`, on both append
  *   paths), and a symlink at `state.json` is replaced by the rename, not followed. The folder itself
  *   may be a symlink (a mount). This guards against a stray entry, not against a writer racing the
  *   server in its own folder.
@@ -365,7 +372,7 @@ export function createDiagnosticsJournal(options: {
         }
     }
 
-    /** Removes a temp file this journal made; one already gone is no failure. */
+    /** Attempts to remove a temp file; failure is counted and may leave it behind, but absence is no failure. */
     function removeTemp(temp: string) {
         try {
             unlinkSync(temp);
@@ -479,7 +486,8 @@ export function createDiagnosticsJournal(options: {
      * symlink, a FIFO) is refused; the open adds `O_NOFOLLOW` and `O_NONBLOCK` (an entry swapped in
      * between), and `fstat` checks again. A file whose last byte is not a newline (an append cut
      * short, here or by an earlier process) gets one first, so the new line parses. A failed write
-     * is truncated back where it can be; the count follows the file.
+     * is truncated back where it can be; the count follows the file. Daily event appends are not
+     * flushed to disk, so power loss may lose recent lines.
      */
     function appendSync(name: string, line: string) {
         if (!eventsReady(true)) {
@@ -544,8 +552,10 @@ export function createDiagnosticsJournal(options: {
 
     /**
      * `appendSync` over `fs`, for a queued operation: the same refusals, newline repair, complete
-     * writes, truncation, and count. Past the fence it stops where it is: the line is the takeover's
-     * until its first write is submitted (so it lands once), and no count or file is touched after.
+     * writes, truncation, and count. The line is the takeover's until its first write is submitted;
+     * after that, takeover never replays it. The outstanding write may complete late or leave an
+     * incomplete line. After the next fence check, no further write or truncation is submitted and
+     * event-file byte totals no longer change; a late I/O error is still counted.
      */
     async function appendQueued(name: string, line: string) {
         if (!(await folderReadyQueued(eventsDir, true)) || terminal) {
@@ -774,8 +784,11 @@ export function createDiagnosticsJournal(options: {
     /**
      * Writes `text` (or its chunks, in order) to `target` in `folder`: a temp file there
      * (`O_EXCL | O_NOFOLLOW`, 0640), flushed before close, then a rename and directory sync. Whether
-     * it landed; a failure (a chunk that throws included) is counted, and the temp file removed when
-     * this call made it. A directory sync failure is counted but still returns true: the file landed.
+     * it landed; a failure (a chunk that throws included) is counted. If this call made a temp file,
+     * it attempts cleanup; a cleanup failure is counted and may leave that file behind.
+     * A directory sync failure propagated by `server/src/data/durableWrite.ts` is
+     * counted but still returns true: the file landed. That helper tolerates EINVAL/EPERM from opening
+     * or syncing the directory on filesystems that refuse directory flushes.
      */
     function writeAtomic(folder: string, target: string, text: string | Iterable<string>, tempPrefix: string): boolean {
         let temp: string | null = null;
@@ -1227,7 +1240,11 @@ export function createDiagnosticsJournal(options: {
     /**
      * One queued publication: `writeAtomic` over `fs`, with its state built here, so the latest wins,
      * and its rename on the JS thread behind the fence, so nothing lands after the final state. Past the
-     * fence it does nothing, and one in flight removes its temp file. Never throws: a failure is counted.
+     * fence it does nothing, and one in flight attempts to remove its temp file; a cleanup failure
+     * is counted and may leave it behind. The staged state is flushed before rename, as reports and
+     * shares are by `writeAtomic`; the folder is synced afterwards.
+     * A folder-sync failure propagated by `server/src/data/durableWrite.ts` is counted while the
+     * renamed file remains landed. Never throws: a failure is counted.
      */
     async function publishState() {
         nextPublication = null;

@@ -9,6 +9,7 @@ const DB_NAME = "risu-sw-diagnostics";
 const STORE = "records";
 const READ_WAIT_MS = 1000;
 
+/** Checked worker push events and whether the bounded read failed; absent IndexedDB is an empty success. */
 export type WorkerRecords = {
     /** The records that pass the browser's projection, in stored order (oldest first). */
     events: DiagnosticEvent[];

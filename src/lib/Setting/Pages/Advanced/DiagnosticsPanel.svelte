@@ -6,8 +6,15 @@
     import { createDiagnosticReport, saveDiagnosticReport, type SaveReportResult } from "src/ts/diagnostics/report";
     import { downloadFile } from "src/ts/globalApi.svelte";
 
-    // Settings → Advanced → Diagnostics: the report as text, built on open and by Refresh. Copy,
-    // Download, and Save act on the report shown.
+    /**
+     * Settings → Advanced → Developer & diagnostics: builds a report on open and on Refresh through
+     * `src/ts/diagnostics/report.ts`'s `createDiagnosticReport`, combining this tab's ring, worker push
+     * records, and checked server events/state; a server read failure still shows the browser report.
+     * Copy, Download, and Save act on the report shown, without rebuilding it. Save failures show a
+     * localized save-failure notice; a timeout after dispatch shows that the save is unconfirmed
+     * and may already have succeeded. The shown report stays available, and saving never retries
+     * automatically.
+     */
 
     let report: string | null = $state(null);
     let building = $state(false);

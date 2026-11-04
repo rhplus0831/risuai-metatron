@@ -85,7 +85,9 @@ export type RuntimeOrigin = (typeof RUNTIME_ORIGINS)[number];
  * the end of the follow without the job's end (the server could not be reached); a saved job followed
  * again after a reload; the end read from the server's kept outcome of a collected job; a job the
  * server no longer knows; the job's chat read again after a lost or gone follow; a socket given up
- * because it had no frame for too long, did not open in time, or the page came back.
+ * because it had no frame for too long, did not open in time, or the page came back. `closedAway`
+ * is a close while the page was hidden or the browser offline, which does not consume the attach
+ * budget (`src/ts/process/serverCommands.ts`).
  */
 export const JOB_LINK_PHASES = [
     "attach",
@@ -123,10 +125,13 @@ export const FEED_PHASES = [
  * delayed records, chats and orders, `durationMs` since the oldest first unsettled edit, and the
  * blocker recorded while it waited (`inFlight`, `backoff`, `refresh`, `generating`, `conflict`). The draft
  * journal (`src/ts/storage/draftJournal.ts`): `entries` it did not write (`tooLarge`, `budget`) or found in
- * a format it cannot read (`format`, kept as they are); a journal that
- * is off or failed (`unavailable`, `timeout` or `blocked` opening, `quota`, `write`, `readFailed`), or a
- * value it could not copy (`uncloneable`: a proxy or a function, so that write is not journaled); and
- * `entries` it took over from a closed tab (`orphan`).
+ * a format it cannot read (`format`, kept as they are), or a recovery intent it cannot install; a
+ * journal that is off or failed (`unavailable`, `timeout` or `blocked` opening, `quota`, `write`,
+ * `readFailed`), or a value it could not copy (`uncloneable`: a proxy or a function, so that write is
+ * not journaled); and
+ * `entries` it took over from a closed tab (`orphan`). `src/ts/storage/journalRecovery.ts` also emits
+ * `journalRecovered` with this boot's decision count in `entries` and no reason when nonzero;
+ * recovery failures emit `journalFailed` with `timeout` or `readFailed`.
  */
 export const SYNC_PHASES = [
     "conflict",
@@ -137,6 +142,7 @@ export const SYNC_PHASES = [
     "saveWait",
 ] as const;
 
+/** `reload` carries `restore` or `serviceWorker`; journal and save-wait reasons belong to their phases. */
 export const SYNC_REASONS = [
     "restore",
     "serviceWorker",
@@ -173,16 +179,24 @@ export const PAGE_PHASES = ["boot", "visible", "hidden", "online", "offline", "f
  * Web Push, the server's side (`server/src/push/pushService.ts`), one event per subscription a
  * completion was sent to: the push service took it (which is not that the phone showed it), refused it
  * (`status` when it answered), or reported the subscription gone (404, 410: removed); or the server
- * sent nothing (`dropped`, with its `reason`).
+ * sent nothing (`dropped`, with its `reason`). `jobId` is diagnostic context passed beside the
+ * notification by `server/src/prompt/runner.ts`'s `notifyCompletion` to
+ * `server/src/push/pushService.ts`, never a field of the push payload.
  */
 export const SERVER_PUSH_PHASES = ["accepted", "failed", "removed", "dropped"] as const;
 
 /**
- * Web Push, the browser's side. The service worker's records (`public/sw.js`): a push arrived, its
- * notification was shown with the platform's defaults or with `silent`, closed because a window was
- * still in front, could not be shown, or was clicked. The page's: its notification state (`browserState`: the permission, whether
- * this browser holds a subscription, whether it runs as an installed app), and the completion
- * notifications it closed on becoming visible (`dismissedByPage`, with their `count`).
+ * Web Push, the browser's side. The service worker's records (`public/sw.js`): a push arrived
+ * (`received`, stamped on arrival before the display queue), its notification was shown with the
+ * platform's defaults or with `silent`, closed because a window was still in front, could not be
+ * shown, or was clicked. The page's: its notification state (`browserState`: the permission, whether
+ * this browser holds a subscription, whether it runs as an installed app), the completion
+ * notifications it closed on becoming visible (`dismissedByPage`, with their `count`), and a
+ * completion push requesting a chat read no follow of this tab covers (`chatRefresh`, recorded by
+ * `src/ts/process/serverCommands.ts`'s `refreshChatAfterPush`). `received`, `shown`, `shownSilent`,
+ * and `showFailed` retain the display's `inFront` predicate (a window both focused and visible)
+ * and `focusedHidden` (some window focused but not visible); `closedInFront` has the second check's
+ * values. The arrival time of `received` precedes the lookup that fills its window-state fields.
  */
 export const BROWSER_PUSH_PHASES = [
     "received",
@@ -208,7 +222,17 @@ export const PUSH_SERVICES = ["fcm", "apple", "mozilla", "windows", "other"] as 
 /** The notification permission, or `unsupported` without the Notification API. */
 export const PUSH_PERMISSIONS = ["granted", "denied", "default", "unsupported"] as const;
 
-/** Content-free notices for user alerts and failed display transforms (`notice` events). */
+/**
+ * Content-free notices: `serverJobLost` means a follow gave up reaching the server; `serverJobEndedAway`
+ * means the chat was recovered after the follow treated the job as gone (unknown to the server or
+ * from another epoch). Recorded with their alerts by `reportEnd` and `recoverJobChat` in
+ * `src/ts/process/serverCommands.ts`. `resourceReloaded` is a reload notice from
+ * `src/ts/storage/resourceSync.svelte.ts`'s `showReloadedNotice`, only when the latched notice
+ * was not already on screen. `transformFailed` is recorded once by each `serverProcessScript` call
+ * whose `editdisplay` target fails (`src/ts/parser/transformClient.ts`); it leaves the text unprocessed.
+ * Its batch may show one failure toast. The event has no target id, so the collector may fold recent
+ * identical failure notices across different targets.
+ */
 export const NOTICES = ["serverJobLost", "serverJobEndedAway", "resourceReloaded", "transformFailed"] as const;
 
 /**
@@ -368,7 +392,8 @@ export function isStackFrame(frame: unknown): frame is string {
  * Every route an `http` event may name: the server's registered templates (`app.routes`), the
  * service worker's `/sw/` routes the browser fetches, and `?` for any other. Literal templates come
  * before parameter ones, so `apiRouteTemplate` matches `/api/resources/revisions` before
- * `/api/resources/:kind`.
+ * `/api/resources/:kind`. The server (`server/src/app.ts`) records only answers of 400 and up or
+ * responses slower than its `HTTP_SLOW_MS`, naming the registered route template rather than a URL.
  */
 export const ROUTE_TEMPLATES = [
     "/api/generations",
@@ -549,6 +574,11 @@ const SCHEMAS: Record<DiagnosticEventKind, Record<string, Check>> = {
         jobKind: oneOf(GENERATION_KINDS),
         stage: oneOf(GENERATION_ERROR_STAGES),
         reason: oneOf(GENERATION_ERROR_REASONS),
+        /**
+         * An explicit chat stop by another client; the error end's reason remains `aborted`.
+         * `server/src/diagnostics/journal.ts` and `shared/diagnosticsReport.ts` retain this field;
+         * `isJobFailureEvent` excludes all user aborts from the journal's recent job failures.
+         */
         stoppedBy: oneOf(["otherClient"]),
         status: httpStatus,
         requestId: id,
@@ -657,7 +687,7 @@ export function projectDiagnosticEvent(input: unknown): DiagnosticEvent | null {
     return event;
 }
 
-/** A job's failure: an `error` end other than a user abort, including one from another client. */
+/** A job's failure: an `error` end excluding every user abort, including a stop by another client. */
 export function isJobFailureEvent(event: DiagnosticEvent): boolean {
     return event.kind === "job" && event.phase === "error" && event.reason !== "aborted";
 }

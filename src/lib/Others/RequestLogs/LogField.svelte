@@ -4,6 +4,12 @@
     import type { RequestHistoryFieldCut } from "../../../../shared/requestHistory.ts";
     import { copyText, formatBytes, highlightJson } from "./requestLogView";
 
+    /**
+     * A labeled request-log field with a copy action for the supplied text and, when cut, its stored
+     * and original byte counts. JSON highlighting uses `src/lib/Others/RequestLogs/requestLogView.ts`'s
+     * escaped-text fallback for large or unhighlightable fields; plain fields use Svelte text escaping.
+     */
+
     interface Props {
         label: string;
         text: string;

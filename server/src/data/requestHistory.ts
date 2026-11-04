@@ -13,20 +13,11 @@ import {
     type RequestHistoryTruncation,
 } from "../../../shared/requestHistory.ts";
 
-export type {
-    RequestHistoryExchange,
-    RequestHistoryFieldCut,
-    RequestHistoryRecord,
-    RequestHistoryStatus,
-    RequestHistorySummary,
-    RequestHistoryTruncation,
-} from "../../../shared/requestHistory.ts";
-
 /**
- * The durable LLM request history: one row per request (a `runInJob` or `start` call, so each retry
- * is its own row), in a file of its own (`save/data/request-history.sqlite`). It is diagnostic data:
- * in no snapshot, backup, or export, and a restore, an import, or a maintenance does not touch it.
- * Only its caps and the user clear it.
+ * The durable LLM request history: one best-effort row per admitted `runInJob` or `start` attempt
+ * (admitted retries are separate attempts), in its own file (`save/data/request-history.sqlite`).
+ * It is diagnostic data: in no snapshot, backup, or export, and a restore, an import, or a maintenance
+ * does not touch it. Only its caps and the user clear it.
  *
  * A row is begun `pending`, gets the transport's log entries as exchanges, and is finished once with
  * its outcome. Rows still `pending` when the store opens become `interrupted` (the server stopped
@@ -50,12 +41,24 @@ export type {
  * `synchronous = NORMAL` can lose the last commits on a power failure.
  *
  * The store never throws to its caller: a failure to open leaves it inert (writes skipped, reads
- * empty, `available()` false), and a failed operation is skipped with one warning for the process
- * (`deleteAll` then answers null). A transaction that cannot be rolled back closes the store.
+ * empty, `available()` false), including when a newer schema is found: its file is left untouched.
+ * A failed operation is skipped with one warning per store (`deleteAll` then answers null). A
+ * transaction that cannot be rolled back closes the store. A failed limit read skips that prune.
  */
 
+export type {
+    RequestHistoryExchange,
+    RequestHistoryFieldCut,
+    RequestHistoryRecord,
+    RequestHistoryStatus,
+    RequestHistorySummary,
+    RequestHistoryTruncation,
+} from "../../../shared/requestHistory.ts";
+
+/** Outcomes a live request may write; startup alone supplies `interrupted`. */
 export type RequestHistoryEndStatus = "success" | "error" | "aborted";
 
+/** Admission metadata; content capture is fixed for this row when it begins. */
 export type RequestHistoryBegin = {
     /** The request id (`RequestBegin.requestId`); at most 256 bytes, else the row is not begun. */
     id: string;
@@ -84,6 +87,7 @@ export type RequestHistoryModel = {
 /** The original bytes of exchange fields the caller already cut (a stream tee's bound). */
 export type RequestHistoryExchangeCuts = Partial<Record<"url" | "header" | "body" | "response", number>>;
 
+/** The first completion's metadata; error text is bounded and kept even with content capture off. */
 export type RequestHistoryOutcome = {
     status: RequestHistoryEndStatus;
     completedAt?: number;
@@ -96,6 +100,7 @@ export type RequestHistoryOutcome = {
     responseBytes?: number | null;
 };
 
+/** Summary filters and an opaque `seq` cursor, traversing begin order newest first. */
 export type RequestHistoryListQuery = {
     /** The `next` of the previous page. */
     cursor?: string | null;
@@ -110,13 +115,16 @@ export type RequestHistoryListQuery = {
 /** What a share reads (`readShare`): a job's rows, or a request's own when it ran without a job. */
 export type RequestHistoryShareQuery = { jobId: string } | { requestId: string };
 
+/** One transaction snapshot, oldest rows first, or a failure without a partial list. */
 export type RequestHistoryShareRead =
     | { status: "ok"; target: RequestHistoryShareTarget; records: RequestHistoryRecord[] }
     | { status: "missing" }
     | { status: "tooLarge"; bytes: number }
     | { status: "failed" };
 
+/** Best-effort history operations: missing or pruned rows are skipped, and failures never escape. */
 export type RequestHistory = {
+    /** Begins a pending row once per id; a duplicate id leaves the existing row unchanged. */
     begin(summary: RequestHistoryBegin): void;
     /**
      * Sets the prompt of a pending row with content on and no prompt yet, as the given text (the
@@ -127,12 +135,13 @@ export type RequestHistory = {
     describe(id: string, model: RequestHistoryModel): void;
     /** The first byte of a pending row; the first one wins. */
     firstByte(id: string, at?: number): void;
-    /** Appends a transport log entry (content on only), whatever the row's status. */
+    /** Appends a transport log entry (content on only), including one that arrives after completion. */
     exchange(id: string, entry: FetchLogEntry, cuts?: RequestHistoryExchangeCuts): void;
     /** Ends a pending row; the first finish wins. */
     finish(id: string, outcome: RequestHistoryOutcome): void;
-    /** Summaries, newest first. */
+    /** Summaries in descending `seq` order; `next` is an opaque cursor, null on the last page. */
     list(query?: RequestHistoryListQuery): { items: RequestHistorySummary[]; next: string | null };
+    /** A row with its kept content, or null when missing, pruned, or unreadable. */
     get(id: string): RequestHistoryRecord | null;
     /**
      * Removes every row, pending ones included; returns the count, or null when nothing was removed
@@ -158,19 +167,29 @@ export type RequestHistory = {
     clearShared(target: RequestHistoryShareTarget): string[] | null;
     /** Removes the oldest rows until both caps hold (`limit` defaults to the `limit` option). */
     prune(limit?: number): void;
+    /** Logical stored bytes and rows, both zero when the store is unavailable. */
     stats(): { rows: number; bytes: number };
     /** Whether the database is open (false when it failed to open, after a failed rollback, or once closed). */
     available(): boolean;
+    /** Closes the connection; subsequent operations are inert. Safe to repeat. */
     close(): void;
 };
 
 const KIB = 1024;
 const MIB = 1024 * KIB;
 
+/** The default logical stored-byte cap, including row and exchange overhead rather than SQLite file size. */
 export const REQUEST_HISTORY_MAX_BYTES = 512 * MIB;
+/** The row cap when no finite numeric setting is supplied. */
 export const REQUEST_HISTORY_DEFAULT_LIMIT = 1000;
+/** The lowest configured row cap after clamping. */
 export const REQUEST_HISTORY_MIN_LIMIT = 10;
+/** The highest configured row cap after clamping. */
 export const REQUEST_HISTORY_MAX_LIMIT = 10_000;
+/**
+ * UTF-8 field-byte caps and the kept exchange count; cuts are recorded, oversized identity fields
+ * omitted whole.
+ */
 export const REQUEST_HISTORY_BOUNDS = {
     prompt: 2 * MIB,
     body: 2 * MIB,
@@ -184,8 +203,9 @@ export const REQUEST_HISTORY_BOUNDS = {
     id: 256,
     exchanges: 32,
 } as const;
-/** The bytes a row and an exchange count for their fixed columns. */
+/** The bytes a row counts for its fixed columns. */
 export const REQUEST_HISTORY_ROW_OVERHEAD = 256;
+/** The bytes a kept exchange counts for its fixed columns. */
 export const REQUEST_HISTORY_EXCHANGE_OVERHEAD = 64;
 
 const SCHEMA_VERSION = "1";
@@ -349,6 +369,10 @@ function truncationText(truncation: RequestHistoryTruncation): string | null {
     return Object.keys(truncation).length === 0 ? null : JSON.stringify(truncation);
 }
 
+/**
+ * Opens the separate SQLite/WAL history and marks unfinished rows interrupted; an unsupported schema
+ * stays inert.
+ */
 export function createRequestHistory(options: {
     file: string;
     maxBytes?: number;

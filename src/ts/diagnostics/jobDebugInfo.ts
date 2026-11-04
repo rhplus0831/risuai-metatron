@@ -6,9 +6,12 @@ import type { JobFailureInfo } from "../alert";
 /**
  * The job error alert's "Copy debug info": a content-free block built only from the named fields,
  * each checked; a field that fails its check is left out. Never the job's message, never the
- * terminal as a whole. The labels are a fixed support format, in English whatever the app's
- * language, so a developer reads every report the same way.
+ * terminal as a whole. It holds checked job/request ids, receipt time, compatibility version, build
+ * id, HTTP-like status, reason, stage, and provider code. `src/lib/Others/AlertComp.svelte` calls
+ * `jobDebugInfo` for failures attached by `src/ts/alert.ts`'s `alertJobError`. The labels are a fixed
+ * support format, in English whatever the app's language, so reports use the same labels.
  */
+
 const LABELS = {
     title: "RisuAI job failure",
     version: "Version",

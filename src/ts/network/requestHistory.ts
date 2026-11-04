@@ -17,6 +17,7 @@ import { authFetch } from "../storage/serverAuth";
  * message when it sent one.
  */
 
+/** Page filters; absent, null, and empty-string values are omitted from the URL query. */
 export type RequestHistoryQuery = {
     cursor?: string | null;
     limit?: number;
@@ -26,6 +27,7 @@ export type RequestHistoryQuery = {
     status?: RequestHistoryStatus | null;
 };
 
+/** An unsuccessful HTTP answer's status and server error text, falling back to `HTTP <status>`. */
 export class RequestHistoryError extends Error {
     constructor(
         message: string,

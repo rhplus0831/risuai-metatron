@@ -96,9 +96,9 @@ export async function readServerDiagnostics(waitMs: number = SERVER_WAIT_MS): Pr
 
 /**
  * The report of this tab and the server now. The browser's events are this tab's ring and the service
- * worker's push records (`readWorkerRecords`, read for at most 1 s), merged by time before the report
- * keeps the newest of them; worker records that could not be read count as one omitted event. Never
- * throws.
+ * worker's push records (`readWorkerRecords`, read for at most 1 s), sorted by time before the report's
+ * per-source cut to the newest 300; worker records that could not be read count as one omitted event.
+ * Never throws.
  */
 export async function createDiagnosticReport(): Promise<string> {
     const [server, worker] = await Promise.all([readServerDiagnostics(), readWorkerRecords()]);

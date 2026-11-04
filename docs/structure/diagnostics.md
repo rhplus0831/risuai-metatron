@@ -17,164 +17,82 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
 
 ### History and checked failures
 
-- `server/src/data/requestHistory.ts` `createRequestHistory`: SQLite/WAL store. `begin`, `setPrompt`, `describe`,
-  `firstByte`, `exchange`, `finish`, `list`, `get`, `deleteAll`, `setShared`, `prune`, `stats`, `available`, `close`.
-  - First-byte and completion writes are first-wins; exchanges after completion can still land. `list` returns
-    newest-first summaries with an opaque `seq` cursor.
-  - A newer schema leaves the file untouched and inert; startup changes pending rows to `interrupted`. A failed
-    operation becomes a skipped write or empty read with one warning; a transaction whose rollback fails closes the
-    store.
-- `server/src/diagnostics/log.ts` `logEvent`, `formatLogEvent`: checked failure fields and a known error
-  name/application frame, never its message. `generationJobs.ts` `markFailure`/`failureOf`/`errorTerminal` preserve the
-  nearest `stage`, `requestId`, `providerCode`, `code` through replacement errors. Writes mark `persist`, scripts mark
-  `script`, requests mark `request`; the runner supplies its current stage when none was marked. A recorder also
-  receives caught runtime faults.
-- `server/src/routes/requestHistory.ts` `registerRequestHistoryRoutes`:
-  - `GET /api/request-history?cursor&limit&chaId&chatId&jobId&status` → `{ items, next }`; malformed cursor/size/status
-    → 400. `GET /:id` returns content or 404.
-  - `DELETE /api/request-history` removes support copies before rows (204; 500 if a copy remains or deletion fails). A
-    partial file-removal failure leaves all history rows but may already have removed some files; a later database
-    failure leaves the rows after all support files were removed.
-  - `PUT /share` takes exactly `{ jobId | requestId, shared }` (JSON, 4 KiB); `GET /shares` lists copies including those
-    whose rows expired. Share failures include 404, 413 over 32 MiB, and 500.
+- `server/src/data/requestHistory.ts` `createRequestHistory`, `RequestHistory`: the SQLite/WAL store. Its module header
+  holds the row lifecycle, bounds, caps, pruning, and failure behavior; the members hold first-wins writes, late
+  exchanges, the `seq` cursor, and `readShare`'s snapshot. Wire shapes: `shared/requestHistory.ts`.
+- `server/src/llm/historyObserver.ts` `createHistoryObserver`: the per-attempt writer the request layer calls
+  ([llm-requests](llm-requests.md)).
+- `server/src/diagnostics/log.ts` `logEvent`, `formatLogEvent`, `recordSafely`, `errorFields`: checked failure fields
+  and a known error name/application frame, never the message. The fields come from `server/src/jobs/generationJobs.ts`
+  `markFailure`/`failureOf`/`errorTerminal`, which keep the nearest site's `stage`, `requestId`, `providerCode`, `code`
+  through replacement errors: writes mark `persist`, scripts `script`, requests `request`, and the runner
+  (`server/src/prompt/runner.ts`) supplies its current stage when none was marked.
+- `server/src/routes/requestHistory.ts` `registerRequestHistoryRoutes`: list, read, "Delete all", share, and shares
+  list; its comment holds the query, the status codes, and the delete order. Client: `src/ts/network/requestHistory.ts`
+  (`listRequestHistory`, `readRequestHistory`, `deleteRequestHistory`, `shareRequestHistory`,
+  `listRequestHistoryShares`, `RequestHistoryError`).
 
 ### Journal, reports, and support copies
 
-- `shared/diagnostics.ts`: event/state contracts and exact-key projections.
-- `server/src/diagnostics/journal.ts` `createDiagnosticsJournal`: `record`, `recordFatal`, `settled`, `recent`, `state`,
-  `start`, `writeState`, `writeStateSync`, `close`, `finish`, `saveReport`, `saveShare`, `commitShare`, `discardShare`,
-  `removeShares`, `removeAllShares`, `listShares`, `eventsFor`.
-  - A `job` error end from an explicit chat stop by another client includes the content-free `stoppedBy: "otherClient"`,
-    retained by the journal and report projection. Its reason stays `aborted`: `isJobFailureEvent` excludes all user
-    aborts, including these, from `recentJobFailures`; support-share failure summaries are unchanged.
-  - Events are `http`, `job`, `request`, `runtime`, `lifecycle`, and `push`; HTTP events record only failures or
-    responses over 5 s, with a registered route template.
-  - Server `push` events (`server/src/push/pushService.ts`, through `recordSafely`, so a throwing recorder never changes
-    delivery) are one per subscription a completion was sent to: `accepted` (the push service took it, not that the
-    phone showed it), `failed` (`status` when it answered), `removed` (404/410); or one `dropped` with `reason` `closed`
-    | `noKeys` | `queueFull` | `noSubscriptions` | `unreadable`.
-  - Server `push` fields: `service` (`fcm` | `apple` | `mozilla` | `windows` | `other`, from the endpoint host, never
-    the URL) and `jobId` (passed beside the notification by the runner's `notifyCompletion`, never in the payload).
-  - Appends and `state.json` publications run off the serving thread over `fs.promises`, as operations on the context's
-    ordered writer ([self-host server](self-host-server.md)), one key each. `record` is synchronous for the ring and the
-    job failures, then queues the line; an append and the prune after it are one operation, so an append never races the
-    deletion of its file.
-  - Past `MAX_QUEUED_WRITE_BYTES` (8 MiB of queued lines) a line is not queued: the event stays in the ring and
-    `dropped` counts it (in the state and in reports).
-  - `writeState` queues a publication; one not yet started is shared by later calls and builds its state when it starts,
-    so the latest state wins and a started one completes. Boot uses `writeStateSync` (nothing is served yet).
-  - `recordFatal` (both `main.ts` fatal paths) raises the terminal fence and takes over on the calling stack: the queued
-    lines in order, the fault's event, then the state, synchronously. `finish` (dispose) closes the timers, waits for
-    the two keys for at most 1 s, then does the same takeover without an event, so the final state is published last.
-  - Past the fence a queued operation does nothing, one in flight stops at its next check and touches no count, and
-    `record` and `writeState` work synchronously. A partial append's truncation, a prune's unlink, and the publishing
-    rename run on the JS thread behind that check, never as a submitted call, which could land after the takeover.
-  - The synchronous path never prunes (a prune could delete the fault's event when its day file alone passes the cap);
-    the next creation's scan does. A line whose first write was already submitted at the fence may land after the
-    fault's.
-  - Reports and shares stay synchronous with their unique-file publication, so a share stays one step from its first
-    read to its last write.
-  - Failed daily JSONL appends truncate back; a partial final line is separated before the next append. Whole-file
-    state, report, and share writes flush the temporary file before rename and sync the folder afterwards; a folder-sync
-    failure is counted even though the renamed file is treated as landed. Daily event appends are not flushed to disk.
-    Failed writes increment a counter and log the first error code without throwing.
-- `server/src/diagnostics/share.ts` `createRequestShares`: `history.readShare` takes one transaction snapshot, oldest
-  rows first; content-off rows contribute summaries. A share includes matching journal events and the last job error's
-  checked fields.
-  - The route awaits `settled` (every event accepted before the request is on disk) before its shutdown recheck, then
-    `share` runs without an await, so no withdrawal or "Delete all" can interleave; a line dropped in the interval marks
-    `eventsPartial`.
-  - `loadStoredSecrets` must succeed before sharing; every string is redacted again, headers masked by name, and
-    trailing credential prefixes trimmed from cut fields.
-  - Replacement order is new file → mark every row → remove older files. A failed mark removes the new copy; failed
-    removal keeps the new copy/marks and answers 500. Withdrawal removes files before clearing marks; a partial
-    filesystem failure can remove some files while leaving marks.
-- `server/src/routes/diagnostics.ts` `registerDiagnosticsRoutes`: `GET /api/diagnostics` returns `{ events, state }`
-  from memory without a write, including during maintenance or a folder-write failure. `POST /api/diagnostics/report`
-  accepts text up to 1 MiB only when `canonicalDiagnosticReport` rebuilds it byte for byte; invalid text → 400 and is
-  never logged. It checks shutdown again before saving.
+- `shared/diagnostics.ts`: the event kinds (`DIAGNOSTIC_EVENT_KINDS`), every phase, reason, and field allowlist with its
+  meaning and emitter on its constant, `projectDiagnosticEvent`, `projectBrowserEvent`, `projectServerEvent`,
+  `isJobFailureEvent`, `isDiagnosticErrorEvent`, `sanitizeStack`, `ROUTE_TEMPLATES`, and `DiagnosticsState`. Change an
+  allowlist with the projection, the emitting source, and focused tests.
+- `server/src/diagnostics/journal.ts` `createDiagnosticsJournal`, `DiagnosticsJournal`: the folder, the queued appends
+  and state publications on the context's ordered writer ([self-host server](self-host-server.md)), the terminal fence
+  of `recordFatal` and `finish`, durability, and the trust rules, in its comment and the members'.
+- Server events: `job` from `server/src/jobs/generationJobs.ts` (with `stoppedBy` for another client's stop), `request`
+  from `server/src/llm/historyObserver.ts`, `http` from `server/src/app.ts` (error or slow answers), `lifecycle` from
+  `server/src/app.ts` and the backup import (`server/src/routes/backupsUpstream.ts`), `runtime` from `log.ts`'s caught
+  faults and the two fatal paths of `server/src/main.ts` (`recordFatal`), and `push` from
+  `server/src/push/pushService.ts` through `recordSafely`, so a throwing recorder never changes delivery.
+- `server/src/diagnostics/share.ts` `createRequestShares`: support copies; its comment holds the copy's content, the
+  second redaction, the write/mark/remove order, and why a share is one synchronous step.
+- `server/src/routes/diagnostics.ts` `registerDiagnosticsRoutes`: `GET /api/diagnostics` from memory and
+  `POST /api/diagnostics/report` through `canonicalDiagnosticReport`.
 
 ### Browser
 
-- `src/ts/diagnostics/collector.ts` `startDiagnosticsCollector`: starts in `boot.ts` before app modules. Keeps this
-  window's last 300 checked events; identical recent events fold into `repeat`/`lastAt` (last 16 entries, 10-minute
-  window; never boot).
-  - The session mirror flushes within 1 s, on hide/pagehide, and before app reload; restore re-projects entries and
-    accepts at most 512K characters.
-  - Its fetch wrapper dispatches the original first, once, preserving response/rejection and unhandled rejection
-    behavior; only same-origin API/worker/proxy failures become checked route-template events. Runtime frames are
-    origin/path checked. Plugin iframes are another realm and are not covered.
-- `bootCache` from `storage/bootCache.ts` reports `fallback`, `writeFailed`, and `cleared`, with checked reasons. The
-  cache owner is [resource-sync](resource-sync.md).
-- Hooks in `generationJobs.ts`, `serverCommands.ts`, `eventFeed.ts`, `resourceSync.svelte.ts`, and `bootstrap.ts` report
-  job attachment/retry/loss, feed state, sync conflicts/reloads, and service-worker setup. They contain no content.
-  Phase and field allowlists live in `shared/diagnostics.ts`; change them with the projection and focused tests.
-  - `jobLink` phases: `attach`, `detach`, `attachFailed`, `reattach`, `resume`; `lost` (the server stayed unreachable),
-    `gone` (the server no longer knows the job), `kept` (the end came from the server's kept outcome of a collected
-    job), and `recovered` (the chat read after a lost or gone follow took); `stale` (no frame for 45 s while visible),
-    `connectTimeout` (not open within 10 s), `resumeReconnect` (an attach replaced because the page came back), and
-    `closedAway` (a close while the page was hidden or the browser offline, not counted against the attach budget).
-  - `feed` phases: `connected` (a `hello` of the loaded epoch), `disconnected`, `connectFailed`, and the same `stale`,
-    `connectTimeout`, and `resumeReconnect`.
-  - `page` phases: `boot`, `visible`, `hidden`, `online`, `offline`, and the Page Lifecycle's `freeze` (which also
-    flushes the mirror) and `resume`.
-- Browser `push` events:
-  - The page's `browserState`, at the collector's start and on every `visible` (`permission` `granted` | `denied` |
-    `default` | `unsupported`; `subscribed`, whether this browser holds a push subscription, false without a worker
-    registration or push manager; `standalone`, `display-mode: standalone`; a value that could not be read, or a
-    subscription lookup over 2 s, is left out rather than false).
-  - The page's `dismissedByPage`, with the `count` of completion notifications `pushNotifications.ts` closed when the
-    page became visible (only when it closed any), and `chatRefresh` when a completion push had the page read a chat no
-    follow of its own covers (`serverCommands.ts` `refreshChatAfterPush`).
-  - The service worker's records (`public/sw.js`): `received` (stamped on arrival, before the display queue), `shown`,
-    `shownSilent`, `closedInFront`, `showFailed` with `inFront` (the in-front predicate the display used;
-    `closedInFront` carries the second check's) and `focusedHidden` (some window focused but not visible), and
-    `clicked`.
-  - The projection keeps a side's phases and fields only: a browser `push` has no `service`, `jobId`, `status`, or
-    `reason`, a server one none of the browser's fields.
-- `sync` phases:
-  - `conflict` from the save loop (`resourceSync.svelte.ts`), `reload` with `restore` from its restore halt or
-    `serviceWorker` from `bootstrap.ts`, and `saveWait` for a dispatched batch whose work waited over 2 s since its
-    first unsettled mark (`reason` `inFlight` | `backoff` | `refresh` | `generating` | `conflict`: the blocker noted
-    while it waited; `records`, `chats`, `orders` count the delayed work; `durationMs` from the oldest mark to
-    dispatch).
-  - From the draft journal (`src/ts/storage/draftJournal.ts`): `journalSkipped` (`reason` `tooLarge` | `budget` for a
-    write it did not make, `format` for rows it cannot read and keeps or recovery intent it cannot install, with
-    `entries`), `journalFailed` (`unavailable`, `timeout`, `blocked`, `quota`, `write`, `readFailed`, `uncloneable` for
-    a value it could not copy), and `journalRecovered` (`orphan`, the `entries` it took over from a closed tab).
-  - `journalRecovery.ts` also emits `journalRecovered` with the boot decision count in `entries` and no reason, and
-    `journalFailed` with `timeout` or `readFailed` when recovery fails. The adapter also emits journal budget skips and
-    write/restore-snapshot failures.
-- `notice` events (`notice` `serverJobLost` | `serverJobEndedAway` | `resourceReloaded` | `transformFailed`) are
-  recorded where those alerts are shown: `serverCommands.ts` `reportEnd` and `recoverJobChat`, and
-  `resourceSync.svelte.ts` `showReloadedNotice` (only when the latched notice was not already on screen);
-  `transformFailed` by `parser/transformClient.ts` `serverProcessScript` for each failed `editdisplay` target (the
-  collector folds repeats).
-- `src/ts/diagnostics/report.ts`, `shared/diagnosticsReport.ts`, and `DiagnosticsPanel.svelte`: Settings → Advanced →
-  Developer & diagnostics. Read the server for at most 10 s; failure still gives the browser report.
-  - The browser's list is this tab's ring plus the worker's push records (`src/ts/diagnostics/workerRecords.ts`
-    `readWorkerRecords`, read for at most 1 s without creating the database, each projected), sorted by time before the
-    per-source cut; a failed or slow read counts as one omitted event, no IndexedDB as none.
-  - Merge checked events by time (newest 300 per source, oldest omitted beyond 1 MiB); include app version, the tab's
-    build id (`Build:`, a line an older tab's report lacks), browser/OS family rather than user agent,
-    online/viewport/export time, checked server state, and omission counts.
-  - Copy/Download/Save act on the report shown. Save's 30 s bound covers authentication and dispatch; it never retries.
-- `src/lib/Others/RequestLogs/RequestLogsPopup.svelte`: Server history and This tab tabs. `ServerRequestHistory.svelte`
-  filters/paginates durable rows, reads details, confirms deletion, and shares/updates/withdraws a job or standalone
-  request. The popup retains a job filter across tabs; `TabRequestLogs.svelte` reads the bounded in-memory view through
-  `getFetchLogs`, `LogField.svelte`, and `requestLogView.ts`. History network access is in
-  `src/ts/network/requestHistory.ts`.
+- `src/ts/diagnostics/collector.ts` `startDiagnosticsCollector` (first in `src/boot.ts`), `recordClientEvent`,
+  `flushClientDiagnostics`, `clientDiagnosticEvents`: this tab's ring, its `sessionStorage` mirror, the fetch wrapper,
+  and the `page`, `runtime`, and `push` `browserState` events. Plugin iframes are another realm and are not covered.
+- Browser emitters, which contain no content and record through `recordClientEvent` (`bootCache` through its injected
+  `report`; phase meanings on the `shared/diagnostics.ts` constants):
+  - `jobLink`: `src/ts/network/generationJobs.ts` and `src/ts/process/serverCommands.ts`; `feed`:
+    `src/ts/network/eventFeed.ts`; the stale and connect deadlines are in `src/ts/network/socketLiveness.ts`.
+  - `sync`: `src/ts/storage/resourceSync.svelte.ts` (conflict, restore reload, `saveWait`), `src/ts/bootstrap.ts`
+    (service-worker reload), `src/ts/storage/draftJournal.ts`, and `src/ts/storage/journalRecovery.ts`.
+  - `serviceWorker`: `src/ts/bootstrap.ts`; `bootCache`: `src/ts/storage/bootCache.ts`, whose owner is
+    [resource-sync](resource-sync.md).
+  - `notice`: beside its alert in `serverCommands.ts` `reportEnd` and `recoverJobChat` and `resourceSync.svelte.ts`
+    `showReloadedNotice`; per failed call in `src/ts/parser/transformClient.ts` `serverProcessScript`, beside a batch's
+    one toast.
+  - `push`: `src/ts/network/pushNotifications.ts` (`dismissedByPage`), `serverCommands.ts` `refreshChatAfterPush`
+    (`chatRefresh`), and the service worker's records of its display decision (`public/sw.js` `showPushNow`), which only
+    the report reads.
+- `src/ts/diagnostics/report.ts` `createDiagnosticReport`, `readServerDiagnostics`, `saveDiagnosticReport`;
+  `src/ts/diagnostics/workerRecords.ts` `readWorkerRecords`; `shared/diagnosticsReport.ts` `buildDiagnosticReport`,
+  `canonicalDiagnosticReport`, `projectDiagnosticsState` (the v1 format in its header);
+  `src/lib/Setting/Pages/Advanced/DiagnosticsPanel.svelte`: Settings → Advanced → Developer & diagnostics.
+- `src/ts/diagnostics/jobDebugInfo.ts` `jobDebugInfo`: the "Copy debug info" text of a failure alert.
+- `src/lib/Others/RequestLogs/RequestLogsPopup.svelte` (`alertRequestLogs`): Server history and This tab tabs and the
+  retained job filter. `src/lib/Others/RequestLogs/ServerRequestHistory.svelte`: the durable viewer and sharing.
+  `src/lib/Others/RequestLogs/TabRequestLogs.svelte`, `src/lib/Others/RequestLogs/LogField.svelte`,
+  `src/lib/Others/RequestLogs/requestLogView.ts`: this tab's `getFetchLogs` view.
 
 ## Flows
 
 - Each admitted `start`/`runInJob` attempt starts a history row through `createHistoryObserver`; retries have separate
   request ids under the same job. Exchanges and the outcome complete it. Tab requests also retain their separate `log`
   events; plugins' `getFetchLogs` still sees only that tab's in-memory list.
-- A checked failure reaches `alertJobError`: Copy debug info includes checked ids, time, version, build id, status,
-  reason, stage, and provider code, never the message; Open in request history filters the viewer to its job
-  ([chat-pipeline](chat-pipeline.md)).
+- A checked failure reaches `alertJobError` (`src/ts/alert.ts`): Copy debug info (`jobDebugInfo`, from
+  `src/lib/Others/AlertComp.svelte`) holds checked ids, time, version, build id, status, reason, stage, and provider
+  code, never the message; Open in request history filters the viewer to its job ([chat-pipeline](chat-pipeline.md)).
 - Server events enter the journal; browser events stay local until the user saves a combined report. Copy and Download
   remain local. Save writes the shown report.
+- A Web Push completion crosses three records: the server's `push` event per subscription in the journal, the service
+  worker's records in IndexedDB, and the page's `dismissedByPage` or `chatRefresh`; only a combined report puts them
+  side by side.
 - Share for support on any request of a job copies every request in that job; a request without a job is copied alone.
   Update refreshes the snapshot; Withdraw removes it. Support deployment must restrict the sftp operator to the
   diagnostics folder.
@@ -225,17 +143,18 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
   capture off. Changing capture does not erase earlier rows. Plugin consent for the tab log does not grant durable
   history.
 - All UI routes use app JWT, shared limiter, `no-store`, and shutdown admission. They are not resources: no
-  epoch/maintenance gate. Unavailable history returns 503 after authentication; writes recheck shutdown immediately
-  before committing.
+  epoch/maintenance gate. Unavailable history returns 503 to row reads and writes after authentication (the shares list
+  reads only the folder); writes recheck shutdown immediately before committing.
 - Preserve checked filenames, regular-file checks, and child-path symlink refusal. The configured diagnostics root
   itself may be a symlink or mount. Created directories/files use 0750/0640. Symlinked/non-directory `events`,
   `reports`, or `shared` are refused; event handles use `O_NOFOLLOW | O_NONBLOCK` plus `fstat`, on the queued and the
   synchronous append alike. State uses temp+rename; state, report, and share temp creation is exclusive and no-follow.
-- Nothing may land after the final state: every step that can undo or replace bytes on disk runs on the JS thread behind
-  the terminal fence, and a fatal fault's event and state are written synchronously.
+- Nothing may undo or replace bytes after the final state: every step that can runs on the JS thread behind the terminal
+  fence, and a fatal fault's event and state are written synchronously. Only a line whose first write was already
+  submitted at the fence can still land after them.
 - A diagnostics-only sftp account is the support-access boundary: restrict it to this folder and prevent access to
   `save/data/` or the wider `save/`. The app creates no sftp account/chroot. Support copies require explicit user action
-  and retain the redaction/write/mark/remove ordering above.
+  and retain `createRequestShares`' redaction/write/mark/remove ordering.
 
 ## Recipes
 

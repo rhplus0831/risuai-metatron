@@ -6,10 +6,13 @@
     import LogField from "./LogField.svelte";
 
     /**
-     * This tab's own request log (`fetchLog`, in memory until the tab closes, newest first): the
-     * fetches this browser made itself (a plugin provider, WebLLM, the auxiliary fetches) and the
-     * `log` events of the tab's server requests.
+     * This tab's bounded in-memory request view: `getFetchLogs` returns the `fetchLog` owned by
+     * `src/ts/globalApi.svelte.ts`, newest first, retained within entry/character budgets while keeping
+     * the newest entry whole. It contains requests recorded through the app's fetch/log helpers
+     * (plugin providers and auxiliary calls using those helpers), plus this tab's server request
+     * `log` events, until the page reloads or closes.
      */
+
     const logs = getFetchLogs();
 
     let expanded: Set<number> = $state(new Set());

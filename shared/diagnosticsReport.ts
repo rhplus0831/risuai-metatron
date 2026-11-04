@@ -250,7 +250,9 @@ const byteLength = (text: string) => utf8.encode(text).length;
 /**
  * The report text of `input`. Every value is checked here (a value that fails is replaced by its
  * fallback, never by the current time, so the same input always gives the same text). A server answer
- * whose state fails `projectDiagnosticsState` counts as unavailable.
+ * whose state fails `projectDiagnosticsState` counts as unavailable. Each source's list must already
+ * be oldest first: its newest 300 are selected by input order before the lists are merged by time.
+ * `src/ts/diagnostics/report.ts` sorts the tab and worker events together before this per-source cut.
  */
 export function buildDiagnosticReport(input: DiagnosticReportInput): string {
     const { meta } = input;

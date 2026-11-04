@@ -20,15 +20,20 @@ import {
  *   at most 10 minutes old, is folded into it (`repeat`, `lastAt`), so a retry loop (a 409 and its
  *   `sync conflict` every few seconds) does not flush the ring. A page's `boot` is never folded.
  * - `startDiagnosticsCollector` (first in `src/boot.ts`, before the app's modules load) restores the
- *   stored ring, then watches this window only (a plugin's iframe is another realm): same-origin API
+ *   stored ring, re-projecting every entry and refusing text over `MAX_STORED_CHARS` (512K characters),
+ *   then watches this window only (a plugin's iframe is another realm): same-origin API/worker/proxy
  *   fetches that fail (`window.fetch`, wrapped), uncaught errors and rejections, visibility, online
  *   state, the Page Lifecycle's `freeze` and `resume`, the service worker's controller, and this
- *   browser's notification state (`push` `browserState`, at the start and whenever the page is shown). The other hooks call `recordClientEvent` where their
- *   event happens (job follows, the live-update socket, the save loop, the service worker setup).
+ *   browser's notification state (`push` `browserState`, at the start and on every `visible`). The
+ *   other hooks call `recordClientEvent` where their event happens (job follows, the live-update
+ *   socket, the save loop, the service worker setup).
  * - The mirror is written at most a second after an event (a pending write is not postponed), when
- *   the page is hidden or left, and before the app reloads the page (`flushClientDiagnostics`); the
- *   oldest events are left out until it fits the size the restore reads. Every storage access is
- *   guarded: without storage the ring still works in memory.
+ *   the page is hidden, left (`pagehide`), or frozen, and before the app reloads
+ *   (`flushClientDiagnostics`); the oldest events are left out until it fits the size the restore
+ *   reads. Every storage access is guarded: without storage the ring still works in memory.
+ * - The fetch wrapper dispatches the original exactly once before inspecting the target, preserving
+ *   its response, rejection reason, and unhandled-rejection behavior. Only same-origin paths that
+ *   `shared/diagnostics.ts`'s `isApiPath` admits can produce checked route-template failure events.
  * - Nothing here throws into the app: every listener and the fetch wrapper's observation are guarded.
  */
 
@@ -361,9 +366,11 @@ function observeFetch(target: FetchTarget, durationMs: number, outcome: { respon
  * Wraps `window.fetch`: the original is called once, first, with the same receiver and arguments.
  * The promise returned resolves with the same response and rejects with the same reason (a promise
  * chained on the original's, so a rejection nobody handles is still unhandled); no body is read.
- * Beside it, a same-origin API fetch that answers 400 or more, or rejects without an answer, is an
- * `http` event (`observeFetch`). The duration ends when the fetch settles, not when a streamed body
- * ends; a `keepalive` fetch the page outlives is never observed.
+ * Beside it, a same-origin API/worker/proxy fetch admitted by `isApiPath` that answers 400 or more,
+ * or rejects (excluding an abort unless timed out), is an `http` event (`observeFetch`). The duration
+ * ends when the fetch settles, not when a streamed body ends. Observation requires this page's
+ * completion handler to run; a keepalive request that completes after the page is gone cannot be
+ * recorded here.
  */
 function wrapFetch() {
     const original = window.fetch;
