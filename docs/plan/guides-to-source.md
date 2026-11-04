@@ -148,7 +148,8 @@ guides a rewrite can break and the reason wave 3 goes last: `server-resources` 3
 - **Q3. Reading the local transcripts (D7).** Answered 2026-11-04: yes. Recommended: yes, aggregated counts only, per
   guide and heading, in a dated audit. Alternative: skip the measurement and order work by churn alone (D1 already
   does).
-- **Q4. Parallel guides inside a wave (D1).** Answered 2026-11-04: pairs, as recommended. Recommended: serial in
+- **Q4. Parallel guides inside a wave (D1).** Answered 2026-11-04: pairs, as recommended; widened 2026-11-05 by the
+  owner to at most six sessions at once, on guides no link joins pairwise. Recommended: serial in
   wave 1; in waves 2 and 3 at most two sessions at once, on guides with no link in either direction, each ledger
   checked on the combined tree before the second commit. Alternative: strictly serial throughout (slower; no
   combined-tree step).
@@ -159,9 +160,9 @@ Slices 1, 2, 3, and 5 run as one sub-slice per guide (owner, 2026-11-04), so eac
 commit as D1 asks: `1-self-host-server`, `1-persistence`, `1-chat-pipeline`, `1-ui-theming` serially in that order;
 in Slice 2, `2-audit` (the second `guide-reads` audit) first, then `2-<guide>` for each wave-2 guide; `3-<guide>`
 for each wave-3 guide, a `structured-memory/<page>` guide as `3-sm-<page>` with `3-sm-README` last; `5-<guide>` for
-each remaining guide, then `5-audit-ceiling` (the final audit and the ceiling decision) last. In waves 2 and 3 two
-sub-slices run at once only when no link joins their guides (Q4). Every guide sub-slice lowers
-`TREE_BYTES_RATCHET`, so a pair lands one after the other, the second rebased onto the first. A slice counts as
+each remaining guide, then `5-audit-ceiling` (the final audit and the ceiling decision) last. In waves 2 and 3 up to
+six sub-slices run at once when no link joins any two of their guides (Q4, widened 2026-11-05). Every guide sub-slice
+lowers `TREE_BYTES_RATCHET`, so parallel sub-slices land one after another, each rebased onto the one before. A slice counts as
 landed when all of its sub-slices have.
 
 ### Slice 0: scripts, protocol, routing fixes (D2's scripts, D7's script and first audit, D9, D10; needs nothing)
@@ -185,7 +186,7 @@ landed when all of its sub-slices have.
 
 ### Slice 2: wave 2 guides (D1–D6; needs 1)
 
-- The twelve wave-2 guides, in pairs under Q4 where no link joins them, else serially. Before the first, the second
+- The twelve wave-2 guides, in parallel under Q4 where no link joins them, else serially. Before the first, the second
   `guide-reads` audit if Q3 is yes, ordering sections inside each ledger.
 - Done when: as Slice 1, for every guide.
 
@@ -219,7 +220,7 @@ landed when all of its sub-slices have.
 ## Recommended order
 
 0, then 1; 4 starts when 1 lands and runs beside 2 and 3; 5 last. One guide per session inside a wave (Q4 for
-pairs). A session that merges `dev` mid-way reruns `pnpm check:docs` after the merge.
+parallel guides). A session that merges `dev` mid-way reruns `pnpm check:docs` after the merge.
 
 ## Verification
 
