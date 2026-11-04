@@ -53,8 +53,12 @@ function parseStamp(value: string): string {
  * Periodic snapshots of the resource database under `dir` (`save/backups/`) and the lock that
  * serializes every operation touching the whole database: snapshots, export copies, restores, and
  * imports. A snapshot is written to a hidden temporary name, flushed, renamed into place, and its
- * directory synced; the list only shows finished files and the newest `keep` are retained. While
- * `withMaintenance` runs, `gate.assertOpen` throws, so resource mutations answer 503.
+ * directory synced; the list only shows finished files and the newest `keep` are retained.
+ * After the maintenance listeners finish, the gate closes while admitted storage writes drain and
+ * the maintenance callback runs; resource mutations then answer 503.
+ * Defaults: a ten-minute timer and the newest 20 snapshots. A periodic tick writes only when the
+ * committed store.writeCount changed since the previous periodic snapshot; starting the timer alone
+ * takes no initial snapshot. Explicit safety snapshots are not conditional on that count.
  */
 export function createSnapshotManager(options: {
     store: ResourceStore;
@@ -115,7 +119,8 @@ export function createSnapshotManager(options: {
     /**
      * Pins the listed snapshot `id` at `target` under the lock, so retention cannot take its file from
      * a restore that works outside the lock: a hard link, or a copy across devices or where links are
-     * refused. False for any id that is not a listed snapshot. Never call it while holding the lock.
+     * refused (EXDEV or EPERM only). False for any id that is not a listed snapshot; the restore
+     * route in `routes/backups.ts` maps that to 404. Never call it while holding the lock.
      */
     function pin(id: string, target: string): Promise<boolean> {
         return exclusive(async () => {

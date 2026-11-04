@@ -1173,7 +1173,15 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             "WHERE chatSeq = ? AND id = ?",
     );
     const selectLastMessage = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position DESC LIMIT 1");
-    // Keyed by the chat incarnation. `undefined` is cached too (empty or undated last message).
+    /**
+     * Keyed by the chat incarnation. `undefined` is cached too (empty or undated last message).
+     * The value is the finite numeric time of the last message by position, never MAX(time) or an
+     * earlier dated message; a miss reads one row through messages_position. Metadata-only changes
+     * keep it. Creation/replacement, append/insert, setMessage, setText, patchMessage, removal and
+     * translation writes invalidate it, as do chat/character deletion. `data/resourceStore.ts`
+     * replaceAll clears it only after commit. While db.isTransaction, lastMessageAt bypasses both
+     * reading and filling this memo, so a rollback cannot leave uncommitted activity cached.
+     */
     const lastMessageTimes = new Map<number, number | undefined>();
     const maxPosition = db.prepare("SELECT MAX(position) AS position FROM messages WHERE chatSeq = ?");
     const shiftAfter = db.prepare("UPDATE messages SET position = position + ? WHERE chatSeq = ? AND position > ?");
@@ -1340,7 +1348,13 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         return text;
     }
 
-    /** A chat's summary: its stored projection and the memoized time of its last message by position. */
+    /**
+     * A chat's summary: its stored projection and the memoized time of its last message by position.
+     * Shared by full listings, collection summaries and single-chat binding reads. Feed entries use
+     * the same summary fields (summaryWithTime) with the write's projection. Fresh projection reads
+     * never select or parse meta; a stale/missing projection falls back to freshSummaryText, which
+     * parses meta once and repairs the row best-effort outside a transaction.
+     */
     function chatSummary(row: ChatSummaryRow): ChatSummary {
         return {
             characterId: row.characterId,
@@ -1667,6 +1681,14 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         trimGroups.run(chatSeq, chatSeq, MAX_CHAT_GROUP_IDS);
     }
 
+    /**
+     * A remembered groupId is answered before lock/revision checks, without reapplying it or producing
+     * a feed ref; duplicate tracking is internal and adds no field to the HTTP ChatGroupResult.
+     * Otherwise selectRestoreFloor refuses a base below a checkpoint load's barrier even for by-id
+     * operations that may use an older revision. `data/checkpointService.ts` load sets that floor in
+     * the replacement's transaction. `data/resourceStore.ts` suppresses feed refs for remembered
+     * duplicate groups; other successful groups may publish a ref even when no operation changes the chat.
+     */
     function applyGroup(
         group: PreparedChatGroup,
         changedOrders: Set<string>,

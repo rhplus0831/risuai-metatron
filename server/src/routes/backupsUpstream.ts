@@ -194,7 +194,8 @@ export function createUpstreamImportStaging(options: { ttlMs?: number } = {}) {
  * `{ epoch, assetsWritten, assetsSkipped, selection }`; the folder is removed whatever happened, unless
  * the import was handed back. Shutdown (`staging.signal`) stops a commit before its install with a 503.
  *
- * `POST /api/backups/import-upstream/cancel` `{ token }`: removes the waiting import; 204 either way.
+ * `POST /api/backups/import-upstream/cancel` `{ token }`: removes the waiting import; 204 either way,
+ * 400 for a malformed body or token.
  */
 export function registerUpstreamImportRoutes(
     app: Hono<AppEnv>,
@@ -401,6 +402,17 @@ export function registerUpstreamImportRoutes(
         }
     }
 
+    /**
+     * POST /api/backups/import-upstream/commit { token, acceptWrites? }, JWT and x-resource-epoch
+     * → { epoch, assetsWritten, assetsSkipped, selection }, after a safety snapshot and replacement.
+     * 400 invalid body or staged file, 404 "Import expired", 409 busy or
+     * { error: "changedSinceReview", writes }, 412 epoch, 503 maintenance/shutdown.
+     * Takes the import and reads no row; verifyStagedFile hashes it while writes remain open, then
+     * staleCommit rechecks both epochs and the accepted write count immediately before maintenance.
+     * Admission refusals do not take the import; a post-hash 409/412 gives it back with a fresh TTL
+     * if staging is still open. Once taken, other failures (including shutdown or an epoch change
+     * under maintenance) remove its folder; a 503 does not invariably preserve it.
+     */
     app.post(UPSTREAM_IMPORT_COMMIT_PATH, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

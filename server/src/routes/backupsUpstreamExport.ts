@@ -173,7 +173,8 @@ function parseExportRequest(body: unknown): UpstreamExportRequest | null {
  *
  * `POST /api/backups/export-upstream/prepare` `UpstreamExportRequest`: auth; 400 for an invalid body;
  * 409 `UPSTREAM_EXPORT_TOO_MANY_STAGED` while that many prepared exports wait or are being prepared;
- * 503 once shutdown began. Tracked by `snapshots.track` up to the token's hand-over, so shutdown waits for it. One consistent copy of the store
+ * 503 once shutdown began. Tracked by `snapshots.track` up to the token's hand-over, so shutdown
+ * waits for it. One consistent copy of the store
  * (`snapshots.exclusive(() => store.backupTo(...))` into `save/.tmp/export-upstream-<uuid>/`), the
  * asset inventory listed after it (a blob is written before the record naming it), then a heap-capped
  * worker reads the copy, projects it with `buildUpstreamDatabase`, encodes it, checks its size, and
@@ -190,7 +191,8 @@ function parseExportRequest(body: unknown): UpstreamExportRequest | null {
  * lifetime (`backups.ts`): tracked until the stream ends, is cancelled, or the client leaves, and the
  * folder removed then.
  *
- * `POST /api/backups/export-upstream/cancel` `{ token }`: removes the waiting export; 204 either way.
+ * `POST /api/backups/export-upstream/cancel` `{ token }`: removes the waiting export; 204 either way,
+ * 400 for a malformed body or token.
  */
 export function registerUpstreamExportRoutes(
     app: Hono<AppEnv>,
@@ -364,6 +366,11 @@ export function registerUpstreamExportRoutes(
         return c.json(outcome satisfies UpstreamExportPrepared);
     });
 
+    /**
+     * GET /api/backups/export-upstream/download?token= consumes the token, then streams referenced
+     * assets as basename records and database.risudat last. Authenticated, no epoch; 400 malformed
+     * token, 404 "Export expired"; tracked admission can refuse shutdown with 503 before taking it.
+     */
     app.get(UPSTREAM_EXPORT_DOWNLOAD_PATH, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

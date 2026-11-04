@@ -68,8 +68,9 @@ export async function stageValidatedSnapshot(
 
 /**
  * Checks that `file` is the staged store `report` describes, on the serving thread: the same regular
- * file (size, mtime, inode), then its SHA-256 in chunks that yield between them. A mismatch is a
- * `ResourceValidationError`; an aborted `signal` throws its reason.
+ * file by lstat (size, mtime, inode), then its SHA-256 in 1 MiB chunks that yield between them.
+ * A mismatch is a `ResourceValidationError` (400 in `routes/backups.ts`); an aborted `signal`
+ * throws its reason.
  */
 export async function verifyStagedFile(file: string, report: StagedFileReport, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();

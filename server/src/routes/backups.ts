@@ -43,7 +43,10 @@ const NEVER_ABORTED = new AbortController().signal;
 
 /**
  * Runs its turns one at a time, in call order, so one validation worker runs at a time. A turn settles
- * whatever happens to it, and the next one then starts, so every waiter settles.
+ * whatever happens to it, and the next one then starts, so every waiter settles. A snapshot restore
+ * holds its turn through validation and installation; restoreSnapshot rechecks the epoch at the
+ * turn before creating staging or a safety snapshot, so a stale waiter is 412 without doing work.
+ * An archive import uses the same queue for validation only, releasing it before maintenance.
  */
 function createRestoreQueue() {
     let tail: Promise<unknown> = Promise.resolve();
@@ -94,7 +97,12 @@ export function registerBackupRoutes(
         maxArchiveRecords?: number;
         /** Checks a snapshot and writes its trusted staged store (`validateRunner.ts`). */
         restoreRunner: RestoreRunner;
-        /** Aborted at shutdown, with the `MaintenanceError` a stopped restore answers. */
+        /**
+         * Aborted at shutdown, with the `MaintenanceError` a stopped restore answers (503). Checked at
+         * the queue turn, during hashing, before and inside maintenance, and right before replaceAll;
+         * a worker is terminated and staging removed on refusal. An install past the final check
+         * completes. This signal does not cancel an admitted version-2 archive import.
+         */
         restoreSignal: AbortSignal;
     },
 ) {
@@ -114,6 +122,12 @@ export function registerBackupRoutes(
         return c.json({ items: snapshots.list() });
     });
 
+    /**
+     * POST with x-resource-epoch; the request body is never read. Validates the pinned snapshot in
+     * a worker before maintenance, then takes a safety snapshot and replaces all resources → { epoch }.
+     * 404 unknown id, 400 refused snapshot, 412 stale epoch, 503 with Retry-After: 5 on shutdown.
+     * Client disconnect does not cancel this operation; restoreSignal does until installation starts.
+     */
     app.post("/api/backups/:id/restore", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -175,6 +189,14 @@ export function registerBackupRoutes(
         }
     }
 
+    /**
+     * POST { partial?: true | string[] } streams a version-2 archive, no epoch required: a fresh
+     * resources.sqlite snapshot followed by asset records, preceded by manifest.json. The exported
+     * copy omits llmSecrets and is vacuumed so deleted credential bytes cannot remain in its pages.
+     * partial: true selects profile assets from that exact snapshot; a list selects explicit keys;
+     * absent partial selects all assets. 400 invalid input or over 100,000 partial assets, 413 when
+     * the database or asset count cannot fit the format. Authenticated before reading the body.
+     */
     app.post("/api/backups/export", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -358,6 +380,15 @@ export function registerBackupRoutes(
         return c.body(iteratorStream(iterator, finalize), 200);
     });
 
+    /**
+     * POST /api/backups/import with x-resource-epoch: raw version-2 archive, exempt from the app's
+     * 100 MiB limit, capped by maxImportBytes (RISU_MAX_IMPORT_BYTES, default 16 GiB). Authentication
+     * and epoch checks precede reading; spools and validates completely before maintenance. The
+     * database validation uses the restore queue, released before the safety snapshot and install.
+     * Adds missing assets and repairs content-named files by restoreValidated's verified-byte rule.
+     * Returns { epoch, assetsWritten, assetsSkipped }; 400 refused archive/store or missing body,
+     * 409 another import, 412 stale epoch, 413 cap exceeded, 503 shutdown before admission.
+     */
     app.post(BACKUP_IMPORT_PATH, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

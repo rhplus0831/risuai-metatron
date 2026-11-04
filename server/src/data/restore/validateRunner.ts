@@ -8,7 +8,11 @@ import type { RestoreWorkerData, RestoreWorkerMessage } from "./validateWorker.t
  * Starts and ends the restore worker (`validateWorker.ts`) from the server's thread. The heap limit
  * covers the JavaScript heap only (not Buffers or SQLite's own memory), and a `--max-old-space-size`
  * the server inherited overrides it, so it is a ceiling against a runaway snapshot, not process
- * isolation.
+ * isolation. `server/src/app.ts` uses one worker per restore with the default kinds and reads
+ * RISU_RESTORE_HEAP_MB (default 2048); supplying resourceKinds selects inProcessRestoreRunner, and
+ * restore.runner overrides either choice. Refusals, worker OOM and exit before a report map to 400
+ * through `routes/backups.ts`; unexpected errors are logged and reach the app's 500. The report
+ * identifies the closed staged file by size, mtime, inode and SHA-256 (`stageValidatedSnapshot.ts`).
  */
 
 /** The worker's default old-generation limit; `RISU_RESTORE_HEAP_MB` overrides it. */

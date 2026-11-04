@@ -50,15 +50,16 @@ type ModuleFilePlan = { module: RisuModule; recordsStart: number; records: numbe
  * read; no epoch (only content-addressed files are written, and the client adds the module record
  * itself). The request lifecycle is `serveFileImport`'s (`http/fileImport.ts`): refused before the
  * body is read for a declared length over `maxImportBytes` (413), another import holding the shared
- * slot (409; the CharX import shares it), maintenance (503 with `Retry-After`), no body (400); the
+ * slot (409; the CharX import shares it), maintenance (503 with `Retry-After: 5`), no body (400); the
  * body spooled to `save/.tmp/module-<uuid>/` under `maxImportBytes` (exempt from the global body
  * limit). The whole file is validated from the file before anything is written: a malformed or
  * truncated file is a 400 `Invalid module file`, a record over `MAX_MODULE_ASSET_BYTES` a 413. Then
  * the answer is NDJSON (`ModuleImportLine`): each record is read, rpack-decoded, and stored under
- * `assets/<sha256 hex>.png` (skipped when that file already holds those bytes, replaced when it does not; each write under the maintenance gate),
- * with throttled `{ done, total }` lines, then `{ module, assetsWritten, assetsSkipped }`, or one
- * `{ error }` line at the first failure (nothing more is written). Memory holds the main record and
- * one asset record at a time.
+ * `assets/<sha256 hex>.png` (skipped when that file already holds those bytes, replaced when it does not; each write
+ * under the maintenance gate),
+ * with throttled `{ done, total }` lines, then `{ module, assetsWritten, assetsSkipped }` with each
+ * imported key in `module.assets[i][1]`, or one `{ error }` line at the first failure (nothing more
+ * is written). Memory holds the main record and one asset record at a time.
  */
 export function registerModuleImportRoutes(
     app: Hono<AppEnv>,

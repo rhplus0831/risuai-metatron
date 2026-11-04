@@ -59,6 +59,11 @@ const generating = (): CheckpointError => ({ status: 409, body: { reason: "gener
  * promised handle after the transaction, without awaiting inside the operation. `loadLocked` refuses a
  * load alone, as `busy` does: a chat's memory rebuild would swap over the records a load restores, while
  * a save holds live records only.
+ * `load` checks the current chat revision and generation/rebuild locks before a single store
+ * transaction saves the safety checkpoint, replaces the chat and captured memory, then sets the
+ * restore floor. `data/chatStore.ts` applyGroup enforces that floor through selectRestoreFloor.
+ * Committed replacement invalidates retained memory-task input through the store's chat invalidation
+ * listeners (`server/src/app.ts` connects them to memoryTasks.invalidate); a rollback publishes none.
  */
 export function createCheckpointService({
     store,
@@ -100,6 +105,14 @@ export function createCheckpointService({
     }
 
     return {
+        /**
+         * Called through `server/src/app.ts` by `server/src/jobs/generationJobs.ts` only after a final done.
+         * The policy threshold uses store.countUserTurns (`data/chatStore.ts` COUNT_USER_TURNS_SQL,
+         * messages_role), so a chat not due for a checkpoint reads no message row. A count below
+         * lastAutoTurns resets the
+         * baseline; an absent baseline saves immediately. Capture, policy update and pruning commit
+         * together, and a busy chat is skipped.
+         */
         autoSave(characterId: string, chatId: string): void {
             if (busy(characterId, chatId)) {
                 return;
@@ -243,6 +256,13 @@ export function createCheckpointService({
             });
         },
 
+        /**
+         * { characterId, chatId, id, chatBaseRevision }, with epoch → { epoch, chatRevision, safety }.
+         * Refuses generation/rebuild locks with 409 reason: "generating" and a stale chat base with
+         * 409 carrying the current revision. Safety capture, replacement, captured-memory restore,
+         * floor and policy baseline updates, and safety pruning share one transaction. The summary
+         * writer lease is held through it; only committed replacement invalidates retained task input.
+         */
         load(request: CheckpointRequest) {
             return respond(() => {
                 const body = parseRequest(request.body, [...chatFields, "id", "chatBaseRevision"]);

@@ -42,18 +42,22 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /**
  * `/api/resources` over the resource store. Reads return the database `epoch`; every mutation must
  * send it in `x-resource-epoch` (412 otherwise, so nothing based on data from before a restore can
- * land), is refused with 503 while a restore or import runs, and names the revision it was based on
- * (`baseRevision`: null to create); a stale one is a 409 carrying the current revision (null when the
- * record is gone). A batch op may be a record patch instead of whole data (`patch`, with a string
- * `baseRevision`; see `ResourceBatchOperation`). The batch also carries chat groups and reorders, and the reads chats and chat
- * collections (`shared/chats.ts`). With a streaming source, whole chats carry authoritative lock
- * lists sampled in the same synchronous step as the read; summaries and missing chats do not. Both
+ * land), is refused with 503 while the maintenance gate is closed (`data/snapshots.ts`), and names
+ * the revision it was based on (`baseRevision`: null to create); a stale one is a 409 carrying the
+ * current revision (null when the record is gone). A batch op may be a record patch instead of whole
+ * data (`patch`, with a string `baseRevision`; see `ResourceBatchOperation`). The batch also carries
+ * chat groups and reorders, and the reads chats and chat collections (`shared/chats.ts`). With a
+ * streaming source, whole chats carry authoritative lock lists sampled in the same synchronous step
+ * as the read; summaries and missing chats do not. Both
  * reads answer a structured chat's `hypaV3Data` with its projection, which only these routes ask for
  * (`memoryProjection`), so a tab's plugins read it from the chat they hold.
- * `POST /api/resources/read` lists each named entry once, and with `continue: true` stops at
- * `MAX_READ_RESPONSE_BYTES` and names what it left out (`ResourceReadRefsAnswer`).
+ * `POST /api/resources/read` lists each named entry once. With `continue: true`, it uses a soft
+ * stored-byte budget (`readResponseBytes`, default `MAX_READ_RESPONSE_BYTES`): the first group is
+ * always served whole; groups left out are named in `unanswered` (`ResourceReadRefsAnswer`).
  * An edit of a message a generation job owns is a 409 whose entry
- * (or, on the single routes, whose body) carries `reason: "generating"`. Responses are never cached.
+ * (or, on the single routes, whose body) carries `reason: "generating"`. Responses passing this
+ * module's noStore middleware receive no-store; the earlier global body limiter in `server/src/app.ts`
+ * can refuse a request before that middleware runs.
  */
 export function registerResourceRoutes(
     app: Hono<AppEnv>,
@@ -122,6 +126,12 @@ export function registerResourceRoutes(
         }
     }
 
+    /**
+     * GET ?kinds=a,b[&chats=1|&chatSummaries=1] returns one committed state:
+     * { epoch, kinds: { [kind]: [{ id, revision, data }] }, chats?, chatSummaries?, chatOrders? }.
+     * Kinds are projected (credentials masked), compressed by `http/compressedJson.ts` according to
+     * Accept-Encoding. 400 for missing/unknown kinds, a chat option other than 1, or both chat options.
+     */
     app.get("/api/resources", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -177,6 +187,17 @@ export function registerResourceRoutes(
         await next();
     };
 
+    /**
+     * POST /api/resources/read: { refs?: [{ kind, id }], chats?: [{ characterId, id }],
+     * chatCollections?: [characterId], chatSummaryCollections?: [characterId], continue?: boolean }.
+     * Names 1–5000 entries before deduplication; each distinct entry is answered once. Authentication
+     * precedes the 32 MiB cap (`MAX_READ_BODY_BYTES`; 413), independent of the app's global limit.
+     * Returns compressed { epoch, items, chats?, chatCollections?, chatSummaryCollections?, unanswered? };
+     * a missing record/chat has null data and revision. Summary collections omit messages, memory,
+     * bookmarks and toolCalls (`shared/chats.ts`). With continue: true, whole groups are served within
+     * the soft stored-byte budget in `data/resourceStore.ts` readRefsWithinBudget; otherwise all are read.
+     * Malformed entries, unknown kinds, an empty request or more than 5000 entries are 400.
+     */
     app.post(RESOURCE_READ_PATH, limiter, authenticated, limitedBody(readBodyBytes), async (c) => {
         const parsed = await readJsonBody(c);
         if (!parsed.ok) {
@@ -248,6 +269,15 @@ export function registerResourceRoutes(
 
     // The boot read that skips what the client holds (`resourceBoot.ts`).
     const limitBootBody = limitedBody(MAX_BOOT_BODY_BYTES);
+    /**
+     * POST /api/resources/boot: ResourceBootRequest { kinds, chatSummaries?: true,
+     * known?: { records?, items?, chatCollections? } } (`shared/resources.ts`). A read, with no epoch
+     * header; authenticated before its own 2 MiB cap (413). Malformed entries, unknown kinds and more
+     * than 5000 combined claims are 400 (`routes/resourceBoot.ts` parseBootRequest).
+     * Returns compressed ResourceBootResult { format: 1, epoch, kinds, chatSummaries?, chatOrders?,
+     * chatSummaryFormat?, cachedChatCollections? }; kinds can contain cached revisions and item deltas
+     * instead of whole records. `routes/resourceBoot.ts` readBoot keeps the result in one committed state.
+     */
     app.post(RESOURCE_BOOT_PATH, limiter, authenticated, limitBootBody, async (c) => {
         const parsed = await readJsonBody(c);
         if (!parsed.ok) {
@@ -264,6 +294,12 @@ export function registerResourceRoutes(
         }
     });
 
+    /**
+     * POST { ops?, chats?, chatOrders? }, with the current x-resource-epoch. The 1–5000 operation cap
+     * counts nested chat operations and reorders; resource operations require exactly one of data,
+     * delete and patch. Returns { epoch, results, chats?, chatOrders? }. A conflict is 409
+     * { error, conflicts } with the entire batch rolled back; malformed operations are 400.
+     */
     app.post("/api/resources/batch", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -319,6 +355,11 @@ export function registerResourceRoutes(
         }
     });
 
+    /**
+     * GET /api/resources/revisions: { epoch, resources: [{ kind, id, revision }],
+     * chats: [{ characterId, id, revision }], chatOrders: [{ characterId, revision }] }.
+     * The live-update reconciliation read carries no data and is compressed per Accept-Encoding.
+     */
     // Before `/api/resources/:kind`, which would take `revisions` as a kind name.
     app.get("/api/resources/revisions", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
@@ -328,6 +369,8 @@ export function registerResourceRoutes(
         return compressedJson(c, store.listRevisions());
     });
 
+    /** GET returns compressed { epoch, items: [{ id, revision, data }] } in creation order,
+     * with each kind's projection applied; an unknown kind is 404. */
     app.get("/api/resources/:kind", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -343,6 +386,7 @@ export function registerResourceRoutes(
         });
     });
 
+    /** 404 for an unknown kind or a missing record, 400 for an invalid id. */
     app.get("/api/resources/:kind/:id", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -372,6 +416,11 @@ export function registerResourceRoutes(
         });
     });
 
+    /**
+     * PUT { baseRevision: string | null, data }, with x-resource-epoch: null creates, a token updates.
+     * Returns { epoch, revision, data } as stored with the kind's projection applied (credentials
+     * masked). A stale revision is 409 { error, revision }; malformed body/id is 400, unknown kind 404.
+     */
     app.put("/api/resources/:kind/:id", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -409,6 +458,11 @@ export function registerResourceRoutes(
         }
     });
 
+    /**
+     * DELETE ?baseRevision=<token>, with x-resource-epoch, returns { success: true, epoch }.
+     * Stale tokens or an already missing record are 409 { error, revision }; a singleton, invalid id
+     * or absent baseRevision is 400, an unknown kind 404.
+     */
     app.delete("/api/resources/:kind/:id", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

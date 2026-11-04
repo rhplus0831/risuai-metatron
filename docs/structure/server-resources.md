@@ -13,151 +13,96 @@
 
 ## Files
 
+Each route's body, answer, statuses, and caps are the comment above its registration; the store modules' rules are their
+headers and method comments.
+
 ### Store and chats
 
-- `data/resourceStore.ts`, `chatStore.ts`, `kinds.ts`, `normalize/`, `snapshots.ts`, `archive.ts`, `checkpointStore.ts`,
-  and `checkpointService.ts` own the database and its disk lifecycle. The store publishes on the
-  [feed](live-update-feed.md#coalescing-and-publish-order).
+- `server/src/data/resourceStore.ts` `createResourceStore` (`ResourceStore`: `applyChanges`, `readRefs`,
+  `readRefsWithinBudget`, `listRevisions`, `replaceAll`, `onChatInvalidated`; `walkSnapshotFile`, `readSnapshotFile`,
+  `writeValidatedStore`, `normalizationStamp`): the SQLite store, its open, and its install.
+- `server/src/data/chatStore.ts` (`openChatSchema`, `createChatTables`, `chatSummary`, `applyGroup`, `copyStagedChats`)
+  and `server/src/data/chats.ts` (`normalizeChatMeta`, `normalizeMessage`): the chat tables, their summaries and memos,
+  and chat validation.
+- `server/src/data/kinds.ts` (`DEFAULT_RESOURCE_KINDS`, `ResourceKind`) and `server/src/data/normalize/` (one normalizer
+  per kind).
+- `server/src/data/checkpointStore.ts` (`createCheckpointTables`, `walkCheckpointSnapshot`) and
+  `server/src/data/checkpointService.ts` (`createCheckpointService`: `save`, `load`, `autoSave`): checkpoints.
+- `server/src/data/snapshots.ts` (`createSnapshotManager`: the timer, `pin`, `withMaintenance`; `MaintenanceGate`),
+  `server/src/data/archive.ts` (the version-2 archive records), `server/src/data/databaseProjection.ts` (the flat
+  `Database` projection of a job's scope and the upstream export), and `server/src/data/recordPatchText.ts`.
+- The store publishes on the [feed](live-update-feed.md#coalescing-and-publish-order).
 
 ### Backup and import internals
 
-- `data/restore/` validates a restore's database in a worker and writes its staged store ([Validation](#validation));
-  `data/upstream/` reads and writes RisuAI-compatible `.bin` saves in workers (`risuSave.ts` is the codec).
-- `http/spool.ts`, `fileImport.ts`, `contentAsset.ts`, `recordStream.ts`, and
-  `routes/{backups,backupsUpstream,backupsUpstreamExport,importModule,importCharx,importPng,importRealm}.ts` handle
-  archive and card file transfer.
+- `server/src/data/restore/` validates a restore's database in a worker and writes its staged store
+  ([Validation](#validation)); `server/src/data/upstream/` reads and writes RisuAI-compatible `.bin` saves in workers
+  (`importRunner.ts`, `importStage.ts`, `exportRunner.ts`, `exportStage.ts` here; `risuSave.ts`, the codec, and the
+  converters are [backup-sync-hub](backup-sync-hub.md)'s).
+- `server/src/http/spool.ts`, `server/src/http/fileImport.ts` (`serveFileImport`, `serveStagedImport`,
+  `createImportSlot`), `server/src/http/contentAsset.ts`, and `server/src/http/recordStream.ts` handle archive and card
+  file transfer for the routes below.
 - A content-named asset (`assets/<sha256 hex>.<ext>`) that already exists is kept only when it holds its bytes
-  (`holdsVerifiedAsset` in `http/assetVerification.ts`, a recorded verification of the same file included): the module,
-  CharX, PNG, and Realm imports replace an empty, truncated, or wrong file by rename, and an archive restore
-  (`backups.ts` `restoreValidated`) replaces it when the archive's copy hashes to the name. Other existing names are
-  never overwritten by a restore.
+  (`holdsVerifiedAsset` in `server/src/http/assetVerification.ts`, a recorded verification of the same file included):
+  the module, CharX, PNG, and Realm imports replace an empty, truncated, or wrong file by rename, and an archive restore
+  (`server/src/routes/backups.ts` `restoreValidated`) replaces it when the archive's copy hashes to the name. Other
+  existing names are never overwritten by a restore.
 
 ### Resource routes
 
-`routes/resources.ts`, `resourceBoot.ts`: `checkAuth` (JWT), authenticated limiter. Writes need the
-[epoch](#epoch-and-response-rules); reads, `POST` reads included, do not. A reverse proxy must keep the encoded ids
-([Gotchas](self-host-server.md#gotchas)).
+`server/src/routes/resources.ts` `registerResourceRoutes` and `server/src/routes/resourceBoot.ts` (`parseBootRequest`,
+`readBoot`): `checkAuth` (JWT), authenticated limiter. Writes need the [epoch](#epoch-and-response-rules); reads, `POST`
+reads included, do not. A reverse proxy must keep the encoded ids ([Gotchas](self-host-server.md#gotchas)). Shapes:
+`shared/resources.ts` (`ResourceBootRequest`, `ResourceBootResult`, `ChatReadRecord`) and `shared/chats.ts`.
 
-- `GET /api/resources?kinds=a,b[&chats=1|&chatSummaries=1]`:
-  `{ epoch, kinds: { <kind>: [{ id, revision, data }] }, chats?, chatSummaries?, chatOrders? }`, one committed state,
-  compressed per `Accept-Encoding` (`compressedJson`); 400 for an unknown or missing kind, or for both chat options.
-- `POST /api/resources/read`: body
-  `{ refs?, chats?: [{ characterId, id }], chatCollections?: [characterId], chatSummaryCollections?: [characterId], continue?: boolean }`
-  (1-5000 in all, each answered once; capped at 32 MiB after authentication, the largest valid request being about 15.4
-  million bytes); `{ epoch, items, chats?, chatCollections?, chatSummaryCollections?, unanswered? }` (null for a missing
-  record or chat; summaries: no messages, memory, bookmarks, or `toolCalls`; see the [read budget](#read-budget)).
-- `POST /api/resources/boot`: body `ResourceBootRequest`
-  `{ kinds, chatSummaries?: true, known?: { records?, items?, chatCollections? } }` (own 2 MiB cap, 413 past it; 400 for
-  a malformed entry, an unknown kind, or over 5000 claims); `ResourceBootResult`
-  `{ format: 1, epoch, kinds, chatSummaries?, chatOrders?, chatSummaryFormat?, cachedChatCollections? }` with `cached`
-  and `items` records (`resourceBoot.ts`), compressed per `Accept-Encoding`.
-- `POST /api/resources/batch`, + epoch: body `{ ops?, chats?, chatOrders? }` (1-5000 operations, nested chat ops
-  counted; a resource op has exactly one of `data`, `delete`, and `patch`); `{ epoch, results, chats?, chatOrders? }`;
-  409 `{ error, conflicts }` with nothing applied.
-- `GET /api/resources/revisions`:
-  `{ epoch, resources: [{ kind, id, revision }], chats: [{ characterId, id, revision }], chatOrders: [{ characterId, revision }] }`,
-  no data (the live-update reconcile); compressed per `Accept-Encoding` (`compressedJson`).
-- `GET /api/resources/:kind`: `{ epoch, items: [{ id, revision, data }] }` in creation order; 404 for an unknown kind.
-- `GET /api/resources/:kind/:id`: `{ epoch, revision, data }`; 404 when missing, 400 for an invalid id.
-- `PUT /api/resources/:kind/:id`, + epoch: body `{ baseRevision: string | null, data }`; `{ epoch, revision, data }` as
-  stored; 409 `{ error, revision }` on a stale revision.
-- `DELETE /api/resources/:kind/:id`, + epoch: `?baseRevision=<token>`; `{ success: true, epoch }`; 409
-  `{ error, revision }` when stale or already gone; 400 for a singleton.
+- Reads: `GET /api/resources?kinds=` (whole kinds, one committed state), `POST /api/resources/read` (named records,
+  chats, and collections; the [read budget](#read-budget)), `POST /api/resources/boot` (skips what the tab holds),
+  `GET /api/resources/revisions` (no data: the live-update reconcile), `GET /api/resources/:kind`, and
+  `GET /api/resources/:kind/:id`, all compressed per `Accept-Encoding` (`compressedJson`).
+- Writes, + epoch: `POST /api/resources/batch` (resource ops, chat groups, chat orders; a conflict applies nothing),
+  `PUT` and `DELETE /api/resources/:kind/:id` (`baseRevision`; 409 with the current revision).
 
 ### Credential routes
 
-`routes/llmSecrets.ts`: JWT + epoch, authenticated limiter.
-
-- `PUT /api/llm-secrets/<path>`: body `{ value, baseRevision }`; sets one credential; `{ epoch, revision, data }` with
-  the masked record; 400, 409 `{ error, revision }`, 412, 503.
-- `DELETE /api/llm-secrets/<path>?baseRevision=`: clears one credential; answers as the PUT.
+`server/src/routes/llmSecrets.ts` `registerLlmSecretRoutes`: JWT + epoch, authenticated limiter.
+`PUT /api/llm-secrets/<path>` sets and `DELETE` clears one credential; both answer the masked record.
 
 ### Message search route
 
-- `POST /api/chats/search` (`routes/messageSearch.ts`): `checkAuth`, authenticated limiter. Body `MessageSearchQuery`
-  (`shared/messageSearch.ts`, capped at 4 KiB of received bytes after authentication); `MessageSearchPage`, `no-store`;
-  404 named character/chat missing, 409 `reason: "epoch"`, 429 past two running, 503 maintenance.
+`POST /api/chats/search` (`server/src/routes/messageSearch.ts` `registerMessageSearchRoutes`): `checkAuth`,
+authenticated limiter, `no-store`; `MessageSearchQuery` and `MessageSearchPage` (`shared/messageSearch.ts`); 429 past
+two running.
 
 ### Chat checkpoint routes
 
-`routes/chatCheckpoints.ts`: JWT, authenticated limiter, `no-store`. Writes also need the epoch, cap their body at 16
-KiB after authentication, and answer 400/404/412/413/503 besides what their bullet names.
-
-- `GET /api/chat-checkpoints?characterId=&chatId=`: `{ epoch, checkpoints }`, newest first; 400/404.
-- `GET /api/chat-checkpoints/policy?characterId=&chatId=`: 200 `{ epoch, policy: { autoEvery, autoKeep } | null }`;
-  400/404.
-- `PUT /api/chat-checkpoints/policy`: `{ characterId, chatId, autoEvery, autoKeep }` or
-  `{ characterId, chatId, off: true }` → 200 `{ epoch, policy: { autoEvery, autoKeep } | null }`.
-- `POST /api/chat-checkpoints/save`: `{ characterId, chatId, name }` → `{ epoch, checkpoint }`; captures server state;
-  409 `generating`.
-- `POST /api/chat-checkpoints/rename`: `{ characterId, chatId, id, baseRevision, name }` → `{ epoch, checkpoint }`; 409
-  with current `revision`.
-- `POST /api/chat-checkpoints/delete`: `{ characterId, chatId, id, baseRevision }` → `{ epoch, ok: true }`; 409 with
-  current `revision`.
-- `POST /api/chat-checkpoints/load`: `{ characterId, chatId, id, chatBaseRevision }` →
-  `{ epoch, chatRevision, safety }`; atomic replacement with safety summary; 409 (current `revision` or
-  `reason: "generating"`).
+`server/src/routes/chatCheckpoints.ts` `registerChatCheckpointRoutes` over `createCheckpointService`: JWT, authenticated
+limiter, `no-store`; writes also need the epoch. `GET /api/chat-checkpoints` and `/policy`, `PUT /policy`, and `POST`
+`save`, `rename`, `delete`, `load` ([chat writes and checkpoints](#chat-writes-and-checkpoints)).
 
 ### Backup routes
 
-`routes/backups.ts`: `checkAuth`, authenticated limiter. The epoch applies only where a bullet says + epoch.
-
-- `GET /api/backups`: `{ items: [{ id, createdAt, size }] }`, newest first.
-- `POST /api/backups/:id/restore`, + epoch: validated in a worker, then replaces every resource (safety snapshot first);
-  `{ epoch }`; 404 unknown id, 400 invalid snapshot, 503. It never reads its body
-  ([Limitations](self-host-server.md#limitations)).
-- `POST /api/backups/export`: body `{ partial?: true | string[] }` (`true`: profile assets selected from the archived
-  snapshot; list: explicit asset keys); streams an archive ([export and import](#archive-export-and-import)); 400 for
-  invalid input or too many partial assets, 413 when it cannot fit the format.
-- `POST /api/backups/import`, + epoch: raw archive body (no 100 MiB limit; `RISU_MAX_IMPORT_BYTES`, default 16 GiB);
-  `{ epoch, assetsWritten, assetsSkipped }`; 400/413.
+`server/src/routes/backups.ts` `registerBackupRoutes`: `checkAuth`, authenticated limiter; the epoch applies to the
+restore and the import only. `GET /api/backups`; `POST /api/backups/:id/restore` ([restore](#snapshots-and-restore); it
+never reads its body, [Limitations](self-host-server.md#limitations)); `POST /api/backups/export` and
+`POST /api/backups/import` ([export and import](#archive-export-and-import)). The import's raw body has no 100 MiB
+limit: `RISU_MAX_IMPORT_BYTES` (`DEFAULT_MAX_IMPORT_BYTES`, 16 GiB) caps it and the upstream, module, and CharX uploads.
 
 ### Upstream backup routes
 
-`routes/backupsUpstream.ts`, `backupsUpstreamExport.ts`: `checkAuth`, authenticated limiter.
-
-- `POST /api/backups/import-upstream/prepare`, + epoch: raw upstream RisuAI `.bin` body (no 100 MiB limit;
-  `RISU_MAX_IMPORT_BYTES`): converted in a worker into a staged store, nothing replaced; NDJSON
-  (`shared/upstreamBackup.ts`): `{ phase, done, total }` lines, then `{ token, report }`, or `{ error }`; 400 (a refused
-  archive, a Risu Account backup's message among them), 409 (busy, or
-  `Another RisuAI backup import is waiting for its answer`), 412, 413, 503.
-- `POST /api/backups/import-upstream/commit`, + epoch: `{ token, acceptWrites? }`: replaces every resource with the
-  staged store (safety snapshot first); `{ epoch, assetsWritten, assetsSkipped, selection }`; 404 `Import expired`, 409
-  busy or `{ error: "changedSinceReview", writes }`, 412, 400 (invalid body or staged store), 503 (the import kept on
-  409/412/503).
-- `POST /api/backups/import-upstream/cancel`: `{ token }`: removes the prepared import; 204 whether it still waited or
-  not; 400.
-- `POST /api/backups/export-upstream/prepare`:
-  `{ promptPresetId, modelPresetId, personaId, includeSecrets, selectedChat? }`: projects one copy of the store into a
-  RisuAI `database.risudat` in a worker and keeps it under a token; `{ token, report }`
-  (`shared/upstreamExportReport.ts`); 400 invalid body, 409
-  `Other RisuAI-compatible backups are waiting for their download`, 413 when it cannot fit the archive format, 503
-  during shutdown.
-- `GET /api/backups/export-upstream/download`: `?token=`: uses the token up and streams the referenced assets as
-  basename records, then `database.risudat`; 400 malformed token, 404 `Export expired`.
-- `POST /api/backups/export-upstream/cancel`: `{ token }`: removes the prepared export; 204 whether it still waited or
-  not; 400.
+`server/src/routes/backupsUpstream.ts` (`registerUpstreamImportRoutes`, `createUpstreamImportStaging`) and
+`server/src/routes/backupsUpstreamExport.ts` (`registerUpstreamExportRoutes`, `createUpstreamExportStaging`):
+`checkAuth`, authenticated limiter. `POST /api/backups/import-upstream/prepare` and `/commit` (+ epoch; NDJSON lines in
+`shared/upstreamBackup.ts`) and `/cancel`; `POST /api/backups/export-upstream/prepare`
+(`shared/upstreamExportReport.ts`) and `/cancel`, `GET /api/backups/export-upstream/download`
+([upstream backups](#upstream-backups)).
 
 ### File import routes
 
-`routes/importModule.ts`, `importCharx.ts`, `importRealm.ts`: `checkAuth`, authenticated limiter, no epoch. The Realm
-routes cap their bodies at 4 KiB.
-
-- `POST /api/import/module`: raw `.risum` body (no 100 MiB limit; `RISU_MAX_IMPORT_BYTES`); NDJSON
-  (`shared/moduleImport.ts`): `{ done, total }` lines, then `{ module, assetsWritten, assetsSkipped }` with each stored
-  key in `module.assets[i][1]`, or `{ error }`; 400/409/413, 503 `Retry-After: 5`.
-- `POST /api/import/charx`: raw CharX body, a zip or a `charxJpeg` (no 100 MiB limit; `RISU_MAX_IMPORT_BYTES`); NDJSON
-  (`shared/charxImport.ts`): `{ done, total }` lines, then `{ card, moduleData, assets, excluded }` (`moduleData`
-  base64, `assets` entry name → stored key), or `{ error }`; 400/409/413, 503 `Retry-After: 5`.
-- `POST /api/import/realm`: `{ id }`: the server downloads, validates, and stages the Realm card, writing nothing;
-  NDJSON (`shared/realmImport.ts`): one `{ kind: "charx" | "png", token, card, ... }` or `{ kind: "json", body }` line,
-  or `{ error }`; 400/409 (busy, or `Too many imports are waiting`)/413, 502 (Realm's text or
-  `Realm download failed`), 503.
-- `POST /api/import/realm/commit`: `{ token }`: stores the staged card's assets; NDJSON: `{ done, total }` lines, then
-  `{ kind: "charx", assets, excluded }` or `{ kind: "png", image, assets }`, or `{ error }`; 400, 404 `Import expired`,
-  409, 413, 503 (the staged import kept on 409/503).
-- `POST /api/import/realm/cancel`: `{ token }`: removes the staged card; 204 whether it still waited or not; 400,
-  413, 503.
+`server/src/routes/importModule.ts`, `server/src/routes/importCharx.ts`, and `server/src/routes/importRealm.ts`
+(`createRealmStaging`; the PNG card plan of `server/src/routes/importPng.ts`): `checkAuth`, authenticated limiter, no
+epoch; NDJSON answers in `shared/moduleImport.ts`, `shared/charxImport.ts`, and `shared/realmImport.ts`.
+`POST /api/import/module`, `POST /api/import/charx`, and `POST /api/import/realm` with `/commit` and `/cancel` (the
+Realm bodies capped at 4 KiB).
 
 ## Flows
 
@@ -165,51 +110,39 @@ routes cap their bodies at 4 KiB.
 
 - "+ epoch" means the `x-resource-epoch` header must name the current database epoch (412
   `{ error: "EpochMismatch", epoch }` otherwise).
-- Mutations answer 503 with `Retry-After` while a restore or an import runs. During shutdown, new resource requests
-  (including reads), backup requests, and module and CharX imports also answer 503 with `Retry-After`; a typed
-  store-closed error maps to the same retryable response.
-- Every `/api/resources` and `/api/llm-secrets` response is `Cache-Control: no-store`. Every read route
-  (`/api/resources?kinds=`, `/api/resources/read`, `/api/resources/:kind`, `/api/resources/:kind/:id`) and the PUT
-  response answer a kind with `project` in its projected form: `llmSecrets` is masked.
+- Mutations answer 503 with `Retry-After` while the maintenance gate is closed (a restore's or an import's install;
+  their validation and the staged file's hash run outside it). During shutdown, new resource requests (including reads),
+  backup requests, and module and CharX imports also answer 503 with `Retry-After`; a typed store-closed error maps to
+  the same retryable response.
+- `/api/resources` responses are `Cache-Control: no-store` (the routes' `noStore` middleware), and `/api/llm-secrets`
+  sets it on a success. Every read route and the PUT response answer a kind with `project` in its projected form:
+  `llmSecrets` is masked.
 - Every whole chat a read returns (`/api/resources/read` `chats` and `chatCollections`, `/api/resources?chats=1`)
-  carries `streaming`: the chat's generation locks as the live-update `hello` lists them (`ChatReadRecord`,
-  `shared/resources.ts`), taken from `generationJobs.streamingSnapshot()` in the same synchronous step as the store
-  read, so the lock list matches the chat's revision (`[]`: no locks; a missing chat and a summary carry none).
+  carries `streaming`, the chat's generation locks taken from `generationJobs.streamingSnapshot()` in the same
+  synchronous step as the store read (`ChatReadRecord`), so the list matches the chat's revision; a missing chat and a
+  summary carry none.
 - The tab replaces the chat's feed locks with it ([feed locks](live-updates.md#feed-locks)); a client must treat the
   field as optional.
 
 ### Read budget
 
-`POST /api/resources/read` deduplicates `refs` by kind and id, `chats` by character and id, and the two collection lists
-by character, always. With `continue: true` (`registerResourceRoutes` `readResponseBytes`, default
-`MAX_READ_RESPONSE_BYTES` in `shared/resources.ts`, 16 MiB; `resourceStore.readRefsWithinBudget`) one answer is bounded
-by its charged bytes, and without it the answer is whole, so an older tab that takes an absent entry for a deleted one
-never meets `unanswered`.
-
-- A group is a character record with its `chatCollections` and `chatSummaryCollections` entries; every chat entry and
-  every other ref is a group of one. Groups go in request order (`refs`, `chats`, `chatCollections`,
-  `chatSummaryCollections`, each at its first mention); the first that would pass the budget and every group after it
-  are named in `unanswered`, in the request's shapes, uncharged past that one and unread.
-- The charge is stored bytes from SQL before anything is parsed, not wire bytes: a record's `octet_length(data)`; a
-  chat's `meta` plus its message rows, two queries; a collection's order text plus one aggregate over its chats and one
-  over their messages; a summary collection's order text plus its `chatSummaries` rows as stored. A
-  [projection](structured-memory/projection.md#the-hypav3-projection) read adds the chats' `memory_events` bytes.
-- The budget is soft: an answer's first group is served whatever its size, so a chat or a collection that outgrew it
-  stays readable, and a chat or a collection is never split. Internal `readRefs` callers are unbudgeted. A character's
-  group is read in one synchronous step; rounds are not one snapshot.
+`POST /api/resources/read` deduplicates its entries, always. With `continue: true` one answer is bounded by its charged
+bytes (`readResponseBytes`, default `MAX_READ_RESPONSE_BYTES` in `shared/resources.ts`, 16 MiB) and names what it left
+out in `unanswered`; without it the answer is whole, so an older tab that takes an absent entry for a deleted one never
+meets `unanswered`. The budget is soft: an answer's first group is served whatever its size, so a chat or a collection
+that outgrew it stays readable, and a chat or a collection is never split. The groups, their order, and the charge
+(stored bytes from SQL, not wire bytes; a [projection](structured-memory/projection.md#the-hypav3-projection) read,
+which the routes ask for and the store does when structured memory is the stored memory algorithm
+(`overlaysMemoryProjection`), adds the chats' `memory_events`) are `readRefsWithinBudget`'s comment.
 
 ### Chat summaries
 
-- `data/chatStore.ts` `chatSummary` over the stored `chatSummaries.text` is shared by the full summary listing,
-  collection summary reads, single-chat binding reads, and a feed chat entry's `summary`; none of them selects or parses
-  `meta` ([Summary projection](#summary-projection)).
+- `server/src/data/chatStore.ts` `chatSummary`, over the stored `chatSummaries.text`, is what the full summary listing,
+  collection summary reads, and single-chat binding reads answer, and a feed chat entry's `summary` carries the same
+  fields (`summaryWithTime`); a fresh projection is read without `meta` ([Summary projection](#summary-projection)).
 - Summaries include optional `lastMessageAt`: the finite numeric `time` of the last message by position, absent for an
-  empty chat or an undated final message. `createChatTables` memoizes both values and absence by chat seq; misses read
-  one row through `messages_position` (`ORDER BY position DESC LIMIT 1`), never MAX(time) or an earlier dated message.
-- Message creation/replacement, append/insert, setMessage, setText, patchMessage, removal, and translation writes
-  invalidate it, as do chat and character cascade deletion; `replaceAll` clears the memo once it committed. While
-  `db.isTransaction`, reads query directly and neither read nor fill the memo, so a throwing transaction callback cannot
-  leave rolled-back activity cached. Metadata-only writes keep the memo.
+  empty chat or an undated final message. Its memo, the writes that invalidate it, and the transaction rule are the
+  comment on `lastMessageTimes` in `createChatTables`.
 
 ### Chat activity
 
@@ -225,31 +158,31 @@ leave absence as absence (upstream reads it as now).
 
 - The client save adapter batches resource, chat, and order changes through `/api/resources/batch`; conflicts roll the
   batch back.
-- Group ids: a chat group whose id its chat incarnation remembers returns its earlier result without applying again or
-  publishing a chat feed ref. Duplicate tracking stays internal; the HTTP response shape is unchanged. A newly applied
-  group publishes its chat ref as usual.
+- A chat group's ops follow the `ChatOp` contract (`shared/chats.ts`), enforced in `chatStore.ts` `applyGroup`: a group
+  id its chat incarnation remembers returns its earlier result without applying again or publishing a chat feed ref, and
+  a group with a non-null base below the chat's restore floor conflicts (`selectRestoreFloor`).
 - [Own chat changes](live-update-feed.md#own-chat-changes) and [feed entries](live-update-feed.md#feed-chat-entries)
   stay out of the HTTP results.
-- The server-specific checkpoints live in `checkpointService.ts`: a load checks the current chat and generation locks,
-  takes a safety checkpoint, applies the replacement and
-  [the memory records](structured-memory/lifecycle.md#a-checkpoint) transactionally, sets the restore floor, and
-  invalidates retained memory-task input.
-- Automatic checkpoints run only after a job ends with a final `done`, when the chat policy's user-turn threshold is
-  met; the count comes from the `messages_role` index (`countUserTurns`), so a turn that is not due reads no message
-  row. A save takes its two counts from SQL, parses the last two rows for the preview and the metadata once for the
-  field pages, and otherwise only selects and hashes the stored row texts.
+- A checkpoint load (`checkpointService.ts` `load`) checks the current chat and generation locks, then in one
+  transaction takes a safety checkpoint, applies the replacement and
+  [the memory records](structured-memory/lifecycle.md#a-checkpoint), and sets the restore floor; the commit invalidates
+  retained memory-task input (`onChatInvalidated`).
+- Automatic checkpoints (`autoSave`) run only after a job ends with a final `done`, when the chat policy's user-turn
+  threshold is met (`countUserTurns`, no message row read).
 
 ### Snapshots and restore
 
 - The snapshot timer runs every ten minutes and writes only after committed resource changes; it retains the newest 20
-  snapshots.
-- A restore checks the epoch and takes a turn of a FIFO queue (`routes/backups.ts`), which spans its validation and
-  install: one validation worker runs at a time, a second restore waits, and a stale waiter answers 412 with no work and
-  no safety snapshot.
-- The turn pins the snapshot into a staging folder (`snapshots.pin`, under the snapshot lock: a hard link, or a copy on
-  `EXDEV` or `EPERM`, so retention cannot take the file; a snapshot not listed is a 404), [validates](#validation) it
-  outside maintenance, verifies the staged file, then under maintenance checks the epoch, makes a safety snapshot, and
-  [installs](#install), advancing the epoch. A client that leaves does not cancel a restore.
+  snapshots (`createSnapshotManager`).
+- A restore checks the epoch and takes a turn of a FIFO queue (`createRestoreQueue` in `routes/backups.ts`) that spans
+  its validation and install, so one validation worker runs at a time; a stale waiter answers 412 with no work and no
+  safety snapshot.
+- The turn pins the snapshot into a staging folder (`snapshots.pin`), [validates](#validation) it in a worker outside
+  maintenance, verifies the staged file, then under maintenance (`withMaintenance`: the snapshot lock and the
+  maintenance listeners come first, and mutations stay open until the gate closes) checks the epoch, makes a safety
+  snapshot, and [installs](#install), advancing the epoch. A client that leaves does not cancel a restore.
+- A write admitted before the gate closes commits without moving the epoch, so the restore's check still passes: the
+  write is in the safety snapshot and is replaced by the install, and the tab's next write meets the new epoch (412).
 
 ### Archive export and import
 
@@ -260,33 +193,18 @@ missing asset files and repairing damaged ones under the [content-name rule](#ba
 
 ### Validation
 
-- `data/restore/stageValidatedSnapshot.ts`: `walkSnapshotFile` reads the source one row at a time and runs every check,
-  handing each checked row to a sink; `readSnapshotFile` collects them in memory for the upstream export, and the
-  restore's sink, the raw validated-row writer (`writeValidatedStore`), writes them into a new file created exclusively,
-  with the live schema, a rollback journal in memory, and no fsync.
-- Numeric revisions stay as stored, chats and checkpoints keep their source `seq`, positions are compacted to `0..n-1`,
-  fences, checkpoint pages, and memory records stay byte for byte, refs come from the manifests, projections from the
-  normalized metadata; retired kinds, the source's `meta` rows, its summaries, `chatGroups`, and `chatRestoreFloors`
-  stay out, and no singleton is materialized.
-- What stays in memory is the largest row or page and the id sets of the cross-row checks. Every page goes into the
-  staged table as it is read, and the unreferenced ones are deleted at the end.
-- `validateRunner.ts` runs this in one `worker_threads` thread per restore on the default kinds, under
-  `RISU_RESTORE_HEAP_MB` (default 2048); a context with `resourceKinds` runs it in process, and `restore.runner`
-  replaces both. A refusal keeps its text (400), an out-of-memory end or an exit before the report is a 400 saying so,
-  and an unexpected failure is logged and a 500. The closed file is reported by size, mtime, inode, and SHA-256.
+`server/src/data/restore/stageValidatedSnapshot.ts` `stageValidatedSnapshot` runs every check in one walk
+(`walkSnapshotFile`), whose sink is the raw validated-row writer (`writeValidatedStore`: what stays as stored, what is
+compacted, what is left out) or, for the upstream export, `readSnapshotFile`.
+`server/src/data/restore/validateRunner.ts` runs it in one `worker_threads` thread per restore under
+`RISU_RESTORE_HEAP_MB` (default 2048); its header has the in-process cases, `restore.runner`, and how each failure
+answers.
 
 ### Install
 
-- `verifyStagedFile` re-checks that report on the serving thread (a regular file by `lstat`, then SHA-256 in 1 MiB
-  chunks that yield between them; a mismatch is a 400).
-- `replaceAll(stagedFile, report)` then stats the file again and reads its version and layout on a short read-only
-  connection, attaches it (`mode=ro&immutable=1`), and in one `BEGIN IMMEDIATE` deletes the live rows and copies the
-  staged ones with `INSERT ... SELECT` in dependency order: fresh live seqs through temporary maps, so the
-  `AUTOINCREMENT` high-water marks keep moving and `sqlite_sequence` is never copied, with foreign keys on.
-- It creates the missing `materialize` singletons, sets the epoch, writes or removes the stamp, and commits; no record
-  normalizer runs on an existing row, since validation normalized its rows. `DETACH` runs outside the transaction, and a
-  failed one is logged and detached by the next install. The memos, the source generation base, and the `epoch` event
-  change only after the commit, so a rollback leaves them.
+`verifyStagedFile` re-checks the worker's report on the serving thread, then `replaceAll(stagedFile, report)` copies the
+staged rows into the live store in one `BEGIN IMMEDIATE` transaction; the order, the seq maps, and what changes only
+after the commit are its comment.
 
 ### Shutdown during a restore
 
@@ -300,12 +218,11 @@ finishes, its worker included, and `dispose` waits for it.
 
 - Upstream `.bin` import and export use prepare/commit or prepare/download flows. Conversion runs in a worker with a
   heap cap; staged work expires after ten minutes. `RISU_MAX_UPSTREAM_DB_BYTES` caps the decoded database.
-- The prepare's worker keeps its build store (the converter's hand-off needs the store's singletons and orders), closes
-  it, and stages from it with `stageValidatedSnapshot`, on the default kinds.
-- Import reports changes for review and checks that the live store has not changed before commit. The commit reads no
-  row: it takes the import, verifies the staged file, and checks the epoch and the accepted write count again right
-  before maintenance (the hash pass is a new window); a change answers 412 or `409 changedSinceReview` and hands the
-  import back with a fresh TTL.
+- The prepare's worker stages from its build store with `stageValidatedSnapshot`, on the default kinds
+  (`importStage.ts`).
+- Import reports changes for review; the commit reads no row and checks the epoch and the accepted write count again
+  right before maintenance, and a change answers 412 or `409 changedSinceReview` (the comment above the commit route has
+  when the import is handed back).
 - Export reads the snapshot without checkpoint tables, so upstream saves hold no named checkpoint history. A failed
   memory walk does not stop it ([projection](structured-memory/projection.md#the-hypav3-projection)).
 

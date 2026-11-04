@@ -12,7 +12,14 @@ export const CHAT_CHECKPOINTS_PATH = "/api/chat-checkpoints";
 /** Ids, a name, a revision token, or a policy; no checkpoint content comes from the tab. */
 const MAX_CHECKPOINT_BODY_BYTES = 16 * 1024;
 
-/** Authenticated checkpoint operations; mutations require epoch and an open maintenance gate. */
+/**
+ * Authenticated checkpoint operations; mutations require epoch and an open maintenance gate.
+ * JWT and the authenticated limiter precede body reads. Writes accept at most 16 KiB of received
+ * bytes after authentication (413 past it); 400 for malformed input, 404 for missing targets, 412
+ * for a stale epoch, 503 with Retry-After: 5 during maintenance or shutdown. `server/src/app.ts`
+ * gives every response Cache-Control: no-store, including reads and refusals. Checkpoint content
+ * always comes from the server; the tab supplies ids, names, policies and revision tokens only.
+ */
 export function registerChatCheckpointRoutes(
     app: Hono<AppEnv>,
     {
@@ -53,10 +60,12 @@ export function registerChatCheckpointRoutes(
         }
     };
 
+    /** GET ?characterId=&chatId= → { epoch, checkpoints }, newest first; 400 invalid ids, 404 missing chat. */
     app.get(CHAT_CHECKPOINTS_PATH, limiter, authenticated, (c) => {
         const result = service.list({ body: c.req.query() });
         return c.json(result.body, result.status);
     });
+    /** GET ?characterId=&chatId= → { epoch, policy: { autoEvery, autoKeep } | null }; 400/404. */
     app.get(`${CHAT_CHECKPOINTS_PATH}/policy`, limiter, authenticated, (c) => {
         const result = service.readPolicy({ body: c.req.query() });
         return c.json(result.body, result.status);
@@ -94,7 +103,17 @@ export function registerChatCheckpointRoutes(
         ["delete", "remove"],
         ["load", "load"],
     ] as const) {
+        /**
+         * POST bodies all name { characterId, chatId } and require x-resource-epoch:
+         * save adds { name } → { epoch, checkpoint }, 409 reason: "generating";
+         * rename adds { id, baseRevision, name } → { epoch, checkpoint }, 409 with current revision;
+         * delete adds { id, baseRevision } → { epoch, ok: true }, 409 with current revision;
+         * load adds { id, chatBaseRevision } → { epoch, chatRevision, safety }, atomic replacement,
+         * 409 with current revision or reason: "generating" (`data/checkpointService.ts` load).
+         */
         app.post(`${CHAT_CHECKPOINTS_PATH}/${path}`, limiter, authenticated, limitedBody, mutationHandler(method));
     }
+    /** PUT { characterId, chatId, autoEvery, autoKeep } or { characterId, chatId, off: true },
+     * with x-resource-epoch → { epoch, policy: { autoEvery, autoKeep } | null }. */
     app.put(`${CHAT_CHECKPOINTS_PATH}/policy`, limiter, authenticated, limitedBody, mutationHandler("writePolicy"));
 }

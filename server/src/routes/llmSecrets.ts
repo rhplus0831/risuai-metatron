@@ -22,10 +22,10 @@ const MAX_SECRET_LENGTH = 64 * 1024;
  *   clears a leaf and removes a map entry);
  * - `DELETE /api/llm-secrets/<path>?baseRevision=`: clears it;
  *
- * JWT, `x-resource-epoch` (412), the maintenance gate (503), the record's revision (409 `{ error,
- * revision }`), 400 for a bad path or value; each answers `{ epoch, revision, data }` with the
- * masked record. The path segments are decoded once from the raw pathname. No value is logged or
- * echoed.
+ * JWT and the authenticated limiter, `x-resource-epoch` (412), the maintenance gate (503), the
+ * record's revision (409 `{ error, revision }`), 400 for a bad path or value; each answers
+ * `{ epoch, revision, data }` with the masked record. The path segments are decoded once from the
+ * raw pathname. No value is logged or echoed.
  */
 export function registerLlmSecretRoutes(
     app: Hono<AppEnv>,
@@ -78,6 +78,13 @@ export function registerLlmSecretRoutes(
         }
     };
 
+    /**
+     * PUT /api/llm-secrets/<path>: { value, baseRevision }, with JWT and x-resource-epoch.
+     * Returns { epoch, revision, data } with the masked record; 400 invalid path/body/value, 409
+     * { error, revision } stale record, 412 stale epoch, 503 with Retry-After: 5 during maintenance
+     * or shutdown. Successful writes set no-store; ordinary validation/conflict refusals do not
+     * set it here. `server/src/app.ts` adds it to shutdown admission refusals.
+     */
     app.put(`${PREFIX}*`, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -104,6 +111,8 @@ export function registerLlmSecretRoutes(
         return update(c, body.baseRevision, (record) => writeSecret(record, path, value));
     });
 
+    /** DELETE /api/llm-secrets/<path>?baseRevision=<token> clears one credential;
+     * the PUT's authentication, epoch, masked response and error contract also apply here. */
     app.delete(`${PREFIX}*`, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

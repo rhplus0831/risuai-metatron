@@ -344,7 +344,10 @@ export function createCheckpointTables(
         /**
          * Captures stored message text, story fields, and structured memory records without changing
          * the chat. Missing chat: null. Counts come from SQL and pages from the stored row texts; only
-         * the two preview rows are parsed. A memory chunk encodes its rows' texts as JSON strings, so
+         * the two preview message rows are parsed, with metadata parsed once for the preview and
+         * captured field pages. Other message rows are selected and hashed as stored text, and the
+         * user-turn count uses messages_role (`data/chatStore.ts` COUNT_USER_TURNS_SQL).
+         * A memory chunk encodes its rows' texts as JSON strings, so
          * its size counts the escaping too.
          */
         save(characterId: string, chatId: string, name: string, kind: CheckpointKind): CheckpointSummary | null {

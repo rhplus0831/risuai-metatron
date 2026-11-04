@@ -696,6 +696,12 @@ export function readSnapshotFile(
  * belong to an incarnation, floors to an epoch), and the source's `meta` rows and stamp are not
  * copied. One transaction, with a rollback journal in memory and no fsync: a crash loses only this
  * file, and once closed it is one self-contained file, without a sidecar.
+ * `data/chatStore.ts` walkChatSnapshot compacts message positions to 0..n-1 while retaining fence
+ * columns; its staging sink derives summaries from normalized metadata, ignoring source projections.
+ * Checkpoint page text, manifests and memory record text keep their checked bytes; refs are rebuilt
+ * from manifests (`data/checkpointStore.ts` createCheckpointStagingSink). Retired resource kinds are
+ * skipped. The walk retains row/page text only while checking it, plus cross-row ids, hashes and
+ * reference claims; every page is staged as read and unreferenced pages are swept at the end.
  */
 export function writeValidatedStore(
     source: string,
@@ -2289,11 +2295,20 @@ export function createResourceStore(options: {
          * `chatSummaryCollections` order: a character's record and its two collection entries are one
          * group, since a client installs them together, and every other entry, a chat included, is alone.
          * Groups are charged from SQL in that order and served until the first that would pass the
-         * budget, which with every group after it is left out, uncharged and unread. The first group is
+         * budget; it and every group after it are left unread, and later groups are not charged.
+         * The first group is
          * served whatever its size. Each list, served or left out, keeps its request order, so
          * re-sending `unanswered` finds the remaining groups in the same order. Every ref is checked
          * first: one left out still refuses the request. A read that overlays projections also charges
          * each chat's and collection's stored events, which is conservative: a projection holds less.
+         * Charges are stored UTF-8 bytes before parsing, not wire sizes: octet_length(data) for a
+         * resource, meta plus message rows for a chat (two queries), order text plus separate chat-meta
+         * and message aggregates for a whole collection, order text plus stored chatSummaries rows
+         * for a summary collection (`data/chatStore.ts` chatBytes/collectionBytes/collectionSummaryBytes).
+         * Projection reads add memory_events bytes. A chat or collection is never split; the character
+         * group is read in this synchronous call, but separate continuation rounds share no snapshot.
+         * Internal readRefs callers are unbudgeted; `routes/resources.ts` opts into this method only
+         * for continue: true and deduplicates each request before calling it.
          */
         readRefsWithinBudget(
             refs: readonly { kind: ResourceKind; id: string }[],
@@ -2860,6 +2875,13 @@ export function createResourceStore(options: {
          * a staged store without it leaves the chats with none. The memos change only after the
          * commit, and a `DETACH` that fails is logged: the data has changed by then, and the next
          * install detaches first.
+         * Before attaching, lstat checks the report again and assertStagedHeader uses a short read-only
+         * connection; ATTACH uses mode=ro&immutable=1. With foreign keys on, one BEGIN IMMEDIATE deletes
+         * live rows and INSERT ... SELECT copies them in dependency order through temporary seq maps.
+         * No normalizer runs on existing rows: validation already normalized them. The normalization
+         * stamp is written or removed for this store's identity. DETACH runs outside the transaction;
+         * epoch, write count, memos, source-generation base and the feed's epoch event advance only
+         * after commit, so rollback leaves them unchanged.
          */
         replaceAll(stagedFile: string, report: StagedFileReport): string {
             assertWritable();
