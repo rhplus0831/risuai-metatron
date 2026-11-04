@@ -131,24 +131,22 @@ import {
     type TTSHookFn,
 } from "src/ts/process/ttsHooks";
 
-/*
-    V3 API for RisuAI Plugins
-
-    Before adding new APIs here, please check the limitations
-
-    - APIs must be a functions
-        - If you want nested objects, first add as a plain function, `_getPluginStorage` for example
-            And add it too _getAliases function ({'pluginStorage':{'getItem': '_getPluginStorage', ... }})
-            This will make pluginStorage.getItem() work in plugins
-        - If you need constants, use _getPropertiesForInitialization to set them up
-            For example apiVersion and apiVersionCompatibleWith are set this way,
-            Accessable in plugins as risuai.apiVersion
-    - APIs must return, or accept as parameters, only the following types:
-        - Serializable data (string, number, boolean, null, array, object)
-        - Class instances marked with __classType = 'REMOTE_REQUIRED'
-        - Callback functions (only as parameters)
-        - Note that Class or Callbacks inside arrays or objects are not supported
-*/
+/**
+ * Host implementation of the guest's `risuai` global, declared by `src/ts/plugins/apiV3/risuai.d.ts`.
+ * `src/ts/plugins/apiV3/factory.ts` turns every guest call into async RPC: expose flat functions,
+ * describe nested aliases in `_getAliases`, and constants in `_getPropertiesForInitialization`.
+ * Values must be serializable data, remote instances marked `__classType = 'REMOTE_REQUIRED'`, or
+ * callback parameters; nested classes and callbacks inside arrays/objects are unsupported.
+ *
+ * Each loaded API object owns its hook context stack (`src/ts/plugins/apiV3/pluginContext.ts`).
+ * Selection-dependent APIs capture `currentContext` synchronously before awaiting, after any
+ * synchronous write refusal: hook calls keep their captured targets; calls without context use
+ * the current selection/settings views. Missing required targets are refused, never redirected.
+ * Host APIs that mutate shared application data check every active context before awaiting and
+ * refuse without throwing while a transform context is active. Plugin storage and the plugin's own
+ * arguments stay writable. New UI and hooks need `addPluginUnloadCallback` cleanup, and external
+ * HTML/URLs need sanitization.
+ */
 
 const pluginChannel = new Map<string, Function>();
 type TrackedEventListener = {
@@ -627,6 +625,12 @@ const removePluginChatPanels = (pluginName: string) => {
     }
 };
 
+/**
+ * Runs per-plugin cleanup before terminating the sandbox (which rejects pending RPC callbacks).
+ * Hook registrations remove their replacers/script handlers; `registerMCP` unregisters only the
+ * client it installed, preserving a replacement at the same identifier. Async cleanup gets up to
+ * one second; registrations can still arrive before termination, so reload clears providers again.
+ */
 const unloadV3Plugin = async (pluginName: string) => {
     forgetPluginPermissions(pluginName);
     const callbacks = pluginUnloadCallbacks.get(pluginName);
@@ -660,8 +664,8 @@ const unloadV3Plugin = async (pluginName: string) => {
     notifyPluginWork();
 };
 
-// Plugin work (`plugin-sandbox.md`): a reload after a remote plugin change waits
-// until `pluginWorkIdle`, and listeners of `onPluginWorkChange` hear whenever it may have become true.
+// A reload after a remote plugin change waits until `pluginWorkIdle`; `onPluginWorkChange` listeners hear
+// whenever it may have become true.
 const pluginWorkListeners = new Set<() => void>();
 // Host-side hook invocations still running (a wrapped hook, a provider awaiting its permission prompt).
 let runningHostHooks = 0;
@@ -699,16 +703,17 @@ function trackHostHook<T>(run: () => T): T {
     return result;
 }
 
-/**
- * No plugin work of this tab is in flight (a reload never interrupts it): no send
- * (`anyLocalSend`), no job that may still call its hooks (`generationPluginWorkActive`), no host-side hook
- * running, and every loaded sandbox idle (`SandboxHost.isIdle`).
- */
 /** Resolves once every loaded guest has reported its startup (ready, failed, or stopped). */
 export function pluginGuestsSettled(): Promise<void> {
     return Promise.allSettled(v3PluginInstances.map(({ host }) => host.startup)).then(() => undefined);
 }
 
+/**
+ * Whether a remote reload may replace this tab's hooks without interrupting work: no local send
+ * (`src/ts/process/localSends.ts`), no job that may still call hooks (`src/ts/network/generationJobs.ts`),
+ * no host hook invocation (including a provider awaiting permission), and every sandbox idle
+ * (`src/ts/plugins/apiV3/factory.ts:SandboxHost.isIdle`). Work with no end keeps reload waiting.
+ */
 export function pluginWorkIdle(): boolean {
     return (
         !get(anyLocalSend) &&
@@ -759,6 +764,7 @@ type PluginV3ProviderOptions = PluginProviderOptions & {
     model?: LLMModel;
 };
 
+/** Provider model metadata; reset this array in place after unload because model-list consumers retain it. */
 export const customV3ProviderMetaStore: LLMModel[] = [];
 
 /**
@@ -1122,7 +1128,10 @@ const setChar = async (context: PluginCallContext | undefined, char: any) => {
     });
 };
 
-/** Runs a plugin write; a refused value (`MutationValidationError`) is warned about and changes nothing. */
+/**
+ * A `MutationValidationError` becomes a `[Plugin] Refused ...` warning and keeps the old value, so
+ * later database keys can still apply. Gone-target errors and unexpected errors propagate.
+ */
 function warnRefused(what: string, write: () => void) {
     try {
         write();
@@ -1340,6 +1349,10 @@ function selectPersonaAt(index: unknown) {
  * field, or a forwarded preset/profile root), and any other key into the top level of
  * `pluginCustomStorage`. Only the full setter passes `plugins`: the plugins the user confirmed,
  * added or updated by name.
+ * Character reconciliation keeps the mirror's order and appends new entries (`applyPluginCharacters`).
+ * `src/ts/storage/pluginStorageStore.svelte.ts` owns the storage writes. Model roots (`maxContext`,
+ * `seperateModels`, `seperateModelsForAxModels`) reach `writeModelRoot` through `updateSettings` in
+ * `src/ts/storage/collectionStore.svelte.ts`; a refused model-root value warns `[Settings] Refused ...`.
  */
 function applyPluginKey(
     key: string,
@@ -1425,7 +1438,10 @@ function vanishedOf(targets: readonly string[]): Set<string> {
     return new Set(targets.filter((chaId) => !present.has(chaId)));
 }
 
-//Keys outside allowedDbKeys are stored at the top level of db.pluginCustomStorage
+/**
+ * Plugin installation needs the full setter's consent flow, so this setter drops `plugins`.
+ * Reconciled chats load first so a snapshot never applies against unloaded chats.
+ */
 const setPluginDatabaseLite = async (newDb: any, context: PluginCallContext | undefined) => {
     if (newDb && typeof newDb === "object" && Object.hasOwn(newDb, "plugins")) {
         newDb = { ...newDb };
@@ -1435,6 +1451,12 @@ const setPluginDatabaseLite = async (newDb: any, context: PluginCallContext | un
     await withChatsLoaded(targets, () => applyPluginDatabase(newDb, context, vanishedOf(targets)));
 };
 
+/**
+ * Preflights every supplied plugin and awaits all installation prompts before assigning any key,
+ * then loads the reconciled characters' chats and applies keys synchronously. Preset fields target
+ * the hook's captured ids; without context they resolve through the settings views after all waits
+ * (`src/ts/storage/collectionStore.svelte.ts:updateSettings`), including any selection repair then.
+ */
 const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefined) => {
     if (Object.hasOwn(newDb, "plugins")) {
         console.warn(
@@ -1451,7 +1473,7 @@ const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefi
         // Only the plugins the user confirms are installed; the installed ones stay.
         newDb = { ...newDb, plugins: await handlePluginInstallViaPlugin(plugins) };
     }
-    // After the chats load, no await: a forwarded preset field lands in the hook's preset, else in the one selected now.
+    // After chats load, no await: preset fields use the hook's ids, else the current settings views.
     const targets = charactersReconciled(newDb);
     await withChatsLoaded(targets, () => applyPluginDatabase(newDb, context, vanishedOf(targets)));
 };
@@ -1468,15 +1490,16 @@ const readAssetImage = (path: string) => {
     return readImage("assets/" + path);
 };
 
+/**
+ * Creates one instance's API and context owner. Wrapped hooks consume `invokeHook`'s handoff before
+ * awaiting and keep it on this owner's stack until settlement; reloading creates a fresh owner.
+ */
 const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
     const safeLocalStorage = new SafeLocalStorage();
     // Captured now: a plugin with database access could rewrite its own script in the database.
     const identity: PluginIdentity = { name: plugin.name, script: plugin.script };
-    // The hooks this plugin registers, wrapped to take their call context (`pluginContext.ts`): a runner
-    // hands it over synchronously, and it stays on this plugin's stack until the hook settles. Keyed
-    // by the registered function, so a removal finds the wrapper it registered.
+    // Keyed by the original callback so removal finds its registered wrapper.
     const hookWrappers = new WeakMap<Function, Function>();
-    // The owner of this instance's context stack: a reloaded instance of the plugin gets its own.
     const contextOwner = {};
     // Check synchronously at host entry, before validation, permission prompts or chat loading.
     // Refusal must not throw: a failed transform would show raw text and schedule recovery retries.
@@ -1584,6 +1607,13 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             if (refuseTransformWrite("setChar")) return;
             return setChar(currentContext(contextOwner), char);
         },
+        /**
+         * Replaces registrations by name: the latest callback, options, and model metadata win,
+         * with one entry in each provider list. Every invocation checks `provider` permission with
+         * periodic reconfirmation (answers are cached for this page). Denial or an abort while
+         * awaiting permission returns `{ success: false, content }` without calling the guest;
+         * `src/ts/network/jobChannel.ts` and `src/ts/process/request/request.ts` expose that failure.
+         */
         addProvider: (
             name: string,
             func: (
@@ -1696,10 +1726,12 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         removeRisuChatListener: (mode: string, func: ChatOutputListener) =>
             removeRisuChatListener(mode, registered(func)),
+        /** Contract: `setPluginDatabaseLite`. */
         setDatabaseLite: async (newDb: any) => {
             if (refuseTransformWrite("setDatabaseLite")) return;
             return setPluginDatabaseLite(newDb, currentContext(contextOwner));
         },
+        /** Contract: `setPluginDatabase`. */
         setDatabase: async (newDb: any) => {
             if (refuseTransformWrite("setDatabase")) return;
             return setPluginDatabase(newDb, currentContext(contextOwner));
@@ -1892,6 +1924,11 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 release();
             }
         },
+        /**
+         * Keeps the hook's chat, presets, and persona through chat loading and parsing via
+         * `src/ts/parser/parser.svelte.ts:risuChatParserScoped`. A missing preset or persona also
+         * throws `PluginTargetGoneError`. Without context, captures the selected chat before loading.
+         */
         parseRisuChat: async (
             text: string,
             options?: {
@@ -2286,8 +2323,13 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         onUnload: (callback: () => void) => {
             addPluginUnloadCallback(plugin.name, callback);
         },
-        //Storage writes resolve when queued; a conflict that discards unsaved ones (another tab or
-        //device wrote the same key) is told to every listener, not to the write's promise
+        /**
+         * Storage writes resolve when queued; later losses from `src/ts/storage/resourceSync.svelte.ts`
+         * go to every listener. `customStorage` only flags custom keys or a reserved namespace's own
+         * shape: revealing custom key names requires `db` permission. This listener needs no permission
+         * and gets no hook context; an existing ambient context can still apply. It is not awaited;
+         * rejections are logged and unload removes it.
+         */
         onStorageDiscarded: (callback: (event: StorageDiscardedEvent) => unknown) => {
             const unsubscribe = onPluginStorageDiscarded((lost) => {
                 const event: StorageDiscardedEvent = {
@@ -2417,6 +2459,13 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 },
             };
         },
+        /**
+         * Pins the hook's chat and passes its context to parsing and provider hooks through
+         * `src/ts/process/request/request.ts`. Model selection uses the captured prompt/model preset
+         * ids and their current values; a gone preset returns a failed request. Without context the
+         * settings views supply the presets. Models whose ids start with `pluginmodel:::` need
+         * `allowPlugins: true`; the legacy `custom` plugin model is not covered by that check.
+         */
         runLLMModel: async (options: {
             mode: ModelModeExtended;
             messages: OpenAIChat[];
@@ -2595,6 +2644,12 @@ type V3PluginInstance = {
 
 const v3PluginInstances: V3PluginInstance[] = [];
 
+/**
+ * Replaces a snapshot of the loaded instances, waiting for unload cleanup and termination first.
+ * Resets providers and model metadata again in place to discard registrations during unload, then
+ * removes tracked DOM listeners from their original targets before starting replacements.
+ * `src/ts/plugins/plugins.svelte.ts` serializes callers and passes only enabled API `3.0` entries.
+ */
 export async function loadV3Plugins(plugins: RisuPlugin[]) {
     await Promise.all(
         [...v3PluginInstances].map(async (instance) => {
@@ -2615,6 +2670,10 @@ export async function loadV3Plugins(plugins: RisuPlugin[]) {
     await Promise.all(loadPromises);
 }
 
+/**
+ * Starts at most one sandbox per internal name. Resolution means the iframe was installed, not
+ * that guest startup settled; boot observes `SandboxHost.startup` separately.
+ */
 export async function executePluginV3(plugin: RisuPlugin) {
     const alreadyRunning = v3PluginInstances.find((p) => p.name === plugin.name);
     if (alreadyRunning) {

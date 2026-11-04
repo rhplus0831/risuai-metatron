@@ -20,4 +20,11 @@ export interface ProviderPluginCustomLink {
     hoverText?: string;
 }
 
+/**
+ * Installed plugin records. `src/ts/plugins/plugins.svelte.ts` imports only API `3.0`; legacy
+ * records with another version (an upstream backup's `2` or `'2.1'`) or none remain persisted but
+ * never load, despite the narrower `version` type. `src/lib/Setting/Pages/PluginSettings.svelte`
+ * marks them unsupported. The internal `name` is the identity used for updates, arguments,
+ * permissions, and IPC allowlists.
+ */
 export type RisuPlugin = ProviderPlugin;

@@ -1,3 +1,12 @@
+/**
+ * Iframe-only plugin execution and bidirectional RPC. `SandboxHost.run` installs the sandbox, CSP,
+ * and `GUEST_BRIDGE_SCRIPT`; calls, callbacks, abort signals, and stream credit/cancel cross this bridge.
+ * Both message listeners check source before data: the host accepts only its iframe window and the
+ * guest only its parent. Never log RPC payloads or answers: fetch headers and bodies can contain secrets.
+ * Abort controllers outlive a returned stream until every stream finishes or is cleaned up;
+ * termination must close bridges in both directions so neither reader waits on a removed iframe.
+ */
+
 type MsgType =
     | "CALL_ROOT"
     | "CALL_INSTANCE"
@@ -460,9 +469,14 @@ await (async function() {
 })();
 `;
 
-/** A bridged host stream the plugin has not pulled from within this time is cancelled (its fetch and upstream end). */
+/**
+ * A host stream never pulled within 60 s errors with `Unread plugin response expired` and cancels
+ * its reader, ending the fetch and `/proxy` upstream. The guest reconstructs with `highWaterMark: 0`,
+ * so only a pending read grants credit; prefetch must not defeat this expiry. No timeout after a pull.
+ */
 export const UNREAD_PLUGIN_STREAM_TIMEOUT_MS = 60_000;
 
+/** Owns one guest's RPC, startup, and activity lifetime; callers must terminate it when unloading. */
 export class SandboxHost {
     private iframe: HTMLIFrameElement;
     private apiFactory: any;
@@ -610,6 +624,10 @@ export class SandboxHost {
         return val;
     }
 
+    /**
+     * Callback wrappers must remove pending entries if preparation or posting fails, including a
+     * missing guest window: no reply can arrive to release them or make the sandbox idle.
+     */
     private deserializeArgs(args: any[], usedAbortIds?: string[]) {
         return args.map((arg) => {
             if (arg && arg.__type === "CALLBACK_REF") {
@@ -815,6 +833,10 @@ export class SandboxHost {
         return { result: obj, ports, cleanups };
     }
 
+    /**
+     * A failed reconstruction cancels every guest stream already built. `CALLBACK_RETURN` resolves a
+     * result or rejects an error and removes the pending entry in both cases.
+     */
     private reconstructStreamsFromPorts(obj: any, ports: readonly MessagePort[]): any {
         if (!obj || typeof obj !== "object") return obj;
 
@@ -1121,6 +1143,11 @@ export class SandboxHost {
         };
     }
 
+    /**
+     * Aborts retained controllers before closing streams and rejecting callbacks. Only host calls
+     * given a guest signal can be aborted; unsignalled calls may keep running. A call resolving after
+     * termination posts nothing, creates no bridge, and cancels its undelivered response streams.
+     */
     public terminate() {
         this.terminated = true;
         // A start still pending ends here (a no-op once the guest reported).

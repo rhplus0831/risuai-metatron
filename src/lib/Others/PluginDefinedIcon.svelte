@@ -1,6 +1,12 @@
 <script lang="ts">
     import DOMPurify from "dompurify";
 
+    /**
+     * Renders plugin-supplied icons from `src/ts/plugins/apiV3/v3.svelte.ts`. HTML must pass
+     * DOMPurify with active/embed tags and styling attributes forbidden; image URLs must be absolute
+     * HTTP, HTTPS, data, or blob URLs. Invalid or disallowed URLs become empty sources.
+     */
+
     let {
         ico,
         className,

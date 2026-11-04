@@ -6,11 +6,14 @@ import { batchRecordWrites } from "./records.svelte";
  * The `pluginStorage` mutations. `pluginCustomStorage` holds three things: the custom keys
  * a plugin's `setDatabase` stores at its top level, the v3 `pluginStorage` values under
  * `_pluginStorage`, and the shared `getLocalPluginStorage()` values under `_safeLocalPluginStorage`.
+ * This is the runtime mutation boundary; `src/ts/bootstrap.ts:installBootRecords` installs the
+ * server's record unchanged before `src/ts/storage/resourceSync.svelte.ts:startResourceSync` marks it.
  * Each function checks its value (JSON data) and writes the record (`records.svelte.ts`), inside
  * one `batchRecordWrites` scope, so the record's write is queued once. Reads return
  * detached copies and never create the record. Any string is a valid key: a key
  * that assigning would not store (`__proto__`, or an inherited name such as `constructor`) gets an
  * own property through a rebuilt dictionary (`writeEntries`).
+ * Array-shaped namespaces: `dictionary`.
  */
 
 /** Where the v3 `pluginStorage` values live inside `pluginCustomStorage`. */

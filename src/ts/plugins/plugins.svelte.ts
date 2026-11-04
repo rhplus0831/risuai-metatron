@@ -19,6 +19,14 @@ import { safeBootOff } from "../safeBoot";
 import type { GuestStartup } from "./apiV3/factory";
 import type { RisuPlugin, ProviderPluginCustomLink } from "../../../shared/plugins.ts";
 
+/**
+ * Plugin import and serialized reload ownership. Installed records live in `shared/plugins.ts`;
+ * only enabled API `3.0` entries run, through `src/ts/plugins/apiV3/v3.svelte.ts` in iframes.
+ * Local loads capture their list before waiting; remote record changes wait for plugin work to
+ * become idle and read the newest list. Safe boot leaves persistence available but starts no guest
+ * and installs no remote listener (`src/ts/safeBoot.ts`).
+ */
+
 export type { RisuPlugin } from "../../../shared/plugins.ts";
 
 export async function createBlankPlugin() {
@@ -112,6 +120,11 @@ export async function updatePlugin(plugin: RisuPlugin) {
     return false;
 }
 
+/**
+ * Imports only scripts whose `//@api` tokens include `3.0`; otherwise reports
+ * `pluginApiVersionUnsupported` and installs nothing. Updates preserve the internal name, which
+ * identifies the record in `src/ts/storage/collectionStore.svelte.ts:upsertPlugin`.
+ */
 export async function importPlugin(
     code: string | null = null,
     argu: {
@@ -382,6 +395,10 @@ export async function importPlugin(
     }
 }
 
+/**
+ * Serializes the entire hook reset and sandbox replacement. Each local caller captures its enabled
+ * list before joining; a failed load is caught on the chain so the next caller can still run.
+ */
 let pluginReload: Promise<void> = Promise.resolve();
 
 // Identities (name, API version, script hash) of the non-3.0 plugins already reported in this page load.
@@ -399,7 +416,10 @@ async function unsupportedPluginIdentity(plugin: RisuPlugin): Promise<string> {
     return JSON.stringify([plugin.name, String(plugin.version ?? ""), scriptId]);
 }
 
-/** Reports each enabled plugin that does not load (not API 3.0) once per page load and identity. */
+/**
+ * Reports enabled non-3.0 entries in one alert (console only during hot reload), once per page load
+ * and identity: name, API version, and script hash. Changing a script makes it reportable again.
+ */
 async function reportUnsupportedPlugins(plugins: readonly RisuPlugin[]): Promise<void> {
     const identities = await Promise.all(plugins.map(unsupportedPluginIdentity));
     // From here on synchronous, so concurrent loads with the same plugins report them once.
@@ -421,13 +441,14 @@ async function reportUnsupportedPlugins(plugins: readonly RisuPlugin[]): Promise
 /**
  * What `loadV3Plugins` captures of each plugin it starts: its name and script, and the `allowedIPC`
  * its own channel messages are checked against. Arguments (`realArg`) are read live, so another
- * device's `setArgument` needs no reload.
+ * device's `setArgument` needs no reload. Callers pass enabled API `3.0` entries in list order;
+ * changing that order changes the signature too.
  */
 function loadSignature(plugins: readonly RisuPlugin[]): string {
     return JSON.stringify(plugins.map((p) => [p.name, p.script, p.allowedIPC ?? []]));
 }
 
-/** The load signature of the plugins running now: null before the first load and while a reload replaces them. */
+/** The running load signature: null before the first load, during replacement, or after a failed replacement. */
 let appliedSignature: string | null = null;
 let pendingLocalLoads = 0;
 
@@ -441,8 +462,11 @@ async function applyPluginLoad(plugins: RisuPlugin[], capture?: (plugins: RisuPl
 }
 
 /**
- * Captures only the boot's guests, inside its serialized load. A stopped guest follows its replacement
- * until it reports, is deliberately disabled/removed, or the boot's settle window ends.
+ * Captures only the boot's guests, inside its serialized load. `ready` succeeds; `failed` or a
+ * missing initial instance fails immediately. After `stopped`, it succeeds when the reload leaves
+ * no replacement and the name is no longer loadable (disabled, removed, or no longer API `3.0`).
+ * Otherwise it follows the replacement until it reports or the boot's settle window ends. No
+ * replacement for a still-loadable name, or the same stopped instance still registered, fails.
  */
 function captureBootGuests(plugins: RisuPlugin[]) {
     let following = true;
@@ -489,13 +513,6 @@ function captureBootGuests(plugins: RisuPlugin[]) {
     };
 }
 
-/*
- * The reload after a remote `plugins` change (`plugin-sandbox.md` Deferred reload): another tab or device disabled,
- * removed, or updated a plugin that runs here. It waits until no plugin work is in flight
- * (`pluginWorkIdle`; running work is never interrupted), checks again on the `pluginReload` chain
- * right before it clears anything, and loads the list as it is then. One at a time: changes while it
- * waits only make it load the newest list. A local `loadPlugins` supersedes it.
- */
 let watchingRemotePlugins = false;
 let deferredWanted = false;
 let deferredQueued = false;
@@ -503,6 +520,10 @@ let deferredCheckQueued = false;
 let deferredGeneration = 0;
 let watchingPluginWork = false;
 
+/**
+ * Installs the remote `plugins` listener once. While a local load is queued or running, every remote
+ * change requests a deferred check; only the comparison inside the reload chain can discard it safely.
+ */
 function watchRemotePlugins() {
     if (watchingRemotePlugins) {
         return;
@@ -529,7 +550,13 @@ function loadablePlugins(): RisuPlugin[] {
     return safeStructuredClone(settings.plugins).filter((p: RisuPlugin) => p.enabled && p.version === "3.0");
 }
 
-/** Checks once per microtask whether the wanted reload can start (activity notifications come in bursts). */
+/**
+ * Coalesces `onRemoteRecordApplied` changes when another tab or device disables, removes, or updates
+ * a plugin running here into one reload on `pluginReload`. Activity notifications retry without a
+ * wait limit or interruption. It rechecks idleness inside the chain, synchronously up to
+ * `clearPluginHooks`; when work resumed it waits again. It loads the list as it is then and skips a
+ * matching signature. A local load supersedes the deferred request, and safe boot cancels it.
+ */
 function queueDeferredCheck() {
     if (!deferredWanted || deferredQueued || deferredCheckQueued) {
         return;
@@ -569,6 +596,11 @@ function queueDeferredCheck() {
     });
 }
 
+/**
+ * Reloads without inspecting guest startup. The first load installs the remote listener; every load
+ * supersedes a waiting deferred reload. With plugins disabled by safe boot, returns before reporting
+ * unsupported entries, resetting hooks, or registering that listener; UI edits still persist.
+ */
 export async function loadPlugins(): Promise<void> {
     await reloadPlugins();
 }
@@ -584,7 +616,12 @@ export async function pluginsStarted(): Promise<void> {
     await pluginGuestsSettled();
 }
 
-/** Only boot captures startup promises; other callers keep the public Promise<void> contract. */
+/**
+ * The boot's load, called by `src/ts/bootstrap.ts:loadData`. It captures startup promises immediately
+ * after `loadV3Plugins`, inside the reload chain before another load can replace its instances.
+ * `captureBootGuests` defines ready/failure and replacement handling; `loadPlugins` never waits for
+ * startup. Safe boot returns an empty successful capture without loading anything.
+ */
 export async function loadPluginsForBoot() {
     let guests = captureBootGuests([]);
     try {
@@ -630,6 +667,10 @@ async function reloadPlugins(capture?: (plugins: RisuPlugin[]) => void) {
     await reload;
 }
 
+/**
+ * Legacy database keys exposed by `apiV3/v3.svelte.ts`. Other keys belong to custom plugin storage;
+ * this list never grants access to the separate server-owned `pluginPermissions` resource.
+ */
 export const allowedDbKeys = [
     "characters",
     "modules",
@@ -656,6 +697,10 @@ export const allowedDbKeys = [
     "characterOrder",
 ];
 
+/**
+ * Returns only new/changed API `3.0` entries the user confirms, without installing them. The full
+ * database setter in `apiV3/v3.svelte.ts` awaits all prompts before applying any database key.
+ */
 export async function handlePluginInstallViaPlugin(plugins: RisuPlugin[]) {
     const trimmedPlugins: RisuPlugin[] = [];
     for (const plugin of plugins) {

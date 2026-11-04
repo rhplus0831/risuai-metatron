@@ -1,6 +1,14 @@
 import { writable } from "svelte/store";
 import type { OpenAIChat } from "../process/index.svelte";
 
+/**
+ * Live tab-side hook registries. `src/ts/network/jobChannel.ts` lists hook names at job creation
+ * (`registeredHooks`) and reads the current registry when a server callback runs; a job does not
+ * retain the original functions. `src/ts/plugins/plugins.svelte.ts` must wait for plugin work to
+ * become idle before a remote change replaces these registrations.
+ */
+
+/** Provider names for UI consumers; `apiV3/v3.svelte.ts` maintains one entry per registered name. */
 export const customProviderStore = writable([] as string[]);
 
 export type PluginProviderArgument = {
@@ -16,6 +24,10 @@ export type PluginProviderArgument = {
     max_tokens: number;
 };
 
+/**
+ * `tokenizerFunc` is retained for compatibility but never called: token counting runs on the server,
+ * which uses `cl100k_base` for a provider's `custom` tokenizer (`server/src/prompt/tokens.ts`).
+ */
 export type PluginProviderOptions = {
     tokenizer?: string;
     tokenizerFunc?: (content: string) => number[] | Promise<number[]>;
@@ -26,6 +38,7 @@ export type ReplacerFunction = (content: OpenAIChat[], type: string) => OpenAICh
 type ChatOutputListenerArg = { char: any; chat: any; characterIndex: number; chatIndex: number; messageIndex: number };
 export type ChatOutputListener = (arg: ChatOutputListenerArg) => void | Promise<void>;
 
+/** Registrations are live until removed or reloaded; context-aware callers use `apiV3/pluginContext.ts:invokeHook`. */
 export const pluginHooks = {
     providers: new Map<
         string,
@@ -44,14 +57,18 @@ export const pluginHooks = {
     chatOutput: new Set<ChatOutputListener>(),
 };
 
+/** Clears provider callbacks, options, and UI names together; `apiV3/v3.svelte.ts` resets model metadata separately. */
 export function clearPluginProviders() {
     pluginHooks.providers.clear();
     pluginHooks.providerOptions.clear();
     customProviderStore.set([]);
 }
 
-//Resets these registries before plugins are reloaded, since most of them have no per-plugin unload cleanup.
-//Replacers rely on unload cleanup; loadV3Plugins resets providers and model metadata again after unloads.
+/**
+ * Resets provider, script-handler, and chat-output registries before unload starts. Replacers rely
+ * on per-plugin unload cleanup. `apiV3/v3.svelte.ts:loadV3Plugins` clears providers and model metadata
+ * again after termination, discarding registrations made during unload.
+ */
 export function clearPluginHooks() {
     clearPluginProviders();
     pluginHooks.editdisplay.clear();

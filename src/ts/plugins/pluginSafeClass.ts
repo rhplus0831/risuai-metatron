@@ -37,6 +37,7 @@ export function isJsonValue(value: unknown, depth = 0, seen = new Set<object>())
     }
 }
 
+/** Device-local shared `safe_plugin_*` storage; server-saved storage uses `SafeLocalPluginStorage`. */
 export class SafeLocalStorage {
     getItem(key: string): string | null {
         return localStorage.getItem(`safe_plugin_${key}`);

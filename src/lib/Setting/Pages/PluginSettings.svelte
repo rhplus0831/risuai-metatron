@@ -21,6 +21,13 @@
     import { hotReloadPluginFiles } from "src/ts/plugins/apiV3/developMode";
     import { safeBootOff } from "src/ts/safeBoot";
 
+    /**
+     * Edits the persisted plugin list and arguments. Legacy entries stay visible with the
+     * "Unsupported API" badge; only API `3.0` loads through `src/ts/plugins/plugins.svelte.ts`.
+     * During safe boot, toggling, removing, and importing still save, but `loadPlugins` starts no
+     * sandbox. Custom links accept only HTTP/HTTPS and open without access to the opener.
+     */
+
     let showParams = $state([]);
 </script>
 
