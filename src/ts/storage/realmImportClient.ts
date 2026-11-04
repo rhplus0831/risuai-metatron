@@ -19,7 +19,9 @@ import { importOverServer, ServerImportAnswerError, type ServerImportOptions } f
 
 /**
  * Asks the server to download the Realm card `id` and stage it, writing nothing, and answers its
- * prepared line (`RealmPrepared`). Throws `ServerImportRequestError` for a non-2xx answer,
+ * prepared line (`RealmPrepared`): staged PNG/CharX card text and token, plus an embedded
+ * `module.risum` only for CharX; legacy JSON is passed through with no stage or token.
+ * Throws `ServerImportRequestError` for a non-2xx answer,
  * `ServerImportFailedError` for a failure line, `ServerImportAnswerError` for a malformed answer, and
  * a network failure as it is (a `TypeError`).
  */

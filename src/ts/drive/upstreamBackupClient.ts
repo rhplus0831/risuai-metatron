@@ -68,7 +68,9 @@ function isSelection(value: unknown): value is UpstreamImportSelection {
 
 /**
  * Uploads `file` to the prepare route with this tab's epoch. Resolves with the prepared import's token
- * and report and selection; `onProgress` gets each progress line. Throws `ServerImportRequestError` for a refusal
+ * and report and selection. `src/ts/storage/serverImportClient.ts` `importOverServer` checks the
+ * NDJSON counts; this entrypoint checks each phase before calling `onProgress`.
+ * Throws `ServerImportRequestError` for a refusal
  * (a 400 carries the server's reason, a Risu Account backup's among them), `ServerImportFailedError`
  * when the conversion failed, `ServerImportAnswerError` for a malformed answer, and a network failure
  * as it is.
@@ -189,9 +191,13 @@ function failureText(error: unknown): string {
  * Restores an upstream RisuAI `.bin`: prepare with progress, the report (Cancel removes the prepared
  * import), then the commit with a wait state, asking again with the count while the server answers
  * that changes were saved since the preview (Restore resends with that count, Cancel cancels).
- * The selection is stored synchronously when the socket detects a restore (`beforeRestoreReload`),
- * or from the commit's answer before reloading. A refusal is shown and nothing changes; a
- * prepared import that was not committed is cancelled. A 412 reloads, as the version-2 import does.
+ * Only `alertUpstreamImportReport`'s own Restore callback authorizes each commit.
+ * Before every commit, `src/ts/storage/resourceSync.svelte.ts` `beforeRestoreReload` installs a
+ * synchronous hook to persist the prepared selection (`src/ts/storage/selection.svelte.ts`, storage
+ * only) before the terminal restore notice, without waiting for the HTTP answer. A successful answer
+ * persists its own selection and reloads. Changed-write answers and definite refusals unregister
+ * the hook (before epoch handling on 412); a lost connection retains it and warns that the commit
+ * may have happened. Every unconsumed prepare is cancelled best effort; a 412 reloads.
  */
 export async function restoreUpstreamBackup(file: Blob): Promise<void> {
     alertWait(language.upstreamImport.uploading);
@@ -291,9 +297,9 @@ async function exportRefusal(res: Response): Promise<UpstreamExportRequestError>
 }
 
 /**
- * The export's request for this tab: its selection (`tabSelectionIds`, the records it resolves to,
- * ignoring the open chat's binding), its open chat (`currentChatRef`, whose character's `chatPage`
- * points at it), and the keys answer.
+ * The export uses `src/ts/storage/settingsViews.svelte.ts` `tabSelectionIds`, ignoring the open
+ * chat's bindings. `src/ts/storage/chatStore.svelte.ts` `currentChatRef` separately supplies
+ * `selectedChat` so its character's exported `chatPage` points at it. `includeSecrets` is the keys answer.
  */
 export function tabExportRequest(includeSecrets: boolean): UpstreamExportRequest {
     const ids = tabSelectionIds();

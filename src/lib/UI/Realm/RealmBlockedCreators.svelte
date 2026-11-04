@@ -4,6 +4,12 @@
     import { removeBlockedRealmCreator } from "src/ts/realmBlocking";
     import { settings } from "src/ts/storage/settingsViews.svelte";
 
+    /**
+     * The shared creator list shows both names and stable ids, or an empty state. Unblocking writes
+     * `settings.ui.blockedRealmCreators` through `src/ts/realmBlocking.ts` before awaiting `onUnblock`;
+     * `src/lib/UI/Realm/RealmMain.svelte` uses that callback to refetch cards.
+     */
+
     interface Props {
         onClose: () => void;
         onUnblock: () => void | Promise<void>;

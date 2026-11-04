@@ -82,6 +82,12 @@ export type UpstreamExportCounts = {
     assets: number;
 };
 
+/**
+ * Preview of an upstream-compatible export (`server/src/data/upstream/exportDatabase.ts`): counts,
+ * reshaped/omitted items in the import report's code/count/name-examples shape, and absent referenced
+ * assets by first owner/role. Missing assets are not truncated here; presentation limits belong to
+ * `src/ts/drive/backuplocal.ts`.
+ */
 export type UpstreamExportReport = {
     counts: UpstreamExportCounts;
     converted: UpstreamReportEntry<UpstreamExportConvertedCode>[];
@@ -124,6 +130,7 @@ export type UpstreamExportRequest = {
 /** The prepare's answer. */
 export type UpstreamExportPrepared = { token: string; report: UpstreamExportReport };
 
+/** A fresh report for one export; its mutable counts and lists must not be reused by another export. */
 export function createUpstreamExportReport(): UpstreamExportReport {
     return {
         counts: {

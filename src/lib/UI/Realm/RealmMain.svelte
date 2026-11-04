@@ -11,6 +11,13 @@
     import { ensureRealmTerms } from "src/ts/realmTerms";
     import { OpenRealmStore } from "src/ts/stores.svelte";
 
+    /**
+     * Realm browsing through `src/ts/characterCards.ts` `getRisuHub`; first listing awaits
+     * `src/ts/realmTerms.ts`, and decline leaves the Realm screen. Reactive creator filtering keeps
+     * cards hidden when either popup host or another tab changes the shared block list; missing
+     * creator metadata stays visible. The menu's management dialog refetches after unblocking.
+     */
+
     let openedData: null | hubType = $state(null);
 
     let charas: hubType[] = $state([]);

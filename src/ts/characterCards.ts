@@ -556,6 +556,10 @@ function realmImportErrorMessage(error: unknown): string {
     });
 }
 
+/**
+ * Creator metadata lookup through `hubURL` (`/hub-proxy` on this server); non-200 answers throw
+ * their text. Private transport only: callers must await `src/ts/realmTerms.ts` before requesting.
+ */
 async function fetchRealmInfo(realmPath: string): Promise<hubType> {
     const res = await fetch(`${hubURL}/hub/info/${realmPath}`);
     if (res.status !== 200) {
@@ -564,6 +568,7 @@ async function fetchRealmInfo(realmPath: string): Promise<hubType> {
     return await res.json();
 }
 
+/** Re-reads the current creator block list after async lookups; absent metadata is allowed, a match shows a notice. */
 function canAccessRealmCreator(creator?: string): boolean {
     if (isRealmCreatorBlocked(settings.ui.blockedRealmCreators ?? [], creator)) {
         alertNormal(language.realmCreatorBlocked);
@@ -572,6 +577,11 @@ function canAccessRealmCreator(creator?: string): boolean {
     return true;
 }
 
+/**
+ * Consumes `?realm=` with history replacement before awaiting `src/ts/realmTerms.ts`; decline or
+ * lookup failure never opens a card. The current block list is checked after lookup, so a creator
+ * blocked during the request cannot enter `showRealmInfoStore`. Missing creator metadata is allowed.
+ */
 export const getRealmInfo = async (realmPath: string) => {
     const url = new URL(location.href);
     url.searchParams.delete("realm");
@@ -592,6 +602,7 @@ export const getRealmInfo = async (realmPath: string) => {
     }
 };
 
+/** Detail-popup state populated only after `getRealmInfo`'s terms and creator checks; null closes it. */
 export const showRealmInfoStore: Writable<null | hubType> = writable(null);
 
 /**
@@ -2064,6 +2075,7 @@ export function createBaseV3(char: ClientCharacter) {
     return card;
 }
 
+/** Realm listing/detail metadata; optional creator ids support filtering, while absent metadata is not a block match. */
 export type hubType = {
     name: string;
     desc: string;
@@ -2085,8 +2097,18 @@ export type hubType = {
     hidden?: boolean;
 };
 
+/**
+ * Last non-empty HTML from an object-shaped listing; array/empty answers retain it.
+ * `src/lib/UI/Realm/RealmMain.svelte` renders it directly with `{@html}` without sanitization.
+ */
 export let hubAdditionalHTML = "";
 
+/**
+ * Requests follow the `src/ts/realmTerms.ts` gate; the supplied search gains ` __shared`. Listing
+ * replies may be arrays or `{ cards, additionalHTML }`. Both use `src/ts/realmBlocking.ts` against the
+ * current settings; cards without creator metadata remain visible. Decline, refusal, or failure
+ * returns an empty list; object replies may update `hubAdditionalHTML`.
+ */
 export async function getRisuHub(arg: {
     search: string;
     page: number;
@@ -2119,6 +2141,16 @@ export async function getRisuHub(arg: {
     }
 }
 
+/**
+ * The `src/ts/realmTerms.ts` gate precedes access checks. With a non-empty block list and no supplied
+ * creator, a lookup precedes preparation. Lookup failure alerts and stops; after a successful lookup,
+ * `canAccessRealmCreator` re-reads the current list. Missing metadata is otherwise allowed; blocked
+ * cards never reach preparation.
+ * `src/ts/storage/realmImportClient.ts` stages PNG/CharX on the server; the tab receives card text,
+ * not the file. `commitRealmCard` resolves any applicable password and `lowLevelAccess` prompts
+ * before committing the staged assets. Legacy JSON goes through the standard importer in hub mode,
+ * fetching portrait/assets through `/hub-proxy`.
+ */
 export async function downloadRisuHub(
     id: string,
     arg: {
@@ -2193,11 +2225,14 @@ export async function downloadRisuHub(
 }
 
 /**
- * The rest of a staged Realm import (`downloadRisuHub`): reads the prepared card and asks its
- * questions (an rcc card's password, the `lowLevelAccess` confirmation), then commits the staged file
- * (the server stores its assets) and builds the character from the stored keys. A card that fails or
- * is declined is cancelled, so the server stores nothing; so is any failure before the commit
- * answered. Returns the new character's id, or a falsy value once the failure is alerted.
+ * The rest of a staged Realm import (`downloadRisuHub`): the prepared card is read, applicable
+ * password and `lowLevelAccess` prompts resolve, then the staged assets are committed through
+ * `src/ts/storage/realmImportClient.ts` and the character is built from the stored keys.
+ * Read failures and declined prompts trigger best-effort cancellation before commit. If the commit
+ * throws before returning a validated result, cancellation is also attempted, but assets may already
+ * be stored.
+ * CharX alone carries embedded `module.risum`; the standard importers use the commit's stored keys,
+ * including a PNG's image. The result is the new character's id, or a falsy value after failure handling.
  */
 async function commitRealmCard(
     download: Exclude<RealmPrepared, { kind: "json" }>,
@@ -2254,6 +2289,7 @@ async function commitRealmCard(
     }
 }
 
+/** Legacy hub-mode portrait/asset bytes through `hubURL` (`/hub-proxy`); non-200 throws Realm's text. */
 export async function getHubResources(id: string) {
     const res = await fetch(`${hubURL}/resource/${id}`);
     if (res.status !== 200) {

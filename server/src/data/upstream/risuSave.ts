@@ -60,6 +60,7 @@ const FORMAT_NAMES: Record<UpstreamSaveFormat, string> = {
     headerless: "data without a RisuAI save header",
 };
 
+/** A refused database decode, carrying the detected format and a user-facing reason; no partial database is returned. */
 export class UpstreamFormatError extends Error {
     readonly format: UpstreamSaveFormat;
 

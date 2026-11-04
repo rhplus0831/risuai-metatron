@@ -21,7 +21,11 @@ import type { UpstreamExportCounts, UpstreamExportReport } from "../../../shared
 
 type AssetInfo = { charName: string; assetName: string };
 
-/** Assets the characters and settings reference, for the missing-asset report. */
+/**
+ * Full-backup missing warnings cover this tab's character/group images and emotions, character
+ * additional/VITS/card assets, selected user icon, and background. Other resource references are
+ * outside this inventory; the server's full export still includes every existing asset file.
+ */
 function referencedAssets(db: BackupInventory): Map<string, AssetInfo> {
     const assetMap = new Map<string, AssetInfo>();
     for (const char of db.characters ?? []) {
@@ -64,7 +68,10 @@ function referencedAssets(db: BackupInventory): Map<string, AssetInfo> {
     return assetMap;
 }
 
-/** The profile images a partial backup keeps. */
+/**
+ * Labels only: `shared/backups.ts` owns the categories and `server/src/routes/backups.ts` selects
+ * from the archived snapshot. A manifest key absent from this tab's inventory remains "Unknown Asset".
+ */
 function partialAssets(db: BackupInventory): Map<string, AssetInfo> {
     const assetMap = new Map<string, AssetInfo>();
     const entries = selectPartialBackupAssets([
@@ -187,7 +194,12 @@ async function streamToFile(
     }
 }
 
-/** Names refused chats and orders from the flush; unmatched keys stay as report keys. */
+/**
+ * Uses the refusal banner's chat/order labels (`src/ts/storage/resourceSync.svelte.ts` `refusedItems`),
+ * falling back to ids or unmatched report keys. Refused keys returned by a successful flush do not
+ * stop the export; the warning says the archive holds the server's copy without those local changes.
+ * A thrown flush refusal stops before export preparation.
+ */
 function backupRefusedNote(refused: string[]): string {
     if (refused.length === 0) return "";
     const labels = new Map<string, string>();
@@ -210,7 +222,11 @@ function backupRefusedNote(refused: string[]): string {
     return [language.backupRefusedChanges, ...refused.map((key) => `- ${labels.get(key) ?? key}`)].join("\n");
 }
 
-/** The backup's result: success, skipped assets, and local changes discarded or refused at its flush. */
+/**
+ * Discarded/refused flush warnings precede missing assets, or accompany success when none are missing.
+ * A discarded edit was replaced by another writer's server copy; a key absent from the inventory is
+ * "Unknown Asset". `src/ts/alert.ts` keeps reload notices in a separate store.
+ */
 function reportMissing(
     missing: string[],
     assetMap: Map<string, AssetInfo>,
@@ -265,7 +281,13 @@ export async function readFirstRecordName(file: Blob): Promise<string | null> {
     }
 }
 
-/** A full backup: the resource database and every asset on the server. */
+/**
+ * A full archive of the server's resource snapshot and every server asset, inlays included
+ * (`server/src/routes/backups.ts`). The tab's missing-asset inventory is captured before the flush
+ * in `downloadArchive` and compared with the returned manifest, rather than rebuilt from the archived
+ * resource snapshot. Inventoried references absent from the manifest's assets are reported with
+ * discarded/refused keys returned by the successful flush.
+ */
 export async function SaveLocalBackup() {
     try {
         const assetMap = referencedAssets(buildBackupInventory());
@@ -289,13 +311,10 @@ export async function SaveLocalBackup() {
 }
 
 /**
- * Saves a partial local backup with only critical assets.
- *
- * Differences from SaveLocalBackup:
- * - Only includes profile images for characters/groups (excludes emotion images, additional assets, VITS files, CC assets, inlays)
- * - Additionally includes: persona icons, folder images, bot preset images
- * - Faster and more efficient for quick backups
- * - Ideal for backing up core visual identity without bulk data
+ * Both `partialBackupFirstConfirm` and `partialBackupSecondConfirm` must be accepted before flushing
+ * and requesting `{ partial: true }`. The resource snapshot is retained; only assets are restricted,
+ * by `shared/backups.ts` `selectPartialBackupAssets` on the server's archived copy
+ * (`server/src/routes/backups.ts`). The tab's `partialAssets` labels the manifest's missing entries.
  */
 export async function SavePartialLocalBackup() {
     // First confirmation: Explain the difference from regular backup
@@ -334,7 +353,11 @@ export async function SavePartialLocalBackup() {
 /** How many missing assets the RisuAI-compatible backup's report lists by name. */
 const UPSTREAM_EXPORT_MISSING_SHOWN = 20;
 
-/** The RisuAI-compatible backup's report (`shared/upstreamExportReport.ts`) as plain text, ending in the download question. */
+/**
+ * The confirmation for `shared/upstreamExportReport.ts`: counts, localized codes with counts/name
+ * examples, the first 20 missing assets by owner/role, and discarded/refused flush warnings that the
+ * archive holds the server's copy. Ends with "Download it now?"; only yes starts the download.
+ */
 function upstreamExportReportText(report: UpstreamExportReport, discarded: string[], refused: string[]): string {
     const text = language.upstreamExport;
     const lines: string[] = [text.intro, ""];
@@ -387,9 +410,10 @@ export function upstreamBackupFileName(date: Date = new Date()): string {
 /**
  * A RisuAI-compatible backup: a `.bin` upstream RisuAI's "Load Backup" restores. Asks whether to
  * include the API keys (every key, the auxiliary services', the characters' TTS keys, and the MCP
- * OAuth secrets included), saves every change, has the server prepare the file from one copy of the
- * store with this tab's selection and open chat, shows the report, and on a yes streams the download
- * to `RisuAI-backup-<date>.bin`. A declined report cancels the prepared export. The file carries no
+ * OAuth secrets included; No is recommended). A failed flush stops preparation; discarded/refused
+ * edits appear as warnings. The server prepares one copy of the store with this tab's selection
+ * and open chat (`src/ts/drive/upstreamBackupClient.ts`). A yes to the report streams the download
+ * to `RisuAI-backup-<date>.bin`; a declined report cancels the prepared export. The file carries no
  * manifest; nothing is read from the stream.
  */
 export async function SaveUpstreamLocalBackup() {

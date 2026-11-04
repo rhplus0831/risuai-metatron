@@ -10,6 +10,13 @@
     import { tooltip } from "src/ts/gui/tooltip";
     import { addBlockedRealmCreator } from "src/ts/realmBlocking";
 
+    /**
+     * Detail and link-copy UI. Chat delegates terms/creator checks to `src/ts/characterCards.ts`
+     * `downloadRisuHub`, passing the known creator; missing metadata triggers lookup there when needed.
+     * Blocking requires confirmation, writes the current shared `settings.ui.blockedRealmCreators`
+     * through `src/ts/realmBlocking.ts`, then closes the popup and shows the success notice.
+     */
+
     interface Props {
         openedData: hubType;
     }

@@ -179,7 +179,10 @@ const ROOT_ONLY_PROFILE_FIELDS = new Set<string>([
 /** Character fields upstream's `character` and `groupChat` lack. */
 const METATRON_CHARACTER_FIELDS = ["customNotificationMessage", "supaMemoryOnCount", "structuredMemoryLanguage"];
 
-/** Chat fields upstream's `Chat` lacks. */
+/**
+ * Chat fields upstream's `Chat` lacks. In particular, `loreOverrides` must not become chat lore:
+ * upstream would add those entries instead of replacing their originals.
+ */
 const METATRON_CHAT_FIELDS = [
     "pinned",
     "memoryTrimAck",
@@ -242,6 +245,16 @@ const SLOT_NESTED_FIELDS: Partial<Record<CredentialSlotName, [string, string]>> 
     novelai: ["novelai", "token"],
 };
 
+/**
+ * Synchronously projects validated snapshot rows and chat tables into a detached upstream database,
+ * referenced assets, and `shared/upstreamExportReport.ts`'s report, without I/O. Rows are parsed here
+ * so repairs cannot affect the store copy. Missing requested selections fall back to the first record
+ * and are reported; `hasAsset` moves absent references into `report.missing`.
+ * `server/src/data/databaseProjection.ts` supplies the same settings/persona/character projection
+ * used by jobs; `server/src/data/upstream/risuSave.ts` encodes the result as `database.risudat`.
+ * Cleanup precedes the final `formatversion: 5` assignment. Secret filtering clears known credential
+ * fields; it does not scan arbitrary text in messages, lorebooks, or retained plugin storage for keys.
+ */
 export function buildUpstreamDatabase(
     rows: UpstreamExportRows,
     chats: UpstreamExportChats,
@@ -507,7 +520,10 @@ function chosenSlotProfiles(
 
 /**
  * One upstream preset: the prompt preset's fields under their stored names, the model preset's slot
- * model ids, the main profile's options except the root-only ones, and the effective context size.
+ * model ids, the main profile's options except the root-only ones, and `maxContext` from the prompt
+ * override or main profile. Stored prompt order is preserved; `id`, `archived`, and override fields
+ * have no upstream counterpart and are omitted. Differing sub/aux options are reported by
+ * `buildUpstreamDatabase`, excluding root-only options and the separately projected context size.
  */
 function upstreamPreset(
     preset: botPreset,
@@ -543,8 +559,11 @@ function upstreamPreset(
 /**
  * Writes the named keys the chosen model preset's slots bind into the upstream fields their models
  * read (main, then sub, then the auxiliary slots when they are on; default-backed slots reserve fields too),
- * and each custom model's key from the profiles that use it. Returns the proxy key. Every named key
- * holding a value that no field received is reported.
+ * and each custom model's key from the profiles that use it. Returns the proxy key. Only with
+ * `includeSecrets`, each unplaced named key whose stored value is a string with non-whitespace
+ * content is reported, including displaced bindings and entries without metadata (named by id).
+ * A placed Vertex binding also supplies `google.projectId` when present and clears cached token/expiry;
+ * a Vertex binding without a client email is skipped.
  */
 function placeNamedKeys(
     db: Root,
@@ -660,7 +679,11 @@ function placeNamedKeys(
     return { proxyKey };
 }
 
-/** Without `includeSecrets`: reports the `llmSecrets` fields that held a key. */
+/**
+ * Reports non-empty `llmSecrets` fields omitted by the client-mirror projection in
+ * `server/src/data/databaseProjection.ts`; `buildUpstreamDatabase` also clears the cached Vertex
+ * token and resets its expiry to zero when secrets are excluded.
+ */
 function reportOmittedKeys(stored: Root, report: UpstreamExportReport): void {
     const fields: string[] = [];
     for (const field of FLAT_SECRET_FIELDS) {
@@ -899,6 +922,16 @@ function upstreamPluginStorage(value: unknown, plugins: readonly Root[], report:
 // ---------------------------------------------------------------------------------------------
 // Characters and chats
 
+/**
+ * Chats keep their stored order; a character without chats gets upstream's empty "Chat 1", since
+ * upstream reads `chats[chatPage]` unguarded (`server/src/data/upstream/importCharacters.ts` makes
+ * the same empty chat). Metatron character fields are stripped and chats with omitted inlays counted.
+ * A numeric frozen legacy `lastInteraction` rises to the newest chat `lastDate`; an absent field
+ * stays absent (upstream reads it as now). This keeps active records out of upstream's ten-day cold
+ * storage, enabled by default without plugins. Finite positive trash times older than three days
+ * are refreshed so upstream boot does not immediately delete those characters. All changes are to
+ * the parsed export copy.
+ */
 function upstreamCharacters(
     records: readonly Root[],
     snapshot: UpstreamExportChats,

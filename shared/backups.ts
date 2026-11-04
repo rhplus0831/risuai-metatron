@@ -1,5 +1,6 @@
 import { RESOURCE_KIND } from "./resources.ts";
 
+/** A partial-backup reference and its display owner; roles are shared with the tab's missing-asset labels. */
 export type PartialBackupAsset = {
     key: string;
     owner: string;
@@ -12,7 +13,14 @@ function object(value: unknown): Record<string, unknown> {
         : {};
 }
 
-/** Selects partial-backup assets from plain resource records, deduplicated by logical key. */
+/**
+ * The asset categories of a partial archive: character/group profile images, persona icons (the
+ * selected user icon lives on its persona), UI background, folder images (`img` and `imgFile`), and
+ * prompt-preset images. Inlays, emotions, additional assets, VITS files, and card assets are excluded.
+ * Only logical `assets/` keys qualify; duplicate keys keep the last owner/role.
+ * `server/src/routes/backups.ts` selects from the snapshot it archives; the inventory in
+ * `src/ts/drive/backuplocal.ts` uses this only to label missing keys, never to select server files.
+ */
 export function selectPartialBackupAssets(records: Iterable<{ kind: string; data: unknown }>): PartialBackupAsset[] {
     const assets = new Map<string, PartialBackupAsset>();
     const add = (key: unknown, owner: unknown, role: PartialBackupAsset["role"]) => {

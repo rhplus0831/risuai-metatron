@@ -6,7 +6,9 @@ import { settings } from "./storage/settingsViews.svelte";
  * and Privacy Policy apply to using it; this app itself is not RisuAI's. A new version asks again.
  */
 export const REALM_TERMS_VERSION = "2026-10-26";
+/** RisuAI's service terms, shown with the privacy policy by `src/ts/alert.ts` `alertRealmTerms`. */
 export const REALM_TERMS_URL = "https://account.sionyw.com/terms";
+/** RisuAI's privacy policy; acceptance is versioned together with the service terms. */
 export const REALM_PRIVACY_URL = "https://account.sionyw.com/privacy";
 
 let asking: Promise<boolean> | null = null;

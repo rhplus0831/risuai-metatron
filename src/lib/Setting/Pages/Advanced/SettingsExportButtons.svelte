@@ -5,6 +5,12 @@
     import Button from "src/lib/UI/GUI/Button.svelte";
     import { alertMd, alertNormal, alertRequestLogs } from "src/ts/alert";
     import { downloadFile } from "src/ts/globalApi.svelte";
+
+    /**
+     * Bug-report export uses the redacted `src/ts/storage/snapshots.svelte.ts` `buildSettingsReport`
+     * projection, downloads its JSON and copies the same text. Request logs use `src/ts/alert.ts`
+     * `alertRequestLogs`; statistics come from the shared settings view.
+     */
 </script>
 
 <Button

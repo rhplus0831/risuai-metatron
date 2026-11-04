@@ -25,17 +25,18 @@ import { kindOf, ownCopy, PendingReport, setOwn, storedValue, tryNormalize } fro
  *   the stub is kept (name, image, a fresh empty chat) and `cold-missing` reported.
  * - The client's creation steps (`characterStore.svelte.ts` `prepareNewCharacter`, ported, not
  *   imported): `normalizeCharacter`, `ttsMode` `"none"` → `""`, `creation_date` when absent, the
- *   `globalLore` conversion (`upgradeLorebook`), a first chat when none is left, each chat's `fmIndex`
- *   (the character's `firstMsgIndex`) and `localLore`, and `postHistoryInstructions` moved into the note
- *   of the chat at `chatPage` (else the first kept chat). Upstream's `checkNewFormat` repair of image
- *   paths runs for a database without `formatversion`.
+ *   `globalLore` conversion (`upgradeLorebook`), a first chat when none is left, each chat's nullish
+ *   `fmIndex` defaulted from numeric `firstMsgIndex` (else -1) and nullish `localLore` defaulted to `[]`,
+ *   and `postHistoryInstructions` moved into the note of the chat at `chatPage` (else the first kept
+ *   chat). Upstream's `checkNewFormat` repair of image paths runs for a database without `formatversion`.
  * - The record is the `characters` kind's normalizer output without `chats`, `chatPage`,
  *   `coldstorage`, `coldStoragedChats`, `realmId`, and `reloadKeys`. A character it refuses is left
  *   out with its chats (`invalid-character`).
  * - Ids: a valid `chaId` is kept by the first kept character holding it; a missing, invalid, or
  *   repeated one gets a new id. An invalid id held by one character only is rewritten where it is
- *   referenced (group members, message speakers, `renamed` for `characterOrder`); a repeated one keeps
- *   pointing at its first holder.
+ *   referenced (group members, message speakers, `renamed` for `characterOrder`); a repeated valid id
+ *   keeps pointing at its first kept holder. Repeated invalid ids are replaced individually without
+ *   remapping their ambiguous references.
  * - Groups: member ids that name no kept character are removed with their `characterTalks` and
  *   `characterActive` entries (`group-member-missing`).
  *
@@ -51,10 +52,11 @@ import { kindOf, ownCopy, PendingReport, setOwn, storedValue, tryNormalize } fro
  * - Toggles: upstream reads a chat's `GLGlobalVariables` value first whenever it is not `""` or
  *   `"null"`, with or without `useLocallySetGlobalVariables` (which only steers its writes, U
  *   `parser/chatVar.svelte.ts` `getGlobalChatVar`); metatron reads it the same way
- *   (`resolveGlobalChatVar`), except that a `""` toggle value counts as set. So the flag is dropped,
- *   the map kept, and its `""` `toggle_*` values removed so the global value still applies.
+ *   (`shared/prompt/toggles.ts` `resolveGlobalChatVar`), except that a `""` text/textarea toggle value
+ *   counts as set. So the flag is dropped, the map kept, and its `""` `toggle_*` values removed so the
+ *   global value still applies.
  * - A message that is not an object, has a role other than `user`/`char`, a `data` that is not a
- *   string (a missing one becomes `""`), or no stored form is left out; a chat field of the wrong kind
+ *   string (undefined or null becomes `""`), or no stored form is left out; a chat field of the wrong kind
  *   is reset (`invalid-data`). The finished chat passes `prepareChatGroups`, the batch's own check, or
  *   is left out (`invalid-chat`).
  * - A chat whose messages show an inlay (`{{inlay::id}}`, `{{inlayed::id}}`, `{{inlayeddata::id}}`)
@@ -104,6 +106,12 @@ type Candidate = {
 
 type Kept = Candidate & { sourceId: unknown };
 
+/**
+ * Recovers each character/chat independently, reporting refusals without losing valid neighbors.
+ * Returns normalized character records and ordered create `ChatGroup`s with valid, unique message
+ * ids; `server/src/data/upstream/importStage.ts` must create characters before appending those chats.
+ * Invalid ids held once are remapped in speakers/members and returned for character-order repair.
+ */
 export function convertCharacters(value: unknown, context: CharacterContext): ConvertedCharacters {
     const { report } = context;
     let entries: readonly unknown[] = [];

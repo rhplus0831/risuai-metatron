@@ -177,6 +177,15 @@ const knownFields = new Set<string>([
     ...FORWARDED_ROOT_KEYS,
 ]);
 
+/**
+ * Synchronously converts without I/O or input mutation into singleton `{ kind, id, data }` records,
+ * characters, ordered chat creates, the selection to apply, and a report. Output records are
+ * normalizer/serialize fixed points (`server/src/data/upstream/importRecords.ts`). Rejected section
+ * fields and generic settings-list entries are reported as `invalid-setting`, and rejected custom
+ * model definitions as `invalid-custom-model`; library conversion uses its own refusal/repair codes.
+ * Fresh-boot records are the last fallback for materialized kinds. A caller-supplied report is
+ * populated and must be single-use.
+ */
 export function convertUpstreamDatabase(db: unknown, options: UpstreamConversionOptions = {}): UpstreamConversion {
     if (!isPlainObject(db)) {
         throw new ResourceValidationError("The upstream database is not an object");
@@ -374,6 +383,10 @@ function settingsRoot(db: Record<string, unknown>): Root {
     return root;
 }
 
+/**
+ * Converts before section serialization: invalid lists/entries are `invalid-setting` (entries by
+ * index); a non-string name falls back to the id, and duplicate ids are silently removed.
+ */
 function convertBlockedRealmCreators(
     value: unknown,
     invalid: (path: string) => void,
@@ -409,8 +422,10 @@ function pick(root: Root, fields: readonly string[]): Record<string, unknown> {
 
 /**
  * The upstream load migrations whose target fields metatron still has and its normalizers no longer
- * apply, in upstream order. Only top-level root fields are replaced (the root is a shallow copy).
- * `openrouterProvider`'s string form is migrated by `normalizeFields` for the root and every preset.
+ * apply, in upstream order: pre-v5 `loreBookToken` floor, old main prompts, Ollama cloud fields,
+ * `antiClaudeOverload`, and `largeChatPerformanceMode` (plus pre-versioned image paths). Only
+ * top-level root fields are replaced (a shallow copy). `openrouterProvider`'s string form is migrated
+ * by `normalizeFields` for the root and every preset.
  */
 function migrateRoot(root: Root, invalid: (path: string) => void): void {
     // U `bootstrap.ts` `checkNewFormat`.
@@ -754,8 +769,15 @@ type ConvertedPresets = {
  * One prompt preset and one model preset per upstream preset, in order, with model profiles shared
  * across presets by content. The effective settings of a preset are `setPreset`'s result on the
  * root; for the selected preset (`botPresetsId`) the root working copy wins wherever it has the
- * field (an own `undefined` included). A missing or invalid selection appends one more preset from
- * the root and selects it, as upstream's default preset list would hold it.
+ * field (an own `undefined` included). An unset prompt `maxContextOverrideSize` is seeded from
+ * `maxContext`, as `src/ts/storage/presets.svelte.ts` `importPreset` does. Each same-named model preset
+ * uses main/sub and set auxiliary profiles deduplicated by sorted-key JSON without `id`/`name`
+ * (`maxContext` and `credentialId` count), beside a materialized `default` profile.
+ * Each distinct `proxyKey` becomes a custom named key bound by its reverse-proxy profiles, since
+ * that model reads no flat key; a preset OpenAI key differing from the root's is kept unbound,
+ * since upstream reads only the root key. A nullish `botPresetsId` requests source index 0; an absent
+ * requested source index appends a root-backed preset candidate. Failed preset conversions are
+ * reported, with final selection falling back to the first surviving/default preset.
  */
 function convertPresets(
     value: unknown,

@@ -5,6 +5,11 @@
     import { hubURL, type hubType } from "src/ts/characterCards";
     import { parseMultilangString } from "src/ts/util";
 
+    /**
+     * Presentation only: the caller owns opening and access checks. `settings.ui.hideAllImages`
+     * suppresses the resource image; feature-badge clicks must not activate the card.
+     */
+
     interface Props {
         onClick?: any;
         chara: hubType;
