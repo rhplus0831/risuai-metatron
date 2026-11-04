@@ -727,7 +727,14 @@ function resendLayer(group: Resend | SentChatGroup): ChatLayerValues["resend"] {
     });
 }
 
-/** Capture only abandoned work, while its mirror and operation sidecars still exist. */
+/**
+ * Capture only abandoned work, while its mirror and operation sidecars still exist. Conflict
+ * replacement, gone/locally deleted chats, deferred reloads and collection removals reach here
+ * before accepting the server copy. Pending befores, conflicted/in-flight/parked resends and refused
+ * intent must survive that replacement. On parent removal or a lost same-id create, forgetCharacter
+ * calls this for chat work and separately captures order intent through the conflict listener.
+ * With fulfilledDelete, this capture omits delete operations already fulfilled by the parent removal.
+ */
 function captureChatConflict(
     key: string,
     options: { group?: SentChatGroup; gone?: boolean; fulfilledDelete?: boolean } = {},
@@ -805,8 +812,26 @@ function captureSentOrder(order: SentChatOrder | undefined) {
 /**
  * Detached, cached journal layers owned by the chat module. Subscription includes work queued
  * before the adapter starts. Projection never takes work, clears a refusal, or changes the mirror.
+ * A chat projects resend (exact ops/base/groupId/sequence/doubt), pending (real unsent ops and their
+ * befores, held base, batch id, optional create snapshot/delete), and refused intent; an empty pending
+ * shell is not intent. Each pending batch mints its groupId before journaling, shared by normal
+ * dispatch and whole-batch keepalive so the server remembers the journaled identity.
+ * Orders project in-flight/recovering sent, pending latest except the identical quarantined vector,
+ * and refused. A lost order answer returns to the current pending vector, never an exact resend.
+ * Create snapshots are reused until mirror content changes; a pending edit does not clone an
+ * unchanged resend. Taken groups/orders must be projected after oversized groups are quarantined,
+ * before dispatch; order rebases dirty sent again. Acks, Retry, refusal, discard, conflict repair,
+ * collection acceptance and base changes must invalidate layers even without another local edit.
+ * src/ts/storage/resourceSync.svelte.ts consumes these projections; it alone writes mutation rows.
  */
 export const chatJournal = {
+    /**
+     * Receives only discarded intent for src/ts/storage/resourceSync.svelte.ts to queue as drafts.
+     * Generating refusals capture only removed locked-message ops. Orders capture the discarded
+     * sent/latest/refused vector (including acknowledgement rebase and keepPendingOrder losses),
+     * never a surviving newer reorder; superseded parked groups are captured as resend. Explicit
+     * discardRefused omits the user's chosen discard but still captures collateral losses.
+     */
     setConflictListener(listener: ((projection: JournalProjection) => void) | null) {
         conflictListener = listener;
     },
@@ -1410,7 +1435,11 @@ function workSeq(key: string): number {
     return Math.max(entry?.seq ?? 0, entry?.resend?.seq ?? 0, inflight.get(key)?.seq ?? 0);
 }
 
-/** Local metadata stays off the wire and follows copied ops explicitly. */
+/**
+ * Local metadata stays off the wire and follows copied ops through clones, reanchoring and
+ * message-id acknowledgements. Coalescing retains the first before value or absence per touched
+ * field, as defined by src/ts/storage/draftJournal.ts JournalBefore/JournalChatOp.
+ */
 const beforeValues = new WeakMap<ChatOp, JournalBefore>();
 
 function fieldsBefore(target: object, fields: Iterable<string>): JournalBefore {
@@ -4184,7 +4213,13 @@ export function reconcileCharacterChats(chaId: string, incoming: readonly DeepRe
 // ---------------------------------------------------------------------------------------------
 // Boot
 
-/** Installs classified boot intent under its original identity, without applying resends to the mirror. */
+/**
+ * Installs classified boot intent under its original identity, without applying resends to the mirror.
+ * Even pending batches may already have reached the server, so they become isolated in-doubt
+ * resends with their original id/base and retry identity. src/ts/storage/journalRecovery.ts drafts
+ * dependent pending work first. Creates install their original snapshot/id; deletes remove the
+ * mirror only after the caller's whole read checked generation locks, and still require another chat.
+ */
 export function installRecoveredChat(
     ref: ChatRef,
     intent: { groupId: string; snapshot: Chat } | Pick<Resend, "groupId" | "ops" | "baseRevision">,

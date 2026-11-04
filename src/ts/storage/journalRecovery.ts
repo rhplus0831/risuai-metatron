@@ -71,6 +71,26 @@ import {
 } from "./resourceSync.svelte";
 import { reconcileSelection, settings } from "./settingsViews.svelte";
 
+/**
+ * Classifies durable record, chat and order intent against the untouched server boot snapshot.
+ * Only safe current-epoch intent replays; ambiguous or other-epoch rows become drafts, while
+ * ineligible content is removed without copying it. Record decisions establish surviving parents
+ * before chat/order decisions. All decisions and draft moves precede local installation.
+ *
+ * One 5 s deadline covers src/ts/storage/draftJournal.ts startup, orphan adoption, expiry purge,
+ * reads, classification, draft moves and handoff. Installation is synchronous: characters, other
+ * records, characterOrder, chats, orders, then selection and language. Local intent never seeds the
+ * server baseline or the boot cache's captured texts. src/ts/storage/resourceSync.svelte.ts adopts
+ * the stored layers and versions before saving starts; its first flush reconciles them durably.
+ *
+ * Chat/order rows handed back to saving remain reserved until synchronous installation and adapter
+ * adoption succeed, then release frees them. Failed installations retain their reservations.
+ * Committed whole-row moves to drafts and expiry cleanup also free reservations; partial moves
+ * retain reservations for remaining layers. A whole chat/order move that produces no draft aborts
+ * recovery. Expired reservations are purged even when readOwn omits them. Apply is explicit, through
+ * normal writers; another epoch's draft remains exportable but cannot be applied.
+ */
+
 type RecordEntry = Extract<MutationEntry, { scope: "record" }>;
 type ServerRecord = ReturnType<typeof heldRecordSnapshot>;
 type Intent = RecordLayerValues["latest"];
@@ -94,6 +114,14 @@ function validIntent(intent: Intent): boolean {
 /**
  * Classifies adapter-produced compact JSON against the untouched boot snapshot. Layer roles order
  * intent; versions only fence storage. A sent update can still land after this snapshot was read.
+ * Refusals, unsupported intent, absent update targets, dispatched creates still absent, and moved
+ * bases without a matching value are drafted. Undispatched creates and unchanged-base updates or
+ * deletes can replay. A non-null sent value matching the server settles that layer and admits
+ * coherent newer intent on the current revision; an absent target satisfies a delete unless a
+ * newer re-add depends on it.
+ * An unresolved sent update must resend before a newer value or revert, even a final no-op. A
+ * matching re-add behind an unresolved delete is drafted: a no-op cannot protect it, and the save
+ * adapter cannot seed a null in-doubt value.
  */
 export function decideRecordRecovery(layers: StoredLayers<"record">, server: ServerRecord): Decision {
     const sent = layers.sent?.value;
@@ -266,7 +294,12 @@ function validRecoveryOp(value: unknown, chatId: string): value is ChatOp {
     }
 }
 
-/** Checks before values in order and the final touched values, without changing the boot mirror. */
+/**
+ * Checks before values in operation order and the final touched values, without changing the boot
+ * mirror: matching befores permit replay; matching final values recognize landed work. Predicates
+ * need the whole pinned chat. Combinations whose ordering or normalization the sidecars cannot
+ * prove are drafted, including mixed append/remove membership edits and `setTranslation` operations.
+ */
 export function decideChatOpsRecovery(
     ops: JournalChatOp[],
     chat: DeepReadonly<Chat>,
@@ -410,7 +443,15 @@ export function decideChatOpsRecovery(
     return landed ? "satisfied" : notApplied ? "replay" : "draft";
 }
 
-/** Classifies a chat against the boot revision, requesting a whole read only for by-id predicates. */
+/**
+ * Classifies a chat against the boot revision, requesting a whole read for by-id predicates.
+ * Existing-chat resends retain exact ops, base and groupId for server retry; dependent pending work
+ * must be atomically drafted before that resend is installed. A dispatched create still absent
+ * is drafted; an undispatched create uses its snapshot and original id. Pending batches over
+ * MAX_BATCH_OPERATIONS (5,000) are drafted because a prefix may have landed under their id.
+ * Pending whole-chat and generation ops require the unchanged boot revision. The caller also loads
+ * deletes to check generation locks, and refuses deletion of the last chat. Other uncertain work is drafted.
+ */
 export function decideChatRecovery(
     layers: StoredLayers<"chat">,
     server: RecoveryChatState,
@@ -504,7 +545,12 @@ export function decideChatRecovery(
     };
 }
 
-/** Orders use the untouched server vector and revision, with membership after recovered creates/deletes. */
+/**
+ * Orders use the untouched server vector and revision, with membership after recovered creates/deletes.
+ * An unresolved sent vector can replay only itself; a landed one settles or admits latest intent
+ * based on its current revision. Latest-only intent settles when already held, otherwise it needs
+ * its unchanged base. Mismatched membership, missing parents and refusals become drafts.
+ */
 export function decideOrderRecovery(
     layers: StoredLayers<"order">,
     server: { revision: string | null; ids: string[] },
@@ -660,6 +706,10 @@ function draftRecord(entry: RecordDraft) {
     };
 }
 
+/**
+ * A pending createSnapshot already contains every queued edit; applying those queued operations
+ * again would duplicate work.
+ */
 function draftChat(entry: ChatDraft) {
     const [chaId, chatId, extra] = entry.target.split("\u0000");
     if (!chaId || !chatId || extra !== undefined) throw new Error(language.recoveryDrafts.invalid);
@@ -690,7 +740,15 @@ function draftOrder(entry: Extract<DraftEntry, { scope: "order" }>) {
     return ids;
 }
 
-/** Live names and Apply availability; malformed intent remains available for Export and Discard. */
+/**
+ * Names drafts and reports Apply restrictions; this does not validate every chat operation.
+ * Rows that draftRecord/draftChat/draftOrder cannot read, and ineligible records, cannot Apply.
+ * Chat/order drafts need a live parent; a missing chat needs a snapshot unless a prior Apply
+ * destination exists. Non-delete character-record intent can recreate an absent character.
+ * Generation blocks character-record writes and edits of an existing source chat, not order
+ * drafts or the flush-only destination retry. Other epochs and saved-but-not-removed drafts
+ * cannot Apply. Reporting these restrictions leaves drafts available for Export and Discard.
+ */
 export function recoveryDraftDetails(entry: DraftEntry): {
     name: string;
     canApply: boolean;
@@ -740,6 +798,11 @@ export function recoveryDraftDetails(entry: DraftEntry): {
     return { name, canApply: reason === undefined, blocked: reason === language.chatGenerating, reason };
 }
 
+/**
+ * Explicit Apply makes fresh by-id writes: append only absent messages and remove only present ids.
+ * Returns skipped missing targets, whole-chat ops and translations whose source changed, so the
+ * caller can report lost intent even though a successful save still removes the draft.
+ */
 function applyChatOps(ref: ChatRef, ops: ChatOp[]): string[] {
     const skipped: string[] = [];
     for (const op of ops) {
@@ -792,7 +855,17 @@ function applyChatOps(ref: ChatRef, ops: ChatOp[]): string[] {
     return skipped;
 }
 
-/** Applies confirmed intent through the normal writers, retaining the draft until saving succeeds. */
+/**
+ * Applies confirmed intent through the normal writers, retaining the draft until saving succeeds.
+ * Admission and expiry are checked before opening a mutation scope. Record priority is latest,
+ * sent, refused; chat order is resend, refused, pending. Existing chats are loaded and pinned, then
+ * admission, epoch, owner lifetime and generation are checked again before fresh by-id writes.
+ * A missing chat is created under the draft id, stable across retries and reloads; an existing
+ * destination under that id needs only a flush and draft removal. src/ts/storage/resourceSync.svelte.ts
+ * flushResources must confirm the scope without relevant discarded/refused keys before deletion.
+ * If deletion fails after saving, src/ts/storage/recoveryDrafts.svelte.ts marks Apply off for this
+ * page, reporting appliedNotRemoved; after reload the durable draft is available again.
+ */
 export async function applyRecoveryDraft(entry: DraftEntry): Promise<{ skipped: string[] }> {
     assertSaveAdmission();
     const details = recoveryDraftDetails(entry);
@@ -889,6 +962,9 @@ class RecoveryTimeout extends Error {}
 /**
  * Claims and classifies durable intent before any recovered local write. The deadline covers all
  * reads, moves, and handoff; failure closes the journal (its bounded drain adds at most its open timeout).
+ * Lifetime checks after awaits prevent late results from installing intent after timeout or failure;
+ * journalFailed is reported and boot continues. Malformed rows are isolated from other targets.
+ * Successful decisions emit journalRecovered with entries, separately from adoption's orphan event.
  */
 export async function recoverJournal(
     options: { journal?: DraftJournal; timeoutMs?: number; now?: () => number } = {},

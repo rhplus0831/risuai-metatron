@@ -316,6 +316,10 @@ export function checkJournalRow(value: unknown): JournalRow | null {
     }
 }
 
+/**
+ * Request identity is an optional pair tied to a message id. Rows predating that pair, including
+ * a sending hand-off stored in the draft row, remain readable without changing the journal format.
+ */
 function checkComposerValue(value: unknown): value is ComposerValue {
     return (
         isPlainObject(value) &&
@@ -421,19 +425,38 @@ export interface DraftJournal {
     readonly tabId: string | null;
     /** The next per-tab version; a caller captures it with what it writes. */
     nextVersion(): number;
-    /** Applies captured-version removals and writes in one transaction; values are copied at the call. */
+    /**
+     * Applies captured-version removals and writes in one transaction; values are copied at the call.
+     * Uncloneable layers (including state proxies or functions) fail with `journalFailed` `uncloneable`
+     * and lose their older stored values, so recovery cannot replay replaced intent. Other items continue.
+     */
     write(items: JournalWrite[], removals?: JournalRemoval[]): Promise<WriteOutcome[]>;
-    /** Conflict drafts commit with cleanup; a budget skip still commits the surrounding removals. */
+    /**
+     * Conflict drafts commit with cleanup, returning `{ committed, writes, drafts }`. Capture-minted
+     * ids keep retries and restore snapshots on the same draft key. Source creation times are read
+     * before cleanup, including reserved sources without modifying them; an earlier draft keeps its time.
+     * Ineligible captures return `ineligible`; `tooLarge` or `budget` skips still commit cleanup.
+     */
     write(items: JournalWrite[], removals: JournalRemoval[], drafts: ConflictDraft[]): Promise<JournalWriteResult>;
     /** Applies the removals in one transaction. */
     remove(items: JournalRemoval[]): Promise<void>;
     /** This tab's mutation entries that have not expired. */
     readOwn(): Promise<KeyedEntry<MutationEntry>[]>;
-    /** Re-keys the rows of closed tabs to this tab; answers how many rows it took (adopted or made drafts). */
+    /**
+     * Re-keys closed tabs' rows, one transaction per tab under the recover lock (at most 5 s waiting
+     * for it). A destination already held here drafts the orphan; expired or ineligible rows are deleted.
+     * A refused owner lock means the other tab is alive, even hidden or frozen, so its rows stay there.
+     * Answers how many rows were adopted or made drafts.
+     */
     adoptOrphans(): Promise<number>;
     /** Converts entries to drafts, each in the same transaction as its removal; answers each draft's id or null. */
     moveToDrafts(items: DraftMove[]): Promise<(string | null)[]>;
-    /** Reads layers and frees keys after commit; expired rows are fenced/deleted. Empty answer on failure or off. */
+    /**
+     * Startup and adopted chat/order keys are reserved; writes and removals skip the whole key,
+     * rechecking after the transaction's row read. Record keys are not reserved. Release reads stored
+     * layers and versions before freeing keys after commit; failure keeps them reserved. Expired rows
+     * are fenced/deleted. Empty answer on failure or off.
+     */
     release(items: JournalRelease[]): Promise<(StoredLayers<"chat"> | StoredLayers<"order"> | null)[]>;
     /** Stores a draft (reclaiming only expired drafts and composer rows); its id, or null when not stored. */
     putDraft(input: DraftInput): Promise<string | null>;
@@ -450,7 +473,12 @@ export interface DraftJournal {
     putComposer(chatKey: string, value: ComposerValue, takeOver?: string): Promise<WriteOutcome>;
     /** Writes the chat's hand-off and deletes its draft, which the send consumed, in one transaction. */
     putComposerSend(chatKey: string, value: ComposerSend): Promise<WriteOutcome>;
-    /** Updates request identity on the hand-off and on the draft, each only while it belongs to this attempt. */
+    /**
+     * Updates both rows in one write transaction, checking message id and any stored request id.
+     * Clears a known attempt's identity or adds retained identity only to a matching row without it;
+     * absent, expired, unreadable and newer-attempt rows stay untouched. Composer fields and createdAt
+     * survive; ordinary write budgets and failure reporting still apply.
+     */
     updateComposerRequest(
         chatKey: string,
         attempt: { userMessageId: string; requestId?: string },
@@ -458,7 +486,8 @@ export interface DraftJournal {
     ): Promise<void>;
     /**
      * The send landed: deletes its hand-off and drops its ids from a draft still carrying them (text
-     * typed again during the send stays), in one transaction.
+     * typed again during the send stays), in one transaction. A matching legacy sending hand-off in
+     * the draft row is deleted too.
      */
     settleComposerSend(chatKey: string, userMessageId: string): Promise<void>;
     /** Deletes the chat's draft, only while it carries `userMessageId` when one is given. */
@@ -470,6 +499,8 @@ export interface DraftJournal {
     /**
      * Ends the journal for this page: drains calls within the open deadline, aborts remaining
      * transactions, closes the connection, and releases the owner lock. Later calls answer as if off.
+     * Once enabled, calls admitted before close are tracked synchronously, including in the same tick.
+     * Composer calls still waiting for startup are not yet admitted and may answer off if close intervenes.
      */
     close(): Promise<void>;
 }
@@ -1821,6 +1852,8 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
     /**
      * Puts the row `update` makes of the stored one (none: "stale") inside the caller's transaction.
      * `replaced` is a row the caller deletes once this one is written; the budget counts it as gone.
+     * Both composer keys are protected from eviction during a swap. A skipped write must leave the
+     * consumed draft or hand-off intact; callers delete it only after `written`.
      */
     async function putComposerRow(
         store: IDBObjectStore,

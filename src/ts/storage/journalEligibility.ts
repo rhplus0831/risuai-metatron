@@ -94,6 +94,9 @@ function customModelsHoldHeader(data: unknown): boolean {
 /**
  * Whether `subject` may be written to the journal (see the module comment). Pure. A record text of a
  * checked kind that is not JSON is refused once it has to be parsed.
+ * Characters avoid parsing unless a non-empty `"apiKey"` string member or a real Unicode escape
+ * could hide a credential. An escaped backslash before `u` does not trigger parsing, keeping large
+ * script-bearing characters cheap to check on every write.
  */
 export function isJournalEligible(subject: JournalSubject): boolean {
     if (subject.scope !== "record") {

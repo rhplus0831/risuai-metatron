@@ -441,7 +441,15 @@ type JournalRecordView = {
     largeWriteAt?: number;
     skippedGeneration?: number;
 };
-/** Keys touched by this page, including captured layers handed over by boot recovery. */
+/**
+ * Keys touched by this page, including captured layers handed over by boot recovery. Eligible
+ * record intent uses the loaded epoch and recordTarget(kind, id): sent holds the dispatched/doubt
+ * op, base and whole text; latest holds newer intent, including a revert or blocked character
+ * delete; refused holds the exact op/text/reason. Membership creates and deletes are records too.
+ * Membership changes queue only creates, deletes, in-doubt characters and characters already holding
+ * journal intent. Unchanged characters retain their cached projections; collection reuses the
+ * character object already in its loop instead of looking it up again.
+ */
 const journalRecords = new Map<string, JournalRecordView>();
 const journalPending = new Set<string>();
 const journalWritingRecords = new Set<string>();
@@ -451,12 +459,21 @@ type JournalChatView = {
     written: Record<string, { version: number; value: unknown }>;
     splitFailures?: { groupId: string; count: number };
 };
-/** Scope is part of identity; these keys never enter the record projection loop. */
+/**
+ * Scope is part of identity; these keys never enter the record projection loop. Detached per-layer
+ * projections come from src/ts/storage/chatStore.svelte.ts; bookkeeping and captured versions stay
+ * separate from records while sharing the same journal transaction.
+ */
 const journalChatViews = new Map<string, JournalChatView>();
 const journalChatPending = new Set<string>();
 /** Includes captures in a transaction until its commit is known, so restore can snapshot them too. */
 const conflictDrafts = new Map<string, ConflictDraft>();
 
+/**
+ * Capture before accepting a server copy, using a detached value and a stable id. Failed transactions
+ * and restore snapshots reuse that id. Cleanup may commit without an ineligible or over-budget
+ * draft; off or halted journaling cannot preserve discarded intent.
+ */
 function queueConflictDraft(input: DraftInput) {
     if (halted || journalOff) return;
     if (input.scope === "record") {
@@ -479,7 +496,13 @@ function captureJournalChat(projection: ReturnType<typeof chatJournal.project>) 
     queueConflictDraft({ ...projection, epoch: view?.epoch ?? getResourceEpoch() });
 }
 
-/** The final local intent, before conflict recovery clears its in-doubt write or refusal. */
+/**
+ * Snapshot potentially abandoned record intent before clearing inDoubt and attempting a 409 merge:
+ * the sent/doubt value, newest local text or deletion, and exact refused text. Queue this capture
+ * only if the merge fails and the remote copy is accepted, or hydration finds the character gone.
+ * Recognized or adopted landed writes bypass capture; successful merges discard the candidate;
+ * clean records yield none.
+ */
 function captureRecordConflict(key: string, op?: PendingOp, gone = false): DraftInput | undefined {
     const view = journalView(key);
     if (!view) return;
@@ -652,6 +675,10 @@ const journalOperation = (text: string | null, baseRevision: string | null): Rec
 /**
  * Record intent, separately from sendable operations: a blocked delete, a removed in-doubt create,
  * and a revert behind a sent write still belong here. This never takes or settles chat work.
+ * Projections are reused at the same dirty generation and character identity; dispatch, doubt,
+ * refusal and base changes independently change the layers. Acks, adopted lost writes and merges
+ * move newer intent to the base we will send; refusal replaces sent until an edit or Retry releases
+ * it, and acceptance of a remote copy removes discarded intent.
  */
 function refreshJournalRecord(key: string, view: JournalRecordView) {
     const [kind, id] = key.split("\u0000");
@@ -753,7 +780,22 @@ function sameJournalLayer(a: RecordLayerValues[keyof RecordLayerValues] | undefi
     );
 }
 
-/** Normal flushes are serialized after startup seeds the version counter, including removals. */
+/**
+ * Normal flushes are serialized after startup seeds the version counter, including removals. A
+ * failed start disables journaling for this page; a restore halt also stops calls waiting on startup.
+ * Normal record and unsplit chat/order flushes rewrite only changed layers. A split chat rewrites
+ * its whole projection to obtain a per-item outcome. Removals use each layer's captured written
+ * version. This adapter never reads or recovers old rows; src/ts/storage/journalRecovery.ts hands
+ * them over at boot.
+ * Whole record text above 256 KiB UTF-8 is throttled to one write per 5 s per key, except creates and
+ * hide flushes. Deferred replacements keep the prior stored value while newer memory supersedes or
+ * cancels them; absent desired layers are removed immediately. Chat/order layers have no throttle.
+ * Credential-bearing kinds are excluded before cloning. Summed text lengths above 16 MiB skip
+ * changed layers and remove their prior values while retaining unchanged layers, reporting tooLarge
+ * once per key/content generation. src/ts/storage/draftJournal.ts still owns full eligibility and
+ * exact UTF-8 budgets. A transaction failure retains conflict captures and unadvanced record
+ * bookkeeping; failed chat writes retry. Split prefixes require an actual per-item write outcome.
+ */
 function flushJournal(onHide = false): Promise<void> {
     if (journalTimer) {
         clearTimeout(journalTimer);
@@ -988,7 +1030,11 @@ type RestoreJournalItem = {
     changed?: (keyof RecordLayerValues)[];
 };
 
-/** Capture before halting: record projection can invalidate a refusal and queue more work. */
+/**
+ * Capture synchronously before halting or settling anything: record projection can invalidate a
+ * refusal and queue more work. Include every record with desired/written layers or a transaction
+ * in flight, plus every chat/order view, even an empty projection, to fence outstanding writes.
+ */
 function captureRestoreJournal(): RestoreJournalItem[] {
     const snapshot: RestoreJournalItem[] = [];
     for (const [key, view] of journalRecords) {
@@ -1030,6 +1076,14 @@ function captureRestoreJournal(): RestoreJournalItem[] {
     return structuredClone(snapshot);
 }
 
+/**
+ * Bypass the adapter's journalQueue and large-record throttle so a stalled normal flush does not
+ * prevent this attempt; IndexedDB transaction serialization still applies. After startup seeds the
+ * counter, one fresh version writes or nulls every scope layer under its old epoch, superseding
+ * pre-halt writes/removals even if they finish later. Oversized records drop changed layers while
+ * preserving unchanged ones. src/ts/storage/draftJournal.ts skips reserved chat/order keys; the
+ * next boot drafts old-epoch rows instead of replaying them.
+ */
 async function writeRestoreJournal(snapshot: RestoreJournalItem[], drafts: ConflictDraft[]) {
     if (journalOff || (snapshot.length === 0 && drafts.length === 0)) return;
     const journal = pageDraftJournal();
@@ -1088,6 +1142,7 @@ async function waitForRestoreJournal(snapshot: RestoreJournalItem[], drafts: Con
     }
 }
 
+/** Bound the wait for a create's dispatched journal mark to 200 ms. */
 async function waitForCreateJournal(flush: Promise<void>) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -1157,7 +1212,12 @@ export function adoptRecoveredRecord(
     journalPending.add(entry.target);
 }
 
-/** Hands installed or settled boot intent to the journal queue before saving starts. */
+/**
+ * Hands installed or settled boot intent from src/ts/storage/journalRecovery.ts to the journal queue
+ * before saving starts, copying the stored epoch/layers/versions. The first flush replaces or
+ * removes them atomically; an empty settled projection clears its layers. Until then another
+ * service-worker reload can recover the durable row again.
+ */
 export function adoptRecoveredChat(
     entry: Extract<MutationEntry, { scope: "chat" | "order" }>,
     layers: StoredLayers<"chat"> | StoredLayers<"order">,

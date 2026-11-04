@@ -5,6 +5,13 @@ import { JOURNAL_ENTRY_TTL_MS, pageDraftJournal, type DraftEntry } from "./draft
 import { isJournalEligible } from "./journalEligibility";
 import { getResourceEpoch } from "./resourceClient";
 
+/**
+ * Reactive view of src/ts/storage/draftJournal.ts listDrafts; the journal remains durable authority.
+ * Record drafts are filtered through src/ts/storage/journalEligibility.ts, and entries omit expired
+ * rows and tag other epochs. While drafts remain, a 60 s timer removes expired rows from the view,
+ * notice and Settings without reloading.
+ */
+
 let drafts = $state.raw<DraftEntry[]>([]);
 let epoch = $state("");
 let now = $state(Date.now());
@@ -30,7 +37,10 @@ function expire() {
     }
 }
 
-/** A reactive view of durable drafts; exporting and dismissing the notice never remove them. */
+/**
+ * A reactive view of durable drafts; exporting and dismissing the notice never remove them.
+ * Discard requires confirmation before removing durable intent.
+ */
 export const recoveryDrafts = {
     get entries() {
         return entries;
