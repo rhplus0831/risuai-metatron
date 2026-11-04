@@ -14,111 +14,69 @@
 
 ## Files
 
-- `shared/structuredMemory.ts`: `MemoryPage.trashedAt` and `reshaped`, `StructuredMemoryContents.trash`, the `merge` and
-  `split` history kinds, `StructuredMemoryPageTool`, `StructuredMemoryPageToolAnswer`, `MEMORY_PACKAGE_VERSION`,
-  `StructuredMemoryImportFile`, `MEMORY_IMPORT_REFUSALS`, `StructuredMemoryImportRefusal`,
-  `StructuredMemoryImportAnswer`.
-- `server/src/prompt/memory/structured/pages.ts`: `parseMemoryPageTool`, `pageToolIds`, `applyPageTool`,
-  `MemoryPageToolRefusal`, all pure. `applyPageTool` takes its reads lazily (`PageToolRecords`), so only a merge reads
-  events and threads, and answers the change set, the page to show, and the pages to flag.
-- `server/src/prompt/memory/structured/importPackage.ts`: `parseMemoryPackage`, pure. It reads the grammar of
-  `renderMemoryPage`, `renderMemoryTimeline`, and `renderMemoryThreads`.
-- `server/src/data/memoryStore.ts`: `TRASHED_PAGE_COLUMN`, `recordRow`, and `listing`, the one place that tells a
-  trashed row from a live one.
-- `src/ts/process/structuredMemory.svelte.ts`: `structuredMemoryPageTool`, `importStructuredMemoryPackage`,
-  `renderMemoryThreads`.
+Read the named contract with its code; the shared modules also serve other structured-memory guides.
+
+- `shared/structuredMemory.ts`: page-tool and import contracts; `MemoryPage.trashedAt`, `reshaped`,
+  `StructuredMemoryContents.trash`, `MEMORY_HISTORY_CHANGE_KINDS`, `StructuredMemoryPageTool`,
+  `StructuredMemoryPageToolAnswer`, `MEMORY_PACKAGE_VERSION`, `StructuredMemoryImportFile`, `MEMORY_IMPORT_REFUSALS`,
+  `StructuredMemoryImportRefusal`, `StructuredMemoryImportAnswer`.
+- `server/src/prompt/memory/structured/pages.ts`: pure page tools; `MemoryPageToolRefusal`, `parseMemoryPageTool`,
+  `pageToolIds`, `PageToolRecords`, `PageToolResult`, `applyPageTool`, `mergedPages`, `joinedSection`, `withAliases`,
+  `remappedEvent`, `splitPages`, `toolEntry`, `withHistory`.
+- `server/src/prompt/memory/structured/importPackage.ts`: pure package grammar and admission; `parseMemoryPackage`,
+  `Reader.metadata`, `readPage`, `fencedEntry`, `readTimeline`, `packageVersion`, `admitted`.
+- `server/src/data/memoryStore.ts`: trash column and listing boundary; `TRASHED_PAGE_COLUMN`, `recordRow`, `listing`.
+- `server/src/routes/structuredMemory.ts`: page-tool and import HTTP boundary; `registerStructuredMemoryRoutes`,
+  `holdsRows`, `fenced`.
+- `src/lib/Others/StructuredMemory/PagesTab.svelte`: page-tool controls and lore export; `runTool`, `exportToLore`,
+  `importPackage`, `LORE_INACTIVE`.
+- `src/ts/process/structuredMemory.svelte.ts`: tab's tool and package client; `structuredMemoryPageTool`,
+  `packageFiles`, `importStructuredMemoryPackage`, `renderMemoryThreads`.
 
 ## Flows
 
 ### The page tools route
 
-`POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/page-tools`, `{ revision, tool }`, capped at 64 KiB, answers
-`StructuredMemoryPageToolAnswer`: the page the tab shows next, null after a purge. Its checks and order are
-[the edit route's](records.md#the-edit-route), so a running or stopped rebuild refuses it 409 `fenced`. A tool that
-changes nothing goes through as an empty change set, so a stale one is still refused. A refusal from the pages is 400
-with text, and the tab shows that text. A gone page is 404 `recordGone`.
+`runTool` calls `structuredMemoryPageTool` through `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/page-tools`. The
+route calls `applyPageTool`, checks the flagged pages with `flagUnsupportedSections`, and writes one change set at the
+tab's revision. The tab selects the answered page and rereads contents. Checks and order follow
+[the edit route](records.md#the-edit-route), so a running or stopped rebuild refuses it 409 `fenced`.
 
 ### The trash
 
-- `trash` sets `trashedAt` and nothing else: links, attendance, and events keep the id, so a restore brings it all back.
-  The scene page is refused, by the tool and again by the store.
-- `untrash` clears it and runs `flagUnsupportedSections` against the events as they stand, since some may have been
-  retracted meanwhile. A name that now collides with a live page is allowed: merge settles it.
-- `purge` takes only a trashed page and removes it. References to it dangle, which readers tolerate.
-- `/records/pages/:id` still reads a trashed page, so the panel shows it. `/edits` page edits and `/revert` refuse
-  it 400.
-
-### Merge
-
-`{ kind: "merge", sourceId, targetId }`: both live, of one type, neither the scene.
-
-- The target gains the source's title and aliases as aliases, its links with any link to the source dropped, and its
-  keywords, the later `lastUsed`, and the source's grade only when it has none. `contextMode` stays the target's.
-  Nothing cuts the alias list: `castRow` bounds what a prompt shows.
-- A heading only the source has moves whole. One both have joins: the same body stays, any other is the target's, a
-  blank line, then the source's. A join past `sectionBodyChars` or a page past `sectionsPerPage` is refused, because
-  nothing is cut. Evidence joins through `newestEvidence`, older section first, and every mark holds when either section
-  held it.
-- `events`, `threads`, other pages' `links`, and the scene's `participants` move from the source's id to the target's in
-  the same write: an event's `participants`, `stateChanges`, `knowledge` and its `knowers`, `relationshipShifts`,
-  `openThreads.add[].who`, and `speakerId`. Manifests, receipts, and run inputs stay as logs.
-- The source goes to the trash unchanged, its history with it. Restoring it gives a plain page, and its references stay
-  on the target.
-
-### Split
-
-`{ kind: "split", pageId, headings, title, aliases }`: `headings` a strict subset of the page's, `aliases` a subset of
-its own, and no live page of the type going by `title`. The new page has the type, `contextMode`, grade, the sections as
-they stand, and the aliases, untruncated. Events stay on the old page: nothing says which half they meant.
+`/records/pages/:id` still reads a trashed page for the panel; `/edits` page edits and `/revert` refuse it 400. Trash
+preserves reference ids, so a restore reconnects them. A `purge` leaves dangling references, which readers tolerate. The
+store also refuses a trashed scene independently of the tool.
 
 ### What a merge or split does to history
 
-- A `merge` entry stands on every heading a merge touched on the target, and a `split` entry on every heading that left
-  the old page. Neither has an `eventId`, so neither can be reverted, and each is a later entry of its heading, which
-  makes [`revertChange`](records.md#the-revert-route) refuse every older one `superseded`. The bounded history drops
-  oldest first, so a blocker outlives what it blocks.
-- The source's history does not move to the target. A moved `before` under a target heading would put the source's text
-  over the target's on a branch cut.
-- `reshaped` marks a merge target, an old page, and a new page, and it outlives the history. A rebuild seeds such a page
-  whole, and a branch leaves it alone, flagging what names a behind event. Without it a rebuild removes an unmarked
-  merged page, and a branch can lose the source's half of a join or the whole page.
+`mergedPages` and `splitPages` leave heading blockers without an `eventId`. The
+[revert route](records.md#the-revert-route) calls `revertChange`, which refuses older entries `superseded`; the tool
+entries themselves cannot be reverted. The bounded history drops oldest first, so a blocker outlives what it blocks.
+
+`reshaped` outlives history on a merge target and both split pages. [Rebuild](rebuild.md) seeds all their sections and
+history; a [branch](lifecycle.md) keeps their text and flags sections citing behind events. Without `reshaped`, a
+rebuild keeps only what `seededPage` keeps for another reason, such as a lock or a person's grade, and an unseeded page
+can disappear at the swap; a branch could lose the source's half of a join or the whole page.
 
 ### Lorebook export
 
-`exportToLore` in `PagesTab.svelte` appends one entry to the chat's `localLore` through `setChatMeta`, never to the
-character's `globalLore`. `comment` is the title and `key` the title and aliases joined by commas, which `aliasSeeds`
-reads. `content` opens with `@@dont_activate` and a blank line, because a decorator line right after it, such as a
-section headed `@@activate`, would win. It is a chat write: no revision and no fence, and `readOnly` only turns the
-button off.
+`exportToLore` appends chat `localLore` through `setChatMeta` in `src/ts/storage/chatStore.svelte.ts`. The next writer's
+`aliasSeeds` reads its title and alias keys; `CCardLib.decorator.parse`, called from `shared/lore/activation.ts`, reads
+its inactive decorator. This is a chat write, outside the memory revision and fence.
 
 ### The import route
 
-`POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/import`, `{ revision, files: { path, text }[] }`, capped at
-`restoreBodyBytes`, 413 past it, answers `StructuredMemoryImportAnswer`.
-
-1. The tab unzips with fflate, adding each `.md` entry's declared `originalSize` against `MEMORY_RESTORE_BODY_BYTES`
-   before any is inflated, so the server never sees a zip.
-2. `parseMemoryPackage` reads each file and refuses what it gets wrong, a timeline event alone as `timeline.md#<id>`.
-3. With no await from there, the epoch and `fenced`. A chat holding a row of any kind, trash and runs included, one
-   under `chatAdoptionHold`, and files with no record all answer `imported: false` and write nothing, with the refusals
-   listed.
-4. What stands goes in one `store.memory.write` at the client's `revision`.
-
-Add-only is refused on purpose: ids are not unique across chats, because a copy keeps them, so an accepted page could
-bind to a refused, different event of the same id. One imported page would also clear an adoption hold with no choice.
-
-The grammar, in `parseMemoryPackage`:
-
-- Metadata is the authority. Each line is `key: <JSON>`, a repeated key refuses the file, and fields land through
-  `Object.fromEntries`, so a `__proto__` key plants nothing.
-- Bodies come by position from `bodyLines` and `summaryLines`. The `##` line must be the collapsed heading or title, a
-  quote line must be the metadata's key line as rendered, and a file must be read to its end.
-- `parseRestoredRecords` is the one shape check, one record at a time. Before it, what the store would refuse whole is
-  refused per file: an invalid id, a repeated id, a second scene, a trashed scene, a text past
-  `MAX_READ_RESPONSE_BYTES`.
-- Pages come back with an empty history. A `packageVersion` past `MEMORY_PACKAGE_VERSION` is `newerVersion`. A timeline
-  with no readable `threads.md` keeps its events with `openThreads.close` and `transitions` emptied and lists
-  `missingThreads`.
+1. `importPackage` calls `importStructuredMemoryPackage`; `packageFiles` unzips with fflate in the tab, refusing
+   `tooLarge` past `MEMORY_RESTORE_BODY_BYTES` (the server's `restoreBodyBytes` cap), and sends Markdown to
+   `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/import`, so the server never sees a zip.
+2. The route calls `parseMemoryPackage`, which reads the renderers' grammar and validates each record through
+   `parseRestoredRecords` in `server/src/prompt/memory/structured/restore.ts`. File and event refusals return in
+   `StructuredMemoryImportAnswer`.
+3. After parsing, the route checks the epoch, fence, and emptiness, then commits what stands in one `store.memory.write`
+   at the tab's revision, without yielding. Only a chat with no rows, trash and runs included, and no `chatAdoptionHold`
+   can import; any other answers `imported: false` and writes nothing. The route contract holds why add-only import
+   cannot bind records safely.
 
 ## State
 
@@ -145,7 +103,8 @@ The grammar, in `parseMemoryPackage`:
 - A reader of pages starts from `contents.pages`. A new reader by id must refuse or show a trashed page on purpose.
 - The scene page takes no tool but export. `recordRow` refuses a trashed scene, a snapshot's included.
 - A tool's `merge` and `split` entries never carry an `eventId`.
-- A merge writes every reference in one change set, so no state exists with some references moved.
+- A merge writes reference changes in events, threads, and live pages in one change set, so no partial remapping is
+  visible.
 - A tool or import that would not fit is refused, never cut.
 
 ## Recipes

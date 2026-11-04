@@ -889,6 +889,7 @@ const withHistory = (page: MemoryPage, entries: readonly MemoryPageHistoryEntry[
 /**
  * `page`'s aliases with `names` added: the page's own stay as they are, and of the added each name key
  * the page does not go by yet comes once, in its first spelling, blanks left out. Nothing is cut.
+ * `castRow`, through `castSlice`, bounds prompt display while a person's tool preserves the aliases.
  */
 function withAliases(page: MemoryPage, names: readonly string[]): string[] {
     const known = new Set(pageNames(page));
@@ -932,13 +933,15 @@ function joinedSection(target: MemorySection, source: MemorySection, at: number)
 }
 
 /**
- * `source` merged into `target`, both live pages of one type that is not the scene. The target takes the
- * source's title and aliases as aliases, its links, its keywords, the later `lastUsed`, and its grade only
- * when the target has none; `contextMode` stays the target's. A heading only the source has moves whole,
- * one both have joins (`joinedSection`), and the page is refused past `sectionsPerPage`. Each touched
- * heading gets a `merge` entry on the target, the source's own history stays with it, and the source goes
- * to the trash as it is. Every reference to the source, in events, threads, other pages' links, and the
- * scene's attendance, becomes one to the target, in the same change set.
+ * `source` merged into `target`, both live pages of one type that is not the scene. The target takes the source's title
+ * and aliases as aliases, its links, its keywords, the later `lastUsed`, and its grade only when the target has none;
+ * `contextMode` stays the target's. A heading only the source has moves whole, one both have joins (`joinedSection`),
+ * and the page is refused past `sectionsPerPage`. Each touched heading gets a `merge` entry on the target, the source's
+ * own history stays with it, and the source goes to the trash as it is. Moving its history would put a source `before`
+ * over the target's text on a branch cut in `server/src/prompt/memory/structured/inherit.ts`. References to the source
+ * in events, threads, other live pages' links, and the scene's attendance become ones to the target in the same change
+ * set; manifests, receipts, and run inputs stay as logs. Restoring the source does not undo that remapping or empty its
+ * sections and history.
  */
 function mergedPages(records: PageToolRecords, sourceId: string, targetId: string, stamp: EditStamp): PageToolResult {
     const source = livePage(records, sourceId, "merged");
@@ -1074,7 +1077,8 @@ function splitPages(
  * says why it does not fit, and the scene page takes no tool at all. A trash of a trashed page and a
  * restore of a live one change nothing and show the page as it is; a purge takes only a trashed page. A
  * restored page is flagged by the route against the events as they stand now, since they may have been
- * retracted while it was away.
+ * retracted while it was away (`server/src/routes/structuredMemory.ts`). Restoring a name that now
+ * collides with a live page is allowed: a merge can settle it.
  */
 export function applyPageTool(
     records: PageToolRecords,

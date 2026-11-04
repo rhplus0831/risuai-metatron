@@ -824,10 +824,12 @@ export function structuredMemoryPageTool(
 }
 
 /**
- * The `.md` entries of `zip`, a package as `buildStructuredMemoryPackage` wrote it, with their text, or
- * `tooLarge` once the entries' declared sizes pass `MEMORY_RESTORE_BODY_BYTES`, before any is inflated.
- * Directories and other files are left out: the server refuses what it does not know by name, and a
- * file that is not UTF-8 reads as its replacement characters, which the server then refuses.
+ * The `.md` entries of `zip`, a package as `buildStructuredMemoryPackage` wrote it, with their text, or `tooLarge` once
+ * the entries' declared sizes pass `MEMORY_RESTORE_BODY_BYTES`. fflate's `unzipSync` filter adds each `.md` entry's
+ * `originalSize` before inflating that entry; earlier entries may already be inflated when a later entry crosses the
+ * cap. Directories and other files are left out: the server refuses what it does not know by name. Invalid UTF-8 bytes
+ * become replacement characters; `server/src/prompt/memory/structured/importPackage.ts` checks grammar and record
+ * shape, so replacements inside a valid body can be imported.
  */
 function packageFiles(zip: Uint8Array): StructuredMemoryResult<ImportFiles> {
     let declared = 0;

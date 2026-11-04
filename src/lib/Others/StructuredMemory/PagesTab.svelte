@@ -463,8 +463,12 @@
 
     /**
      * Appends `page` to the chat's own lorebook as an inactive entry: the title and aliases as its keys, so
-     * they seed the next recording's aliases, and the sections under their headings behind the decorator
-     * that keeps it out of the prompt. A chat write on the loaded chat, outside the memory revision.
+     * `aliasSeeds` in `server/src/prompt/memory/structured/pages.ts` reads them for the next recording. `setChatMeta`
+     * in `src/ts/storage/chatStore.svelte.ts` writes `localLore`, never `globalLore`. The blank line after
+     * `@@dont_activate` ends the decorator lines `CCardLib.decorator.parse` reads (called from
+     * `shared/lore/activation.ts`): an adjacent `@@activate` would override it, while a rendered `## @@activate`
+     * heading is plain text. This needs the chat loaded and uses its chat revision, outside the memory revision and
+     * fence; `readOnly` only disables the button.
      */
     function exportToLore(page: MemoryPage) {
         const chat = findChat(chatRef);

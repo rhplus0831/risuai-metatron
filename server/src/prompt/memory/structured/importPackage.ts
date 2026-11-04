@@ -86,7 +86,8 @@ class Reader {
 
     /**
      * Consumes metadata lines up to and including `end`: each `key: <JSON>`, keys unique, the values as
-     * parsed. A key never holds `: `, which is what splits the line.
+     * parsed. A key never holds `: `, which is what splits the line. `Object.fromEntries` makes a
+     * `__proto__` key an own data property, so metadata cannot change the result's prototype.
      */
     metadata(end: string): Record<string, unknown> {
         const entries: [string, unknown][] = [];
@@ -298,8 +299,11 @@ function admitted(
 /**
  * The records `files`, the entries of one package zip, hold, and what each refused file got wrong. A file
  * that is not a page file, `timeline.md`, or `threads.md` is `unknownFile`; one the grammar does not read
- * is `unreadable`, with where it broke; one of a newer version is `newerVersion`. A timeline event that
- * fails on its own is refused as `timeline.md#<id>` and the rest of the file goes on.
+ * is `unreadable`, with where it broke; a readable `timeline.md` or `threads.md` of a newer version is
+ * `newerVersion`. A timeline event that fails on its own is refused as `timeline.md#<id>` and the rest of
+ * the file goes on.
+ * Without a readable, supported `threads.md`, a readable timeline keeps its events but loses their
+ * `openThreads.close` and `transitions`, with `missingThreads`: those ids would name absent threads.
  */
 export function parseMemoryPackage(files: readonly StructuredMemoryImportFile[]): ParsedMemoryPackage {
     const refusals: StructuredMemoryImportRefusal[] = [];

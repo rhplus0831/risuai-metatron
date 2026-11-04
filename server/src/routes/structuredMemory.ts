@@ -284,29 +284,31 @@ type RoundRead = {
  *   change of the section stands on this one or a compaction's patch left the history, and 409
  *   `{ error, revision }` when `revision` is not the current token. The body is read after authentication
  *   and capped at 64 KiB.
- * - `POST /api/memory/structured/:characterId/:chatId/page-tools` `{ revision, tool }`: one person's tool
- *   over a page as a whole (`StructuredMemoryPageTool`, `applyPageTool` in `structured/pages.ts`): to the
+ * - `POST /api/memory/structured/:characterId/:chatId/page-tools` `{ revision, tool }`: one person's tool over a page
+ *   as a whole (`StructuredMemoryPageTool`, `applyPageTool` in `server/src/prompt/memory/structured/pages.ts`): to the
  *   trash and back, deleted for good, merged into another page of its type, or split into two, answered
- *   `StructuredMemoryPageToolAnswer` with the page the tab shows next, null after a purge. A merge moves
- *   every reference to the source in the same write, which reads the chat's events and threads; a
- *   restored page is flagged against the events as they stand (`flagUnsupportedSections`). A tool that
- *   changes nothing, a trash of a trashed page or a restore of a live one, still names a revision. 400 for a
- *   malformed tool or one the pages refuse (the scene page, a trashed page in any tool but restore and
- *   purge, two types, a joined section or a page past its limit, a title a live page of the type goes
- *   by), 404 `chatGone` or `recordGone`, 409 `{ error, reason: "fenced" }` while `fenced` holds, and 409
- *   `{ error, revision }` when `revision` is not the current token. The body is read after authentication
- *   and capped at 64 KiB.
- * - `POST /api/memory/structured/:characterId/:chatId/import` `{ revision, files: { path, text }[] }`:
- *   gives a chat the records of a Markdown package the tab unzipped, answered
- *   `StructuredMemoryImportAnswer`. The files are read back by the package's grammar
- *   (`structured/importPackage.ts`), each record's shape by `parseRestoredRecords`, and what a file gets
- *   wrong refuses that file, or one event of the timeline, and is listed; what stands goes in one write.
- *   Like a restore it takes only a chat with no row of any kind, trash and runs included, and not one that
- *   waits for a choice on its HypaV3 summaries (`chatAdoptionHold`): those, and files with no record,
- *   answer `imported: false` and write nothing. 400 for a body of another shape or a record the store
- *   refuses, 404 `chatGone`, 409 `{ error, reason: "fenced" }` while `fenced` holds, and 409
- *   `{ error, revision }` when `revision` is not the current token. The body is read after authentication
- *   and capped at `restoreBodyBytes`, 413 past it.
+ *   `StructuredMemoryPageToolAnswer` with the page the tab shows next, null after a purge. A merge moves references in
+ *   events, threads, and live pages in the same write, which reads the chat's events and threads; a restored page is
+ *   flagged against the events as they stand (`flagUnsupportedSections`). A tool that changes nothing, a trash of a
+ *   trashed page or a restore of a live one, still names a revision. 400 for a malformed tool or one the pages refuse
+ *   (the scene page, a trashed page in a merge or split, two types, a joined section or a page past its limit, a title
+ *   a live page of the type goes by), 404 `chatGone` or `recordGone`, 409 `{ error, reason: "fenced" }`
+ *   while `fenced` holds, and 409 `{ error, revision }` when `revision` is not the current token. The body is read
+ *   after authentication and capped at 64 KiB.
+ * - `POST /api/memory/structured/:characterId/:chatId/import` `{ revision, files: { path, text }[] }`: gives a chat the
+ *   records of a Markdown package the tab unzipped, answered `StructuredMemoryImportAnswer`. The files are read back by
+ *   the package's grammar (`server/src/prompt/memory/structured/importPackage.ts`), each record's shape by
+ *   `parseRestoredRecords` in `server/src/prompt/memory/structured/restore.ts`, and what a file gets wrong refuses that
+ *   file, or one event of the timeline, and is listed; what stands goes in one write at the client's `revision`. From
+ *   parsing through the epoch, fence, and emptiness checks to that write there is no await, so another request cannot
+ *   enter between admission and the write. Like a restore it takes only a chat with no row of any kind, trash and runs
+ *   included, and not one that waits for a choice on its HypaV3 summaries (`chatAdoptionHold`): those, and files with
+ *   no record, answer `imported: false` and write nothing. Add-only import is refused because copies keep ids
+ *   (`server/src/prompt/memory/structured/inherit.ts`): accepting a page beside a refused, different event of the same
+ *   id would bind them. Importing even one page into a held chat would also clear its adoption hold without a choice.
+ *   400 for a body of another shape or a record the store refuses, 404 `chatGone`, 409 `{ error, reason: "fenced" }`
+ *   while `fenced` holds, and 409 `{ error, revision }` when `revision` is not the current token. The body is read
+ *   after authentication and capped at `restoreBodyBytes`, 413 past it.
  * - `POST /api/memory/structured/:characterId/:chatId/inherit` `{ sourceChatId }`: gives a copied or
  *   branched chat the records of the character's chat it came from, as far as its messages support them
  *   (`structured/inherit.ts`), answered `StructuredMemoryInheritAnswer`. The server builds them from the
