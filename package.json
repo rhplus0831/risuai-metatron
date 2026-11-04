@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build --sourcemap && node util/compressDist.mjs",
-    "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json",
+    "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json --incremental --tsBuildInfoFile node_modules/.cache/tsc/server.tsbuildinfo",
+    "check:changed": "node util/changedChecks.mjs types",
     "check:tests": "node util/testInventory.mjs",
     "check:docs": "node util/docsBudget.mjs",
     "test": "vitest run --tags-filter=!slow",
@@ -23,7 +24,8 @@
     "dev:agent": "node util/agentDev.mjs agent",
     "dev:human": "node util/agentDev.mjs human",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check --cache .",
+    "format:changed": "node util/changedChecks.mjs format"
   },
   "dependencies": {
     "@adobe/css-tools": "4.4.4",

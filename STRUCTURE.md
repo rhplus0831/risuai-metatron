@@ -34,8 +34,8 @@ run.
   [persistence](docs/structure/persistence.md).
 - T3. Svelte runes belong only in `*.svelte` and `*.svelte.ts`. Legacy stores coexist with runes; preserve established
   store boundaries.
-- T4. Format changed files with `pnpm exec prettier --write <files>` and honor `.prettierignore`; `pnpm format:check` is
-  the repository formatting check.
+- T4. Format changed files with `pnpm format:changed --write` or `pnpm exec prettier --write <files>`; both honor
+  `.prettierignore`. `pnpm format:check` is the repository formatting check; its cache makes a warm run take seconds.
 - T5. Code comments, test titles, identifiers, and file names describe current behavior, not the work item that added
   it: no plan, phase, slice, stop, or audit labels such as `(Phase 6 slice 5)`, `data-loss slice 6b`, or
   `docs/plan/<plan>.md S2`. Plans move to the archive when done, so these labels go stale. State the reason itself
@@ -44,10 +44,10 @@ run.
 
 ### Verification
 
-- V1. Run `pnpm check` and `pnpm --silent test:agent` once per change, after the last source edit; while iterating, run
-  only the test files the edit reaches (`pnpm --silent test:agent <files or directories>`). A change also runs the slow
-  tests and `e2e/` specs it affects, and a build change `pnpm build`. Agents use the wrapper, never `HUMAN` to bypass
-  the human/CI command gate. The wrapper's flags, lock, and warnings belong to
+- V1. Run `pnpm check` (or `pnpm check:changed`) and `pnpm --silent test:agent` once per change, after the last source
+  edit; while iterating, run only the test files the edit reaches (`pnpm --silent test:agent <files or directories>`). A
+  change also runs the slow tests and `e2e/` specs it affects, and a build change `pnpm build`. Agents use the wrapper,
+  never `HUMAN` to bypass the human/CI command gate. The wrapper's flags, lock, and warnings belong to
   [test-harness](docs/structure/test-harness.md).
 - V2. Unit tests are `*.test.ts`, colocated or in sibling `tests/` directories. Vitest defaults to happy-dom; server
   tests select Node. Setup mocks, clone/DOM differences, and the deny-by-default network guard are documented in

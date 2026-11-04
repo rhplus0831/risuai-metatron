@@ -29,15 +29,31 @@
 Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Test commands and `check:tests` belong to
 [test-harness](test-harness.md#recipes).
 
-| Script                    | Use                                                                                                |
-| ------------------------- | -------------------------------------------------------------------------------------------------- |
-| `dev`                     | Vite only; requires a running `server`.                                                            |
-| `build`                   | Vite with source maps, then `util/compressDist.mjs` for Brotli/gzip siblings.                      |
-| `check`                   | `svelte-check` for the client, then `tsc -p server/tsconfig.json` for server/shared code.          |
-| `check:docs`              | `util/docsBudget.mjs`: guide budgets and targets, outline, and Markdown links; no tests.           |
-| `server`                  | Node runs `server/src/main.ts` with type stripping.                                                |
-| `dev:agent` / `dev:human` | Isolated agent stack or normal-login human stack; see [Dev runner](#dev-runner).                   |
-| `format` / `format:check` | Repository-wide Prettier write/check; use targeted `pnpm exec prettier --write <files>` for edits. |
+| Script                    | Use                                                                                                                                                       |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dev`                     | Vite only; requires a running `server`.                                                                                                                   |
+| `build`                   | Vite with source maps, then `util/compressDist.mjs` for Brotli/gzip siblings.                                                                             |
+| `check`                   | `svelte-check` for the client, then `tsc -p server/tsconfig.json` for server/shared code, with an incremental cache in `node_modules/.cache/tsc/`.        |
+| `check:changed`           | `util/changedChecks.mjs types`: the same two programs in parallel, skipping one no changed path reaches; see [Changed-file checks](#changed-file-checks). |
+| `check:docs`              | `util/docsBudget.mjs`: guide budgets and targets, outline, and Markdown links; no tests.                                                                  |
+| `server`                  | Node runs `server/src/main.ts` with type stripping.                                                                                                       |
+| `dev:agent` / `dev:human` | Isolated agent stack or normal-login human stack; see [Dev runner](#dev-runner).                                                                          |
+| `format` / `format:check` | Repository-wide Prettier write/check; `format:check` keeps Prettier's cache in `node_modules/.cache/prettier/`.                                           |
+| `format:changed`          | `util/changedChecks.mjs format [--write]`: Prettier `--check` (or `--write`) on the changed files only.                                                   |
+
+### Changed-file checks
+
+- `util/changedChecks.mjs` takes the changed set from git: every path that differs between the base and the working
+  tree, deletions and both sides of a rename included, plus untracked files. The base is the merge base of HEAD and
+  `origin/dev` (HEAD when there is none); `--base <ref>` picks another.
+- `format` runs Prettier on the changed files that still exist; formatting is per file, so that is the whole check for
+  them.
+- `types` never narrows a program to the changed files, since a type error can surface in a file nobody touched. It
+  skips `svelte-check` only when every changed path is inert (Markdown, `docs/`, `util/`, `e2e/`, assets, tool
+  dotfiles), and server `tsc` also when the rest is client-only (`src/`, `public/`, client configs). The client imports
+  `server/src` and `shared/`, so those run both; an unknown path runs both.
+- `svelte-check --incremental` is not used: it reported two errors the normal run does not (an unused `@ts-expect-error`
+  and a `LegacyComponentType` mismatch), measured 2026-11-04 with svelte-check 4.7.
 
 ### Build compression
 
