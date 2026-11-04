@@ -8,12 +8,14 @@ import { bodyIntercepterStore } from "../stores.svelte";
  * (`server/src/llm/auxOps.ts`): the server sends it to the operation's fixed endpoint with the
  * stored key; the tab never holds the key. The operation's method is kept (a GET carries no body).
  * With a profileId it first flushes resource writes (including the profile and named-key metadata),
- * then waits for credential writes this tab queued (a key entered just before is used), runs
+ * sending `risu-aux-profile` for the discovery/account operations that support profile resolution.
+ * It then waits for credential writes this tab queued (a key entered just before is used), runs
  * the plugin body interceptors for `interceptor` as `globalFetch` does, and logs the request (its
  * headers carry no credential; the JWT is in the outer request only). Returns the `Response`; a
  * failed key save or a network error throws. An abort settles the call at once, even while it waits
  * for the save (which goes on), and no interceptor or request starts after it; nothing is sent once
- * saving has stopped for a restore.
+ * saving has stopped for a restore. `beforeDispatch` checks abort and save admission again after
+ * `src/ts/storage/serverAuth.ts` has authenticated and signed the request.
  */
 export async function auxFetch(
     op: string,

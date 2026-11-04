@@ -22,8 +22,11 @@ import { settings } from "../storage/settingsViews.svelte";
  * - With the permission already granted, `reconcilePush` keeps the subscription registered (push
  *   services rotate them, and a server key change needs a new one) unless this browser opted out.
  * - The banner is shown once per browser: either of its buttons dismisses it for good.
+ * - Enable, disable, and sync serialize across tabs under the `risu-push` Web Lock when available,
+ *   otherwise on this tab's promise chain. Enable requests permission synchronously before either.
  */
 
+/** Browser/server eligibility, independent of permission, subscription and this browser's opt-out. */
 export type PushAvailability =
     /** Not checked yet. */
     | "checking"
@@ -36,6 +39,7 @@ export type PushAvailability =
     /** The server has no VAPID key (`/api/push/key` answered null). */
     | "server-off";
 
+/** This page's observed push state; the synced notification setting and browser opt-out are separate. */
 export type PushBrowserState = {
     availability: PushAvailability;
     permission: NotificationPermission | "unsupported";
@@ -175,6 +179,7 @@ function browserAvailability(): PushAvailability {
     return "ok";
 }
 
+/** Observable push controls and failures; registration evidence remains in storage under the push lock. */
 export const pushBrowserState = writable<PushBrowserState>({
     availability: "checking",
     permission: "default",
@@ -338,6 +343,12 @@ async function flushPendingUnsubscribe(optedOut: boolean) {
  * Registers this browser's subscription with the server, creating it (or replacing one made for an
  * old server key) first. Needs the permission granted; creating a subscription may need a click on
  * some browsers, so a failure here is reported, not fatal. `known` is a key this sync already read.
+ * `risu-push-registered` is evidence `{ endpoint, p256dh, auth, serverKey, at }`: an identical
+ * registration skips PUT for `PUSH_REGISTRATION_REFRESH_MS` (24 h), while changed identity/key,
+ * invalid evidence, or explicit enable (`force`) registers again. Evidence is read/written only
+ * inside the push lock. A successful PUT stamps a complete identity; failed PUT, disable,
+ * unsubscribe, or successful removal of its endpoint clears it. Storage failure leaves no reusable
+ * in-memory evidence.
  */
 async function ensureSubscribed(force: boolean, known: KeyRead | null = null): Promise<void> {
     const { key, failure } = known ?? (await loadServerKey());
@@ -415,6 +426,12 @@ function describe(error: unknown): string {
  * Brings this browser in line with the settings without asking anything: registers the subscription
  * while the switch is on, the permission granted, and this browser not opted out. Safe to call often
  * (boot, the switch turned on elsewhere, the page shown again).
+ * Eligible registration syncs read `/api/push/key` again (boot supplies its first read); server-off
+ * gets a best-effort probe too. Opt-out, permission, settings and availability gates can skip
+ * registration. During registration, a failed key read can use the last key, but never replaces a
+ * subscription made for another key; that mismatch, or no cached key, reports the read's error.
+ * Waiting reconciliations share one promise until their task starts, including the Web Lock wait.
+ * A running task permits one further queued run; enable/disable breaks this fold to preserve order.
  */
 export function reconcilePush(): Promise<void> {
     if (!started) {

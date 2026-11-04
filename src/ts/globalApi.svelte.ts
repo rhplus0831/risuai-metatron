@@ -54,8 +54,11 @@ interface fetchLog {
     status?: number;
 }
 
+/** Entry-count ceiling for this tab's request log, independent of server history. */
 const FETCH_LOG_MAX_ENTRIES = 20;
+/** UTF-16 code-unit budget for retained body, header and response strings (newest entry excepted). */
 const FETCH_LOG_MAX_CHARS = 16 * 1024 * 1024;
+/** This tab's live request-log array; readers keep its identity, so writers must trim in place. */
 const fetchLog: fetchLog[] = [];
 
 /** Keeps the newest entries within both budgets, always retaining the newest entry whole. */
@@ -644,11 +647,15 @@ export function appendFetchLog(entry: fetchLog) {
 }
 
 /**
- * Performs a global fetch request.
- *
- * @param {string} url - The URL to fetch.
- * @param {GlobalFetchArgs} [arg={}] - The arguments for the fetch request.
- * @returns {Promise<GlobalFetchResult>} - The result of the fetch request.
+ * Buffered remote call with tab logging and `{ ok, data, headers, status }` results. Routing uses
+ * `shared/localNetwork.ts`: a qualifying `networkRoute: "local_network"` always takes the proxy;
+ * otherwise localhost/127.0.0.1/0.0.0.0, `plainFetchForce`, or `settings.providers.usePlainFetch`
+ * selects plain fetch unless `plainFetchDeforce`; then userscript `userScriptFetch`, else proxy.
+ * `bodyIntercepterStore` interceptors run before dispatch, logging throws and retaining the body
+ * so far. The timeout starts after those interceptors, covers the selected buffered transport,
+ * and combines with `abortSignal`; its timer/listener is removed on settlement.
+ * The method defaults to POST. Proxy encoding and headers are governed by `fetchWithProxy`.
+ * An already-aborted call, routing error, or transport failure becomes `ok: false`, status 400.
  */
 export async function globalFetch(url: string, arg: GlobalFetchArgs = {}): Promise<GlobalFetchResult> {
     try {
@@ -783,11 +790,13 @@ async function fetchWithUSFetch(url: string, arg: GlobalFetchArgs): Promise<Glob
 }
 
 /**
- * Performs a fetch request using a proxy.
- *
- * @param {string} url - The URL to fetch.
- * @param {GlobalFetchArgs} arg - The arguments for the fetch request.
- * @returns {Promise<GlobalFetchResult>} - The result of the fetch request.
+ * Same-origin `/proxy2` exchange (`server/src/routes/proxy.ts`): `risu-url` is the encoded target,
+ * `risu-header` the encoded JSON upstream headers. A fresh JWT is sent as `risu-auth` when present,
+ * `useRisuToken` adds `x-risu-tk: use`, and `requestTimeoutMs` adds `risu-timeout-ms` (floored,
+ * at least 1). These outer headers are separate from the upstream headers.
+ * URLSearchParams uses form encoding; other bodies use JSON, with matching default content types.
+ * Method defaults to POST. Raw responses return bytes; otherwise a non-JSON response is a failure
+ * even on HTTP success. Transport/auth errors become status 400 results; response reads are logged.
  */
 async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<GlobalFetchResult> {
     try {
@@ -864,11 +873,7 @@ export function getBasename(data: string) {
  */
 export { checkCharOrder } from "./storage/characterOrder";
 
-/**
- * Retrieves the fetch logs array.
- *
- * @returns {fetchLog[]} The fetch logs array.
- */
+/** Returns this tab's live log array, whose identity writers preserve; it is not server history. */
 export function getFetchLogs() {
     return fetchLog;
 }
@@ -1078,20 +1083,19 @@ export class AppendableBuffer {
 }
 
 /**
- * Fetches data from a given URL using native fetch or through a proxy.
- * @param {string} url - The URL to fetch data from.
- * @param {Object} arg - The arguments for the fetch request.
- * @param {string} arg.body - The body of the request.
- * @param {Object} [arg.headers] - The headers of the request.
- * @param {string} [arg.method="POST"] - The HTTP method of the request.
- * @param {AbortSignal} [arg.signal] - The signal to abort the request.
- * @param {boolean} [arg.useRisuTk] - Whether to use Risu token.
- * @param {string} [arg.chatId] - The chat ID associated with the request.
- * @returns {Promise<Object>} - A promise that resolves to an object containing the response body, headers, and status.
- * @returns {ReadableStream<Uint8Array>} body - The response body as a readable stream.
- * @returns {Headers} headers - The response headers.
- * @returns {number} status - The response status code.
- * @throws {Error} - Throws an error if the request is aborted or if there is an error in the response.
+ * Streaming remote call returning a `Response`; transport failures reject. Accepts an optional
+ * string, Uint8Array, or ArrayBuffer body. Method defaults to POST; exact GET/HEAD discard the
+ * body, while DELETE/PATCH retain it. String bodies alone run `bodyIntercepterStore` interceptors
+ * before encoding (throws are logged and the body so far kept).
+ * A qualifying `networkRoute: "local_network"` (`shared/localNetwork.ts`) takes same-origin
+ * `/proxy2`; otherwise userscript `userScriptFetch` when present, else direct fetch. The proxy
+ * sends encoded `risu-url` and JSON `risu-header`, outer Content-Type application/json, a fresh
+ * `risu-auth` JWT when present, optional `x-risu-tk: use` (`useRisuTk`), and `risu-timeout-ms`
+ * (`requestTimeoutMs`, floored to at least 1). The request body remains its encoded bytes.
+ * Timeout starts after interceptors and combines with `signal` until transport settlement, not
+ * until the returned stream is consumed. Logging defaults on, records a streamed-fetch placeholder
+ * before dispatch, and does not consume the response. The plugin adapter's GET default and body
+ * normalization are in `src/ts/plugins/apiV3/v3.svelte.ts`.
  */
 export async function fetchNative(
     url: string,

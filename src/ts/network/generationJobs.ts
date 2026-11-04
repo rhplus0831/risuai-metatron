@@ -37,6 +37,22 @@ import { recordClientEvent } from "../diagnostics/collector";
 import { dropJobStage, setJobStage } from "../process/jobStages";
 
 /**
+ * The client transport of server generation jobs (`shared/jobs.ts`): create, status, abort, and the
+ * owner socket. `applyGenerationEvent` mirrors events into `src/ts/storage/chatStore.svelte.ts` and
+ * `src/ts/storage/resourceSync.svelte.ts` without outgoing writes. Its command and send callers are
+ * in `src/ts/process/serverCommands.ts`.
+ *
+ * The tab's client id and saved jobs (one per chat) live in `sessionStorage`. The page claims the
+ * identity before reading either, marking `risu-generation-client-claim` held. A copied held claim
+ * (an opener's session or a duplicated tab) mints a new id and drops the copied jobs. `pagehide`
+ * releases the claim, so a reload or same-tab navigation recovers it; `document.wasDiscarded` also
+ * permits recovery. `pageshow` marks it held again. This is a synchronous storage claim, not a
+ * live-page handshake: a copied released marker cannot distinguish two pages, and a killed page
+ * without `pagehide` or `wasDiscarded` loses recovery. If storage fails, the page keeps an in-memory
+ * id without exposing copied saved jobs.
+ */
+
+/**
  * The channel dispatcher (UI, plugin registries) loads on first use, so this transport stays free of
  * the UI modules. Its work runs on one chain, in the order the socket delivered the events.
  */
@@ -140,15 +156,6 @@ export function noteChannelCallbacks(count: number) {
     channelCallbacks = count;
     notifyPluginWork();
 }
-
-/**
- * The client transport of server generation jobs (`shared/jobs.ts`): create, status, abort, and the
- * owner socket, plus `applyGenerationEvent`, which mirrors a job's events into the chat module and
- * the save loop without any outgoing write. The tab's `clientId` and its jobs (one per chat) are
- * kept in `sessionStorage`, so boot can resume through `resumeServerJobs` and `followJobToEnd`. Its
- * callers are the server command and send jobs of `process/serverCommands.ts` (the only generation
- * path).
- */
 
 const CLIENT_ID_KEY = "risu-generation-client";
 const JOBS_KEY = "risu-generation-jobs";
@@ -275,10 +282,12 @@ export function savedGenerationJobIds(): string[] {
     return [...new Set(Object.values(readSavedJobs()))];
 }
 
+/** Keeps one resumable job per chat of this tab; a new job replaces that chat's saved id. */
 export function rememberGenerationJob(ref: ChatRef, jobId: string) {
     writeSavedJobs({ ...readSavedJobs(), [chatKey(ref)]: jobId });
 }
 
+/** Removes this job from every saved chat entry without removing a chat's replacement job. */
 export function forgetGenerationJob(jobId: string) {
     const jobs = readSavedJobs();
     for (const [key, id] of Object.entries(jobs)) {
@@ -575,7 +584,14 @@ export async function cancelGenerationRequest(requestId: string, ref: ChatRef): 
     }
 }
 
-/** Creates or replays one frozen request for `body.context`'s chat, remembering only an owned job; hooks default to registered ones. */
+/**
+ * Creates or replays one frozen request for `body.context`'s chat, remembering only an owned job;
+ * hooks default to `registeredHooks` in `src/ts/network/jobChannel.ts`.
+ * Refusals distinguish `GenerationBusyError`, `GenerationStaleError`, `ChatBindingRefusedError`
+ * (409 `chatBindingIncomplete` or `chatBindingMismatch`), and `ChatLoreOverrideOrphanedError`;
+ * an epoch mismatch uses `epochMismatch` in `src/ts/storage/resourceClient.ts`. An uncertain
+ * exchange wraps its cause in `GenerationCreateError` so the caller can resolve admission first.
+ */
 export async function createGenerationJob(
     body: CreateInput,
     options: CreateOptions = {},
@@ -816,8 +832,9 @@ export async function reportCallbackDrained(jobId: string, callbackId: string): 
     }
 }
 
+/** One owner-socket attachment, with separate open and close outcomes; closing does not release the job. */
 export type GenerationFollow = {
-    /** Sends a JSON message to the job (the `job-channel` answers); false while the socket is not open. */
+    /** Sends a JSON message to the job (`src/ts/network/jobChannel.ts` answers); false while closed or not yet open. */
     send(message: unknown): boolean;
     close(): void;
     /**
@@ -831,16 +848,6 @@ export type GenerationFollow = {
     opened: Promise<boolean>;
 };
 
-/**
- * Follows a job over its socket: on every attach the server sends the job chat and the records it
- * changed (fresh), the chosen preset, the current reply with its text, and the result if the job
- * ended. Pings are answered with pongs before events of another epoch than the loaded one are
- * dropped. The follow gives its
- * socket up, as its own `close()` would (the job is not released), when it has not opened within
- * 10 s of the follow's start (authentication included), when it has had no frame (pings included)
- * for 45 s while the page is visible, and when the page comes back (`socketLiveness.ts`); a terminal
- * that arrived stands. The caller attaches again.
- */
 /** The newest follow of each job: a newer follow cancels the older one (its socket, events, and sends). */
 const currentFollows = new Map<string, { cancel(): void }>();
 
@@ -852,6 +859,19 @@ function attachStamp(): number {
     return lastStamp;
 }
 
+/**
+ * Follows a job over its owner socket with a fresh JWT: on every attach the server sends the job
+ * chat and the records it changed (fresh), the chosen preset, the current reply with its text,
+ * and the result if the job ended. Pings are answered with pongs before events of another epoch
+ * than the loaded one are dropped. The follow gives its socket up, as its own `close()` would
+ * (the job is not released), when it has not opened within
+ * 10 s of the follow's start (authentication included), when it has had no frame (pings included)
+ * for 45 s while the page is visible, and when the page comes back
+ * (`src/ts/network/socketLiveness.ts`); a terminal that arrived stands. The caller attaches again.
+ * A newer follow cancels the older socket (even while connecting), events, and sends immediately;
+ * its higher `attach` stamp also orders ownership across reloads on the server. `send` carries the
+ * channel's answers; `closed` retains any terminal, and distinguishes a resumed page from a lost link.
+ */
 export function followGenerationJob(jobId: string, onEvent: (event: GenerationEvent) => void): GenerationFollow {
     liveJobs.add(jobId);
     let ws: WebSocket | null = null;
@@ -1126,6 +1146,9 @@ function runRecovery(transport: ChannelTransport, recovery: Recovery) {
  * `error`: every lock of the job is released and the saved job is forgotten). A patch the mirror
  * cannot take asks the job for its chat whole through `transport` (`resync`); a missing chunk base
  * asks only for the reply (`resyncReply`).
+ * Creation and the first `accepted` seed `preparing` only without a known stage; `stage` replaces
+ * it in `src/ts/process/jobStages.ts` until release. A `preset` event is a job-local `presetChain`
+ * pick: neither the tab's selection nor the chat's binding changes.
  */
 export function applyGenerationEvent(
     jobId: string,
@@ -1247,8 +1270,8 @@ export function applyGenerationEvent(
 
 /**
  * Everything this tab holds for a job, released as its end releases it: the channel's outstanding
- * questions and callbacks (cancelled), the job's message locks, and the saved job. Also for a job
- * the tab stopped following without its end (lost).
+ * questions and callbacks (cancelled), the job's message locks, saved job, and presentation stage.
+ * Also for a job the tab stopped following without its end (lost).
  */
 export function releaseGenerationJob(jobId: string) {
     dropJobStage(jobId);

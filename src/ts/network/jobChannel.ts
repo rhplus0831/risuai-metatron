@@ -453,6 +453,10 @@ function applyEffect(jobId: string, notice: GenerationNotice) {
     }
 }
 
+/**
+ * Alert questions relay the alert's raw result; the alert API has no separate dismissal result.
+ * `memoryTrim` and `memoryGap` map selection indices to their wire choices, or null.
+ */
 async function ask(event: GenerationQuestionEvent): Promise<unknown> {
     switch (event.kind) {
         case "alertInput":
@@ -490,6 +494,9 @@ async function ask(event: GenerationQuestionEvent): Promise<unknown> {
     }
 }
 
+/**
+ * Sends question results as `answered`, never `cancelled`; a server cancel drops the result.
+ */
 async function drainUi() {
     if (uiBusy) {
         return;
@@ -754,7 +761,23 @@ function errorText(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
-/** Runs the hook set a callback names, in order, under the job's targets. */
+/**
+ * Runs the hook set in registry order under the job's targets. Replacers and edit hooks stop at
+ * the first throw; body interceptors log and continue without the hook context. Plugin MCP calls
+ * receive the targets too. Registries are read at invocation, not snapshotted at job creation.
+ *
+ * `imggen`/`generateImage` call `stableDiff`/`generateAIImage` in `src/ts/process/stableDiff.ts`
+ * with the callback's abort signal; server cancellation or job end aborts it and suppresses late
+ * results. Providers receive the server-built argument and an abort signal. A missing provider
+ * or text beyond `MAX_PROVIDER_TEXT_CHARS` (4 Mi characters) fails as `hook`; a text answer is
+ * `{ success, content }`. Successful streams send cumulative `chunk` text immediately, at most
+ * every `PROVIDER_CHUNK_INTERVAL_MS` (50 ms), and finally before `{ success: true, streamed: true }`.
+ * Failed streams are read whole into the answer; either reader is cancelled if the callback ends first.
+ *
+ * `mcpList`/`mcpTool` use the current `plugin:` registry or `readyTabClient` in
+ * `src/ts/process/mcp/mcp.ts` for `internal:fs`/`internal:googlesearch` (which may prompt for a
+ * directory or credentials). A client's throw is a `hook` failure.
+ */
 async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Promise<unknown> {
     // The job's targets, and this callback as the parent of any aux request the hook makes.
     const context: PluginCallContext = { ...event.targets, channelCall: { jobId: entry.jobId, callbackId: event.id } };
@@ -1165,6 +1188,12 @@ export async function replaySkippedListeners(
     }
 }
 
+/**
+ * A barrier miss, discarded key, or failed flush answers `failed`/`barrier`; an ordinary hook throw
+ * answers `failed`/`hook` (explicit `CallbackFailed` preserves its class).
+ * `src/ts/storage/resourceSync.svelte.ts` flushes the mutation scope even after a hook throws;
+ * its barrier failure takes precedence over the hook error.
+ */
 async function runCallback(event: GenerationCallbackEvent, entry: Outstanding): Promise<ChannelAnswer> {
     const failedAnswer = (failure: CallbackFailure, error: string, discarded?: string[]): ChannelAnswer => ({
         type: "answer",
@@ -1265,6 +1294,11 @@ function holdChild(jobId: string, event: GenerationCallbackEvent, parent: Outsta
     heldChild = { jobId, event, parent, timer: setTimeout(expire, Math.max(0, event.deadline - Date.now())) };
 }
 
+/**
+ * Admits one live child of the top live root. A replacement waits for that root's cancelled child
+ * hooks to drain and never starts past its own deadline; `server/src/jobs/channel.ts` owns timeout
+ * outcomes. Duplicate deliveries use the cached answer; an unknown replay is refused as protocol.
+ */
 function handleCallback(jobId: string, event: GenerationCallbackEvent) {
     const known = requests.get(event.id);
     if (known) {
@@ -1537,7 +1571,11 @@ export async function stopMemoryRun(jobId: string, runId: string): Promise<void>
     }
 }
 
-/** The job ended: its questions and statuses are dropped; modal notices stay and callbacks stop starting hooks. */
+/**
+ * The job ended: its questions and queued `alertWait`/`alertClear`/`alertToast` are dropped; modal
+ * notices stay and callbacks stop starting hooks. Its status clears only while that exact object
+ * still owns the alert slot, preserving a newer writer's status.
+ */
 export function endJobChannel(jobId: string) {
     hydrations.delete(jobId);
     jobStreaming.delete(jobId);
