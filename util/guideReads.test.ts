@@ -117,6 +117,55 @@ describe("docs:reads", () => {
         expect(tally.guides.get("STRUCTURE")).toMatchObject({ bash: 0, docsRead: 1, outline: 1, headings: new Map() });
     });
 
+    it("attributes both folder README spellings in docs:read calls to the folder guide", async () => {
+        const root = tree({
+            "session.jsonl": transcript(
+                tool("readme-md", "Bash", { command: "pnpm docs:read structured-memory/README.md" }),
+                tool("readme", "Bash", { command: "pnpm docs:read structured-memory/README" }),
+            ),
+        });
+        const { tally, files } = await scanTranscripts(
+            [root],
+            textAt,
+            (guide: string) => guide === "structured-memory",
+        );
+        expect([...tally.guides.keys()]).toEqual(["structured-memory"]);
+        expect(tally.guides.get("structured-memory")).toMatchObject({ docsRead: 2, bash: 0 });
+        expect(tally.unresolvedGuide).toBe(0);
+
+        const report = formatReport(tally, { date: "2026-01-03", files, dirs: 1 }, () => GUIDE_TEXT);
+        expect(report).toContain("| structured-memory | 0 | 0 | 0 | 0 | 2 |");
+        expect(report).not.toContain("calls named no guide");
+    });
+
+    it("counts README as the guides index but README.md as naming no guide", async () => {
+        const root = tree({
+            "index/session.jsonl": transcript(tool("index-readme", "Bash", { command: "pnpm docs:read README" })),
+            "repository/session.jsonl": transcript(
+                tool("repository-readme", "Bash", { command: "pnpm docs:read README.md" }),
+            ),
+        });
+        const { tally: index, files } = await scanTranscripts(
+            [path.join(root, "index")],
+            textAt,
+            (guide: string) => guide === "README",
+        );
+        expect([...index.guides.keys()]).toEqual(["README"]);
+        expect(index.guides.get("README")).toMatchObject({ docsRead: 1, bash: 0 });
+        expect(index.unresolvedGuide).toBe(0);
+        expect(formatReport(index, { date: "2026-01-03", files, dirs: 1 }, () => GUIDE_TEXT)).toContain(
+            "| README | 0 | 0 | 0 | 0 | 1 |",
+        );
+
+        const { tally: repository } = await scanTranscripts(
+            [path.join(root, "repository")],
+            textAt,
+            (guide: string) => guide === "README",
+        );
+        expect([...repository.guides.keys()]).toEqual([]);
+        expect(repository.unresolvedGuide).toBe(1);
+    });
+
     it("reports aggregates and guide headings without transcript text or paths", async () => {
         const command = "rg -n COMMAND_PRIVATE_52 docs/structure/example.md";
         const query = "QUERY_PRIVATE_25";

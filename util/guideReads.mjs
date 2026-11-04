@@ -114,14 +114,18 @@ export function shellWords(text) {
     return words;
 }
 
-/** The guide name a `docs:read` argument names (a name, an area, `STRUCTURE`, or a path), or null. */
+/**
+ * The guide name a `docs:read` argument names (a name, an area or its README, `STRUCTURE`, or a path), or null.
+ * Bare `README` names the guides index; `README.md` names the repository README and is not a guide.
+ */
 export function guideOfArgument(argument) {
     const stripped = argument.replace(/^\.\//, "").replace(/\/$/, "");
     const fromPath = guideOfPath(stripped);
     if (fromPath) return fromPath;
     const name = stripped.replace(/\.md$/, "");
-    if (name === INDEX_NAME) return INDEX_NAME;
-    return GUIDE_NAME.test(name) ? name : null;
+    if (name === INDEX_NAME || stripped === "README") return name;
+    const guide = name.replace(/^([^/]+)\/README$/, "$1");
+    return GUIDE_NAME.test(guide) ? guide : null;
 }
 
 const DOCS_READ =
