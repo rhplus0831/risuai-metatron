@@ -87,6 +87,7 @@ export function toggleStorageKey(key: string): string {
     return TOGGLE_VARIABLE_PREFIX + key;
 }
 
+/** The value an unset toggle reads: `""` for text and textarea, `"0"` (off, or the first option) otherwise. */
 export function toggleDefault(kind: ToggleKind): string {
     return kind === "text" || kind === "textarea" ? "" : "0";
 }
@@ -109,7 +110,10 @@ export function valueToggles(definitions: readonly sidebarToggle[]): ValueToggle
     });
 }
 
-// Key by the full source text: definitions can change during a job or between reactive reads.
+/**
+ * The kinds per definitions text, keyed by the full source text: definitions can change during a job or between
+ * reactive reads. At most 16 texts; the oldest goes first.
+ */
 const kindCache = new Map<string, Map<string, ToggleKind>>();
 
 function toggleKinds(text: string): ReadonlyMap<string, ToggleKind> {
@@ -128,7 +132,14 @@ function nonemptyValue(value: unknown): value is string {
     return typeof value === "string" && value !== "" && value !== "null";
 }
 
-/** Chat override, then legacy global, then a defined toggle's kind default (else "null"). */
+/**
+ * Chat override, then legacy global, then a defined toggle's kind default (else "null").
+ * - `""` and `"null"` are unset, except that an empty value counts as set for a text or textarea toggle: an empty
+ *   chat value wins over a legacy one, and an empty legacy value over the default.
+ * - Only `toggle_` keys get defaults; any other key without a value reads `"null"`.
+ * - `definitionsText` (the preset's, the enabled modules', then the chat owner's toggle definitions; the first
+ *   definition of a key wins) is read only when a `toggle_` key reaches it.
+ */
 export function resolveGlobalChatVar(
     key: string,
     chatMap: Readonly<Record<string, unknown>> | null | undefined,

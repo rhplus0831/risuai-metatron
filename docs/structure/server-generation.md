@@ -5,6 +5,8 @@
 - Owns the server side of generation: job admission, request identity, receipts, command sequences, the job channel, the
   integration of the prompt, Lua, LLM, and translation runtimes, transforms, and the memory task and token routes.
 - The live-update feed and its socket → [live-update-feed](live-update-feed.md).
+- The tab's transform client (batching, provisional display, display-transform failure retries) →
+  [cbs-rendering](cbs-rendering.md#script-transform-client).
 - Contracts shared with the tab stay with [chat-pipeline](chat-pipeline.md); each domain's semantics stay with its
   owner, listed in [Known Hazards](#known-hazards), and translation with [translation](translation.md).
 - Neighbors: [self-host server](self-host-server.md) owns the process, middleware, limiters, and auth;

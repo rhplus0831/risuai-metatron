@@ -8,6 +8,14 @@
     import tsWorkerUrl from "monaco-editor/language/typescript/ts.worker?worker&url";
     import editorWorkerUrl from "monaco-editor/editor/editor.worker?worker&url";
 
+    /**
+     * A Monaco editor bound to `value` (loaded on demand by `PopupEditor.svelte`). Every content change writes
+     * `value` and calls `onchange`; an outside change of `value` replaces the model's text as one edit (undo
+     * keeps working) only when it differs. `language`, `theme`, and `readonly` are read once, at mount. The
+     * Monaco workers are set up for the page by the first instance; there is no CBS language support
+     * (`registerCBSMonaco` does nothing).
+     */
+
     // Set up workers once globally
     if (!("MonacoEnvironment" in self)) {
         (self as any).MonacoEnvironment = {

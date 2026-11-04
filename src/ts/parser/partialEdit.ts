@@ -1,4 +1,19 @@
 /**
+ * Maps text selected in a rendered message back to ranges of its source markdown, for partial editing
+ * (`src/lib/ChatScreens/PartialEditController.svelte`).
+ * - Both texts are normalized with a map from every normalized character to a source offset: `{{ruby::A::B}}`
+ *   reads as `A(B)`; CR and CRLF become LF; typographic quotes and dashes, NBSP, and the ideographic space become
+ *   ASCII; U+200B to U+200D and U+FEFF go; runs of spaces and tabs collapse; leading and trailing spaces are
+ *   trimmed (newlines stay). A typographic ellipsis becomes three dots that all map to the ellipsis, so a range
+ *   ending in one includes it.
+ * - The stages run in order (exact, anchor, fuzzy, bigram), and the first that finds a range answers. Each stage
+ *   caps its results (`maxResults`); exact matching skips occurrences overlapping an earlier one, and the fuzzy and
+ *   bigram stages drop a candidate starting near one already taken.
+ * - The answer is sorted by confidence, then position. The final deduplication removes identical source ranges
+ *   only, so two non-overlapping exact occurrences on one line both come back and the controller shows its chooser.
+ */
+
+/**
  * Epsilon threshold for confidence comparison
  * Ignores differences smaller than this value to handle floating-point errors
  */
@@ -725,6 +740,7 @@ function extractContext(
     return { before, after };
 }
 
+/** The rendered elements the controller offers block editing on (hover), matched as one selector list. */
 export const EDITABLE_BLOCK_SELECTORS = [
     "h1",
     "h2",

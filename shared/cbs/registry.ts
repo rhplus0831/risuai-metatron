@@ -14,6 +14,10 @@ export type { CBSRegisterArg, CbsConditions, matcherArg, RegisterCallback } from
  * still uses globals both runtimes have: `Buffer` (a polyfill on the client),
  * `TextEncoder`/`TextDecoder`, `Math.random`, `console`, and `Date`/`Intl` with the runtime's own
  * timezone and default locale, which on the server are the server's.
+ *
+ * `defaultCBSRegisterArg` is a placeholder host for a consumer that only lists the catalogue
+ * (`src/lib/Playground/PlaygroundDocs.svelte`): it supplies its own `registerFunction` (this one throws), and no
+ * callback is meant to run against it.
  */
 export const defaultCBSRegisterArg: CBSRegisterArg = {
     registerFunction: () => {
@@ -74,6 +78,16 @@ export const defaultCBSRegisterArg: CBSRegisterArg = {
         }) as LLMModel,
 };
 
+/**
+ * Enumerates every built-in function into `arg.registerFunction`, synchronously. It takes the host's members (the
+ * values `isMobile` and `appVer` are read then) but calls none of its state readers: only the callbacks do, each
+ * time they run, and only through `arg` (including `getTriggerId` for `trigger_id`, `getViewport` for
+ * `screenwidth`/`screenheight`, and `getBrowserLanguage` for `metadata::browserlang`). So a consumer that lists
+ * the catalogue can pass `defaultCBSRegisterArg` with its own `registerFunction`. A `doc_only` entry has no
+ * callback: the evaluator parses that form itself (blocks, `?`), leaves it to the renderer (the asset macros), or
+ * leaves it as literal text (`//`). `internalOnly` only hides an entry from the catalogue (the playground docs);
+ * the evaluator registers it like any other.
+ */
 export function registerCBS(arg: CBSRegisterArg) {
     const {
         registerFunction,
@@ -309,6 +323,11 @@ export function registerCBS(arg: CBSRegisterArg) {
             "Returns the main system prompt that provides instructions to the AI model. The text is processed through the chat parser for variable substitution.\n\nUsage:: {{mainprompt}}",
     });
 
+    // The owner's `globalLore` with the chat's `loreOverrides` applied (`shared/lore/overrides.ts`
+    // `mergeOwnerLore`: an override's copy in the original's place, an off entry left out, an off folder with
+    // every entry in it, an orphan override not inserted; a group contributes none), then the chat's `localLore`,
+    // then the enabled modules' lore. The owner is the parse's `chara` when it is a character object, else the
+    // context character; the chat is always the context chat.
     registerFunction({
         name: "lorebook",
         callback: (str, matcherArg, args, vars) => {
@@ -1462,6 +1481,10 @@ export function registerCBS(arg: CBSRegisterArg) {
             "Returns a JSON array of additional asset names for the current character. These are extra images/files beyond the main avatar. Returns empty string for groups or characters without assets.\n\nUsage:: {{assetlist}}",
     });
 
+    // The main model's descriptor (`getModelInfo`, which both hosts resolve through `shared/llm/models.ts`
+    // `resolveModelInfo` with the custom flags) decides for the Anthropic and Anthropic legacy formats: its
+    // `hasPrefill` flag, so an adaptive-only Claude model answers 0. Any other format answers whether the model id
+    // starts with `claude`.
     registerFunction({
         name: "prefillsupported",
         callback: (str, matcherArg, args, vars) => {

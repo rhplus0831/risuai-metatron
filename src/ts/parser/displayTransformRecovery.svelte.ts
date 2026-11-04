@@ -2,6 +2,17 @@ import { untrack } from "svelte";
 import { isPageVisible, pageRecoveryVersion } from "../pageVisibility.svelte";
 import type { ChatRef } from "../storage/chatStore.svelte";
 
+/**
+ * The pending `editdisplay` transform failures of mounted messages, by message, and the retry rounds that render
+ * them again. `transformClient.ts` reports each current failure and success; each `Chat.svelte` row reports what
+ * it shows and, in a round that names its message, renders again through `rerenderMessage`.
+ * - A timed round runs after a backoff while the page is visible and failures are pending: 5 s, doubled after
+ *   each timed round, at most 60 s; a success does not reset it. A recovery round runs at once when the page
+ *   becomes visible again or the browser comes back online (`src/ts/pageVisibility.svelte.ts`), and resets the
+ *   backoff to 5 s. A hidden page runs no round.
+ * - A round takes every pending failure; a row not mounted then misses it (a later mount renders fresh).
+ */
+
 const INITIAL_RETRY_DELAY_MS = 5_000;
 const MAX_RETRY_DELAY_MS = 60_000;
 /** What a row shows: its display text and, with bilingual display, the pairs' source side. */
@@ -22,6 +33,7 @@ export const displayTransformRetryRound = $state<{ version: number; keys: Readon
     keys: new Set(),
 });
 
+/** A message's key here, the same JSON as `transformClient.ts` uses for its generations. */
 export const displayTransformMessageKey = (ref: ChatRef, messageId: string) =>
     JSON.stringify([ref.chaId, ref.chatId, messageId]);
 
@@ -49,6 +61,7 @@ function scheduleRetry(): void {
     }, retryDelay);
 }
 
+/** A retryable failure of the message's transform at Re-render `generation`, with what its row shows now. */
 export function markDisplayTransformFailed(ref: ChatRef, messageId: string, generation: number): void {
     const key = displayTransformMessageKey(ref, messageId);
     failures.set(key, { generation, shown: shownSources.get(key)?.shown });

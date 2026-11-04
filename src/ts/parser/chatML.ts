@@ -1,7 +1,14 @@
 import { risuChatParser } from "./parser.svelte";
 import type { ChatRef } from "../storage/chatStore.svelte";
 
-/** `chatRef`: the chat whose CBS the contents parse with (`risuChatParser`), else the selected chat's. */
+/**
+ * `chatRef`: the chat whose CBS the contents parse with (`risuChatParser`), else the selected chat's.
+ * Null unless the trimmed text starts with `<|im_start|>`. Each part's role is `user`, `system`, or `assistant`
+ * followed by `<|im_sep|>`, a space, or a newline (else `user`, with no prefix taken off); a trailing `<|im_end|>` is
+ * cut, and the part is trimmed. In each part, everything from its first `<Thoughts>` to its last `</Thoughts>`
+ * moves to `thoughts` (when there is something between them: an empty `<Thoughts></Thoughts>` stays) before the
+ * content is CBS-parsed; a `CbsLimitError` reaches the caller.
+ */
 export function parseChatML(data: string, chatRef?: ChatRef | null): OpenAIChat[] | null {
     const starter = "<|im_start|>";
     const seperator = "<|im_sep|>";

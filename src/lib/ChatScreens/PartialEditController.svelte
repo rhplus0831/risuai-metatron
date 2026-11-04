@@ -14,6 +14,22 @@
         type RangeResultWithContext,
     } from "src/ts/parser/partialEdit";
 
+    /**
+     * Hover (block) and drag-select (5 characters or more) editing of a rendered message, active while its body
+     * is near the viewport. A block or selection is mapped back to source ranges (`src/ts/parser/partialEdit.ts`):
+     * exactly one match at 0.95 confidence or more, or a single match, proceeds; several open a chooser; none, the
+     * match-failed dialog. For a delete, a fuzzy or bigram match is extended toward its line end (at most 5,000
+     * characters further) and its start moves back to just after a newline found within 4 characters before it,
+     * spaces and tabs skipped; then runs of blank lines collapse and the text is trimmed.
+     * - The result is dispatched as `save` (`Chat.svelte` `handlePartialEditSave`). In a translated view with
+     *   `getTranslationEditContext`, it edits the translation or nothing, never the original; a translation edit
+     *   goes through the awaitable `saveTranslation` instead when it is passed, and the draft stays open when that
+     *   write is refused (a delete's confirmation closes either way).
+     * - Escape cancels and Ctrl/Meta+Enter saves in the editor, neither while an IME composes
+     *   (`src/ts/ime.ts` `isImeComposing`).
+     * - The edit buttons live on `document.body` and hide before any dialog opens.
+     */
+
     interface Props {
         messageData: string;
         chatIndex: number;

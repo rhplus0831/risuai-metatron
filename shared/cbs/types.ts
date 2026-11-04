@@ -26,6 +26,7 @@ export type CbsDatabase = Pick<
     | "characters"
 >;
 
+/** A message's flags from its caller: a nonempty `chatRole` answers `{{role}}`; else `firstmsg` makes it `char`. */
 export type CbsConditions = {
     firstmsg?: boolean;
     chatRole?: string;
@@ -57,6 +58,13 @@ export type matcherArg = {
     setNestedRoot?: (val: string) => void;
 };
 
+/**
+ * A function's callback (`str` is the whole `{{...}}` body, `args` its `::`- or `:`-separated arguments). A string
+ * replaces the call; `null` keeps the call as literal text; `{ text, var }` also replaces the parse's temporary
+ * variables with `var`, and a truthy `__force_return__` in it ends that parse with `__return__` (`"null"` when it
+ * is missing; `evaluator.ts`).
+ * A throw keeps the literal text too, except `CbsLimitError` (`limits.ts`), which ends the evaluation.
+ */
 export type RegisterCallback = (
     str: string,
     matcherArg: matcherArg,
@@ -70,6 +78,12 @@ export type RegisterCallback = (
     | string
     | null;
 
+/**
+ * The registry's only access to its host (`registry.ts` `registerCBS`): every read of the database, chat
+ * variables, selection, modules, model info, trigger, viewport, and browser language goes through it, and so does
+ * `spend`. The evaluator builds it from its `CbsHost` plus the parts it supplies itself (`evaluator.ts`). A member
+ * that takes `chatRef` reads or writes that chat, and the selected chat without one.
+ */
 export type CBSRegisterArg = {
     registerFunction: (arg: {
         name: string;

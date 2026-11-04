@@ -60,6 +60,26 @@ import { maxContextOverrideOf } from "../../../shared/sections.ts";
 import { assetExtension, assetMimeType } from "../../../shared/assetMime.ts";
 import cssSelectorParser from "postcss-selector-parser";
 
+/**
+ * The tab's CBS host and its message renderer.
+ *
+ * - `risuChatParser` is the shared evaluator (`shared/cbs/evaluator.ts`) with the client host (`clientCbsHost`):
+ *   the live records through `cbsDatabase`, the selected character (untracked), `CurrentTriggerIdStore`, `window`
+ *   for the viewport, `navigator.language`, `findCharacterbyId` in the legacy shape, and `CLIENT_CBS_LIMITS`. One
+ *   evaluator serves the tab; a parse for a chat with display ids gets a scoped one (`risuChatParserScoped`, the 16
+ *   last-created scopes kept, in creation order: a hit does not renew one). Each evaluator has its own budget.
+ * - A parse that reaches its budget throws `CbsLimitError` to its caller. `risuChatParserForDisplay` turns it into
+ *   the limit message; style restoration (`decodeStyleContent`) turns it, like any failure of a style's CBS or CSS
+ *   parse, into its CSS error fallback.
+ * - `ParseMarkdown` renders a message body; `trimMarkdown` (and `trimMarkdownSharingStyles` for a chat row whose
+ *   styles are shared, `chatStyles.ts`) sanitizes it. A bare lowercase `<style>...</style>` with a body (no
+ *   attributes: `styleRegex`) travels hex-encoded as `<risu-style>` through Markdown and the sanitizer, and only
+ *   those two restore it as a scoped `<style>`; any other style element is not encoded and takes none of that path.
+ * - The DOMPurify hooks below apply to every `DOMPurify.sanitize` in the tab once this module is loaded, among
+ *   them: an `iframe` other than a YouTube embed is removed; classes get the `x-risu-` prefix (`hljs*` and
+ *   already-prefixed ones excepted); an `href` other than `http(s)://` is emptied.
+ */
+
 const markdownItOptions = {
     html: true,
     breaks: true,
@@ -162,6 +182,11 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
 
 export { risuEscape, risuUnescape };
 
+/**
+ * markdown-it with curly quotes in the input made straight and typographer quotes rendered as the quote set
+ * (`customQuotes`), wrapped in `<mark risu-mark>` for styling unless `unformatQuotes`. `$$...$$` becomes KaTeX
+ * MathML first and stays as written when KaTeX fails.
+ */
 function renderMarkdown(md: MarkdownIt, data: string) {
     let quotes = ["“", "”", "‘", "’"];
     if (settings.ui.customQuotes) {
@@ -217,6 +242,10 @@ function renderMarkdown(md: MarkdownIt, data: string) {
     return text;
 }
 
+/**
+ * `renderMarkdown` with fenced code highlighted by highlight.js, each language loaded on first use; an unknown
+ * language is escaped plain code, `risuerror` an error box, and a block that fails to highlight stays a placeholder.
+ */
 async function renderHighlightableMarkdown(data: string) {
     let rendered = renderMarkdown(mdHighlight, data);
     const highlightPlaceholders = rendered.match(/<pre-hljs-placeholder lang="(.+?)">(.+?)<\/pre-hljs-placeholder>/gms);
@@ -420,6 +449,7 @@ async function renderHighlightableMarkdown(data: string) {
     return rendered;
 }
 
+/** The asset macros `parseAdditionalAssets` expands, `{{type::name}}`; a global regex, so `exec` keeps state. */
 export const assetRegex = /{{(raw|path|img|image|video|audio|bgm|bg|emotion|asset|video-img|source)::(.+?)}}/gms;
 
 function getAssetSrc(assetArr: readonly (readonly string[])[], assetPaths: AssetPaths) {
@@ -542,6 +572,10 @@ const parserCharacterAssets = $derived.by(() => {
 const parserAssetInputs = $derived.by(() => ({ character: parserCharacterAssets, modules: parserModuleAssets }));
 let lastAssetInputs: typeof parserAssetInputs | undefined;
 
+/**
+ * Replaces the exact-name asset maps (names lower-cased; character and module assets in one map, where a repeated
+ * name keeps only the paths with its first entry's extension; emotions in another, the last one per name).
+ */
 export function resetAssetsCache(
     charAssets: readonly (readonly string[])[],
     emoAssets: readonly (readonly string[])[],
@@ -560,7 +594,12 @@ export function resetAssetsCache(
     emoAssetsCache = charEmoPaths;
 }
 
-/** Also read by a parse: tracked, and current even before the root effect has flushed. */
+/**
+ * Also read by a parse: tracked, and current even before the root effect has flushed. A change of the live
+ * inputs (the selected character's assets and emotions, the enabled modules' assets) drops the maps, so the next
+ * asset pass builds them again from those inputs; the character passed to that pass supplies them only while no
+ * character, or a group, is selected.
+ */
 function syncAssetsCache() {
     const inputs = parserAssetInputs;
     if (!Object.is(inputs, lastAssetInputs)) {
@@ -582,6 +621,15 @@ $effect.root(() => {
 const imageCBS = ["img", "image", "emotion", "asset", "bg", "raw", "path"];
 const videoExtensions = ["mp4", "webm", "avi", "m4p", "m4v"];
 
+/**
+ * Expands `assetRegex` macros. A name matches the exact-name maps first (`syncAssetsCache`; `emotion`: its own
+ * map, no fallback), then, unless `legacyMediaFindings`, the closest asset of `char`'s own list
+ * (`getClosestMatch`); no match, or an image macro under `hideAllImages`, expands to nothing, and `bg` expands
+ * only in `back` mode. A name with several paths picks
+ * one by `pickHashRand` of the chat index and character, so a message keeps its pick. A `<source>` `type` is
+ * `shared/assetMime.ts` `assetMimeType` of the path's extension, left out for `application/octet-stream`.
+ * `{{source::char}}`/`{{source::user}}` take `arg`'s icons.
+ */
 async function parseAdditionalAssets(
     data: string,
     char: simpleCharacterArgument | character | AnyClientCharacter,
@@ -711,7 +759,8 @@ async function parseAdditionalAssets(
  * The character asset closest to `name` (lower-cased) by `getDistance` of the trimmed names, the
  * first one on a tie; null past `assetMaxDifference`. The result per trimmed name, a miss included,
  * is cached on the asset list's index, which a change of the list replaces (and a render that read
- * it reruns).
+ * it reruns). A miss is reused only at a cutoff no greater than its own. A lookup that has to compute while the
+ * index holds `FUZZY_RESULT_LIMIT` results clears them first (a retried miss at a larger cutoff included).
  */
 function getClosestMatch(
     char: simpleCharacterArgument | character | AnyClientCharacter,
@@ -844,6 +893,15 @@ function trimmer(str: string) {
     return str.trim().replace(/[_ -.]/g, "");
 }
 
+/**
+ * Expands `{{inlay::id}}`, `{{inlayed::id}}`, and `{{inlayeddata::id}}` (the last two wrapped in a
+ * `risu-inlay-image` block) from `getInlayMedia` (`src/ts/process/files/inlays.ts`: the asset key, no bytes).
+ * Images use `getFileSrc`, and `hideAllImages` removes them; audio and video use `getDirectAssetSrc`, else the
+ * fallback `getInlayObjectUrl`. A missing inlay, or no URL, leaves the tag in place. The `<source>` `type` is
+ * `assetMimeType` of the key's extension, matching the asset route's `Content-Type`; `application/octet-stream`
+ * gets none, so the browser sniffs the bytes. Both URLs are never revoked, so cached renders keep working ones;
+ * a page that loses its controlling worker renders later inlays through the fallback.
+ */
 async function parseInlayAssets(data: string) {
     const inlayMatch = data.match(/{{(inlay|inlayed|inlayeddata)::(.+?)}}/g);
     if (inlayMatch) {
@@ -928,6 +986,23 @@ function parseThoughtsAndTools(data: string) {
     });
 }
 
+/**
+ * Renders a message body for display, in this order:
+ * 1. `parseAdditionalAssets`, for a character that is not a group;
+ * 2. the server script stage (`transformClient.ts` `serverProcessScript`, `editdisplay`; target `background` in
+ *    `back` mode, else `message`), skipped without a character or a transform context;
+ * 3. the asset pass again, only when the script stage changed the text; then `parseInlayAssets`;
+ * 4. `<Thoughts>` to a collapsed `<details>`, `<tool_call>` to a notice;
+ * 5. each bare `<style>...</style>` with a body (`styleRegex`: lowercase, no attributes) to a hex `<risu-style>`,
+ *    so Markdown and the sanitizer leave that CSS alone; other style elements are left as they are;
+ * 6. Markdown (`renderHighlightableMarkdown`), in `normal` and `notrim` modes only;
+ * 7. `trimMarkdown`, except in `notrim`, which answers the Markdown output unsanitized.
+ *
+ * The transform context is `capturedTransform` (null: none), or captured here before the first await when it is
+ * omitted. `{{source::char}}` is the image of the owner of the render's chat (the capture's, else the selected
+ * chat; a group owner included), else of the selected character; `{{source::user}}` is that chat's persona icon.
+ * Both are read untracked before the first await and shared by both asset passes.
+ */
 export async function ParseMarkdown(
     data: string,
     charArg: character | simpleCharacterArgument | groupChat | AnyClientCharacter | string = null,
@@ -1034,6 +1109,14 @@ const trimPurifyConfig = {
     ],
 };
 
+/**
+ * Sanitizes rendered HTML (DOMPurify with `trimPurifyConfig` and this module's hooks), then turns each
+ * `<risu-style>` element into a `<style>`: its CSS decoded, CBS-parsed again (`risuChatParser`, the selected
+ * chat), class selectors prefixed `x-risu-` and every selector scoped under `.chattext`, and an `@import` whose
+ * raw value starts with `data:` emptied (a quoted or `url(...)` data import is kept). A style whose CBS or CSS
+ * parse fails (a `CbsLimitError` included) becomes text: `CSS ERROR: ...` with `returnCSSError`, else nothing.
+ * The CSS is set as the element's text, not fed back to the HTML parser during restoration.
+ */
 export function trimMarkdown(data: string) {
     if (!data) {
         return "";
@@ -1206,6 +1289,10 @@ export async function postTranslationParse(data: string) {
     return data;
 }
 
+/**
+ * Markdown for text outside a chat row (a chat export, the playground docs): no `a` or `style` elements (plus
+ * `forbidTags`) and no `style`, `href`, or `class` attributes; no assets, CBS, or style restore.
+ */
 export function parseMarkdownSafe(
     data: string,
     arg: {
@@ -1430,7 +1517,11 @@ export function risuChatParser(da: string, arg: ClientCbsParseArg = {}): string 
     return clientCbsEvaluator().risuChatParser(da, sharedParseArg(arg));
 }
 
-/** Show a localized message when a display parse exceeds its budget. Other callers keep throwing. */
+/**
+ * Show a localized message when a display parse exceeds its budget; `risuChatParser` itself keeps throwing.
+ * Only `CbsLimitError` is caught: the answer is `language.cbsLimitReached` with the error's message, and any
+ * other error propagates.
+ */
 export function risuChatParserForDisplay(da: string, arg: ClientCbsParseArg = {}): string {
     try {
         return risuChatParser(da, arg);

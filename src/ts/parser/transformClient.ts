@@ -164,6 +164,12 @@ const messageKey = (ref: ChatRef, messageId: string) => JSON.stringify([ref.chaI
  * depend on the lock version, the selection, or other rows (a lock change on one message would
  * re-render every mounted row); a locked row, and a row of a chat whose first save landed, re-render
  * through `chatBodyRevision`.
+ * It holds the chat (the plugin context's, else `chatRef`, else the selected one), the message id at `chatID`, the
+ * chat's display ids (`chatDisplayIds`: per field the bound record when it exists, else the tab's; the persona sent
+ * as both the effective and the selected one), the plugin call context, the message's lock and Re-render
+ * generation, the tab cache's generation, `chatInstallVersion`, and `chatHasUnackedWork`. A render's later stages
+ * take it as their last argument (`ParseMarkdown`, `translateHTML`): a capture, null for none (the stage is
+ * skipped), or omitted to capture at that call.
  */
 export function captureTransform(
     chatID: number,
@@ -215,7 +221,11 @@ function readTransformContext(
     };
 }
 
-/** "Re-render": the next transform of the message skips the server cache; older responses apply no effects. */
+/**
+ * "Re-render": the next transform of the message skips the server cache; older responses apply no effects.
+ * It drops the message's tab results (every source, mode, and viewport) and raises its generation, so that
+ * transform also skips the tab cache and answers captured before it change neither cache nor recovery.
+ */
 export function rerenderMessage(chatRef: ChatRef, messageId: string): void {
     const key = messageKey(chatRef, messageId);
     const generation = (generations.get(key) ?? 0) + 1;
@@ -228,6 +238,12 @@ export function rerenderMessage(chatRef: ChatRef, messageId: string): void {
 const appliedEmotions = new Set<string>();
 const MAX_APPLIED = 4096;
 
+/**
+ * On the `ReloadGUIPointer` bump (`src/ts/stores.svelte.ts`): forgets which results' emotions were applied and
+ * advances the tab cache's generation, keeping its entries, across chat switches too. A capture taken before it
+ * can no longer change or confirm the cache, apply emotions, report to recovery, or schedule a provisional
+ * correction.
+ */
 export function resetTransformEffects(): void {
     appliedEmotions.clear();
     advanceTransformResultsGeneration();

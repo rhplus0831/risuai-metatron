@@ -17,11 +17,33 @@ import type { CBSRegisterArg, CbsConditions, CbsDatabase, RegisterCallback, matc
  * The CBS evaluator, shared by the client and the server: the `{{...}}` loop, block statements
  * (`#if`, `#when`, `#each`, `#func`, ...), and the registry's functions. The application state
  * comes only through `CbsHost` (the registry's globals apply here too, and `dateTimeFormat` uses
- * the runtime's timezone); an evaluator registers the functions on first use.
+ * the runtime's timezone); an evaluator registers the functions at its first function call (`matcher`).
+ *
+ * A parse first rewrites `<user>`, `<char>`, and `<bot>` (any case) to their `{{...}}` calls, then scans once:
+ * - Nested `{{...}}` evaluate innermost first. A `{{#...}}` opens a block that a `{{/...}}` closes. While the body
+ *   of a false `#if`, `#pure`, `#pure_display`, `#each`, `#func`, or `#escape` is scanned, ordinary calls are
+ *   not evaluated, but a `call::` of a function already defined still runs, side effects included.
+ *   `{#...#}` is the legacy `if`. Syntax left open at the end is put back as text, not byte for byte (an open
+ *   block's opener is lost: `{{#if 1}}x` answers `<x`).
+ * - `{{#func name args}}...{{/func}}` defines a function for this parse and its `call::` children;
+ *   `{{call::name::a::b}}` substitutes `{{arg::0}}` (the name), `{{arg::1}}`, ... and parses the result.
+ * - Any other call goes to `matcher`: `{{? expr}}` is `CbsHost.calcString`; else the body splits on `::` when its
+ *   first colon is doubled, else on `:`, and the name (lowercased; whitespace, `_`, and `-` removed) selects the
+ *   callback. A call with no callback stays literal, including `{{// ...}}` and the asset macros, which the
+ *   registry lists as `doc_only` (`{{// ...}}` is not removed here, and calls nested in it still run; the
+ *   renderer expands the asset macros).
+ * - A callback's `{ text, var }` replaces the parse's temporary variables; `{{return::x}}` sets
+ *   `__force_return__`, and the parse answers `__return__` at once (in a `call::` child, what the call inserts).
  *
  * A host with `limits` (`limits.ts`: the client and server) gets a bounded evaluator: a top-level
  * `risuChatParser` call that reaches a limit throws `CbsLimitError`. Without `limits` nothing is
  * counted and the results are the same.
+ */
+
+/**
+ * `CBSRegisterArg` (`types.ts`) without the parts the evaluator supplies itself (`registerFunction`,
+ * `risuChatParser`, `makeArray`, `parseArray`, `parseDict`, `dateTimeFormat`, `spend`), plus the character lookup
+ * a group chat's parse uses for its last speaker and the optional limits.
  */
 export type CbsHost = Omit<
     CBSRegisterArg,
@@ -45,6 +67,12 @@ export type CbsParseArg = {
     role?: string;
     runVar?: boolean;
     functions?: Map<string, { data: string; arg: string[] }>;
+    /**
+     * The depth of this parse's caller: a parse runs at one more, and one past 20 answers
+     * `ERROR: Call stack limit reached` without evaluating its text. A child (`call::`, or a callback's
+     * `risuChatParser` with the caller's `matcherArg`) reads its caller's depth; no parse writes the depth into
+     * the argument it was given, so sibling `call::` and `history` parses do not add up: only nesting counts.
+     */
     callStack?: number;
     cbsConditions?: CbsConditions;
     /** The chat this parse runs for (default: the selected chat); see `matcherArg.chatRef`. */
@@ -62,6 +90,11 @@ export type CbsEvaluator = {
     risuChatParser: (da: string, arg?: CbsParseArg) => string;
 };
 
+/**
+ * An evaluator over `host`: its own function map (filled from `registerCBS` at its first function call, so a
+ * parse of plain text registers nothing) and, with
+ * `host.limits`, its own budget, which a top-level `risuChatParser` call starts over and its nested parses share.
+ */
 export function createCbsEvaluator(host: CbsHost): CbsEvaluator {
     const ev: Evaluator = {
         host,
@@ -112,6 +145,10 @@ const replacements = [
     ";", //0xE9BF
 ];
 
+/**
+ * Turns the private-use characters U+E9B8 to U+E9BF back into `{`, `}`, `(`, `)`, `&lt;`, `&gt;`, `:`, and `;`
+ * (`risuEscape` makes only the first four; the registry's `displayescaped...` functions make all eight).
+ */
 export function risuUnescape(text: string) {
     return text.replace(/[\uE9b8-\uE9bf]/g, (f) => {
         const index = f.charCodeAt(0) - 0xe9b8;
@@ -119,6 +156,7 @@ export function risuUnescape(text: string) {
     });
 }
 
+/** Hides `{`, `}`, `(`, and `)` from the scanner as U+E9B8 to U+E9BB (`#escape`); `risuUnescape` restores them. */
 export function risuEscape(text: string) {
     return text.replace(/[{}()]/g, (f) => {
         switch (f) {
@@ -251,6 +289,7 @@ type blockMatch =
     | "newif"
     | "newif-falsy";
 
+/** A JSON array, or else the text split on `§` (the legacy array form). */
 export function parseArray(p1: string): unknown[] {
     try {
         const arr = JSON.parse(p1);
@@ -271,6 +310,10 @@ export function parseDict(p1: string): { [key: string]: unknown } {
     }
 }
 
+/**
+ * JSON with each direct string element's `::` written as `\u003A\u003A`, so that element cannot split a call's
+ * arguments; strings nested in an object or array element keep their `::`.
+ */
 export function makeArray(p1: unknown[]): string {
     return JSON.stringify(
         p1.map((f) => {

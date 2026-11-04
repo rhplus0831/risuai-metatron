@@ -9,6 +9,8 @@ import { resolveGlobalChatVar, toggleDefinitionsText } from "../../../shared/pro
 /**
  * A chat variable of the selected chat, else its default: the character's, then the prompt preset's
  * (`scope`'s, a parse for a captured context; else the settings view's).
+ * The value is stored in `Chat.scriptstate` under `$` plus the name. Without a selected character, or with no
+ * stored value and no default, it reads `"null"`.
  */
 export function getChatVar(key: string, scope?: PresetScope): string {
     const char = selectedCharacter();
@@ -34,7 +36,8 @@ export function getChatVar(key: string, scope?: PresetScope): string {
 
 /**
  * Sets a chat variable of the selected chat: one `scriptstate` entry merged through the chat module
- * (`mergeChatMeta`), so variables another writer set meanwhile are kept.
+ * (`mergeChatMeta`), so variables another writer set meanwhile are kept. The same variable is last writer wins.
+ * False, and nothing queued, without a selected chat or when the stored value is already `value`.
  */
 export function setChatVar(key: string, value: string): boolean {
     const chat = selectedChat();
@@ -103,6 +106,11 @@ export function getGlobalChatVarOf(ref: ChatRef | null, key: string, scope?: Pre
     );
 }
 
+/**
+ * A global chat variable of the selected chat (`shared/prompt/toggles.ts` `resolveGlobalChatVar`): its
+ * `GLGlobalVariables`, then the legacy `globalChatVariables`, then a toggle's default from the definitions of the
+ * prompt preset (`scope`'s, else the settings view's), the enabled modules, and the selected character.
+ */
 export function getGlobalChatVar(key: string, scope?: PresetScope): string {
     return resolveGlobalChatVar(key, selectedChat()?.GLGlobalVariables, settings.globalChatVariables, () =>
         globalToggleDefinitions(undefined, scope),

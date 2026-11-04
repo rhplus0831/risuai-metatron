@@ -1,3 +1,13 @@
+/**
+ * The tab's bounded LRU of confirmed transform text and server answers, keyed by the call's identity: filled by
+ * `transformClient.ts`, cleared by `src/ts/storage/resourceClient.ts` on an epoch change. A read or a confirmation
+ * makes an entry the most recent; a write evicts the least recent until at most 2,048 entries and an 8 MiB
+ * estimate (two bytes per character of the identity, server key, source, result, and message key, plus 64 per
+ * entry) remain, and an answer larger than that alone is not kept.
+ * Every write is conditional on the entry version its caller read, so an overlapping older answer cannot overwrite
+ * a newer entry. Effects (emotions) are never retained.
+ */
+
 /** Confirmed transform text for this tab; effects are never retained here. */
 export type TransformResultEntry = Readonly<{ key: string; source: string; text: string; version: symbol }>;
 
@@ -8,6 +18,7 @@ const entries = new Map<string, Entry>();
 let bytes = 0;
 let generation = 0;
 
+/** The generation a capture records: `transformClient.ts` writes an answer here only while it is unchanged. */
 export function transformResultsGeneration(): number {
     return generation;
 }
@@ -52,6 +63,7 @@ export function transformResultVersion(identity: string): symbol | undefined {
     return entries.get(identity)?.version;
 }
 
+/** A `same` answer for the entry version the caller read: that entry becomes the most recent; else nothing. */
 export function confirmTransformResult(identity: string, version: symbol): void {
     const entry = entries.get(identity);
     if (entry?.version === version) getTransformResult(identity, entry.source);
