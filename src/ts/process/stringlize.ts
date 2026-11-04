@@ -2,6 +2,7 @@ import { settings, activePreset, activePersona } from "../storage/settingsViews.
 import type { OpenAIChat } from "./index.svelte";
 import { getUserName } from "../util";
 
+/** Empty and unreferenced (the server's copy in `server/src/llm/stringlize.ts` is empty too). */
 export function multiChatReplacer() {}
 
 export function stringlizeChat(formated: OpenAIChat[], char: string, continued: boolean) {
@@ -35,6 +36,7 @@ function appendWhitespace(prefix: string, seperator: string = " ") {
     }
     return prefix;
 }
+/** Unreferenced, as is the server's copy in `server/src/llm/stringlize.ts`. */
 export function stringlizeChatOba(
     formated: OpenAIChat[],
     characterName: string,

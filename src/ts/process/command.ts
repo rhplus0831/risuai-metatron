@@ -54,6 +54,11 @@ export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: read
  * lore) `ref`: by default the chat selected when the line started. `/trigger` runs on the server (a
  * server trigger's `v2Command` runs on the server too). The chat is pinned (kept loaded) for the
  * whole line, and loaded first.
+ *
+ * Commands are piped with `|` (outside double quotes): each one's result fills the first `{{pipe}}` and
+ * the first `{{slot}}` of the next one's argument, and is that argument when it has none. `false` means
+ * the line is not a command (an unknown one, or `/setinput`), even when an earlier part of it ran: the
+ * screen then sends the line as ordinary text. `/send` only appends a user message; it does not generate.
  */
 export async function processMultiCommand(command: string, ref: ChatRef | null = currentChatRef()) {
     const release = ref ? pinChat(ref) : null;
@@ -99,6 +104,10 @@ async function processPinnedCommands(command: string, ref: ChatRef | null) {
     return pipe;
 }
 
+/**
+ * One command of a line. A new command is a case of this switch, with its entry in the hand-written `/?`
+ * help text (the `"?"` case), which is all `/?` shows.
+ */
 async function processCommand(command: string, pipe: string, ref: ChatRef | null): Promise<false | string> {
     const currentChar = ref ? characterList().find((character) => character?.chaId === ref.chaId) : selectedCharacter();
     if (!currentChar) {

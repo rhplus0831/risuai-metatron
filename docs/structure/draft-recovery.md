@@ -4,7 +4,7 @@
 
 - Owns journal durability and eligibility, composer-row storage, boot recovery, and recovery drafts.
 - Not here: save cycle and conflicts → [resource sync](resource-sync.md); chat module → [chat store](chat-store.md);
-  composer timing, hand-off, and guarded restore → [chat pipeline](chat-pipeline.md#files); the dialog →
+  composer timing, hand-off, and guarded restore → [chat pipeline](chat-pipeline.md#composer-and-drafts); the dialog →
   [UI and theming](ui-theming.md); `sync` events → [diagnostics](diagnostics.md).
 - A `Decision:` plan name resolves through [the archive](../archived-plan/README.md).
 

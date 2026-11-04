@@ -2,6 +2,36 @@ import { onChatRemoved, type ChatRemoval } from "../storage/chatStore.svelte";
 import { pageDraftJournal, type ComposerValue, type DraftJournal } from "../storage/draftJournal";
 import { composerSendText, type SendDraft } from "./sendDraft";
 
+/**
+ * The chat screen's composers, one per chat (`createComposer`). `input`, `translate`, and `files` belong
+ * to the shown chat; `switchTo(key)` stashes the previous chat's draft and loads the next one, and
+ * `at(key)` routes a delayed write to the chat it captured. Setters track edits; getters never schedule
+ * writes, and opening an empty composer is not an edit.
+ *
+ * Without a journal everything stays in memory. With one (the screen passes `pageDraftJournal()`), edits
+ * are journaled after `debounceMs` (500 ms) of quiet per chat, and every dirty chat flushes on page hide
+ * and when the screen is destroyed. A chat has a draft row and a send's hand-off row:
+ *
+ * - `beginSend` journals the consumed composer at once as the hand-off, with its message id and, when
+ *   the caller passes one (an ordinary Send; Continue passes none), its request id and the current
+ *   epoch. Typing or clearing during the send writes only the draft row.
+ * - `settleSend` with `landed` false updates the request identity of both rows, for hidden or unmounted
+ *   chats too (`updateComposerRequest` in `src/ts/storage/draftJournal.ts`: a known end clears its
+ *   request id from the matching attempt, an uncertain end adds it to a matching row that has none, and
+ *   a row with another request id is left alone). That hand-off stays until `placeSend` or `restore`
+ *   replaces it; a landed send's is removed.
+ * - Active send ids are module-level (`sending`) and outlive the screen, so a remount never restores a
+ *   send still running.
+ * - `restore` applies a journal read only to the same still-empty, unchanged composer; a draft typed
+ *   during a send wins over the hand-off. The caller's `RestoreChecks` decide the rest: a landed send is
+ *   dropped, an unknown load outcome keeps the draft and its message id, a missing inlay is dropped and a
+ *   failed lookup keeps it, and dropping an attachment drops both ids. It returns a request id only when
+ *   the row's `requestEpoch` is the current epoch; another epoch keeps the text and message id.
+ * - A module-level `onChatRemoved` subscription clears the chat's journal rows even without a mounted
+ *   screen, invalidates pending restores and writes, and fences late `at(key)` callbacks until the key
+ *   is shown again.
+ */
+
 export type ComposerDraft = { input: string; translate: string; files: string[] };
 /** A chat's live composer while shown, or its stashed draft otherwise. */
 export type ComposerView = ComposerDraft & { addFile(id: string): void; removeFileAt(index: number): void };

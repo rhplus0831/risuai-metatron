@@ -18,6 +18,11 @@ export function chatOrphanedOverrideEntries(ref: ChatRef): OrphanedOverrideEntry
     return owner ? orphanedOverrideEntries(owner.globalLore ?? [], overrides) : [];
 }
 
+/**
+ * The alert text of an orphaned-override refusal, the orphans named one per line. Both refusals show it:
+ * the local check (`refuseOrphanedOverrides`) and the server's 409 `chatLoreOverrideOrphaned`
+ * (`runPinnedServerJob` in `src/ts/process/serverCommands.ts`).
+ */
 export function chatLoreOverrideRefusalText(entries: readonly OrphanedOverrideEntry[]): string {
     const strings = language.chatLoreOverrides;
     return [strings.refused, ...entries.map((entry) => entry.name), "", strings.fixes].join("\n");

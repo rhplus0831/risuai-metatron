@@ -51,6 +51,11 @@ function appendLocalLore(entries: loreBook[]) {
     setChatMeta(ref, { localLore: [...$state.snapshot(chat.localLore ?? []), ...entries] });
 }
 
+/**
+ * Adds an empty entry: `type` 0 to the selected character's `globalLore`, written in place and not
+ * fenced by a running job; 1 to the selected chat's local lore (`appendLocalLore`, refused during a job
+ * there); any other value adds nothing.
+ */
 export function addLorebook(type: number) {
     const char = selectedCharacter();
     if (type === 0) {
@@ -80,6 +85,7 @@ export function addLorebook(type: number) {
     }
 }
 
+/** `addLorebook` for a folder entry, keyed `\uf000folder:` and a fresh uuid. */
 export function addLorebookFolder(type: number) {
     const char = selectedCharacter();
     const id = v4();
@@ -177,6 +183,13 @@ async function activatePinnedLore(ref: ChatRef | null) {
     return result;
 }
 
+/**
+ * Imports a lorebook file (a Risu export, or another format's `entries` through
+ * `convertExternalLorebook`) into the selected character's lore (`"global"`, its `globalLore`, entries
+ * upgraded by `upgradeLorebook`) or the selected chat's (`"local"`, its `localLore`, refused with
+ * `chatGenerating` during a job there). Those are the only modes: the settings-level lorebook pages
+ * (`Database.loreBook`) have none here or in `exportLoreBook`.
+ */
 export async function importLoreBook(mode: "global" | "local") {
     const chaId = selectedCharacter()?.chaId;
     // The chat (for local lore) is captured before the file dialog, so a chat switch cannot redirect
@@ -272,6 +285,11 @@ export function convertExternalLorebook(entries: { [key: string]: CCLorebook }) 
     return lore;
 }
 
+/**
+ * Downloads the selected character's lore (`"global"`) or the selected chat's local lore (`"local"`)
+ * as a Risu export (`lorebook_export.json`). A local export of a chat that is not loaded yet refuses
+ * with `localLoreExportNotLoaded`.
+ */
 export async function exportLoreBook(mode: "global" | "local") {
     try {
         let lore: unknown;

@@ -100,11 +100,20 @@ export type ContextReport = {
     maxResponse: number;
     /** Final counted input (= generationInfo.inputTokens). */
     input: number;
-    /** One row per kind, in first-counted order; kinds that counted nothing are left out. */
+    /**
+     * One row per kind, in first-counted order; kinds that counted nothing are left out. Kinds are counted
+     * where assembly already counts (`addSection` in `server/src/prompt/assemble.ts`), except three its
+     * `buildContextReport` adds: memory as the traced memory entries in the final prompt, by their
+     * recheck counts, and history and examples as their kept sources were counted when pushed.
+     */
     sections: readonly { kind: ContextSectionKind; tokens: number }[];
-    /** input − sum(sections); signed. */
+    /** input − sum(sections); signed. It carries whatever the sections do not attribute. */
     adjustment: number;
-    /** False when editRequest changed the list or a removal or merge could not be traced. */
+    /**
+     * False when editRequest changed the list or a removal or merge could not be traced: a recheck
+     * removal of an entry without a whole source, or a memory entry that was rewritten, merged with
+     * history, or untraced.
+     */
     attributionExact: boolean;
     history: {
         /**
@@ -112,6 +121,11 @@ export type ContextReport = {
          * One left blank by its scripts, with no media, has nothing to send and is not counted.
          */
         total: number;
+        /**
+         * Of those, the ones whose source is in the final prompt. A history-side entry keeps its source
+         * by identity across `systemizeChat`, `pushPrompts` merges, and the copies a memory algorithm
+         * returns (matched by message id, then by signature); memory entries never take a history source.
+         */
         kept: number;
         totalUser: number;
         keptUser: number;
@@ -121,7 +135,10 @@ export type ContextReport = {
          */
         droppedTokens: number;
     };
-    /** No-memory trim ledger, when queued messages survive formatting, for the displacement estimate. */
+    /**
+     * No-memory trim ledger, when queued messages survive formatting, for the displacement estimate:
+     * present only when no memory step ran (`contextTrim` in `server/src/prompt/assemble.ts`).
+     */
     trim?: {
         /** maxContext − currentTokens after the trim loop. */
         headroom: number;
@@ -151,7 +168,16 @@ export type ContextReport = {
          * headroom, extra; absent when none was reduced.
          */
         budgetReduced?: readonly HypaV3BudgetReduction[];
-        /** "gap": uncovered history left out, or covered history with an empty card; "unknown": cannot tell. */
+        /**
+         * "gap": uncovered history left out, or covered history with an empty card; "unknown": cannot tell.
+         * Always "unknown" for memory other than HypaV3 and Structured Memory. HypaV3 starts at "gap" for
+         * history trimmed without a summary, else "unknown" when the stored summaries run ahead of the
+         * history, else "covered"; Structured Memory starts as `selectMemory`
+         * (`server/src/prompt/memory/structured/step.ts`) sets it. Raw history the prompt lost afterwards
+         * demotes only "covered" (to "unknown"). For those two, memory sent with no traced memory-only
+         * entry in the final prompt, an untraced memory entry there, or a manifest item whose tag is not in
+         * it forces "unknown".
+         */
         coverage: "covered" | "gap" | "unknown";
         /**
          * HypaV3: how many of the history messages left out a stored summary covers (at most
@@ -263,7 +289,11 @@ const isCount = (value: unknown): value is number => isNumber(value) && value >=
 const counts = (record: Fields, keys: readonly string[]) => keys.every((key) => isCount(record[key]));
 const oneOf = <T>(values: readonly T[], value: unknown): value is T => values.includes(value as T);
 
-/** The report in `value`, or null when its shape or any number is wrong (old or imported data). */
+/**
+ * The report in `value`, or null when its shape or any number is wrong (old or imported data): a wrong
+ * shape, a count that is not finite or is negative, a section kind listed twice, or a sparse array. A
+ * stored report may lack `lore.rejected`; readers go through this.
+ */
 export function parseContextReport(value: unknown): ContextReport | null {
     if (!isRecord(value) || value.v !== 1) {
         return null;
@@ -499,7 +529,8 @@ function hashString(text: string): string {
 /**
  * A digest of the history a send of `messages` reads: the eligible messages' id, role, disabled
  * flag, and text, and whether an `allBefore` message cut it. The server and the tab compute it the
- * same way, so an edit, a deletion, or a changed disabled flag changes it.
+ * same way, so an edit, a deletion, or a changed disabled flag changes it. It and the assembly's history
+ * both read `eligibleHistory`, so they agree on which messages count.
  */
 export function historyDigest(messages: readonly HistoryMessage[]): string {
     const { messages: eligible, reset } = eligibleHistory(messages);

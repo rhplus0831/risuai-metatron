@@ -344,6 +344,10 @@ async function writeMedia(
     await putMeta(id, data, check);
 }
 
+/**
+ * A picked or pasted file as a new inlay, by extension: an image is redrawn (`writeInlayImage`), audio
+ * and video are stored as given; null for any other extension (`mpeg` and `avi` included).
+ */
 export async function postInlayAsset(img: { name: string; data: Uint8Array }) {
     const extention = img.name.split(".").at(-1);
     const imgObj = new Image();
@@ -381,6 +385,8 @@ export async function postInlayAsset(img: { name: string; data: Uint8Array }) {
  * Draws an image as an inlay (PNG, at most 1024² pixels). `check`, when given, throws to stop the
  * write: it runs after the wait for the id's queue, after the image loads and encodes, and before
  * the media and the metadata are written (a server job's callback that was cancelled meanwhile).
+ * Rejects, writing nothing, when the image fails to load or loaded with no pixels; the rejection is
+ * the caller's to handle.
  */
 export async function writeInlayImage(
     imgObj: HTMLImageElement,
@@ -456,6 +462,7 @@ export type InlaySignature = {
     source: string;
 };
 
+/** Stores a reply's model signatures (`InlaySignature`) as a signature inlay: metadata only, no media file. */
 export async function saveInlayedSignature(sigid: string, signature: InlaySignature) {
     await serialize(sigid, () =>
         putMeta(sigid, { name: sigid, ext: "json", type: "signature", text: JSON.stringify(signature) }),
@@ -490,7 +497,10 @@ function toAsset(meta: InlayResource, data: string | Blob): InlayAsset {
     return asset;
 }
 
-// Returns with base64 data URI (a signature keeps its JSON text)
+/**
+ * The inlay with its media as a base64 data URI (a signature: its JSON text); null when it or its bytes
+ * are missing.
+ */
 export async function getInlayAsset(id: string): Promise<(InlayAsset & { data: string }) | null> {
     const meta = await getMeta(id);
     if (!meta) {
@@ -527,7 +537,10 @@ export async function getInlayMedia(id: string): Promise<{ type: "image" | "vide
  */
 const mediaObjectUrls = new Map<string, string>();
 
-/** Fallback typed object URL without a capable controlling worker (null: missing, a signature, or no bytes). */
+/**
+ * Fallback typed object URL without a capable controlling worker (null: missing, a signature, or no bytes).
+ * One per asset key, kept for the page and never revoked: rendered and cached HTML holds them.
+ */
 export async function getInlayObjectUrl(id: string): Promise<string | null> {
     const meta = await getMeta(id);
     if (!meta || meta.data.type === "signature" || !meta.data.asset) {
@@ -551,7 +564,7 @@ export async function getInlayObjectUrl(id: string): Promise<string | null> {
     return url;
 }
 
-// Returns with Blob
+/** `getInlayAsset` with the media as a Blob (a signature: its JSON text as `application/json`). */
 export async function getInlayAssetBlob(id: string): Promise<(InlayAsset & { data: Blob }) | null> {
     const meta = await getMeta(id);
     if (!meta) {
@@ -693,6 +706,7 @@ export function supportsInlayImage() {
     return getModelInfoForMode("model").flags.includes(LLMFlags.hasImageInput);
 }
 
+/** PNG bytes of `img`: a PNG is returned as given, anything else is redrawn at its own size (no pixel cap). */
 export async function reencodeImage(img: Uint8Array) {
     if (getImageType(img) === "PNG") {
         return img;

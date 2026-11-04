@@ -77,6 +77,11 @@ type ComposerKeydownOptions = {
     reroll: () => unknown;
 };
 
+/**
+ * The main composer's keys: Enter sends with `sendWithEnter` (Shift+Enter is a new line), Shift+Enter
+ * sends without it, and Ctrl+M rerolls. Skipped while an IME composes (`isImeComposing`), with no
+ * `preventDefault`, so the IME keeps the key.
+ */
 export function handleMainComposerKeydown(event: KeyboardEvent, options: ComposerKeydownOptions) {
     if (isImeComposing(event)) {
         return;
@@ -96,6 +101,10 @@ export function handleMainComposerKeydown(event: KeyboardEvent, options: Compose
     }
 }
 
+/**
+ * The translation composer's keys: Enter without Shift sends only with `sendWithEnter` (no Shift+Enter
+ * send without it), and Ctrl+M rerolls. Skipped while an IME composes, as `handleMainComposerKeydown` is.
+ */
 export function handleTranslationComposerKeydown(event: KeyboardEvent, options: ComposerKeydownOptions) {
     if (isImeComposing(event)) {
         return;

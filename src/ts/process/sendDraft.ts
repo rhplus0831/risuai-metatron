@@ -1,7 +1,12 @@
 import { v4 } from "uuid";
 import type { ChatRef } from "../storage/chatStore.svelte";
 
+/**
+ * A send's input and ids; `requestUncertain`: the request id is reused from an attempt that may have
+ * reached the server.
+ */
 export type SendDraft = { input: string; userMessageId: string; requestId?: string; requestUncertain?: boolean };
+/** How a send ended, for `settle`: `selected` and `composerEmpty` decide whether its text goes back at once. */
 export type SendDraftOutcome = {
     landed: boolean;
     ok: boolean;
@@ -12,12 +17,22 @@ export type SendDraftOutcome = {
 
 const keyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
 
-/** The text submitted by the composer, including its queued attachments in order. */
+/**
+ * The text submitted by the composer, including its queued attachments in order (`{{inlayed::id}}`).
+ * The one serialization of a composer into send text: the screen's send, the journal's retry lookup,
+ * and a restored draft's text all use it, so the same composer always maps to the same send.
+ */
 export function composerSendText(draft: { input: string; files: readonly string[] }): string {
     return draft.input + draft.files.map((file) => `{{inlayed::${file}}}`).join("");
 }
 
-/** Retains failed sends' text and ids, including when an absent message may just be waiting for hydration. */
+/**
+ * Retains failed sends' text and ids, including when an absent message may just be waiting for hydration.
+ * `idsFor` captures a send's ids before its dispatch: the same text keeps its `userMessageId`, and an
+ * ordinary Send (`reuseRequest`) also reuses a retained request id, marked `requestUncertain`; else a
+ * fresh one. `settle` keeps the request id only after an uncertain end, and keeps the text and message
+ * id for any end that neither landed nor succeeded.
+ */
 export function createSendDrafts() {
     const drafts = new Map<string, SendDraft & { placed: boolean }>();
 

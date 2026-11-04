@@ -200,6 +200,16 @@ type postFileResultText = {
     type: "text";
     name: string;
 };
+/**
+ * Turns files into composer attachments, by extension: images, audio, and video become inlays
+ * (`postInlayAsset`; its id as `asset`), `txt`, `pdf`, and `xml` become `text` for the caller to append
+ * as a `{{file::name::data}}` tag, and a `po` file runs its translation sends and download (`void`);
+ * any other extension adds nothing, and so do `mpeg` and `avi`, which the picker offers but
+ * `postInlayAsset` does not store. A string `query` opens the file picker (and is the query a PDF's
+ * passages are searched by). The picker's own list offers no `pdf` or `xml`, and the screen's other
+ * caller passes only pasted images, so those arrive only when the picker accepts every extension
+ * (`selectFileByDom` in `src/ts/util.ts`: `allowAllExtentionFiles` on, or iOS).
+ */
 export async function postChatFile(
     query:
         | string

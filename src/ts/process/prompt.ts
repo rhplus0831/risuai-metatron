@@ -9,6 +9,12 @@ import type { PromptItem, PromptRole } from "../../../shared/prompt.ts";
 
 export type * from "../../../shared/prompt.ts";
 
+/**
+ * The tokens of a prompt template's own text, not what its slots fill in: the text of `plain` and
+ * `jailbreak` items and the `innerFormat` of `persona`, `description`, `lorebook`, `postEverything`,
+ * `authornote`, and `memory` items, each expanded as `tokenizeAccurate` does (`consti`: its
+ * `consistantChar`). Chat, cache, and other items count nothing. Counted with the tab's main model.
+ */
 export async function tokenizePreset(prompts: PromptItem[], consti: boolean = false) {
     const strings: string[] = [];
     for (const prompt of prompts) {
@@ -225,6 +231,18 @@ export const OobaParams = [
     "grammar_string",
 ];
 
+/**
+ * Converts SillyTavern preset files (as `detectPromptJSONType` typed them; `NOTSUPPORTED` ones are
+ * skipped) into new presets, reporting by alert. An `STCHAT` chat-completion preset becomes one prompt
+ * preset of its prompts (`stChatConvert`) with the common samplers read through `getParam` unset, and
+ * may not be combined with an
+ * `STINST` instruct file. Otherwise the `STINST`, `PARAMETERS`, and `STCONTEXT` files, applied in that
+ * order, become a prompt preset with a fixed prompt template plus an unselected model preset holding a
+ * Jinja instruct template built from the instruct sequences and story string. A common sampler read
+ * through `getParam` that the `PARAMETERS` file does not enable is stored as -1000 (unset); the
+ * backend-specific settings (`ooba`, `ainconfig`, ...) keep the template's defaults. Temperature and the
+ * frequency and presence penalties are scaled by 100.
+ */
 export function promptConvertion(files: { name: string; content: string; type: string }[]) {
     let preset = safeStructuredClone(presetTemplate);
     let instData = {

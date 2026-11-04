@@ -497,6 +497,18 @@
         return sendMain(true);
     }
 
+    /**
+     * Send (`send`) and Continue (`sendContinue`) from the selected chat's composer. The checks run in
+     * this order, all before the input, translation draft, attachments, or reroll history are consumed:
+     * the chat busy (`isChatBusy`), a slash command (`processMultiCommand`, which consumes its line), the
+     * chat busy again after a line that is not a command, an incomplete binding (`chatBindingDialog`),
+     * then orphaned lore overrides. While the binding is incomplete the send button reads "Set up this
+     * chat" and keeps the `button-icon-send` class, so the send hotkey opens the setup too, and both
+     * composers are read-only. The send text is `composerSendText`, which appends the queued
+     * `{{inlayed::id}}` tags; an empty one (Continue included) appends "*says nothing*" only with
+     * `useSayNothing` on, outside a group, and when the last message is not the user's. Consuming the
+     * input clears the chat's bundle history, and nothing awaits between it and the send's admission.
+     */
     async function sendMain(continueResponse: boolean) {
         // The chat this send writes to, captured before any await; everything after an await
         // resolves it again by id (and stops when it is gone).
@@ -590,6 +602,13 @@
         if (now?.chaId === ref.chaId && now.chatId === ref.chatId) chatsInstance?.scrollToLatestMessage();
     }
 
+    /**
+     * Refused while the selected chat is busy. A swipe candidate (`Prereroll`,
+     * `src/ts/process/prereroll.ts`) is tried first, then the chat's bundle history (`rerollHistory`),
+     * which `sendMain` clears. A new reroll refuses orphaned lore overrides with the send's alert before
+     * it removes the captured tail; otherwise it removes it, sends in the captured chat, and hands the
+     * end to `restoreRerolledReplies` (through `rerollHistory.restore`).
+     */
     async function reroll() {
         const ref = currentChatRef();
         // Nothing while the selected chat loads.
@@ -659,6 +678,7 @@
         }
     }
 
+    /** `reroll` backwards: refused while busy, the previous swipe candidate (`PreUnreroll`) first, then the history. */
     async function unReroll() {
         const ref = currentChatRef();
         // Nothing while the selected chat loads.
@@ -708,6 +728,11 @@
      * `ok`: whether it ran to a reply (`sendChat`'s result: false for a failed, lost, or stopped job too).
      * `settled`: nothing of the send writes to the chat any more (`sendChat`'s `onEnd`; false when it threw).
      * `blockedChats`: the chats a flush refused for a generation waited on.
+     * It rechecks `target`'s busy state, takes the chat's Stop controller (`sendAborts`, from
+     * `createSendAborts`), and calls `sendChat` with `target` and `serverInput`'s ids. An input that
+     * neither landed nor succeeded keeps its text and `userMessageId` (`sendDrafts.settle`), and the text
+     * goes back only to an empty main input for its chat: at once when that chat is selected, else when
+     * it is shown next (`takeUnplaced`). Auto mode is `runAutoMode`.
      */
     async function sendChatMain(
         continued: boolean = false,
@@ -827,6 +852,11 @@
         autoRun = null;
     });
 
+    /**
+     * Auto mode: rounds of `sendChatMain` in the chat it started in, one after another. It ends on Stop
+     * (`abortChat`), an unsuccessful round (`ok` false: refused, failed, lost, or stopped), toggling it
+     * again, leaving or closing that chat (the `autoRun` effect), or the screen's destruction.
+     */
     async function runAutoMode() {
         const ref = currentChatRef();
         if (!ref) {

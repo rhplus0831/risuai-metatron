@@ -23,6 +23,12 @@ export type LoreActivationInput = {
     userName: string;
 };
 
+/**
+ * The application state activation reads and writes outside `input`. The client's host is
+ * `activatePinnedLore` in `src/ts/process/lorebook.svelte.ts` (the regex test runs in the tab); the
+ * server's is `activateJobLore` in `server/src/lua/bindings.ts`, whose regex test is a script worker
+ * task (`server/src/scripts/worker.ts`) and so asynchronous.
+ */
 export type LoreHost = {
     /** A deep copy of the lore; activation rewrites `child` entries in place. */
     clone: <T>(value: T) => T;
@@ -65,6 +71,9 @@ export type LoreRejected = { name: string; tokens: number };
  * The token budget pass: `used` is the kept entries' total before `@@inject_lore` edits (accepted
  * injectors included), `limit` the budget, and the rejected entries are the ones the pass dropped,
  * listed in the order it tried them (priority descending).
+ *
+ * The pass runs once, after every recursion round: an entry it rejects has still activated what its
+ * content matched, and its keep and don't-activate-after-match flags are still written.
  */
 export type LoreBudget = {
     used: number;
@@ -288,6 +297,9 @@ export function searchMatch(
 /**
  * The lore of `input.chat` that activates, and why: `loadLoreBookV3Prompt` on the client.
  * Applies chat overrides to owner lore, silently drops orphans, and keeps off child links inactive.
+ * Searches, in this order (a `child` entry links to an earlier entry with its id), the owner's
+ * `globalLore` merged with the chat's overrides (`mergeOwnerLore`), the chat's `localLore`, and the
+ * module lore the caller resolved (`input.moduleLorebooks`), all as one deep copy (`host.clone`).
  */
 export async function activateLore(input: LoreActivationInput, host: LoreHost): Promise<LoreActivation> {
     const char = input.character;

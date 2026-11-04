@@ -5,6 +5,14 @@ import { inlayScreenGenData } from "../../../shared/characters.ts";
 
 const imggenRegex = [/<ImgGen="(.+?)">/gi, /{{ImgGen="(.+?)"}}/gi] as const;
 
+/**
+ * Unreferenced: a send's view-screen pass is the server's `runInlayScreen`
+ * (`server/src/prompt/postProcess.ts`), which asks the tab for each image. With `inlayViewScreen`
+ * on, the `emotion` view turns `<Emotion="x">` into `{{emotion::x}}`, and the `imggen` view shows
+ * `[Generating...]` for each `<ImgGen="...">` and `{{ImgGen="..."}}` at once, then `promise` gives the
+ * text with each command's image as `{{inlay::id}}` (removed when no image was made); a failed inlay
+ * write rejects `promise`.
+ */
 export function runInlayScreen(char: character, data: string): { text: string; promise?: Promise<string> } {
     if (char.inlayViewScreen) {
         if (char.viewScreen === "emotion") {

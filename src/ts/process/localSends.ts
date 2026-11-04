@@ -18,6 +18,11 @@ function localSendKey(ref: ChatRef): string {
     return `${ref.chaId}\u0000${ref.chatId}`;
 }
 
+/**
+ * This tab's send registry, read-only: one entry per chat with a send, plus the tab entry (key `""`)
+ * for a send without a chat. Synchronous admission (`beginLocalSend`, `isLocalSend`) reads this Map,
+ * never the derived `anyLocalSend`.
+ */
 export const localSends: Readable<ReadonlyMap<string, ChatRef | null>> = { subscribe: sends.subscribe };
 
 /**

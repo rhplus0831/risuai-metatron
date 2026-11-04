@@ -5,6 +5,12 @@ import { findCharacterbyId } from "../util";
 import { alertConfirm, alertError, alertSelectChar } from "../alert";
 import { language } from "src/lang";
 
+/**
+ * Adds a picked character to the selected group, refused (`alreadyCharInGroup`) when it is a member
+ * already. With the confirm, its first message is appended to the group's selected chat before it
+ * joins. The member arrays `characters`, `characterTalks`, and `characterActive` are parallel and grow
+ * together, written in place on the group.
+ */
 export async function addGroupChar() {
     const chaId = selectedCharacter()?.chaId;
     // The group is found again after each dialog: the selection can change and the group can be deleted meanwhile.
@@ -48,6 +54,7 @@ export async function addGroupChar() {
     }
 }
 
+/** Removes member `index` from the selected group's three parallel member arrays together; nothing for a character. */
 export function rmCharFromGroup(index: number) {
     const group = selectedCharacter();
     if (group?.type === "group") {
@@ -63,6 +70,12 @@ export type GroupOrder = {
     index: number;
 };
 
+/**
+ * Unreferenced: a send's speaker order is the server's copy (`groupOrder` in
+ * `server/src/prompt/runner.ts`). Members named in `input` (words split at spaces and newlines,
+ * case-insensitive) come first, one per word in word order, so a member named twice appears twice; then
+ * each other member, shuffled, with chance `talkness` (0.5 when unset); never empty.
+ */
 export function groupOrder(chars: GroupOrder[], input: string): GroupOrder[] {
     let order: GroupOrder[] = [];
     let ids: string[] = [];

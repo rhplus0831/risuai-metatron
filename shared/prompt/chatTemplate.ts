@@ -31,6 +31,16 @@ export type ChatTemplateInput = {
     userName: () => string;
 };
 
+/**
+ * Renders `messages` with a Hugging Face Jinja template (`@huggingface/jinja`): `chatTemplates[type]`,
+ * or `input.jinjaTemplate` for `jinja`. Only `user`, `assistant`, and `system` messages are passed.
+ * A type's `templateEffect` list applies its effects first, each on its own: `no_system_messages`
+ * turns system messages into `System: ` user messages, and `alter_user_assistant_roles` folds
+ * same-role runs into alternating turns that start with the user. The template sees
+ * `add_generation_prompt` true and empty `bos_token` and `eos_token`, and both names are read on every
+ * render. Rendering is synchronous with no work or time limit, so a template that loops long blocks
+ * its caller; a template error or `raise_exception` throws.
+ */
 export function renderChatTemplate(messages: OpenAIChat[], input: ChatTemplateInput): string {
     const type = input.type;
     // Only `role` and `content` are read, and the effects rewrite them, so those are the copy.

@@ -84,6 +84,7 @@ export function noteForeignJob(ref: ChatRef, jobId: string): void {
     if (jobs.get(key) !== jobId) foreignJobs.set(new Map(jobs).set(key, jobId));
 }
 
+/** With `jobId`, clears the mark only while it still names that job, so a late clear keeps a newer job's mark. */
 export function clearForeignJob(ref: ChatRef, jobId?: string): void {
     const key = chatStatusKey(ref);
     const jobs = get(foreignJobs);

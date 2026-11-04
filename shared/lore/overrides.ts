@@ -1,6 +1,15 @@
 import type { ChatLoreOverride, loreBook } from "../database.ts";
 import type { DeepReadonly } from "../readonly.ts";
 
+/**
+ * A chat's overrides of its owner's lore (`Chat.loreOverrides`, `ChatLoreOverride` in
+ * `shared/database.ts`), applied only in that chat: each is a full copy of one owner `globalLore`
+ * entry, frozen when the override was made and linked by `entry.id`, which either replaces the entry or,
+ * with `off`, turns it off. The first override per id wins (`firstOverridePerId`); one whose id no
+ * owner entry has is an orphan, which a send refuses (`orphanedOverrideEntries`) and activation drops.
+ * Shared by the client and the server; nothing here writes.
+ */
+
 type OverrideMatch = {
     /** Owner index → the first override for that entry's id (only the first owner entry per id). */
     replacements: Map<number, DeepReadonly<ChatLoreOverride>>;
@@ -100,7 +109,9 @@ function matchOverrides(
  * An off override of an owner folder (`mode: "folder"`) also removes every entry inside it by the
  * owner's current folder keys, nested folders included, whatever their own overrides; those
  * overrides are not orphans.
- * Returns references without mutating or cloning the inputs; callers that mutate must copy first.
+ * Returns references without mutating or cloning the inputs, since the client passes live Svelte
+ * `$state` proxies (the selected character's lore and the selected chat's overrides); callers that
+ * mutate must copy first.
  */
 export function mergeOwnerLore(
     ownerLore: DeepReadonly<loreBook[]>,
