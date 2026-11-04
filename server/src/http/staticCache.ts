@@ -135,7 +135,27 @@ async function openCompressedFile(filePath: string, original: BigIntStats, heade
     return undefined;
 }
 
-/** Serve negotiated siblings and answer conditional requests before serveStatic handles identity. */
+/**
+ * Serve negotiated siblings and answer conditional requests before serveStatic handles identity. Only
+ * a regular file of `root` is handled for GET and HEAD; a missing or rejected path passes on with no
+ * cache headers. `/assets/*` (hashed build names) is `public, max-age=31536000, immutable`, every other
+ * file (`sw.js`, `manifest.json`) `no-cache`.
+ *
+ * A file of `STATIC_COMPRESSIBLE_EXTENSIONS` is served from its `.br` or `.gz` sibling when
+ * `Accept-Encoding` accepts that coding at least as much as identity (codings matched in any case,
+ * `q=0` refusing one, `*` covering the unnamed; equal qualities prefer Brotli, then gzip) and the
+ * sibling is a regular file no older than the original; else the next acceptable coding, else
+ * identity, which a missing header also gets. The sibling answer has its own length and the
+ * original's MIME type. Each representation has its own weak size/mtime ETag (the coding in it) and
+ * `Last-Modified`, and every answer of a compressible file, identity and 304 included, carries
+ * `Vary: Accept-Encoding`. HTML is not compressible, so the index is never negotiated.
+ *
+ * `If-None-Match` (weak comparison, `*` only as the whole field) alone decides a bodyless 304; only
+ * without it does an `If-Modified-Since` at or after the mtime, floored to whole seconds, answer 304.
+ * A request with `Range` or `If-Range` always gets identity, through `serveStatic`; an `If-Range`
+ * other than the exact `Last-Modified` date (the ETag is weak, so no tag satisfies it) drops the
+ * Range, and the answer is the full 200.
+ */
 export function createStaticCache(root: string): MiddlewareHandler<AppEnv> {
     return async (c, next) => {
         if (c.finalized || (c.req.method !== "GET" && c.req.method !== "HEAD")) {
@@ -198,7 +218,13 @@ export function createStaticCache(root: string): MiddlewareHandler<AppEnv> {
     };
 }
 
-/** The validator and index text come from the same open file. */
+/**
+ * The client index (`/`, `/index.html`, the client routes): `no-cache`, a weak size/mtime ETag,
+ * `Last-Modified`, and the same conditional 304 as `createStaticCache`, else the text with
+ * `globalThis.__NODE__ = true` injected after the `<head>` tag, which the client needs to mount. The
+ * validator and index text come from the same open file, and an index without `<head>` throws before
+ * any conditional answer, so the unflagged file is never served.
+ */
 export async function serveCachedIndex(c: Context<AppEnv>, indexPath: string) {
     const handle = await fs.open(indexPath, "r");
     try {

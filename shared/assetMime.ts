@@ -35,7 +35,11 @@ export function assetMimeType(extension: string): string {
     return Object.hasOwn(ASSET_MIME_TYPES, ext) ? ASSET_MIME_TYPES[ext] : "application/octet-stream";
 }
 
-/** Active document and script types are downloaded; SVG stays inline under the asset route's CSP. */
+/**
+ * Active document and script types are downloaded: the asset route (`server/src/routes/storage.ts`)
+ * answers them as an `application/octet-stream` attachment. SVG stays inline under the asset route's
+ * CSP.
+ */
 export function isActiveAssetExtension(extension: string): boolean {
     return ACTIVE_ASSET_EXTENSIONS.has(extension.toLowerCase());
 }

@@ -24,18 +24,18 @@
 
 The server is TypeScript run directly by Node's type stripping: `pnpm run server` runs `node server/src/main.ts` on Node
 `>=24`; there is no server build step. `server/tsconfig.json` strictly checks the server and its imports from `shared/`.
-Routes, data, HTTP helpers, jobs, prompt processing, and tests live under `server/src/`.
+Routes, data, HTTP helpers, jobs, prompt processing, and tests live under `server/src/`. A module's contract is its doc
+comments; an entry names its path, role, and identifiers.
 
 ### Entrypoints and configuration
 
-- `main.ts` starts HTTP or HTTPS, installs WebSocket upgrades, starts background tasks, and drains shutdown. It passes
-  `TRUST_PROXY` and sets a four-hour `REQUEST_TIMEOUT_MS`.
-- `listenConfig.ts` parses bind, storage, and development-auth settings: `PORT` (default 6001), `RISU_HOST`,
-  `RISU_SAVE_DIR`, and `RISU_AGENT_DEV_AUTH_BYPASS`. Unset `RISU_HOST` listens on every interface, and the auth bypass
-  accepts `TRUE`/`1` only with a numeric loopback address (`127.0.0.0/8` or `::1`, without brackets).
-  `parsePasswordSeed` trims and validates a 64-character SHA-256 hex string.
-- `app.ts` assembles `createServerContext`, route registration, state, and lifecycle. It and its route factories consume
-  the variables below; a value one of them cannot parse stops the start, with the variable's name.
+- `server/src/main.ts` the process entry (HTTP or HTTPS, upgrades, shutdown): `startServer`, `REQUEST_TIMEOUT_MS`,
+  `SHUTDOWN_GRACE_MS`, `TRUST_PROXY`.
+- `server/src/listenConfig.ts` bind, storage, and development-auth settings: `readListenConfig`, `ListenConfig` (`PORT`,
+  `RISU_HOST`, `RISU_SAVE_DIR`, `RISU_AGENT_DEV_AUTH_BYPASS`), `isLoopbackHost`, `parsePasswordSeed`.
+- `server/src/app.ts` the assembly of state, routes, and lifecycle: `createServerContext`, `RouteLimits`,
+  `attachWebSocket`, `startBackgroundTasks`, `beginShutdown`, `dispose`. It and its route factories consume the
+  variables below; a value one of them cannot parse stops the start, with the variable's name.
 - `RISU_PASSWORD_SHA256`; `RISU_MAX_IMPORT_BYTES` ([backup routes](server-resources.md#backup-routes));
   `RISU_MAX_UPSTREAM_DB_BYTES` ([upstream backups](server-resources.md#upstream-backups));
   `RISU_UPSTREAM_IMPORT_HEAP_MB`, `RISU_UPSTREAM_EXPORT_HEAP_MB`, and `RISU_RESTORE_HEAP_MB`
@@ -45,75 +45,37 @@ Routes, data, HTTP helpers, jobs, prompt processing, and tests live under `serve
 
 ### Services and helpers
 
-- `push/pushService.ts` handles Web Push. Each completion goes to every subscription with `TTL` 1 h, `urgency: "high"`,
-  and the chat's tag hash as the RFC 8030 `topic`, so a push service replaces an undelivered completion only with a
-  later one of the same chat; a tag without a valid hash gets no topic. Each outcome, with the job id the runner passes
-  beside the notification, is a content-free `push` diagnostic event ([diagnostics](diagnostics.md)).
-- `data/orderedWriter.ts` `createOrderedWriter` schedules the auxiliary files' writes for the auth store, the journal,
-  and the push service: operations in FIFO order per key, at most four at once across keys, keys served in turn, one
-  instance per context. It knows nothing about files, and each consumer keeps its own file code.
-- `data/durableWrite.ts` `writeFileDurable` (`writeFileDurableSync` at creation) writes the auth password and known-key
-  files and the push subscriptions through a flushed temporary file renamed into place.
-- `http/{body,rateLimit,clientIp,compressedJson,staticCache,assetVerification,assetThumbnails}.ts` cover request limits,
-  client IPs, caching, and asset delivery; `compressedJson` answers the
-  [resource reads](server-resources.md#resource-routes). Thumbnail cache publication, removal, and stale-entry sweeps
-  synchronize per key directory. See [network and jobs](network-jobs.md) for the tab's transport and fetch policy.
+- `server/src/push/pushService.ts` Web Push for completions: `createPushService`, `completionTopic`, `PushService`,
+  `MAX_PUSH_SUBSCRIPTIONS`; its outcomes are content-free `push` events ([diagnostics](diagnostics.md)).
+- `server/src/data/orderedWriter.ts` the auxiliary-write scheduler: `createOrderedWriter`, one per context, shared by
+  the auth store, the diagnostics journal, and the push service.
+- `server/src/data/durableWrite.ts` flushed temporary file renamed into place, for the auth files and the push
+  subscriptions: `writeFileDurable`, `writeFileDurableSync`, `mkdirDurable`, `mkdirDurableSync`, `syncDir`.
+- `server/src/http/body.ts` JSON bodies: `readJsonBody`. `server/src/http/rateLimit.ts` the buckets:
+  `createRateLimiter`, `rateLimitKey`. `server/src/http/clientIp.ts` client IPs: `parseTrustProxyEnv`, `compileTrust`,
+  `getClientIp`.
+- `server/src/http/compressedJson.ts` compression of the [resource reads](server-resources.md#resource-routes):
+  `compressedJson`. `server/src/http/staticCache.ts` the client and `dist/` caching: `createStaticCache`,
+  `serveCachedIndex`, `STATIC_COMPRESSIBLE_EXTENSIONS`.
+- `server/src/http/assetVerification.ts` content-name verification: `assetVerification`, `contentNameHash`,
+  `verifyFiles`, `holdsVerifiedAsset`. `server/src/http/assetThumbnails.ts` the thumbnail service and cache:
+  `createThumbnailService`, `THUMBNAIL_VERSION`, `ThumbnailRequest`, `ENTRY_NAME`.
 - `diagnostics/` owns request history, diagnostic journals, reports, and support shares ([diagnostics](diagnostics.md)).
 - Packaging: `server/ssl/` generates local certificates; `Dockerfile`, `.dockerignore`, `server.sh`, and `server.bat`
   define deployment and launch behavior.
 
 ### Routes
 
-`app.ts` is the registration map of the server's HTTP and WebSocket surface. Check it and the named route module before
-changing a path or its admission policy. Routing is non-strict (a trailing slash matches). Registration order in
-`createServerContext`:
+`server/src/app.ts` `createServerContext` is the registration map of the server's HTTP and WebSocket surface: check it
+and the named route module before changing a path or its admission policy. In registration order:
 
-1. `onError`: `HTTPException` responses pass through; maintenance and a closed resource store answer 503 with
-   `Retry-After`; other errors are a 500 `Internal Server Error`. Shutdown admission middleware then runs before body
-   parsing:
-   - It tracks resource handlers (`/api/resources`, `/api/llm-secrets`, `/api/chats/search`, `/api/memory/tasks`,
-     `/api/memory/structured`, and `/api/chat-checkpoints`) and the auth and push writes (`POST /api/login`,
-     `POST /api/set_password`, `PUT` and `DELETE /api/push/subscription`).
-   - During shutdown it refuses new resource, message search, credential, backup, module import, CharX import, Realm
-     import, token, request history, and diagnostics requests and those auth and push writes with 503, and adds
-     `Connection: close` to every response.
-   - Every request history, diagnostics, memory task, token, and chat checkpoint answer gets `Cache-Control: no-store`
-     there, so a 429 or 413 carries it too.
-2. `limitedBody` is the 100 MiB global cap (413 `{error:"Request body too large"}`); disk-spooled imports and routes
-   with their own caps skip it.
-   - Disk-spooled: backup import, upstream backup prepare, module import, and CharX import.
-   - Per-route cap owners: [resources](server-resources.md#files), [generation](server-generation.md#files),
-     [storage](#storage-routes), [auth](#auth-routes), [push](#push-routes), and
-     [diagnostics](#request-history-and-diagnostics-routes).
-   - Login, crypto, and password setup read before authentication and cap bodies at 16 KiB. The shared helper is
-     `server/src/routes/limitedBody.ts`; chat checkpoints keep a separate `hono/body-limit` wrapper after auth.
-   - Over-cap requests answer 413; a stream failure under the cap answers 400, never the app's 500
-     ([Request bodies](#request-bodies)).
-3. `GET /` and `GET /index.html` (no auth, no limiter; one shared handler, with `no-cache`, a weak size/mtime ETag,
-   `Last-Modified`, and conditional 304 responses), then the same handler for the client's screen routes: a `GET *`
-   handler serves it when `isClientRoutePath` (`shared/routes.ts`: first segment `chat`, `playground`, `realm`,
-   `characters`, or `settings`) matches and passes every other path on ([URL routes](app-shell.md)).
-   - It serves `dist/index.html` with `globalThis.__NODE__ = true` injected after the `<head>` tag. The same open handle
-     supplies stat and text, and a missing `<head>` still throws before a conditional answer.
-4. `createStaticCache` (`server/src/http/staticCache.ts`) checks regular files before `serveStatic` handles every other
-   GET/HEAD of `dist/*` (no auth, no limiter):
-   - `/assets/*` gets `public, max-age=31536000, immutable`; all other files (including `sw.js` and `manifest.json`) get
-     `no-cache`.
-   - For `.js`, `.mjs`, `.css`, `.json`, `.svg`, and `.wasm`, it negotiates fresh regular `.br` and `.gz` siblings using
-     `Accept-Encoding` qualities (case-insensitive tokens, explicit exclusions, and wildcard; ties prefer Brotli, gzip,
-     then identity). A missing header uses identity; missing, stale, or unacceptable siblings fall back to another
-     acceptable representation or identity.
-   - Compressed responses stream the sibling with its own length, `Content-Encoding`, the original file's MIME type, and
-     a weak size/mtime ETag that includes the encoding. Each representation has its own ETag and `Last-Modified`; all
-     compressible-file responses, including identity and 304, carry `Vary: Accept-Encoding`.
-   - Matching `If-None-Match` for the selected representation (weak comparison; `*` only as the whole field) answers a
-     bodyless 304; only when that header is absent, a parseable `If-Modified-Since` at or after mtime floored to whole
-     seconds also answers 304.
-   - Requests carrying `Range` or `If-Range` always use identity through `serveStatic`. `If-Range` permits Range only
-     with a matching strong ETag or the exact `Last-Modified` date; weak tags, stale validators, and invalid values
-     discard Range and serve the full 200.
-   - HTML, including the injected index path, is never negotiated. Missing or rejected paths pass on without cache
-     headers.
+1. `app.onError`, then shutdown admission before body parsing (what it tracks, refuses, and marks `no-store`: its
+   comments).
+2. `limitedBody`, the 100 MiB global cap, which the `ownLimit` routes skip ([Request bodies](#request-bodies)).
+3. `GET /`, `GET /index.html`, and every `isClientRoutePath` path (`shared/routes.ts`, [URL routes](app-shell.md)):
+   `serveCachedIndex`, with no auth and no limiter.
+4. `createStaticCache`, then `serveStatic`, for every other GET/HEAD of `dist/*`, with no auth and no limiter. HTML (the
+   injected index included) and requests carrying `Range` or `If-Range` are never negotiated: they get identity.
 5. The route families, each documented in one place:
    - This guide: [proxy](#proxy-routes), [push](#push-routes),
      [request history and diagnostics](#request-history-and-diagnostics-routes), [auth](#auth-routes), and
@@ -137,136 +99,57 @@ changing a path or its admission policy. Routing is non-strict (a trailing slash
 
 ### Proxy routes
 
-`routes/proxy.ts`, all on the authenticated limiter.
+`server/src/routes/proxy.ts` `registerProxyRoutes`, all on the authenticated limiter.
 
-- `GET`/`POST /proxy`, `/proxy2`: `checkProxyAuth` (stored password in `risu-auth`, or a registered ES256 JWT).
-  Arbitrary reverse proxy (`risu-url`, `risu-header`); with `risu-aux-op`, JWT only and one auxiliary operation
-  (`server/src/llm/auxOps.ts`, [LLM requests](llm-requests.md)).
-- `GET /hub-proxy/*`: no auth. Proxies to `https://sv.risuai.xyz` only (path and query after `/hub-proxy`); one redirect
-  within that origin is followed, any other redirect is answered to the browser.
+- `GET`/`POST /proxy`, `/proxy2`: `checkProxyAuth` (the stored password in `risu-auth`, or a registered ES256 JWT); with
+  `risu-aux-op`, JWT only (`server/src/llm/auxOps.ts`, [LLM requests](llm-requests.md)).
+- `GET /hub-proxy/*`: no auth; `https://sv.risuai.xyz` only.
 
 ### Push routes
 
-`routes/push.ts`: JWT, authenticated limiter, no epoch.
+`server/src/routes/push.ts` `registerPushRoutes`: JWT, authenticated limiter, no epoch; the statuses are in its comment,
+the refresh interval is `PUSH_REGISTRATION_REFRESH_MS` (`shared/notifications.ts`).
 
-- `GET /api/push/key`: `{ publicKey }`: the VAPID public key, null while push is off on the server.
-- `PUT /api/push/subscription`: body `{ subscription }` (`PushSubscription.toJSON()`, 16 KiB cap): 204; an unchanged
-  healthy registration refreshed within 24 h answers without writing; 400 for an invalid one or an endpoint outside the
-  allowed push services; 503 while push is off; 500 when the file could not be written.
-- `DELETE /api/push/subscription`: body `{ endpoint }` (16 KiB cap): 204, also when it was not registered; 500 when the
-  file could not be written.
+- `GET /api/push/key`; `PUT` and `DELETE /api/push/subscription`, with 16 KiB bodies read after authentication.
 
 ### Request history and diagnostics routes
 
-JWT, authenticated limiter, `no-store`; the [history, reports, and support-share contract](diagnostics.md#files) belongs
-to diagnostics. `PUT /api/request-history/share` caps its body at 4 KiB and `POST /api/diagnostics/report` at 1 MiB,
-after authentication.
-
-- `GET /api/request-history?cursor&limit&…`, `GET /api/request-history/:id`, `DELETE /api/request-history`.
-- `PUT /api/request-history/share`, `GET /api/request-history/shares`.
-- `GET /api/diagnostics`, `POST /api/diagnostics/report`.
+`/api/request-history*` and `/api/diagnostics*` (`registerRequestHistoryRoutes`, `registerDiagnosticsRoutes`): JWT,
+authenticated limiter, `no-store`, bodies capped after authentication (`PUT /api/request-history/share` 4 KiB,
+`POST /api/diagnostics/report` 1 MiB). The [routes and their contract](diagnostics.md#files) belong to diagnostics.
 
 ### Auth routes
 
-`routes/auth.ts`.
+`server/src/routes/auth.ts` `createAuthStore` (`registerRoutes`, `verifyJwt`, `checkAuth`); the bodies are capped at
+`MAX_AUTH_BODY_BYTES` and read before any authentication.
 
-- `GET /api/test_auth`: no auth, auth limiter. Returns `unset`, `incorrect`, or `success`.
-- `POST /api/login`: password digest, login limiter. Registers a public-key hash.
-- `POST /api/crypto`: **no auth**, auth limiter. SHA-256 of `body.data` (text/plain).
-- `POST /api/set_password`: **no auth**, only works while unset; login limiter. First-run password setup.
+- `GET /api/test_auth`: no auth, auth limiter. `POST /api/login`: password digest, login limiter.
+- `POST /api/crypto`: **no auth**, auth limiter. `POST /api/set_password`: **no auth**, only while unset; login limiter.
 
 ### Storage routes
 
-`routes/storage.ts`: `checkAuth` (JWT), storage limiter.
+`server/src/routes/storage.ts` `registerStorageRoutes`: `checkAuth` (JWT), storage limiter, hex UTF-8 logical keys
+(`decodeKeyHeader`, `resolveStorageKey`); each route's contract is the comment above it.
 
-- `GET /api/read`, `/api/remove`, `/api/list`: storage. The `file-path` header is the hex UTF-8 key; `remove` takes
-  `$$`-joined hex keys and validates every segment before deleting; no client calls it.
-- `GET`/`HEAD /api/asset/*`: stored asset bytes; the path suffix is the hex UTF-8 key; extension-based MIME, single byte
-  range (206/416), conditional ETag (304), no body for HEAD; 401 for a missing or rejected JWT, 404 for a missing or
-  unsupported key. `?w=256` or `?w=512` selects the asset's WebP thumbnail, or a 307 to the original; any other, empty,
-  or repeated `w` is 400.
-- `POST /api/write`: storage write, raw body bytes.
-- `POST /api/assets/write`: batch write (`shared/assetBatch.ts`): raw body of archive-framed records named by logical
-  key, each staged, then renamed into place under the gate (overwrites); `{ success: true, written }`; 400
-  `Invaild Path` + `index` or `Invalid asset batch`, 503, 500, each after the body is read.
-- `POST /api/assets/read`: batch read: body `{ keys }` (1-2000); a chunked `no-store` octet stream of one record per
-  key, in order, duplicates kept (zero-length for a missing file, symlink, non-regular file, or key with no storage
-  location); 400.
-- `POST /api/assets/missing`: `checkAuth` before body read. Verified presence: body `{ names }` (1-512, 64 KiB cap);
-  `{ missing }` holds each unverified name once in first-asked order; non-canonical, unresolvable, absent, empty,
-  corrupt, or over-budget files count as missing; `no-store`; 400/413.
-
-### Asset responses
-
-- `/api/asset/*` answers with
-  `Content-Security-Policy: sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'`,
-  `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy: same-origin`, `Accept-Ranges: bytes`, and
-  `Content-Disposition: inline`, including errors and 304s.
-- Byte responses and 304s use the extension's MIME from `shared/assetMime.ts`, including `flac` as `audio/flac` and
-  `mkv` as `video/x-matroska` (unknown types: `application/octet-stream`); `html`, `htm`, `xhtml`, `xml`, `js`, and
-  `mjs` use `attachment` and `application/octet-stream`, while SVG stays inline under the CSP sandbox.
-- Successful responses and 304s are `Cache-Control: private, no-cache` with a weak ETag unless the content name is
-  verified against the stat of the handle supplying the bytes. Verified names use
-  `Cache-Control: private, max-age=31536000, immutable` and the strong ETag `"sha256-<hex>"` on 200/206 responses.
-  Errors remain `no-store`.
-- A verified name accepts either its strong tag or its current weak stat tag in `If-None-Match`; a 304 carries the tag
-  that matched and the immutable Cache-Control, so revalidating an earlier weak-tagged copy upgrades its caching policy.
-  Comparison is weak for both tag forms, lists, whitespace, and a lone `*`; a strong-tag match takes precedence when
-  both tags match. The weak ETag uses size, nanosecond mtime, and inode; a matching `If-None-Match` takes precedence
-  over Range.
-- A single satisfiable `bytes=` range gets 206 with `Content-Range` and its length; an unsatisfiable range gets 416 with
-  `Content-Range: bytes */<size>`. HEAD ignores Range and returns the full length (or 304); empty files ignore Range and
-  return an empty 200.
-
-### Missing asset check
-
-`POST /api/assets/missing` awaits `assetVerification.verifyFiles`: at most four asynchronous streaming hashes at once
-and 256 MiB of reads per request, with budget reservations in name order. It opens regular, non-empty files without
-following symlinks and reuses verified or mismatched results only against a fresh handle stat. Unknown files larger than
-the remaining budget count as missing. Each hash reads at most its reserved size; changed handle stats or pathname
-identity (size, nanosecond mtime, inode, device) make the file missing. Writer and forget generations prevent an older
-check from overwriting a newer verification or reporting it present. Only a digest matching the canonical name is
-present; corrupt files are missing so uploads repair them. Aborting stops new hashes. The read-only check remains
-available during maintenance.
-
-### Thumbnail variant
-
-`routes/storage.ts` admits the sizes (`widths`, `thumbnailSize`), and `http/assetThumbnails.ts` repeats them in
-`ThumbnailRequest.size` and the cache entry pattern `ENTRY_NAME`. The variant (`?w=256|512`, the short side's size
-class, not the output width) keeps the route's limiter, authentication before any file access, security headers, and the
-open-once rule: the route opens and stats the source once and hands that handle and stat to the service, which never
-reopens the source path.
-
-- A WebP answer is `image/webp`, `inline`, served from the cache file with the same Range, HEAD, and 304 rules as the
-  original.
-- Its tags carry the size and transform version so they never equal the original's, another size's, or another
-  version's: a verified source gets `"sha256-<hex>-w<size>-v<THUMBNAIL_VERSION>"` with the immutable Cache-Control and
-  also accepts its current weak tag (a 304 then upgrades that copy); any other source gets
-  `W/"<size>-<mtimeNs>-<ino>-<dev>-w<size>-v<THUMBNAIL_VERSION>"` with `private, no-cache`.
-- A concrete variant-tag match answers 304 before the service runs, with no decode; a lone `*` goes through the service
-  and applies to a WebP outcome only.
-- The answer is `307 Temporary Redirect` to the relative, query-free `/api/asset/<hex>` with
-  `x-risu-thumbnail: original`, no ETag, and the original's Cache-Control (immutable when verified, else
-  `private, no-cache`) when the original should be shown: the short side is at most the size, an animated GIF or WebP
-  (`pages > 1`) or a PNG with `acTL` before its first `IDAT`, a source that is not a PNG, JPEG, GIF, WebP, or AVIF or
-  that sharp reports as an unsupported format, an empty source, or one over 32 MiB or 40 megapixels. Preconditions are
-  ignored, so it is never a 304.
-- The encoder failing to load, a full generation queue, or any other service error (I/O, memory, encoder) answers the
-  same redirect with `x-risu-thumbnail: unavailable`, `busy`, or `error` and `Cache-Control: no-store` (`error` also
-  logs a line); a thumbnail failure is never a 5xx. The browser and the service worker follow the redirect to the
-  original, so a page needs no status handling.
+- `GET /api/read`, `GET /api/list`, `POST /api/write`, and `GET /api/remove` (no client calls it).
+- `GET`/`HEAD /api/asset/*`: `assetHeaders`, `serveAssetFile`, `shared/assetMime.ts` (`assetMimeType`,
+  `isActiveAssetExtension`), `assetVerification`; `?w=256|512` is the thumbnail variant (`createThumbnailService`). The
+  cache headers, ETags, and the variant's `307` reasons (`x-risu-thumbnail`: `original`, `unavailable`, `busy`, `error`;
+  `thumbnailRedirect`, `thumbnailFailure`) are the comment above the route.
+- `POST /api/assets/write` and `/api/assets/read` (`shared/assetBatch.ts` framing); `POST /api/assets/missing`
+  (`ASSET_MISSING_PATH`, `checkAuth` before the body, `assetVerification.verifyFiles`).
+- The thumbnail sizes are admitted here (`widths`, `thumbnailSize`) and repeated in `ThumbnailRequest.size` and
+  `ENTRY_NAME`: change them together. The browser and the service worker follow the variant's redirect to the original,
+  so a page needs no status handling.
 
 ## Flows
 
 ### Boot
 
-1. `pnpm run server` starts `main.ts`; `readListenConfig` resolves the port, host, save directory, and loopback-only
-   development auth bypass.
-2. `createServerContext` creates the save directory and server state, then `serve()` listens with HTTPS when
-   `server/ssl/certificate/server.key` and `server.crt` exist. The context attaches WebSocket handlers and starts
-   snapshot, diagnostics, and job background tasks.
-3. Shutdown stops admissions and timers, drains HTTP for up to eight seconds, closes remaining connections, then awaits
-   `dispose()` before exiting. What it does to a restore or an import is in
+1. `server/src/main.ts` `startServer`: `readListenConfig`, `createServerContext` (save directory by `mkdirDurableSync`,
+   state, routes), `serve()`, `attachWebSocket`, `startBackgroundTasks` (`generationJobs.startGc`, `snapshots.start`,
+   `diagnostics.start`, the thumbnail sweep).
+2. SIGINT or SIGTERM: `beginShutdown`, the HTTP drain (`SHUTDOWN_GRACE_MS`), `dispose()`; for a restore or an import see
    [shutdown during a restore](server-resources.md#shutdown-during-a-restore).
 
 `__NODE__` in the flagged `index.html` lets the client mount only when this server is present. Client boot, auth, and
@@ -275,48 +158,41 @@ the store runs the [normalization pass](server-resources.md#store-open-and-norma
 
 ### Login flow
 
-1. The tab stores an ES256 key pair in IndexedDB and calls `/api/test_auth`. On first setup it posts the password digest
-   to `/api/set_password`, then logs in; otherwise it calls `/api/login`. The server registers the public-key hash and
-   returns a short-lived JWT.
-2. Later HTTP and WebSocket requests carry that JWT.
-3. JWT input failures answer 400; malformed tokens and token parse/crypto exceptions use
-   `{ error: "Invalid Signature" }`. The asset route still rewrites auth failures to 401. Token acceptance rules are
-   shared with WebSocket authentication.
+1. The tab keeps an ES256 key pair in IndexedDB and asks `/api/test_auth`. On first setup it posts the password digest
+   to `/api/set_password`, then logs in; with an unknown key it calls `/api/login`, which registers the public-key hash
+   and answers `{ status: "success" }`, with no token.
+2. Every HTTP and WebSocket request carries a JWT the tab signs itself (`createAuth`, `src/ts/storage/serverAuth.ts`,
+   five minutes). A failed check answers 400 (`failureBodies`), 401 on the asset route; sockets share the rule
+   (`isAuthorizedToken`).
 
 ### Request bodies
 
-Request bodies use `routes/limitedBody.ts` for both the global cap and route-specific caps. A new self-capping route is
-added to `ownLimit` in `app.ts`, the condition that skips the global cap. The limiter counts and does not buffer: a
-declared `Content-Length` over the cap is an immediate 413 with nothing read, and any other body reaches the route at
-once as a demand-driven stream that reads its source only when the route reads. A route that answers before reading (a
-failed auth check) therefore costs no body. After the route has run the limiter assigns `c.res` from what it recorded:
-413 past the cap (overflow wins), otherwise 400 `{ error: "Invalid JSON body" }` (or the route's configured read error)
-when the stream failed under the cap, whatever the route answered or threw meanwhile, `Cache-Control` and `RateLimit-*`
-kept and the route's other headers dropped. With neither fact the route's own answer stands, an error included. A
-route's read fails with `RequestBodyError`, an `HTTPException`, so `app.onError` logs nothing for it.
+`server/src/routes/limitedBody.ts` `limitedBody` (`replaceAnswer`, `RequestBodyError`) applies the global cap
+(`MAX_BODY_BYTES`, 100 MiB; `RouteLimits.bodyBytes` in tests) and the route caps. A new self-capping route wraps itself
+in its own `limitedBody(<cap>)`, as `server/src/routes/auth.ts` and `server/src/routes/push.ts` do, and is added to
+`ownLimit` in `server/src/app.ts` (and the cap list in the comment above it), which skips the global cap. Cap owners:
+[resources](server-resources.md#files), [generation](server-generation.md#files), [storage](#storage-routes),
+[auth](#auth-routes), [push](#push-routes), and [diagnostics](#request-history-and-diagnostics-routes); chat checkpoints
+keep a separate `hono/body-limit` wrapper after auth.
 
-Three consequences follow. A route that never reads its body (the snapshot restore) refuses an over-cap one only by its
-declared length; the body is discarded with the connection. A route must finish reading before it exposes a streamed
-response, because an overflow found later cannot become a 413; every route under a cap does. And the source is not read
-past the overflow: a client still sending gets the 413 and the connection closes 500 ms later (`@hono/node-server`'s
-cleanup stalls behind the abandoned reader), except on `POST /api/assets/write`, which drains first.
-
-The asset batch publishes each completed record by rename while the upload is still being read, so its failures are
-partial by design: at the first failure the staged file is removed, the rest of the body is read and dropped, and
-records renamed before it stay. An over-cap chunked batch is such a failure: its earlier records may be published when
-it answers 413 (a declared length over the cap publishes nothing), and that is the same outcome as an upload that fails
-midway.
+- A route that never reads its body (the snapshot restore) refuses an over-cap one only by its declared length.
+- A route must finish reading before it exposes a streamed response, as every capped route does: a later overflow cannot
+  become a 413.
+- The source is not read past the overflow: a client still sending gets the 413 and the connection closes 500 ms later
+  (`@hono/node-server`'s cleanup stalls behind the abandoned reader), except on `POST /api/assets/write`, which drains
+  first. That batch publishes each record as it completes, so an over-cap chunked one keeps the records renamed before
+  the overflow, as any batch failing midway does.
 
 ### Proxying
 
-- `/proxy` and `/proxy2` forward arbitrary upstream requests. They preserve raw request bodies, strip hop-by-hop and
-  `risu-auth` headers, and keep the timeout active through response streaming; a client disconnect aborts the upstream
-  call.
-- `/hub-proxy/*` targets the configured Realm hub only and does not forward `risu-auth`.
-- Server local-network streaming runs as a generation job over WebSocket. Its target must pass the server's
-  local-network URL policy; job deletion, deadline, garbage collection, shutdown, or client disconnect aborts the
-  upstream stream. See [LLM requests](llm-requests.md) for request dispatch and [plugins](plugin-sandbox.md) for plugin
-  providers.
+- `/proxy` and `/proxy2` relay a tab's request (`fetchNative`, [network and jobs](network-jobs.md)) to any target,
+  `/hub-proxy/*` only to the Realm hub, never with `risu-auth`; header, body, timeout, and abort rules are the comments
+  in `server/src/routes/proxy.ts`.
+- Server local-network streaming bypasses them: with `localNetworkMode` on and a local URL,
+  `getLocalNetworkRequestOptions` (`server/src/llm/openAI/shared.ts`) selects the `local_network` route and its timeout,
+  and rejects nothing. The stream runs inside a generation job and ends with it; the job's abort and owner-absence rules
+  belong to [server generation](server-generation.md#generation-channels). See [LLM requests](llm-requests.md) for
+  request dispatch and [plugins](plugin-sandbox.md) for plugin providers.
 
 ## State
 
@@ -469,7 +345,8 @@ store's and the jobs' parts are in [store state](server-resources.md#process-mem
   - Client: `src/ts/storage/serverAuth.ts` (`createAuth`, `checkAuth`, `digestPassword`).
   - Server: `routes/auth.ts` (`verifyJwt`, the `/api/login` route).
   - Verify first run, restart, token expiry, and unknown keys.
-- Change proxy policy: server `sanitizeTargetUrl`, client `localNetwork.ts` + `fetchNative`.
+- Change proxy policy: server `server/src/routes/proxy.ts` `registerProxyRoutes`, client
+  `src/ts/network/localNetwork.ts` + `fetchNative`.
 - Change packaging: `Dockerfile`, the README Docker steps, and `package.json` `server` together. Any new root folder the
   server imports at runtime (like `shared/`) needs a `COPY` in the `runtime` stage.
 
@@ -531,6 +408,6 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
   `acTL`.
 - Static serving precedes the asset route. A file emitted under `dist/api/asset/` would be served before asset
   authentication and headers; the current build emits no `api/` directory.
-- `/proxy` and `/proxy2` can reach arbitrary targets; the local-network restriction applies to server streaming jobs.
+- `/proxy` and `/proxy2` can reach arbitrary targets: no address or local-network restriction applies to them.
 - Reverse proxies must preserve encoded path segments: decoding `%2F` can split a resource id containing a slash.
   Deployment behavior remains unverified.

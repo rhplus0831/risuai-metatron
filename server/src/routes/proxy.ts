@@ -132,6 +132,12 @@ function filterHeaders(source: Headers, stripped: string[]): Headers {
     return headers;
 }
 
+/**
+ * The proxies, all on the authenticated limiter: `/proxy` and `/proxy2` (GET and POST,
+ * `checkProxyAuth`: the stored password digest or a registered JWT; JWT only with `risu-aux-op`)
+ * reach any target the tab names, with no address or local-network restriction; `/hub-proxy/*` (GET,
+ * no auth) reaches only `hubURL`.
+ */
 export function registerProxyRoutes(
     app: Hono<AppEnv>,
     arg: {

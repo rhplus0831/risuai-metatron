@@ -7,6 +7,15 @@ import { createServerContext } from "./app.ts";
 import { errorFields } from "./diagnostics/log.ts";
 import { readListenConfig } from "./listenConfig.ts";
 
+/**
+ * The process entry (`pnpm run server`): the working directory is the root (`dist/`, `save/`,
+ * `server/ssl/`). It listens with HTTPS when both `server/ssl/certificate/server.key` and
+ * `server.crt` can be read, else with HTTP (the read error is logged, never fatal), and hands
+ * `TRUST_PROXY` to `createServerContext` (`server/src/http/clientIp.ts` parses it). WebSocket
+ * upgrades and the background tasks (`attachWebSocket`, `startBackgroundTasks` in
+ * `server/src/app.ts`) start only after `serve()` is set up, and SIGINT or SIGTERM runs the
+ * shutdown below once.
+ */
 const rootDir = process.cwd();
 const SHUTDOWN_GRACE_MS = 8_000;
 /**

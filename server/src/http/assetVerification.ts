@@ -33,7 +33,11 @@ async function hashBoundedHandle(handle: FileHandle, size: number, signal?: Abor
     return hash.digest("hex");
 }
 
-/** Only canonical SHA-256 content names with an alphanumeric extension can become immutable. */
+/**
+ * Only canonical SHA-256 content names with an alphanumeric extension can become immutable on the
+ * asset route or count as present in `POST /api/assets/missing` (`server/src/routes/storage.ts`);
+ * null for every other key.
+ */
 export function contentNameHash(key: string): string | null {
     return /^assets\/(?:inlay_)?([0-9a-f]{64})\.[A-Za-z0-9]+$/.exec(key)?.[1] ?? null;
 }
@@ -120,7 +124,18 @@ export class AssetVerification {
         }
     }
 
-    /** Fresh-stat verification, reserving unknown files' read budgets in input order. */
+    /**
+     * Fresh-stat verification, reserving unknown files' read budgets in input order: the subset of
+     * `files` (as absolute paths) whose bytes hash to their `expectedHex` now. A file opens without
+     * following symlinks, and only a non-empty regular file can count. A recorded result, verified or
+     * mismatched, is reused only against the fresh handle's stat; any other file reserves its size,
+     * and one larger than the budget left is not hashed and does not count. At most `concurrency`
+     * hashes run at once, each reading at most its reservation. A file whose handle stat or path
+     * identity (size, nanosecond mtime, inode, device) changed by the end, or that a write or removal
+     * recorded or forgot meanwhile (its generation moved), does not count, so an older check never
+     * overwrites a newer verification or reports it present. An aborted `signal` starts no further
+     * hash and rejects once the running ones end.
+     */
     async verifyFiles(
         files: readonly { fullPath: string; expectedHex: string }[],
         options: AssetVerificationOptions = {},

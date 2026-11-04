@@ -154,8 +154,17 @@ async function sourceBytes({ handle, stat }: ThumbnailRequest["source"]): Promis
 
 /**
  * Lazily caches WebP thumbnails and deterministic original decisions by the supplied source stat.
- * Callers own source handles and keep them open until `get` settles. Cache maintenance shares a
- * per-key lock so an older generation cannot remove a newer generation's entries.
+ * Callers own source handles and keep them open until `get` settles; the bytes come from that handle,
+ * never from reopening the source path. Cache maintenance shares a per-key lock so an older generation
+ * cannot remove a newer generation's entries.
+ *
+ * `get` decides `original` (an `.orig` marker, cached like a WebP) for an empty source or one over
+ * `MAX_INPUT_BYTES`, one that is not a PNG, JPEG, GIF, WebP, or AVIF by its signature or that sharp
+ * reports as an unsupported format or over its pixel limit, one over `MAX_INPUT_PIXELS`, an animated
+ * one (`pages > 1`, or a PNG with `acTL` before its first `IDAT`), and one whose short side is at most
+ * the requested size. Otherwise the WebP's short side is that size. An encoder that fails to load is
+ * remembered, so every later generation rejects with `ThumbnailsUnavailable`; a full wait queue rejects
+ * with `ThumbnailBusy`. No failure writes a cache entry.
  */
 export function createThumbnailService(options: ThumbnailOptions & { savePath: string; assetsPath: string }) {
     const cachePath = path.join(options.savePath, "cache", "thumbnails");

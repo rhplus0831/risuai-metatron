@@ -19,6 +19,11 @@ const PASSWORD_KEY = "auth:password";
 
 type JwtFailure = "no_header" | "expired" | "unknown_key" | "unsupported_alg" | "invalid_signature";
 
+/**
+ * Every failed JWT check is a 400 with one of these errors; a malformed token and any parse or crypto
+ * exception in `verifyJwt` are `invalid_signature`. The asset route turns each into a 401
+ * (`server/src/routes/storage.ts`).
+ */
 const failureBodies: Record<JwtFailure, { status: 400; error: string; log: string }> = {
     no_header: { status: 400, error: "No auth header", log: "No auth header" },
     expired: { status: 400, error: "Token Expired", log: "Token expired" },
@@ -208,6 +213,10 @@ export function createAuthStore(
             return c.json({ status: "success" });
         });
 
+        // With the stored password digest, registers the tab's public key and answers
+        // `{ status: "success" }` once its hash is durable. It issues no token: the tab signs its own
+        // short-lived ES256 JWT over that key (`src/ts/storage/serverAuth.ts` `createAuth`), which
+        // `verifyJwt` checks against these hashes.
         app.post(LOGIN_PATH, limiters.login, limitBody, async (c) => {
             const parsed = await readJsonBody(c);
             if (!parsed.ok) {

@@ -48,7 +48,7 @@ export const PAREN_DEPTH_BUDGET = 2;
  * The most the guides and `STRUCTURE.md` may hold together. Lower it in the change that lowers the total, to
  * within 1,000 bytes of the new total; a change that needs it raised moves or deletes text instead.
  */
-export const TREE_BYTES_RATCHET = 1_056_000;
+export const TREE_BYTES_RATCHET = 1_045_500;
 
 export const GUIDE_DIR = "docs/structure";
 export const INDEX_DOC = "STRUCTURE.md";

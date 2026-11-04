@@ -245,7 +245,9 @@ export function createServerContext(options: {
     const trust = compileTrust(parseTrustProxyEnv(options.trustProxy));
     const clientIp = (c: Parameters<typeof getClientIp>[0]) => getClientIp(c, trust);
 
-    // The auxiliary files' writes (the auth, diagnostics, and push files) leave the serving thread here.
+    // The auxiliary files' writes (the auth, diagnostics, and push files) leave the serving thread here:
+    // one writer per context, shared by `createAuthStore`, the diagnostics journal, and
+    // `createPushService`.
     const writer = createOrderedWriter();
     const passwordSeed = parsePasswordSeed(options.passwordSeed ?? process.env.RISU_PASSWORD_SHA256);
     const auth = createAuthStore(savePath, { bypass: options.authBypass, passwordSeed, writer });
@@ -568,6 +570,7 @@ export function createServerContext(options: {
         keyOf: clientIp,
     });
 
+    // Non-strict routing: a path with a trailing slash matches its route.
     const app = new Hono<AppEnv>({ strict: false });
     let shuttingDown = false;
     let disposing: Promise<void> | undefined;
@@ -693,6 +696,10 @@ export function createServerContext(options: {
         const stateWrite =
             (c.req.method === "POST" && (fileImportRoute === LOGIN_PATH || fileImportRoute === SET_PASSWORD_PATH)) ||
             ((c.req.method === "PUT" || c.req.method === "DELETE") && fileImportRoute === PUSH_SUBSCRIPTION_PATH);
+        // During shutdown every answer closes its connection (`Connection: close`), and a request of the
+        // families above or a token route is refused with 503 `Retry-After: 5`, `no-store`. Every answer
+        // of the history, diagnostics, memory task, structured memory, token, and checkpoint routes is
+        // `no-store`, a 429 or 413 included.
         if (shuttingDown) {
             c.header("Connection", "close");
         }
@@ -1077,6 +1084,11 @@ export function createServerContext(options: {
             server.on("upgrade", listener);
             upgradeListeners.set(server, listener);
         },
+        /**
+         * Starts the job garbage collection, the snapshot timer, the diagnostics timers, and the
+         * thumbnail cache sweep (once per context, never after shutdown began; `beginShutdown` aborts
+         * it). `main.ts` calls it after `serve()`, so the sweep runs once the server listens.
+         */
         startBackgroundTasks: () => {
             generationJobs.startGc();
             snapshots.start();

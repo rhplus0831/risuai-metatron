@@ -331,7 +331,13 @@ function matchedAssetEtag(header: string | undefined, representation: AssetRepre
           : null;
 }
 
-/** Owns the handle until a byte stream takes it, including conditional, HEAD, and range answers. */
+/**
+ * Owns the handle until a byte stream takes it, including conditional, HEAD, and range answers. A
+ * matching `If-None-Match` answers 304 before Range is looked at. One satisfiable `bytes=` range is a
+ * 206 with `Content-Range` and its own length, an unsatisfiable one a 416 whose `Content-Range` names
+ * only the size, and a malformed or multiple range is ignored; HEAD, an empty file, and any request
+ * with `If-Range` ignore Range (HEAD answers the full length, an empty file an empty 200).
+ */
 async function serveAssetFile(
     c: Context<AppEnv>,
     handle: FileHandle,
@@ -405,6 +411,11 @@ function thumbnailFailure(c: Context<AppEnv>, hex: string, error: unknown): Resp
     return thumbnailRedirect(c, hex, "error");
 }
 
+/**
+ * Runs after the asset route on every answer it gives, errors, 304s, and thumbnail redirects included:
+ * the CSP sandbox, `nosniff`, same-origin CORP, `Accept-Ranges: bytes`, `inline` unless the route
+ * chose `attachment`, and `no-store` on an error or an answer without its own `Cache-Control`.
+ */
 const assetHeaders: MiddlewareHandler<AppEnv> = async (c, next) => {
     await next();
     c.header(
@@ -512,6 +523,27 @@ export function registerStorageRoutes(
         }
     });
 
+    // Stored asset bytes by URL (`<img src>`, media): the path suffix is the hex UTF-8 key. The JWT is
+    // checked before any file access (every failure a 401); a malformed key is a 400, a missing one,
+    // one with no storage location, or a missing or non-regular file a 404; the bytes, stat, and
+    // validators come from one open handle. The media type is the extension's (`shared/assetMime.ts`);
+    // an active type is an `application/octet-stream` attachment. An answer is `private, no-cache` with
+    // the weak tag `W/"<size>-<mtimeNs>-<ino>"` unless its canonical content name (`contentNameHash`)
+    // is verified against this handle's stat: then it is `private, max-age=31536000, immutable` with
+    // the strong `"sha256-<hex>"`, and the current weak tag still matches (the strong one first), so a
+    // 304 carries the tag a cached copy sent and upgrades a weak-tagged copy. An unverified content
+    // name queues a background verification for a later request.
+    //
+    // `?w=256` or `?w=512` (the short side's size class, not the output width; any other, empty, or
+    // repeated `w` is a 400) asks for the WebP thumbnail. Its tags add `-w<size>-v<THUMBNAIL_VERSION>`
+    // (the weak one also carries the device), so they never equal the original's, another size's, or
+    // another version's. A concrete tag match is a 304 before the service runs, with no decode; a lone
+    // `*` goes through it and applies to a WebP only. A WebP is served from its cache file with the
+    // original's Range, HEAD, and 304 rules. Otherwise the answer is a `307 Temporary Redirect` to the
+    // query-free `/api/asset/<hex>` without an ETag, `x-risu-thumbnail` naming why: `original` (the
+    // service's decision, with the original's Cache-Control and never a 304), or `unavailable` (the
+    // encoder failed to load), `busy` (a full queue), and `error` (any other failure, logged), each
+    // `no-store`. A thumbnail failure is never a 5xx.
     app.get("/api/asset/*", assetHeaders, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -631,7 +663,8 @@ export function registerStorageRoutes(
         if (!header) {
             return c.json({ error: "File path required" }, 400);
         }
-        // Batch form: each key hex-encoded on its own, joined with `$$` (not a hex character).
+        // Batch form: each key hex-encoded on its own, joined with `$$` (not a hex character). Every
+        // segment is resolved before anything is deleted, so a bad one is a 400 that removes nothing.
         const fullPaths = new Map<string, string>();
         for (const segment of header.split("$$")) {
             if (!segment) {
@@ -877,6 +910,15 @@ export function registerStorageRoutes(
         return c.json({ success: true, written });
     });
 
+    // Verified presence, for an upload that skips what the server holds: `{ names }` (1 to
+    // `MAX_ASSET_MISSING_NAMES`, a body capped at `MAX_ASSET_MISSING_BODY_BYTES` and read only after
+    // `checkAuth`) answers `{ missing }`, each name not proven present once, in the order first asked.
+    // Only a canonical content name (`contentNameHash`) with a storage location can be present, and
+    // only when `assetVerification.verifyFiles` proves its bytes now (four hashes at once and 256 MiB
+    // of reads per request by default): an absent, empty, symlinked, corrupt, changed, or over-budget
+    // file is missing, so the tab uploads it again and the upload repairs it. The success answer is
+    // `no-store` (a 400 or 413 comes before that header). Read-only, so it stays open during
+    // maintenance; a client that leaves stops the hashes not yet started.
     app.post(
         ASSET_MISSING_PATH,
         limiter,
@@ -929,7 +971,7 @@ export function registerStorageRoutes(
     // export reads a file (no symlinks, size and bytes from one handle). A key with no storage
     // location, a missing file, a symlink, or a non-regular file is a zero-length record, as `/api/read`
     // answers an empty 200. A file that cannot be read fails the stream. Like `/api/read`, it stays
-    // open under maintenance.
+    // open under maintenance. The answer is a `no-store` octet stream.
     app.post(ASSET_BATCH_READ_PATH, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
