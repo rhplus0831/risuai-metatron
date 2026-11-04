@@ -53,8 +53,10 @@ import type { EditStamp } from "./edits.ts";
  *   change set; a split leaves events on the old page, since nothing says which half they meant.
  */
 
+/** A writer warning as retained by the receipt. */
 export type Warning = MemoryReceipt["warnings"][number];
 
+/** One section change's hashes and history id on the writer receipt. */
 export type ReceiptSection = MemoryReceipt["pages"][number]["sections"][number];
 
 /** Names lore or a group ties to one subject. */
@@ -156,9 +158,9 @@ function namedBy(page: MemoryPage, names: ReadonlySet<string>): boolean {
 
 /**
  * The alias seeds of a chat's lore and a group's members, both stored data of any shape: an entry that is
- * no object, as a legacy array-shaped one is, gives no seed. A lore entry gives its name to match and its
- * comma-split keys as aliases; a regex or folder entry gives nothing, its keys being no names. A member's
- * `name` and `nickname` are one seed each way.
+ * no object, as a legacy array-shaped one is, gives no seed. A lore entry matches on its `comment`
+ * alone and gives its comma-split keys as aliases; a regex or folder entry gives nothing, its keys
+ * being no names. A member's `name` and `nickname` are one seed each way.
  */
 export function aliasSeeds(lore: readonly unknown[], members: readonly unknown[]): AliasSeed[] {
     const seeds: AliasSeed[] = [];
@@ -207,8 +209,9 @@ function castRow(page: MemoryPage): CastRow {
 
 /**
  * The pages a recording's prompt lists, at most `promptPages`, in this order: `always` pages, the scene's
- * participants, then pages whose title or alias appears in `messages`, so the cost of a recording does
- * not grow with the cast. The scene page itself is left out: it has its own slot.
+ * participants, then pages whose title or alias is a case-insensitive substring of `messages`. The
+ * scene page itself is left out: it has its own slot. Each row holds id, type, title, aliases, last
+ * state and section summaries; row count and text sizes are capped, so prompt cost stays bounded.
  */
 export function castSlice(pages: readonly MemoryPage[], messages: readonly Pick<Message, "data">[]): CastRow[] {
     const scene = pages.find(({ type }) => type === "scene");
@@ -260,10 +263,14 @@ export function newScenePage(id: string): MemoryPage {
  * - The scene page, and a create of that type, are refused `sceneOwned`.
  * - A create is matched first, by name key over the titles and aliases of existing pages of its type,
  *   with the names seeds tie to it. A match makes it a target of that page at any confidence, and two
- *   creates of one name are one page.
+ *   creates of one name are one page. A page already created in this plan also matches by title key
+ *   regardless of type. Matching an existing page adds no aliases: those are the person's tools.
  * - A create below `createConfidence` with no match is refused `lowConfidence`, which is how the receipt
- *   lists an unresolved mention. A weaker mention of a page another candidate makes is no such thing:
- *   the creates above the threshold go first.
+ *   lists an unresolved mention; no store holds unresolved mentions outside these receipt refusals.
+ *   A weaker mention of a page another candidate makes is no such thing: creates above the threshold
+ *   go first.
+ * - A new page starts `contextMode: "auto"` with no sections. Its identity and references survive even
+ *   when `server/src/prompt/memory/structured/patches.ts` gives it no text.
  * - `speaker` gets a character page: an existing one by name, else one code makes. That name is exact,
  *   so no threshold applies, and alone it makes no target.
  * - `repeated`: a repeat makes nothing, so every candidate is refused `repeatedEvent`, though a name that
@@ -457,7 +464,10 @@ export function addPage(changes: PageChanges, page: MemoryPage, stamp: PageStamp
  * text or a delete replaces a person's words, which highlights the entry whatever the rule says, and
  * stays on an identical upsert and on a disputed join, whose text keeps them. An identical upsert is
  * never highlighted, though it keeps its entry and its receipt row. The history keeps what was replaced,
- * marks included, with one entry, bounded by `pageHistoryEntries`.
+ * marks included, with one entry, bounded by `pageHistoryEntries`. Evidence keeps the newest
+ * `sectionEvidence` ids and sources. Under `all` every changed writer entry highlights; `important`
+ * needs a listed kind, and `change` also needs the higher of the event's and page's grade to reach
+ * `highlightChangeGrade`. No writer page-history entry has kind `retract`.
  */
 export function changeSection(
     changes: PageChanges,
@@ -554,9 +564,10 @@ function standingReverts({ history }: MemoryPage, heading: string): Set<string> 
  * Rewrites the scene from `draft`: each fixed section as a `change` with the old text in the history, so
  * the bounded history keeps old scenes, or a `create` the first time. A blank field, or one that says the
  * same, changes nothing. A locked section is skipped with a warning and the others go on, and so is a
- * field that says again what a person took back (`standingReverts`). A blank list of participants keeps
- * the attendance, which has no history entry: each event's participants record it. `scene` must be the
- * commit's latest version of the page.
+ * field that says again what a person took back (`standingReverts`), with `lockedSection` or
+ * `revertedScene` respectively. A different rewrite releases that heading's revert hold. A blank or
+ * fully unresolved list of participants keeps the attendance, which has no history entry: each event's
+ * participants record it. `scene` must be the commit's latest version of the page.
  */
 export function rewriteScene(
     changes: PageChanges,

@@ -60,11 +60,9 @@ import {
 import { eventVectorTexts } from "./retrieve.ts";
 import { windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./window.ts";
 
-export { writerPaused };
-
 /**
- * The Structured Memory writer: an analysis call per window, a patch call when a page candidate was
- * accepted, a compaction call for each section a patch left past its budget, and a `memory_runs` row
+ * The Structured Memory writer: an analysis call per window, a patch call when an accepted target can
+ * be shown, a compaction call for each section a patch left past its budget, and a `memory_runs` row
  * that shows how it went. The rows are the writer's whole state: a restart loses nothing, and pausing
  * needs no table of its own.
  *
@@ -84,30 +82,28 @@ export { writerPaused };
  *   window rebuilds, and a reverted scene stays reverted, the prompt is built anew.
  * - Snapshot: no analysis call is made before its exact input is stored in a `pending` row. An input too
  *   large for a record fails the run with no call.
- * - Failure: a provider failure, an empty or unexpected answer, or an answer `parseAnalysis` refuses
- *   ends the run `failed`, with a redacted error and no event. A `MemoryHostFailure` does too, and goes
- *   on to end the task. Any other throw, which is an ended task or an abort, leaves the row `pending`
- *   for the next run to close, and `commit`'s own check throws once the task ended: that is how output
- *   after the deadline is discarded.
+ * - Before the closing commit, a provider failure, an empty or unexpected answer, or an answer
+ *   `parseAnalysis` refuses ends the run `failed`, with a redacted error and no event. During a model
+ *   call a `MemoryHostFailure` attempts that failed write and propagates; other throws leave the row
+ *   `pending` for the next start. `commit` throws once the task ended, discarding late output.
  * - Patch call: it comes after admission, so it holds the admitted event and everything on a page traces
  *   to that event. It has no snapshot of its own: a retry replays the analysis, and the closing write
  *   keeps what it sent. It fails as the analysis call does, `patchFailed`, because an event committed
  *   without it would close the window for good. A page it may not touch is no such failure: that page is
  *   listed and the rest commit.
  * - Compaction: it comes before the commit, in the one run, so the event, its pages, and the recorded run
- *   stay one commit. A dry run of that commit names the sections, each gets one call, and every attempt of
- *   the commit works everything out again, so no id of the dry run reaches a record and a compaction
- *   the records no longer allow is dropped (`compact.ts`). A failed call, or an answer that is not kept,
- *   is a warning and the run goes on: a compaction is never why a window stays open. A `MemoryHostFailure`
- *   or any other throw goes as for the patch call. Its prompt and answer stay out of the run, whose record
- *   margin does not cover them.
+ *   stay one commit. A dry run names the sections, each gets one call, and every closing attempt
+ *   recomputes the changes with stable new-page and scene ids. A compaction no longer allowed by fresh
+ *   records is dropped. A returned call failure or an unusable answer is a warning and the run goes on;
+ *   throws go as for the patch call. Its prompt and answer stay out of the run, whose record margin
+ *   does not cover them.
  * - Success: one commit writes the event, its threads, its pages, and the recorded run. A refusal for
  *   the revision admits the answer again against fresh records, with no call, and a new page keeps its
  *   id, which the patches name.
  * - Receipt: a recorded or failed run carries one, and that commit copies it onto the window's assistant
  *   messages (`commitWindow`), where a person reads it. The writer itself never touches the chat.
  * - Warming: the committed event's summary and key lines and the sections it changed are embedded into
- *   the shared vector cache. A failure keeps the records.
+ *   the shared vector cache after the recorded commit. Returned errors and throws both keep that row.
  * - Store: a run reads and writes through the `memory` it is given, the live records or a rebuild's staged
  *   set (`createStructuredWriter`). So a rebuild's writer stands on what the run wrote, and a chat's run is
  *   defended at the writer's one live write (`commitWindow`).
@@ -125,6 +121,8 @@ export { writerPaused };
  *   were new, no compaction call is made and nothing is warmed, and every write still goes through the
  *   caller's `commit`, which keeps what a recording would have written and stores none of it.
  */
+
+export { writerPaused };
 
 type WriterArg = Parameters<StructuredMemoryWriter>[0];
 
@@ -703,7 +701,26 @@ function historicalAnalysis(analysis: MemoryAnalysisResult): MemoryAnalysisResul
     };
 }
 
-/** The production writer, over the records `store` holds. `now` times the runs. */
+/**
+ * The production writer, over the live or staged records `store` holds. `now` times the runs.
+ *
+ * Replay compares message ids and hashes, `settingsFingerprint`, prompt mode and the scene's current
+ * taken-back lines. The opening write stores the exact input and language, or an `inputTooLarge`
+ * failure without a call. Failed patch rows keep `analysis` and any built `patchInput` that fits;
+ * oversized custom patch input is cleared before the `inputTooLarge` failure.
+ *
+ * Closing writes use the opening revision first, then fresh records on `revisionConflict`, at most
+ * three attempts without more calls. Three conflicting closing attempts return `skipped revisionConflict`,
+ * leaving the opening row pending for the next start, as do `staleInput` and `windowChanged`.
+ * New page ids remain stable because the patches already name them.
+ *
+ * Compaction follows the dry commit only when patches were returned, with at most
+ * `patchesPerCall` targets. Returned call failures and unusable bodies are warnings; throws still
+ * propagate. Compaction prompts and answers are not stored. Each call's input is counted before it is
+ * sent; output tokens count nonempty successful answers, and duration ends before commit and warming.
+ * Cross-module admission and compaction use `server/src/prompt/memory/structured/analysis.ts`,
+ * `server/src/prompt/memory/structured/patches.ts` and `server/src/prompt/memory/structured/compact.ts`.
+ */
 export function createStructuredWriter(
     store: WriterStore,
     options: { now?: () => number } = {},

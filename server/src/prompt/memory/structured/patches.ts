@@ -178,7 +178,8 @@ function readPatch(value: unknown): MemoryPatch | undefined {
 /**
  * A patch call's answer as bounded patches (`answerJson`). An answer that is not JSON, or has no
  * `patches` list, cannot be used, and the error says which; a malformed element is left out and counted,
- * and one past `patchesPerCall` is not read.
+ * and one past `patchesPerCall` is not read. `upsert` supplies the whole new section body; `delete`
+ * removes it. Neither operation is a text diff.
  */
 export function parsePatches(text: string): ParsedPatches {
     const json = answerJson(text);
@@ -271,7 +272,23 @@ function emptiesPage(page: MemoryPage, edits: readonly SectionEdit[]): boolean {
 /**
  * Applies `patches` over `changes` and `pages`, a page's patches together, and answers what it lists.
  * `seen` is what the call showed: a page it does not hold, or one that is gone, is refused `unseenPage`.
- * Every refused patch is listed, each as `<page title>: <heading>`.
+ * Every refused patch is listed with its code as `kind` and `<page title>: <heading>` as `detail`:
+ *
+ * - `lockedSection`: touches a locked section.
+ * - `unseenSection`: an existing body was not shown or changed since, a section was added or deleted
+ *   since it was shown, or a delete names no section.
+ * - `duplicateHeading`: the group names the same heading twice.
+ * - `notASlot`: adds to a character outside `CHARACTER_SECTION_SLOTS`.
+ * - `tooManySections`: additions exceed `sectionsPerPage`, after this group's deletes make room.
+ * - `emptyBody`: an upsert is blank.
+ * - `sectionTooLong`: the answered or joined body exceeds `sectionBodyChars`; nothing is cut to fit.
+ *
+ * A refusal cancels its page's whole group; otherwise valid patches read `pageRefused`. A group that
+ * would empty a page that had sections reads `emptiesPage`. Other pages and the event still commit.
+ * An upsert of existing text is `change`, or `contradiction` for that conflict. At or above
+ * `contradictionConfidence` it replaces; below it, missing confidence counting as zero, it joins
+ * `<old>\n[disputed] <new>`, sets `disputed` and warns. A replacing upsert appends `(was: ...)` for
+ * nonblank `was` unless that exact line is already present. Neither conflict waits for approval.
  */
 export function applyPatches(arg: {
     changes: PageChanges;

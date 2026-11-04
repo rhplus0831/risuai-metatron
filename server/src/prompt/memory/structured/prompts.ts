@@ -279,7 +279,10 @@ function sceneSlot(scene: MemoryPage | null): string {
     return [...(shown === "" ? [] : [shown]), ...sceneTakenBackLines(scene)].join("\n") || NONE;
 }
 
-/** The slot values of one recording. */
+/**
+ * The slot values of one recording. Window text stays raw for quote verification, except that inlays
+ * show as `[Image]`; filling after ChatML and CBS parsing prevents that text becoming prompt syntax.
+ */
 export function analysisSlots(input: AnalysisInput): AnalysisSlots {
     return {
         format: FORMAT,

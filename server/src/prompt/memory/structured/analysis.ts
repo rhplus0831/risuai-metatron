@@ -412,7 +412,9 @@ export function answerJson(text: string): { ok: true; value: unknown } | { ok: f
  * A model's answer as a bounded draft (`answerJson`). The event may stand at the top level or under
  * `event`; page candidates and the scene are read from the top level either way, and both may be
  * missing, as `storyTime` may. A required field that is missing or mistyped fails the whole answer,
- * naming the field; a malformed list element is left out and counted.
+ * naming the field; a malformed list element is left out and counted as `malformed`, and entries past
+ * a list's accepted-element cap as `capped`, once per field. Strings clamp without splitting surrogate
+ * pairs. Axes round and clamp; a candidate without finite confidence is malformed.
  */
 export function parseAnalysis(text: string): ParsedAnalysis {
     const json = answerJson(text);
@@ -461,7 +463,8 @@ function bigramSimilarity(a: string, b: string): number {
 /**
  * Whether a recording repeats `last`, the chat's last stored event: that event is active, names the
  * same participants, has a near-identical summary, and still reads from the chat as stored, since an
- * event whose evidence changed must not take on more.
+ * event whose hashed evidence changed must not take on more. An adopted source's null hash supplies
+ * no text to compare and passes this check even when its message is absent.
  */
 function repeatsEvent(
     last: MemoryEvent,
@@ -493,17 +496,20 @@ function repeatsEvent(
  *
  * - Evidence: a key line's text and a knowledge or state item's `quote` must be a non-empty contiguous
  *   piece of a window message's raw `data`, never of a context message or of the text the prompt showed,
- *   so one that spans an `[Image]` fails. What fails goes to `unverified`.
+ *   so one that spans an `[Image]` fails. What fails goes to `unverified` with `quoteNotFound`.
  * - Pages: a page reference is a page's id, or the title of a create it accepted (`created`). A
  *   participant, `who`, or knower that names neither is removed and a knowledge, state, or relationship
- *   item that names neither is left out, each listed, and `scene.participants` reads the same way.
+ *   item that names neither is left out, each listed as `unknownPage`, and `scene.participants` reads
+ *   the same way. Quoted items go to `unverified`; removed references and relationships warn.
  * - Threads: `add` makes a thread; `close` and `transitions`, in that order, move only a thread that
- *   exists and has not ended, and any other id is a warning. A thread named twice is written once, the
- *   last naming winning.
+ *   exists and has not ended (`unknownThread` or `endedThread` otherwise). A thread named twice is
+ *   written once, the last naming winning, and an end sets `closedBy`.
  * - A repeat of the last stored event (`repeatsEvent`) makes no new event: that event counts it and
  *   cites the window, or the window would stay open forever, and the thread changes name it. Everything
  *   else on it stays, pins included, and `speakerId` does not reach it. A window that re-records an event
  *   is never a repeat: a repair must replace that event, not merge into it.
+ *   Repetition requires an active event, the same participants and character-bigram Jaccard similarity
+ *   at least `dedupeSimilarity`; hashed sources must still match, while adopted null hashes pass.
  */
 export function admitAnalysis(arg: {
     draft: MemoryEventDraft;

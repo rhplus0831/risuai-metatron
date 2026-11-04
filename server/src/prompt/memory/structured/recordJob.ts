@@ -53,7 +53,7 @@ import { chatAdoptionHold, commitWindow, createStructuredWriter, writerRequestDb
  *
  * - Refused: another algorithm is selected, the owner's memory is off, the summarization model is a
  *   local one, which the writer cannot serve here either, the chat waits for a person to adopt or
- *   decline its HypaV3 summaries (`chatAdoptionHold`), so a press from a tab that shows no such choice
+ *   decline its HypaV3 summaries (`chatAdoptionHold`, a 409), so a stale tab's press with no such choice
  *   gets an answer, or the named message is not an eligible assistant message. The chat is this job's,
  *   so no generation runs at admission. With nothing confirmed there is nothing to do: the job ends
  *   `done`.
@@ -61,8 +61,9 @@ import { chatAdoptionHold, commitWindow, createStructuredWriter, writerRequestDb
  *   at once, and the task starts after its terminal.
  * - A Plugin `memory` slot, a `request` trigger, or no service: the writer runs here on the chat's
  *   writer lease, as a blocking HypaV3 summary does, because only the job's requests reach the plugin
- *   provider and the trigger. Windows run oldest first up to `maxWriterWindows`, with a task's request
- *   policy, and the first that does not record ends the job; its run and receipt are already stored.
+ *   provider and the trigger. Repair windows run first, then ordinary windows oldest first, up to
+ *   `maxWriterWindows` with a task's request policy. The first nonrecorded window ends the job; any run
+ *   or receipt already written stays stored, and a skipped window need not create either.
  *   Windows left past the cap are an ordinary `done`. No task fence applies: the job holds the chat's
  *   slot and the lease, and a panel write checks the memory revision.
  * - A press also re-records the marked events, here as on the service: their windows come first
@@ -71,12 +72,13 @@ import { chatAdoptionHold, commitWindow, createStructuredWriter, writerRequestDb
  *
  * A send's approved gap (`recordGapInJob`) shares those windows, inside the send: the person who said
  * yes to the question waits for it, so it takes their stop control, and a window that does not record
- * only ends the run. Its run and receipt are stored, and the send goes on with the gap. It answers a
- * question about the gap, so it re-records nothing: the marks wait for a press or the next hand-off.
+ * only ends the run and the send goes on with the gap. Any run or receipt already written stays stored;
+ * a skipped window need not create either. It re-records nothing: marks wait for a press or hand-off.
  */
 
 type RecordRefusal = Extract<MemoryTaskRecordAnswer, { outcome: "refused" }>["reason"];
 
+/** Service refusals become command errors, so a press gets an answer instead of a silent hand-off. */
 export const RECORD_REFUSALS: Readonly<Record<RecordRefusal, { status: number; message: string }>> = {
     shuttingDown: { status: 503, message: "The server is shutting down" },
     maintenance: { status: 503, message: "The server is under maintenance" },

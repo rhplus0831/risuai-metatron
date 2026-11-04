@@ -278,16 +278,21 @@ const statusKind = (input: AnyMemoryTaskInput) =>
  *   ceiling: an automatic task's is the input's, the only thing it takes from the hand-off; a manual
  *   task's is `through`, inclusive, else `writerCeiling` of that chat, else the input's, since a
  *   person's start is the confirmation the captured one stands in for (a ceiling no longer eligible:
- *   `skipped staleInput`). Windows stay oldest first, so a press on a message records the oldest open
- *   ones, never that message ahead of them. A manual task re-records every marked event, an automatic
- *   one only those an edit explains (`automaticRerecords`): their windows run first (`confirmedWindows`),
- *   and a commit retires what each replaces (`retireRerecorded`). `total` counts the windows the task
- *   runs, at most `maxWriterWindows`, and `done` those the writer returned recorded. The first window
+ *   `skipped staleInput`). Repair windows run first, then ordinary windows oldest first; a press never
+ *   moves its target ahead of older open ordinary work. A manual task re-records every marked event,
+ *   an automatic one only those an edit explains (`automaticRerecords`): their windows run first (`confirmedWindows`),
+ *   and a commit retires what each replaces (`retireRerecorded`). `total` counts the planned windows,
+ *   at most `maxWriterWindows`, and `done` those the writer returned recorded. The first window
  *   that ends otherwise ends the task. `commit` is the writer's only write path: refused when the
  *   service closed, the epoch or source generation moved, a re-record's event no longer wants it, the
  *   window no longer reads from the chat as stored under that same ceiling (`windowStillConfirmed`), a
  *   generation job owns one of its messages, the chat holds a rebuild's run, or the memory revision
  *   conflicts. A run's receipt then goes onto the window's assistant messages (`commitWindow`).
+ *   No windows is `done` with 0 of 0. Windows beyond the cap end `done windowsLeft`; the next hand-off
+ *   continues them, under `manual` only after another person's start. Otherwise a returned `warmingError`
+ *   ends `done warmingFailed` with its redacted error; a throw during warming propagates after the
+ *   recorded commit to `endFromError`. A `MemoryHostFailure` fails a live task; an ended task keeps
+ *   its terminal.
  * - Rebuild work: the run holds what the task works, so a task takes its plan once and goes on from the
  *   run's cursor, `done` and `total` counting the whole run. Each window reads the chat as stored
  *   (`rebuildWindow`), and one with nothing left moves the cursor with no call. The writer then runs on

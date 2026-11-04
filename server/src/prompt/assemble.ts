@@ -557,6 +557,7 @@ type StructuredMemoryStepResult =
  * recording, which runs in a job of its own or on the gap's yes. An event an edit marked for a re-record
  * counts as due (`automaticRerecords`), or a send with nothing else due would never hand it off; the gap
  * asks about the history a send lost, so its count and its run take no marks.
+ * With no eligible user message there is no ceiling and no writer task input.
  *
  * A chat that waits for a person to adopt or decline its HypaV3 summaries (`adoptionHeld`) gets neither
  * the gap's question, which a yes could not answer, nor a hand-off, not even a not-due one, which would

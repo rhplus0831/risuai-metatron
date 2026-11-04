@@ -213,6 +213,10 @@ function tokenThreshold(cadence: WriterCadence, maxContext: number): number {
     return Math.max(1, cadence.budgetMode === "tokens" ? cadence.cadenceTokens : cadence.cadenceRatio * context);
 }
 
+/**
+ * Paired messages and fresh anchors: hashes use `messageSourceHash` from
+ * `server/src/data/memoryStore.ts`, and indexes refer to the stored list, never the eligible subset.
+ */
 export function windowOf(entries: readonly ConfirmedMessage[]): WriterWindow {
     return {
         sources: entries.map(({ id, message, index }) => ({ messageId: id, hash: messageSourceHash(message), index })),
@@ -260,7 +264,9 @@ function rerecordWindows(
  *
  * `tokenizer` counts a stored message as `role` and `data` alone, so the job's step and its task decide
  * alike; `maxContext` is the input's in both. Only the `tokens` cadence counts: there the turns
- * accumulate until their messages reach the threshold.
+ * accumulate until their messages reach `cadenceTokens` under budget mode `tokens`, otherwise
+ * `cadenceRatio` of `maxContext`, at least 1. `everyTurn` closes each turn, `everyK` closes each
+ * `cadenceTurns` turns, and `manual` closes nothing without a person's start.
  *
  * `manual` (a manual start) also closes the trailing partial window, under the `manual` cadence, which
  * closes none on its own, makes one window of each turn, and re-records a marked event through the

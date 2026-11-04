@@ -22,7 +22,7 @@ import {
  *
  * - A section gets a call when a commit really changed it and left it past its page type's budget. One
  *   past its budget that the commit did not change gets none, so a section that cannot shrink is not
- *   asked again every window. The scene page is rewritten whole, so nothing compacts it.
+ *   asked again every window. Scene fields are rewritten directly, so nothing compacts the scene page.
  * - A compaction never overrides a person. A locked section gets no call, and neither does a
  *   `userCorrected` or `disputed` one, which is listed `compactionSkipped`: a person's words are not the
  *   model's to shrink, and a rewrite could silently settle a dispute that waits for review.
@@ -103,8 +103,8 @@ export function readCompaction(target: CompactionTarget, text: string): ReadComp
 
 /**
  * Applies `compactions` over `changes`, which must hold this attempt's patches, as `compact` changes, and
- * answers what it lists: `compacted` for one applied, with the change of length, and `compactionStale`
- * for one this attempt no longer allows.
+ * answers what it lists: `compacted` for one applied, whose `detail` carries the old and new
+ * `body.length`, and `compactionStale` for one this attempt no longer allows.
  */
 export function applyCompactions(arg: {
     changes: PageChanges;
