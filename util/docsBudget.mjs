@@ -16,7 +16,8 @@
 //   - `missing-path`: a code span naming a repository path that does not exist. A span is a path when it is one
 //     token of path characters with a `/` and starts with a directory of the repository root (not an untracked one
 //     such as `node_modules`); `{a,b}` expands, `*` must match something, a trailing `/` needs a directory. A
-//     missing path git ignores is a runtime file and passes;
+//     missing path git ignores is a runtime file and passes. Identifiers in code spans and paths without a `/`
+//     (`package.json`) are not validated;
 //   - `ownership`: the ownership manifest (`docs/structure/ownership.json`, read by `util/docsOwner.mjs`) is not
 //     JSON or has a bad rule, a rule matches no tracked path or only paths an earlier rule owns, a tracked path under
 //     `src/`, `server/`, `shared/`, `util/`, `e2e/`, or `public/` has no rule, or a rule names no guide. Tracked
@@ -54,7 +55,7 @@ export const PAREN_DEPTH_BUDGET = 2;
  * The most the guides and `STRUCTURE.md` may hold together. Lower it in the change that lowers the total, to
  * within 1,000 bytes of the new total; a change that needs it raised moves or deletes text instead.
  */
-export const TREE_BYTES_RATCHET = 986_000;
+export const TREE_BYTES_RATCHET = 974_000;
 
 export const GUIDE_DIR = "docs/structure";
 export const INDEX_DOC = "STRUCTURE.md";

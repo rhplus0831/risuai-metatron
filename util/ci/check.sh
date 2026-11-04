@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# The CI gate (docs/structure/build-test-platforms.md, "CI"): installs from the lockfile, then
-# runs the type check, the formatting check, the test inventory, the documentation budgets, the
-# tests without the `slow` tag, and the build. It stops at the first failing step with that step's
-# exit code and prints every step's duration.
+# The CI gate (docs/structure/build-test-platforms.md): installs from the lockfile, then runs the
+# type check, the formatting check, the test inventory, the documentation budgets, the tests without
+# the `slow` tag, and the build. `pnpm test:slow` and `pnpm test:e2e` are not part of it. It stops at
+# the first failing step with that step's exit code and prints every step's duration.
 #
-# Needs Bash 5 or later (for EPOCHREALTIME), Node 24 or later, and the pnpm version that
-# `packageManager` in package.json names (in CI the job runs `corepack enable` first). When
-# PNPM_STORE_DIR is set, `pnpm install` uses it as the store (the CI cache); otherwise pnpm's
-# default store. It needs no credentials.
+# Needs Bash 5 or later (for EPOCHREALTIME), Node 24 or later, and exactly the pnpm version that
+# `packageManager` in package.json names (in CI the job runs `corepack enable` first); it checks all
+# three before the first step and exits 1 on a mismatch. When PNPM_STORE_DIR is set, `pnpm install`
+# uses it as the store (the CI cache); otherwise pnpm's default store. It needs no credentials.
 #
 # Usage: util/ci/check.sh (from any directory; it runs in the repository root)
 set -euo pipefail

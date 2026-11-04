@@ -1,5 +1,32 @@
 // @ts-nocheck
 
+/**
+ * The app's service worker. Its paths and the Cache Storage name `risuCache` are a contract with
+ * `src/ts/bootstrap.ts` (`registerSw`, `probeSw`), `src/ts/globalApi.svelte.ts` (`getFileSrc`), and
+ * `src/ts/characterCards.ts` (`characterURLImport`, `importPendingShare`).
+ *
+ * Routes: `/sw/check/<hex>`, `/sw/img/<hex>`, `/sw/register/<hex>`, `/sw/init`, `/sw/share`, and `/tf`
+ * with any path under it (always 404); any other `/sw/<x>` answers the text `<x>`. Every other request,
+ * navigations included, falls through without `respondWith`, except the direct-asset loads.
+ *
+ * Direct assets: a same-origin `/api/asset/` request is signed (`fetchAsset`) only when it is `GET` or
+ * `HEAD`, carries a non-empty string `event.clientId`, and has a destination in `ASSET_DESTINATIONS`.
+ * Everything else passes through unsigned: cross-origin, no client id, other methods, and the
+ * destinations `""` (fetch/XHR and the plugin bridge), `document`, `iframe`, `worker`, `object`. Only
+ * these requests and the `/sw/img/` misses that pass the same gate (`getSource`) read the page's signing
+ * key. `/sw/init` answers `{"version":"v3","directAssets":true}` (`application/json`), the capability
+ * `probeSw` reads.
+ *
+ * A new worker takes over at once (`skipWaiting`, `clients.claim`), so an installed app gets new
+ * handlers without closing every tab. Activation deletes only the `/sw/img/` entries of `risuCache`
+ * (best effort: a cache failure does not stop `clients.claim()`) and keeps every other entry: a pending
+ * `/sw/share/<kind>` file must survive a worker update. `/sw/register` and `/sw/check` stay for a page
+ * that registers bytes: `getFileSrc` with direct assets off, or a tab still running an older client.
+ *
+ * `pushsubscriptionchange` is not handled: push has no credentials, and the page registers the new
+ * subscription again when it opens.
+ */
+
 let cachedAssetAuth = null
 let assetAuthPromise = null
 const ASSET_DESTINATIONS = ['image', 'audio', 'video', 'track', 'style', 'font']
@@ -51,6 +78,11 @@ self.addEventListener('fetch', (event) => {
                     }))
                     break
                 }
+                // A share target POST: its first file in character → preset → module order is cached at the
+                // absolute `/sw/share/<kind>` URL without a content type, then a 303 to `/#share_<kind>`. A
+                // POST without a file and every other method under `/sw/share` (GET included) get a 303 to `/`.
+                // `importPendingShare` reads the file from Cache Storage, also on an uncontrolled page, and
+                // deletes it only after a truthy import result.
                 case 'share':{
                     event.respondWith((async () => {
                         if(event.request.method === 'POST'){
@@ -85,7 +117,14 @@ self.addEventListener('fetch', (event) => {
     }}
 })
 
-/** Reads the page's key without leaving a new database behind before the page creates its store. */
+/**
+ * The page's key pair, or null; it never rejects. The location is the one `src/ts/util.ts`
+ * `saveKeypairStore("node", …)` writes and `getKeypairStore("node")` reads: IndexedDB `DPoPDB` version 1,
+ * store `node`, key `dpop`, holding `{ privateKey, publicKey }`. It only reads, so it leaves no new
+ * database behind before the page creates its store: it aborts any upgrade (an absent database stays
+ * absent), never creates the `node` store, and closes every connection it opened, including a late
+ * success after a blocked open.
+ */
 function readAssetKeyPair(){
     return new Promise((resolve) => {
         let db = null
@@ -141,7 +180,12 @@ function assetBase64url(bytes){
     return btoa(String.fromCharCode(...bytes)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')
 }
 
-/** Keep the JWT format and UTF-8 encoding in parity with serverAuth.ts createAuth. */
+/**
+ * A hand copy of `src/ts/storage/serverAuth.ts` `createAuth`, since the bundler does not reach this file:
+ * ES256 over UTF-8 JSON in base64url, header `{ alg: "ES256", typ: "JWT" }`, payload
+ * `{ iat, exp: iat + 300, pub }`. Keep the two in parity: `server/src/tests/swAuth.test.ts` checks this
+ * signer's token against `server/src/routes/auth.ts` `createAuthStore().checkAuth`. Null without a key.
+ */
 async function signAssetAuth(){
     const keyPair = await readAssetKeyPair()
     if(!keyPair){
@@ -163,7 +207,11 @@ async function signAssetAuth(){
     return { token: unsigned + '.' + assetBase64url(new Uint8Array(signature)), exp: payload.exp }
 }
 
-/** Concurrent loads share a signer; missing keys and failures can be tried again on the next load. */
+/**
+ * A token is reused until 60 s before its expiry, and concurrent loads share one signing promise. A null
+ * (missing-key) result is kept as no token, and a thrown signing rejects every load waiting on it; either
+ * way nothing is reused, so the next load signs again.
+ */
 async function getAssetAuth(){
     if(cachedAssetAuth && Date.now() / 1000 < cachedAssetAuth.exp - 60){
         return cachedAssetAuth
@@ -179,7 +227,11 @@ async function getAssetAuth(){
     return assetAuthPromise
 }
 
-/** A fresh same-origin request permits the auth header even for no-cors media loads. */
+/**
+ * A fresh same-origin request permits the auth header even for no-cors media loads. Only `Range` and
+ * `If-Range` are copied from the page's request. The browser HTTP cache holds the bytes; the worker
+ * caches no asset.
+ */
 function fetchSignedAsset(request, token){
     const headers = new Headers({ 'risu-auth': token })
     for(const name of ['Range', 'If-Range']){
@@ -198,7 +250,11 @@ function fetchSignedAsset(request, token){
     })
 }
 
-/** Only a 401 retries auth; network failures and aborts from the signed fetch stay rejected. */
+/**
+ * Only a 401 retries auth, once: with the token another request already refreshed, or a new signing. It
+ * discards only the token it used. A missing key or a key-read or signing failure falls back to
+ * `fetch(request)` without auth. Network failures and aborts from the signed fetch stay rejected.
+ */
 async function fetchAsset(request){
     let auth
     try {
@@ -226,6 +282,10 @@ async function fetchAsset(request){
 }
 
 
+/**
+ * `/sw/check/<hex>` looks up `/sw/img/<hex>` and answers `{ able }`. It is the page's fallback when
+ * page-side Cache Storage lookup is unavailable or fails (`getFileSrc`).
+ */
 async function checkCache(url){
     const cache = await caches.open('risuCache')
 
@@ -241,6 +301,12 @@ async function checkCache(url){
     }))
 }
 
+/**
+ * The cached answer for `url`. A `/sw/img/<hex>` miss whose `request` passed the direct-asset gate is
+ * answered from the signed `/api/asset/<hex>` route (same hex, `Range`/`If-Range` copied), so a URL the
+ * fallback handed out before activation's cleanup still loads. Any other miss resolves with no response,
+ * which `respondWith` turns into a network error.
+ */
 async function getSource(url, request = null){
     const cache = await caches.open('risuCache')
     const response = await cache.match(url)
@@ -266,6 +332,12 @@ async function check(){
 
 }
 
+/**
+ * Stores `buffer` in `risuCache`. A relative string resolves against the worker origin; a URL object is
+ * accepted too. Without `noContentType` the second path segment becomes `img` (`/sw/register/<hex>` is
+ * stored as `/sw/img/<hex>`) and the entry is labelled `image/png` whatever its bytes are. With it (the
+ * share receiver) the path is kept as given and no content type is stored.
+ */
 async function registerCache(urlr, buffer, noContentType = false){
     const cache = await caches.open('risuCache')
     const url = new URL(urlr, self.location.origin)
@@ -289,12 +361,7 @@ async function registerCache(urlr, buffer, noContentType = false){
         "done": true
     }))
 }
-// Web Push for chat completions. A new worker takes over at once, so an installed app gets these
-// handlers without closing every tab. Activation removes stored asset copies under `/sw/img/`
-// from `risuCache` and keeps share files. A `/sw/img/` miss from an allowed subresource is answered
-// from the signed `/api/asset/` route. A rotated subscription (`pushsubscriptionchange`) is not
-// handled here: push has no credentials, and the page registers it again when it opens. Only asset
-// requests read the page's signing key.
+// Web Push for chat completions.
 const NOTIFICATION_LOGO = '/logo_192.png'
 // The tag prefix (`shared/notifications.ts` `COMPLETION_NOTIFICATION_TAG`); a push names its chat's tag
 // (the prefix, `:`, a hash of the chat), so each chat keeps its own notice.
@@ -617,6 +684,7 @@ async function openFromNotification(route){
     }
 }
 
+/** The window's answer through a `MessageChannel` within 2 s, else false (also when the post throws). */
 function askToOpen(client, route){
     return new Promise((resolve) => {
         const channel = new MessageChannel()

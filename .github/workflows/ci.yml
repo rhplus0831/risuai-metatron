@@ -1,4 +1,4 @@
-# One CI workflow: util/ci/check.sh (docs/structure/build-test-platforms.md, "CI").
+# One CI workflow: util/ci/check.sh (docs/structure/build-test-platforms.md).
 # Runs for pushes to `metatron` and `main` and for pull requests that target them.
 name: CI
 

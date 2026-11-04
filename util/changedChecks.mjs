@@ -146,6 +146,8 @@ async function types(root, files) {
     const targets = typeCheckTargets(files);
     const runs = [];
     if (targets.client) {
+        // Not `svelte-check --incremental`: with svelte-check 4.7 it reported two errors the normal run
+        // does not, an unused `@ts-expect-error` and a `LegacyComponentType` mismatch.
         runs.push(run(root, "svelte-check", "svelte-check", "svelte-check", ["--tsconfig", "./tsconfig.json"]));
     } else console.log("[changed] svelte-check: skipped, no changed path reaches the client program");
     if (targets.server) runs.push(run(root, "tsc server", "typescript", "tsc", SERVER_TSC_ARGS));

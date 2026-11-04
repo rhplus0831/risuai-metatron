@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { resolveBuildInfo } from "./server/src/buildInfo.ts";
 
 // The dev server stands in for the self-host server's index route and forwards its API routes to a
-// running `pnpm runserver`. Set RISU_DEV_SERVER when the server uses HTTPS or another port.
+// running `pnpm server`. Set RISU_DEV_SERVER when the server uses HTTPS or another port;
+// `util/agentDev.mjs` sets it under `pnpm dev:agent` and `pnpm dev:human`.
 const devServerTarget = process.env.RISU_DEV_SERVER ?? "http://localhost:6001";
 // `pnpm dev:agent` gives its Vite a cache of its own (`util/agentDev.mjs`), so it can optimize
 // dependencies beside another dev server; unset keeps Vite's `node_modules/.vite`.
@@ -19,6 +20,7 @@ export default defineConfig(({ command, mode }) => {
     const buildInfo = resolveBuildInfo(fileURLToPath(new URL(".", import.meta.url)));
     return {
         cacheDir,
+        // The only define; `src/ts/buildInfo.ts` reads it.
         define: {
             __RISU_BUILD__: JSON.stringify(buildInfo),
         },
@@ -51,6 +53,9 @@ export default defineConfig(({ command, mode }) => {
                 },
             },
             {
+                // Dev only (`apply: "serve"`), so `dist/index.html` never carries the flag: in production
+                // the self-host server injects it (`server/src/http/staticCache.ts` `serveCachedIndex`).
+                // `src/ts/platform.ts` `isNodeServer` reads it.
                 name: "risu-node-flag",
                 apply: "serve",
                 transformIndexHtml: () => [

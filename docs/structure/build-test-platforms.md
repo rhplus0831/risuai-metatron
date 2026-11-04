@@ -26,92 +26,42 @@
 
 ### Relevant `package.json` scripts
 
-Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Test commands and `check:tests` belong to
-[test-harness](test-harness.md#recipes).
+Run scripts with `pnpm <script>`; `package.json` is the executable inventory, and as JSON it holds no comments, so the
+roles are here. Test commands and `check:tests` belong to [test-harness](test-harness.md#recipes).
 
-| Script                    | Use                                                                                                                                                       |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dev`                     | Vite only; requires a running `server`.                                                                                                                   |
-| `build`                   | Vite with source maps, then `util/compressDist.mjs` for Brotli/gzip siblings.                                                                             |
-| `check`                   | `svelte-check` for the client, then `tsc -p server/tsconfig.json` for server/shared code, with an incremental cache in `node_modules/.cache/tsc/`.        |
-| `check:changed`           | `util/changedChecks.mjs types`: the same two programs in parallel, skipping one no changed path reaches; see [Changed-file checks](#changed-file-checks). |
-| `check:docs`              | `util/docsBudget.mjs`: guide budgets, targets, and the tree ratchet, outline, Markdown links, and code-span paths; no tests.                              |
-| `docs:*`                  | `docs:read`, `docs:owner`, `docs:contracts`, `docs:ledger`, `docs:reads`: the guide tools; see [Documentation check](#documentation-check).               |
-| `server`                  | Node runs `server/src/main.ts` with type stripping.                                                                                                       |
-| `dev:agent` / `dev:human` | Isolated agent stack or normal-login human stack; see [Dev runner](#dev-runner).                                                                          |
-| `format` / `format:check` | Repository-wide Prettier write/check; `format:check` keeps Prettier's cache in `node_modules/.cache/prettier/`.                                           |
-| `format:changed`          | `util/changedChecks.mjs format [--write]`: Prettier `--check` (or `--write`) on the changed files only.                                                   |
+| Script                             | Use                                                                                           |
+| ---------------------------------- | --------------------------------------------------------------------------------------------- |
+| `dev`                              | Vite only; requires a running `server`.                                                       |
+| `build`                            | Vite with source maps, then `util/compressDist.mjs`.                                          |
+| `check`                            | `svelte-check` (client), then server `tsc` (cache in `node_modules/.cache/tsc/`).             |
+| `check:changed` / `format:changed` | `util/changedChecks.mjs` `types` / `format`; see [Changed-file checks](#changed-file-checks). |
+| `check:docs` / `docs:*`            | See [Documentation check](#documentation-check).                                              |
+| `server`                           | Node runs `server/src/main.ts` with type stripping.                                           |
+| `dev:agent` / `dev:human`          | Agent or human full stack; see [Dev runner](#dev-runner).                                     |
+| `format` / `format:check`          | Repository-wide Prettier; `format:check` caches in `node_modules/.cache/prettier/`.           |
 
 ### Changed-file checks
 
-- `util/changedChecks.mjs` takes the changed set from git: every path that differs between the base and the working
-  tree, deletions and both sides of a rename included, plus untracked files. The base is the merge base of HEAD and
-  `origin/dev` (HEAD when there is none); `--base <ref>` picks another.
-- `format` runs Prettier on the changed files that still exist; formatting is per file, so that is the whole check for
-  them.
-- `types` never narrows a program to the changed files, since a type error can surface in a file nobody touched. It
-  skips `svelte-check` only when every changed path is inert (Markdown, `docs/`, `util/`, `e2e/`, assets, tool
-  dotfiles), and server `tsc` also when the rest is client-only (`src/`, `public/`, client configs). The client imports
-  `server/src` and `shared/`, so those run both; an unknown path runs both.
-- `types` first prints the guides owning the changed paths and the unowned source paths.
-- `svelte-check --incremental` is not used: it reported two errors the normal run does not (an unused `@ts-expect-error`
-  and a `LegacyComponentType` mismatch), measured 2026-11-04 with svelte-check 4.7.
-
-### Build compression
-
-- `util/compressDist.mjs` runs after Vite with async `node:zlib` compression and at most four files in flight, starting
-  with the largest files. It shares `STATIC_COMPRESSIBLE_EXTENSIONS` with `server/src/http/staticCache.ts`: `.js`,
-  `.mjs`, `.css`, `.json`, `.svg`, and `.wasm`.
-- Files below 1 KiB, HTML, source maps, and already compressed image/font/archive types receive no siblings.
-- Brotli uses quality 11 through 16 MiB and quality 9 above that, text mode for text types, and a size hint; gzip uses
-  level 9. Only smaller outputs remain, published through temporary files and rename.
-- It prints file and byte totals plus elapsed time; any failure fails the build.
-  `node util/compressDist.mjs [dist-directory]` accepts an explicit directory and otherwise uses the repository's
-  `dist/`.
-
-### Prettier config
-
-- `.prettierrc.json`: 4-space indent, double quotes, semicolons, width 120, 2-space for JSON/YAML/Markdown,
-  `prettier-plugin-svelte`, `proseWrap: "always"` for `STRUCTURE.md` and `docs/structure/`.
-- `.prettierignore` includes `.ignore`'s payloads and additionally excludes all of `public/`, lockfiles, snapshots,
-  `dist/`, `.claude/worktrees/`, and `src/ts/plugins/apiV3/risuai.d.ts` (a doc comment there contains a literal `*/`, so
-  Prettier cannot parse it).
+- `util/changedChecks.mjs` (`format`, `types`, `--base <ref>`, `isInert`, `ownersLine`): the local checks narrowed to
+  the paths git says changed against the merge base with `origin/dev`. Its header defines the changed set and when
+  `types` skips a program; `types` never narrows a program to the changed files, and its first line names the guides
+  owning the changed paths and the unowned source paths.
 
 ### Documentation check
 
-- `pnpm check:docs` (`util/docsBudget.mjs`, plain Node over the Markdown, with a line-based parse) checks `STRUCTURE.md`
-  and every guide, printing one `path:line rule message` per finding. Every file has the same budgets. These fail:
-  - `ceiling`: a file over 40,000 bytes, with the overage.
-  - `leaf`: over 8,000 bytes between a heading and the next heading of any level, with the overage. Text before a file's
-    first heading counts only toward `ceiling`.
-  - `item`: a list item or table row over 600 characters, measured on the joined text with code spans included.
-  - `paren-depth`: parentheses three deep outside code spans.
-  - `sections`: a guide's `##` headings are not the nine of the [README](README.md) in order; an area folder's
-    `README.md` is an index with no outline. `hazards`: a `Known Hazards` `###` other than `Issues`, `Limitations`,
-    `Gotchas`, in that order.
-  - `unresolved-link`: a relative `.md` link or `#anchor` that does not resolve, with anchors computed as GitHub does.
-    `self-link`: a link to its own file without an anchor.
-  - `label`: a T5 label, matched on the joined item, so a wrap cannot split it (in `STRUCTURE.md`, prose only: T5 quotes
-    the labels).
-  - `missing-path`: a code span naming a repository path that does not exist. A span is a path when it is one token of
-    path characters with a `/`, not starting with one, whose first segment is a directory of the repository root other
-    than `node_modules`, `dist`, `.git`, or `.claude`. `{a,b}` expands and each expansion must exist, `*` must match
-    something, a trailing `/` needs a directory. A missing path `git check-ignore` accepts is a runtime file and passes.
-  - `ownership`: `docs/structure/ownership.json` is malformed, a rule names no guide or owns no git-listed path, or a
-    git-listed path under `src`, `server`, `shared`, `util`, `e2e`, `public` has none.
-  - `tree`: the guides and `STRUCTURE.md` together over `TREE_BYTES_RATCHET` in `util/docsBudget.mjs`. The verdict line
-    always prints the tree total against the ratchet; a trim lowers the constant to within 1,000 bytes of the new total.
-- `near` does not fail: a file over 36,000 bytes or a heading over 7,000, the [README](README.md) targets, printed with
-  the bytes left under the budget, so a guide that needs a split shows up before the next change fails the gate.
-- `--report` prints the sizes, each file's headroom under 40,000 bytes, and every finding, and exits 0; use plain
-  `pnpm check:docs` as the gate.
-- Identifiers in code spans are not validated, nor a path without a `/` (`package.json`, `vitest.*`). Confirm them with
+- `util/docsBudget.mjs` (`pnpm check:docs`): plain Node over `STRUCTURE.md` and the guides, one `path:line rule message`
+  per finding; its header defines each rule. Failing rules: `ceiling`, `leaf`, `item`, `paren-depth`, `sections`,
+  `hazards`, `unresolved-link`, `self-link`, `label`, `missing-path`, `ownership`, and `tree`, the total over
+  `TREE_BYTES_RATCHET` (a trim lowers the constant to within 1,000 bytes of the new total). The budgets and targets are
+  the [README](README.md)'s.
+- `near` does not fail: a file or heading over its target, with the bytes left. `--report` prints the sizes and every
+  finding and exits 0; use plain `pnpm check:docs` as the gate.
+- Not validated: identifiers in code spans, and a path without a `/` (`package.json`, `vitest.*`). Confirm them with
   targeted `rg` searches; the link rule checks only relative Markdown destinations and heading anchors.
 - The guide tools; each header comment holds its contract:
   - `pnpm docs:read <guide> [heading]` (`util/docsRead.mjs`): a guide's headings with their bytes, or one section.
   - `pnpm docs:owner <path>...` (`util/docsOwner.mjs`): each path's owning guide; exit 1 on an unowned one.
-  - `pnpm docs:contracts <file-or-dir>...` (`util/docsContracts.mjs`): each export with the `/** */` comment above it,
-    the exports without one, and the documented count.
+  - `pnpm docs:contracts <file-or-dir>...` (`util/docsContracts.mjs`): each export with the `/** */` comment above it.
   - `pnpm docs:ledger <guide> [--base <ref>]` (`util/docsLedger.mjs`): the base's `Files` and `Flows` identifiers that
     neither the guide nor a file it names holds; exit 1 on any.
   - `pnpm docs:reads [--out <file>] [<dir>...]` (`util/guideReads.mjs`): guide reads counted over local session
@@ -119,204 +69,74 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
 
 ### Config files
 
-- `vite.config.ts`:
-  - Plugins: Svelte, Tailwind (`@tailwindcss/vite`), `vite-plugin-wasm`, conditional `@rollup/plugin-strip`.
-  - Dev server defaults to port 5174 with `strictPort`, listening on `0.0.0.0` (`util/agentDev.mjs` passes
-    `--host`/`--port`). `cacheDir` is `RISU_VITE_CACHE_DIR` when set, else Vite's `node_modules/.vite`. The watcher
-    ignores the server storage (`save/`, `save-agent/`, its lock, and its staging and previous copies).
-  - It injects `globalThis.__NODE__ = true` (plugin `risu-node-flag`, `apply: "serve"`, so `dist/index.html` never
-    carries it) and proxies the server routes (`/api`, `/proxy`, `/proxy2`, `/hub-proxy`, with WS) to `RISU_DEV_SERVER`
-    (default `http://localhost:6001`). See `self-host-server.md` for the dev caveats.
-  - `envPrefix` is Vite's default (`VITE_`); `build.target` is `baseline-widely-available` and `build.minify` is `oxc`.
-  - Alias `src` → `/src`. Workers are built as `es`.
-  - `define` sets only `__RISU_BUILD__` (the `BuildInfo` of `resolveBuildInfo`, read through `src/ts/buildInfo.ts`;
-    Vitest leaves it undefined, so tests see an unknown build). The build-only plugin `risu-build-info` writes the same
-    object to `dist/build-info.json`. `manualChunks` is not set.
-- `tsconfig.json`: includes `src/**/*`, `shared/**/*.ts`, and `public/sw.js`. `noEmit: true` and
-  `allowImportingTsExtensions: true`: Vite builds the client and Node runs the server, so `tsc` only type-checks, and
-  imports of `shared/` use explicit `.ts` extensions.
-- `server/tsconfig.json`: strict, `erasableSyntaxOnly`, `lib: es2023` without DOM; includes `src/**/*.ts` and
-  `../shared/**/*.ts`, so `pnpm check` strict-checks the shared persisted types.
-- `tsconfig.node.json` covers the Vite config only and is outside `pnpm check`; see [Issues](#issues).
+- `vite.config.ts`: the client build and the dev server (port 5174, `strictPort`, proxy to `RISU_DEV_SERVER`, `cacheDir`
+  from `RISU_VITE_CACHE_DIR`). Look up `risu-node-flag` (dev only: `globalThis.__NODE__`), `risu-build-info` (build
+  only: `dist/build-info.json`), and `define` (`__RISU_BUILD__`, read through `src/ts/buildInfo.ts`). Besides Svelte,
+  `@tailwindcss/vite`, and `vite-plugin-wasm`, builds use `@rollup/plugin-strip`, `build.target`
+  `baseline-widely-available`, `build.minify` `oxc`, and no `manualChunks`; `envPrefix` is Vite's default (`VITE_`).
+- `server/src/buildInfo.ts` `resolveBuildInfo`: `RISU_BUILD_COMMIT`, `RISU_BUILD_DATE`, `RISU_BUILD_DIRTY` give the
+  build id without git, as the `Dockerfile` build arguments do; otherwise git. The id's shape is in [State](#state).
+- `util/compressDist.mjs`: after Vite, writes the smaller `.br` and `.gz` siblings into `dist/`; its extensions are
+  `STATIC_COMPRESSIBLE_EXTENSIONS` from `server/src/http/staticCache.ts`, which serves them, and its header holds the
+  size and quality rules.
+- These are JSON, so their facts stay here:
+  - `tsconfig.json`: includes `src/**/*`, `shared/**/*.ts`, and `public/sw.js`. `noEmit: true` and
+    `allowImportingTsExtensions: true`: Vite builds the client and Node runs the server, so `tsc` only type-checks, and
+    imports of `shared/` use explicit `.ts` extensions.
+  - `server/tsconfig.json`: strict, `erasableSyntaxOnly`, `lib: es2023` without DOM; includes `src/**/*.ts` and
+    `../shared/**/*.ts`, so `pnpm check` strict-checks the shared persisted types.
+  - `tsconfig.node.json` covers the Vite config only and is outside `pnpm check`; see [Issues](#issues).
+  - `.prettierrc.json`: 4-space indent, double quotes, semicolons, width 120, 2-space for JSON/YAML/Markdown,
+    `prettier-plugin-svelte`, `proseWrap: "always"` for `STRUCTURE.md` and `docs/structure/`.
+- `.prettierignore` (its comments give the reasons): `.ignore`'s payloads, all of `public/` (so `public/sw.js` keeps its
+  own style), lockfiles, snapshots, `dist/`, `.claude/worktrees/`, and `src/ts/plugins/apiV3/risuai.d.ts`.
 
 ### Dev runner
 
-`util/agentDev.mjs` (`pnpm dev:agent` / `pnpm dev:human`) runs the server (`node --watch server/src/main.ts`, so a
-server edit restarts it) and Vite (`--host <host> --port <port> --strictPort`, `RISU_DEV_SERVER` pointed at that server,
-`https` when `server/ssl/certificate/server.key` and `server.crt` exist) as children.
-
-- Processes: each child leads its own process group (kept after its leader exits). Ctrl+C or SIGTERM sends SIGTERM to
-  each leader (the `node --watch` supervisor passes it to the server), waits until each group is empty, and sends
-  SIGKILL to a group still alive after 10 s. When one child ends the rest is stopped, and nothing is started once
-  stopping began.
-- Before anything starts it applies the server's `readListenConfig` to the environment it will pass (a bypass off
-  loopback or a bad flag ends it there) and checks both ports (taken: it exits with a message).
-- Vite starts only once the server accepts connections (120 s at most): `node --watch` keeps waiting for an edit after a
-  failed start, so only that first start is checked, and a later restart may fail while code is being edited.
-- Host: both modes bind to `127.0.0.1` (`util/agentDevHost.mjs` `resolveAgentDevHost`): `localhost` is a secure context,
-  which the login (`crypto.subtle`) and the service worker need.
-  - `RISU_AGENT_DEV_HOST` binds elsewhere (an IPv6 address without brackets).
-  - `tailscale` looks up this machine's Tailscale IPv4 (`tailscale ip -4`, `100.64.0.0/10`) and binds only to it (an
-    error without one), and over plain HTTP that origin is no secure context.
-- `agent`: server 6419, Vite 6418, `RISU_AGENT_DEV_AUTH_BYPASS=TRUE` (the server refuses it off loopback,
-  `server/src/listenConfig.ts`), Vite cache `node_modules/.vite-agent` (two Vite processes sharing one cache collide
-  while optimizing dependencies), storage `save-agent/` unless `RISU_SAVE_DIR` is set (then used as it is).
-  - The runner prepares the storage before starting the server, so a `--watch` restart keeps it.
-  - It holds `save-agent.lock` (its pid, written with `wx`) for its lifetime: a second `dev:agent` in the same checkout,
-    also on other ports, refuses to start while the owner runs. A lock left by a killed runner is not taken over (two
-    runners could both see the dead pid); the message says to delete it.
-- `human`: server 6001, Vite 5174, the normal login, storage `save/` (or `RISU_SAVE_DIR`), Vite's default cache. It can
-  run beside an agent stack.
-- `util/agentDataSandbox.mjs` `prepareAgentDataSandbox` (`RISU_AGENT_DATA_MODE`):
-  - `clone` (default) rebuilds `save-agent/` from `save/` on every start: `data/resources.sqlite` and
-    `data/vectors.sqlite` through SQLite's online backup (read-only source, so a running human server is fine) and
-    `assets/` as hard links (copies across filesystems; safe because asset writes are staged and renamed, never
-    rewritten).
-  - Left behind: `server/` (password, known keys, Web Push keys and subscriptions), `backups/`, `diagnostics/`,
-    `data/request-history.sqlite`, `data/generation-jobs.sqlite`, `models/`, and top-level files.
-  - `keep` reuses an existing sandbox (clones when there is none), `fresh` starts empty.
-  - The copy is built in `.save-agent.staging-*` and swapped in (`save-agent.previous-*` during the swap); a
-    symbolic-link sandbox, a non-directory, or a sandbox inside the source (or the reverse) is refused.
-
-### Heap analysis
-
-- `util/heap/snapshot.mjs` reads a `.heapsnapshot` larger than V8's maximum string and analyses it: `summarize`,
-  `diffSnapshots`, `retainers` (over strong edges), `dominators`, and `heapReport`, the heap object counts. Retained
-  sizes charge a WeakMap value to its key, as DevTools does.
-- `util/heap/analyze.mjs` is its command line (usage in its header). It prints no string content and no property key
-  unless asked, so user snapshots stay local data.
-
-### Upstream `.bin` check
-
-`util/upstream/checkBinCompat.mjs` (not in `pnpm test`; usage in its header) runs upstream RisuAI's own `.bin` database
-decoder and boot defaults on this server's output. Its checks are listed in the header, and `upstreamHarness.mjs` has
-the loader's `REAL`, `EXTRACT`, and `OVERRIDES` tiers in its own.
-
-- Targets: one of two per run (`UPSTREAM_TARGETS` in `util/upstream/upstreamHarness.mjs`; one target per process,
-  because the loader hooks stay registered).
-  - `--target legacy` (the default, `669b12ce`): `decodeRisuSave` returns the database.
-  - `--target current` (`f50b5942`): `decodeRisuSave` returns `{ database, kv }`; the check fails on another shape, or
-    on a non-empty `kv` for a legacy-format file.
-  - Metatron's export is the legacy format, which both targets read.
-- Environment: `RISU_UPSTREAM_DIR` names an upstream checkout that holds the target's commit. `RISU_UPSTREAM_MSGPACKR`
-  and `RISU_UPSTREAM_FFLATE` name package directories of the target's exact library versions (`packages`, from
-  upstream's lockfile at that commit: msgpackr 1.10.1 and fflate 0.8.2 for both targets).
-- Another version, an unknown target, or a checkout without the commit ends the run with `ERROR` (exit 2). It never
-  installs, builds or starts the upstream app.
-- Run each target in turn:
-  ```bash
-  P=<a node_modules/.pnpm holding msgpackr@1.10.1 and fflate@0.8.2>
-  RISU_UPSTREAM_DIR=<upstream checkout> RISU_UPSTREAM_MSGPACKR=$P/msgpackr@1.10.1/node_modules/msgpackr RISU_UPSTREAM_FFLATE=$P/fflate@0.8.2/node_modules/fflate node util/upstream/checkBinCompat.mjs --target legacy
-  ```
-  then the same with `--target current`; each ends `OK` (exit 0) or `<n> check(s) failed` (exit 1).
-- Approved uses: every import outside the loader's tiers is a recording stub, and a recorded use the check has not
-  approved fails it. Each target lists its approved uses one by one, by exact label, per phase: both approve store and
-  storage-instance construction at load and `changeLanguage` in the boot pass; current also approves `changeLanguage`
-  and `requiresFullEncoderReload.state=` in the migration pass.
-- `--bin <file>` identifies inputs by ordinal and prints array counts and fixed failure categories only, without names
-  or property paths (safe to report for private files; an upstream backup's counts include its cold-storage stubs). Use
-  trusted local files: upstream's decoder runs in this process.
-- Not run: neither target runs upstream's backup reader (`LoadLocalBackup`) or its asset writes, `makeColdData`'s
-  character and chat cold storage, `cleanChunks`, plugin loading, or the UI. No block save (`RISUSAVE`) is written or
-  read.
-- The migration's cold storage is in memory and starts empty, so an upstream backup's own plugin cold records are not
-  read (a `_coldpluginIndex` pointer fails the migration pass under `--bin`).
-
-### Environment variables
-
-- `RISU_BUILD_COMMIT`, `RISU_BUILD_DATE` (`YYYY-MM-DD`), `RISU_BUILD_DIRTY` (`true`): the build id without git, as in
-  the Docker build (`Dockerfile` build arguments); otherwise `resolveBuildInfo` asks git.
-- `util/agentDev.mjs`: `RISU_AGENT_DEV_HOST` (default `127.0.0.1`; `tailscale`), `RISU_AGENT_DEV_PORT` (Vite; 6418
-  agent, 5174 human), `RISU_AGENT_API_PORT` (server; 6419 agent, 6001 human), `RISU_AGENT_DEV_AUTH_BYPASS` (`TRUE`
-  agent, `FALSE` human), `RISU_AGENT_DATA_MODE` (`clone`, `keep`, `fresh`), `RISU_SAVE_DIR`, `RISU_VITE_CACHE_DIR`.
-- It sets the server's `PORT`, `RISU_HOST`, `RISU_SAVE_DIR`, and `RISU_AGENT_DEV_AUTH_BYPASS` and Vite's
-  `RISU_DEV_SERVER` and `RISU_VITE_CACHE_DIR`.
+- `util/agentDev.mjs` (`pnpm dev:agent` / `pnpm dev:human`): the server (`node --watch server/src/main.ts`) and Vite as
+  children, Vite's proxy pointed at that server. Its header holds the modes, defaults, and overrides; look up
+  `spawnManaged` and `stopGroup` (process groups and the stop), `assertPortFree` and `waitForListener` (ports and the
+  readiness wait), `acquireSandboxLock` (`save-agent.lock`), and the `readListenConfig` call (the server's own rules,
+  `server/src/listenConfig.ts`, before anything starts).
+- Modes: `agent` is server 6419, Vite 6418, `RISU_AGENT_DEV_AUTH_BYPASS=TRUE` (the server refuses it off loopback), Vite
+  cache `node_modules/.vite-agent`, storage `save-agent/`; `human` is server 6001, Vite 5174, the normal login, `save/`.
+  Both can run at once; `RISU_SAVE_DIR` replaces either storage as it is, with no sandbox and no lock.
+- `util/agentDevHost.mjs` `resolveAgentDevHost`: both modes bind to `127.0.0.1`, a secure context, which the login
+  (`crypto.subtle`) and the service worker need; `RISU_AGENT_DEV_HOST` binds elsewhere, `tailscale` to this machine's
+  Tailscale IPv4 only.
+- `util/agentDataSandbox.mjs` `prepareAgentDataSandbox` (`RISU_AGENT_DATA_MODE`: `clone`, `keep`, `fresh`): builds
+  `save-agent/` from `save/` in `.save-agent.staging-*` and swaps it in; its comments list what a clone copies
+  (`data/resources.sqlite`, `data/vectors.sqlite`, `assets/`) and what it leaves behind (`server/` secrets, `backups/`,
+  `diagnostics/`, `data/request-history.sqlite`, `data/generation-jobs.sqlite`, `models/`).
 - Test command environment and agent restrictions: [human gate](test-harness.md#human-gate).
 
-### Web
+### Analysis scripts
+
+- `util/heap/snapshot.mjs` (`summarize`, `diffSnapshots`, `retainers`, `dominators`, `heapReport`): reads a
+  `.heapsnapshot` larger than V8's maximum string; `util/heap/analyze.mjs` is its command line. Neither prints string
+  content or a property key unless asked, so user snapshots stay local data.
+- `util/upstream/checkBinCompat.mjs` (manual, not in `pnpm test`): runs upstream RisuAI's own `.bin` decoder and boot
+  defaults on this server's output, `--target legacy` (the default) or `--target current`, and `--bin <file>` on an
+  existing export. Its header holds the usage, the environment (`RISU_UPSTREAM_DIR`, `RISU_UPSTREAM_MSGPACKR`,
+  `RISU_UPSTREAM_FFLATE`), the checks, and the exit codes. Metatron's export is the legacy format, which both targets
+  read. Use trusted local files: upstream's decoder runs in this process.
+- `util/upstream/upstreamHarness.mjs` (`UPSTREAM_TARGETS`, the `REAL`, `EXTRACT`, and `OVERRIDES` tiers) loads one
+  target per process, lists what neither target runs, and holds each target's approved stub uses.
+
+### Service worker and PWA
 
 - There is no mobile (Capacitor) build. Installation is only through the PWA manifest.
-- `public/manifest.json`: PWA manifest. `file_handlers` for `.charx`, `.risup`, `.risum` go through `launchQueue` to
-  `characterURLImport`. `share_target` posts multipart form data to the worker's `/sw/share` receiver with the
-  `character` (`.charx`), `preset` (`.risup`), and `module` (`.risum`) file entries. An already installed app keeps the
-  old `/receive-files/` action until the browser refreshes the manifest.
+- `public/manifest.json` (JSON, so here): `file_handlers` for `.charx`, `.risup`, `.risum` go through `launchQueue` to
+  `characterURLImport`; `share_target` posts multipart form data to the worker's `/sw/share` with the `character`
+  (`.charx`), `preset` (`.risup`), and `module` (`.risum`) file entries. An already installed app keeps the old
+  `/receive-files/` action until the browser refreshes the manifest.
+- `public/sw.js`: the hand-written, unbundled worker. Its header holds the routes (`/sw/check`, `/sw/img/<hex>`,
+  `/sw/register`, `/sw/init`, `/sw/share`), Cache Storage `risuCache`, the takeover and activation cleanup, and the
+  direct-asset gate. Look up `fetchAsset`, `getAssetAuth`, `signAssetAuth`, `readAssetKeyPair` (signed asset loads),
+  `getSource`, `registerCache`, `checkCache` (the cache fallback), and `showPushNow`, `windowState`,
+  `appendPushRecords`, `openFromNotification` (Web Push).
 - `util/risuUserscript.user.js`: exposes `GM_fetch` as `unsafeWindow.userScriptFetch`, which `globalFetch` uses when
-  present.
-
-### Service worker
-
-`public/sw.js`: Cache Storage `risuCache`. Routes `/sw/check`, `/sw/img/<hex>`, `/sw/register`, `/sw/init`, and
-`/sw/share`. Registered by `bootstrap.ts:registerSw`. A new worker takes over at once (`skipWaiting`, `clients.claim`).
-
-- `globalApi.getFileSrc` gives a page this worker controls `/api/asset/<hex>` URLs when its reported direct-asset
-  capability is enabled; the worker signs those loads ([Direct assets](#direct-assets)).
-- With the capability off, the fallback checks `risuCache` from the page, registers misses through `/sw/register/<hex>`,
-  and serves assets through `/sw/img/<hex>`; `/sw/check` stays served when page-side Cache Storage lookup is unavailable
-  or fails.
-- `registerCache` resolves relative strings against the worker origin and still accepts URL objects.
-- A share POST reads multipart form data, caches the first file in character → preset → module order at the absolute
-  `/sw/share/<kind>` URL without a content type, and redirects with 303 to `/#share_<kind>`; a POST without a file and
-  every non-POST (GET included) under `/sw/share` redirect with 303 to `/`.
-- `characterCards.characterURLImport` uses `importPendingShare` to read the pending file directly from Cache Storage
-  even on an uncontrolled page, deleting it only after a truthy import result. A thrown, falsy, or cancelled import
-  retains it; missing Cache Storage or a missing entry does nothing.
-
-### Direct assets
-
-- Interception: same-origin paths starting with `/api/asset/` only for `GET`/`HEAD`, a non-empty string
-  `event.clientId`, and destinations `image`, `audio`, `video`, `track`, `style`, or `font`. All other asset requests
-  pass through without `respondWith`: cross-origin URLs, missing client ids, other methods, and destinations including
-  `""` (fetch/XHR and the plugin bridge), `document`, `iframe`, `worker`, and `object`.
-- The worker builds a fresh request with `risu-auth`, copies only incoming `Range` and `If-Range`, and uses
-  `mode: "same-origin"`, `credentials: "omit"`, `cache: "default"`, and the incoming signal. The browser HTTP cache
-  holds the bytes.
-- It reuses the token until 60 seconds before expiry, with one signing promise shared by concurrent requests. A 401
-  discards that token, rereads the key, and retries once; a newer token another request already obtained is reused
-  instead.
-- Missing keys and key-read/signing failures fall back to `fetch(request)` without added auth and are never cached;
-  signed-fetch network errors and aborts stay rejected.
-- `/sw/init` answers status 200 with `content-type: application/json` and `{"version":"v3","directAssets":true}`.
-  `bootstrap.ts:probeSw` parses the JSON and calls `setDirectAssets(true)` only for `directAssets === true`; non-JSON
-  responses, a missing/false flag, or an older worker leave it false. A `controllerchange` clears the capability and
-  probes the new controller; only the newest probe can set it.
-- Stored-asset copies: activation deletes every `risuCache` entry under `/sw/img/` (best effort; a cache failure does
-  not stop `clients.claim()`) and keeps every other entry, including the pending `/sw/share/<kind>` files.
-  `/sw/register` and `/sw/check` stay for a tab still running a client that registers bytes.
-- A `/sw/img/<hex>` miss that passes the direct-asset gate above (same origin, `GET`/`HEAD`, a client id, an allowed
-  destination) is answered from the signed `/api/asset/<hex>` route (same hex, `Range`/`If-Range` copied), so a URL the
-  fallback handed out before the cleanup still loads; any other miss answers no response, unsigned.
-
-### Worker Web Push
-
-[Web Push](network-jobs.md) in the worker:
-
-- `push` shows every completion (also with a window in front: Safari requires it) with the logo, the payload's chat tag
-  (`risuai-chat-completion:<hash>`, one per chat, so a chat's later notice replaces only its own; a missing or foreign
-  tag falls back to the bare `risuai-chat-completion`), the title and body from the payload, and a click URL that must
-  be a same-origin `/chat/<chaId>/<chatId>` route, else `/`.
-- In-front test: while a same-origin window is in front (`windowState`'s `inFront`: one window both focused and
-  `visibilityState` `visible`, since a hidden Android PWA keeps the focus; `clients.matchAll` with uncontrolled windows;
-  a failed lookup counts as none), the notification is `silent`, so it does not sound after the page's message sound
-  (`playMessage`). Otherwise `silent` is left out and the platform's default applies.
-- If a window is still in front once it is shown, the notification is closed. This is best effort: only the notification
-  this push showed, found by its tag and a per-worker number in `data.push`, with `windowState` checked again after the
-  lookup. Pushes are shown one at a time, since Chromium closes a notification by its tag.
-- Before the display, the same-origin windows of that lookup are posted `risu-push-completion` with the checked chat
-  route (none for `/`; a window whose post throws is skipped; `pushNotifications.ts` has the chat read again).
-- `notificationclick` focuses a window of the app and posts `risu-open-route` (answered through a `MessageChannel`
-  within 2 s, else the window is navigated; a navigation the browser refuses, such as of a window the worker does not
-  control, opens a window instead), or opens a window.
-- Each push and click also leaves content-free records: `push` phases `received`, stamped on arrival, then
-  `shown`/`shownSilent`, `closedInFront`, or `showFailed`, with `inFront` and `focusedHidden` from `windowState`;
-  `clicked`, stamped on the click and written whatever the window work's outcome. Fixed phases and booleans only, never
-  the payload, title, body, route, endpoint, or error text.
-- The records are appended to IndexedDB `risu-sw-diagnostics` (store `records`, newest 100, append and prune in one
-  transaction) after the display settles and outside the display queue, so a write never delays `showNotification` or
-  the next push.
-- No IndexedDB, a failed or blocked open, a failed transaction, or one not done in 2 s is skipped (a late connection is
-  closed, an abandoned transaction aborted), and the display's own rejection stays the event's. The diagnostic report
-  reads them ([diagnostics](diagnostics.md)).
-- `pushsubscriptionchange` is not handled: the page registers the new subscription when it opens.
+  present, after its local-network and plain-fetch routes.
 
 ## Flows
 
@@ -330,24 +150,61 @@ notice. There is no desktop build.
 
 ### Development
 
-`pnpm run server` plus `pnpm dev`. Vite proxies `/api`, `/proxy`, `/proxy2`, and `/hub-proxy` to the server
-(`RISU_DEV_SERVER`, default `http://localhost:6001`).
+`pnpm run server` plus `pnpm dev`, or `pnpm dev:agent` for both. Vite proxies `/api`, `/proxy`, `/proxy2`, and
+`/hub-proxy` (with WebSockets) to the server (`RISU_DEV_SERVER`, default `http://localhost:6001`); the dev caveats are
+in [self-host-server](self-host-server.md).
 
 ### CI
 
-GitHub Actions runs `.github/workflows/ci.yml`, one job, `check`.
+- GitHub Actions runs `.github/workflows/ci.yml`, one job, `check`, on pushes to `metatron` and `main` and on pull
+  requests that target them; a newer run for the same ref cancels the older one. It sets up Node 24, runs
+  `corepack enable` (so `pnpm` is the `packageManager` version), and caches the pnpm store at `$RUNNER_TEMP/pnpm-store`
+  (`PNPM_STORE_DIR`), keyed on `pnpm-lock.yaml`.
+- It then runs `util/ci/check.sh`, whose header lists the steps: `pnpm install --frozen-lockfile`, `pnpm check`,
+  `pnpm format:check`, `pnpm check:tests`, `pnpm check:docs`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`.
+  `pnpm test:slow` and `pnpm test:e2e` are not in CI.
+- The job uses no secrets and no `save/` data. A person can run the same script locally; agents keep using
+  `pnpm --silent test:agent` (V1).
 
-- Trigger: pushes to `metatron` and `main` and pull requests that target them (`on: push` / `pull_request` branch
-  filters; nothing else starts a run, and a newer run for the same ref cancels the older one).
-- Environment: `ubuntu-latest` with Node 24 (`actions/setup-node`) and `ONNXRUNTIME_NODE_INSTALL_CUDA=skip` (no CUDA
-  provider download in the postinstall). It runs `corepack enable`, so `pnpm` is the `packageManager` version.
-- Steps, in `util/ci/check.sh`: `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm format:check`, `pnpm check:tests`,
-  `pnpm check:docs`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`, stopping at the first failure with its exit
-  code and printing each step's duration. `pnpm test:slow` and `pnpm test:e2e` are not in CI.
-- The pnpm store is kept outside the checkout at `$RUNNER_TEMP/pnpm-store` (`PNPM_STORE_DIR`, which the script passes to
-  `pnpm install`) and cached with `actions/cache`, keyed on `pnpm-lock.yaml`.
-- The job uses no secrets and no `save/` data. A person can run the same script locally (it checks the Node and pnpm
-  versions first); agents keep using `pnpm --silent test:agent` (V1).
+### Direct assets
+
+The page, the worker, and the server's asset route together ([assets](assets.md) for `getFileSrc`'s side,
+[self-host-server](self-host-server.md) for the route):
+
+- `src/ts/bootstrap.ts` `registerSw` registers `public/sw.js` and `probeSw` fetches `/sw/init`; only a JSON answer with
+  `directAssets === true` calls `setDirectAssets(true)`, so a non-JSON answer, a missing or false flag, or an older
+  worker leaves it false. A `controllerchange` clears the capability and probes the new controller; only the newest
+  probe can set it.
+- With the capability on, `globalApi.getFileSrc` gives a page this worker controls `/api/asset/<hex>` URLs, and the
+  worker signs those subresource loads with the page's key (`fetchAsset`).
+- With it off, a page using the worker checks `risuCache` itself, registers a miss through `/sw/register/<hex>`, and
+  loads `/sw/img/<hex>`; `/sw/check` serves only when page-side Cache Storage lookup is unavailable or fails. Without
+  the worker, or when that path fails, `getFileSrc` returns an object URL. Activation drops the `/sw/img/` entries, and
+  a later miss is answered from the signed route (`getSource`), so a URL handed out before still loads.
+
+### Share target
+
+The manifest's `share_target` POST reaches the worker's `/sw/share`, which caches the first file at `/sw/share/<kind>`
+and redirects to `/#share_<kind>`. `characterCards.characterURLImport` uses `importPendingShare` to read the pending
+file directly from Cache Storage even on an uncontrolled page, deleting it only after a truthy import result. A thrown,
+falsy, or cancelled import retains it; missing Cache Storage or a missing entry does nothing.
+
+### Worker Web Push
+
+[Web Push](network-jobs.md) from the server to the worker and on to the page:
+
+- `push` shows every completion (also with a window in front: Safari requires it) under the payload's chat tag
+  (`risuai-chat-completion:<hash>`, `shared/notifications.ts` `COMPLETION_NOTIFICATION_TAG`), silent while an app window
+  is in front so it does not sound after the page's `playMessage`, and closed again if one still is.
+- Before the display, the app's windows are posted `risu-push-completion` with the checked chat route, and
+  `src/ts/network/pushNotifications.ts` calls `refreshChatAfterPush` (`src/ts/process/serverCommands.ts`), which reads
+  the chat again unless a followed job covers it. `notificationclick` focuses a window and posts `risu-open-route`,
+  which `pushNotifications.ts` answers through a `MessageChannel` within 2 s, else the worker navigates the window or
+  opens one.
+- Each push and click leaves content-free records (`push` phases `received`, `shown`/`shownSilent`, `closedInFront`,
+  `showFailed`, `clicked`; `inFront`, `focusedHidden`) in IndexedDB `risu-sw-diagnostics`, which the diagnostic report
+  reads ([diagnostics](diagnostics.md)).
+- `pushsubscriptionchange` is not handled: the page registers the new subscription when it opens.
 
 ## State
 
@@ -444,7 +301,7 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
 ### Gotchas
 
 - Playwright's bundled Firefox drops service worker control after a navigation the worker does not answer
-  (`public/sw.js` lets every non-`/sw/` request fall through): the next document has
+  (`public/sw.js` lets every navigation fall through): the next document has
   `navigator.serviceWorker.controller === null`, so the app runs in the blob fallback instead of direct asset mode.
   Chrome keeps control, and so does a real Firefox build
   ([observation](../audit/direct-assets-browser-control-2026-10-24.md)).

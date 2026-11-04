@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 // Write smaller Brotli and gzip siblings for production app files, excluding HTML and source maps.
 // Usage: node util/compressDist.mjs [dist-directory]; defaults to the repository's dist/.
+// `pnpm build` runs it after Vite. The extensions are the set `server/src/http/staticCache.ts`
+// negotiates the siblings for. Largest files first, at most four in flight; Brotli quality drops to 9
+// above 16 MiB. A sibling is kept only when smaller than its input, published through a temporary file
+// and rename, and a stale sibling is removed. Any failure exits 1, failing the build.
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { availableParallelism } from "node:os";

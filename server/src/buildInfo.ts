@@ -18,7 +18,8 @@ const runGit: GitRunner = (args, cwd) =>
  * The build of the checkout at `rootDir`. `RISU_BUILD_COMMIT` (with the optional `RISU_BUILD_DATE`,
  * `YYYY-MM-DD`, and `RISU_BUILD_DIRTY=true`) wins when set: the Docker build has no `.git`.
  * Otherwise git gives the HEAD commit, its committer date (`%cs`, the same on every machine), and
- * whether `git status` lists a change. Unknown when neither works.
+ * whether `git status` lists a change. Unknown when neither works; a `RISU_BUILD_COMMIT` that is
+ * non-empty after trimming but not 9 to 40 hex digits also gives an unknown build, without asking git.
  */
 export function resolveBuildInfo(
     rootDir: string,
