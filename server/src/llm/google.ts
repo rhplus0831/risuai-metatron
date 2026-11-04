@@ -517,6 +517,11 @@ async function requestGoogle(
 ): Promise<requestDataResponse> {
     const db = arg.ctx.db;
 
+    /**
+     * The `antiServerOverloads` re-request of a `RESOURCE_EXHAUSTED` answer (not for Vertex), bounded like a
+     * tool-call retry: at most `requestRetrys` re-requests, each after `toolRetryDelay` waited with the abort signal,
+     * then the original failure.
+     */
     const fallBackGemini = async (originalError: string): Promise<requestDataResponse> => {
         const failure: requestDataResponse = {
             type: "fail",
@@ -913,6 +918,13 @@ function initStreamState(state?: { [key: string]: string }): { [key: string]: st
     return state;
 }
 
+/**
+ * The Gemini (Google/Vertex) stream parser, one per response body (a tool follow-up builds a fresh one). Each `data:`
+ * event is applied once; a malformed line is skipped on its own, and `[DONE]` ends the parse. At most one cumulative
+ * `StreamResponseChunk` snapshot is emitted per read that applied an event (the flush emits one if none was): text at
+ * key `"0"`, and the tool calls, thoughts, signatures, usage, and model status as metadata keys that survive to the
+ * final snapshot. A signature's inlay save is started (not awaited) before its marker is appended to the text.
+ */
 function getTranStream(args: {
     modelInfo: LLMModel;
     saveSignature: boolean;

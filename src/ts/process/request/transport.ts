@@ -121,6 +121,12 @@ function dataUrlImage(mimeType: string, data: string): HTMLImageElement {
  * records are written before any later event is handled, callbacks (`mcpTool`, `cbs`) are answered
  * without holding up the stream, and the result or the stream becomes the `requestDataResponse` the
  * caller expects.
+ *
+ * The tokenizer scope (`src/ts/tokenizer.ts` `tabTokenScope`, the captured main model's) is taken with the ids, and
+ * the body carries JSON-serializable copies of the arguments and the tool descriptors (name, description, input
+ * schema). Cancelling the returned stream aborts the request; a stream that ends without a terminal event is an
+ * error (a failure before the answer, a stream error after it). Only a request from a plugin callback's hook carries
+ * its `channelCall` parentage.
  */
 export async function requestServer(
     arg: TransportArgument,

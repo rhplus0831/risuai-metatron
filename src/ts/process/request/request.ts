@@ -83,6 +83,9 @@ interface requestDataArgument {
      * later ones. A captured preset that is gone refuses the
      * request, as a plugin context's does. Without it a request without a chat reads the settings
      * views at its start; a request with a chat (its `chatRef` or plugin context) never reads it.
+     * The prompt preset, model preset, and persona (`src/ts/translator/translator.ts` captures them once per run) are
+     * used where a plugin context's ids would be: the preset-gone checks before each attempt, `requestChatDataMain`'s
+     * scope, WebLLM's user name, and the transport's ids.
      */
     requestIds?: ChatContextIds;
     escape?: boolean;
@@ -147,6 +150,11 @@ export interface StreamResponseChunk {
  * chat (its `chatRef`, else its plugin context's) is pinned and loaded from the start, before tool
  * discovery and the plugin hooks, until the request and its after-request hooks end (a streamed
  * reply keeps the transport's own pin until its stream ends). A chat that is gone fails the request.
+ *
+ * The retries (`requestRetrys`: an ordinary failure or a banned-script answer uses one retry, an overload failure
+ * half a retry with `antiServerOverloads`), the plugins' before/after request replacers, and escaping run here in the
+ * tab, around each `requestChatDataMain` attempt. The character's `request`
+ * trigger runs only for a server job's requests (`server/src/llm/outer.ts`); the tab's own requests go out without it.
  */
 export async function requestChatData(
     arg: requestDataArgument,
@@ -473,6 +481,11 @@ async function requestPinnedChatData(
     }
 }
 
+/**
+ * The tab's copy of `server/src/llm/request.ts` `reformater`, for the formats that run in the tab (Plugin, WebLLM),
+ * with the profile's system replacements. The leading system block kept with `hasFirstSystemPrompt` is left out of the
+ * role alternation and the start-with-user handling, and is put back in front afterwards.
+ */
 export function reformater(
     formated: OpenAIChat[],
     modelInfo: LLMModel | LLMFlags[],
@@ -560,6 +573,17 @@ export function reformater(
     return formated;
 }
 
+/**
+ * One request attempt. It resolves the slot with `resolveModelSlot` (the shared resolver over the captured model
+ * preset, with the request's `profileId`); a refusal fails with `noRetry`. `LLMFormat.Plugin` and `LLMFormat.WebLLM`
+ * run here with a detached copy of the resolved profile (its system replacement, plugin provider, and chat template)
+ * and its named-key decision (`credentialFor`; a refused binding fails with `noRetry`), through `requestPlugin` and
+ * `requestWebLLM` after `reformater`. Every other format goes to the server through `requestServer`
+ * (`src/ts/process/request/transport.ts`) with the caller's arguments as they came.
+ *
+ * It mutates its argument object: do not reuse the argument after the call. Plugin v3 calls it directly
+ * (`src/ts/plugins/apiV3/v3.svelte.ts`), skipping `requestChatData`'s retries and replacers.
+ */
 export async function requestChatDataMain(
     arg: requestDataArgument,
     model: ModelModeExtended,

@@ -26,6 +26,11 @@ const sentencePiece =
  * reference captured from the former client tokenizer (`server/src/tests/fixtures/tokens/browser-ids.json`).
  * `gemma` preserves its `gemmaTokenize`; `gemmaSentencePiece` is the SentencePiece fallback of a
  * failed Google count. `gemma/tokenizer.json` is unused.
+ *
+ * A row is `json` or `sentencePiece` over a `server/assets/token/` payload (`payloads.ts`, read through
+ * `webTokenizers.ts`, or `gemma.ts` for `gemma`); the tiktoken families use the package's data (`tiktoken.ts`). Only
+ * the tiktoken families refuse text with a special token; a new encoder that refuses must throw the message
+ * `server/src/prompt/tokens.ts` `isTokenizerTextRefusal` matches, so the count route answers that text `null`.
  */
 const LOADERS = {
     cl100k_base: tiktoken("cl100k_base"),

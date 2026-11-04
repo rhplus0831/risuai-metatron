@@ -18,6 +18,14 @@ export type ChatTokenHost = {
     gptVisionQuality: () => string | undefined;
 };
 
+/**
+ * A prompt's token arithmetic over `ChatTokenHost.count`. While the host's model takes no inlay images
+ * (`supportsInlayImage` false) every multimodal entry counts as `chatAdditionalTokens`; only otherwise are `mainModel`
+ * (the resolved main `LLMModel`) and `requestModel` (the selected OpenRouter/NanoGPT wire id, otherwise undefined)
+ * read. The production hosts (`src/ts/tokenizer.ts` `ChatTokenizer`, `server/src/prompt/runner.ts`,
+ * `server/src/prompt/memory/memoryTaskHost.ts`) supply both; a count-only host may omit them and gets the
+ * unknown-model fallback.
+ */
 export class ChatTokenCounter {
     private host: ChatTokenHost;
 

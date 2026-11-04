@@ -1,4 +1,8 @@
-// Numeric codes persisted in saves and shared files (presets, cards). Never renumber (STRUCTURE D5).
+/**
+ * The model descriptor vocabulary both runtimes share. `LLMFlags`, `LLMFormat`, `LLMTokenizer`, and `LLMProvider` are
+ * numeric codes persisted in saves and shared files (presets, cards; a saved custom model stores the numbers): only
+ * append a value, never renumber or reuse one (STRUCTURE D5).
+ */
 
 export const LLMFlags = {
     hasImageInput: 0,
@@ -119,7 +123,11 @@ export const LLMProvider = {
 } as const;
 export type LLMProvider = (typeof LLMProvider)[keyof typeof LLMProvider];
 
-/** A catalogue entry (the catalogue itself is still the client's `modellist.ts`). */
+/**
+ * A catalogue entry. The static catalogue is `shared/llm/models.ts` `BASE_LLM_MODELS`; the tab's
+ * `src/ts/model/modellist.ts` `LLMModels` is a copy of it plus its dynamic registrations. `format`, `flags`,
+ * `parameters`, `internalID`, `endpoint`, and `tokenizer` must agree: wrong flags silently change the prompt shape.
+ */
 export interface LLMModel {
     id: string;
     name: string;

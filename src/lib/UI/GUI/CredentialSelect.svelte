@@ -7,6 +7,14 @@
     import OptionInput from "./OptionInput.svelte";
     import SelectInput from "./SelectInput.svelte";
 
+    /**
+     * The per-profile key select. The options are the provider default and the records the model's credential slot
+     * accepts (`src/ts/model/credentials.ts` `credentialsAccepted`); a bound key outside them (missing or of another
+     * type) shows as a disabled entry, and a refusal shows its reason (`credentialFor`). Choosing writes the profile's
+     * `credentialId` through `collectionStore.svelte.ts` `setProfileCredential` (`null` for the default). A model with
+     * no slot shows nothing, or only the refusal and a remove button while a binding remains.
+     */
+
     interface Props {
         profileId: string;
         compact?: boolean;

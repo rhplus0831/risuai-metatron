@@ -2,6 +2,13 @@ import type { ModelProfile } from "../../../shared/database.ts";
 import { auxFetch } from "../network/auxFetch";
 import type { ModelGridItem } from "./modelGrid";
 
+/**
+ * OpenRouter discovery for the model pickers. Both lists go through `auxFetch` (`src/ts/network/auxFetch.ts`) with the
+ * edited profile, so the server sends that profile's bound key, or the flat default key when it binds none; a refused
+ * binding fails on the server (`server/src/llm/auxOps.ts` `planAuxOp`) and reads as an empty list here, never a
+ * default-account list. The free-model pick for `risu/free` lives on the server (`server/src/llm/openrouter.ts`).
+ */
+
 /** Per-1M-token price entry. undefined means the field is not available for this model. */
 export type PriceEntry = number | undefined;
 

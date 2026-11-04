@@ -419,6 +419,11 @@ export type JobRequestSpec = {
  * `error` with the reason), aborts every upstream fetch, rejects every pending callback, and fences
  * every later event, whether or not the adapter's work has stopped; that work drains in the
  * background (`dispose` waits for it, bounded).
+ *
+ * It owns request admission (refused during shutdown or maintenance; a tab's request also by its client's
+ * `MAX_REQUESTS_PER_CLIENT` count) and `runInJob`, which carries a job's frozen settings, tokenizer scope, tools,
+ * callbacks, and abort signal into a request. The `strongBan` token cache is shared by every request and keyed by the
+ * phrase and the request scope's tokenizer identity (`shared/tokenizerChoice.ts` `tokenizerIdentityKey`).
  */
 export function createLlmRequests(options: LlmRequestsOptions) {
     const now = options.now ?? Date.now;

@@ -46,6 +46,13 @@ function pushDynamicModel(model: LLMModel) {
     dynamicModelIds.add(model.id);
 }
 
+/**
+ * When `dynamicModelRegistry` is on, fetches the Google (models with `generateContent` only), Anthropic, and OpenAI
+ * (`gpt-` ids only) model lists, each only while that provider's default credential is set, and appends to `LLMModels`
+ * every model whose id or `internalID` is not already listed. Every descriptor field comes from
+ * `shared/llm/models.ts` `dynamicModelOf` except the display names and recommendations; an OpenAI model also gets its
+ * `-response-api` twin. A failed list is logged (OpenAI's silently dropped) and the others still register.
+ */
 export async function registerModelDynamic() {
     if (!settings.providers.dynamicModelRegistry) {
         return;
@@ -161,6 +168,9 @@ globalThis.registerModelDynamic = registerModelDynamic;
 /**
  * A definition with the main profile's flags (the captured pair when supplied), or an explicit
  * profile's flags. Null means no profile and uses schema defaults, never the active main profile.
+ * It is `shared/llm/models.ts` `resolveModelInfo` over those custom flags (`profile`, else the main profile of
+ * `scope`'s model preset, a request's captured pair, else of the selected one), `settings.customModels` (the record
+ * views), this tab's `LLMModels`, and `customV3ProviderMetaStore` (the plugin models).
  */
 export function getModelInfo(id?: string | null, scope?: PresetScope, profile?: ModelProfile | null): LLMModel {
     const field = (name: "enableCustomFlags" | "customFlags") =>
@@ -189,6 +199,11 @@ interface GetModelListGroup {
     models: LLMModel[];
 }
 
+/**
+ * The models for the UI: grouped by provider name (each AsIs and NanoGPT model its own `@as-is` group, plugin models
+ * last as `Plugins`), or a new ungrouped array of the catalogue then the plugin models. Listing never appends plugins
+ * to `LLMModels`.
+ */
 export function getModelList<T extends boolean>(
     arg: {
         recommendedOnly?: boolean;

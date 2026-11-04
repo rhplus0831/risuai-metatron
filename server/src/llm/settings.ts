@@ -77,6 +77,10 @@ export type LoadedRequestDb = {
     userName: string;
 };
 
+/**
+ * Thrown by `loadRequestDb` when the request's preset, model preset, or persona (selected or effective) is gone: a
+ * request never falls back to another selection.
+ */
 export class RequestTargetGoneError extends Error {
     constructor(what: string) {
         super(`The request's ${what} no longer exists`);

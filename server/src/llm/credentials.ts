@@ -4,6 +4,7 @@ import { resolveCredentialBinding, type CredentialRefusalReason } from "../../..
 import { messages } from "./messages.ts";
 import type { RequestDb } from "./settings.ts";
 
+/** A binding's outcome; `default` carries no key and leaves the choice to the adapter. */
 export type ResolvedCredential =
     | { kind: "default" }
     | { kind: "key"; key: string }
@@ -23,7 +24,13 @@ export function defaultCredentialKey(modelId: string | undefined, defaultKey: st
     return modelId === "reverse_proxy" || modelId?.startsWith("xcustom:::") ? "" : (defaultKey ?? "");
 }
 
-/** Resolve only the profile's binding; an invalid binding never redirects to a default credential. */
+/**
+ * Resolve only the profile's binding; an invalid binding never redirects to a default credential. It is
+ * `shared/llm/credentialBinding.ts` `resolveCredentialBinding` over the resolved profile and the plaintext keys (a
+ * key counts when it is nonblank), answered as `default`, `key`, `vertex` (`clientEmail`, `privateKey`,
+ * `projectId?`), or `refused` with an English message (`server/src/llm/messages.ts` `errors.credential*`) that names
+ * the model and, when a record exists, the key's name, never its value.
+ */
 export function resolveCredential(
     db: Pick<RequestDb, "credentials">,
     aiModel: string,

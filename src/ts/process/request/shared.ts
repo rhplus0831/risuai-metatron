@@ -62,6 +62,14 @@ export function getAdditionalParameters(aiModel?: string): [string, string][] {
     return additionalParams;
 }
 
+/**
+ * The additional parameters (`getAdditionalParameters`), applied to a built body so they can override or delete body
+ * fields and headers; an adapter may still set fields after them (the OpenAI Chat and Responses adapters set
+ * `stream`). A `header::` key targets a header and takes its value as a literal string; `{{none}}` deletes the field
+ * or header. For body fields only, a `json::` value is parsed as JSON (an unparsable one is skipped), quotes are
+ * removed, `true`/`false`/`null` and numbers are typed, and a dotted key sets a nested field (a delete takes the key
+ * as written). These are trusted user configuration. The server's copy is `server/src/llm/shared.ts`.
+ */
 export function applyAdditionalParameters<T extends Record<string, any>>(
     body: T,
     headers: Record<string, string>,
@@ -119,6 +127,12 @@ export function applyAdditionalParameters<T extends Record<string, any>>(
     return body;
 }
 
+/**
+ * Writes the preset's values of the caller's `parameters` into `data`, for every mode, under their `rename` names. A
+ * numeric `-1000` means unset and is left out; reasoning effort and verbosity become named levels first, so they are
+ * always written. A preset's stored `seperateParameters` fields are never read. Only the tab's plugin path uses this
+ * copy (with a fixed list); the server has its own (`server/src/llm/shared.ts`).
+ */
 export function applyParameters(
     data: Record<string, any>,
     parameters: LLMParameter[],

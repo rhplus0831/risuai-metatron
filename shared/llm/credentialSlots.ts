@@ -38,6 +38,13 @@ function slot(
  * Credential metadata for the client and server resolver. Bindings live on model profiles.
  * Keep the defaults aligned with the adapters: every NanoGPT format reads the NanoGPT key by
  * default. This describes routing only; it neither resolves a binding nor changes a request.
+ *
+ * It answers the named-key type a model accepts, or `null` for a model with no named-key type; the binding itself is
+ * the profile's `credentialId` (`shared/llm/credentialBinding.ts`). This table owns the provider and model exceptions:
+ * reverse proxies and custom endpoints have no flat default, and a `keyIdentifier` model uses its own
+ * `OaiCompAPIKeys` entry unless a `custom` credential is bound. A new provider gets a row here (and a
+ * `CREDENTIAL_TYPES` entry in `shared/database.ts` if it needs its own type, with `language.sharedApiKeys.types` and
+ * `defaults` strings), and its server adapter prefers `arg.key`.
  */
 export function credentialSlotOf(
     modelId: string,

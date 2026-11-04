@@ -15,6 +15,8 @@ import type { Tokenizers } from "./tokenizers/index.ts";
  * - Google's `countTokens` uses the server's `llmSecrets.google.accessToken`, with an LRU of 1,500;
  *   a count rejects after 30 s.
  */
+
+/** The entries of the encode cache and of the Google count cache. */
 export const TOKEN_CACHE_SIZE = 1500;
 export const GOOGLE_COUNT_TIMEOUT_MS = 30_000;
 export const GOOGLE_COUNT_MAX_CONCURRENT = 8;
@@ -53,7 +55,12 @@ export function tokenScopeFromTab(tokenizer: TabTokenScope, googleAccessToken: s
     };
 }
 
-/** Tiktoken refuses special tokens in ordinary text; loader and service failures are not refusals. */
+/**
+ * Tiktoken refuses special tokens in ordinary text; loader and service failures are not refusals. `cl100k_base` and
+ * `o200k_base` refuse a text containing one of their special tokens (`<|endoftext|>`, `<|endofprompt|>`, and for
+ * `cl100k_base` the `<|fim_...|>` ones). The count route (`server/src/routes/tokens.ts`) answers such a text `null`
+ * and fails the whole batch on any other throw; the encode route answers 400.
+ */
 export function isTokenizerTextRefusal(error: unknown): error is Error {
     return (
         error instanceof Error && error.message.startsWith("The text contains a special token that is not allowed: ")
@@ -70,6 +77,13 @@ type PendingGoogleCount = {
 
 export type TokenCounter = ReturnType<typeof createTokenCounter>;
 
+/**
+ * A counter over the shared tokenizer choice. Concurrent Google counts of the same text and model share one call:
+ * a caller's abort cancels it only after its last waiter leaves, while its own 30 s timeout, which starts when the
+ * call is sent (not while it waits in the queue), fails every waiter. At most `GOOGLE_COUNT_MAX_CONCURRENT` calls are
+ * outstanding. A non-200 Google answer counts
+ * with `gemmaSentencePiece`.
+ */
 export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?: typeof fetch }) {
     const { tokenizers } = options;
     const fetchImpl = options.fetchImpl ?? fetch;

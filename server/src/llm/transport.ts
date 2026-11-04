@@ -15,6 +15,9 @@
  * request ends (`captures`), with the first `STREAM_CAPTURE_BYTES` of its body; an adapter's
  * `addLog` as it is. The tab's log keeps the pre-fetch "Streamed Fetch" entry, which is not
  * recorded. A `record` failure never changes the provider's answer.
+ *
+ * On the server an unhandled promise rejection ends the process: a fire-and-forget promise here or in an adapter (a
+ * `pipeTo`, a `fetch`, a signature save) must catch.
  */
 
 export type FetchLogEntry = {

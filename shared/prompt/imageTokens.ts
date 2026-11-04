@@ -1,6 +1,16 @@
 import { LLMFormat, type LLMModel } from "../llm.ts";
 import type { MultiModal } from "../openai.ts";
 
+/**
+ * Image token estimates. `IMAGE_RULES` holds the model- and detail-dependent OpenAI tile and patch rules, matched by
+ * the wire id (the request model, else the descriptor's `internalID` or `id`, without `openai/`); the GPT-4o 85/170
+ * tile rule is the explicit fallback for every unknown wire id, other vendors' included. Only the formats that send
+ * image `detail` through the OpenAI Chat/Responses adapters honor low detail; everything else counts as high. Missing
+ * or invalid image dimensions count as 512×512. While image input is supported, video, audio, and signature entries
+ * count a flat `NON_IMAGE_TOKENS` (85); otherwise `shared/prompt/chatTokens.ts` charges `chatAdditionalTokens` per
+ * entry.
+ */
+
 const DEFAULT_IMAGE_SIZE = 512;
 const TILE_SIZE = 512;
 const TILE_MAX_DIMENSION = 2048;

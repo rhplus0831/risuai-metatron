@@ -11,6 +11,13 @@
     import type { LLMFlags, LLMFormat, LLMTokenizer } from "src/ts/model/types";
     import { v4 } from "uuid";
 
+    /**
+     * Edits the `settings.customModels` entries (`shared/database.ts` `CustomModel`): definitions with no key; a
+     * profile that uses one picks the key. The add button creates an `xcustom:::<uuid>` model; a deleted definition
+     * leaves the profiles naming it with their model id. The format, tokenizer, and flag lists are kept by hand and do
+     * not cover every value.
+     */
+
     let openedModels = $state(new Set<string>());
 
     let {

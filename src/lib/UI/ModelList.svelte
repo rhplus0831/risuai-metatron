@@ -7,6 +7,15 @@
     import { getModelInfo, getModelList } from "src/ts/model/modellist";
     import { ArrowLeft } from "@lucide/svelte";
 
+    /**
+     * A model id picker: a button showing `getModelInfo(value)`'s full name opens a list of the catalogue
+     * (`src/ts/model/modellist.ts` `getModelList`, grouped by provider, catalogue entries recommended only unless the
+     * user asks for all; registered plugin models stay listed), the Horde models (`src/ts/horde/getModels.ts`), the
+     * custom models, and a "none" entry when `blankable`. Choosing writes only the bindable `value` and calls
+     * `onChange`; it writes no slot or profile itself (the profile editor binds it to a profile's `modelId`). It
+     * fetches nothing on credential changes.
+     */
+
     interface Props {
         value?: string;
         onChange?: (v: string) => void;

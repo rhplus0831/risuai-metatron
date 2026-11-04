@@ -207,6 +207,13 @@ export type AuxOpPlan =
  * set: the parsed URL must have the row's exact origin and path and no credentials of its own,
  * and the method must match. Caller-sent credential headers and `key` parameters are removed
  * before the server's are added.
+ *
+ * `profile` is the stored profile's credential decision, when the request names one (`risu-aux-profile`), resolved by
+ * `server/src/app.ts` `auxCredential` with `resolveCredential` over the stored records. Only the rows with a `slot`
+ * accept a profile: the five NanoGPT rows (`nanogpt`), `ollama-cloud-tags` (`ollama`), and the OpenRouter models and
+ * providers rows (`openrouter`). A profile on any other row, a profile whose slot differs, or a non-key binding
+ * refuses (400); an invalid binding refuses with generation's refusal message, never a default key. A bound key
+ * replaces the row's secret and so joins the plan's redaction `secrets`.
  */
 export function planAuxOp(
     name: string,

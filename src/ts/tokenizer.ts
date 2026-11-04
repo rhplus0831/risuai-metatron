@@ -17,6 +17,12 @@ import { LRUMap } from "mnemonist";
 import { tokenizerIdentityKey, type TabTokenScope } from "../../shared/tokenizerChoice.ts";
 import { ChatTokenCounter } from "../../shared/prompt/chatTokens.ts";
 
+/**
+ * The tab's token counts. On-screen counts go through the authenticated `/api/tokens/count` route and playground ids
+ * through `/api/tokens/encode`; no tokenizer loads in the tab. `tabTokenScope` is also what
+ * `src/ts/process/request/transport.ts` sends with a request, so a request and the counts on screen use one scope.
+ */
+
 const MAX_CACHE_SIZE = 1500;
 const MAX_BATCH_TEXTS = 256;
 const MAX_BATCH_TEXT_BYTES = 1024 * 1024;
@@ -59,13 +65,15 @@ export function tabTokenScope(presetScope?: PresetScope, mainModel?: LLMModel): 
 }
 
 /**
- * The scope a server job counts with (`tokenScopeFor` in `server/src/llm/settings.ts`): the tab's,
- * without the plugin provider's tokenizer, which never counts on the server.
+ * The scope a server job counts with (`tokenScopeFor` in `server/src/llm/settings.ts`): the tab's, with
+ * `pluginTokenizer` forced to `"none"`, as jobs count. That `"none"` is what the context meter compares with a
+ * context report's `tokenScope`.
  */
 export function jobTokenScope(presetScope?: PresetScope): TabTokenScope {
     return { ...tabTokenScope(presetScope), pluginTokenizer: "none" };
 }
 
+/** The captured scope's identity (`shared/tokenizerChoice.ts` `tokenizerIdentityKey`), the count cache's key part. */
 export function tokenScopeKey(captured: TabTokenScope = tabTokenScope()): string {
     return tokenizerIdentityKey({
         ...captured,
@@ -168,6 +176,11 @@ function flushCounts(key: string, batch: PendingBatch) {
 /**
  * Counts with the captured main model's scope. Signal-less calls in one macrotask share batches;
  * a signal owns its request. Only the captured caching flag controls cache reads and writes.
+ *
+ * A batch splits at 256 texts or 1 MiB of JSON-escaped UTF-8; an oversized text is sent alone. The 1500-entry LRU is
+ * keyed by the text and the tokenizer identity (`tokenScopeKey`). A `null` count rejects that text only; a failed or
+ * malformed batch rejects every text in it. An abort ends the request, so the server stops its remaining work (a
+ * shared Google count is cancelled only after its last waiter leaves).
  */
 export async function countTokens(text: string, scope?: PresetScope, signal?: AbortSignal): Promise<number> {
     if (signal?.aborted) {
@@ -206,6 +219,10 @@ export async function countTokensInScope(text: string, captured: TabTokenScope, 
     });
 }
 
+/**
+ * The playground's tokenizer names. A new name also gets its `shared/tokenizerChoice.ts` `byName` and
+ * `playgroundFamily` cases unless their fallbacks are intended (`tik` relies on them).
+ */
 export const tokenizerList = [
     ["tik", "Tiktoken (OpenAI)"],
     ["mistral", "Mistral"],
@@ -254,7 +271,10 @@ function expandTokenCountText(text: string, consistantChar?: boolean): string {
 
 export type TokenCountInput = { text: string; expanded: string; scope: string } | { text: string; error: unknown };
 
-/** Reads count dependencies synchronously, carrying preparation failures to the delayed count. */
+/**
+ * Reads count dependencies synchronously, carrying preparation failures to the delayed count. It captures the
+ * CBS-expanded text and the tokenizer identity, so a delayed UI count is invalidated by a relevant model or CBS change.
+ */
 export function tokenCountInput(text: string): TokenCountInput {
     try {
         return { text, expanded: expandTokenCountText(text), scope: tokenScopeKey() };
@@ -263,6 +283,7 @@ export function tokenCountInput(text: string): TokenCountInput {
     }
 }
 
+/** Counts the text after CBS expansion. */
 export async function tokenizeAccurate(data: string, consistantChar?: boolean, signal?: AbortSignal) {
     return countTokens(expandTokenCountText(data, consistantChar), undefined, signal);
 }

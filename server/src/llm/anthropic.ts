@@ -995,6 +995,12 @@ async function requestClaudeHTTP(
                 result: await textifyReadableStream(res.body!),
             };
         }
+        /**
+         * The Anthropic stream parser's line reader, one per response body. Each `data:` event is applied once and a
+         * malformed line is skipped on its own; at most one cumulative snapshot (`StreamResponseChunk`, text at key
+         * `"0"`, thinking inside `<Thoughts>`) is emitted per read that applied an event; the flush closes an open
+         * thinking block.
+         */
         const lines = new SseLines();
         let text = "";
         let thinking = false;

@@ -58,6 +58,11 @@ export type TokenizerIdentity = {
     pluginTokenizer: string;
 };
 
+/**
+ * The identity of a tokenizer scope: every field that can change which tokenizer counts, the model's `internalID`
+ * included (Google counts by it). The tab's count cache (`src/ts/tokenizer.ts` `tokenScopeKey`), the server's encode
+ * cache, the strong-ban cache, and the context report's `tokenScope` all key by it.
+ */
 export function tokenizerIdentityKey(scope: TokenizerIdentity): string {
     return JSON.stringify([
         scope.aiModel,
@@ -70,7 +75,10 @@ export function tokenizerIdentityKey(scope: TokenizerIdentity): string {
     ]);
 }
 
-/** The tab's tokenizer scope, sent to the LLM request and token count routes. */
+/**
+ * The tab's tokenizer scope, sent to the LLM request and token count routes: the main model's tokenizer settings,
+ * captured at call time (`src/ts/tokenizer.ts` `tabTokenScope`).
+ */
 export type TabTokenScope = {
     aiModel: string;
     currentPluginProvider: string;
@@ -155,6 +163,15 @@ function byName(name: string): TokenizerChoice | null {
     }
 }
 
+/**
+ * Which tokenizer counts a model's text, for the server counter and routes: `openrouter` and `reverse_proxy` by
+ * `customTokenizer` (else `o200k_base`), the legacy plugin `custom` model by its declared tokenizer (`custom` is
+ * `pluginFunction`; an unknown name `o200k_base`), else the catalogue family. `GoogleCloud` is Google's count with
+ * `googleClaudeTokenizing`, else `gemma`; `Llama3`, `Local`, and `Unknown` count with `cl100k_base`. A new
+ * user-pickable name gets a `src/ts/tokenizer.ts` `tokenizerList` row and its `byName` and `playgroundFamily` cases
+ * unless their fallbacks are intended (`tik` relies on them: `o200k_base` as an override, `cl100k_base` in the
+ * playground).
+ */
 export function selectTokenizer(settings: TokenizerSettings): TokenizerChoice {
     if (settings.aiModel === "openrouter" || settings.aiModel === "reverse_proxy") {
         return byName(settings.customTokenizer) ?? family("o200k_base");

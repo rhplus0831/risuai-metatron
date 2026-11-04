@@ -1,9 +1,3 @@
-// The server request layer: a port of `src/ts/process/request/request.ts`'s `requestChatDataMain`
-// and its per-format functions. The client keeps the outer `requestChatData` loop (replacers, the
-// request trigger, retries) and the formats that run in the tab (`Plugin`, `WebLLM`);
-// `POST /api/llm/request` runs this for every other format. The client's module reads
-// (`getDatabase`, `globalFetch`, the selected character, `getUserName`, `risuChatParser`, ...)
-// are the request context's (`arg.ctx`).
 import { Ollama } from "ollama";
 import type { ModelProfile } from "../../../shared/database.ts";
 import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
@@ -34,6 +28,20 @@ import type { RequestDb } from "./settings.ts";
 import { getStopStrings, stringlizeAINChat, unstringlizeAIN, unstringlizeChat } from "./stringlize.ts";
 import { deferFirstByte, watchFirstByte } from "./transport.ts";
 import { sleep } from "./util.ts";
+
+/**
+ * The server request layer: a port of `src/ts/process/request/request.ts`'s `requestChatDataMain`
+ * and its per-format functions. The tab keeps its outer `requestChatData` loop (its retries and plugin replacers)
+ * and the formats that run in the tab (`Plugin`, `WebLLM`); `POST /api/llm/request` runs this for every other format.
+ * A job's request runs the character's request trigger through `server/src/llm/outer.ts`. The client's module reads
+ * (`getDatabase`, `globalFetch`, the selected character, `getUserName`, `risuChatParser`, ...)
+ * are the request context's (`arg.ctx`).
+ *
+ * The provider adapters exist only on the server: this file's per-format functions, `server/src/llm/anthropic.ts`,
+ * `server/src/llm/google.ts`, and `server/src/llm/openAI/` (with the helpers `server/src/llm/nai.ts` and
+ * `server/src/llm/openrouter.ts`). An adapter reads nothing outside `arg.ctx` and its arguments, so a provider change
+ * goes into them.
+ */
 
 export type { StreamResponseChunk };
 
@@ -241,6 +249,10 @@ function normalizeOllamaStreamResponse(response: Response): Response {
     });
 }
 
+/**
+ * Reshapes the prompt from the model flags. The leading system block kept with `hasFirstSystemPrompt` is left out of
+ * the role alternation and the start-with-user handling, and is put back in front afterwards.
+ */
 export function reformater(
     formated: OpenAIChat[],
     modelInfo: LLMModel | LLMFlags[],
@@ -375,7 +387,13 @@ export type ResolvedRequestModel =
     | { kind: "refused"; result: string }
     | { kind: "resolved"; db: RequestDb; profile: ModelProfile | undefined; aiModel: string; modelInfo: LLMModel };
 
-/** Slot → profile → descriptor, as `requestChatDataMain` resolves them. */
+/**
+ * Slot → profile → descriptor, as `requestChatDataMain` resolves them. Every mode, an auxiliary one included, gets a
+ * request-local `db`: a copy of the context's with the resolved profile's roots forwarded as detached copies
+ * (`shared/sections.ts` `forwardProfileRoots`; schema defaults without a profile). Every mode runs on that
+ * request-local profile overlay (`ctx.db`); the resolved descriptor and custom URL go to the adapter on the request
+ * argument. The job's frozen database and a captured profile are never mutated.
+ */
 export function resolveRequestModel(
     ctx: Pick<RequestContext, "db" | "getModelInfo">,
     model: ModelModeExtended,
@@ -441,6 +459,10 @@ export function resolveJobRequestModel(
  * `WebLLM` (a local Transformers.js model) runs on the server (`ctx.localGeneration`): both for a
  * job's request only; a tab runs them itself and its transport never sends them. Dynamic provider
  * models resolve from their ids through the shared catalogue.
+ *
+ * The named key (`server/src/llm/credentials.ts` `resolveCredential`) is resolved before `reformater` and dispatch: a
+ * refusal fails with `noRetry`, a bound Vertex account populates `vertexCredential`, and any other bound key replaces
+ * `arg.key`, which the adapters prefer over the flat default.
  */
 export async function requestChatDataMain(
     arg: RequestArgs & { tools: ToolDescriptor[] },

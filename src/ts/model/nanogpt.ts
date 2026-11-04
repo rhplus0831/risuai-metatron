@@ -12,6 +12,14 @@ import {
 } from "../../../shared/llm/providers/nanogpt.ts";
 import type { ModelGridItem } from "./modelGrid";
 
+/**
+ * NanoGPT discovery and account reads. The account and model calls use the stored NanoGPT key on the server: they go
+ * through `auxFetch` (`src/ts/network/auxFetch.ts`) with the edited profile, so the server sends that profile's bound
+ * key, or the flat default key when it binds none. A refused binding does not fall back to a default or public
+ * account: the server refuses the call (`server/src/llm/auxOps.ts` `planAuxOp`), and `getNanoGPTModels` answers an
+ * empty list instead of the public one. Only `getNanoGPTModels` without any key set reads the public list directly.
+ */
+
 const NANOGPT_KEY: SecretPath = { kind: "flat", field: "nanogptKey" };
 
 export type NanoGPTModelInfo = {
@@ -62,7 +70,6 @@ export type NanoGPTSubscriptionUsage = {
     period: { currentPeriodEnd: string };
 };
 
-// The account and model calls use the stored NanoGPT key on the server (`auxFetch`).
 export async function getNanoGPTBalance(profile?: ModelProfile): Promise<NanoGPTBalance | null> {
     try {
         const res = await auxFetch("nanogpt-balance", NANOGPT_BALANCE_ENDPOINT, {

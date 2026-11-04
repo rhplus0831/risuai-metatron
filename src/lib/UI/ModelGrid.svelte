@@ -3,6 +3,14 @@
     import { language } from "src/lang";
     import TextInput from "./GUI/TextInput.svelte";
 
+    /**
+     * A searchable, sortable grid of discovered models (`ModelGridItem`s the caller fetched: OpenRouter, NanoGPT, or
+     * Ollama), with optional pinned entries. Choosing writes only the bindable `value` (an item also calls
+     * `onselect`); the caller binds it to a profile field such as `openrouterRequestModel`. It fetches nothing: the
+     * caller refetches its items on the binding identity or key version (`src/ts/model/credentials.ts`
+     * `credentialStatusFor`).
+     */
+
     interface Props {
         value?: string;
         items?: ModelGridItem[];

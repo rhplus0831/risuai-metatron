@@ -8,9 +8,14 @@ import { untrack } from "svelte";
  * next update a first count again; after `dispose` (unmount) no result is applied.
  */
 
+/** The quiet period before a count of a later input, unless `delayMs` overrides it. */
 export const TOKEN_COUNT_DELAY_MS = 400;
 
-/** Runs first immediately or via scheduleFirst, then after delayMs of quiet; aborts and ignores superseded runs, and keeps the last result on failure unless onError handles it. */
+/**
+ * Runs first immediately or via scheduleFirst, then after delayMs of quiet; aborts and ignores superseded runs, and
+ * keeps the last result on failure unless onError handles it. The count runs untracked, so the caller's input (what
+ * it passes to `update`) is the only reactive dependency.
+ */
 export function createTokenCountField<I, R = number>(options: {
     count: (input: I, signal: AbortSignal) => Promise<R>;
     apply: (result: R) => void;

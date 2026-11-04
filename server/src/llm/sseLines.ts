@@ -1,4 +1,8 @@
-/** Incremental UTF-8 lines for one SSE response body; only the unfinished line is retained. */
+/**
+ * Incremental UTF-8 lines for one SSE response body; only the unfinished line is retained. One instance holds one
+ * streaming decoder, so each response body (each tool follow-up's included) gets a fresh one. `end` flushes the
+ * decoder and an unterminated final line; a trailing `\r` is dropped from every line.
+ */
 export class SseLines {
     private readonly decoder = new TextDecoder();
     private buffer = "";

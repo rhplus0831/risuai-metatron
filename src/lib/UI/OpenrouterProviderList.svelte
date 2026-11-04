@@ -3,6 +3,13 @@
     import { language } from "src/lang";
     import TextInput from "./GUI/TextInput.svelte";
 
+    /**
+     * An OpenRouter provider picker over the `options` the caller fetched (`src/ts/model/openrouter.ts`
+     * `getOpenRouterProviders`), plus a free-text slug. Choosing writes only the bindable `value` and calls
+     * `onChange`; the caller stores it in the profile's `openrouterProvider` order, only, or ignore list (and refetches
+     * the options on the key version). It fetches nothing itself.
+     */
+
     interface Props {
         value?: string;
         options?: { name: string; slug: string }[];

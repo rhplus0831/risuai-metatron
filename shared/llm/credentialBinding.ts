@@ -20,7 +20,14 @@ function ownBinding(record: unknown, field: string): string | undefined {
     return typeof value === "string" ? value : undefined;
 }
 
-/** An invalid binding refuses; only an absent binding selects the existing default. */
+/**
+ * The one named-key binding decision; the tab's state (`src/ts/model/credentials.ts`) and the server's decision
+ * (`server/src/llm/credentials.ts`) both come from here, so change the rules here, not in a caller. It reads only the
+ * profile's own `credentialId`: none, or no profile, is `default`. An invalid binding refuses with the first failing
+ * reason, in order `unsupportedModel` (a binding on a model with no credential slot), `missing`, `empty` (`hasKey`
+ * false: the plaintext on the server, the masked status in the tab), `typeMismatch`, `vertexEmailMissing`; it never
+ * falls back to the default key.
+ */
 export function resolveCredentialBinding<T extends CredentialBindingRecord>(
     modelId: string,
     modelInfo: Pick<LLMModel, "provider" | "format" | "keyIdentifier">,

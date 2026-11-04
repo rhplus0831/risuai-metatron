@@ -19,6 +19,15 @@
     import ProviderDefaultKeys from "./Model/ProviderDefaultKeys.svelte";
     import { tick } from "svelte";
 
+    /**
+     * The Model menu's API Keys tab (`API_KEYS_SETTINGS_MENU`). It hosts `Model/ProviderDefaultKeys.svelte` (the flat
+     * provider defaults), then the named keys (`settings.credentials`, written through `collectionStore.svelte.ts`):
+     * the key value is write-only through `SecretInput`, and a delete is confirmed with every profile naming the key
+     * (`src/ts/model/credentials.ts` `credentialsUsing`, unused profiles included). The bindings list shows every
+     * profile with a `credentialId`, marks one whose key record is missing, and removes a binding with
+     * `setProfileCredential(id, null)`.
+     */
+
     let name = $state("");
     let type = $state<CredentialType>("openai");
     let clientEmail = $state("");

@@ -1025,6 +1025,13 @@ export async function requestOpenAILegacyInstruct(arg: RequestDataArgumentExtend
     };
 }
 
+/**
+ * The OpenAI Chat stream parser, one per response body (a tool follow-up builds a fresh one). Each `data:` event is
+ * applied once; a malformed line is skipped on its own, and `[DONE]` ends the parse. Content (per choice index with
+ * `multiGen`, else at key `"0"`), reasoning, and tool argument deltas are concatenated, and at most one cumulative
+ * `StreamResponseChunk` snapshot is emitted per read that applied an event (the flush emits one if none was). Tool
+ * calls (`__tool_calls`) ride on every snapshot, so they survive to the final one.
+ */
 function getTranStream(arg: RequestDataArgumentExtended): TransformStream<Uint8Array, StreamResponseChunk> {
     const lines = new SseLines();
     const readed: Record<string, string> = { "0": "" };

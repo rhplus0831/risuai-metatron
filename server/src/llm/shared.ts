@@ -63,6 +63,10 @@ export function getAdditionalParameters(db: RequestDb, aiModel?: string): [strin
     return additionalParams;
 }
 
+/**
+ * The same rule as `src/ts/process/request/shared.ts` `applyAdditionalParameters`: it can override or delete body
+ * fields and headers, an adapter may still set fields after it, and value parsing applies to body fields only.
+ */
 export function applyAdditionalParameters<T extends Record<string, any>>(
     body: T,
     headers: Record<string, string>,
@@ -120,6 +124,10 @@ export function applyAdditionalParameters<T extends Record<string, any>>(
     return body;
 }
 
+/**
+ * The same rule as `src/ts/process/request/shared.ts` `applyParameters`, over the request's `db`: the caller's
+ * parameters from the preset for every mode, never its stored `seperateParameters` fields.
+ */
 export function applyParameters(
     data: Record<string, any>,
     parameters: LLMParameter[],

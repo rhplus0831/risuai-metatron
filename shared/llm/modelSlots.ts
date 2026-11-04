@@ -1,6 +1,13 @@
 import type { ModelPreset, ModelProfile, ModelSlot } from "../database.ts";
 import type { ModelModeExtended } from "./request.ts";
 
+/**
+ * Model preset slot routing, which the tab (`src/ts/storage/settingsViews.svelte.ts` `resolveModelSlot`) and the
+ * server both call: never keep a local copy of these rules. A "slot" here is a model preset's routing position
+ * (`mainSlot`, `subSlot`, `auxSlots`), not a credential slot (`shared/llm/credentialSlots.ts`, the kind of key a model
+ * accepts). `ModelSlot`, `ModelPreset`, and the profile record `ModelProfile` are declared in `shared/database.ts`.
+ */
+
 const profileDefinitions = new Set([
     "reverse_proxy",
     "openrouter",
@@ -39,6 +46,16 @@ function bareModel(modelId: string): SlotProfileResolution {
  * auxiliary slots fall back to sub when disabled or unset, and `submodel` always uses sub. Dangling
  * profile ids refuse, never redirect. A bare definition uses profile field defaults and its flat
  * default key unless it requires a profile.
+ *
+ * `none` means the profile fields read at their schema defaults and the adapter's default credential. Refusals:
+ * `missingNamedProfile` (the named `profileId` is gone), `missingProfile` (the slot's profile is gone), `needsProfile`
+ * (a bare model that `definitionNeedsProfile` names).
+ *
+ * Order: a named `profileId` first. Then a supplied `staticModel` short-circuits slot routing: it uses the main
+ * profile only when that profile's `modelId` matches, otherwise it resolves as a bare static model with no profile
+ * (refused if `definitionNeedsProfile`). With no `staticModel`, `model` uses main; with `seperateModelsForAxModels`
+ * on, an auxiliary mode uses its slot (sub when unset); every other mode, `submodel` included, uses sub. No alternate
+ * profile is ever tried.
  *
  * Both runtimes already hold the profile collection as an array; no lookup needs to be built.
  */

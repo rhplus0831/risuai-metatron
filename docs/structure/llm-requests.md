@@ -36,209 +36,136 @@
 
 ## Files
 
+Each module's rules are in its doc comments (module header, then the named exports); an entry names the path, its role,
+and what to look up.
+
 ### Catalogue and model resolution
 
-- `shared/llm.ts` declares `LLMFlags`, `LLMProvider`, `LLMFormat`, `LLMTokenizer` (persisted numeric codes), `LLMModel`,
-  and `LLMParameter`. `shared/llm/types.ts` re-exports them and adds `ProviderNames` and the parameter presets such as
-  `OpenAIParameters`/`ClaudeParameters`.
-- `shared/llm/models.ts`: `BASE_LLM_MODELS`, the static list assembled from the provider arrays (with the derived
-  `-response-api` variants of OpenAI models and `-vertex` variants of Google models), and
-  `resolveModelInfo(id, { enableCustomFlags, customFlags, customModels, extraModels, pluginModels })`: static IDs (then
-  `extraModels`), `hf:::`, `horde:::`, `xcustom:::`, `pluginmodel:::`, `dynamicModelOf(id)`, else an as-is
-  OpenAI-compatible model. Static and explicit extra/prefixed models keep precedence over dynamic ids.
-- `dynamicModelOf` (`shared/llm/models.ts`) is the one discovery template builder: nonempty `dynamic_google_<id>`
-  (Google, upstream id without a leading `models/`), `dynamic_anthropic_<id>` (Anthropic), and `gpt-<id>` /
-  `gpt-<id>-response-api` (OpenAI Chat / Responses, upstream id without the Responses suffix). These resolve without a
-  tab descriptor or registry setting, including jobs, translation, transforms, image flags, CBS, and token scopes;
-  custom flags apply as for listed models. The server names dynamic models by id; the tab keeps the provider's display
-  name.
-- `model/modellist.ts`: the tab's registry.
-  - `LLMModels`: this tab's copy of `BASE_LLM_MODELS`, which `registerModelDynamic` appends to (`isDynamicModel(id)`
-    says which ids it added).
-  - `registerModelDynamic`: when `dynamicModelRegistry` is on, fetches model lists from Google, Anthropic, and OpenAI.
-    It uses `dynamicModelOf` for all descriptor fields except display names and recommendations.
-  - `getModelInfo(id, scope?, profile?)`: `resolveModelInfo` with the custom flags of `profile` (`null`: the schema
-    defaults, no profile), else of the main profile of `scope`'s model preset (a request's captured pair) or of the
-    selected one, `settings.customModels` (the record views), this tab's list, and `customV3ProviderMetaStore`.
-    `getModelInfoForMode(mode, scope?)`: the same for the profile a mode resolves to (`resolveModelSlot`).
-  - `getModelList`: grouped models for the UI, or a new ungrouped array of catalogue and plugin models; listing never
-    appends plugins to `LLMModels`.
+- `shared/llm.ts`: the persisted descriptor codes (`LLMFlags`, `LLMProvider`, `LLMFormat`, `LLMTokenizer`), `LLMModel`,
+  and `LLMParameter`. `shared/llm/types.ts` re-exports them with `ProviderNames` and the parameter presets
+  (`OpenAIParameters`, `ClaudeParameters`); static entries are in `shared/llm/providers/`.
+- `shared/llm/models.ts`: the catalogue and resolver both runtimes share: `BASE_LLM_MODELS`, `resolveModelInfo`, and
+  `dynamicModelOf`, the one discovery template builder. A dynamic id resolves from the id alone, so a job, a
+  translation, a transform, image flags, CBS, and token scopes need no tab descriptor or registry setting.
+- `src/ts/model/modellist.ts`: the tab's registry and lookups: `LLMModels`, `isDynamicModel`, `registerModelDynamic`,
+  `getModelInfo`, `getModelInfoForMode`, `getModelList`. The server's lookup is `server/src/llm/request.ts`
+  `requestModelLookup`.
 
 ### Model preset slots
 
-A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlots`). A credential slot, under
-`Credentials`, is a different thing: the kind of key a model accepts. `shared/database.ts` declares `ModelSlot`,
-`ModelPreset`, and the profile record `ModelProfile`.
+A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlots`); a credential slot, under
+`Credentials`, is the kind of key a model accepts.
 
-- `shared/llm/modelSlots.ts`: the slot routing both runtimes share.
-  `resolveSlotProfile(modelPreset, profiles, mode, staticModel?, profileId?)` answers
-  `{ kind: "profile", profile, modelId }`, `{ kind: "none", modelId }` (no profile: the profile fields at their schema
-  defaults and the flat default key), or
-  `{ kind: "refused", reason: "missingProfile" | "missingNamedProfile" | "needsProfile" }`.
-- `definitionNeedsProfile(modelId)` (`shared/llm/modelSlots.ts`): the definitions a bare slot cannot run
-  (`reverse_proxy`, `openrouter`, `nanogpt`, `ollama-hosted`, `ollama-cloud`, `ooba`, `mancer`, `kobold`, the legacy
-  plugin `custom`, every `xcustom:::`).
+- `shared/llm/modelSlots.ts`: the slot routing both runtimes call: `resolveSlotProfile` (the answer kinds, the refusal
+  reasons, the routing order) and `definitionNeedsProfile` (the definitions a bare slot cannot run). The tab calls it
+  through `src/ts/storage/settingsViews.svelte.ts` `resolveModelSlot` ([persistence](persistence.md) owns that file).
 
 ### Credentials
 
-- `shared/llm/credentialSlots.ts` `credentialSlotOf(modelId, modelInfo)` maps a model to its accepted named-key type, or
-  `null`. The binding is the profile's `credentialId`; the source table owns provider and model exceptions. Reverse
-  proxies and custom endpoints have no flat default. Key-identifier models use their own `OaiCompAPIKeys` entry unless a
-  `custom` credential is bound.
-- `shared/llm/credentialBinding.ts` `resolveCredentialBinding(modelId, modelInfo, profile, credentials, hasKey)`: the
-  one binding decision the tab and the server share. It reads the profile's own `credentialId` (none, or no profile, is
-  `default`) and answers `default`, `bound`, or `refused` with the first failing reason: `unsupportedModel` (a binding
-  on a model with no slot), `missing`, `empty` (`hasKey` false: the plaintext on the server, the masked status in the
-  tab), `typeMismatch`, `vertexEmailMissing`.
-- `model/credentials.ts`: the tab's named key readers. `credentialFor(profile, modelId?)` is `resolveCredentialBinding`
-  over the profile, the records, and `secretStatus` with pending writes. An absent `credentials` or `modelProfiles`
-  collection reads as empty.
-- `credentialsAccepted(modelId)` (`model/credentials.ts`): the records the slot accepts, in list order: the select
-  options. `credentialsUsing(credentialId)`: every profile naming the key, profiles no preset uses included: the delete
-  confirmation.
-- `credentialStatusFor(profile, defaultPath)` (`model/credentials.ts`) supplies discovery key gates and a refresh
-  identity containing the profile, binding path, refusal state, and that key's `secretVersion`, so switching between
-  named keys or from default to bound refetches.
-- `model/{openrouter,nanogpt,ollama}.ts`: supported discovery/account fetches take the edited profile through
-  `auxFetch`. A refused binding does not fall back to a public/default account; discovery refreshes on binding identity
-  or key-version changes.
-- `server/src/llm/credentials.ts` `resolveCredential(db, aiModel, modelInfo, profile)`: `resolveCredentialBinding` with
-  the resolved profile and the plaintext keys, as `default`, `key`, `vertex` (`clientEmail`, `privateKey`,
-  `projectId?`), or `refused` with an English message (`messages.ts` `errors.credential*`) naming the model and the
-  key's name, never its value.
-- `server/src/llm/auxOps.ts`: the `/proxy2` auxiliary operations (`self-host-server.md`): the media, memory, model
-  discovery, account, and count calls the tab makes with a stored key (`network-jobs.md` `auxFetch`).
-- `planAuxOp` (`auxOps.ts`) optionally takes the stored profile's credential decision: five NanoGPT rows use slot
-  `nanogpt`, Ollama cloud tags `ollama`, OpenRouter models/providers `openrouter`. A profile on any other row or a
-  different slot refuses (400); invalid bindings use generation's refusal message, never a default key. The app resolves
-  the profile with `resolveCredential` and the shared credential merge; selected named keys join the plan's redaction
-  secrets.
+- `shared/llm/credentialSlots.ts` `credentialSlotOf`: the named-key type a model accepts, and the provider and model
+  exceptions (`CREDENTIAL_TYPES` in `shared/database.ts`).
+- `shared/llm/credentialBinding.ts` `resolveCredentialBinding`: the one binding decision the tab and the server share,
+  with its refusal reasons in order.
+- `src/ts/model/credentials.ts`: the tab's readers: `credentialFor`, `credentialsAccepted` (the select options),
+  `credentialsUsing` (the delete confirmation), and `credentialStatusFor` (the discovery key gate `keySet` and the
+  refresh identity `keyVersion`).
+- `src/ts/model/openrouter.ts`, `src/ts/model/nanogpt.ts`, `src/ts/model/ollama.ts`: discovery and account fetches with
+  the edited profile, through `auxFetch` ([network jobs](network-jobs.md)) to the server's `/proxy2` rows. Their
+  callers, the pickers and panels `src/lib/Setting/Pages/Model/ModelProfileEditor.svelte` mounts
+  (`NanoGPTDashboard.svelte` among them), refetch on `keyVersion`.
+- `server/src/llm/credentials.ts` `resolveCredential`, `defaultCredentialKey`: the server's resolver over the plaintext
+  keys; refusal messages are `server/src/llm/messages.ts` `errors.credential*`.
+- `server/src/llm/auxOps.ts` `AUX_OPS`, `planAuxOp`: the `/proxy2` auxiliary operations ([server](self-host-server.md)):
+  the media, memory, model discovery, account, and count calls the tab makes with a stored key, and which rows accept a
+  profile. `server/src/routes/proxy.ts` reads the `risu-aux-profile` header, and `server/src/app.ts` `auxCredential`
+  resolves that profile with `resolveCredential` over the merged records (`server/src/llm/settings.ts`
+  `mergeCredentials`).
 
 ### Tab request layer
 
-- `request/request.ts`: request entry points.
-  - `requestChatData(arg, mode, abortSignal)`: the public entry. Handles retries, plugin before/after replacers, and
-    escaping, in the tab. The character's `request` trigger runs only for a server job's requests: the tab's own
-    requests go out without it.
-  - `requestChatDataMain`: resolves the slot (`resolveModelSlot`, the shared resolver over the captured model preset,
-    with the request's `profileId`; a refusal fails with `noRetry`); `LLMFormat.Plugin` and `LLMFormat.WebLLM` run here
-    with a detached copy of the resolved profile (its system replacement, plugin provider, and chat template) and its
-    named-key decision (`requestPlugin`, `requestWebLLM`, after `reformater`), every other format goes to the server
-    through `requestServer`.
-  - `requestIds` (a chatless request's captured prompt preset, model preset, and persona; the tab's translator pipeline
-    captures them once per run, `src/ts/translator/translator.ts`): used where a plugin context's ids would be (the
-    preset-gone checks before each attempt, `requestChatDataMain`'s scope, WebLLM's user name, the transport's ids); a
-    request with a chat ignores it.
-- `request/transport.ts` `requestServer(arg, mode, abortSignal, modelInfo)`: the tab half of `POST /api/llm/request`. It
-  captures the chat/preset/persona and tokenizer scope before awaiting the resource flush, then posts serializable
-  request args and tool descriptors. It consumes result and stream events, handles log/inlay/tool records, and answers
-  MCP/CBS callbacks; cancelling the response aborts the request, and a stream without a terminal is an error. Only a
-  plugin callback carries its `channelCall` parentage (see [plugins](plugin-sandbox.md)).
-- The provider adapters exist only on the server (`server/src/llm/`); the tab has no copy. `process/stringlize.ts`
+- `src/ts/process/request/request.ts`: `requestChatData` (the tab's outer loop: retries, plugin replacers, escaping),
+  `requestChatDataMain` (one attempt: slot resolution, the tab-run Plugin and WebLLM formats, the server for the rest),
+  `reformater`, and `RequestDataArgumentExtended.requestIds` (a chatless request's ids, which
+  `src/ts/translator/translator.ts` captures once per run).
+- `src/ts/process/request/transport.ts` `requestServer`: the tab half of `POST /api/llm/request`; the server half is
+  `server/src/routes/llm.ts`. A plugin callback's `channelCall` parentage: [plugins](plugin-sandbox.md).
+- `src/ts/process/request/shared.ts` `applyParameters`, `applyAdditionalParameters`: the tab's plugin path's copy of
+  `server/src/llm/shared.ts`. The provider adapters exist only on the server; `src/ts/process/stringlize.ts`
   `unstringlizeChat` serves the tab's plugin provider path.
-- `request/shared.ts` `applyParameters`: the preset's parameters, for every mode. A preset's stored `seperateParameters`
-  fields are never read.
 
 ### Server request layer
 
-- `server/src/llm/request.ts` `requestChatDataMain(arg, mode, ctx)`: the server resolves the shared slot/profile, builds
-  request-local settings and model info from that profile, then dispatches to a provider adapter. Provider adapters live
-  in `server/src/llm/{anthropic,google,openAI/*,nai,openrouter}.ts`.
-- Auxiliary requests (`server/src/llm/request.ts`) use their own URL, routing, flags, and templates without mutating the
-  job's frozen database. Plugin providers and WebLLM are explicit job-side exceptions; they use the request context's
-  tab callback and server model service.
-- `server/src/llm/openAI/shared.ts` `getLocalNetworkRequestOptions(url, db, useStreaming)`: when the resolved profile's
-  `localNetworkMode` is on and the URL is local-network, it supplies `networkRoute: "local_network"`; streaming calls
-  also receive the profile's positive `localNetworkTimeoutSec` (default 600 seconds). OpenAI Chat and Responses use it
-  for request and replacement URLs.
-- `server/src/llm/sseLines.ts` `SseLines`: one streaming UTF-8 decoder per response body, retaining only the unparsed
-  line suffix and flushing an unterminated final line. Each tool follow-up body gets fresh parser state.
-- The line-based parsers, OpenAI Chat (`openAI/requests.ts`), Google/Vertex Gemini (`google.ts`), and Anthropic
-  (`anthropic.ts`), apply each provider event once, skip malformed lines individually, and emit at most one cumulative
-  snapshot per read that applies an event. OpenAI content, reasoning, and tool argument deltas are concatenated as
-  deltas. Snapshots carry key `"0"`; tool metadata and Gemini thoughts, signatures, usage, and model status survive to
-  the final snapshot.
-- `server/src/llm/settings.ts` `loadRequestDb(store, kinds, ids)`: takes one store read and builds the request database
-  from the selected preset/profile, persona, provider settings, custom model definitions, credentials, and their secret
-  values. A missing preset or persona throws `RequestTargetGoneError`; a request never falls back to another selection.
-- `server/src/llm/requests.ts` `createLlmRequests`: owns request admission and `runInJob`, which carries the job's
-  frozen settings, tokenizer scope, tools, callbacks, and abort signal into a request. Its `strongBan` token cache is
-  keyed by tokenizer identity. Request history and observer details are in [diagnostics](diagnostics.md) and
-  [server](self-host-server.md).
+- `server/src/llm/request.ts`: `requestChatDataMain` (named key, `reformater`, dispatch by `LLMFormat`),
+  `resolveRequestModel` (the request-local `db` every mode, an auxiliary one included, runs on),
+  `resolveJobRequestModel`, and the per-format functions; the other adapters are `server/src/llm/anthropic.ts`,
+  `server/src/llm/google.ts`, and `server/src/llm/openAI/` (helpers `server/src/llm/nai.ts`,
+  `server/src/llm/openrouter.ts`). `server/src/llm/outer.ts` `requestChatDataOuter` is a job's outer loop.
+- `server/src/llm/openAI/shared.ts`: `getOpenAIRequestKey` and `getLocalNetworkRequestOptions` (the profile's
+  `localNetworkMode` route and `localNetworkTimeoutSec`).
+- `server/src/llm/sseLines.ts` `SseLines`, and the stream parsers in `server/src/llm/openAI/requests.ts`,
+  `server/src/llm/google.ts`, and `server/src/llm/anthropic.ts` (comments on each parser), under the snapshot contract
+  in `Flows`.
+- `server/src/llm/settings.ts` `loadRequestDb`, `RequestTargetGoneError`, `tokenScopeFor`: the request database from one
+  store read.
+- `server/src/llm/requests.ts` `createLlmRequests`: admission, `runInJob`, and the `strongBan` cache. Request history
+  and observer details are in [diagnostics](diagnostics.md) and [server](self-host-server.md).
 
 ### Tokenizer selection and server counting
 
-- `shared/tokenizerChoice.ts` `selectTokenizer`: which tokenizer family counts a model's text
-  (`openrouter`/`reverse_proxy` by `customTokenizer`, a legacy plugin `custom` model by its declared tokenizer, else the
-  catalogue family; `Llama3`, `Local`, and `Unknown` count with `cl100k_base`), used for selection by the server counter
-  and routes. The module also defines `TabTokenScope` and `tokenizerIdentityKey` for the tab's scope and count cache.
-- Encoders: `server/src/prompt/tokenizers/index.ts` `LOADERS` holds one loader per `TokenizerFamily`; `createTokenizers`
-  loads a family on first use and keeps it. Payloads are `server/assets/token/` files (`payloads.ts`) read through
-  `webTokenizers.ts` or `gemma.ts`; the tiktoken families use the package's data (`tiktoken.ts`).
-- The server counter (`server/src/prompt/tokens.ts` `createTokenCounter`) shares one Google call among concurrent counts
-  of the same text and model and keeps at most `GOOGLE_COUNT_MAX_CONCURRENT` (8) Google calls outstanding; the 30 s
-  timeout starts when a call is sent.
-- `shared/prompt/chatTokens.ts` `ChatTokenCounter`: a prompt's token arithmetic over `ChatTokenHost.count`. Both
-  production hosts supply `mainModel` (the resolved main `LLMModel`) and `requestModel` (the selected OpenRouter/NanoGPT
-  wire id, otherwise undefined), read only when image input is supported; count-only hosts may omit these and use the
-  unknown-model fallback.
-- `shared/prompt/imageTokens.ts` applies model- and detail-dependent OpenAI tile/patch rules to images, with the GPT-4o
-  85/170 tile rule as the explicit fallback for unknown wire ids. Only formats using the OpenAI Chat/Responses image
-  adapters honor low detail; everything else counts as high. Missing image dimensions count as 512×512;
-  video/audio/signature entries count a flat 85. A model without image input keeps counting each entry as
-  `chatAdditionalTokens`.
+- `shared/tokenizerChoice.ts`: `selectTokenizer` (which family counts a model's text, for the server counter and
+  routes), `TabTokenScope`, `tokenizerIdentityKey`, `byName`, `playgroundFamily`.
+- `server/src/prompt/tokenizers/index.ts` `LOADERS`, `createTokenizers`: one loader per `TokenizerFamily`; payloads are
+  `server/assets/token/` files (`server/src/prompt/tokenizers/payloads.ts`).
+- `server/src/prompt/tokens.ts` `createTokenCounter`, `isTokenizerTextRefusal`, `GOOGLE_COUNT_MAX_CONCURRENT`: the
+  server counter; the routes are `server/src/routes/tokens.ts`.
+- `shared/prompt/chatTokens.ts` `ChatTokenCounter`, `ChatTokenHost`, and `shared/prompt/imageTokens.ts` `imageTokens`: a
+  prompt's token arithmetic, the same on both runtimes.
 - The context report (`shared/contextReport.ts`, written by `assemblePrompt`) makes no counts of its own: it records the
   counts assembly already makes. Its `tokenScope` is the job scope's `tokenizerIdentityKey` (`tokenScopeFor`,
   `pluginTokenizer: "none"`), so a tab comparing it uses that scope too.
 
 ### Tab token counting
 
-- `tokenizer.ts` routes on-screen counts and playground ids through authenticated server routes; tokenizers do not load
-  in the tab. `tabTokenScope` captures the main model's tokenizer settings at call time and is shared with
-  `request/transport.ts`; `tokenScopeKey` derives its identity. `jobTokenScope` sets `pluginTokenizer: "none"`, which
-  the context meter compares with the report's `tokenScope`.
-- `countTokens` posts the captured scope to `/api/tokens/count`. Signal-less calls in one macrotask coalesce by scope;
-  batches split at 256 texts or 1 MiB of JSON-escaped UTF-8, with oversized texts sent alone. Its 1500-entry LRU is
-  keyed by text and tokenizer identity when caching is enabled. A `null` rejects one text; a failed or malformed batch
-  rejects as a whole. Aborts stop remaining server work and cancel a shared Google count only after its last waiter
-  leaves.
-- `tokenizeAccurate` expands CBS before counting; `ChatTokenizer` supplies the prompt counter. `tokenCountInput` also
-  captures expanded text and tokenizer identity so delayed UI counts are invalidated by relevant model or CBS changes.
-- `src/ts/tokenCountField.ts` `createTokenCountField`: reusable UI count lifecycle. The first input runs immediately or
-  through a caller-provided scheduler; later inputs wait 400 ms by default, abort superseded work, ignore late results,
-  and keep the last applied value after failure. It runs the count untracked so the caller's input is the reactive
-  dependency. Editor call sites and component behavior are indexed in [UI](ui-theming.md).
+- `src/ts/tokenizer.ts`: counts through the server routes, with no tokenizer in the tab: `tabTokenScope` (also what
+  `requestServer` sends), `tokenScopeKey`, `jobTokenScope`, `countTokens`, `tokenizeAccurate`, `tokenCountInput`,
+  `ChatTokenizer`, `tokenizerList`.
+- `src/ts/tokenCountField.ts` `createTokenCountField`: the reusable UI count lifecycle. Editor call sites and component
+  behavior are indexed in [UI](ui-theming.md).
 
 ### Settings pages
 
-- `CustomModelsSettings.svelte` edits `db.customModels` entries (`shared/database.ts` `CustomModel`): definitions with
-  no key; a profile that uses one picks the key.
-- `ModelProfilesSettings.svelte` (`MODEL_PROFILES_SETTINGS_MENU`; the Model menu's "Connections" / "연결" tab): the
-  profile list, a delete confirmed with `presetsUsingModelProfile` and `translatorPresetsUsingModelProfile` (the last
-  profile is kept), and `Model/ModelProfileEditor.svelte`, which edits the selected profile by id.
-- `ApiKeysSettings.svelte` (`API_KEYS_SETTINGS_MENU`; the Model menu's API Keys tab): the named keys, with the
-  write-only value through `SecretInput`, a delete confirmed with `credentialsUsing`, and every profile binding with a
-  missing key marked.
-- `Model/ProviderDefaultKeys.svelte` (`ApiKeysSettings.svelte`): each provider's flat default key for the models the
-  selected model preset's slots use. It is the only place that edits the OpenAI and Google keys, listed there also while
-  the image provider is DALL-E or Imagen, or when a status link asked for them; see [settings](settings-i18n.md).
+Each component's contract is the JSDoc block at the top of its `<script>`.
+
+- `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte`: the `db.customModels` definitions (`CustomModel`), which
+  hold no key.
+- `src/lib/Setting/Pages/ModelProfilesSettings.svelte` (`MODEL_PROFILES_SETTINGS_MENU`; the Model menu's "Connections" /
+  "연결" tab): the profile list, a delete confirmed with `presetsUsingModelProfile` and
+  `translatorPresetsUsingModelProfile` (the last profile is kept), and `Model/ModelProfileEditor.svelte`, which edits
+  the selected profile by id.
+- `src/lib/Setting/Pages/ApiKeysSettings.svelte` (`API_KEYS_SETTINGS_MENU`; the Model menu's API Keys tab): the named
+  keys and the bindings. It hosts `Model/ProviderDefaultKeys.svelte`, each provider's flat default key for the models
+  the selected model preset's slots use; that is the only place that edits the OpenAI and Google keys, listed there also
+  while the image provider is DALL-E or Imagen, or when a status link asked for them; see [settings](settings-i18n.md).
+- `src/lib/UI/GUI/CredentialSelect.svelte`: the per-profile key select.
+- `src/lib/UI/ModelList.svelte`, `src/lib/UI/ModelGrid.svelte`, `src/lib/UI/OpenrouterProviderList.svelte`,
+  `src/lib/UI/NanoGPTDashboard.svelte`, `src/lib/UI/NanoGPTProviderPicker.svelte`: pickers and panels that write only
+  their bindable `value`; slot writes are `src/lib/Setting/Pages/Model/ProfileSlotSelect.svelte`'s (see `Coupling`).
 
 ## Flows
 
 - Every provider request except plugin providers and WebLLM runs on the server. Tab requests go through
-  `requestChatDataMain` → `requestServer`; jobs enter the server outer loop directly. Plugin v3 may call
-  `requestChatDataMain` itself. Both runtimes apply `applyReverseProxyOverride` before dispatch.
-- `resolveSlotProfile` selects a named `profileId` first, regardless of mode. A supplied `staticModel` short-circuits
-  slot routing: it uses the main profile only on an id match, otherwise it resolves as a bare static model with no
-  profile (and refuses if that definition needs one). With no `staticModel`, `model` uses main, configured auxiliary
-  modes use their slot, and other modes (including `submodel`) use sub. An unset auxiliary slot falls back to sub.
-  Dangling profiles refuse with `noRetry`; no alternate profile is tried. The [slot resolver](#model-preset-slots) owns
-  these rules.
+  `requestChatData` → `requestChatDataMain` → `requestServer`; jobs enter the server outer loop (`requestChatDataOuter`)
+  directly. Plugin v3 calls `requestChatDataMain` itself (`src/ts/plugins/apiV3/v3.svelte.ts`). Both runtimes apply
+  `applyReverseProxyOverride` (`shared/llm/reverseProxy.ts`) before dispatch.
+- Slot routing is `resolveSlotProfile`'s on both runtimes ([slot resolver](#model-preset-slots)): a refusal fails the
+  tab's attempt with `noRetry` and the server's before dispatch; no alternate profile is tried.
 - The server builds a detached request context with profile roots, resolves the named credential, reforms the prompt
   from model flags, and dispatches by `LLMFormat`. A bound Vertex account populates `vertexCredential`; other bound keys
   replace `arg.key`. See [credential binding](#credentials).
-- Streams carry cumulative `StreamResponseChunk` snapshots (text at key `'0'` plus metadata). Tool calls go through
-  `mcp.ts:callTool`; results are appended before the request recurses.
+- Streams carry cumulative `StreamResponseChunk` snapshots (text at key `'0'` plus metadata), from the server's parsers
+  through the transport to the tab's caller. Each parser applies an event once, skips a malformed line on its own, and
+  emits at most one snapshot per read; tool metadata survives to the final snapshot. Tool calls go through the tab's
+  `mcp.ts:callTool` (a callback from the server); results are appended before the request recurses.
 
 ## State
 
@@ -264,9 +191,9 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 - Depends on `database.svelte.ts`, `globalApi.svelte.ts` (`globalFetch`/`fetchNative`), `stringlize.ts`,
   `templates/chatTemplate.ts`, `tokenizer.ts`, `mcp.ts`, plugin stores (`pluginHooks.ts`
   `pluginHooks`/`customProviderStore`, `customV3ProviderMetaStore`), inlays, and `platform.ts`.
-- UI model pickers write the slots through the store actions (`setMainModelSlot`, `setSubModelSlot`, `setAuxModelSlot`)
-  and edit profiles through `profileForSlot`/`updateModelProfile` (`settingsViews.svelte.ts`,
-  `collectionStore.svelte.ts`).
+- The settings pages (`Model/ProfileSlotSelect.svelte`, `Model/ModelProfileEditor.svelte`) write the slots through the
+  store actions (`setMainModelSlot`, `setSubModelSlot`, `setAuxModelSlot`) and edit profiles through
+  `profileForSlot`/`updateModelProfile` (`settingsViews.svelte.ts`, `collectionStore.svelte.ts`).
 
 ## Invariants
 
@@ -290,11 +217,12 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 - Streaming consumers expect cumulative text, not deltas. Tool metadata must survive to the final chunk.
 - `escape` disables streaming. Audio and image output modalities disable streaming.
 - Mode `submodel` is not a `seperateModels` key.
-- Additional parameters apply last and can override or delete body fields and headers:
-  - `header::` targets a header.
+- Additional parameters apply after the built body (the OpenAI Chat and Responses adapters still set `stream`) and can
+  override or delete body fields and headers:
+  - `header::` targets a header; its value stays a literal string.
   - `{{none}}` deletes the field.
-  - `json::` parses a JSON value.
-  - Dotted keys address nested fields.
+  - `json::` parses a JSON value for a body field.
+  - Dotted keys address nested fields when setting.
   - Treat these as trusted user configuration.
 - Configured provider URLs are fetched from the server, so `localhost` is the server's (in Docker, the container's: use
   `host.docker.internal` or the host's address).
@@ -317,8 +245,8 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   answer is not redacted (it would rewrite URLs in the text).
 - On the server an unhandled promise rejection ends the process: a fire-and-forget promise in a ported adapter (a
   `pipeTo`, a `fetch`) must catch.
-- `cl100k_base` and `o200k_base` refuse text containing the special token `<|endoftext|>`; the count route returns
-  `null` for that text, and the tab rejects its count.
+- `cl100k_base` and `o200k_base` refuse text containing one of their special tokens (`<|endoftext|>` among them); the
+  count route returns `null` for that text, and the tab rejects its count.
 - Tokenization does not follow a per-call `profileId`: a request's tokenizer scope is still the main model's (the tab's
   `context.tokenizer`, a job's `tokenScopeFor`), so token biases and bans of a per-call request use the main model's
   tokenizer (translation sends none).
@@ -364,8 +292,8 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   4. Add it to `allBasicParameterItems` (`src/ts/setting/botSettingsParamsData.ts`), gated by `modelInfo.parameters`.
 - Add a tokenizer:
   1. Append to `LLMTokenizer` (`shared/llm.ts`), add the `TokenizerFamily` and its `selectTokenizer` case
-     (`shared/tokenizerChoice.ts`), and for a name a user can pick, `byName`, `playgroundFamily`, and `tokenizerList`
-     (`src/ts/tokenizer.ts`). Add the `CustomModelsSettings` option.
+     (`shared/tokenizerChoice.ts`), and for a name a user can pick, `byName` and `playgroundFamily` there and
+     `tokenizerList` (`src/ts/tokenizer.ts`). Add the `CustomModelsSettings` option.
   2. Put the payload under `server/assets/token/` and add a `LOADERS` row (`json` or `sentencePiece`).
   3. Text refusal: only the tiktoken families refuse text with a special token. If a new encoder refuses, it must throw
      the message `isTokenizerTextRefusal` matches (`server/src/prompt/tokens.ts`), so the count route answers that text
@@ -419,8 +347,8 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 ### Issues
 
 - The `/proxy2` media, memory, and count rows and the Google/Anthropic/OpenAI discovery lists keep flat default keys;
-  they do not accept a profile. `openrouter.ts` `getFreeOpenRouterModels` also keeps the default key. A model-profile
-  follow-up (Remaining Follow-Ups in the [archive](../archived-plan/README.md)).
+  they do not accept a profile. `server/src/llm/openrouter.ts` `getFreeOpenRouterModels` (the `risu/free` pick) also
+  keeps the default key. A model-profile follow-up (Remaining Follow-Ups in the [archive](../archived-plan/README.md)).
 - NanoGPT's `providers.nanogptSubscriptionState` and `nanogptUseSubscriptionEndpoint` remain global: two profiles on
   different accounts share subscription state and endpoint selection. A model-profile follow-up (Remaining Follow-Ups in
   the [archive](../archived-plan/README.md)).

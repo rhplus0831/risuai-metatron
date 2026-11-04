@@ -6,6 +6,14 @@
     import type { NanoGPTBalance, NanoGPTSubscriptionUsage } from "src/ts/model/nanogpt";
     import { language } from "src/lang";
 
+    /**
+     * The NanoGPT account panel for the edited profile: balance and subscription usage, fetched through the profile's
+     * binding (`src/ts/model/nanogpt.ts`) while `keySet`, again whenever `keyVersion` (`src/ts/model/credentials.ts`
+     * `credentialStatusFor`) changes; an answer for a superseded key or a cleared one is not applied. The latest
+     * answer writes `settings.providers.nanogptSubscriptionState`, which is global, not per profile: two profiles on
+     * different accounts share it (and `nanogptUseSubscriptionEndpoint`).
+     */
+
     interface Props {
         /** Whether a NanoGPT key is stored, and its version (a replaced key refetches). */
         keySet: boolean;

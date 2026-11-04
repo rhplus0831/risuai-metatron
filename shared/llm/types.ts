@@ -1,6 +1,11 @@
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "../llm.ts";
 import type { LLMParameter } from "../llm.ts";
 
+/**
+ * Re-exports the `shared/llm.ts` numeric code objects and `LLMModel`, and adds `ProviderNames` and the parameter
+ * presets.
+ */
+
 export { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer };
 export type { LLMModel };
 

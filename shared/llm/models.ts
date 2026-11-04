@@ -641,12 +641,28 @@ function deepFreeze<T>(value: T): T {
 }
 
 /**
- * The assembled static catalogue, frozen: `resolveModelInfo` hands out clones, and the client
+ * The assembled static catalogue, frozen: the provider arrays (`shared/llm/providers/`) and this file's own entries,
+ * then for each OpenAI Chat-format model a derived `<id>-response-api` Responses variant (with `hasPrefill`) and for
+ * each Google model a derived `<id>-vertex` Vertex AI variant. `resolveModelInfo` hands out clones, and the client
  * copies it (`structuredClone`) before its dynamic registry appends.
  */
 export const BASE_LLM_MODELS: readonly LLMModel[] = deepFreeze(LLMModels);
 
-/** Discovery templates shared by the tab registry and every server model scope. */
+/**
+ * The one discovery template builder, shared by the tab registry (`src/ts/model/modellist.ts`
+ * `registerModelDynamic`) and every server model scope. It answers `null` for any other id:
+ * - `dynamic_google_<id>`: a Google model; the upstream id is the suffix without a leading `models/`.
+ * - `dynamic_anthropic_<id>`: an Anthropic model. A suffix matching an Anthropic static entry's `internalID` or `id`
+ *   inherits that entry's capabilities (flags, parameters, format, tokenizer) but keeps its own `id` and the suffix
+ *   as `internalID`; an unknown suffix gets the generic budget/adaptive thinking template without
+ *   `claudeThinkingOnByDefault`.
+ * - `gpt-<id>` / `gpt-<id>-response-api`: OpenAI Chat / Responses; the upstream id drops the Responses suffix.
+ *
+ * Each suffix must be nonempty. Resolution through `resolveModelInfo` needs no tab descriptor or
+ * `dynamicModelRegistry` setting, so these ids resolve in every scope (jobs, translation, transforms, image flags,
+ * CBS, token scopes), and custom flags apply as for listed models. The template names a model by its id; only the
+ * tab registry substitutes the provider's display name.
+ */
 export function dynamicModelOf(id: string): LLMModel | null {
     const base = { id, name: id, shortName: id, fullName: id };
     if (id.startsWith("dynamic_google_")) {
@@ -736,6 +752,8 @@ export type ModelResolution = {
  * list, then `extraModels` (a found model is cloned and takes `customFlags` when
  * `enableCustomFlags` is on), `hf:::`, `horde:::`, `xcustom:::` (`customModels`),
  * `pluginmodel:::` (`pluginModels`, returned as stored), dynamic ids, then an unknown OpenAI-compatible model.
+ * Static ids and explicit extra or prefixed models therefore take precedence over a dynamic id that names the same
+ * string; an unmatched `xcustom:::` or `pluginmodel:::` id falls through to the later steps.
  */
 export function resolveModelInfo(id: string | null | undefined, from: ModelResolution = {}): LLMModel {
     if (!id) {

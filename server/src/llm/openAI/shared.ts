@@ -4,7 +4,11 @@ import { defaultCredentialKey } from "../credentials.ts";
 import type { RequestDataArgumentExtended } from "../request.ts";
 import type { RequestDb } from "../settings.ts";
 
-/** A provider-specific key never falls through to another provider's default, even on direct calls. */
+/**
+ * A provider-specific key never falls through to another provider's default, even on direct calls. The key is
+ * `arg.key` (a bound named key), else a `keyIdentifier` model's own `OaiCompAPIKeys` entry or `""`, else the provider
+ * default (`""` for a custom model or the reverse proxy: `server/src/llm/credentials.ts` `defaultCredentialKey`).
+ */
 export function getOpenAIRequestKey(arg: RequestDataArgumentExtended, defaultKey: string): string {
     if (arg.key != null) {
         return arg.key;
@@ -22,6 +26,11 @@ export interface LocalNetworkRequestOptions {
     requestTimeoutMs?: number;
 }
 
+/**
+ * When the resolved profile's `localNetworkMode` is on and `url` is a local-network address, the request takes the
+ * `local_network` route; a streaming call also gets the profile's positive `localNetworkTimeoutSec` (default 600
+ * seconds) as its timeout. The OpenAI Chat and Responses adapters call it for their request and replacement URLs.
+ */
 export function getLocalNetworkRequestOptions(
     url: string,
     db: RequestDb,
