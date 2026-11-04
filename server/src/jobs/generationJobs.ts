@@ -123,6 +123,14 @@ const foreignFailures = new WeakMap<object, GenerationFailure>();
  * Adds to `error`'s failure fields each field of `failure` it does not have yet (a field is had when
  * it holds a value: the site nearest the failure wins, and a later site only fills the gaps). A
  * primitive thrown value takes none. Returns `error`, so a site can `throw markFailure(error, …)`.
+ *
+ * Marking sites: this module's runningJob.write catch around writeAsJob marks persist;
+ * `server/src/jobs/runSetup.ts` asScript marks script (including Lua, triggers and plugin hooks),
+ * as do the hook wrappers in `server/src/lua/bindings.ts` runRequest. That module's request wrapper
+ * marks request unless an inner site marked a stage. `server/src/prompt/runner.ts` runSpeaker
+ * marks returned request failures as request, with request id/provider code; readReply distinguishes
+ * request reads from persist checkpoints. Its runPromptSend catch fills an unmarked stage from
+ * JobRunState.stage (setup, input, assembly, request or tail). errorTerminal copies checked fields.
  */
 export function markFailure<E>(error: E, failure: GenerationFailure): E {
     if (typeof error !== "object" || error === null) {
@@ -160,7 +168,7 @@ export class GenerationJobEndedError extends Error {
     }
 }
 
-/** A job write conflicted again after its one re-read (F-b), or conflicted on a chat or order. */
+/** A job write conflicted again after its one re-read, or conflicted on a chat or order. */
 export class JobWriteConflictError extends Error {
     readonly conflicts: BatchConflict[];
     constructor(conflicts: BatchConflict[]) {
@@ -257,7 +265,14 @@ export type RunningJob = {
     assertWritable?(): void;
     /** Sequence coordination, available on registry jobs (absent on read-only render facades). */
     sequence?: {
-        /** Synchronous preflight immediately before the part's write. An absent stop code means aborted. */
+        /**
+         * Synchronous preflight immediately before the part's write: abort, previous part deadline,
+         * shutdown, maintenance/gate, epoch, chat existence, complete binding equal to the admitted
+         * context, then orphaned overrides. A presetChain pick does not change that context. Neither
+         * the occupied slot nor the original revision is rechecked. Refusal writes nothing; an absent
+         * stop code means aborted. Success starts JOB_MAX_DURATION_MS anew for this part; an already
+         * expired deadline aborts instead of resetting. Diagnostics still time from job admission.
+         */
         beginPart(): { ok: true } | { ok: false; stopped?: string };
         progress(value: Pick<GenerationSequence, "total" | "sent">): void;
         /** Releases only deleted messages, keeping the job's token and slot alive. */
@@ -291,6 +306,7 @@ export type MemoryControl = { stopRequested(): boolean; release(): void };
 /** `requestMemoryStop`'s answer: the stop is recorded, or the route's status and body. */
 export type MemoryStopResult = { ok: true } | { ok: false; status: 404 | 409 | 412; body: Record<string, unknown> };
 
+/** A normal return without a terminal becomes an error; a registry abort takes precedence. */
 export type GenerationRunner = (job: RunningJob) => Promise<void>;
 
 /** Without a runner (`options.runner`), a job ends with this error. */
@@ -298,6 +314,7 @@ export const unavailableRunner: GenerationRunner = async () => {
     throw new GenerationRunnerError(501, "Server generation is not available yet");
 };
 
+/** Admission or identity replay; null replay status comes from a retained disk receipt without its outcome payload. */
 export type CreateResult =
     | ({ ok: true } & GenerationCreated)
     | { ok: false; status: 400 | 404 | 409 | 412 | 503; body: Record<string, unknown> };
@@ -315,7 +332,6 @@ function rebuildLocks(body: GenerationCreateBody): boolean {
     return body.kind !== "preview" && body.kind !== "previewPrompt" && body.command?.type !== "memoryRebuild";
 }
 
-/** Sorts object keys recursively without assigning them to a prototype; keeps array order and maps absent values to null. */
 function canonicalJson(value: unknown): string {
     if (value === undefined || value === null) return "null";
     if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -329,7 +345,12 @@ function canonicalJson(value: unknown): string {
     return JSON.stringify(value);
 }
 
-/** Hashes the action and its input identity, excluding revision, bindings, hooks and client ownership. */
+/**
+ * SHA-256 of exactly kind, characterId, chatId, command, input, userMessageId and continueMessageId,
+ * with recursively sorted JSON object keys, array order kept, and absent fields encoded as null.
+ * Revision, binding ids, hooks and client id are excluded: retry identity follows the action and
+ * input even after its owner's stored revision or connection changed.
+ */
 function requestFingerprint(body: GenerationCreateBody): string {
     const { characterId, chatId, input, userMessageId, continueMessageId } = body.context;
     return createHash("sha256")
@@ -404,10 +425,11 @@ type Job = {
     /** Records the job sent (`kind\0id`, or `chats\0characterId\0id`), re-sent fresh on attach. */
     refs: Map<string, { kind: string; id: string; characterId?: string }>;
     /**
-     * The job chat as last handed to an owner socket (a stored state at its `revision`: a read, or
+     * The job chat as last handed to an owner socket (seeded at admission, then advanced when send
+     * succeeds, without a tab acknowledgement; a stored state at its `revision`: a read, or
      * `workingChat`): the base of the next `chatPatch`. Null once the job ended. It is not what the
      * owner holds: the owner applies a patch only at exactly its base or its revision, and asks for a
-     * resync otherwise. While the stored revision is still this one's, the callback barrier sends a
+     * whole-chat resync otherwise. While the stored revision is still this one's, the callback barrier sends a
      * socket that advertised `hydration=patch` no chat at all (`hydrateAll`); that tab reads the chat
      * itself when it does not hold the revision.
      */
@@ -417,7 +439,10 @@ type Job = {
      * event that read it, `jobChatEvent`), advanced by each own write whose stored change starts at
      * that revision (`writeAsJob`'s `committed`). While the stored revision is still its own, the next
      * `chatPatch` is `sentChat` diffed against it without reading the chat, however many writes no
-     * socket took. Null when unknown: an own write of the chat without a by-id change (a whole-chat
+     * socket took. Own writes use applyChanges with changes: true, adopting ChatWriteChange via
+     * advanceChatBaseline and `server/src/data/chatStore.ts` messageOrderAfterChange. A checkpoint
+     * with no open socket advances only this baseline, so the next attach includes all such writes.
+     * Null when unknown: an own write of the chat without a by-id change (a whole-chat
      * write, a remove and reappend, a group that applied nothing), one whose change starts at another
      * revision (another writer's change landed first), or a change that did not fit; the next chat
      * event then reads the chat. Behind the stored revision after another writer's change alone, which
@@ -627,11 +652,12 @@ const abortMessages: Record<GenerationErrorReason, { status: number; message: st
 /**
  * The generation job registry: admission (one running job per chat), the owner socket, the job's
  * writes (`writeAsJob` with the generation lock), and the lifecycle. Every abort fixes one
- * deadline (`abortGraceMs`, `JOB_ABORT_GRACE_MS` by default); a job is finalized once: its token dies, its locks and chat
- * slot are released, its chat's hydration and one terminal event are sent, and `finished`
+ * deadline (`abortGraceMs`, `JOB_ABORT_GRACE_MS` by default); a job is finalized once: its token dies,
+ * its locks and chat slot are released, its chat's hydration and one terminal event are sent, and `finished`
  * resolves. Shutdown aborts every job at `beginShutdown`; a restore or import aborts them from
  * `withMaintenance` and waits for their end while writes are still open, so an abort checkpoint
  * lands before the data is replaced and no old job can write afterwards.
+ * The default `server/src/jobs/channel.ts` hub shares `now` with the registry's owner clock.
  */
 export function createGenerationJobs(options: {
     store: ResourceStore;
@@ -650,11 +676,20 @@ export function createGenerationJobs(options: {
     diagnostics?: DiagnosticsRecorder;
     /** Best-effort disk receipts; memory remains authoritative. */
     receipts?: GenerationReceipts;
-    /** How long an aborted job's runner may take before the job is ended for it (default `JOB_ABORT_GRACE_MS`; tests raise it). */
+    /**
+     * How long an aborted runner may take before the job is ended for it (default JOB_ABORT_GRACE_MS;
+     * tests raise it).
+     */
     abortGraceMs?: number;
-    /** Owner absence allowance for channel requests (default `OWNER_ABSENT_MS`; tests shorten it). */
+    /**
+     * Owner absence allowance (default OWNER_ABSENT_MS); `server/src/app.ts` forwards the test option
+     * generationOwnerAbsentMs.
+     */
     ownerAbsentMs?: number;
-    /** Negotiated socket silence allowance (default `OWNER_SILENT_MS`; tests shorten it). */
+    /**
+     * Negotiated socket silence allowance (default OWNER_SILENT_MS); `server/src/app.ts` forwards the
+     * test option generationOwnerSilentMs.
+     */
     ownerSilentMs?: number;
     /** Clock for job timestamps, owner liveness, channel deadlines and identity retention (defaults to Date.now). */
     now?: () => number;
@@ -695,6 +730,10 @@ export function createGenerationJobs(options: {
     /** A `job` event to the journal; a recorder's throw never reaches the job. */
     const record = (input: DiagnosticEventInput) => recordSafely(diagnostics, input);
 
+    /**
+     * Starts absence only when the last effective socket leaves; a superseded socket's close
+     * changes nothing. The channel is re-armed, without aborting callback-free work in the job.
+     */
     function removeOwner(job: Job, ws: WebSocket, at: number) {
         const live = liveness.get(ws);
         if (live?.timer) clearTimeout(live.timer);
@@ -705,7 +744,11 @@ export function createGenerationJobs(options: {
         }
     }
 
-    /** Silence ends ownership at its deadline, even when the timer or close is processed late. */
+    /**
+     * Silence ends ownership and starts absence at its deadline, even when detection is late.
+     * Socket events, sends and owner-presence reads (including MCP's) check it too: a late frame
+     * cannot revive an expired socket while its timer is delayed.
+     */
     function expireSilentOwners(job: Job) {
         let dropped = false;
         for (const ws of job.sockets) {
@@ -1013,6 +1056,7 @@ export function createGenerationJobs(options: {
      * write is written (its chat event, or this barrier's, carries it). Returns their receipts, the
      * job chat's first (synchronously: each receipt names the copy sent, or the job chat's last copy
      * a socket took when nothing was sent).
+     * `server/src/jobs/channel.ts` calls it when building callback events, replays included.
      */
     function hydrateAll(job: Job): HydrationReceipt[] {
         job.pendingFlush?.();
@@ -1035,6 +1079,9 @@ export function createGenerationJobs(options: {
      * an owner socket, or for a socket that did not advertise it (an older tab, which can only apply
      * a remembered whole copy again once its local work settled: a patch cannot be applied that
      * late), the chat goes whole.
+     * The revision is read once and reused for the patch event. Skipping relies on streaming locks
+     * and watermarks staying fixed at that revision: checkpoint watermarks move only when applied;
+     * releaseRemovedReplies is followed by the end or the next part's writes before its callbacks.
      */
     function hydrateJobChat(job: Job): HydrationReceipt | null {
         const base = job.sentChat;
@@ -1049,11 +1096,6 @@ export function createGenerationJobs(options: {
             return null;
         }
         if (revision === base.revision) {
-            // The copy a socket last took is the stored chat, its `streaming` list included: locks and
-            // watermarks change only with a write of the chat (a `begin`, an applied checkpoint), except
-            // in `releaseRemovedReplies`, which releases the locks of removed messages without one. Its
-            // caller then ends the job or starts the next sequence part, whose own writes and chat
-            // events come before that part's callbacks.
             return { kind: "chats", id: chatId, characterId, revision };
         }
         const event = deliverJobChat(job, "patch", revision);
@@ -1195,6 +1237,11 @@ export function createGenerationJobs(options: {
         return { type: "error", reason, ...abortMessages[reason] };
     }
 
+    /**
+     * Copies markFailure/failureOf metadata into the failed terminal, admitting only checked
+     * stages, request ids, provider codes and error codes. It does not infer a stage: the nearest
+     * marking site, or `server/src/prompt/runner.ts` runPromptSend's current-stage fallback, owns it.
+     */
     function errorTerminal(error: unknown): TerminalInput {
         const status =
             error instanceof GenerationRunnerError && error.status >= 400 && error.status <= 599 ? error.status : 500;
@@ -1620,6 +1667,15 @@ export function createGenerationJobs(options: {
         return chat && chat.revision !== null ? chatBaseline(chat.revision, chat.data as Chat) : null;
     }
 
+    /**
+     * Epoch first, then synchronize identity maps/receipts and look up requestId before shutdown,
+     * maintenance/gate, hooks, chat existence, occupied slot, rebuild lock, revision, binding and
+     * orphaned overrides. Matching identity replays the original job/status even if those later
+     * gates would now refuse; another fingerprint is requestIdReused, a tombstone requestCancelled.
+     * No requestId admits normally without deduplication; its epoch still precedes the gates.
+     * Lookup through slot and request-index installation is synchronous, with the runner deferred
+     * to a later microtask: identical simultaneous requests admit once. Refusals install no identity.
+     */
     function create(body: GenerationCreateBody, epoch: string | undefined): CreateResult {
         if (epoch !== store.epoch()) {
             return { ok: false, status: 412, body: { error: "EpochMismatch", epoch: store.epoch() } };
@@ -1783,7 +1839,10 @@ export function createGenerationJobs(options: {
         return job && !job.ended ? job : null;
     }
 
-    /** The slot covers every job kind, even before a command acquires a generation lock. */
+    /**
+     * Read-only slot lookup covering every kind, even a command before it acquires a generation
+     * lock. clientId only computes owned; no attachment, ownership change or callback authority.
+     */
     function current(characterId: string, chatId: string, clientId: string | undefined): GenerationCurrent | null {
         const job = currentJob(characterId, chatId);
         return job
@@ -1797,7 +1856,14 @@ export function createGenerationJobs(options: {
             : null;
     }
 
-    /** Comparing the slot and aborting are synchronous: a replacement job is never stopped. */
+    /**
+     * Checks the epoch, compares the confirmed job id with the current slot and aborts synchronously:
+     * a replacement is never stopped. After jobChanged, look up and confirm the replacement again.
+     * First abort wins: only this explicit stop by a different clientId attributes abortedBy: "other"
+     * in finalize's error terminal and stoppedBy: "otherClient" in its diagnostic end. It remains
+     * reason aborted, not a failure. Request cancel and owner DELETE are unattributed. The abort
+     * ends the whole sequence, whose progress and attribution survive in kept outcomes.
+     */
     function stop(
         body: GenerationStopBody,
         epoch: string | undefined,
@@ -1836,7 +1902,13 @@ export function createGenerationJobs(options: {
         }
     }
 
-    /** Finds current-epoch identity in live jobs, kept outcomes or tombstones before falling back to disk. */
+    /**
+     * Current-epoch lookup order: live jobs (ended jobs in grace included), kept outcomes,
+     * cancellation tombstones, then disk. Kept memory drops identity and payload together at the
+     * MAX_KEPT_OUTCOMES cap or after KEPT_OUTCOME_MS. Only a retained disk receipt from a healthy
+     * receipts store can return identity after payload pruning (status: null). create compares the
+     * fingerprint before considering ordinary admission refusals.
+     */
     function lookupRequest(requestId: string): RequestIdentity | null {
         expireOutcomes(clock());
         expireCancelled(clock());
@@ -1860,7 +1932,13 @@ export function createGenerationJobs(options: {
         return receipts?.readByRequest(requestId) ?? null;
     }
 
-    /** Aborts this request's job regardless of owner, or records a tombstone before a late create can admit. */
+    /**
+     * Idempotent across ownership: aborts a running request, leaves an ended one intact, or installs
+     * an unknown request's tombstone in memory before its best-effort disk write. Repeated cancel
+     * keeps the first timestamp. An abort acknowledgement is not a terminal: the runner retains its
+     * abort grace to save and end. Epoch-checked, but available during maintenance and shutdown;
+     * never targets another job that later took the same chat slot.
+     */
     function cancel(
         body: GenerationCancelBody,
         epoch: string | undefined,
@@ -1916,7 +1994,6 @@ export function createGenerationJobs(options: {
         }
     }
 
-    /** Drops the kept outcomes older than `KEPT_OUTCOME_MS` (oldest first, so the scan stops at the first young one). */
     function expireOutcomes(now: number) {
         for (const [id, outcome] of keptOutcomes()) {
             if (now - outcome.keptAt < KEPT_OUTCOME_MS) {
@@ -1945,6 +2022,9 @@ export function createGenerationJobs(options: {
      * its silence ends ownership. `hydratesByPatch`: the tab reads the job chat itself for a callback
      * receipt it does not hold (`hydration=patch`), so callback barriers send this socket the chat only
      * as it changed since the last copy a socket took (`hydrateAll`), starting from this attach's.
+     * Expire overdue channel requests while still absent, then clear absence, send the snapshot and
+     * replay those still open. Reconnection removes the absence cap without extending a request's
+     * own allowance (`server/src/jobs/channel.ts` effectiveDeadline).
      */
     function attach(job: Job, ws: WebSocket, negotiated: boolean, hydratesByPatch: boolean) {
         expireSilentOwners(job);
@@ -2071,6 +2151,10 @@ export function createGenerationJobs(options: {
      * False, leaving the socket untouched, for any other path. The handshake needs a JWT (`risu-auth`
      * query or header) and the job's `clientId` query; another client's or an unknown job is a 404.
      * The `liveness=1` and `hydration=patch` queries advertise what the tab supports (`attach`).
+     * The password is never accepted; there is no HTTP limiter on this upgrade path. The stream
+     * carries the owner's GenerationEvents. With liveness=1 the tab answers each ping with pong.
+     * `attach` is a finite connection stamp (default 0): a lower stamp cannot displace
+     * a newer handshake (409), and a successful attach supersedes the previous owner socket.
      */
     function handleUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): boolean {
         let url: URL;
@@ -2214,8 +2298,9 @@ export function createGenerationJobs(options: {
 
         /**
          * The owner reports the cancelled callback `callbackId` of its job drained (`ChannelDrainedBody`):
-         * the client's lane it kept is free (`createChannelHub`). Also for a job that ended and is still
-         * kept; false when the callback holds no lane. Null: no such job, or another client's.
+         * the client's lane it kept is free (`server/src/jobs/channel.ts` createChannelHub). Also for
+         * an ended job still in the registry, not a collected outcome; false when the callback holds
+         * no lane. Null: no such job, or another client's.
          */
         callbackDrained(jobId: string, clientId: string | undefined, callbackId: string): boolean | null {
             const job = ownJob(jobId, clientId);
@@ -2327,4 +2412,5 @@ export function createGenerationJobs(options: {
     };
 }
 
+/** Registry capabilities; job-id access is owner-scoped, while current/stop and request-id cancel cross owners. */
 export type GenerationJobs = ReturnType<typeof createGenerationJobs>;

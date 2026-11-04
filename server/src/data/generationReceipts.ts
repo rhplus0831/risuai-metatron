@@ -4,16 +4,27 @@ import { DatabaseSync } from "node:sqlite";
 import type { GenerationKind, GenerationStatus } from "../../../shared/jobs.ts";
 import { type DiagnosticsRecorder, errorFields, recordSafely } from "../diagnostics/log.ts";
 
+/**
+ * Best-effort job identities, cancellation tombstones and trimmed outcomes in a separate SQLite
+ * file, outside snapshots and archives. `server/src/jobs/generationJobs.ts` remains authoritative
+ * in memory. Any open, read, write, sync or prune failure closes the connection for the process
+ * lifetime and emits one content-free runtime event (origin generation.receipts); jobs continue
+ * with memory only. An unsupported schema is left untouched and also degrades the store.
+ */
+
 /** An ended job's payload stays on disk this long, with at most this many payloads. */
 export const KEPT_OUTCOME_MS = 24 * 60 * 60_000;
+/** Oldest ended payloads give way first; compact identities survive payload pruning. */
 export const MAX_KEPT_OUTCOMES = 500;
 /** Identity and progress outlive the payload; running rows are exempt from both limits. */
 export const GENERATION_RECEIPT_MS = 72 * 60 * 60_000;
+/** Oldest ended rows give way first; a running row is never pruned to meet this cap. */
 export const MAX_GENERATION_RECEIPTS = 10_000;
 const PRUNE_BATCH = 500;
 const PRUNE_ROUNDS = 4;
 const SCHEMA_VERSION = 1;
 
+/** Admission identity; clients without requestId have receipts but cannot deduplicate by request. */
 export type GenerationReceiptAdmission = {
     jobId: string;
     clientId: string;
@@ -26,6 +37,7 @@ export type GenerationReceiptAdmission = {
     fingerprint?: string | null;
 };
 
+/** A current-epoch job identity outlives its status payload: null status does not mean an unknown job. */
 export type GenerationReceipt = Omit<GenerationReceiptAdmission, "clientId" | "requestId" | "fingerprint"> & {
     clientId: string | null;
     requestId: string | null;
@@ -35,6 +47,7 @@ export type GenerationReceipt = Omit<GenerationReceiptAdmission, "clientId" | "r
     status: GenerationStatus | null;
 };
 
+/** Synchronous, best-effort persistence: failures fall back to no-op writes and null reads, never fail a job. */
 export type GenerationReceipts = {
     admit(input: GenerationReceiptAdmission): void;
     end(jobId: string, endedAt: number, status: GenerationStatus): void;
@@ -50,6 +63,7 @@ export type GenerationReceipts = {
     close(): void;
 };
 
+/** Request lookup includes private cancellation rows; job-status reads never expose those rows. */
 export type GenerationRequestReceipt = { cancelled: true } | (GenerationReceipt & { cancelled: false });
 
 type ReceiptRow = Omit<GenerationReceipt, "kind" | "progress" | "status"> & {
@@ -59,9 +73,10 @@ type ReceiptRow = Omit<GenerationReceipt, "kind" | "progress" | "status"> & {
 };
 
 /**
- * Job receipts in their own SQLite file, outside snapshots and archives. Memory answers first;
- * any store failure permanently disables this connection without affecting the jobs. WAL with
- * `synchronous = NORMAL` does not promise the last commits will survive a power loss.
+ * Opens the store and ends leftover running rows as shutdown once, preserving valid sequence
+ * progress without resuming parts. WAL with `synchronous = NORMAL` does not promise the last
+ * commits survive a power loss. Epoch sync deletes old rows; matching expired request rows are
+ * removed synchronously before lookup, admission or cancellation can reuse their unique key.
  */
 export function createGenerationReceipts(options: {
     file: string;

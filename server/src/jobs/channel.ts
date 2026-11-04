@@ -19,6 +19,16 @@ import {
     TAB_MCP_IDENTIFIERS,
 } from "../../../shared/jobs.ts";
 
+/**
+ * Job questions and callbacks share one client lane across jobs. The owner clock comes from
+ * `server/src/jobs/generationJobs.ts` via ChannelTransport.ownerAbsentDeadline; this module applies
+ * it in absenceDeadline and effectiveDeadline, using the hub's injected clock for every check.
+ * Timers only wake work: answers, chunks, dispatch, attach, parent lookup and watchCallback must
+ * check the current effective deadline too, so a late timer or frame cannot accept overdue work.
+ * Owner transitions re-arm wakeups. Reconnection removes the absence cap without extending a
+ * dispatched request's own allowance or its parent's allowance.
+ */
+
 /** A question waits this long from the moment it is dispatched (not while it waits in the client's queue). */
 export const QUESTION_TIMEOUT_MS = 120_000;
 /**
@@ -52,6 +62,12 @@ export type ChannelTransport = {
     ownerAbsentDeadline?(): number;
 };
 
+/**
+ * The runner's owner channel. Callbacks require an admitted hook, provider or MCP entry except for
+ * the fixed built-ins: generateImage, inlayImage, imggen, selectedChat and MCP callbacks to
+ * TAB_MCP_IDENTIFIERS. Callbacks hydrate before delivery; a notice is one way and cannot wait for
+ * an answer or hold a request lane.
+ */
 export type JobChannel = {
     notice(notice: GenerationNotice): void;
     ask(
@@ -261,7 +277,7 @@ function readAnswer(kind: Request["kind"], message: Record<string, unknown>): Qu
 }
 
 /**
- * The channel hub: one per server, shared by every job. Per client it keeps a FIFO
+ * The registry's channel hub, shared by its jobs. Per client it keeps a FIFO
  * of queued requests and a stack of outstanding ones: a request without a parent waits until the
  * client has none outstanding; a child (an aux request's callback, `parentId` = the client's
  * outstanding callback) runs at once, one level deep; anything else is refused. Notices are never
@@ -282,6 +298,7 @@ function readAnswer(kind: Request["kind"], message: Record<string, unknown>): Qu
  * a late valid answer of it on the job's socket) or `CANCELLED_CALLBACK_DRAIN_MS` after the cancel.
  * A job's end does not release it: Stop in one chat must not let the tab's next root (another chat's
  * job) arrive while the stopped hook still runs.
+ * A never-dispatched root gets neither a cancel frame nor a drain hold when it settles.
  */
 export function createChannelHub(options: { now?: () => number } = {}) {
     const now = options.now ?? Date.now;
@@ -763,6 +780,9 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 /**
                  * The owner attached: every outstanding request is sent, marked as a replay only when an
                  * owner socket took it before (it may have run on a page that is gone).
+                 * Buffered notices, replays, and first deliveries promoted by expiry share the original
+                 * request/notice order. A promoted request joins this batch once, through dispatch,
+                 * rather than also being collected as an outstanding replay.
                  */
                 handleAttach() {
                     const early = state.early ?? [];
@@ -871,4 +891,9 @@ export function createChannelHub(options: { now?: () => number } = {}) {
     };
 }
 
+/**
+ * Shared by a registry's jobs (`server/src/jobs/generationJobs.ts`; the app has one registry in
+ * `server/src/app.ts`), with one outstanding root per client in this hub. Drain holds are bounded
+ * by CANCELLED_CALLBACK_DRAIN_MS and can expire without proof that the tab's callback finished.
+ */
 export type ChannelHub = ReturnType<typeof createChannelHub>;

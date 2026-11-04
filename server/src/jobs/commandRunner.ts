@@ -25,6 +25,14 @@ import {
     type RunSetup,
 } from "./runSetup.ts";
 
+/**
+ * Dispatches generation jobs and runs command interactions under their one registry lifetime.
+ * `/multisend` queued by `server/src/jobs/runSetup.ts` runs on the server after the interaction;
+ * its parts keep one job id, chat slot, owner, hook set and channel. Each part delegates to
+ * `server/src/prompt/runner.ts` runPromptSend, so parts without browser callbacks continue without
+ * the page; a needed callback uses the channel's owner-absence rules.
+ */
+
 export type { GenerationRunnerDeps } from "./runSetup.ts";
 
 /**
@@ -128,8 +136,9 @@ async function runCommand(job: RunningJob, deps: GenerationRunnerDeps): Promise<
  * aggregate budget. A trigger stops the loop when the chat is gone. A load failure ends the job with its error
  * (as the client's former `doString` threw out of the loop), as do a spent budget and a worker
  * failure; a failure inside the handler is logged and the next trigger runs (as the client's former
- * catch did); a fatal host failure (a write conflict, a lost owner, an abort) ends the job. `accepted` carries no message;
- * queued sequence parts run after the handlers and supply the final reply when there is one.
+ * catch did); a fatal host failure (a write conflict, a lost owner, an abort) ends the job.
+ * `accepted` carries no message; queued sequence parts run after the handlers and supply the final
+ * reply when there is one.
  */
 async function runLuaInteractionTrigger(
     job: RunningJob,
@@ -230,7 +239,28 @@ async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, nam
     await finishCommand(job, deps, state);
 }
 
-/** Sends the queued parts under the command's one registry lifetime. */
+/**
+ * Sends queued parts after a button, form or manual trigger, under the command's one lifetime.
+ * `RunningJob.sequence.beginPart` in `server/src/jobs/generationJobs.ts` preflights each part
+ * synchronously. With no await between it and the token-owned write, clear removes all messages
+ * (omitted for an empty chat) and the user text is appended with a fresh id and no timestamp in
+ * that one write; the owner receives the chat afterwards. A refused boundary writes nothing.
+ *
+ * Pending metadata is flushed before switching views. Each send view keeps registry methods and
+ * the signal, drops the command/trigger/speaker/user/continue ids, and uses empty input (no input
+ * trigger or editinput), fresh run state and script budget, carrying emotion history forward.
+ * Each part has its own generation ids, reply locks, stages and request-history rows. Translations
+ * and memory hand off before it returns; removed replies' locks release without ending the job.
+ *
+ * Progress updates memory and best-effort receipts before the first part (sent: 0) and after each
+ * returned part, before the live-only sequence event: zero-based index, total, sent, optional
+ * reply messageId and alternatives. A removed reply counts as sent; a stopped send does not.
+ * One done terminal carries sequence { total, sent, stopped? }: boundary refusals use their code,
+ * a stopped send uses notSent. Throws and registry aborts retain error terminals with current
+ * progress; the first abort wins. No queued parts means no sequence. The registry runs one
+ * auto-checkpoint after a done sequence with an attempted part, after releasing the slot, never
+ * between parts.
+ */
 async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, commandState: JobRunState): Promise<void> {
     const { characterId, chatId } = job.context;
     const parts = commandState.sequence.flatMap(({ clear, parts }) => parts.map((part) => ({ clear, part })));

@@ -9,9 +9,13 @@ import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { limitedBody } from "./limitedBody.ts";
 
+/** Count endpoint exempted from the app's global body cap in favor of its authenticated cap. */
 export const TOKEN_COUNT_PATH = "/api/tokens/count";
+/** Playground endpoint sharing the count route's authenticated body cap. */
 export const TOKEN_ENCODE_PATH = "/api/tokens/encode";
+/** Both token routes bound the actual UTF-8 body bytes after authentication, independent of declared length. */
 export const MAX_TOKEN_BODY_BYTES = 2 * 1024 * 1024;
+/** Bounds a count batch, including repeated texts; exceeding it is 413. */
 export const MAX_TOKEN_TEXTS = 512;
 
 async function readTokenBody(c: Context<AppEnv>): Promise<JsonBodyResult> {
@@ -37,9 +41,12 @@ async function readTokenBody(c: Context<AppEnv>): Promise<JsonBodyResult> {
  * and tokenizers. Rate-limited, authenticated before reading, capped at 2 MiB of actual bytes,
  * every answer `no-store`. No epoch header: neither route writes. 400 for malformed bodies/scopes
  * or a refused encode text; 413 over the body cap or 512 count texts; 429 from the authenticated
- * limiter; 503 with `Retry-After` during maintenance or shutdown. Counts run sequentially and a
+ * limiter; 503 with `Retry-After: 5` during maintenance or shutdown. Counts run sequentially and a
  * tokenizer's text refusal yields only that entry's `null`; other failures reach the app's 500.
- * A disconnected client stops the batch and aborts its Google fetch.
+ * A disconnect ends this caller's batch and detaches its wait from a coalesced Google count
+ * (`server/src/prompt/tokens.ts`); the disconnect aborts that fetch only when no other caller still waits.
+ * Count bodies { scope: TabTokenScope, texts } answer { counts }; encode bodies { tokenizer, text }
+ * answer { ids } using `shared/tokenizerChoice.ts` playgroundFamily for the tab's tokenizer family.
  * Requests hold no maintenance lease, so shutdown does not wait for remote Google counts.
  */
 export function registerTokenRoutes(

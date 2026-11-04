@@ -61,6 +61,10 @@ function parseConditions(value: unknown): CbsConditions | string {
     return out;
 }
 
+/**
+ * Validates the tab's correlation ids separately from cache identity; strips client emotions from
+ * the render environment. Binding and stored-data admission remain the service's responsibility.
+ */
 export function parseTransformRequest(body: Record<string, unknown>): TransformRequest | string {
     if (!isValidResourceId(body.clientId)) {
         return "clientId must be a resource id";
@@ -179,6 +183,10 @@ export function parseTransformRequest(body: Record<string, unknown>): TransformR
     };
 }
 
+/**
+ * Bounds handler texts and truncates handler errors; the service checks that these ids answer
+ * exactly the snapshot's pending targets, and consumes the snapshot only once.
+ */
 export function parseTransformContinue(body: Record<string, unknown>): TransformContinueRequest | string {
     if (!isValidResourceId(body.clientId)) {
         return "clientId must be a resource id";
@@ -217,9 +225,13 @@ export function parseTransformContinue(body: Record<string, unknown>): Transform
 /**
  * The script transform: `POST /api/transform` (a `TransformRequest`) and
  * `POST /api/transform/continue` (the second call after the tab's plugin handlers), both answering
- * a `TransformResponse` as JSON. Authenticated, rate-limited, the body capped at
- * `MAX_TRANSFORM_BODY_BYTES`, the resource epoch checked (412 `EpochMismatch`). A render writes
- * nothing, so it does not hold the maintenance gate: a maintenance stops it (503, `Retry-After`). A
+ * a `TransformResponse` as JSON: the first call returns { results, same? }, with { snapshotId,
+ * pending } when targets await the tab's handlers. Continuations always return full { results };
+ * `same` belongs only to the first call (`server/src/prompt/transform.ts` partitionKnownResults).
+ * Authenticated before the 8 MiB body cap (`MAX_TRANSFORM_BODY_BYTES`, 413), rate-limited, the
+ * resource epoch checked (412 `EpochMismatch`). Malformed bodies, including a knownKey other than
+ * 64 lowercase hex characters, are 400. A render writes nothing, so it does not hold the maintenance
+ * gate: maintenance stops it (503, Retry-After: 5), as do shutdown and service unavailability. A
  * missing chat, preset, or persona is 404; a snapshot that is gone is 409 `SnapshotExpired`; an id
  * that is not the chat's bound one (the display rule) is 409 `chatBindingMismatch`.
  */

@@ -28,16 +28,19 @@ const REFUSAL_TEXT = {
 
 /**
  * The memory task routes (`shared/events.ts`), both refused with 503 `{ reason: "notEnabled" }` while
- * `enabled()` is false (no Retry-After: it is the server's configuration, not a passing state):
+ * the runner's service is absent or disabled by `enabled()` (also when replaced in tests; no
+ * Retry-After, since this is service configuration rather than a passing state):
  *
  * - `POST /api/memory/tasks` `{ characterId, chatId }`: a manual start (`MemoryTasks.start`), answered
- *   `MemoryTaskStartAnswer`; 404 for a chat that is gone, 429 `queueFull`, 503 (`Retry-After`) during
- *   shutdown and maintenance. The body is read after authentication and capped at 4 KiB.
+ *   `MemoryTaskStartAnswer`: { outcome: "running" | "queued", status } or { outcome: "pendingManual" }.
+ *   404 for a chat that is gone, 429 `queueFull`, 503 (Retry-After: 5) during shutdown and maintenance.
+ *   The body is read after authentication and capped at 4 KiB (413).
  * - `DELETE /api/memory/tasks/:characterId/:chatId`: cancels the chat's queued and running task and a
- *   waiting manual start, answered `MemoryTaskCancelAnswer`; 404 for a chat that is gone.
+ *   waiting manual start, answered `MemoryTaskCancelAnswer` { cancelled }; 404 for a chat that is gone.
  *
  * Both are authenticated, rate-limited, and epoch-checked (412 `EpochMismatch`); 400 for an id that is
- * not a resource id. The app makes every answer `no-store` and refuses them during shutdown. The epoch check and the service call run in one synchronous step.
+ * not a resource id. The app makes every answer `no-store` and refuses them during shutdown.
+ * The epoch check and the service call run in one synchronous step.
  */
 export function registerMemoryTaskRoutes(
     app: Hono<AppEnv>,

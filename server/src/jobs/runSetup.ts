@@ -41,6 +41,14 @@ import type { McpRegistry } from "../mcp/registry.ts";
 import type { PushService } from "../push/pushService.ts";
 import type { TranslationRunner } from "../translation/runner.ts";
 
+/**
+ * Job-scoped script services shared by `server/src/jobs/commandRunner.ts` and
+ * `server/src/prompt/runner.ts`. Runs share the JobRunState budget, fatal latch and effect count;
+ * a command sequence creates fresh state for each send. Lua and native triggers reach the same
+ * bindings, and pending metadata is flushed before snapshots, writes and callback barriers.
+ */
+
+/** Process services injected into each job; credentials stay in the request projection, never the tab's mirror. */
 export type GenerationRunnerDeps = {
     store: ResourceStore;
     kinds: ResourceKindRegistry;
@@ -73,9 +81,9 @@ export type GenerationRunnerDeps = {
     diagnostics?: DiagnosticsRecorder;
     /** The trigger effect loop's monotonic clock for its yield (default `performance.now`; tests freeze or step it). */
     effectClock?: () => number;
-    /** HypaV3's summary separator limits (`MemoryHost.separatorLimits`; default the production ones, tests lengthen them). */
+    /** HypaV3's summary separator limits (MemoryHost.separatorLimits); tests lengthen the production defaults. */
     hypaV3SeparatorLimits?: HypaV3SeparatorLimits;
-    /** The CBS wall times of every job, render, and run (`serverCbsLimits`; default the production ones, tests lengthen them). */
+    /** The CBS wall times of every job, render and run (serverCbsLimits); tests lengthen the production defaults. */
     cbsTimeLimits?: ServerCbsTimeLimits;
 };
 
@@ -103,8 +111,9 @@ export function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promi
 
 /**
  * What one send or command shares across its speakers and scripts: one aggregate Lua budget, its CBS
- * evaluation time, the effect count of its native triggers, the fatal abort (the first fatal host failure stops the run in progress at
- * once: the Lua hook raises, so a script that catches it cannot go on writing), and the regex
+ * evaluation time, the effect count of its native triggers, the fatal abort (the first fatal host
+ * failure stops the run in progress at once: the Lua hook raises, so a script that catches it cannot
+ * go on writing), and the regex
  * scripts' cache.
  */
 export type JobRunState = {
@@ -259,6 +268,14 @@ export function moduleTriggers(scope: JobScope): triggerscript[] {
     );
 }
 
+/**
+ * Binds Lua, native triggers and commands to the job's chat. `/multisend` parsed by
+ * `server/src/prompt/commands.ts` queues clear + copied texts in JobRunState.sequence only for
+ * command jobs; inside a send it does nothing. Across queued commands, MAX_SEQUENCE_PARTS (64)
+ * parts of at most MAX_SEQUENCE_PART_CHARS (100,000) characters are allowed. An over-limit command
+ * emits an alertError notice and queues none of its parts. `server/src/jobs/commandRunner.ts`
+ * runs the queue only after the button, form or manual trigger finishes.
+ */
 export function createRunSetup(
     job: RunningJob,
     deps: GenerationRunnerDeps,

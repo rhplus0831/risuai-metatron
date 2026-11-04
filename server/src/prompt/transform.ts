@@ -153,7 +153,14 @@ function targetRetainedBytes(run: TargetRun): number {
     );
 }
 
-/** Partition ordinary cache hits already held by the tab out of the first call's full results. */
+/**
+ * A target's knownKey changes only the first-call answer for an ordinary successful cache hit with
+ * exactly that key: `same` is a separate { id, key }[] without text or emotions, omitted when empty.
+ * The first call answers each target exactly once in results, same or pending. Different keys,
+ * evicted entries, fresh runs, noCache and failures answer in full (or await handlers in pending).
+ * Continuations always answer in full and never call this partition. Admission and refusals are
+ * unchanged; knownKey is neither authorization nor a promise that a newly computed output is equal.
+ */
 function partitionKnownResults(targets: TransformTarget[], results: TransformResult[]): TransformResponse {
     const knownKeys = new Map(targets.map((target) => [target.id, target.knownKey]));
     const full: TransformResult[] = [];
@@ -222,9 +229,7 @@ function partitionKnownResults(targets: TransformTarget[], results: TransformRes
  * speaker ids, including missing ones, and is validated against the owner's current display
  * identity; a missing memo or changed owner identity requires a load. Character records are read
  * only on identity-memo misses; no configuration data or message rows are parsed by the probe.
- * On the first call, `partitionKnownResults` answers an ordinary cache hit matching the target's
- * `knownKey` in `same` with only its id and key, present only when non-empty. A different key,
- * a miss, `noCache`, a failure and every continuation answer in full (or await plugin handlers).
+ * First-call confirmations follow `partitionKnownResults`.
  * The key identifies inputs, not output, so random, clock, or plugin output refilled under the
  * same key after eviction or Re-render can differ while `same` still confirms that key.
  *
@@ -832,7 +837,8 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                         results.push(finish(run, await tail(run, request.mode), life));
                         continue;
                     }
-                    // The texts sent back together stay within the second call's limit, and the snapshot within its budget.
+                    // The texts sent back together stay within the second call's limit,
+                    // and the snapshot within its budget.
                     const bytes = targetRetainedBytes(run) + (pending.length === 0 ? scopeBytes! : 0);
                     const pendingText = pending.reduce((sum, entry) => sum + Buffer.byteLength(entry.text), 0);
                     if (
@@ -866,7 +872,8 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                 claimed: false,
                 release: reservation.release,
             };
-            // The deadline (or a maintenance) ends the snapshot too: it is no longer claimable once its runs' time is over.
+            // The deadline (or maintenance) ends the snapshot too:
+            // it is no longer claimable once its runs' time is over.
             life.controller.signal.addEventListener(
                 "abort",
                 () => {
@@ -974,7 +981,12 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
     return {
         transform: (request: TransformRequest, signal: AbortSignal) => track(transform(request, signal)),
         resume: (request: TransformContinueRequest, signal: AbortSignal) => track(resume(request, signal)),
-        /** A maintenance began: every request and snapshot ends, the cache empties; new work waits for the returned resume. */
+        /**
+         * Maintenance ends every request and snapshot and empties caches. While paused, new transforms
+         * and continuations throw TransformUnavailableError (`server/src/routes/transform.ts` answers
+         * 503 with Retry-After: 5). Each active pause's returned resume closure must be called before
+         * admission can reopen.
+         */
         pause(reason: string): () => void {
             paused++;
             pauses++;

@@ -1,3 +1,6 @@
+import type { CbsConditions } from "./cbs/types.ts";
+import type { GenerationClientEnv } from "./jobs.ts";
+
 /**
  * The script transform: the read-only batch endpoint that runs the display transform
  * (`editdisplay`: Lua `editDisplay`, the `display` trigger, CBS, the regex scripts, the dynamic
@@ -11,14 +14,17 @@
  * `TransformContinueRequest`, which answers the rest. Both answer `TransformResponse`.
  * A target's `knownKey` confirms an exact cache hit in `same`, without downloading its text again.
  */
-import type { CbsConditions } from "./cbs/types.ts";
-import type { GenerationClientEnv } from "./jobs.ts";
 
+/** Display runs the display hooks before CBS/regex/assets; process runs plugin handlers before CBS/regex. */
 export type TransformMode = "editdisplay" | "editprocess";
 
-/** `message`: a chat message (by id); `background`: background HTML; `translation`: translated text; `text`: the rest. */
+/**
+ * `message`: a chat message (by id); `background`: background HTML; `translation`: translated text;
+ * `text`: the rest.
+ */
 export type TransformTargetKind = "message" | "background" | "translation" | "text";
 
+/** The wire allowlist shared by the tab's targets and `server/src/routes/transform.ts` validation. */
 export const TRANSFORM_TARGET_KINDS: readonly TransformTargetKind[] = ["message", "background", "translation", "text"];
 
 /** The chat the transform runs for (the tab captures it before its first await), and its preset and personas. */
@@ -35,6 +41,9 @@ export type TransformContext = {
     selectedPersonaId: string;
 };
 
+/**
+ * One isolated transform on the supplied source, correlated by id; its overlays never persist.
+ */
 export type TransformTarget = {
     /** The request's correlation id (unique in the request; never a cache identity). */
     id: string;
@@ -51,11 +60,14 @@ export type TransformTarget = {
     noCache?: boolean;
     /**
      * The `key` of this target's earlier result (64 lowercase hex characters): when the server's
-     * cache holds exactly that key, the target is answered in `same` instead of `results`.
+     * ordinary successful cache hit holds exactly that key, it is answered in `same` instead of
+     * `results`. The key identifies inputs; output can differ after eviction or a forced re-render.
+     * Fresh runs, failures and noCache targets answer in full (or await handlers in pending).
      */
     knownKey?: string;
 };
 
+/** A read-only first call: handlers opt cache misses into the two-call protocol, not cache hits. */
 export type TransformRequest = {
     clientId: string;
     mode: TransformMode;
@@ -77,6 +89,7 @@ export type TransformContinueRequest = {
 /** An `@@emo` effect: the emotion's name and image, in the order the regex scripts produced them. */
 export type TransformEmotion = { name: string; image: string };
 
+/** A full target answer; successes carry text and ordered emotion effects, failures are never cached. */
 export type TransformResult =
     | {
           id: string;
@@ -98,12 +111,15 @@ export type TransformResult =
           permanent?: true;
       };
 
+/**
+ * Each first-call target is answered exactly once in results, same or pending. `same` is a separate
+ * { id, key }[] (no text or emotions), omitted when empty. A continuation always answers its
+ * pending targets in full in results, without same, snapshotId or pending.
+ */
 export type TransformResponse = {
     results: TransformResult[];
     /**
-     * Targets whose `knownKey` the cache holds, answered without text or emotions; present only
-     * when non-empty. Each target of a first call is answered exactly once: in `results`, in
-     * `same`, or (with `handlers`) in `pending`.
+     * Exact successful cache-hit confirmations of the target's knownKey, on the first call only.
      */
     same?: { id: string; key: string }[];
     /** Present when targets wait for the tab's plugin handlers (`POST /api/transform/continue`). */

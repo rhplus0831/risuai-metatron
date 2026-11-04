@@ -49,20 +49,26 @@ export function serverAppVersion(rootDir: string): string {
 
 /**
  * The server's CBS limits (`shared/cbs/limits.ts`): card text is evaluated on the
- * main thread, so one template is held to a work count and a wall time, and a job's templates
+ * main thread, so one template is held to a work count and a wall time, and a send's or command run's templates
  * together to an allowance of evaluation time. The numbers are policy, chosen with room for large
  * inline data in card text (a multi-megabyte data URL scans at about 80 ns per character).
  */
 export const SERVER_CBS_MAX_WORK = DEFAULT_CBS_MAX_WORK;
+/** One template's cooperative wall-time bound; serverCbsLimits allows tests to lengthen it. */
 export const SERVER_CBS_MAX_MS = 5_000;
+/**
+ * Cumulative evaluation allowance shared by one send's or command run's evaluators and speakers.
+ * Each sequence part starts fresh (`server/src/jobs/commandRunner.ts` finishCommand).
+ */
 export const SERVER_CBS_JOB_MS = 60_000;
 
-/** The wall times `serverCbsLimits` allows: one template's and a job's in all (tests lengthen them). */
+/** The wall times serverCbsLimits allows: one template's and one run's cumulative allowance (tests lengthen them). */
 export type ServerCbsTimeLimits = { templateMs: number; jobMs: number };
 
 /**
- * The limits of one job's evaluators: `usage` is the job's, shared by every run of it. `time`
- * replaces `SERVER_CBS_MAX_MS` and `SERVER_CBS_JOB_MS`; the work limit and the clock stay.
+ * Limits over the caller's usage, shared across one send's or command run's evaluators and speakers.
+ * `server/src/jobs/runSetup.ts` createJobRunState gives each sequence part fresh usage. `time`
+ * replaces SERVER_CBS_MAX_MS and SERVER_CBS_JOB_MS; the work limit and the clock stay.
  */
 export function serverCbsLimits(usage: CbsUsage, time?: ServerCbsTimeLimits): CbsLimits {
     return {
@@ -75,6 +81,7 @@ export function serverCbsLimits(usage: CbsUsage, time?: ServerCbsTimeLimits): Cb
 /** How a job's chat variables are written: through the job (`job.write`), the change itself or false. */
 export type JobChatVarWriter = (key: string, value: string) => boolean;
 
+/** The caller supplies job-owned limits and variable writes; the CBS host never writes through a tab. */
 export type JobCbsOptions = {
     rootDir: string;
     /** Writes a chat variable of the job's chat (the client's `setChatVarOf`). */

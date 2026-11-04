@@ -235,21 +235,13 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
 }
 
 /**
- * `/api/generations`: `POST` creates a job (`{ jobId }`; 409 `chatBusy` with the running job's id,
- * 409 with plain text while the chat holds a memory rebuild, 409 `stale`, 409 `chatBindingIncomplete`
- * with `problems` or `chatBindingMismatch` when the context's ids are not the chat's complete binding,
- * 409 `chatLoreOverrideOrphaned` with `entries` (`{ id, name }`) when overrides lost their owner entries,
- * 404, 412 for another epoch, 503 while the server shuts down or a restore runs), `GET /:id?clientId=` is the owner's status, and
- * `DELETE /:id?clientId=` aborts it, and `POST /:id/memory-stop?clientId=` (`{ runId }`, the epoch
- * checked) stops the job's initial memory summarization run `runId` after its summary in progress
- * (`{ stopped: true }`; 409 `jobEnded`, `noMemoryRun`, or `otherMemoryRun`; 412 for another epoch),
- * and `POST /:id/drained?clientId=` (`ChannelDrainedBody`) reports a callback of the job the server
- * cancelled as no longer running in the tab, freeing the client's channel lane (`{ drained }`, false
- * when it held none; also for an ended job still kept). Those id routes return 404 for another
- * client's job. `GET /current?characterId=&chatId=&clientId=` reads the chat's running job without
- * attaching (404 `idle`); `POST /stop` with `GenerationStopBody` and the epoch aborts only that
- * chat's named current job (409 `jobChanged`, 404 `idle`). The socket is
- * `/api/generations/:id/ws` (`generationJobs.handleUpgrade`). Responses are never cached.
+ * `/api/generations`: JWT authentication, the authenticated limiter, and `no-store` on responses
+ * these registrations produce. The earlier global body limiter in `server/src/app.ts`
+ * (`server/src/routes/limitedBody.ts`) rejects a declared Content-Length above its cap with 413 before
+ * these registrations run, without Cache-Control. Job-id routes are owner-scoped by client-id
+ * equality; current, stop and request-id cancel are available to any authenticated tab.
+ * The socket `/api/generations/:id/ws` is handled outside
+ * these registrations by `server/src/jobs/generationJobs.ts` handleUpgrade.
  */
 export function registerGenerationRoutes(
     app: Hono<AppEnv>,
@@ -263,6 +255,16 @@ export function registerGenerationRoutes(
     app.use("/api/generations", noStore);
     app.use("/api/generations/*", noStore);
 
+    /**
+     * POST GenerationCreateBody, with optional requestId: { jobId }, or a replay
+     * { jobId, replayed: true, owned, status }. `server/src/jobs/generationJobs.ts` create checks
+     * x-resource-epoch, so request lookup follows the epoch check, before ordinary admission gates.
+     * 400 for a malformed body; 404 for a missing chat; 412 for another epoch; 503 with Retry-After: 5
+     * during shutdown or maintenance. 409: requestIdReused, requestCancelled, chatBusy { jobId },
+     * stale, chatBindingIncomplete { problems }, chatBindingMismatch, or
+     * chatLoreOverrideOrphaned { entries: [{ id, name }] }. A memory rebuild also refuses with 409,
+     * whose JSON `error` is a human-readable message rather than a structured refusal code.
+     */
     app.post("/api/generations", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -287,6 +289,12 @@ export function registerGenerationRoutes(
         return c.json(answer);
     });
 
+    /**
+     * POST { requestId, clientId } with x-resource-epoch: an unknown id gets a tombstone and
+     * { state: "cancelled" }; an admitted id gets { state: "aborted" | "ended", jobId, owned, status }.
+     * Aborts that request regardless of owner, never a different job occupying its chat. 400 for
+     * invalid ids; 412 for another epoch. Available during shutdown and maintenance.
+     */
     app.post("/api/generations/cancel", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) return denied;
@@ -308,6 +316,12 @@ export function registerGenerationRoutes(
         return result.ok ? c.json(result.body) : c.json(result.body, result.status);
     });
 
+    /**
+     * GET ?characterId=&chatId=&clientId=: read-only chat-slot lookup
+     * { jobId, kind, owned, stage?, sequence? }; 404 idle, 400 invalid ids. Optional clientId only
+     * determines owned: it never attaches or grants channel access. Register before /:id, which
+     * would otherwise capture "current" as a job id.
+     */
     app.get("/api/generations/current", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) return denied;
@@ -325,6 +339,12 @@ export function registerGenerationRoutes(
         return current ? c.json(current) : c.json({ error: "idle" }, 404);
     });
 
+    /**
+     * POST { characterId, chatId, jobId, clientId } with x-resource-epoch aborts only that chat's
+     * named current job, including its sequence: { aborted } (false if already aborting). clientId
+     * is attribution only. 400 invalid ids; 412 another epoch; 404 idle; 409 jobChanged, after which
+     * the replacement must be looked up and confirmed again.
+     */
     app.post("/api/generations/stop", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) return denied;
@@ -348,6 +368,11 @@ export function registerGenerationRoutes(
         return result.ok ? c.json(result.body) : c.json(result.body, result.status);
     });
 
+    /**
+     * GET ?clientId=: the owner's GenerationStatus, 404 for an unknown or another client's job.
+     * After the 60 s ended-job grace and collection, a kept outcome still answers state: "ended",
+     * kept: true and a trimmed terminal, but the collected job can no longer be attached.
+     */
     app.get("/api/generations/:id", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -357,6 +382,7 @@ export function registerGenerationRoutes(
         return status ? c.json(status) : c.json({ error: "Generation not found" }, 404);
     });
 
+    /** DELETE ?clientId= aborts the owner's job: { aborted }; 404 for an unknown or another client's job. */
     app.delete("/api/generations/:id", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -366,6 +392,12 @@ export function registerGenerationRoutes(
         return aborted === null ? c.json({ error: "Generation not found" }, 404) : c.json({ aborted });
     });
 
+    /**
+     * POST ?clientId= { runId }, with x-resource-epoch, stops the owner's initial memory
+     * summarization run after its summary in progress; the job continues. { stopped: true };
+     * 400 invalid runId; 404 unknown/another client's job; 409 jobEnded, noMemoryRun or otherMemoryRun;
+     * 412 another epoch.
+     */
     app.post("/api/generations/:id/memory-stop", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -388,6 +420,12 @@ export function registerGenerationRoutes(
         return result.ok ? c.json({ stopped: true }) : c.json(result.body, result.status);
     });
 
+    /**
+     * POST ?clientId= ChannelDrainedBody { callbackId }: the owner reports a server-cancelled
+     * callback no longer running in the tab, freeing its channel lane. { drained } (false when it
+     * held none), also for an ended job still in grace; 400 invalid callbackId, 404 unknown/another
+     * client's job. A collected kept outcome has no channel to drain.
+     */
     app.post("/api/generations/:id/drained", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

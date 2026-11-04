@@ -271,10 +271,10 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  * 2. The input stage (a send with a nonempty `input`, unless the chat already holds the user message
  *    `userMessageId`): for a character, the `input` trigger on a copy of the chat as stored, then
  *    `editinput`, then the user message appended under that id; a group appends the input as it came.
- *    `accepted { userMessageId }` follows. It runs on the admitted preset, before `presetChain`, as
- *    the tab runs it before `sendChat`.
- * 3. `presetChain` (by name, with `deps.random`): the job's scope becomes the picked preset's (the
- *    keep rules of `setPreset`), later callbacks name it, and `preset { presetId }` tells the tab.
+ *    `accepted { userMessageId }` follows. It runs on the admitted preset, before applying
+ *    `presetChain`, as the tab runs it before `sendChat`.
+ * 3. `presetChain` (picked by name with `deps.random` before input): the scope now becomes the picked
+ *    preset's (the keep rules of `setPreset`), later callbacks name it, and `preset { presetId }` tells the tab.
  * 4. The speakers: the character, or the group's members in `groupChat`'s order (one budget, one
  *    effect count, each speaker's own bindings and request projection). A preview stops after the
  *    first; a speaker that fails ends the loop.
@@ -321,7 +321,12 @@ export type PromptSendResult =
           skipped?: SkippedHook[];
       };
 
-/** Runs one send, including its failure metadata and hand-offs, without ending the registry job. */
+/**
+ * Runs one send, including failure metadata, without ending the registry job. After final chat
+ * writes and before returning, hands translations and due memory input to their detached services;
+ * failures of those services' hand-offs cannot fail the send. `runPromptJob` emits done only after
+ * this returns; `server/src/jobs/commandRunner.ts` uses the same boundary for each sequence part.
+ */
 export async function runPromptSend(
     job: RunningJob,
     deps: GenerationRunnerDeps,

@@ -129,6 +129,11 @@ Example: <img src="{{ele::{{chardisplayasset}}::0}}">
 <Image Tag Instruction>
 `;
 
+/**
+ * The job services supplied by `server/src/prompt/runner.ts`: reads and writes stay in the job's
+ * scope, callbacks use its owner channel, and token counting and memory services share its request
+ * configuration and abort fence. Assembly does not acquire an independent job or owner.
+ */
 export type AssemblyHost = {
     /** The job's database projection (the preset's fields forwarded). */
     db: Database;
@@ -1075,6 +1080,10 @@ async function hypaV3Step(
     return blockingReason ? blocking(blockingReason) : selectOnlyStep(job);
 }
 
+/**
+ * Assembles each speaker's round after `server/src/prompt/runner.ts` locks a continued message.
+ * When input processing applies, it runs on the admitted preset before the picked presetChain is applied.
+ */
 export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): Promise<AssembledPrompt> {
     const { db, owner: nowChatroom, speaker: currentChar, chatRef: chatTarget, tokenizer } = host;
     const parse = host.parse;
