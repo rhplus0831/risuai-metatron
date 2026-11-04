@@ -65,14 +65,18 @@ const reporter = "./util/agentTestReporter.ts";
  * sees, released by the kernel when the process ends.
  */
 const E2E_LOCK_PORT = 6199;
-/** How long an e2e run waits for the lock, and then for a leftover stack to free its ports. */
+/** Wait up to 30 minutes for the e2e lock; timeout exits 1 before checking the stack's ports. */
 const E2E_LOCK_WAIT_MS = 30 * 60_000;
 /** Held the same way by a whole-suite Vitest run (no file filter), so such runs queue per machine. */
 const GATE_LOCK_PORT = 6198;
 /** How long a whole-suite run waits for the lock before running anyway. */
 const GATE_LOCK_WAIT_MS = 15 * 60_000;
+/** A separate two-minute wait for leftover stack ports; timeout exits 1 naming the busy ports. */
 const E2E_PORTS_WAIT_MS = 2 * 60_000;
-/** How the wrapper hands `--slow-tests` to the reporter (empty: no slow-test list). */
+/**
+ * How the wrapper hands `--slow-tests` to the reporter (empty: no slow-test list). Its threshold
+ * is part of the cache key: a replay keeps the stored durations; `--force` measures again.
+ */
 const SLOW_TESTS_ENV = "RISU_REPORT_SLOW_TESTS_MS";
 const STDERR_TAIL = 60;
 /** One JSON line per test that failed in a full run and passed when its file ran alone. */
@@ -86,6 +90,7 @@ const lock = !args.includes("--no-lock");
 const verbose = args.includes("--verbose");
 const all = args.includes("--all");
 const e2e = args.includes("--e2e");
+/** Rerun policy is part of the cache key, so disabling reruns cannot replay a merged result. */
 const rerun = !args.includes("--no-rerun");
 const isSlowTests = (arg) => arg === "--slow-tests" || arg.startsWith("--slow-tests=");
 
@@ -111,6 +116,7 @@ let keyArgs;
 let toolVersion;
 const vitestArgs = [];
 if (e2e) {
+    // These flags govern the Vitest reporter and per-file reruns; e2e refuses them with exit 2.
     if (slowTestsMs !== undefined || !rerun) usage("--slow-tests and --no-rerun are for Vitest runs, not --e2e");
     const specArgs = e2eSpecArgs();
     const playwrightArgs = args.filter(
@@ -120,6 +126,7 @@ if (e2e) {
             !isSpecArg(arg),
     );
     command = [playwrightCli, "test", ...specArgs, "--reporter=dot", ...playwrightArgs];
+    // Selected specs and the Playwright version distinguish e2e cache entries.
     keyArgs = ["--e2e", ...specArgs, ...playwrightArgs];
     toolVersion = `playwright ${packageVersion("@playwright/test")}`;
 } else {
@@ -152,6 +159,7 @@ function isSpecArg(arg) {
 
 // The spec files of an `--e2e` run, as Playwright's file filters (none: every spec). Prints what was
 // selected and why; exits with 2 when nothing can be selected.
+// Automatic selection shows up to three selecting changed paths per spec, with a count of the rest.
 function e2eSpecArgs() {
     const specs = loadSpecs(root);
     const known = new Set(specs.map((spec) => spec.file));
@@ -220,9 +228,12 @@ function e2eSpecArgs() {
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
-// Listens on `port` for the rest of the process, waiting while another `what` run holds it. Past
-// `waitMs`, an e2e run exits 1 (its stack's ports would be busy anyway) and a whole-suite run goes
-// ahead without the lock.
+/**
+ * Listens on `port` for the rest of the process, waiting while another `what` run holds it. Waiting
+ * emits `[agent-test] whole-suite: ...` or `[agent-test] e2e: ...`. Past `waitMs`, an e2e run exits 1
+ * naming the lock port, while a whole-suite run goes ahead without the lock (after GATE_LOCK_WAIT_MS,
+ * 15 minutes). Once the e2e lock is acquired, `waitForE2ePorts` checks the stack's ports separately.
+ */
 async function acquireLock(port, waitMs, what) {
     const startedWaiting = Date.now();
     for (let waiting = false; ; waiting = true) {
@@ -248,7 +259,7 @@ async function acquireLock(port, waitMs, what) {
     }
 }
 
-// Whether the Vitest run covers the whole suite: no file filter among its arguments.
+/** A whole-suite run has no file filter according to Vitest's `parseCLI`, regardless of tag filters. */
 async function wholeSuite() {
     const { parseCLI } = await import("vitest/node");
     return (parseCLI(["vitest", "run", ...vitestArgs]).filter ?? []).length === 0;
@@ -290,6 +301,7 @@ function git(gitArgs, env = {}) {
 
 // Tree id of the working tree: a copy of the real index (so unchanged files keep their stat cache
 // and are not re-hashed) with everything staged, written as a tree object. Null outside git.
+// A failed add or write-tree also disables caching; the tests still run.
 function workingTreeId() {
     const gitDir = git(["rev-parse", "--git-dir"]);
     if (gitDir.status !== 0) return null;
@@ -406,6 +418,7 @@ const key =
               .update(JSON.stringify([tree, process.version, toolVersion, keyArgs]))
               .digest("hex");
 
+/** Cache replays start with `[agent-test] cached result ...` and finish before either lock is acquired. */
 const cached = key === null || force ? null : readEntry(entryFile);
 if (cached && cached.key === key && typeof cached.exitCode === "number") {
     log(
@@ -417,6 +430,7 @@ if (cached && cached.key === key && typeof cached.exitCode === "number") {
     process.exit(cached.exitCode);
 }
 
+/** A child terminated by a signal ends the wrapper without caching either the full run or a partial rerun. */
 function interrupted(stdout, stderr) {
     process.stdout.write(stdout);
     printStderr(stderr, 1);
@@ -424,8 +438,15 @@ function interrupted(stdout, stderr) {
     process.exit(1);
 }
 
-// Runs each file of a failed full run that `planRerun` accepts again alone, one at a time, and returns
-// the final output (`mergeRerun`), or the full run's own when there is nothing to rerun.
+/**
+ * Runs each file that `planRerun` accepts again alone, one at a time. Missing or interrupted reports,
+ * unhandled errors, or more than MAX_RERUN_FILES (five) failing files prevent reruns; the latter two
+ * print `[agent-test] not rerun: ...` with the original output.
+ * `mergeRerun` replaces repeat failures with `RERUN <file> failed again when run alone` and that run's
+ * failures. The summary counts the merged result and appends `<n> failed file(s) rerun alone in <s>s`.
+ * Exit 0 means the merged result has no failed tests, module/suite errors, or unhandled errors;
+ * rerun exit codes alone do not determine it.
+ */
 async function rerunFailedFiles(full) {
     const plan = planRerun(full.report);
     if (plan.files.length === 0) {

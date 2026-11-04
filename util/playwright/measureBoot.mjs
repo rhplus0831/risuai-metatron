@@ -26,8 +26,10 @@
 // requires exactly one listing and the away change shown; scripts reports same-origin
 // non-API transfer/decoded bytes after network idle. Final Markdown tables use median bytes/ms.
 // Every cached boot checks its request, expanded answer and written cache against a plain read;
-// warm claims every eligible character and module. External page requests are blocked through
-// CDP so Chrome's HTTP cache stays enabled. A busy port refuses startup; each run owns its store.
+// warm claims every eligible character and module. CDP blocks the page's four known public hosts:
+// cdn.jsdelivr.net, fonts.googleapis.com, fonts.gstatic.com and sv.risuai.xyz, keeping Chrome's HTTP
+// cache enabled. Other non-local HTTP(S) page requests fail the run; the server's own egress is
+// unguarded. A busy port refuses startup; each run owns its store.
 // Usage: pnpm build && FIXTURE=reported node util/playwright/measureBoot.mjs
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";

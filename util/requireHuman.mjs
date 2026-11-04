@@ -22,7 +22,7 @@ export function humanGateMessage(command) {
     ].join("\n");
 }
 
-// Prints the message and exits instead of throwing, so the caller shows no stack trace.
+/** Prints agent/person instructions and exits 1 without a stack trace unless CI, HUMAN, or AGENT_TEST is set. */
 export function requireHuman(command) {
     if (humanAllowed()) return;
     process.stderr.write(humanGateMessage(command));

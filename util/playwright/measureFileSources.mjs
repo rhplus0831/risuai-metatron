@@ -745,6 +745,7 @@ try {
             });
             // Routing disables the HTTP cache. Each run has a fresh profile anyway: these are cold
             // transfers, not a warm-cache comparison; the server's generated thumbnail cache stays.
+            // Requests and redirects count individually, so counts can exceed distinct image totals.
             const blocked = await isolateContext(context);
             await context.addInitScript(trackObjectUrls);
             await context.addInitScript(trackImages);
@@ -939,6 +940,10 @@ try {
             const decoded = inspected.images;
             await settle();
             const byUrl = new Map(decoded.map((image) => [image.url, image]));
+            /**
+             * The sw contract is every seeded catalog avatar decoded from ?w=256 at short side 256;
+             * checking the dimensions alone would also accept an incorrectly sourced image.
+             */
             const avatarOk = thumbs.filter((character) => {
                 const urls = catalog.get(character.name) ?? [];
                 if (urls.length !== 1) return false;

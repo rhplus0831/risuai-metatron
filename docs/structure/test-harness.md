@@ -20,123 +20,83 @@
 
 ## Files
 
-### Reporter
+Read the module headers and the comments on the identifiers below: they have each script's usage, behavior, and exit
+codes; the entries name the role and the identifiers to look up.
 
-- `util/agentTestReporter.ts` (its header has the output): stack frames leave out `node_modules`, Node internals, and
-  anonymous frames, and the cause chain is printed. Logs are buffered per task and printed only under a failure, so
-  `--silent=passed-only` is not needed. Module and suite errors (import failures, `beforeAll` throws) and unhandled
-  errors are listed like failures. Diffs, values, logs, and frames are capped.
-- With `test:agent --slow-tests` it prints a `SLOW` warning with the ten slowest passed tests and a count of the rest.
-- `util/agentTestResults.mjs` `summaryLine`, which the wrapper also uses after a rerun:
-  `OK <n> passed, <n> skipped (<files>, <s>s)` or `FAIL <n> failed, <n> passed, ... (<k> of <files> failed, <s>s)`.
+### Test wrapper and reporter
+
+- `util/agentTest.mjs`: the `test:agent` wrapper (`pnpm test` for agents, `--e2e` for the specs); the cache, the held
+  stderr, the rerun, and the locks (`GATE_LOCK_PORT`, `E2E_LOCK_PORT`, `MAX_RERUN_FILES`, `FLAKY_LOG`).
+- `util/agentTestReporter.ts` `AgentTestReporter`: the Vitest reporter the wrapper installs: failures only, one summary
+  line, the `SLOW` warning (`MAX_SLOW_TESTS`), the caps (`MAX_FRAMES`, `MAX_LOG_LINES`, ...).
+- `util/agentTestResults.mjs`: what the reporter and the wrapper share: `summaryLine`
+  (`OK <n> passed, <n> skipped (<files>, <s>s)` or `FAIL <n> failed, <n> passed, ... (<k> of <files> failed, <s>s)`),
+  `RESULTS_FILE_ENV`, `planRerun`, `mergeRerun`, `withoutFilters`.
+- `util/agentE2e.mjs`: which specs a change reaches (`selectSpecs`, `EVERY_SPEC_FILES`, `reachesBrowser`).
+- `util/overloadTest.mjs`: `test:overload`, the gated tests under the reference overload (one CPU, eight burners).
 
 ### Human gate
 
-- `util/requireHuman.mjs` (its header names the commands and the three variables): `requireHuman(command)` prints a
-  notice (what to run as an agent, how to set `HUMAN` as a person) and exits with 1 unless `CI`, `HUMAN`, or
-  `AGENT_TEST` is set.
-- `vitest.config.ts` calls it at load; the Vitest VS Code extension loads that config too, so that editor needs `HUMAN`
-  in its environment.
-- Agents must use the wrapper and must not set `HUMAN` or `AGENT_TEST` themselves to bypass this convention.
+- `util/requireHuman.mjs` `requireHuman(command)`: the gate of `pnpm test`, `test:slow`, `test:all`, `test:e2e`, and a
+  direct `vitest` run, open when `CI`, `HUMAN`, or `AGENT_TEST` is set. `vitest.config.ts` calls it at load, so an
+  editor's Vitest extension needs `HUMAN` in its environment.
+- Agents use the wrapper and do not set `HUMAN` or `AGENT_TEST` themselves to bypass this convention.
 
 ### Vitest config and setup
 
-- `vitest.config.ts` (its comments give the reasons): `requireHuman("vitest")` at load, the Svelte plugin with
-  `configFile: false`, the test-only `lucideImports` plugin, the `src` alias, browser resolve conditions, `happy-dom`
-  with `enableIframePageLoading`, setup file `vitest.setup.ts`, the default include pattern, and `e2e/**` and
-  `.claude/**` excluded.
-- `vitest.lucideImports.ts` `lucideImports` (its doc comment has the rewrite and the reasons): one
-  `@lucide/svelte/icons/<file>` default import per icon, for tests only.
-- `vitest.setup.ts`: mocks KaTeX, sets `globalThis.safeStructuredClone` to a JSON clone, patches happy-dom's
-  `Node.prototype.nodeName` getter so it dispatches by node type, and installs the [network guard](#network-guard).
-  - DOMPurify >= 3.4.6 reads tag names through that prototype getter, which happy-dom leaves returning `""`
-    (capricorn86/happy-dom#2182); without the patch the sanitizer strips every element under happy-dom.
-  - The patch is guarded, runs only under the happy-dom environment, and its contract is pinned by
-    `vitest.setup.test.ts`. Remove both once happy-dom fixes the getter.
+- `vitest.config.ts`: the gate's config (`happy-dom` with `enableIframePageLoading`, the Svelte plugin with
+  `configFile: false`, the setup file, excludes, timeouts, the `slow` tag); its comments give the reasons.
+- `vitest.lucideImports.ts` `lucideImports`: the test-only rewrite of `@lucide/svelte` barrel imports.
+- `vitest.setup.ts`: mocks KaTeX, sets `globalThis.safeStructuredClone` to a JSON clone, installs happy-dom's
+  `Node.prototype.nodeName` shim (without it DOMPurify mis-sanitizes under happy-dom), and installs the
+  [network guard](#network-guard) through `vitest.testNetwork.ts` (`allowTestLoopbackOrigin`, `classifyTestRequest`).
 
 ### Test inventory
 
-- `pnpm check:tests` (`util/testInventory.mjs`, plain Node: no test run, so no human gate): its header lists what fails
-  and how it applies each runner's patterns. Run it after adding, moving, or tagging a test.
-- Slow rows: a row names its file, then "(the whole file)" for a `@module-tag slow` or each tagged test's title in
-  double quotes, `...` standing for any text.
-- A `.svelte` file's imports are read through Svelte's parser, template expressions included.
-- A config shape it cannot read is an error; teach the script before using one.
+- `pnpm check:tests` (`util/testInventory.mjs`, plain Node: no test run, so no human gate): runner patterns, the
+  [slow-test table](#slow-test-table) against the tags (`readSlowTable`, `checkSlowTable`), and test imports from
+  product code. Run it after adding, moving, or tagging a test; teach the script a config shape before using one.
 
 ### Browser stack
 
-- Browser checks use Playwright against this stack: plain `playwright-core` scripts in `util/playwright/` for captures
-  and one-off observations, `@playwright/test` specs in `e2e/` for repeatable checks (`pnpm test:e2e`).
-  `playwright.config.ts`, `e2e/`, and `util/playwright/` are outside `tsconfig.json`'s include, so `pnpm check` does not
-  type-check them.
-- `playwright.config.ts`: specs in `e2e/**/*.spec.ts`, one worker, the system Chrome (`/usr/bin/google-chrome`, override
-  with `RISU_CHROME`; no browser download), `baseURL` `http://localhost:5201`. `globalSetup` is
-  `util/playwright/globalSetup.mjs`, which starts one isolated stack per run.
-- `e2e/fixtures.ts`: the specs' `test`, `expect`, and `settle` (and the Playwright types they use).
-  - `settle(page)` waits until the page's resource sync is idle (`resourceSyncIdle` in
-    `src/ts/storage/resourceSync.svelte.ts`: nothing dirty, queued, scheduled, or in flight), seen on two polls 100 ms
-    apart, within 30 s.
-  - Its `context` fixture clears safe boot's counter of unsettled boots before every page load, so a spec that opens the
-    app several times, or runs right after another check's loads in the same stack, is not met by the Safe boot notice
-    intercepting its clicks.
-  - The fixture wraps only Playwright's injected `context`, so a context a spec makes itself (`browser.newContext()`)
-    calls `clearSafeBootAttempts` before its first page load.
-- `util/playwright/stack.mjs` `startStack({ serverPort, vitePort, serverEnv })`: runs `server/src/main.ts` in a fresh
-  temporary working directory and the Vite dev server with `RISU_DEV_SERVER` pointing at it; `stop()` ends both and
-  deletes the directory.
-  - `RISU_SAVE_DIR` is pinned to the directory's `save/` and the shell's `RISU_HOST` and `RISU_AGENT_DEV_AUTH_BYPASS`
-    are dropped, so the store starts empty, the repository `save/` is never touched, and auth is real.
-  - `serverEnv` adds to the server's environment only, e.g. `NODE_OPTIONS` with a check's `--import` preload; without
-    one the server gets a `fetch` egress tripwire, `deniedEgress()`.
-  - `isolateContext(context)` keeps a browser context's HTTP requests on local hosts and `unexpectedEgress` filters the
-    expected blocks.
-  - `openApp(page, baseURL)` answers the node-password prompts and waits for `loadedStore`.
-  - `restartServer({ signal })` stops the server (SIGTERM, a graceful shutdown, unless `signal` says otherwise:
-    `SIGKILL` checks crash recovery) and starts it again over the same `save/`, leaving Vite running.
-  - `clearSafeBootAttempts(contextOrPage)` is for a check that loads the app three times within safe boot's 10 s settle
-    window; a reload followed by `openApp` loads it twice.
-- `util/playwright/offline.sh <command>` runs a check in a user and network namespace with loopback only
-  (`unshare -rn`): the boundary that keeps the stack, the browser, and the mocks off public services, whatever the
-  transport.
-- Page code reaches app modules with `await import("/src/...")`, which is the same module instance the app uses; a
+- Plain `playwright-core` scripts in `util/playwright/` for captures and one-off observations, `@playwright/test` specs
+  in `e2e/` for repeatable checks. `playwright.config.ts`, `e2e/`, and `util/playwright/` are outside `tsconfig.json`'s
+  include, so `pnpm check` does not type-check them.
+- `playwright.config.ts`: one worker, the system Chrome (`RISU_CHROME`), `globalSetup` `util/playwright/globalSetup.mjs`
+  (one stack per run on `E2E_SERVER_PORT`/`E2E_VITE_PORT`).
+- `e2e/fixtures.ts`: the specs' `test` (clears safe boot's counter per page load), `expect`, and `settle` (waits for
+  `resourceSyncIdle`).
+- `util/playwright/stack.mjs`: `startStack` (server in a temporary working directory plus Vite, `restartServer`;
+  `deniedEgress` lists what the server's `fetch` tripwire refused, and a `serverEnv.NODE_OPTIONS` of the check's own
+  replaces that tripwire), `isolateContext`, `unexpectedEgress`, `openApp`, `openCharacterChat`,
+  `clearSafeBootAttempts(contextOrPage)`.
+- `util/playwright/offline.sh` (prefix a check's command): a check with loopback only (`unshare -rn`), the boundary that
+  keeps the stack, the browser, and the mocks off public services.
+- `util/playwright/modelProfiles.mjs` and `util/playwright/modelProfiles.browser.mjs`: model and chat-binding fixtures
+  for a mock provider ([Recipes](#recipes)).
+- Page code reaches app modules with `await import("/src/...")`, the module instance the app uses (dev stack only); a
   two-client check opens a second browser context (tabs of one context share `localStorage`).
 
-### Check scripts
+### Check and measurement scripts
 
-Each script in `util/playwright/` has its usage and what it checks in its header. None is in the gate.
+None is in the gate.
 
-- Against the dev stack: `checkLiveUpdates.mjs`, `checkCredentialTraffic.mjs` and `checkLlmTransport.mjs` (no provider
-  key in the browser's traffic), `checkStreamingModes.mjs`, `checkServerTransform.mjs`, `checkMcpFixes.mjs`,
-  `checkDurableDrafts.mjs`, `checkSidebarChatStatus.mjs` (also supports `--base`).
-- `checkJobProtocol.mjs`: generation jobs with a real v3 plugin provider installed in the persisted plugin list and
-  selected by the model profile, its replies and stream chunks held and released from the sandbox frame. Run it under
-  `offline.sh`.
-- `checkBootCache.mjs`: ports 6141/5241, `PORT`/`VITE_PORT`. Besides the header's comparison it fails if loading times
-  out and checks that the chat edit re-sends only that character's collection.
-- Against a running production server, normally the Docker image on a fresh volume (`--base`, `--password`; a mock
-  provider named by `--provider-host`): `checkRecordsSmoke.mjs`, `checkLazyChatsSmoke.mjs`, `checkTwoClientSmoke.mjs`,
-  `checkServerSend.mjs`, `checkServerButton.mjs`, `checkServerTrigger.mjs`, `checkServerJobMatrix.mjs`. The last four
-  start their own dev stack when no `--base` is given.
-
-### Measurement scripts
-
-Each script's header has its fixture, environment, and output. All but `measureTransformLua.mjs` and
-`probeDirectAssets.mjs` measure a production build in headless Chrome.
-
-- `measureRecords.mjs`, `measureCharacters.mjs`, `measureChats.mjs`, `measureHeap.mjs`, and `measureTransformLua.mjs`
-  need no notes beyond their headers.
-- `measureBoot.mjs` exports the synthetic fixture builder `buildBootFixture`/`seedBootFixture`. A relative `RISU_DIST`
-  is resolved against the working directory. It blocks the page's four known public hosts through CDP instead of
-  `isolateContext`, because Playwright's request routing turns the HTTP cache off, and fails on a page request to any
-  other host. The server's egress is not guarded. Startup requires the child's listening URL on stdout.
-- `measureFileSources.mjs`: its `thumb` step checks that `sw` decoded every catalog avatar at short side 256 from
-  `?w=256`. In `sw` the request counts are the worker's own requests, not the page requests it answered.
-  `isolateContext` routing turns the HTTP cache off, so these are cold transfers, and the request counts can exceed the
-  distinct images.
-- `probeDirectAssets.mjs` is a standalone browser probe of the direct asset mechanics, not the app, and is not in the
-  gate: a non-extractable IndexedDB key, an immutable fetch from the HTTP cache, a ranged `<video>`, a sandboxed SVG,
-  and an opaque srcdoc iframe. It exits non-zero on any failed check, including Playwright Firefox losing worker control
-  after an unanswered navigation.
+- Against the dev stack: `util/playwright/checkLiveUpdates.mjs`, `util/playwright/checkCredentialTraffic.mjs`,
+  `util/playwright/checkLlmTransport.mjs`, `util/playwright/checkStreamingModes.mjs`,
+  `util/playwright/checkServerTransform.mjs`, `util/playwright/checkMcpFixes.mjs`,
+  `util/playwright/checkDurableDrafts.mjs`, `util/playwright/checkSidebarChatStatus.mjs`,
+  `util/playwright/checkBootCache.mjs`, and `util/playwright/checkJobProtocol.mjs` (a real v3 plugin provider; run it
+  under `offline.sh`).
+- Against a running production server, normally the Docker image on a fresh volume (`--base`, `--password`,
+  `--provider-host`): `util/playwright/checkRecordsSmoke.mjs`, `util/playwright/checkLazyChatsSmoke.mjs`,
+  `util/playwright/checkTwoClientSmoke.mjs`, `util/playwright/checkServerSend.mjs`,
+  `util/playwright/checkServerButton.mjs`, `util/playwright/checkServerTrigger.mjs`,
+  `util/playwright/checkServerJobMatrix.mjs`; the last four start a dev stack without `--base`.
+- Measurements of a production build in headless Chrome: `util/playwright/measureRecords.mjs`,
+  `util/playwright/measureCharacters.mjs`, `util/playwright/measureChats.mjs`, `util/playwright/measureHeap.mjs`,
+  `util/playwright/measureBoot.mjs` (also the fixture builder `buildBootFixture`/`seedBootFixture`), and
+  `util/playwright/measureFileSources.mjs`. `util/playwright/measureTransformLua.mjs` runs the server in process;
+  `util/playwright/probeDirectAssets.mjs` probes the direct asset mechanics on its own server, not the app.
 
 ### Fixtures
 
@@ -152,75 +112,44 @@ Each script's header has its fixture, environment, and output. All but `measureT
 
 ### Test wrapper
 
-`util/agentTest.mjs`
-(`pnpm --silent test:agent [--force] [--verbose] [--all] [--slow-tests[=<ms>]] [--no-rerun] [--no-lock] [vitest args]`)
-is `pnpm test` for agents, and the only entry point that runs tests without `CI` or `HUMAN`. Its header has the run, the
-cache key, the held stderr, the rerun, and the lock.
+`pnpm --silent test:agent [--force] [--verbose] [--all] [--slow-tests[=<ms>]] [--no-rerun] [--no-lock] [vitest args]` is
+`pnpm test` for agents, and the only entry point that runs tests without `CI` or `HUMAN` (`--tags-filter=slow` is
+`pnpm test:slow`). Across processes:
 
-- `--tags-filter=slow` is `pnpm test:slow`; other arguments, such as a file filter, pass through.
-- A cache hit prints a `[agent-test] cached result ...` line first. Outside git it runs without the cache. An
-  interrupted run caches nothing.
-- `pnpm --silent test:agent` also drops pnpm's own banner lines.
-- `--slow-tests` is consumed by the wrapper (Vitest never sees it). It is part of the cache key like any argument, so a
-  cached replay shows the stored run's durations, and `--force` measures again. `test:overload` passes it through.
-
-### Failed-file rerun
-
-The wrapper reruns with the same arguments minus the file filters (`parseCLI` from `vitest/node` finds them), and the
-reporter's output is held until then. The reporter hands the wrapper its per-file results in a temporary JSON file named
-by `RISU_REPORT_RESULTS_FILE`.
-
-- A file that fails again shows the failures of its run alone after a `RERUN <file> failed again when run alone` line,
-  instead of its full-run failures.
-- The summary line then counts the merged result and ends with `<n> failed files rerun alone in <s>s`, and the exit code
-  is 0 only when every rerun passed.
-- Nothing is rerun when more than 5 files failed (`MAX_RERUN_FILES`; a `[agent-test] not rerun: ...` line says so), when
-  the run had unhandled errors (they belong to no file), or when the run was interrupted or wrote no results.
-- Whether the rerun is on is part of the cache key.
-
-### Whole-suite lock
-
-A whole-suite run takes the machine-wide lock, so whole-suite runs from every checkout and worktree queue instead of
-sharing the CPUs. The suite is compute-bound, so queued runs finish one after another in the single run's time
-([timings](../audit/test-suite-lock-2026-10-30.md)). A run is whole-suite when `parseCLI` finds no file filter among the
-Vitest arguments. It prints a `[agent-test] whole-suite: ...` line while it waits, waits up to 15 min, then runs anyway.
-A cache hit replays before the lock.
+1. The wrapper keys the cache by the working tree's `git write-tree`, versions, and arguments; a hit replays the stored
+   output before any lock.
+2. A whole-suite run (no file filter) takes the machine-wide lock, so whole-suite runs from every checkout and worktree
+   queue instead of sharing the CPUs; queued runs finish one after another in the single run's time
+   ([timings](../audit/test-suite-lock-2026-10-30.md)).
+3. The Vitest child (`AGENT_TEST=1`) runs with the reporter, which holds its output and writes per-file results to the
+   file `RISU_REPORT_RESULTS_FILE` names.
+4. When at most `MAX_RERUN_FILES` files failed and no error was unhandled, the wrapper reruns each alone with the file
+   filters removed (`parseCLI` from `vitest/node`), then merges the results: a file that passes alone is `FLAKY` and
+   logged to `flaky.jsonl`.
 
 ### Browser specs
 
 `pnpm --silent test:agent --e2e [<spec>...] [--all] [--e2e-since=<rev>] [--force] [--verbose] [playwright args]`: the
-Playwright specs in `e2e/` for agents (`pnpm test:e2e` is for people), through
-`node_modules/@playwright/test/cli.js test --reporter=dot` with the same held stderr and the same cache (keyed by the
-Playwright version and the selected specs). Run the specs the change reaches, not the whole set. The headers of
-`util/agentTest.mjs` and `util/agentE2e.mjs` have the selection rules.
+Playwright specs for agents (`pnpm test:e2e` is for people; Playwright arguments such as `-g <grep>` pass through),
+through `node_modules/@playwright/test/cli.js test --reporter=dot` with the same held stderr and cache. Run the specs
+the change reaches, not the whole set.
 
-- "Changed" means staged, unstaged, deleted, both names of a rename, and untracked files.
-- Files every spec runs on: `EVERY_SPEC_FILES` in `util/agentE2e.mjs`. `docs/`, `handover/`, `*.md`, and `*.test.*`
-  never select a spec.
-- The wrapper prints each selected spec with the changed files that selected it. When nothing is selected it lists the
-  specs with their first comment sentence and exits with 2, so the agent names the specs that cover the behavior it
-  changed.
+- The wrapper asks `util/agentE2e.mjs` which specs the changed files reach; when none, it lists the specs and exits with
+  2, so the agent names the specs that cover the behavior it changed.
 - Selection is by name, not coverage: a component no spec names (a chat screen file, say) selects nothing even when a
   spec drives it.
-- One e2e run at a time per machine: a run listens on the e2e lock port (waiting up to 30 min while another run holds
-  it), then waits up to 2 min for the stack's ports (a stack an interrupted run left behind) and exits 1 naming the busy
-  port.
-- `--slow-tests` and `--no-rerun` are refused. Other arguments (`-g <grep>`, `--repeat-each=<n>`) pass through.
+- One e2e run at a time per machine: the run holds the e2e lock port, then waits for the stack's ports, and Playwright's
+  `globalSetup` starts the stack.
 - It still shares Vite's `node_modules/.vite` with any other dev stack of the checkout (`pnpm dev:human`, a
   `util/playwright/` check), so do not run it beside one.
 
 ### Overload runner
 
-`util/overloadTest.mjs` (`pnpm --silent test:overload [--runs N] [--cpu N] [--testTimeout MS] [files or vitest args]`)
-runs the gated tests under the reference overload. Its header has the setup, the exit codes, and the supervisor.
-
-- The gate's own timeout is the one to check against, so `--testTimeout` is forwarded only when given. Investigate each
-  failure.
-- `--maxWorkers` is fixed and refused; a bare `--` is dropped.
-- A burner that broke means that run's result does not count, and a supervisor that ends without a result counts as a
-  broken overload. On SIGINT or SIGTERM the runner sends the group SIGTERM, then SIGKILL once the supervisor ends or
-  after 3 s at the latest.
-- `taskset` comes from util-linux; elsewhere it exits 2 with a message.
+`pnpm --silent test:overload [--runs N] [--cpu N] [--testTimeout MS] [files or vitest args]` runs each run as a
+supervisor in its own process group: it starts the burners and `util/agentTest.mjs --force --no-rerun --no-lock` pinned
+to one CPU and reports over IPC, and the runner kills the whole group after each run. The gate's own timeout is the one
+to check against, so `--testTimeout` is forwarded only when given; investigate each failure. `taskset` comes from
+util-linux.
 
 ## State
 
@@ -398,7 +327,7 @@ dispatcher, and happy-dom's loaders through `vitest.testNetwork.ts`. The comment
 Slow tests cover real wall-clock/production limits, cold tokenizers, or fresh Node processes. Select them when touching
 the last column of the [slow-test table](#slow-test-table). Discover current tags with
 `rg -n 'module-tag slow|tags:.*slow' server/src shared src` rather than relying on a count or timing estimate. To tag a
-test, follow [Recipes](#recipes); [Test inventory](#test-inventory) has the row format.
+test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` has the row format.
 
 ### Slow-test table
 

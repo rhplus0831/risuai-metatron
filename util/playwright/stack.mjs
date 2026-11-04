@@ -114,6 +114,11 @@ function stop(child, signal = "SIGTERM") {
 }
 
 /**
+ * Drops the shell's RISU_HOST, RISU_SAVE_DIR and RISU_AGENT_DEV_AUTH_BYPASS from the server's inherited
+ * environment, then pins RISU_SAVE_DIR to the fresh work directory's save/. The store starts empty
+ * and the repository save/ is never touched; auth is real unless serverEnv explicitly overrides it.
+ * `stop()` ends both the server and Vite and deletes the work directory.
+ *
  * `restartServer({ signal })` stops the server (SIGTERM by default, for graceful shutdown) and starts it again over
  * the same `save/`, leaving the dev server running: for checks of what a server start does to
  * stored data. Pass `signal: "SIGKILL"` to check crash recovery without a final checkpoint.

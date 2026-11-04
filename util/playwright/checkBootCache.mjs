@@ -21,6 +21,8 @@
 // bodies fail the chat-edit assertion that needs them; other boots compare the captured snapshot.
 //
 // Usage: node util/playwright/checkBootCache.mjs
+// Ports default to server 6141 / Vite 5241; override with PORT / VITE_PORT. A loading timeout fails
+// the check, including failure to capture the loaded document's snapshot within 120 s.
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { chromium } from "playwright-core";

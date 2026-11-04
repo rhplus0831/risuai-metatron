@@ -33,6 +33,7 @@ const SOURCE_NAME = /\.([cm]?[jt]sx?|svelte)$/;
 export const TEST_ROOTS = ["src", "server", "shared", "util", "e2e"];
 /** Where product files are checked for test imports. */
 export const PRODUCT_ROOTS = ["src", "server/src", "shared"];
+/** The documented slow-test inventory; its table header and contiguous rows are a parser contract. */
 export const SLOW_TABLE_DOC = "docs/structure/test-harness.md";
 /** The first header cell of the slow-test table; a row's bare file name is relative to this directory. */
 const SLOW_TABLE_HEADER = /^Test \(file in `([^`]+)`\)$/;
@@ -302,6 +303,7 @@ export function slowTagsOf(rel, text) {
  * The rows of the slow-test table: `{ file, whole, titles }`. A cell names its file in backticks
  * (bare names are relative to the header's directory, a name with a `/` to the repository), then
  * either "(the whole file)" or one or more double-quoted titles, where `...` stands for any text.
+ * Keep the header cell's format and the rows contiguous: reading stops at the first non-`|` line.
  */
 export function readSlowTable(markdown) {
     const lines = markdown.split("\n");
@@ -377,6 +379,7 @@ export function compareSlowTable(tags, rows) {
     return problems;
 }
 
+/** Checks both directions: every slow tag needs a row, and every row must match a slow tag. */
 export function checkSlowTable(root, files = findTestFiles(root)) {
     const tags = files.flatMap((rel) => slowTagsOf(rel, readFileSync(path.join(root, rel), "utf8")));
     const rows = readSlowTable(readFileSync(path.join(root, SLOW_TABLE_DOC), "utf8"));
@@ -458,6 +461,7 @@ export function checkProductImports(root) {
     return problems;
 }
 
+/** Unsupported runner config or unparseable Svelte source aborts the check instead of being skipped. */
 export function checkInventory(root) {
     const files = findTestFiles(root);
     return [...checkRunners(root, files), ...checkSlowTable(root, files), ...checkProductImports(root)];

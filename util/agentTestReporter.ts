@@ -2,6 +2,11 @@
 // error message, diff, in-repo stack frames, that test's console output) and one summary line. With
 // `test:agent --slow-tests[=<ms>]` it also lists the passed tests slower than that, as a warning
 // that never changes the exit code (the wrapper passes the threshold in RISU_REPORT_SLOW_TESTS_MS).
+// The SLOW warning shows at most MAX_SLOW_TESTS (ten) slowest qualifying tests and counts the rest.
+// `--silent=passed-only` is unnecessary: passing tasks' buffered logs are never printed.
+// Module and suite errors (import failures, beforeAll throws) are printed as failures; unhandled
+// errors get their own UNHANDLED ERROR entries. Diffs, expected/actual values, logs and frames are
+// bounded by their MAX_* constants, and nested causes are printed through MAX_CAUSE_DEPTH.
 // When the wrapper sets RESULTS_FILE_ENV it also writes the run's per-file results there, for the
 // wrapper's rerun of failed files alone (`util/agentTestResults.mjs`).
 // Used by `pnpm test:agent` (`util/agentTest.mjs`). See `docs/structure/test-harness.md`.

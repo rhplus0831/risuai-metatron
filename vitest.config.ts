@@ -5,6 +5,7 @@ import { lucideImports } from "./vitest.lucideImports.ts";
 
 // Every Vitest run loads this file once in the main process, so this gate covers `pnpm test` and a
 // direct `vitest` alike: without CI, HUMAN, or AGENT_TEST it prints the notice and exits.
+// The Vitest VS Code extension loads this config too, so that editor needs HUMAN in its environment.
 requireHuman("vitest");
 
 export default defineConfig({

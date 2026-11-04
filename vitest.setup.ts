@@ -16,7 +16,8 @@ import { testNetwork } from "./vitest.testNetwork.ts";
 // created at module evaluation; a setup import that pulls in dompurify would run before this
 // body, so this file must not import application code.
 //
-// Remove it once the installed happy-dom returns the element tag name from
+// The shim's contract is pinned by `vitest.setup.test.ts`; remove the shim and that test together once
+// the installed happy-dom returns the element tag name from
 // `Object.getOwnPropertyDescriptor(Node.prototype, "nodeName").get.call(document.createElement("div"))`;
 // the guard below then leaves the prototype untouched and this block is dead code.
 installHappyDomNodeNameShim(globalThis.window);

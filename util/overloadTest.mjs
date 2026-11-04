@@ -27,6 +27,7 @@ const self = fileURLToPath(import.meta.url);
 const root = resolve(dirname(self), "..");
 const agentTest = join(root, "util", "agentTest.mjs");
 const BURNERS = 8;
+/** Fixed reference worker count; user `--maxWorkers` overrides are refused. */
 const MAX_WORKERS = 3;
 // Supervisor exit codes besides the run's 0 (passed) and 1 (failed).
 const BROKEN = 3;
@@ -172,7 +173,8 @@ async function main() {
             stopping = true;
             log(`${signal}: stopping the run and the burners`);
             if (!running()) process.exit(code);
-            // Let Vitest end on SIGTERM; the exit handler sends SIGKILL to whatever is left.
+            // Let the group end on SIGTERM; exit when the supervisor closes or after 3 s at the latest,
+            // and let the exit handler SIGKILL whatever is left.
             killGroup("SIGTERM");
             const timer = setTimeout(() => process.exit(code), 3000);
             supervisor.once("close", () => {
@@ -186,6 +188,7 @@ async function main() {
         process.exit(2);
     });
 
+    /** A supervisor that ends without an IPC result counts as a broken overload, not a test result. */
     function runOnce() {
         return new Promise((done) => {
             supervisor = spawn(
