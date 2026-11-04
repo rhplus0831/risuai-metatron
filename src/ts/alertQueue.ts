@@ -19,6 +19,7 @@ export interface AlertDialog {
     cancel(): void;
 }
 
+/** The alert store surface; a dialog waiting for the gap reads as `none` with `dialogPending: true`. */
 export interface AlertQueue extends Readable<alertData> {
     /**
      * Status types replace the status; `none` closes the shown dialog with its `msg` (the dialog's own
@@ -26,7 +27,11 @@ export interface AlertQueue extends Readable<alertData> {
      */
     set(value: alertData): void;
     update(change: (value: alertData) => alertData): void;
-    /** Queues a dialog. An identical notice right behind the last queued one returns that one's handle. */
+    /**
+     * Consecutive normal/error/markdown/wait2 notices share the tail's handle when type, msg and
+     * submsg (missing equals empty) match and neither carries jobFailure. Other fields, including
+     * stackTrace, are not compared.
+     */
     open(value: alertData): AlertDialog;
     /** Closes the shown dialog with `msg`, only while `expected` (when given) is the one shown. */
     answer(msg: string, expected?: alertData): void;
@@ -209,7 +214,7 @@ const DIALOG_KEYS = new Set(["Enter", "Escape"]);
  * (window, capture phase, so no element's `stopPropagation` hides one) and a reset on blur. A dialog
  * takes Enter or Escape only from a stroke that began after it appeared: never a repeat, and never
  * the stroke that was down when it appeared (including the keydown that opened it). A later
- * non-repeated keydown is a new stroke even if its keyup was lost.
+ * non-repeated keydown is a new stroke even if its keyup was lost. Composing keys never answer.
  */
 export function createDialogKeyGate(queue: AlertQueue) {
     const strokes = new Map<string, number>();

@@ -174,7 +174,8 @@ them up, and a backup does not carry them.
   plugins as device-specific).
 - `sessionStorage`: `risu-selection`, `risu-generation-client` and `risu-generation-jobs` (a reloaded tab reattaches:
   `resumeServerJobs`), `risu-generation-client-claim` (a copied session gets a new id).
-- `DPoPDB` (IndexedDB): this browser's non-extractable auth key pair.
+- `DPoPDB` (IndexedDB): this browser's non-extractable auth key pair, written and read by `src/ts/storage/serverAuth.ts`
+  through the `src/ts/util.ts` keypair store ([global-api](global-api.md#utilts)) and read by `public/sw.js`.
 
 ### Character order repair
 

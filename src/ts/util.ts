@@ -14,6 +14,7 @@ export { pickHashRand, sfc32 } from "../../shared/hashRand.ts";
 export { parseToggleSyntax } from "../../shared/prompt/toggles.ts";
 export type { sidebarToggle, sidebarToggleGroup, sidebarToggleGroupEnd } from "../../shared/prompt/toggles.ts";
 
+/** A displayed message with its original index before `messageForm` reverses and limits the list. */
 export interface Messagec extends Message {
     index: number;
 }
@@ -46,14 +47,16 @@ export function checkNullish(data: any) {
     return data === undefined || data === null;
 }
 
+/** Reads the selected File into `{ name, data: Uint8Array }`; an empty eligible selection rejects. */
 export async function selectSingleFile(ext: string[]) {
     const file = await selectSingleFileHandle(ext);
     return { name: file.name, data: await readFileAsUint8Array(file) };
 }
 
 /**
- * The picked file as the `File` itself, read by nobody here (a `.risum` is uploaded as it is, never
- * held in the tab); `null` when none is picked.
+ * Returns the DOM-picked File unread, or null for an empty eligible change.
+ * `src/ts/process/modules.ts` passes `.risum` and `.charx` Files to server imports;
+ * `src/ts/process/transformers.ts` uses `src/ts/process/zipFile.ts` to read VITS model zips in slices.
  */
 export async function selectSingleFileHandle(ext: string[]): Promise<File | null> {
     const files = await selectFileByDom(ext, "single");
@@ -61,13 +64,14 @@ export async function selectSingleFileHandle(ext: string[]): Promise<File | null
 }
 
 /**
- * The picked files as the `File`s themselves, read by nobody here (the asset pickers read each file
- * only when its save slot is free, `savePickedFiles`); `[]` when none is picked.
+ * Returns DOM-picked Files unread, or [] for an empty eligible change.
+ * `src/ts/storage/assetQueue.ts`'s savePickedFiles reads each only after load admission.
  */
 export async function selectMultipleFileHandles(ext: string[]): Promise<File[]> {
     return (await selectFileByDom(ext, "multiple")) ?? [];
 }
 
+/** Reads eligible Files in selection order into `{ name, data: Uint8Array }` entries; [] for an empty change. */
 export async function selectMultipleFile(ext: string[]) {
     const v = await selectFileByDom(ext, "multiple");
     let arr: { name: string; data: Uint8Array }[] = [];
@@ -132,6 +136,11 @@ export function getUserIconProtrait(chatRef?: { chaId: string; chatId: string } 
     }
 }
 
+/**
+ * Resolves eligible Files in selection order on change, or [] for an empty eligible selection.
+ * Filtering is bypassed by allow-all, iOS, or `allowedExtensions[0] === "*"`.
+ * Settles only on `change`: a native cancel without a change never settles.
+ */
 export function selectFileByDom(allowedExtensions: string[], multiple: "multiple" | "single" = "single") {
     return new Promise<null | File[]>((resolve) => {
         const fileInput = document.createElement("input");
@@ -196,6 +205,7 @@ export async function getCustomBackground(db: string) {
     }
 }
 
+/** Finds a non-group character; a miss returns a new blank character named "Unknown Character". */
 export function findCharacterbyId(id: string) {
     for (const char of characterList()) {
         if (char.type !== "group") {
@@ -209,6 +219,7 @@ export function findCharacterbyId(id: string) {
     return unknown;
 }
 
+/** Current list index (groups included), or -1; an index must not be retained as an address across awaits. */
 export function findCharacterIndexbyId(id: string) {
     let i = 0;
     for (const char of characterList()) {
@@ -250,6 +261,10 @@ export function defaultEmotion(em: readonly (readonly [string, string])[]) {
     return "";
 }
 
+/**
+ * Returns [] or a mode (emp/normal) followed by render values; depending on type/branch those values
+ * can be image URLs, CSS declarations, or a missing image value.
+ */
 export async function getEmotion(
     chaEmotion: { [key: string]: [string, string, number][] },
     type: "contain" | "plain" | "css",
@@ -333,6 +348,7 @@ export function getAuthorNoteDefaultText() {
     return "";
 }
 
+/** AES-GCM ciphertext/tag ArrayBuffer using SHA-256 of the UTF-8 key and a fixed zero 12-byte IV; no IV prefix. */
 export async function encryptBuffer(data: Uint8Array, keys: string) {
     // hash the key to get a fixed length key value
     const keyArray = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(keys));
@@ -352,6 +368,7 @@ export async function encryptBuffer(data: Uint8Array, keys: string) {
     return result;
 }
 
+/** Reads `encryptBuffer`'s SHA-256-keyed, zero-IV AES-GCM format; authentication failure rejects. */
 export async function decryptBuffer(data: Uint8Array, keys: string) {
     // hash the key to get a fixed length key value
     const keyArray = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(keys));
@@ -382,6 +399,7 @@ export function BufferToText(data: Uint8Array) {
     return new TextDecoder().decode(data);
 }
 
+/** Produces the heading format consumed by parseMultilangString; xx is free text, not an ordinary language. */
 export function encodeMultilangString(data: { [code: string]: string }) {
     let result = "";
     if (data.xx) {
@@ -393,6 +411,7 @@ export function encodeMultilangString(data: { [code: string]: string }) {
     return result;
 }
 
+/** Reads # headings with a backtick-quoted code and newline; free text becomes `xx`, overriding any `xx` section. */
 export function parseMultilangString(data: string) {
     let result: { [code: string]: string } = {};
     const regex = /# `(.+?)`\n([\s\S]+?)(?=\n# `|$)/g;
@@ -581,6 +600,7 @@ export const languageCodes = [
     "zu",
 ];
 
+/** Sums UTF-16 code units into a deterministic seed; different ids can collide. */
 export function uuidtoNumber(uuid: string) {
     let result = 0;
     for (let i = 0; i < uuid.length; i++) {
@@ -589,6 +609,7 @@ export function uuidtoNumber(uuid: string) {
     return result;
 }
 
+/** Empty or whitespace-only input counts as terminated. */
 export function isLastCharPunctuation(s: string) {
     const lastChar = s.trim().at(-1);
     const punctuation = [
@@ -981,6 +1002,7 @@ export const searchTagList = (query: string) => {
     return result.filter((v) => splited.indexOf(v) === -1);
 };
 
+/** Recognizes only case-sensitive http://, https://, ccdefault: and the persisted spelling embeded://. */
 export const isKnownUri = (uri: string) => {
     return (
         uri.startsWith("http://") ||
@@ -990,6 +1012,7 @@ export const isKnownUri = (uri: string) => {
     );
 };
 
+/** Nonempty `key=value` lines without trimming; only the first value segment survives extra `=`; [] on failure. */
 export function parseKeyValue(template: string) {
     try {
         if (!template) {
@@ -1020,6 +1043,7 @@ export const sortableOptions = {
     },
 } as const;
 
+/** Requires a global regexp with lastIndex 0. Replacers run concurrently; results are inserted in match order. */
 export async function replaceAsync(
     string: string,
     regexp: RegExp,
@@ -1032,6 +1056,10 @@ export async function replaceAsync(
     return string.replace(regexp, () => replacements[i++]);
 }
 
+/**
+ * Projects supported schema fields recursively; mutates union `type` to its first non-null type,
+ * setting `nullable` if the union contained "null".
+ */
 export function simplifySchema(
     schema: any,
     args: {
@@ -1128,6 +1156,7 @@ export const jsonOutputTrimmer = (data: string) => {
     return data.trim();
 };
 
+/** Type assertion for buffer APIs only: returns the same value without copying or converting SharedArrayBuffer. */
 export function asBuffer(arr: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBuffer>;
 export function asBuffer(arr: ArrayBufferLike): ArrayBuffer;
 
@@ -1139,6 +1168,7 @@ export function asBuffer(arr: Uint8Array<ArrayBufferLike> | ArrayBufferLike): Ui
     }
 }
 
+/** Opens IndexedDB `DPoPDB` v1; creates store `name || "DPoPStore"` only on upgrade, not on later opens. */
 export function openKeypairStoreDB(name: string): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
         const request = indexedDB.open("DPoPDB", 1);
@@ -1155,6 +1185,11 @@ export function openKeypairStoreDB(name: string): Promise<IDBDatabase> {
     });
 }
 
+/**
+ * Stores `{ privateKey, publicKey }` CryptoKeys as supplied under key `dpop` in `DPoPDB` v1, store
+ * `name || "DPoPStore"`. Preserve the signing private key's non-extractability: `src/ts/storage/serverAuth.ts`
+ * generates it with extractable false and uses store `node`; `public/sw.js` reads that same layout.
+ */
 export async function saveKeypairStore(name: string, keyPair: CryptoKeyPair) {
     const db = await openKeypairStoreDB(name);
     return new Promise((resolve, reject) => {
@@ -1173,6 +1208,7 @@ export async function saveKeypairStore(name: string, keyPair: CryptoKeyPair) {
     });
 }
 
+/** Reads `DPoPDB` v1 / `name || "DPoPStore"` / `dpop` as a CryptoKeyPair, null if absent; IDB errors reject. */
 export async function getKeypairStore(name: string): Promise<CryptoKeyPair | null> {
     const db = await openKeypairStoreDB(name);
     return new Promise((resolve, reject) => {
@@ -1196,6 +1232,7 @@ export async function getKeypairStore(name: string): Promise<CryptoKeyPair | nul
     });
 }
 
+/** Unpadded byte encoding used for JWT segments by `src/ts/storage/serverAuth.ts`. */
 export function base64url(source: Uint8Array | ArrayBuffer): string {
     const bytes = source instanceof ArrayBuffer ? new Uint8Array(source) : source;
     let encodedSource = btoa(String.fromCharCode.apply(null, [...bytes]))

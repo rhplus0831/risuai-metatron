@@ -1,8 +1,13 @@
-// Korean-aware text matching for list filters and settings search.
-// Derived forms of each text are computed per call and never cached: a cache keyed
-// by text would keep every searched name alive.
 import { canBeChoseong, convertQwertyToHangul, disassemble, getChoseong } from "es-hangul";
 
+/**
+ * Client-only Korean-aware matching over `es-hangul`, shared by list filters and settings search.
+ * An all-choseong query stops at the initials tier; there is no romanization matching (the Latin
+ * fallback interprets QWERTY keys as Hangul). Derived forms of each text are computed per call,
+ * never cached by text, so searched names are not retained.
+ */
+
+/** Query-derived forms prepared once for reuse across the texts in a search. */
 export interface PreparedQuery {
     /** NFC, trimmed, lowercased, whitespace removed. */
     text: string;
@@ -35,6 +40,10 @@ function foldCase(text: string): string {
     return text.toLowerCase().replace(FINAL_SIGMA, "σ");
 }
 
+/**
+ * Prepares a reusable query using NFC, whitespace removal and lowercase/final-sigma normalization;
+ * returns null when empty. QWERTY candidates are attempted only for all-ASCII-letter queries.
+ */
 export function prepareQuery(query: string): PreparedQuery | null {
     const typed = query.normalize("NFC").replace(WHITESPACE, "");
     if (typed === "") return null;

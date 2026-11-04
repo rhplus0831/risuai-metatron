@@ -9,6 +9,14 @@ import type { GenerationTerminalEvent } from "../../shared/jobs.ts";
 import type { UpstreamImportReport } from "../../shared/upstreamBackup.ts";
 import { currentChatRef, type ChatRef } from "./storage/chatStore.svelte";
 
+/**
+ * Helpers over `src/ts/stores.svelte.ts`'s alert slot, a `createAlertQueue` from `src/ts/alertQueue.ts`.
+ * Dialog helpers queue dialogs; an awaited helper waits for its own dialog's answer. Status writes
+ * (`wait`, `toast`, `progress`) replace the status. Targets are captured before queuing: Branches'
+ * `chaId`, HypaV2's `chatRef`, and the requestdata message copy supplied by
+ * `src/lib/ChatScreens/Chat.svelte`. Terminal and reload notices have separate stores outside this slot.
+ */
+
 /** A server job's failure as the tab received it, for the error alert's debug actions. */
 export type JobFailureInfo = {
     jobId: string;
@@ -44,9 +52,16 @@ export interface alertData {
         | "upstreamImportReport"
         | "realmTerms";
     msg: string;
+    /**
+     * `error`: a hint; `progress`: a numeric percentage string without `%` (for example `50.00`);
+     * other text dialogs may show a subtitle.
+     */
     submsg?: string;
+    /** `input`: suggested [value, label] pairs. */
     datalist?: [string, string][];
+    /** `error`: the original stack before optional source-map translation. */
     stackTrace?: string;
+    /** `input`: the field's initial value. */
     defaultValue?: string;
     /** `error`: a server job's failure (`alertJobError`): "Copy debug info" and "Open in request history". */
     jobFailure?: JobFailureInfo;
@@ -72,9 +87,9 @@ type AlertGenerationInfo = {
     message?: DeepReadonly<Message>;
 };
 /**
- * Writes to the alert slot (`stores.svelte.ts`): status types (`wait`, `progress`, `toast`) replace
- * the status, other types queue a dialog, and `none` closes the dialog shown (its own close only; a
- * status writer ends its status with `alertClear`).
+ * Set-only facade for `src/ts/stores.svelte.ts`'s alert store. Status types replace status; other
+ * non-`none` types queue dialogs. `none` answers the visible dialog, or clears status when none is
+ * visible. Status producers must use `alertClear()` so they cannot dismiss an intervening dialog.
  */
 export const alertStore = {
     set: (d: alertData) => {
@@ -110,6 +125,7 @@ export function openAlertDialog<T>(open: () => T): { value: T; dialog: AlertDial
     }
 }
 
+/** Queues an error dialog with an Error's stack; a message that trims to "{}" is not shown. */
 export function alertError(msg: string | Error) {
     const data = errorAlert(msg);
     if (data) {
@@ -184,12 +200,12 @@ export async function waitAlert() {
     await alertStoreImported.idle();
 }
 
+const terminalNoticeStore = writable<string | null>(null);
 /**
  * The notice the page ends on (a restore replaced the server data, and the page reloads once it is
- * acknowledged): a modal dialog (`TerminalNotice.svelte`) above every other alert and overlay. No
+ * acknowledged): a modal dialog (`src/lib/Others/TerminalNotice.svelte`) above every other alert and overlay. No
  * other alert replaces or clears it, and Escape does not close it; only its own OK acknowledges it.
  */
-const terminalNoticeStore = writable<string | null>(null);
 export const terminalNotice = readonly(terminalNoticeStore);
 let terminalPending: Promise<void> | null = null;
 let acknowledgeTerminal: (() => void) | null = null;
@@ -226,12 +242,12 @@ export function acknowledgeTerminalNotice() {
     acknowledgeTerminal?.();
 }
 
+const reloadNoticeStore = writable<string | null>(null);
 /**
  * The save adapter's "another tab or device changed this data, your change was replaced" notice: a
- * panel (`ReloadNotice.svelte`) outside `alertStore`, so no other alert (a progress `wait`, a
+ * panel (`src/lib/Others/ReloadNotice.svelte`) outside `alertStore`, so no other alert (a progress `wait`, a
  * toast, an error, `alertClear`) replaces or hides it. It stays until the user dismisses it.
  */
-const reloadNoticeStore = writable<string | null>(null);
 export const reloadNotice = readonly(reloadNoticeStore);
 
 /**
@@ -264,6 +280,7 @@ export async function alertNormalWait(msg: string) {
     });
 }
 
+/** Resolves with the add-character action token, "cancel" from its button, or "" on Escape. */
 export async function alertAddCharacter() {
     return await openDialog({
         type: "addchar",
@@ -271,6 +288,7 @@ export async function alertAddCharacter() {
     });
 }
 
+/** Resolves with the chosen option's numeric index, or NaN on cancellation. */
 export async function alertChatOptions() {
     const result = await openDialog({
         type: "chatOptions",
@@ -280,6 +298,7 @@ export async function alertChatOptions() {
     return parseInt(result);
 }
 
+/** Encodes options with `||` and an optional `__DISPLAY__<display>||` prefix; resolves with an index string or "". */
 export async function alertSelect(msg: string[], display?: string) {
     const message = display !== undefined ? `__DISPLAY__${display}||${msg.join("||")}` : msg.join("||");
     return await openDialog({
@@ -288,6 +307,7 @@ export async function alertSelect(msg: string[], display?: string) {
     });
 }
 
+/** Queues the legacy `wait2` dialog and resolves without a value when it closes; it is not a status. */
 export async function alertErrorWait(msg: string) {
     await openDialog({
         type: "wait2",
@@ -310,6 +330,10 @@ export function doingAlert() {
     return alertStoreImported.hasDialogs() || get(alertStoreImported).type === "progress";
 }
 
+/**
+ * Replaces the status; `onInstall` receives the exact object before installation, for cleanup with
+ * `src/ts/stores.svelte.ts`'s `alertStore.clearStatus(expected)` without clearing a newer status.
+ */
 export function alertToast(msg: string, onInstall?: (status: alertData) => void) {
     const data: alertData = {
         type: "toast",
@@ -319,6 +343,10 @@ export function alertToast(msg: string, onInstall?: (status: alertData) => void)
     alertStoreImported.set(data);
 }
 
+/**
+ * Replaces the status; `onInstall` receives the exact object before installation, for cleanup with
+ * `src/ts/stores.svelte.ts`'s `alertStore.clearStatus(expected)` without clearing a newer status.
+ */
 export function alertWait(msg: string, onInstall?: (status: alertData) => void) {
     const data: alertData = {
         type: "wait",
@@ -333,6 +361,7 @@ export function alertClear() {
     alertStoreImported.clearStatus();
 }
 
+/** Resolves with the selected non-group character's `chaId`, or "" on Escape. */
 export async function alertSelectChar() {
     return await openDialog({
         type: "selectChar",
@@ -361,6 +390,7 @@ export async function alertPluginConfirm(msg: string) {
 /**
  * The RisuRealm terms dialog (`realmTerms.ts` `ensureRealmTerms`): RisuAI's Terms of Service and
  * Privacy Policy with Accept and Decline. Resolves true only for Accept; any other close declines.
+ * `src/ts/hotkey.ts` gives it no Enter shortcut (a focused button can still activate); Escape answers "".
  */
 export async function alertRealmTerms() {
     const result = await openDialog({
@@ -371,6 +401,11 @@ export async function alertRealmTerms() {
     return result === "yes";
 }
 
+/**
+ * Character export choice; an empty answer (including Escape) becomes `{ type: "cancel", type2: "" }`.
+ * The close button in `src/lib/Others/AlertComp.svelte` keeps its selected `type2`; the caller in
+ * `src/ts/characterCards.ts` ignores the format when `type` is "cancel".
+ */
 export async function alertCardExport() {
     const result = await openDialog({
         type: "cardexport",
@@ -385,6 +420,7 @@ export async function alertCardExport() {
     };
 }
 
+/** Resolves with the input's value, or "" on Escape. */
 export async function alertInput(msg: string, datalist?: [string, string][], defaultValue?: string) {
     return await openDialog({
         type: "input",
@@ -394,6 +430,7 @@ export async function alertInput(msg: string, datalist?: [string, string][], def
     });
 }
 
+/** Resolves with the selected module's id, or "" when closed without picking one. */
 export async function alertModuleSelect() {
     return await openDialog({
         type: "selectModule",
@@ -410,6 +447,11 @@ export function alertRequestData(info: AlertGenerationInfo) {
     });
 }
 
+/**
+ * Captures `currentChatRef()` before queuing. `src/lib/Others/AlertComp.svelte` reads `findChat(ref)`
+ * and writes `setChatMeta(ref, ...)`; while the chat is unloaded or lacks HypaV2 data, it renders no
+ * editor and writes nothing.
+ */
 export function showHypaV2Alert() {
     void openDialog({
         type: "hypaV2",

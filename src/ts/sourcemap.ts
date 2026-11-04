@@ -13,6 +13,11 @@ export interface StackTraceTranslationResult {
     didTranslate: boolean;
 }
 
+/**
+ * Maps HTTP(S) JavaScript stack frames through each script's `.js.map`, preserving unmapped lines and their order.
+ * Fetch/parse failures leave those frames unchanged; no mapped frames returns the input with `didTranslate: false`.
+ * Unexpected translation errors can reject; consumers are destroyed after frame processing.
+ */
 export async function translateStackTrace(stackTrace: string): Promise<StackTraceTranslationResult> {
     if (!stackTrace) {
         return {

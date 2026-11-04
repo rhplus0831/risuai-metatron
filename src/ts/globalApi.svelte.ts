@@ -801,19 +801,16 @@ async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<Global
  */
 const re = /\\/g;
 
-/**
- * Gets the basename of a given path.
- *
- * @param {string} data - The path to get the basename from.
- * @returns {string} - The basename of the path.
- */
 export function getBasename(data: string) {
     const splited = data.replace(re, "/").split("/");
     const lasts = splited[splited.length - 1];
     return lasts;
 }
 
-/** The `characterOrder` mutation; it lives in the storage layer (`storage/characterOrder.ts`). */
+/**
+ * The `characterOrder` mutation from `src/ts/storage/characterOrder.ts`, kept on this facade for
+ * `src/ts/characters.ts` and the plugin API in `src/ts/plugins/apiV3/v3.svelte.ts`.
+ */
 export { checkCharOrder } from "./storage/characterOrder";
 
 /**
@@ -826,7 +823,7 @@ export function getFetchLogs() {
 }
 
 /**
- * Opens a URL in the appropriate environment.
+ * Opens a new tab with `noopener,noreferrer`, isolating its opener and initial session storage from this tab.
  *
  * @param {string} url - The URL to open.
  */
@@ -853,7 +850,9 @@ function formDataToString(formData: FormData): string {
 }
 
 /**
- * Class representing a local writer.
+ * Streams a download through `streamsaver`. `writeBackup` frames each record as a native-endian
+ * Uint32 UTF-8 basename byte length, basename bytes, Uint32 data byte length, then data bytes;
+ * `write` instead passes bytes through unchanged.
  */
 export class LocalWriter {
     writer: WritableStreamDefaultWriter;
@@ -914,7 +913,7 @@ export class LocalWriter {
 }
 
 /**
- * Class representing a virtual writer.
+ * In-memory writer over `AppendableBuffer`; close and abort leave its accumulated bytes available.
  */
 export class VirtualWriter {
     buf = new AppendableBuffer();
@@ -942,6 +941,8 @@ export class VirtualWriter {
 
 /**
  * A class to manage a buffer that can be appended to and deappended from.
+ * `deappend` discards bytes from the front; slice offsets and length still count from the original
+ * stream start, while `buffer` copies only the retained bytes.
  */
 export class AppendableBuffer {
     deapended: number = 0;
@@ -1169,12 +1170,7 @@ export function toggleFullscreen() {
           });
 }
 
-/**
- * Removes non-Latin characters from a string, replaces multiple spaces with a single space, and trims the string.
- *
- * @param {string} data - The input string to be processed.
- * @returns {string} The processed string with non-Latin characters removed, multiple spaces replaced by a single space, and trimmed.
- */
+/** ASCII-only: accented Latin letters are removed too. */
 export function trimNonLatin(data: string) {
     return data
         .replace(/[^\x00-\x7F]/g, "")
@@ -1254,10 +1250,6 @@ export async function loadInternalBackup() {
     location.reload();
 }
 
-/**
- * A debugging class for performance measurement.
- */
-
 export class PerformanceDebugger {
     kv: { [key: string]: number[] } = {};
     startTime: number;
@@ -1316,6 +1308,7 @@ export class PerformanceDebugger {
     }
 }
 
+/** The persisted UI locale `cn` is passed to Intl as `zh`. */
 export function getLanguageCodes() {
     let languageCodes: {
         code: string;
@@ -1358,6 +1351,10 @@ export function getVersionString(): string {
     return versionString;
 }
 
+/**
+ * Each read resolves the current object; returned methods bind to that instance at lookup time.
+ * restrictChildren rejects get/set of listed names.
+ */
 export function toGetter<T extends object>(
     getterFn: () => T,
     args?: {
@@ -1510,7 +1507,10 @@ export function changeChatTo(IdOrIndex: string | number) {
     ReloadGUIPointer.set(Math.random());
 }
 
-/** Opens a pin by id, selecting its chat before its character so only the target chat is loaded. */
+/**
+ * Shared home/rail navigation by `{ chaId, chatId }` (per tab). Selects the chat before its character
+ * so only the target chat is loaded; a missing character or chat entry leaves selection unchanged.
+ */
 export function openPinnedChat(ref: ChatRef, reseter?: () => void) {
     if (!findCharacter(ref.chaId) || !chatEntry(ref)) {
         return;

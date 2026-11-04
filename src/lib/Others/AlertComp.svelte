@@ -54,6 +54,21 @@
     import versionData from "../../../version.json";
     import { buildId } from "src/ts/buildInfo";
 
+    /**
+     * Renders the alert slot from `src/ts/stores.svelte.ts`. A UI dismissal must answer
+     * the shown dialog so its waiting caller settles. Render branches outside the first
+     * guard must also be excluded from that guard.
+     *
+     * Dialog keyboard handling belongs to `src/ts/hotkey.ts`: handled Escape answers
+     * ""; eligible Enter shortcuts answer ask/normal/error or the alert input's value.
+     * Focused buttons retain gated native activation. The hotkey handler can return
+     * early for other text-entry targets.
+     *
+     * Answer this error before opening request history. Trace translation results and
+     * failures from `src/ts/sourcemap.ts` are ignored after the alert changes or this
+     * component is destroyed, so a later error cannot inherit an earlier result.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     const hypaV2Ref = $derived($alertStore.type === "hypaV2" ? $alertStore.chatRef : undefined);
     const hypaV2Data = $derived(hypaV2Ref ? findChat(hypaV2Ref)?.hypaV2Data : undefined);

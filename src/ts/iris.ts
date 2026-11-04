@@ -1,5 +1,6 @@
 import { RisuAccessClient } from "./process/mcp/risuaccess";
 
+/** Iris's assistant system prompt, including the RisuAccess instructions and current tool list. */
 export const getIrisSystemPrompt = async () => {
     return `
 You are roleplaying Iris.

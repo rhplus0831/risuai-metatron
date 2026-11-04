@@ -1,5 +1,10 @@
 import { currentChatRef, selectedChat } from "./storage/chatStore.svelte";
 
+/**
+ * `data` is `{ targetCharacterId, targetChatId, targetMessageId }`, or null for no fold. This module's
+ * selection effect clears it when the selected chat changes; `src/lib/ChatScreens/DefaultChatScreen.svelte`
+ * also clears it for message jumps and when the user expands the folded messages.
+ */
 export const chatFoldedState = $state<{
     data: null | {
         targetCharacterId: string;
@@ -38,6 +43,10 @@ $effect.root(() => {
     });
 });
 
+/**
+ * Targets the selected chat reference. Numeric targets require a loaded message with an id; string
+ * ids are accepted without checking that the message is loaded. Missing ref or empty target is a no-op.
+ */
 export function foldChatToMessage(targetMessageIdOrIndex: string | number) {
     const targetMessageId =
         typeof targetMessageIdOrIndex === "number"

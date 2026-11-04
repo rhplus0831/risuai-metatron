@@ -10,6 +10,13 @@
     import { RisuAccessClient } from "src/ts/process/mcp/risuaccess";
     import { getModelInfo, LLMFormat } from "src/ts/model/modellist";
 
+    /**
+     * Visual-novel-style Iris assistant using `requestChatData(..., "otherAx")` with RisuAccess tools.
+     * Dialogue persists in `settings.ui.irisDialogue`, the server-saved `ui` settings record. Older
+     * browser copies are imported by `src/ts/storage/browserLocalImport.ts`, awaited at boot by
+     * `src/ts/bootstrap.ts` before plugins load.
+     */
+
     interface DialogueLine {
         speaker: string;
         text: string;
