@@ -1,7 +1,8 @@
 # Guides To Source Plan
 
 Status: drafted 2026-11-04 after the chat-store pilot (`c0f4cabae`), no slice landed. Decisions D1–D11 are
-recommendations for the owner; the **Open questions** Q1–Q4 wait for the owner. Code anchors and measurements are
+recommendations for the owner; the **Open questions** Q1–Q4 were answered by the owner on 2026-11-04 (the
+recommended option each time). Code anchors and measurements are
 at `c0f4cabae` on `dev`; verify them again before editing (STRUCTURE.md protocol step 5).
 
 Sources: the owner's 2026-11-04 question (STRUCTURE.md and `docs/structure` keep growing; split further, trim, or
@@ -138,15 +139,19 @@ guides a rewrite can break and the reason wave 3 goes last: `server-resources` 3
 
 ## Open questions
 
-- **Q1. Move Doc Maintenance out of STRUCTURE.md (D8)?** Recommended: yes, to `docs/structure/README.md`; it is
-  6,307 bytes every session reads and only guide edits need. Alternative: keep it and accept STRUCTURE.md near 25 KB.
-- **Q2. Where the ownership manifest lives (D8).** Recommended: `docs/structure/ownership.json`, beside what it
-  describes and inside the folder the docs check reads. Alternative: `util/guideOwnership.json`, beside the scripts.
-- **Q3. Reading the local transcripts (D7).** Recommended: yes, aggregated counts only, per guide and heading, in a
-  dated audit. Alternative: skip the measurement and order work by churn alone (D1 already does).
-- **Q4. Parallel guides inside a wave (D1).** Recommended: serial in wave 1; in waves 2 and 3 at most two sessions at
-  once, on guides with no link in either direction, each ledger checked on the combined tree before the second commit.
-  Alternative: strictly serial throughout (slower; no combined-tree step).
+- **Q1. Move Doc Maintenance out of STRUCTURE.md (D8)?** Answered 2026-11-04: yes. Recommended: yes, to
+  `docs/structure/README.md`; it is 6,307 bytes every session reads and only guide edits need. Alternative: keep it
+  and accept STRUCTURE.md near 25 KB.
+- **Q2. Where the ownership manifest lives (D8).** Answered 2026-11-04: the guides folder. Recommended:
+  `docs/structure/ownership.json`, beside what it describes and inside the folder the docs check reads. Alternative:
+  `util/guideOwnership.json`, beside the scripts.
+- **Q3. Reading the local transcripts (D7).** Answered 2026-11-04: yes. Recommended: yes, aggregated counts only, per
+  guide and heading, in a dated audit. Alternative: skip the measurement and order work by churn alone (D1 already
+  does).
+- **Q4. Parallel guides inside a wave (D1).** Answered 2026-11-04: pairs, as recommended. Recommended: serial in
+  wave 1; in waves 2 and 3 at most two sessions at once, on guides with no link in either direction, each ledger
+  checked on the combined tree before the second commit. Alternative: strictly serial throughout (slower; no
+  combined-tree step).
 
 ## Slices
 
