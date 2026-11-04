@@ -108,7 +108,10 @@ type FileSource = {
     revokeTimer?: ReturnType<typeof setTimeout>;
 };
 
-/** One shared load per path, pinned by plain reads or held by previews; failed loads are dropped. */
+/**
+ * One shared fallback load per path, pinned by plain reads for the page or held by previews.
+ * Empty results are dropped so the next read tries again.
+ */
 const fileSources = new Map<string, FileSource>();
 /** Let rows shifted by a list edit re-hold their sources before releasing their blobs. */
 const FILE_SOURCE_RELEASE_GRACE_MS = 100;
@@ -119,9 +122,15 @@ const knownSwPaths = new Set<string>();
 let swCache: Promise<Cache> | undefined;
 
 /**
- * A capable worker controlling this page allows a direct URL without reading or retaining bytes.
- * Otherwise, reads share a worker-cache URL or object URL, pinned for the page by this plain read;
- * previews use `holdFileSrc` to release theirs. Only the fallback detects missing or empty files.
+ * Direct mode resolves `/api/asset/<hex of the UTF-8 key>` at once (`""` for an empty key), without
+ * a read, Cache Storage lookup, registration, shared file source, or pin: nothing needs revoking.
+ * `public/sw.js` signs the subresource load; the browser HTTP cache holds the bytes. A missing file
+ * is not detected here: its element receives a 404. Direct-mode 401s and network failures never
+ * retry through `readAsset`.
+ *
+ * Each call checks `usingSw`, `directAssets`, and a controlling worker. Controller loss or a
+ * capability re-probe sends new calls through the fallback; switching modes leaves existing
+ * fallback sources' pin and hold lifetimes intact.
  *
  * @param {string} loc - The location of the file.
  * @returns {Promise<string>} - A promise that resolves to the source URL of the file.
@@ -135,7 +144,11 @@ export function getFileSrc(loc: string): Promise<string> {
     return source.src;
 }
 
-/** Direct URLs need no release; fallback previews hold a source until released or pinned by a plain read. */
+/**
+ * Preview source and release handle; direct URLs need no release. In the fallback, the last release
+ * revokes and drops an unpinned `blob:` URL after `FILE_SOURCE_RELEASE_GRACE_MS`. A new hold or plain
+ * read cancels that timer. Worker URLs are never revoked.
+ */
 export function holdFileSrc(loc: string): { src: Promise<string>; release(): void } {
     if (canUseDirectAssets()) {
         return { src: Promise.resolve(directAssetSrc(loc)), release() {} };
@@ -154,7 +167,12 @@ export function holdFileSrc(loc: string): { src: Promise<string>; release(): voi
     };
 }
 
-/** Direct thumbnails need no read or pin; fallback returns getFileSrc's own promise for the original. */
+/**
+ * Direct mode adds `?w=<size>`: `server/src/routes/storage.ts` serves a WebP thumbnail or a 307 to
+ * the query-free original, followed by `public/sw.js`. Otherwise returns `getFileSrc`'s own promise
+ * for the full image: pages without a worker, uncontrolled pages, and fallback loads get no
+ * decoded-memory saving, an accepted trade-off.
+ */
 export function getThumbSrc(loc: string, size: 256 | 512): Promise<string> {
     if (canUseDirectAssets()) {
         return Promise.resolve(loc ? directAssetSrc(loc) + "?w=" + size : "");
@@ -162,7 +180,10 @@ export function getThumbSrc(loc: string, size: 256 | 512): Promise<string> {
     return getFileSrc(loc);
 }
 
-/** Returns a direct asset URL when a capable worker controls this page, otherwise null. */
+/**
+ * Direct URL for inlay audio and video in `src/ts/parser/parser.svelte.ts`; null without a capable
+ * controlling worker, so the parser can use its own object URL fallback.
+ */
 export function getDirectAssetSrc(loc: string): string | null {
     return canUseDirectAssets() ? directAssetSrc(loc) : null;
 }
@@ -190,6 +211,12 @@ function directAssetFetchUrl(input: RequestInfo | URL): string | null {
     }
 }
 
+/**
+ * Signs same-origin `assets/` URLs on GET/HEAD without a `risu-auth` header, using a fresh token.
+ * Legacy `/sw/img/<hex>` URLs map to `/api/asset/<hex>` so rows rendered before worker activation
+ * cleared their cache entries remain fetchable. Signed requests use `mode: "same-origin"` so a
+ * redirect cannot leave the origin. Other requests pass through unchanged.
+ */
 async function fetchFileSrcWith(
     originalFetch: typeof fetch,
     input: RequestInfo | URL,
@@ -216,7 +243,10 @@ async function fetchFileSrcWith(
     return originalFetch.call(globalThis, input, init);
 }
 
-/** Fetches same-origin displayed assets with auth, mapping legacy worker URLs to the asset route. */
+/**
+ * Rich copy in `src/lib/ChatScreens/Chat.svelte` needs bytes for message images and character/user
+ * icons; `public/sw.js` signs subresource loads but does not sign `fetch()`.
+ */
 export function fetchFileSrc(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     return fetchFileSrcWith(fetch, input, init);
 }
@@ -224,7 +254,12 @@ export function fetchFileSrc(input: RequestInfo | URL, init?: RequestInit): Prom
 let fileSrcFetchScope:
     { depth: number; active: boolean; originalFetch: typeof fetch; wrapper: typeof fetch } | undefined;
 
-/** Signs asset fetches made by capture libraries, including CSS and font resources outside the captured row. */
+/**
+ * Screenshot capture in `src/lib/ChatScreens/DefaultChatScreen.svelte` signs fetches for images,
+ * computed-style URLs from shared chat styles outside the rows, and fonts. Nested runs share one
+ * wrapper; the last run disables signing and restores fetch only if global fetch is still this
+ * wrapper. A wrapper retained by another script stays inactive.
+ */
 export async function withFileSrcFetch<T>(run: () => T | Promise<T>): Promise<T> {
     if (!fileSrcFetchScope) {
         const originalFetch = globalThis.fetch;
@@ -294,9 +329,20 @@ class MissingFileError extends Error {
     }
 }
 
+/**
+ * Fallback URL: `/sw/img/<hex>` when `public/sw.js` holds the file. The page shares `risuCache`
+ * with the worker, so a Cache Storage hit needs no worker request; a miss posts bytes to
+ * `/sw/register/<hex>`. When Cache Storage is unavailable or denied, `/sw/check/<hex>` answers
+ * instead. Every worker request is bounded by `SW_REQUEST_TIMEOUT_MS`.
+ *
+ * A failed worker request (an uncontrolled page, for example), or every load with `usingSw` false
+ * after boot continued without a ready worker, falls back to a `blob:` URL of type `image/png`.
+ * Never a data URL: it would inflate the text `serverProcessScript` sends to the server in
+ * `src/ts/parser/transformClient.ts`. Missing or empty bytes are never registered or shown: they
+ * resolve `""`, as does a failed load.
+ */
 async function loadFileSrc(loc: string): Promise<string> {
     let bytes: Promise<Uint8Array> | null = null;
-    // A missing or empty file is never registered or shown: the read resolves `""` and is tried again.
     const read = () =>
         (bytes ??= (async () => {
             const data = (await readAsset(loc)) as unknown as Uint8Array | null;
@@ -313,11 +359,9 @@ async function loadFileSrc(loc: string): Promise<string> {
                 if (knownSwPaths.has(loc)) return url;
                 let hasCache: boolean;
                 try {
-                    // The page shares Cache Storage with the worker; a hit needs no worker request.
                     const cache = await (swCache ??= caches.open("risuCache"));
                     hasCache = !!(await cache.match(url));
                 } catch {
-                    // Cache Storage can be unavailable or denied even with a controlling worker.
                     swCache = undefined;
                     const check = await fetch("/sw/check/" + encoded, {
                         signal: AbortSignal.timeout(SW_REQUEST_TIMEOUT_MS),
@@ -448,10 +492,17 @@ export { saving } from "./storage/resourceSync.svelte";
 let usingSw = false;
 let directAssets = false;
 
+/** Records whether `registerSw` in `src/ts/bootstrap.ts` returned `ready`, separately from capability. */
 export function setUsingSw(value: boolean) {
     usingSw = value;
 }
 
+/**
+ * Records the controlling worker's `/sw/init` `directAssets` capability from `src/ts/bootstrap.ts`.
+ * Non-JSON responses (including older workers), missing or false flags, unavailable workers, and
+ * unsupported browsers leave it false. `controllerchange` clears it and probes the new controller;
+ * only the newest probe for the current controller can set it again.
+ */
 export function setDirectAssets(value: boolean) {
     directAssets = value;
 }

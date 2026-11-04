@@ -1,7 +1,7 @@
 /**
  * The batch asset codec: the local backup archive's record framing (`server/src/data/archive.ts`),
  * each record `u32le nameLength`, the UTF-8 name, `u32le dataLength`, then the bytes, with no
- * header or footer of its own.
+ * header or footer of its own. The archive also uses `encodeAssetRecordHeader` as its encoder.
  *
  * - `POST /api/assets/write` takes records named by their full logical keys (`assets/<id>.<ext>`)
  *   and writes each one under its key (always overwriting, as `/api/write` does).
@@ -12,9 +12,14 @@
  * The encoder and the parser run in both: `TextEncoder`/`TextDecoder` and `DataView` only.
  */
 
+/** Route accepting concatenated asset records to write. */
 export const ASSET_BATCH_WRITE_PATH = "/api/assets/write";
+/** Route accepting a JSON key list and answering asset records in key order. */
 export const ASSET_BATCH_READ_PATH = "/api/assets/read";
-/** Most records one batch may carry (a write) or ask for (a read). */
+/**
+ * Server cap on records written or keys read per batch; `src/ts/storage/assetClient.ts` sends at
+ * most `ASSET_BATCH_CLIENT_RECORDS`.
+ */
 export const MAX_ASSET_BATCH_RECORDS = 2000;
 /** Most UTF-8 bytes of one record name, the backup archive's cap. */
 export const MAX_ASSET_BATCH_NAME_BYTES = 4096;

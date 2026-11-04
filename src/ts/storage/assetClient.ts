@@ -53,6 +53,7 @@ export function assetContentHash(key: string): string | null {
     return /^assets\/(?:inlay_)?([0-9a-f]{64})\.[A-Za-z0-9]+$/.exec(key)?.[1] ?? null;
 }
 
+/** Cancellation shared by asset reads, missing checks, writes, and their retries. */
 export type AssetRequestOptions = {
     /** Aborts the pending wait and the request in flight. */
     signal?: AbortSignal;
@@ -183,10 +184,12 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 /**
- * Returns names the server does not hold verified, checking at most 512 names and 64 KiB of JSON
- * per request. Throws on a failed or malformed answer and on a request that has not answered within
- * {@link MISSING_CHECK_DEADLINE_MS} (the request is then aborted, so its late answer is never read);
- * an abort of `signal` throws the signal's reason.
+ * Returns names the server does not hold verified: absent, empty, corrupt, non-canonical, unreadable
+ * or changed files, symlinks or non-regular files, and unknown files over the remaining verification
+ * budget (`server/src/http/assetVerification.ts`, `server/src/routes/storage.ts`). Checks at most
+ * 512 names and 64 KiB of JSON per request. Throws on a failed or malformed answer and on a request
+ * that has not answered within {@link MISSING_CHECK_DEADLINE_MS} (then aborted, so its late answer
+ * is never read); an abort of `signal` throws the signal's reason.
  */
 export async function missingAssets(names: readonly string[], options: AssetRequestOptions = {}): Promise<Set<string>> {
     const { signal } = options;
@@ -385,8 +388,10 @@ function joinRecords(batch: readonly WriteRecord[]): Uint8Array {
 /**
  * Writes every item under its key with `POST /api/assets/write`, one batch at a time (see
  * {@link writeBatches}), each request retried as described above. Canonical names with matching
- * `sha256` skip the upload when the server holds verified bytes; any raw overwrite of the same key
- * disables that skip for the whole call. A failed or timed-out check sends everything; an abort rejects.
+ * `sha256` are checked once per unique name and skip uploads when the server holds verified bytes.
+ * An item without a matching `sha256` (a custom id or raw overwrite) always uploads and prevents
+ * skipping every item for its key in this call. A failed or timed-out check sends everything; an abort
+ * rejects with the signal's reason (`AbortError` for a nullish reason), even if every upload could be skipped.
  * A zero-length item is an empty file. Nothing is sent for an empty list. Throws `"setItem Error"`
  * for a non-2xx answer and the answer's `error` for a refused one, as `writeAsset` does; the
  * batches before the failing one, and possibly some of its records, stay written.
