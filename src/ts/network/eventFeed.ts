@@ -15,30 +15,32 @@ import {
 
 /**
  * The live-update socket (`server/src/routes/events.ts`): another tab's or device's committed
- * changes arrive as refs and revisions and go to the save loop (`noteRemoteChanges`), which reads
- * and applies what this tab holds. On every `hello` (connect, reconnect, a server restart) the tab
- * reconciles against server revisions: its advertised map when the hello's digest matches, otherwise
- * a fetched revision listing, so nothing committed while it was disconnected is missed. The map
- * tracks advertised revisions independently of held records and overlays changes received during
- * a listing read. Every connection signs a fresh JWT (they live five minutes). A frame of another epoch, or
- * an `epoch` frame, means a restore replaced the data: the save loop halts and the page reloads. A
- * `change` frame's refs are dispatched before its generation locks (`streaming`) go to the chat
- * module (`noteRemoteStreaming`), so a fitting `begin` patch puts the row in the mirror before its
- * lock. For a chat the mirror lacks, an unloaded chat, or a patch that does not fit, the lock is
- * installed by id and the row arrives locked with the read. A `hello` replaces the feed's whole
- * lock set with the server's snapshot before reconciliation starts.
+ * changes arrive as refs and revisions and go to `src/ts/storage/resourceSync.svelte.ts`
+ * (`noteRemoteChanges`), which reads and applies what this tab holds. On every `hello` (connect,
+ * reconnect, a server restart) the tab reconciles against server revisions: its advertised map when
+ * the hello's digest matches, otherwise a fetched revision listing, so nothing committed while it
+ * was disconnected is missed. The map tracks advertised revisions independently of held records and
+ * overlays changes received during a listing read. Every connection signs a fresh JWT (they live
+ * five minutes). A `hello` or `epoch` frame of another epoch means a restore replaced the data: the
+ * save loop halts and the page reloads; `change` and `memoryTask` frames of another epoch are
+ * ignored. A `change` frame's refs are dispatched before its generation locks (`streaming`) go to
+ * `src/ts/storage/chatStore.svelte.ts` (`noteRemoteStreaming`), so a fitting `begin` patch puts the
+ * row in the mirror before its lock. For a chat the mirror lacks, an unloaded chat, or a patch that
+ * does not fit, the lock is installed by id and the row arrives locked with the read. A `hello`
+ * replaces the feed's whole lock set with the server's snapshot before reconciliation starts.
  *
  * One connection is current at a time (`generation`). A connection that has not opened within 10 s
- * (authentication included) or that has had no frame for 45 s while the page is visible is abandoned
- * without waiting for its `close`, and reconnects with the backoff (`socketLiveness.ts`). When the
- * page comes back (visible after 30 s hidden, a Page Lifecycle `resume`, `online`; triggers that come
- * together are folded) the connection is replaced at once, even during a retry's wait: a half-open
- * socket after a freeze would otherwise deliver nothing until TCP gives up.
+ * (authentication included) or that has had no frame for 45 s while the page is visible is
+ * abandoned without waiting for its `close`, and reconnects with the backoff. Liveness and resume
+ * triggers are in `src/ts/network/socketLiveness.ts`. When the page comes back (visible after 30 s
+ * hidden, a Page Lifecycle `resume`, `online`; triggers that come together are folded) the
+ * connection is replaced after that fold, even during a retry's wait: a half-open socket after a
+ * freeze would otherwise deliver nothing until TCP gives up.
  *
- * HypaV3 memory task statuses go to `memoryTasks.svelte.ts`: a `memoryTask` frame of the loaded epoch
- * as it comes, a `hello`'s snapshot as the whole status set, and the fetched or digest-matched revision
- * listing (before it is reconciled) for the chats whose fences wait for it. Another epoch resets
- * them and the advertised map.
+ * HypaV3 memory task statuses go to `src/ts/process/memoryTasks.svelte.ts`: a `memoryTask` frame of
+ * the loaded epoch as it comes, a `hello`'s snapshot as the whole status set, and the fetched or
+ * digest-matched revision listing (before reconciliation) for the chats whose fences wait for it. A
+ * mismatching `hello`/`epoch` or listing epoch error resets them and the advertised map.
  */
 
 const MAX_BACKOFF_MS = 30_000;
@@ -153,6 +155,11 @@ function retire() {
     socket = null;
 }
 
+/**
+ * Retry with a base of 1 s doubling to 30 s, jittered between half that base and the base. Only a
+ * successful reconcile resets the attempt count: accepting a socket without a usable revision
+ * listing must keep backing off. A pending retry is shared until it fires or a resume replaces it.
+ */
 function scheduleReconnect() {
     if (stopped || retryTimer) {
         return;
@@ -195,6 +202,13 @@ function resumeReconnect() {
     void connect();
 }
 
+/**
+ * The HTTP listing has its own deadline even while socket pings arrive. A failure other than an
+ * epoch mismatch closes this connection and schedules its retry here, since a dead link may never
+ * deliver `close`. The fetched snapshot goes unchanged to `src/ts/process/memoryTasks.svelte.ts`
+ * and `src/ts/storage/resourceSync.svelte.ts`; only the advertised map receives the concurrent
+ * overlay.
+ */
 async function reconcile(
     gen: number,
     ws: WebSocket,

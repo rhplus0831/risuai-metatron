@@ -421,9 +421,15 @@ const remoteCollections = new Map<string, number>();
 let remoteCollectionSeq = 0;
 /** Kinds whose records live outside the mirror (`inlays`, `pluginPermissions`): their own owner applies a live update. */
 const remoteOwners = new Map<string, RemoteResourceOwner>();
-/** A live update waits this long, so the refs of a burst of commits are read together. */
+/**
+ * A live update waits this long, so the refs of a burst of commits are read together; an earlier
+ * pending wakeup may read sooner and refresh backoff may delay it.
+ */
 const REMOTE_DELAY_MS = 50;
-/** Most records (and, separately, chat lists) one cycle reads for live updates; the rest wait for the next. */
+/**
+ * Most records, chat lists, and idle chats (each counted on its own) one refresh read requests;
+ * the rest wait for the next pass.
+ */
 const MAX_REMOTE_READS = 1000;
 
 type JournalRecordLayers = Partial<RecordLayerValues>;
@@ -3272,9 +3278,10 @@ function handleCycleError(error: unknown) {
 let restoreReloadHook: (() => void) | null = null;
 
 /**
- * Registers one hook before the restore notice, replacing any previous hook; returns its unregister.
- * The upstream import stores its prepared selection here when the socket reports the new epoch
- * before the commit's answer (`upstreamBackupClient.ts`). The notice never waits on the network.
+ * Registers one hook before the restore notice, replacing any previous hook; returns its
+ * unregister. The upstream import stores its prepared selection here when the socket reports the
+ * new epoch before the commit's answer (`src/ts/drive/upstreamBackupClient.ts`). The notice never
+ * waits on the network.
  */
 export function beforeRestoreReload(fn: () => void): () => void {
     restoreReloadHook = fn;
@@ -3287,7 +3294,13 @@ export function beforeRestoreReload(fn: () => void): () => void {
 
 /**
  * The server data was replaced (restore or import): every revision here is void. Also reached from
- * `resourceClient` for a 412 or a changed epoch on any other resource request (inlays, permissions).
+ * `src/ts/storage/resourceClient.ts` for an EpochMismatch 412 or a changed epoch on any resource
+ * request (inlays and permissions included). The restore journal is captured synchronously before
+ * anything can settle; late cycle answers and aborted refresh reads apply nothing. The snapshot's
+ * 1 s wait bound starts before the synchronous hook and terminal notice (`alertTerminal` in
+ * `src/ts/alert.ts`), so acknowledgement adds only any remaining journal wait. Reload follows
+ * acknowledgement and the existing wait, even if the journal fails or times out. Acknowledgement
+ * has no timeout; an off or empty journal adds no wait.
  */
 async function haltForRestore() {
     if (halted) {
@@ -3348,14 +3361,14 @@ let cancelRestorePoll: (() => void) | null = null;
 
 /**
  * A server job of this tab ended because a restore or import is replacing the data (its
- * `maintenance` terminal, which comes before the replacement): reads one small record every second
- * until the server answers with another epoch, which `getResource`'s epoch check turns into
- * `haltForRestore` (the restore notice and a reload). An answer with the old epoch, the maintenance
- * 503, and a network failure keep it waiting. A read that takes over 5 s is aborted and the watch
- * reads again; a maintenance that replaced nothing ends the watch after two minutes, however its
- * reads hang. Writes need no pause meanwhile: each names the epoch it was based on, so one
- * after the replacement is refused (412) and halts too. One watch at a time; resolves true when the
- * data was replaced (or saving had already halted).
+ * `maintenance` terminal, which comes before the replacement): waits 1 s before each small-record
+ * read until the server answers with another epoch, which `src/ts/storage/resourceClient.ts`'s
+ * `getResource` epoch check turns into `haltForRestore` (the restore notice and a reload). An
+ * answer with the old epoch, the maintenance 503, and a network failure keep it waiting. A read
+ * that takes over 5 s is aborted and the watch reads again; a maintenance that replaced nothing
+ * ends the watch after two minutes, however its reads hang. Writes need no pause meanwhile: each
+ * names the epoch it was based on, so one after the replacement is refused (412) and halts too. One
+ * watch at a time; resolves true when the data was replaced (or saving had already halted).
  */
 export function watchForRestore(): Promise<boolean> {
     if (halted) {
@@ -4462,7 +4475,9 @@ function applySettingsRecord(
  * Puts a server record into the mirror (data null: the record is gone): a settings record through
  * `applyRaw` (nothing is marked), a character in place. After `presets`, `modelPresets`, or
  * `personas`, this tab's selections are resolved against the new list. A character removed by
- * another writer discards its chats' unsent work (`forgetCharacter`); returns whether it had any.
+ * another writer discards its chats' unsent work (`forgetCharacter` in
+ * `src/ts/storage/chatStore.svelte.ts`); returns whether it had any. Removing the selected
+ * character selects home. Selection reconciliation lives in `src/ts/storage/settingsViews.svelte.ts`.
  */
 function applyToMirror(kind: string, id: string, data: unknown): boolean {
     if (isSection(kind) || isSettingsCollection(kind)) {
@@ -4565,16 +4580,19 @@ function runOwner(kind: string, run: (owner: RemoteResourceOwner) => void) {
 }
 
 /**
- * A live update: the refs and revisions one committed write changed (the change feed). Each is
- * compared with what this client holds when it arrives, and one that is not newer is dropped (this
- * client's own save, or a job event that applied it first). A field patch this client can take now
- * is applied at once (`applyRemotePatch`), with no read. A newer record waits for the cycle,
- * which reads and applies it while this client has no unsent change of it (`applyRemoteUpdates`); a
- * chat goes to the chat module with its optional by-id change (`delta`, else `patch`: applied at its
- * exact base while loaded and idle, otherwise the ordinary idle refresh) and its summary knowledge
- * (`summary` or `summaryBase`: settles a chat held only as its summary without its character's chat
- * list when it fits); a new chat or a changed chat order reads the character's chat list (also for a
- * character still waiting to be inserted). Never an outgoing write, a discard, or a notice.
+ * A live update: the refs and revisions one committed write changed. Each is compared with what
+ * this client holds when it arrives, and one that is not newer is dropped (this client's own save,
+ * or a job event that applied it first). A field patch this client can take now is applied at once
+ * (`applyRemotePatch`), with no read. A newer record waits for the refresh queue, which applies it
+ * only without local edits, except preserved `llmSecrets` siblings (`applyRemoteUpdates`); a
+ * missing character or a singleton absent at boot (such as pluginStorage) can be inserted remotely,
+ * but a locally created unsaved record waits for its save's 409 instead of adopting another create.
+ * A chat goes to `src/ts/storage/chatStore.svelte.ts` with its optional by-id change (`delta`, else
+ * `patch`: applied at its exact base while loaded and idle, otherwise the ordinary idle refresh)
+ * and its summary knowledge (`summary` or `summaryBase`: settles a chat held only as its summary
+ * without its character's chat list when it fits); a new chat or a changed chat order reads the
+ * character's chat list (also for a character still waiting to be inserted). Never an outgoing
+ * write, a discard, or a notice.
  */
 export function noteRemoteChanges(changes: ChangeSet) {
     if (halted || !started) {
@@ -4715,17 +4733,20 @@ export function reconcileRemote(listing: ResourceRevisionListing) {
 }
 
 /**
- * Applies a live update's record patch without reading the record, when this client holds the record
- * at exactly the patch's base revision (of the loaded epoch, the same incarnation, one write before
- * the update) and has no local change of it (`canApplyRemote`): a character's field patch
- * (`RecordFieldPatch`) goes in raw (`patchRawCharacter`: no mark, no echo); another mirrored record
- * patch (except `llmSecrets`) is applied to a detached copy of the held text and the result goes through
- * the mirror's whole-record path (`applyToMirror`, as a read would). The saved text is the mirror's
- * projection afterwards, as for a whole update, and a waiting notice the update covers is settled.
- * The remote-change listeners hear of every changed field. Returns false, changing nothing, for anything
- * else (another kind or patch form, another base, a local change, a malformed patch or one naming a
- * field twice, a character's fixed or client-only field or one the mirror object only inherits, an
- * item patch that does not fit the held list): the update is then read whole as before.
+ * Applies a live update's record patch without reading the record, when this client holds the
+ * record at exactly the patch's base revision (of the loaded epoch, the same incarnation, one write
+ * before the update) and has no local change of it (`canApplyRemote`), except an echo of a lost
+ * in-doubt write may advance the saved base while preserving newer local mirror text. Sending,
+ * quarantined and job-blocked records still refuse that echo. In the ordinary path, a character's
+ * field patch (`RecordFieldPatch`) goes in raw (`patchRawCharacter`: no mark, no echo); another
+ * mirrored record patch (except `llmSecrets`) is applied to a detached copy of the held text and
+ * the result goes through the mirror's whole-record path (`applyToMirror`, as a read would). The
+ * saved text is the mirror's projection afterwards, as for a whole update, and a waiting notice the
+ * update covers is settled. The remote-change listeners hear of every changed field. Returns false,
+ * changing nothing, for anything else (another kind or patch form, another base, a local change, a
+ * malformed patch or one naming a field twice, a character's fixed or client-only field or one the
+ * mirror object only inherits, an item patch that does not fit the held list): the update is then
+ * read whole as before.
  */
 function applyRemotePatch(ref: {
     kind: string;
@@ -4884,7 +4905,14 @@ function applyCollectionPatch(kind: string, id: string, heldText: string, patch:
     return true;
 }
 
-/** Whether a live update of `key` may be applied now: this client has no unsent change of it. */
+/**
+ * Admission for ordinary live updates: never overwrite a local edit, in-flight/doubt write,
+ * quarantine or job-blocked delete. An unheld record may enter only as a missing remote character
+ * or an absent singleton; a local unsaved creation must reach its save/conflict outcome instead.
+ * Character generation alone is no blocker. llmSecrets is checked against server siblings after
+ * reading; blockedLocal prevents rereading the same conflicting local text while its 409 is
+ * pending.
+ */
 function canApplyRemote(key: string, entry: { kind: string; id: string; blockedLocal?: string }): boolean {
     if (sendingKeys.has(key) || recordQuarantine(key) || isRecordJobBlocked(key) || inDoubt.has(key)) {
         return false;
@@ -4983,13 +5011,20 @@ function applyRemotePatches() {
 }
 
 /**
- * Reads and applies waiting live updates concurrently with writes: first every waiting field patch this
- * client can now take without a read (`applyRemotePatch`), then the eligible records and the chat lists
- * of characters with no order work, at most `MAX_REMOTE_READS` of each. Eligibility is checked again
- * after the read: a change made meanwhile keeps the update waiting. A read settles only the notice it
- * was issued for, or a later one its answer covers. A deletion applies only if the held revision is
- * unchanged since the read was issued; otherwise it is read again. Returns whether a character deletion
- * discarded unsent chat work (the refresh queue shows the reload notice).
+ * Reads and applies waiting live updates concurrently with writes: first eligible patches without a
+ * read (`applyRemotePatch`), then the eligible records and the chat lists of characters with no
+ * order work, at most `MAX_REMOTE_READS` of each, new characters' lists first. Their lists go
+ * through `src/ts/storage/chatStore.svelte.ts`; chat/order refs that beat insertion keep a list
+ * read pending, and notices arriving during a read retain their sequence fence. Eligibility is
+ * checked again after the read: a change made meanwhile keeps the update waiting. A read settles
+ * only the notice it was issued for, or a later one its answer covers. A deletion applies only if
+ * the held revision is unchanged since the read was issued; otherwise it is read again. Returns
+ * whether a character deletion discarded unsent chat work (the refresh queue shows the reload
+ * notice). Already-held revisions drop without a read. Adoptions except `llmSecrets` save the
+ * mirror's projection, so watchers do not echo it; ordinary adoption discards no work, settles no
+ * resource key and shows no notice. A deleted character's chat-work discard is the exception.
+ * llmSecrets adopts the masked status and siblings as a credential reply does; conflicting
+ * local/server siblings apply nothing and block on that local text until its save or 409 decides.
  */
 async function applyRemoteUpdates(): Promise<boolean> {
     applyRemotePatches();
