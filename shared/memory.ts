@@ -1,6 +1,27 @@
-// Long-term memory shapes persisted on chats (`hypaV2Data`, `hypaV3Data`) and in settings.
-
 import type { StructuredMemorySettings } from "./structuredMemory.ts";
+
+/**
+ * Long-term memory shapes persisted on chats (`hypaV2Data`, `hypaV3Data`) and in settings, shared by
+ * the server's algorithms (`server/src/prompt/memory/`), the tab's HypaV3 copy and modal
+ * (`src/ts/process/memory/hypav3.ts`, `src/lib/Others/HypaV3Modal.svelte`), and the settings pages.
+ *
+ * - Two shapes per value: the runtime one (`HypaV2Data`, `HypaV3Data`, `Summary`) holds each
+ *   summary's message ids as a `Set`; the stored one (`SerializableHypaV2Data`,
+ *   `SerializableHypaV3Data`, `SerializableSummary`) holds them as a list. A `Set` is never persisted
+ *   (JSON makes it `{}`): the algorithm modules convert at their edges (`toHypaV3Data` and
+ *   `toSerializableHypaV3Data` in both HypaV3 copies; `toHypaV2Data`, `toSerializableHypaV2Data`, and
+ *   the old `targetId` shape's `convertOldToNewHypaV2Data` in `server/src/prompt/memory/hypav2.ts`).
+ * - Message ids are `Message.chatId` values (`null` for the greeting); rewriting them orphans the
+ *   summaries that name them.
+ * - The Voyage model tables (`VOYAGE_CONTEXT_MODELS`, `VOYAGE_EMBEDDING_MODELS`, by `hypaModel`
+ *   value) with `isVoyageContextModel`, `isVoyageEmbeddingModel`, and `voyageKeyMissing` are read by
+ *   both embedding copies (`src/ts/process/memory/`, `server/src/prompt/embeddings.ts`) and the
+ *   settings options: a Voyage model is one table entry plus its `HypaModel` value.
+ * - The merge helpers (`mergeHypaV3Write`, `mergeHypaV3SelectionWrite`, `mergeHypaV2Write`) place a
+ *   job's or a task's changes onto the latest stored value and return null (skip the write) when
+ *   they cannot be placed soundly. A summary's identity is `summaryKey` (its message ids); a V2 main
+ *   chunk's is its `id` with its message ids.
+ */
 
 export const DISPLAY_MODE = {
     All: "All",
@@ -10,6 +31,10 @@ export const DISPLAY_MODE = {
 
 export type DisplayMode = (typeof DISPLAY_MODE)[keyof typeof DISPLAY_MODE];
 
+/**
+ * The `hypaModel` values: the Transformers.js models (`localModels` in both embedding copies; a `GPU`
+ * name runs on WebGPU in the tab), OpenAI, Voyage, and `custom` (`hypaCustomSettings`).
+ */
 export type HypaModel =
     | "custom"
     | "ada"
@@ -44,16 +69,19 @@ export const VOYAGE_CONTEXT_MODELS: Record<string, { id: string; name: string }>
     voyageContext4: { id: "voyage-context-4", name: "Voyage Context 4" },
 };
 
+/** The Voyage `/v1/embeddings` models (see `VOYAGE_CONTEXT_MODELS`). */
 export const VOYAGE_EMBEDDING_MODELS: Record<string, { id: string; name: string }> = {
     voyage4Large: { id: "voyage-4-large", name: "Voyage 4 Large" },
     voyage4: { id: "voyage-4", name: "Voyage 4" },
     voyage4Lite: { id: "voyage-4-lite", name: "Voyage 4 Lite" },
 };
 
+/** Whether `model` (a `hypaModel` value) is a contextual Voyage model, the only contextual providers. */
 export function isVoyageContextModel(model: string): boolean {
     return Object.hasOwn(VOYAGE_CONTEXT_MODELS, model);
 }
 
+/** Whether `model` (a `hypaModel` value) is a Voyage `/v1/embeddings` model. */
 export function isVoyageEmbeddingModel(model: string): boolean {
     return Object.hasOwn(VOYAGE_EMBEDDING_MODELS, model);
 }
@@ -64,6 +92,7 @@ export function voyageKeyMissing(model: string): Error {
     return new Error(`${name} requires a Voyage API Key`);
 }
 
+/** HypaV2's runtime value: summaries (`mainChunks`) and their retrieval pieces (`chunks`). */
 export interface HypaV2Data {
     lastMainChunkID: number; // can be removed, but exists to more readability of the code.
     mainChunks: {
@@ -80,7 +109,7 @@ export interface HypaV2Data {
     }[];
 }
 
-// Reuse HypaV2Data and override only chatMemos in mainChunks
+/** The stored `hypaV2Data`: `HypaV2Data` with each main chunk's message ids as a list. */
 export interface SerializableHypaV2Data extends Omit<HypaV2Data, "mainChunks"> {
     mainChunks: {
         id: number;
@@ -143,6 +172,10 @@ export interface HypaV3Settings {
     structured: StructuredMemorySettings;
 }
 
+/**
+ * HypaV3's runtime value. `metrics` holds the last selection as indices into `summaries`, so a
+ * change of the list moves them (`remapHypaV3Metrics`, `remapHypaV3MetricsByIdentity`).
+ */
 export interface HypaV3Data {
     summaries: Summary[];
     categories?: { id: string; name: string }[];
@@ -165,6 +198,7 @@ export interface HypaV3Data {
     };
 }
 
+/** The stored `hypaV3Data`: `HypaV3Data` with serializable summaries. */
 export interface SerializableHypaV3Data extends Omit<HypaV3Data, "summaries"> {
     summaries: SerializableSummary[];
     /**
@@ -175,6 +209,7 @@ export interface SerializableHypaV3Data extends Omit<HypaV3Data, "summaries"> {
     structuredMemoryProjection?: string;
 }
 
+/** One HypaV3 summary. `chatMemos` are the message ids it covers, in order: the next summary starts after the last. */
 export interface Summary {
     text: string;
     chatMemos: Set<string>;
@@ -183,6 +218,7 @@ export interface Summary {
     tags?: string[];
 }
 
+/** A stored summary: `chatMemos` as a list. */
 export interface SerializableSummary extends Omit<Summary, "chatMemos"> {
     chatMemos: string[];
 }

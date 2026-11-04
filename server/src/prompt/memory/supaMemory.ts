@@ -4,11 +4,25 @@ import { stringlizeChat } from "../../llm/stringlize.ts";
 import { HypaProcesser } from "../embeddings.ts";
 import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 
+/**
+ * SupaMemory (and HypaMemory, its `asHyper` variant) on the server: the method `assemblePrompt`
+ * (`server/src/prompt/assemble.ts`) runs when no other is set, on the job's `MemoryHost` (`host.ts`). It writes no
+ * chat field: its result's `memory` and `lastId` are what the caller writes as the chat's
+ * `supaMemoryData` and `lastMemory`, falling back to the stored fields when a result has none.
+ */
+
 type SupaResult = { currentTokens: number; chats: OpenAIChat[]; error?: string; memory?: string; lastId?: string };
 
 /**
  * `supaMemory` of the former `src/ts/process/memory/supaMemory.ts` (SupaMemory, and HypaMemory with `asHyper`),
  * statement for statement, on a `MemoryHost`. A provider's answer in an error text is redacted.
+ *
+ * `Chat.supaMemoryData` (read from `room`, returned as `memory`) is one of two texts, told apart by
+ * its first line: SupaMemory's `lastId + "\n" + summary` (the id of the message the next run resumes
+ * at, normally the first one left unsummarized, since a read drops the chats before it; then the
+ * summary), or HypaMemory's `"hypa:\n"` followed by the JSON of `HypaData[]` (newest first). Each
+ * mode refuses the other's text with an error, except that `asHyper` starts over from a SupaMemory
+ * text. Nothing is summarized, and no `memory` is returned, while the count fits the context.
  */
 export async function supaMemory(
     host: MemoryHost,

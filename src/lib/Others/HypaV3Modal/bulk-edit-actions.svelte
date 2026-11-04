@@ -4,6 +4,12 @@
     import type { BulkEditState, Category } from "./types";
     import { language } from "src/lang";
 
+    /**
+     * The bulk-edit bar: the selection input and the category, importance, and resummarize actions.
+     * Every action is a callback; the modal applies it to its copy (`HypaV3Modal.svelte`). It writes
+     * no memory data itself.
+     */
+
     interface Props {
         /** The modal's editing copy of the memory data (its changes are saved by the modal). */
         hypaV3Data: SerializableHypaV3Data;

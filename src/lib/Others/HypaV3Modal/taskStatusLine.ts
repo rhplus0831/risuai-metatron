@@ -1,6 +1,11 @@
 import { language } from "src/lang";
 import type { MemoryTaskStatus } from "../../../../shared/jobs.ts";
 
+/**
+ * The HypaV3 modal's line for the chat's memory task status (`src/ts/process/memoryTasks.svelte.ts`),
+ * with a reason shown by its `language.memoryTasks.reasons` text, else as it is.
+ */
+
 function reasonText(reason: string | undefined): string {
     return reason === undefined ? "" : (language.memoryTasks.reasons[reason] ?? reason);
 }

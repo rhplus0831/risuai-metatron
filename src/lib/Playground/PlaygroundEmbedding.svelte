@@ -21,6 +21,13 @@
     import Button from "../UI/GUI/Button.svelte";
     import { HypaProcesser } from "src/ts/process/memory/hypamemory";
 
+    /**
+     * The embedding playground: embeds the draft's texts with the tab's `HypaProcesser` and ranks them
+     * against the query. The OpenAI key (`supaMemoryKey`) is edited only on the Memory settings page:
+     * this tool shows its status and links there (`CredentialStatusLink`). The draft (model, query,
+     * texts, results) is module state, so the round trip through the settings keeps it.
+     */
+
     const run = async () => {
         if (draft.running) return;
         draft.running = true;

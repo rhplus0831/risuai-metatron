@@ -36,6 +36,13 @@
     } from "./types";
     import { alertConfirmTwice, handleDualAction, getFirstMessage, processRegexScript, getCategoryName } from "./utils";
 
+    /**
+     * One summary: its text, importance, category and tags, covered messages, translation, and reroll.
+     * It edits that summary in the modal's copy (text, importance, an applied reroll); deletion and
+     * the tag manager go through the modal's callbacks (`onDeleteSummaries`, `onOpenTagManager`). A
+     * reroll of an orphaned summary (a covered message gone) does not start.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     interface Props {
         summaryIndex: number;

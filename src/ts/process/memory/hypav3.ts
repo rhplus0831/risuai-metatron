@@ -16,6 +16,25 @@ import type { ChatRef } from "src/ts/storage/chatStore.svelte";
 import { capturePluginContext, type PluginCallContext } from "src/ts/plugins/apiV3/pluginContext";
 
 /**
+ * The tab's HypaMemory V3, kept for the HypaV3 modal (its resummarize and reroll call `summarize`)
+ * and the memory oracle test (`memoryOracle.test.ts`, the legacy `hypaMemoryV3`). A send's V3 step
+ * is the server's port (`server/src/prompt/memory/hypav3.ts`), split into parts there; this copy
+ * changes only with shared legacy behavior, and the server-only work (detached tasks, source
+ * validation, the writer lease, token-budget mode, lookahead) is not here.
+ *
+ * The standard flow of one step:
+ * 1. When the count is over the context, summarize the oldest chats after the last summary's last
+ *    message, `maxChatsPerSummary` at a time and never the last `queryChatCount`, into `Summary`
+ *    records until the count is at the extra-summarization target, or earlier once it fits the
+ *    context and only those last chats are left or the next window would go below the target.
+ * 2. Select summaries within the memory budget: important, then recent, then similar (by
+ *    embeddings, `HypaProcesserEx`), then random.
+ * 3. Record the selection in `metrics` (indices into `summaries`).
+ * 4. Prepend the selected summaries, in chronological order, as one `<Past Events Summary>` card with
+ *    `memo: "supaMemory"`.
+ */
+
+/**
  * Whose request a summary is: the chat it summarizes and the plugin call context captured when the
  * send or the modal action began. Without one, the request reads the selection as it is when it is
  * made.
@@ -63,6 +82,12 @@ function splitBySeparator(text: string, separator: string): string[] {
     }
 }
 
+/**
+ * The legacy composition only (the oracle test runs it): the experimental main when the active
+ * preset has `useExperimentalImpl`, else the standard one. A missing preset is thrown as it is (it is
+ * looked up first); the mains' errors are thrown with the `[HypaV3]` prefix. A local summarization
+ * model's WebLLM engine is unloaded afterwards.
+ */
 export async function hypaMemoryV3(
     chats: OpenAIChat[],
     currentTokens: number,
@@ -1479,6 +1504,17 @@ function sanitizeSummaryContent(content: string): string {
     return content.replace(inlayTokenRegex, "[Image]");
 }
 
+/**
+ * One summary of `oaiMessages` (`isResummarize` picks the re-summarization prompt): inlay tokens
+ * become `[Image]`, the prompt with `{{slot}}` expanded goes through `parseChatML` for the context's
+ * chat, and then:
+ * - `subModel`: `requestChatData(..., "memory")` with the context's chat and plugin context (`context`,
+ *   else the plugin context captured now); `<Thoughts>` blocks are stripped.
+ * - Any other value is a WebLLM model: `chatCompletion` with the system message first; `<think>`
+ *   blocks are stripped.
+ *
+ * A failed or empty answer throws. The modal passes the chat it captured when the action began.
+ */
 export async function summarize(
     oaiMessages: OpenAIChat[],
     isResummarize: boolean = false,
@@ -1586,6 +1622,7 @@ export async function summarize(
     return result;
 }
 
+/** The selected preset of the settings views (`selectedHypaV3Preset`); throws when the list is empty. */
 export function getCurrentHypaV3Preset(): HypaV3Preset {
     const preset = selectedHypaV3Preset({
         hypaV3Presets: appSettings.hypaV3Presets.items,
@@ -1684,6 +1721,13 @@ interface SummaryChunkVector {
     vector: memoryVector;
 }
 
+/**
+ * The standard implementation's processor: vectors per summary chunk. A contextual model's chunk
+ * vectors are cached under their context-qualified key (the text, then the provider's suffix: the
+ * model and, for a summary of more than one chunk, the hash of its chunks), so an equal paragraph in
+ * another summary's context keeps its own vector. Unlike the server's key (`contextualChunkCacheKey`
+ * in `server/src/prompt/embeddings.ts`) it has no chunk position or key version.
+ */
 class HypaProcesserEx extends HypaProcesser {
     // Maintain references to SummaryChunks and their associated memoryVectors
     summaryChunkVectors: SummaryChunkVector[] = [];

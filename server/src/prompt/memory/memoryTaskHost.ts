@@ -19,6 +19,13 @@ import { parseChatML } from "../triggers.ts";
 import type { HypaV3SeparatorLimits, MemoryHost, MemoryTokenizer } from "./host.ts";
 
 /**
+ * The `MemoryHost` of a detached memory task (`createMemoryTaskHost`), the counterpart of the job's
+ * host that the runner builds (`server/src/prompt/runner.ts`): no tab, no job channel, and requests
+ * through the memory slot alone. A fatal host failure (`MemoryHostFailure`) ends the task `failed`,
+ * not `cancelled`.
+ */
+
+/**
  * A fatal failure of a memory task host's work: the request layer ended the run (`endJob`: a barrier
  * failure, a timeout) or the task's CBS budget ran out. It aborts the host's signal, but the task
  * failed (it was not cancelled). The message is redacted.
@@ -44,6 +51,7 @@ const DETACHED_MEMORY_CHANNEL: JobChannel = {
     }),
 };
 
+/** The server services a task host uses (`createMemoryTasks` receives them as `hostDeps`). */
 export type MemoryTaskHostDeps = {
     llm: Pick<LlmRequests, "runInJob">;
     embeddings: EmbeddingsService;

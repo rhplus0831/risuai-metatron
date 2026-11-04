@@ -4,6 +4,11 @@
     import type { BulkResummaryState } from "./types";
     import { handleDualAction } from "./utils";
 
+    /**
+     * The bulk resummary's result with its translate, Retry, Apply, and Cancel buttons. It renders
+     * `bulkResummaryState` and calls back; the modal resolves the targets and writes the copy.
+     */
+
     interface Props {
         bulkResummaryState: BulkResummaryState;
         onToggleTranslation: (regenerate: boolean) => void;

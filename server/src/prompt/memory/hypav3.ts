@@ -27,31 +27,46 @@ import {
 } from "../embeddings.ts";
 import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 
-// `hypaMemoryV3` of `src/ts/process/memory/hypav3.ts` (the standard and the experimental
-// implementation), statement for statement, on a `MemoryHost`.
-//
-// - The summaries come from the job's `memory` request. A preset whose summarization model is one of
-//   the browser's WebLLM models cannot run here: the summary fails with an explicit error where the
-//   client would call the engine, so a send that needs no new summary still works.
-// - The progress store's writes are `progress` notices to the job's tab.
-// - The random selection's shuffle draws from the host's random source.
-// - `summaryChunkSeparator` is the owner's setting; valid regular expressions run on script workers
-//   with per-task deadlines and a cumulative chunking budget. Invalid patterns keep the tab's fallback.
-// - The mains are split into parts: `prepareHypaV3` (the stored data and the token ledger),
-//   `planHypaV3Summaries` (the summary windows, without a request), `executeHypaV3Plan` (the
-//   summaries), and `selectHypaV3` (the memory card). `hypaMemoryV3` composes them with the mains'
-//   requests, progress, results, and error positions. The planner tokenizes every window before the
-//   first summary request, where the standard main tokenized each window just before summarizing it.
-// - Beyond that composition, the parts take options and hooks the composition never passes: a
-//   prepare without the orphan cleanup, lookahead planning, an execution that validates and saves
-//   each summary as it is made and can stop between windows, a selection that trims the history no
-//   summary covers instead of summarizing it, and the warming of the new summaries' vectors.
+/**
+ * HypaMemory V3 on the server: `hypaMemoryV3` of `src/ts/process/memory/hypav3.ts` (the standard and
+ * the experimental implementation), statement for statement, on a `MemoryHost`. A send's V3 step
+ * runs here; the tab keeps its copy for the HypaV3 modal and the oracle test only.
+ *
+ * - The mains are split into parts: `prepareHypaV3` (the stored data and the token ledger),
+ *   `planHypaV3Summaries` (the summary windows, without a request), `executeHypaV3Plan` (the
+ *   summaries), `selectHypaV3` (the memory card), and around them `forecastHypaV3` (the context
+ *   meter) and `warmHypaV3Vectors` (a task's new vectors). Production (the job's step in
+ *   `server/src/prompt/assemble.ts` and the memory task in `memoryTasks.ts`) calls the parts, whose
+ *   doc comments own their contracts; this copy has no separate mains.
+ * - `hypaMemoryV3` composes the parts with the mains' requests, progress, results, and error
+ *   positions, which the frozen algorithm fixture (`server/src/tests/fixtures/memory/algorithms.json`)
+ *   pins: a change to the parts keeps that composition's results. The planner tokenizes every window
+ *   before the first summary request, where the standard main tokenized each window just before
+ *   summarizing it.
+ * - Beyond that composition, the parts take options and hooks the composition never passes: a
+ *   prepare without the orphan cleanup, lookahead planning, an execution that validates and saves
+ *   each summary as it is made and can stop between windows, a selection that trims the history no
+ *   summary covers instead of summarizing it, and the warming of the new summaries' vectors.
+ * - The summaries come from the job's `memory` request. A preset whose summarization model is one of
+ *   the browser's WebLLM models cannot run here: the summary fails with an explicit error where the
+ *   client would call the engine (`LOCAL_SUMMARIZATION_UNSUPPORTED`), so a send that needs no new
+ *   summary still works.
+ * - The progress store's writes are `progress` notices to the job's tab.
+ * - The random selection's shuffle draws from the host's random source.
+ * - `summaryChunkSeparator` is the owner's setting; valid regular expressions run on script workers
+ *   with per-task deadlines and a cumulative chunking budget. Invalid patterns keep the tab's fallback.
+ */
 
 interface SummaryChunk {
     text: string;
     summary: Summary;
 }
 
+/**
+ * A V3 step's result: the prompt history (`chats`, the memory card first after a selection) and its
+ * count, the `hypaV3Data` to write as `memory`, and `error` when the step failed. A failure returns
+ * the incoming `chats`; an invalid-settings failure (`prepareHypaV3`) also has no `memory`.
+ */
 export interface HypaV3Result {
     currentTokens: number;
     chats: OpenAIChat[];
@@ -339,6 +354,12 @@ export interface HypaV3ExecutionHooks {
     sequential?: boolean;
 }
 
+/**
+ * The legacy composition of the parts (prepare, plan, execute, select) with the mains' results and
+ * error positions, which the algorithm fixture and the limit tests run; production calls the parts.
+ * A missing preset is thrown as it is; any other error, after `host.fence()` raises the job's own
+ * end, is thrown with the `[HypaV3]` prefix.
+ */
 export async function hypaMemoryV3(
     host: MemoryHost,
     chats: OpenAIChat[],
@@ -1427,9 +1448,12 @@ export interface HypaV3Selection extends HypaV3Result {
 /**
  * Selects from an execution's summaries (important, recent, similar, random, as each main does),
  * releases the reservation for the actual card, and returns the prompt history from the
- * execution's cursor with the card. Records the selection in the returned memory's `metrics`
- * without changing the execution. Without `options`, the mains' selection exactly (an over-context
- * count throws; a no-summary return is not checked).
+ * execution's cursor with the card. The card is one system entry with `memo: "supaMemory"` (a
+ * value prompt assembly special-cases) whose content is the selected summaries in chronological
+ * order inside `<Past Events Summary>` tags (empty without summaries), prepended to the history.
+ * Records the selection in the returned memory's `metrics` without changing the execution. Without
+ * `options`, the mains' selection exactly (an over-context count throws; a no-summary return is not
+ * checked).
  */
 export async function selectHypaV3(
     host: MemoryHost,
@@ -2511,6 +2535,13 @@ function sanitizeSummaryContent(content: string): string {
     return content.replace(inlayTokenRegex, "[Image]");
 }
 
+/**
+ * One summary of `oaiMessages` (a window, or the recent chats of the similarity correction): inlay
+ * tokens become `[Image]`, the preset's (re)summarization prompt with `{{slot}}` expanded goes through
+ * `host.parseChatML`, and the job's `memory` request answers; `<Thoughts>` blocks are stripped. An
+ * empty answer throws. A local summarization model (anything but `subModel`) throws
+ * `LOCAL_SUMMARIZATION_UNSUPPORTED`.
+ */
 export async function summarize(
     host: MemoryHost,
     oaiMessages: readonly OpenAIChat[],
@@ -2570,6 +2601,7 @@ export async function summarize(
     throw new Error(LOCAL_SUMMARIZATION_UNSUPPORTED);
 }
 
+/** The selected preset of the job's settings (`selectedHypaV3Preset`); throws when the list is empty. */
 export function getCurrentHypaV3Preset(host: MemoryHost): HypaV3Preset {
     const preset = selectedHypaV3Preset(host.db);
 
@@ -2622,6 +2654,15 @@ interface SummaryChunkVector {
     vector: memoryVector;
 }
 
+/**
+ * The standard implementation's processor: vectors per summary chunk. A contextual model's chunk
+ * vectors are cached under their context-qualified key (`contextualChunkCacheKey` in
+ * `../embeddings.ts`: the text, the model, the hash of the summary's chunks when it has more than
+ * one, the key version, and the 0-based chunk position), so an equal paragraph in another summary's
+ * context, or at another position of the same summary, keeps its own vector. A summary's group
+ * comes from the cache only when every chunk hits; otherwise the whole group is embedded again and
+ * the answer's counts are checked before any vector is stored.
+ */
 class HypaProcesserEx extends HypaProcesser {
     // Maintain references to SummaryChunks and their associated memoryVectors
     summaryChunkVectors: SummaryChunkVector[] = [];

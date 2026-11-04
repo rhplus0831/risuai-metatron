@@ -14,6 +14,14 @@ import { selectSingleFileHandle, asBuffer } from "src/ts/util";
 import { readZipEntry, readZipIndex, type ZipFileIndex } from "./zipFile";
 import { v4 } from "uuid";
 import type { OnnxModelFiles } from "../../../shared/settings.ts";
+
+/**
+ * The tab's Transformers.js wrappers. Model files come from the mirror at `env.localModelPath` and are
+ * kept in the Cache Storage `tfCache` (the package's own browser cache is off); an imported VITS model's
+ * files are served from the tab's assets (`tfMap`, filled by `runVITS`). The server runs its own copy
+ * of the models in a child process (`server/src/prompt/transformers.ts`) and shares no files with this.
+ */
+
 /** The generation options of the text-generation pipeline; the package stopped exporting the type by name. */
 type TextGenerationConfig = NonNullable<Parameters<TextGenerationPipeline["_call"]>[1]>;
 let tfCache: Cache = null;
@@ -48,6 +56,7 @@ async function initTransformers() {
     console.log("transformers loaded");
 }
 
+/** Text generation with a local model (`requestWebLLM` in `request/request.ts`): the first output, prompt included. */
 export const runTransformers = async (
     baseText: string,
     model: string,
@@ -65,6 +74,7 @@ export const runTransformers = async (
     return outputOne;
 };
 
+/** A `distilbart` summary. Nothing in the tab calls it: memory summarization runs on the server. */
 export const runSummarizer = async (text: string) => {
     await initTransformers();
     const { pipeline } = await import("@huggingface/transformers");
@@ -76,6 +86,11 @@ export const runSummarizer = async (text: string) => {
 let extractor: FeatureExtractionPipeline = null;
 let lastEmbeddingModelQuery: string = "";
 type EmbeddingModel = "Xenova/all-MiniLM-L6-v2" | "nomic-ai/nomic-embed-text-v1.5";
+/**
+ * One normalized, mean-pooled vector per text, with 8-bit weights on `device`. Only the extractor is
+ * kept between calls (replaced when the model or device changes); the vectors are not cached here,
+ * the callers cache them (`hypaVector`).
+ */
 export const runEmbedding = async (
     texts: string[],
     model: EmbeddingModel = "Xenova/all-MiniLM-L6-v2",
@@ -114,6 +129,7 @@ export const runEmbedding = async (
     return res ?? [];
 };
 
+/** The caption of an image (`vit-gpt2-image-captioning`), despite the name. Nothing in the tab calls it. */
 export const runImageEmbedding = async (dataurl: string) => {
     await initTransformers();
     const { pipeline } = await import("@huggingface/transformers");

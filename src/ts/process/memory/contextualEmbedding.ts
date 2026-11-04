@@ -3,6 +3,20 @@ import { globalFetch } from "src/ts/globalApi.svelte";
 import { contextHash, type VectorArray } from "./hypamemory";
 import { VOYAGE_CONTEXT_MODELS, isVoyageContextModel, voyageKeyMissing } from "../../../../shared/memory.ts";
 
+/**
+ * The tab's contextual embedding providers: a document is embedded with its group (the other chunks
+ * of the same summary) as context. The Voyage contextual models (Context 3 and 4, by
+ * `VOYAGE_CONTEXT_MODELS`, with `voyageApiKey` through `globalFetch`) are the only providers. Document
+ * groups are batched at most 1,000 groups and 16,000 chunks per request, except that one group over
+ * the chunk limit is sent whole; queries go in one request, unbatched. Nothing counts tokens, and the
+ * answer's counts are not checked here (the server's port in `server/src/prompt/embeddings.ts`
+ * checks a document answer's).
+ */
+
+/**
+ * A contextual provider. `getCacheKeySuffix` names the model and, for a group of more than one
+ * chunk, the group's hash (`contextHash`), so a cached vector is tied to its context.
+ */
 export interface ContextualEmbeddingProvider {
     readonly modelId: string;
     embedDocumentGroups(groups: string[][]): Promise<VectorArray[][]>;
@@ -10,10 +24,12 @@ export interface ContextualEmbeddingProvider {
     getCacheKeySuffix(contextTexts?: string[]): string;
 }
 
+/** Whether `model` (a `hypaModel` value) embeds with context: a Voyage contextual model. */
 export function isContextModel(model: string): boolean {
     return isVoyageContextModel(model);
 }
 
+/** The provider of a contextual model, or null for any other model. */
 export function getContextProvider(model: string): ContextualEmbeddingProvider | null {
     return isVoyageContextModel(model) ? new VoyageContextProvider(model) : null;
 }

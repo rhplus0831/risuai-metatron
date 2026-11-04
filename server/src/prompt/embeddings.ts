@@ -34,7 +34,11 @@ import type { TransformersService } from "./transformers.ts";
  * - Every error text passes the job's embedding redactor (the three keys, in their plain,
  *   JSON-escaped, and URL-encoded forms) before it leaves this module.
  * - `HypaProcesser.testText` is not ported: nothing calls it.
+ *
+ * Its users go beyond the memory algorithms (prompt assembly, scripts, the Lua bindings,
+ * post-processing, the internal MCP tools); the tab's own `HypaProcesser` serves only the tab's callers.
  */
+
 export type VectorArray = number[] | Float32Array;
 
 export type memoryVector = {
@@ -43,6 +47,11 @@ export type memoryVector = {
     alreadySaved?: boolean;
 };
 
+/**
+ * What the embeddings read: one env is bound to one job or memory task (`createEmbeddings(...).forJob`)
+ * with that run's settings projection, stored memory key, and abort signal; the vector cache is the
+ * server's one, shared by every client.
+ */
 export type EmbeddingEnv = {
     /** The job's projection: `hypaModel`, `hypaCustomSettings`, `voyageApiKey`. */
     db: Pick<Database, "hypaModel" | "hypaCustomSettings" | "voyageApiKey">;
@@ -66,6 +75,11 @@ export type EmbeddingsService = {
 
 export const EMBEDDING_FETCH_TIMEOUT_MS = 120 * 1000;
 
+/**
+ * The embeddings service (one per server, on its vector cache and Transformers worker). `forJob`
+ * builds a run's env: its redactor covers the stored memory key, `voyageApiKey`, and the custom
+ * embedding key, plain and trimmed; a whitespace-only value is no key.
+ */
 export function createEmbeddings(options: {
     cache: VectorCache;
     transformers: TransformersService;
@@ -95,7 +109,11 @@ export function createEmbeddings(options: {
     };
 }
 
-// In a typical environment, bge-m3 is a heavy model.
+/**
+ * The Transformers.js embedding models by `hypaModel` value, as the tab's registry
+ * (`src/ts/process/memory/hypamemory.ts`) lists them; a `GPU` name runs the same model on the CPU
+ * here. In a typical environment, bge-m3 is a heavy model.
+ */
 export const localModels = {
     models: {
         MiniLM: "Xenova/all-MiniLM-L6-v2",
@@ -239,6 +257,13 @@ export function contextualChunkCacheKey(baseKey: string, index: number): string 
     return `${baseKey}|chunk-cache-v${CONTEXTUAL_CHUNK_CACHE_VERSION}|index:${index}`;
 }
 
+/**
+ * A contextual document answer whose group count, or one group's vector count, differs from what was
+ * sent. The check covers one provider call's answer before any of its vectors is stored, so a short
+ * answer stores nothing of that call; in a `HypaProcessorV2` batch run, the batches that succeeded
+ * are still stored when another fails. Contextual queries are checked by `checkVectors` instead (an
+ * ordinary `Error` for a missing vector; a group's extra vectors are ignored).
+ */
 export class ContextualEmbeddingCountError extends Error {
     constructor(expected: number, received: number) {
         super(`Contextual embedding count mismatch: expected ${expected}, received ${received}`);
@@ -419,7 +444,14 @@ async function openAIEmbeds(env: EmbeddingEnv, model: string, input: string[] | 
     });
 }
 
-/** The Voyage `/v1/embeddings` request (`voyageEmbeds` of the client's `hypamemory.ts`). */
+/**
+ * The Voyage `/v1/embeddings` request (`voyageEmbeds` of the client's `hypamemory.ts`): `inputType`
+ * is `document` for stored texts and `query` for a search, which give different vectors
+ * (`HypaProcesser` caches no query; `HypaProcessorV2` keeps a Voyage query under its own key). It
+ * sends what it is given and counts no tokens: `HypaProcesser.embedDocuments` and `HypaProcessorV2`'s
+ * API batches pass at most 50 texts, but a direct `HypaProcesser.getEmbeds` call forwards its whole
+ * input.
+ */
 async function voyageEmbeds(
     env: EmbeddingEnv,
     model: string,
@@ -440,6 +472,10 @@ async function voyageEmbeds(
     });
 }
 
+/**
+ * The tab's `HypaProcesser` on an `EmbeddingEnv`: stored texts' vectors (`addText`, cached in the
+ * `VectorCache` under the client's keys) and a dot-product search; queries are not cached.
+ */
 export class HypaProcesser {
     oaikey: string | undefined;
     vectors: memoryVector[];
@@ -665,6 +701,11 @@ export interface EmbeddingResult<TMetadata> extends EmbeddingText<TMetadata> {
 
 export type EmbeddingVector = number[] | Float32Array;
 
+/**
+ * The tab's `HypaProcessorV2` on an `EmbeddingEnv`: API requests go through its `TaskRateLimiter`,
+ * whose queued tasks the job's abort cancels; grouped contextual documents carry their chunk
+ * position in their keys (`contextualChunkCacheKey`).
+ */
 export class HypaProcessorV2<TMetadata> {
     public readonly options: Required<HypaProcessorV2Options>;
     public progressCallback: ((queuedCount: number) => void) | null = null;

@@ -52,6 +52,30 @@
     import { remapHypaV3Metrics, summaryKey } from "../../../shared/memory.ts";
     import { isSealedHypaV3Data } from "../../../shared/structuredMemory.ts";
 
+    /**
+     * The HypaV3 memory editor of the selected chat. It and its children (`HypaV3Modal/`, which get the
+     * copy as their `hypaV3Data` prop) edit a synced copy of the chat's `hypaV3Data`, and every change
+     * is saved with `setChatMeta`: search, filters, categories, tags, bulk edit, resummarize and
+     * reroll, reset, and the V2→V3 conversion. A send's memory data is written by the job and by the
+     * background memory task, never here; while either can write, edits are refused (`memoryWriteFence`).
+     *
+     * - The saving effect never writes the empty default of a chat without memory data; the immediate
+     *   initialization write is quietly refused while fenced. A refused conversion reports no success.
+     * - A replacement of the copy by another writer, or a fenced edit's undo, clears the bulk-edit
+     *   selection and closes the tag manager; a bulk resummary's Apply closes it too.
+     * - Resummarize and reroll capture the open chat (`currentChatRef`) and its plugin context
+     *   (`capturePluginContext`) when the action begins and pass them to `summarize`, so the request
+     *   is that chat's whatever is selected when it runs.
+     * - A bulk resummary's Cancel, Apply, Retry, and a new run discard earlier requests
+     *   (`bulkResummaryGeneration`): a late summary or translation result, or failure, shows nothing.
+     * - Tag handlers and rendering ignore a missing summary, and a delete confirmation resolves the
+     *   summary it captured by object identity before removing anything (`deleteSummaries`).
+     * - Under the header: the chat's memory task status (`memoryTaskStatusLine`: queued, running
+     *   `k/n`, or the last notable end with its reason), "Summarize now" (`startMemoryTask`), and,
+     *   while a task is live or a manual start waits, "Cancel" (`cancelMemoryTask`). The lore editor's
+     *   writes are not fenced by tasks (`src/ts/process/memoryTasks.svelte.ts`).
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
     /**
@@ -73,8 +97,10 @@
 
     /**
      * The notice a write of `ref`'s memory data is refused with, or null when it may be written: a
-     * send of this tab or a job this tab knows of runs in it, or its memory task fence holds
-     * (reactive, except that a held revision catching up alone does not notify).
+     * send of this tab (`isLocalSend`) or a job this tab knows of (`generatingChatKeys`: a followed job
+     * or a server lock this tab saw) runs in it, with `chatGenerating`; or its memory task fence holds
+     * (`memoryTaskFenced`), with `memoryTasks.editFenced` (reactive, except that a held revision
+     * catching up alone does not notify).
      */
     function memoryWriteFence(ref: ChatRef): string | null {
         if (isLocalSend(ref, $localSends) || generatingChatKeys().has(chatStatusKey(ref))) {
@@ -181,7 +207,12 @@
 
     const taskStatusLine = $derived(memoryTaskStatusLine(taskStatus));
 
-    /** Shows the notice of a start or cancel that did not simply run. */
+    /**
+     * Shows the notice of a start or cancel that did not simply run. A start refused before it reached
+     * the server says why: local changes a conflict discarded (`memoryTasks.discarded`), changes the
+     * server refused (`serverJob.refusedDraft`), or a send in the chat; `pendingManual` says the next
+     * reply in the chat hands it off.
+     */
     function showMemoryTaskResult(result: MemoryTaskActionResult, action: "start" | "cancel") {
         switch (result.outcome) {
             case "pendingManual":
@@ -366,6 +397,12 @@
         }
     }
 
+    /**
+     * Removes `target` (by object identity; nothing when the copy no longer holds it), or every summary
+     * after it. Deleted selection indexes are dropped and later ones shift down, the last selection's
+     * badges move with their summaries, and a tag manager whose summary is deleted or shifts closes
+     * and resets its editing state (`closeTagManager`).
+     */
     function deleteSummaries(target: SerializableSummary, after: boolean) {
         const index = hypaV3Data.summaries.indexOf(target);
         if (index === -1) return;
@@ -449,7 +486,8 @@
      * selection, the one summary that has it now. Null when the chat is no longer the selected one, or
      * a summary is gone or ambiguous: the copy can be replaced during the summarization await (a job's
      * memory write, a change from another tab), and the indices captured before it would name other
-     * summaries.
+     * summaries. Apply and Retry refuse a null with `hypaV3Modal.bulkResummaryTargetsGone` and change
+     * nothing; the result stays shown until Cancel.
      */
     function resolveBulkTargets(state: BulkResummaryState): BulkResummaryTarget[] | null {
         const ref = currentChatRef();
@@ -473,6 +511,11 @@
         return resolved.sort((a, b) => a.index - b.index);
     }
 
+    /**
+     * Merges the selected summaries (two or more) into one summary request. The selection is kept as
+     * `BulkResummaryState.targets` (each by object and `summaryKey`), which Apply and Retry resolve
+     * again in the copy as it is then (`resolveBulkTargets`).
+     */
     async function resummarizeBulkSelected() {
         if (bulkEditState.selectedSummaries.size < 2) return;
 

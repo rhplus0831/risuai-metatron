@@ -4,8 +4,16 @@ import type { OpenAIChat } from "../../../../shared/openai.ts";
 import { HypaProcesser } from "../embeddings.ts";
 import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 
-// `hypaMemoryV2` of the former `src/ts/process/memory/hypav2.ts`, statement for statement, on a `MemoryHost`.
-// A provider's answer in an error text is redacted.
+/**
+ * HypaMemory V2 on the server (`db.hypav2`, `server/src/prompt/assemble.ts`): `hypaMemoryV2` of the
+ * former `src/ts/process/memory/hypav2.ts`, statement for statement, on the job's `MemoryHost`
+ * (`host.ts`). A provider's answer in an error text is redacted.
+ *
+ * Summaries come from `supaModelType` (the local `distilbart` summarizer, OpenAI completions with the
+ * stored memory key, or the job's `memory` request); retrieval uses the job's embeddings. The
+ * module writes nothing: `hypaMemoryV2` returns the new `hypaV2Data`, which the caller places onto
+ * the value stored at the write (`mergeHypaV2Write`, `shared/memory.ts`).
+ */
 
 async function summary(host: MemoryHost, stringlizedChat: string): Promise<{ success: boolean; data: string }> {
     const db = host.db;
@@ -99,6 +107,7 @@ async function summary(host: MemoryHost, stringlizedChat: string): Promise<{ suc
 } // No, I am not going to touch any http API calls.
 
 // Helper function start
+/** The old stored shape (chunks addressed by `targetId`), converted on read by `convertOldToNewHypaV2Data`. */
 export interface OldHypaV2Data {
     chunks: {
         text: string;
@@ -275,6 +284,14 @@ function toHypaV2Data(data: SerializableHypaV2Data): HypaV2Data {
     };
 }
 
+/**
+ * One HypaV2 step: reads `room.hypaV2Data` (the old shape converted), drops the main chunks whose
+ * messages are no longer all in `chats`, summarizes from after the last main chunk while the count is
+ * over the context, and returns the history after the summarized messages behind one `supaMemory`
+ * card (`<Past Events Summary>` and `<Past Events Details>`), with the whole new value as `memory`.
+ * The last four chats are never summarized and the last two always stay; an error result carries no
+ * `memory`. It counts with the legacy subtraction of `maxResponse`.
+ */
 export async function hypaMemoryV2(
     host: MemoryHost,
     chats: OpenAIChat[],

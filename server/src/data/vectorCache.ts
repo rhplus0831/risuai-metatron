@@ -26,7 +26,13 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
  * transaction as its insert, continuing on later sets until the target is reached. An insert that
  * still cannot fit is skipped. Startup trims to 90% in bounded transactions before serving. The file
  * itself (pages, the index, the WAL) is larger than that sum. A vector over `MAX_ENTRY_BYTES` is not stored.
+ *
+ * The server opens one cache (`server/src/app.ts`), so every client and every job shares its rows.
+ * Nothing reads a browser's `hypaVector` store: the vectors a tab computed are not migrated, and the
+ * server computes its own on first use.
  */
+
+/** A stored vector: a local model's `Float32Array` or an API's numbers. */
 export type CachedVector = number[] | Float32Array;
 
 export type VectorCache = {
@@ -65,11 +71,17 @@ const TRIM_ROWS_PER_SET = 256;
 const KIND_FLOAT32 = 0;
 const KIND_FLOAT64 = 1;
 
+/** A row's key: the SHA-256 of the client's cache key, read as UTF-16. */
 export function vectorCacheKey(key: string): string {
     // UTF-16, not UTF-8: two different lone surrogates must not become the same replacement character.
     return createHash("sha256").update(Buffer.from(key, "utf16le")).digest("hex");
 }
 
+/**
+ * Opens the cache in `options.file` (WAL mode). A file that cannot be opened leaves a cache that
+ * serves and stores nothing, and the embeddings work without it; the first failure of any kind logs
+ * one warning. `trimRowsPerSet` and `now` are for tests.
+ */
 export function createVectorCache(options: {
     file: string;
     maxBytes?: number;

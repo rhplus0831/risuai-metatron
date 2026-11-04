@@ -71,7 +71,16 @@ import {
 } from "./structured/window.ts";
 import { chatAdoptionHold, commitWindow, createStructuredWriter, writerHostDeps } from "./structured/writer.ts";
 
-/** The service's caps and times (D9). Tests shrink them. */
+/**
+ * The server's detached memory tasks, one service per server: work a finished job hands off for its
+ * chat, run without the job or a tab, of two kinds (`AnyMemoryTaskInput`): HypaV3 summaries ahead of
+ * need, and the Structured Memory writer (with a rebuild's runs). `createMemoryTasks`'s doc comment
+ * holds the queue, the start checks, the work of each kind, and the ends; `MEMORY_TASK_LIMITS` the
+ * caps; the host a task runs on is `memoryTaskHost.ts`. Its registry lives in process memory: a
+ * restart loses queued work, which the next send finds again.
+ */
+
+/** The service's caps and times. Tests shrink them. */
 export type MemoryTaskLimits = {
     /** Tasks whose work has not settled, server-wide (also after their terminal). */
     maxRunning: number;
@@ -92,6 +101,11 @@ export type MemoryTaskLimits = {
     maxWriterWindows: number;
 };
 
+/**
+ * The production caps; `createMemoryTasks` merges a test's `limits` over them. Structured Memory
+ * planning outside the service (the gap question in `server/src/prompt/assemble.ts`,
+ * `structured/rebuild.ts`, `structured/recordJob.ts`) reads `maxWriterWindows` from here.
+ */
 export const MEMORY_TASK_LIMITS: Readonly<MemoryTaskLimits> = {
     maxRunning: 4,
     maxPendingChats: 32,
@@ -165,7 +179,7 @@ class MemoryTaskEnd extends Error {
     }
 }
 
-/** A start check that failed: the task ends `skipped` with the reason (D10). */
+/** A start check that failed: the task ends `skipped` with the reason. */
 type Skip = { skip: string };
 
 /** One captured input and who keeps it: `"pending"`, `"latest"`, or a task whose work has not settled. */
@@ -256,7 +270,7 @@ const statusKind = (input: AnyMemoryTaskInput) =>
  *   (`localSummarization`); the settings fingerprint is the input's (`staleInput`).
  * - HypaV3 work: prepare without the orphan cleanup (stored coverage past the input's history:
  *   `skipped staleInput`), a lookahead plan, an execution whose every summary is validated against the
- *   chat as stored (D15) and saved at once: a `meta` write merged onto the stored value, on the admitted
+ *   chat as stored and saved at once: a `meta` write merged onto the stored value, on the admitted
  *   revision (a recreated chat conflicts) and the input's epoch, refused (`writeSkipped`) when the
  *   source generation moved, the merge refuses, or the write conflicts. Then the new summaries'
  *   vectors are warmed (also the saved prefix of a provider failure); a warming failure keeps them.
@@ -688,7 +702,7 @@ export function createMemoryTasks(deps: {
         store.epoch() === input.epoch &&
         store.chatSourceGeneration(input.chatRef.chaId, input.chatRef.chatId) === input.sourceGeneration;
 
-    /** D10's checks on a fresh scope, synchronously. */
+    /** The start checks (`createMemoryTasks`), on a fresh scope, synchronously. */
     const startChecks = (input: AnyMemoryTaskInput): { scope: JobScope } | Skip => {
         if (store.chatRevision(input.chatRef.chaId, input.chatRef.chatId) === null) {
             return { skip: "chatGone" };
@@ -1506,7 +1520,7 @@ export function createMemoryTasks(deps: {
         },
 
         /**
-         * A manual start (D8): the chat's running task as it is, its queued one marked manual; else its
+         * A manual start: the chat's running task as it is, its queued one marked manual; else its
          * retained latest input queued again, marked manual, when its epoch and source generation are
          * current and a fresh scope has its settings fingerprint; else `pendingManual` (the chat's next
          * input job hands off).

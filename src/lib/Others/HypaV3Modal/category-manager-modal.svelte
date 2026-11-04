@@ -5,6 +5,12 @@
     import type { Category, CategoryManagerState, SearchState, FilterState } from "./types";
     import { createCategoryId } from "./utils";
 
+    /**
+     * The category manager: adds, renames, and deletes the copy's `categories` (the modal saves the
+     * copy). Deleting a category moves its summaries to unclassified and resets a filter that named
+     * it; the unclassified category (id `""`) is never deleted.
+     */
+
     interface Props {
         /** The modal's editing copy of the memory data (its changes are saved by the modal). */
         hypaV3Data: SerializableHypaV3Data;

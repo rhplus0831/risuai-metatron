@@ -6,6 +6,12 @@
     import { language } from "src/lang";
     import { getFirstMessage, processRegexScript } from "./utils";
 
+    /**
+     * The next summarization target: the message after the last summary's last message; without one,
+     * the greeting, or the first message when there is no greeting. Regex-processed when the preset's
+     * `processRegexScript` is on. Read-only.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     interface Props {
         hypaV3Data: SerializableHypaV3Data;

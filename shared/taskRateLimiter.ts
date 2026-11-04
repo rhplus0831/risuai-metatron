@@ -1,9 +1,26 @@
+/**
+ * The rate limiter of the memory algorithms' provider requests (HypaV3's experimental summaries and
+ * `HypaProcessorV2`'s embeddings), shared by the tab (re-exported by
+ * `src/ts/process/memory/taskRateLimiter.ts`) and the server's memory code. One limiter's tasks wait
+ * in one queue: at most `maxConcurrentTasks` run at once, and at most `tasksPerMinute` start in any
+ * 60-second window.
+ *
+ * - A task's failure is its result (`success: false`), never a rejection. With `failFast` (the
+ *   default) the first failure cancels every queued task: each ends with a `TaskCanceledError`
+ *   result. Tasks already running are not stopped.
+ * - `cancelPendingTasks` ends the queued tasks the same way. A retry timer already scheduled for the
+ *   rate window stays alive until the window advances (up to 60 seconds); it then processes the
+ *   queue as it is then, so it starts nothing unless a task was queued after the cancel.
+ */
+
+/** The limits: 20 tasks per minute, 5 at once, and `failFast` by default. */
 export interface TaskRateLimiterOptions {
     tasksPerMinute?: number;
     maxConcurrentTasks?: number;
     failFast?: boolean;
 }
 
+/** A batch's results, in the order of its tasks. */
 export interface BatchResult<TData> {
     results: TaskResult<TData>[];
     successCount: number;
@@ -17,6 +34,10 @@ export interface TaskResult<TData> {
     error?: Error;
 }
 
+/**
+ * The limiter. The constructor throws when `maxConcurrentTasks` exceeds `tasksPerMinute`.
+ * `taskQueueChangeCallback` hears the queued count after each change (the progress counts).
+ */
 export class TaskRateLimiter {
     private static readonly LOG_PREFIX = "[TaskRateLimiter]";
     public readonly options: Required<TaskRateLimiterOptions>;
@@ -167,6 +188,7 @@ export class TaskRateLimiter {
     }
 }
 
+/** The error of a task cancelled before it started (`failFast`, `cancelPendingTasks`). */
 export class TaskCanceledError extends Error {
     public readonly name: string;
 

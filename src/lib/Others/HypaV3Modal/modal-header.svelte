@@ -15,6 +15,13 @@
     import { hypaV3ModalOpen, settingsOpen, SettingsMenuIndex, MEMORY_SETTINGS_MENU } from "src/ts/stores.svelte";
     import type { SearchState, BulkEditState, CategoryManagerState, FilterState, UIState } from "./types";
 
+    /**
+     * The modal's header: search, the importance and last-selection filters, bulk-edit mode, the
+     * category manager, reset (the modal's `onResetData`), the Memory settings link, and close. It
+     * edits only the view state it is bound to, never the memory data. The memory task's status line
+     * and controls below it belong to `HypaV3Modal.svelte`.
+     */
+
     interface Props {
         searchState: SearchState;
         filterImportant: boolean;

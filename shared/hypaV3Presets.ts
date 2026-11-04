@@ -2,6 +2,15 @@ import { isRecordId, newId } from "./ids.ts";
 import type { HypaV3Preset, HypaV3Settings } from "./memory.ts";
 import { normalizeStructuredMemorySettings } from "./structuredMemory.ts";
 
+/**
+ * HypaV3 presets, shared by the tab, the server's algorithms, and the server's normalizer
+ * (`normalizeHypaV3Presets` in `server/src/data/normalize/collections.ts`): the one constructor and
+ * normalizer of a preset (`createHypaV3Preset`), the selected preset (`selectedHypaV3Preset`), and the
+ * budget arithmetic (`resolveHypaV3Budget`). A site that sizes a step's budget calls
+ * `resolveHypaV3Budget`, never a formula of its own; only the tab's legacy copy
+ * (`src/ts/process/memory/hypav3.ts`) keeps its own ratio-mode expressions.
+ */
+
 /** The settings that are token amounts: integers >= 0. */
 const TOKEN_AMOUNT_KEYS: ReadonlySet<string> = new Set([
     "gapConfirmTokens",

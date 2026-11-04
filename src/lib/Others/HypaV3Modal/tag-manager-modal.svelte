@@ -4,6 +4,12 @@
     import { language } from "src/lang";
     import type { TagManagerState } from "./types";
 
+    /**
+     * The tag editor of one summary (`tagManagerState.currentSummaryIndex`) in the modal's copy.
+     * Nothing renders, and no handler changes anything, when that summary is missing; the modal
+     * closes it and resets its editing state when the copy is replaced or the summary moves.
+     */
+
     interface Props {
         /** The modal's editing copy of the memory data (its changes are saved by the modal). */
         hypaV3Data: SerializableHypaV3Data;

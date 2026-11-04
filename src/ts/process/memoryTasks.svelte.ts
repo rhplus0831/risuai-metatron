@@ -338,6 +338,12 @@ export function summarizingChats(): ReadonlyMap<string, MemoryTaskCount | null> 
     return result;
 }
 
+/**
+ * Why a start or cancel was refused: the server's answer (`notEnabled`, `queueFull`, `shuttingDown`,
+ * `maintenance`; `chatGone` for a 404; `epoch` for another resource epoch), or, for a start, its save
+ * of the tab's pending changes first: `discarded` (a conflict discarded some), `refused` (the server
+ * refused this chat's), or `generating` (saving is blocked by a generation).
+ */
 export type MemoryTaskRefusal =
     | "notEnabled"
     | "chatGone"
