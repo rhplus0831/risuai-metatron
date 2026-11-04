@@ -2,10 +2,20 @@
 
 Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) records completed plans,
-historical paths/commits, retrieval commands, and pending manual follow-ups. All five
+historical paths/commits, retrieval commands, and pending manual follow-ups. The five feature
 plans below were revised on 2026-11-04 after the
 [plan design audit](../audit/plan-design-audit-2026-11-04.md); Job Handoff, Asset Lifecycle and Reroll
-Candidates were then challenged again and revised a second time the same day.
+Candidates were then challenged again and revised a second time the same day. Guides To Source was
+drafted that day after its pilot landed.
+
+- [Guides To Source](guides-to-source.md): the guides become a map of contracts, coupling, and hazards
+  instead of a second copy of the code: a fact about one module moves into a doc comment above what it
+  governs, a guide's `Files` entry becomes the path, role, and identifiers, `Flows` keeps only sequences that
+  cross a module, process, or tab, and every trim carries a fact ledger checked by `pnpm docs:ledger`; the
+  guides are rewritten in three churn-ordered waves (one guide per session, the chat-store pilot cut 45% with
+  no fact lost), STRUCTURE.md's Path Ownership becomes a validated `ownership.json` that `check:changed`
+  queries and Doc Maintenance moves out, use is measured once from local transcripts as aggregated counts, and
+  the tree ratchet comes down with every slice; D1–D11 recommended, Q1–Q4 open, no slice scheduled.
 
 - [Job Handoff](job-handoff.md): another tab of the same user (a PC marked as a worker) takes over
   the owner role of a running generation job when the creating tab goes silent, asked at creation, or
