@@ -44,26 +44,28 @@
     import MemoryLinkButton from "./MemoryLinkButton.svelte";
     import { codeText, memoryReadFailureText } from "./memoryText";
 
-    // The Pages tab: the chat's pages as a tree, and one page to read and correct. An edit is applied to
-    // the tab's copy, sent, and a refusal puts the copy back with the notice and reads again; a success
-    // keeps the answer, whose revision the next edit names. The tab sends what changed and never a
-    // record (`StructuredMemoryEdit`), so the server's own record decides everything else. A revert from
-    // a history row goes the same way, except that the server alone knows what it restores, so the copy
-    // stays as it is until the answer.
-    //
+    /**
+     * Pages keeps a revision-bound copy of one page. Edits through
+     * src/ts/process/structuredMemory.svelte.ts send only `StructuredMemoryEdit`, never a whole record;
+     * the server decides all other fields. A refusal restores the copy and rereads; a success supplies the
+     * next revision. A revert waits for the server's answer because only it knows the restored content.
+     *
+     * An open section editor keeps its base body. A read or revert that changes that body closes the editor
+     * with `changed`, so an old draft cannot replace new writer text. Read-only keeps the draft and disables
+     * Save; the read when it falls checks the same base. Titles, aliases, types, and links have no editor.
+     * Section headings use `pages.headings`, with unknown keys shown literally. All record text stays plain.
+     *
+     * History's after-state comes from `memoryPageHistoryView` in src/ts/process/structuredMemory.svelte.ts;
+     * no after-state is stored. One diff opens at a time and renders as spans. A target with `historyId`
+     * opens that diff only after its page is held, then scrolls after render.
+     */
+
     // A tool over a page as a whole (`StructuredMemoryPageTool`) goes that way too: the server answers
     // the page to show next, the contents are read again, and that page is selected. The trash is listed
     // under the tree; a page in it shows read-only with Restore and Delete forever. Merging, splitting,
     // deleting forever, and importing a package are confirmed first. Exporting a page to the chat's
     // lorebook is a chat write, not a memory write: it needs the chat loaded and nothing else.
     //
-    // An open section editor keeps the body it opened on. A read or a revert that brings another body for
-    // it closes the editor with the `changed` notice: a draft written against old text must not clobber
-    // the writer's new text. Read-only keeps the draft and only turns Save off, and the read that comes
-    // when it falls applies the same rule. Everything shown is plain text.
-    //
-    // A jump can name a history entry: that entry's diff opens once its page is the copy, and comes into
-    // view once it has rendered, because the history sits below every section.
 
     let { chatRef, readOnly, refresh, focus, open, jump }: MemoryPanelTabProps = $props();
 

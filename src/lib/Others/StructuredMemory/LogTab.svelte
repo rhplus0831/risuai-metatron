@@ -16,10 +16,16 @@
     import type { StructuredMemoryLogRun } from "../../../../shared/structuredMemory.ts";
     import { codeText, memoryReadFailureText, memoryReasonText } from "./memoryText";
 
-    // The Log tab: one row per writer run, newest first, a round at a time. A row expands to what the
-    // run extracted, each item next to its quote, which is the point of the log: what the model said,
-    // even where the records kept something else. A stored run is data of any shape, which
-    // `memoryRunView` reads, and all of it is plain text.
+    /**
+     * Run rows preserve what the model extracted, even where admitted records differ. `memoryRunView`
+     * in src/ts/process/structuredMemory.svelte.ts reads stored runs as data of any shape; model text,
+     * quotes, and an unreadable answer are plain text. Unverified quotes match by kind and text, so equal
+     * quotes are both marked. Last-send badges follow committed event ids, not run ids.
+     *
+     * Rounds are tied to the first revision; a later `changed` refusal restarts the list. JSON export
+     * uses `buildStructuredMemoryLog` in src/ts/process/structuredMemory.svelte.ts to read all rounds at
+     * one revision, restarting on change; its envelope is `{ logVersion, revision, runs }`.
+     */
 
     interface Props {
         chatRef: ChatRef;

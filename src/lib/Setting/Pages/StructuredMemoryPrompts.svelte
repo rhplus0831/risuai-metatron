@@ -18,13 +18,18 @@
     import { pressMemoryTest } from "../../Others/StructuredMemory/memoryRecordPress";
     import { codeText, memoryReadFailureText, memoryReasonText } from "../../Others/StructuredMemory/memoryText";
 
-    // The memory preset's prompt fine-tuning: the box that lets the preset's own ChatML replace the
-    // writer's default analysis and page update prompts, the two text areas while it is on, the default
-    // prompts and the guide to what may change, and the test run, which replays the open chat's last
-    // window on the server and saves nothing. Ticking the box asks first, because a prompt that loses a
-    // required field breaks recording, and then seeds blank prompts from the defaults, which the server
-    // answers; with no answer the box stays off. Unticking keeps the texts. Everything the model or the
-    // server sent is shown as text.
+    /**
+     * The preset's `fineTuning`, `analysisPrompt`, and `patchPrompt` controls. Enabling asks first and
+     * seeds only blank texts from server/src/routes/structuredMemory.ts's default-prompts answer; a
+     * failed read leaves fine-tuning off. Disabling preserves texts. Seeded frames are copies and never
+     * follow later default-frame changes. The same answer supplies the displayed defaults; `promptGuide`
+     * in src/lang/en.ts supplies the instructions shown here.
+     *
+     * `pressMemoryTest` in src/lib/Others/StructuredMemory/memoryRecordPress.ts runs the open chat's
+     * writer test. It first flushes pending settings through src/ts/process/serverCommands.ts; the test
+     * writes no memory records, while request and job logs remain. Its window may be a replay or the
+     * first open cadence window. Results and all server/model data render as plain text.
+     */
 
     interface Props {
         /** The preset's writer settings as read, every field filled. */

@@ -179,6 +179,8 @@ export function readMemoryRecords(
 /**
  * One `ReadEntry` per entry of `history`, the greeting (when the send has one) and then one entry for
  * each of `messages`, which built them. The greeting has no stored message behind it.
+ * `role` stays the stored role: server/src/prompt/assemble.ts can rewrite prompt roles for groups and
+ * `sendName`. `text` is processed content, so evidence quotes what this prompt would have shown.
  */
 export function readEntries(history: readonly OpenAIChat[], messages: readonly Message[]): ReadEntry[] {
     const first = history.length - messages.length;
@@ -231,6 +233,7 @@ function cardEntries(
  * `coverage` is `gap` when the trim dropped history, or when covered history with something to send
  * left and the card that stands in for it is empty: the events cover it, but the model does not see
  * them. Only `gapTokens` drives the gap question, so that second case asks nothing.
+ * `budget.reduced` reports only memory: headroom and extra belong to the summarizer, not this read.
  */
 export async function selectMemory(
     input: MemorySelectionInput,

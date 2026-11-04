@@ -1,8 +1,10 @@
 <script lang="ts">
     import type { HTMLButtonAttributes } from "svelte/elements";
 
-    // A small button that leads somewhere else: to an event, a page, or a message. It is off when what it
-    // names is gone, and shows `label` as plain text.
+    /**
+     * Links to records and messages show `label` as plain text. Callers disable a link when its target
+     * is gone; this component forwards that decision and the press handler without resolving the target.
+     */
 
     interface Props extends Omit<HTMLButtonAttributes, "type" | "class" | "children"> {
         label: string;

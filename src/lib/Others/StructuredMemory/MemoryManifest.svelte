@@ -5,10 +5,13 @@
     import type { ContextMemoryWriter, ContextReport } from "../../../../shared/contextReport.ts";
     import { memoryReasonText } from "./memoryText";
 
-    // What a send's report says of its memory: the writer, the included records, the candidates left
-    // out, and each lane's spend. The context meter's popover and the Preview tab both show it. A report
-    // names records by id, so the caller reads their titles; a row without one still shows. A report
-    // can repeat an id, since an event can be in two lanes, so no list here is keyed by id.
+    /**
+     * The Preview tab and src/lib/ChatScreens/ContextMeter.svelte share this view of a
+     * send's report: writer, included items, exclusions, and lane spend. The caller resolves titles by
+     * `memoryItemKey` in src/ts/process/structuredMemory.svelte.ts; missing titles never hide rows.
+     * An event can occur in two lanes, so a list must not be keyed by id. Flow has no token target:
+     * `Number.MAX_SAFE_INTEGER` is shown as spend alone.
+     */
 
     interface Props {
         memory: NonNullable<ContextReport["memory"]>;

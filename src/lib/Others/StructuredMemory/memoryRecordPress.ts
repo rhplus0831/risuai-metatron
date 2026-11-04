@@ -16,6 +16,13 @@ import {
     type StructuredMemoryRebuildMode,
 } from "../../../../shared/structuredMemory.ts";
 
+/**
+ * Shared command presses for the panel, receipt line, and prompt settings. Requests cross
+ * src/ts/process/serverCommands.ts's `runServerJob`, which flushes pending settings and owns job
+ * errors; following a busy job is not a new recording or test result. Receipts remain server-written
+ * copies: no press invents one locally. Rebuild command presses share this transport.
+ */
+
 /** The writer's settings of the selected memory preset. */
 function writerSettings() {
     const preset = selectedHypaV3Preset({

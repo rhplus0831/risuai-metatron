@@ -20,8 +20,6 @@ import {
     spendLanes,
 } from "./lanes.ts";
 
-export { itemTag } from "../../../../../shared/structuredMemory.ts";
-
 /**
  * The memory card: a stable part and a volatile part, in that order, each one text the prompt can place
  * on its own. The stable part (required pages, recent flow) opens with the rule header; the volatile
@@ -32,10 +30,12 @@ export { itemTag } from "../../../../../shared/structuredMemory.ts";
  *   not know is part of its line.
  * - The card's own words are English, for the model. Field values stay in whatever language the record
  *   was written.
- * - `maximum` bounds the card's text, the two parts summed, which holds wherever the volatile part goes.
+ * - `maximum` bounds both parts counted as one system chat each, wherever the volatile part goes.
  *   A wrapper the prompt puts around the card is not part of it.
  * - The required lane is whole or there is no card: nothing may cut it, so it refuses instead.
  */
+
+export { itemTag } from "../../../../../shared/structuredMemory.ts";
 
 type CardParts = { stable: string; volatile: string };
 
@@ -83,6 +83,7 @@ const CARD_LANES: Record<MemoryManifestLane, { part: keyof CardParts; heading: s
     threads: { part: "volatile", heading: "Open threads:" },
 };
 
+/** Normalize record text before comparison and rendering; whitespace differences do not make a distinct fact. */
 export const flattened = (text: string) => text.replace(/\s+/g, " ").trim();
 
 /** `body` flattened to one line behind the tag, added after so an id is never altered. */
@@ -126,7 +127,7 @@ function knowledgeClause({ fact, stance, privateTo: [holder, ...others] = [] }: 
 
 /**
  * A page on one line, in either lane, whose tags are the same. A disputed section says so, since its body
- * holds two values. Bodies are whole: they only lose their line breaks.
+ * holds two values. Bodies are whole, with whitespace collapsed to one line.
  */
 export function pageLine(
     { id, title }: Pick<MemoryPage, "id" | "title">,

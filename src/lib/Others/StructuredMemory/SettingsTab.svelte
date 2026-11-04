@@ -13,10 +13,12 @@
         structuredMemoryLanguageOverride,
     } from "../../../../shared/structuredMemory.ts";
 
-    // The Settings tab: the chat's own overrides, its recording language and its highlight mode. Both are
-    // chat fields, written through the chat module and not through the routes, so they need the chat held
-    // and nothing of its memory, and read-only only turns the controls off. Every other value is the
-    // selected memory preset's, which the memory settings page edits; the tab links there.
+    /**
+     * The chat's language and highlight overrides are chat fields written through
+     * src/ts/storage/chatStore.svelte.ts's `setChatMeta`, not memory routes. The chat must be held;
+     * read-only disables the controls. Other values belong to the selected memory preset, so the link
+     * closes the panel and opens the Memory settings page rather than editing them here.
+     */
 
     let { chatRef, readOnly }: MemoryPanelTabProps = $props();
 

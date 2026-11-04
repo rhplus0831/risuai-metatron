@@ -24,10 +24,17 @@
     import { normalizeStructuredMemorySettings } from "../../../../shared/structuredMemory.ts";
     import { codeText, memoryReadFailureText, memoryReasonText } from "./memoryText";
 
-    // The Coverage tab: what memory did with each message. The record facts come from the server, and
-    // the join with the chat's messages happens here, over what the tab holds and after reconciling the
-    // facts with it, so a message that changes moves its row without a request. Everything shown of a
-    // message is plain text.
+    /**
+     * Coverage joins server/src/routes/structuredMemory.ts's coverage facts with the held chat in this
+     * tab, after `reconcileMemoryCoverage` from src/ts/process/structuredMemory.svelte.ts. Held-message edits
+     * therefore change rows without a request. An unloaded chat leaves the facts unreconciled: comparing
+     * with no messages would falsely mark every source missing. Each mount keeps its own hash memo.
+     *
+     * The join reads stored text, rather than a send's processed text and greeting. Only gap and leaving
+     * texts start token counts, so streaming a reply into the window starts none; a changed tokenizer alone
+     * does not recount. Counts never hold up rows, and only the newest count may replace them. Consecutive
+     * states are grouped, with one group open and 200 rows shown at a time. All message text stays plain.
+     */
 
     interface Props {
         chatRef: ChatRef;

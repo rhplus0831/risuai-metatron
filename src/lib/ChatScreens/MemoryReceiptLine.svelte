@@ -17,12 +17,19 @@
     import { pressMemoryRecord } from "../Others/StructuredMemory/memoryRecordPress";
     import { codeText, memoryReadFailureText } from "../Others/StructuredMemory/memoryText";
 
-    // One assistant message's line about Structured Memory's writer: what it recorded, why it did not,
-    // or why it will not on its own, collapsed to one row, with the button that starts it. The row list
-    // mounts `Chat` once per text, so `messageGenerationInfo` keeps the receipt the row was mounted
-    // with; a receipt arrives without a text change, so the line reads the held chat, which is deep
-    // state, and the feed's patch moves it. Its details list what changed: each row opens the panel at
-    // that change's diff, and a highlighted one can be reverted here.
+    /**
+     * One assistant message's writer receipt, read from the held chat in
+     * src/ts/storage/chatStore.svelte.ts: src/lib/ChatScreens/Chat.svelte's `messageGenerationInfo` keeps
+     * what the text row mounted with, so only the held chat follows a receipt-only feed patch. Live task
+     * status concerns the chat, not proof this row is being recorded. Stored data is read through
+     * src/ts/process/structuredMemory.svelte.ts's `memoryReceiptView`; all model text stays plain.
+     *
+     * Changes open page history through `requestMemoryPanelTarget` before the panel mounts. Highlighted
+     * changes also revert through `revertStructuredMemoryChange`, which obtains a current revision first.
+     * A revert never rewrites the stored receipt: reverted markers belong to this mount alone, and a later
+     * press can report that nothing remains to undo. Record and resume share `pressMemoryRecord` with
+     * src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte.
+     */
 
     interface Props {
         chatRef: ChatRef;

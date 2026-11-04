@@ -8,9 +8,6 @@ import {
     normalizeStructuredMemorySettings,
 } from "../../../../../shared/structuredMemory.ts";
 
-export { coveredMessages, rawWindow } from "../../../../../shared/structuredMemory.ts";
-export type { RawWindow, ReadEntry } from "../../../../../shared/structuredMemory.ts";
-
 /**
  * The read path's pure rules: what stays raw in a send, what memory may spend, and how the lanes share it.
  *
@@ -25,6 +22,9 @@ export type { RawWindow, ReadEntry } from "../../../../../shared/structuredMemor
  *   so a quiet scene leaves room empty: the lanes are a cap, not a quota. The required lane takes no part
  *   in this: `buildMemoryCard` reserves it first.
  */
+
+export { coveredMessages, rawWindow } from "../../../../../shared/structuredMemory.ts";
+export type { RawWindow, ReadEntry } from "../../../../../shared/structuredMemory.ts";
 
 /**
  * One record's line in a lane. `score` decides lending, on one scale across lanes. `order` is the item's

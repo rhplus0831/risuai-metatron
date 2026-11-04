@@ -275,6 +275,7 @@ export type MemoryReceiptLists = {
     refused: { candidate: string; refusal: string }[];
 };
 
+/** A receipt display copy; `action` is a possible press, never evidence that a window is admitted or due. */
 export type MemoryReceiptView = MemoryReceiptLists & {
     kind: MemoryReceiptViewKind;
     /** The stored reason code. */
@@ -286,7 +287,7 @@ export type MemoryReceiptView = MemoryReceiptLists & {
     model?: string;
     inputTokens?: number;
     outputTokens?: number;
-    /** The preset's own prompts stood in for the defaults. */
+    /** Fine-tuning was enabled, even if no custom frame ran. */
     customPrompt: boolean;
     /** A failed run's error, which a receipt keeps only under `customPrompt`. */
     error?: string;
@@ -1456,7 +1457,12 @@ export function takeMemoryPanelTarget(ref: ChatRef | null): MemoryPanelTarget | 
         : null;
 }
 
-/** What the panel hands every tab. */
+/**
+ * The panel/tab boundary: a tab exists only while selected. `refresh` requests a read; it is not a
+ * signal to run Preview, whose local send itself moves refresh. `readOnly` disables controls before
+ * server/src/routes/structuredMemory.ts enforces its write fence. `open` becomes the chosen tab's
+ * `focus`; `jump` opens the chat before requesting the message and closing the panel.
+ */
 export type MemoryPanelTabProps = {
     chatRef: ChatRef;
     readOnly: boolean;
@@ -1470,6 +1476,7 @@ export type MemoryPanelTabProps = {
 
 /** What the memory panel says of a stored message. */
 export const MEMORY_COVERAGE_STATES = ["covered", "pending", "failed", "skipped", "excluded", "stale"] as const;
+/** A display state derived from current messages and record facts, never a persisted message outcome. */
 export type MemoryCoverageState = (typeof MEMORY_COVERAGE_STATES)[number];
 
 /** One stored message in the Coverage view. */
@@ -1487,6 +1494,7 @@ export type MemoryCoverageRow = {
     reason?: string;
 };
 
+/** Stored-text coverage and window indices for display; a send can differ after scripts, greeting, and trim. */
 export type MemoryCoverageJoin = {
     /** One row per stored message, in order. */
     rows: MemoryCoverageRow[];
@@ -1542,6 +1550,8 @@ export function memoryMessageHasher(): (message: HashedMessage) => string {
  * `facts` with their events as `messages` leave them, by the rule a send uses (`reconcileMemoryEvents`),
  * so an event that stopped reading from its messages shows `stale` at once. Everything derived from the
  * answer reads it, the join included, and nothing is stored or asked for.
+ * The route's stored `status`, `sources`, and `keptState` are inputs to the rule in
+ * shared/structuredMemory.ts; carry `rerecord` through the returned copy for the repair views too.
  */
 export function reconcileMemoryCoverage(
     facts: StructuredMemoryCoverage,

@@ -17,325 +17,212 @@
 
 ## Files
 
-- `server/src/prompt/memory/structured/lanes.ts`: the pure read rules: `readBudget`, `spendLanes`, `LaneItem`,
-  `LaneCandidate`, `Lane`, `ExcludedItem`, `itemKey`, and the raw window re-exported from `shared/`.
-- `server/src/prompt/memory/structured/retrieve.ts`: `retrieveLanes`, `RETRIEVAL_LIMITS`, `readsAsPast`,
-  `eventVectorTexts`, `lexicalTerms`.
-- `server/src/prompt/memory/structured/card.ts`: `buildMemoryCard`, `RequiredOverLimit`, and the line builders,
-  `pageLine` among them. `itemTag` is in `shared/`, because the tab finds a block by it, and `card.ts` re-exports it.
-- `server/src/prompt/memory/structured/step.ts`: a send's read: `readMemoryRecords`, `MemoryRecords`, `readEntries`,
-  `blankEntry`, `selectMemory`, `writerState`, `sendManifest`. `structuredMemoryStep` in `assemble.ts` drives it; the
-  job's part is in [the writer guide](writer.md#the-writer-task).
-- `shared/contextReport.ts`: the manifest's fields on `ContextReport.memory`, `reportedMemoryExclusions`,
-  `CONTEXT_MEMORY_EXCLUDED`. `trimHistoryToContext` in `hypav3.ts` is the trim both algorithms share.
-- `previewChatReport` in `src/ts/process/index.svelte.ts`: a preview's messages and report. `GenerationPreviewResult` in
-  `shared/jobs.ts` is that job's `done.result`.
-- `src/lib/Others/StructuredMemory/`: `StructuredMemoryPanel.svelte`, `CoverageTab.svelte`, `PreviewTab.svelte`,
-  `PagesTab.svelte`, `TimelineTab.svelte`, `ThreadsTab.svelte`, `LogTab.svelte`, `SettingsTab.svelte`,
-  `MemoryLinkButton.svelte`, `MemoryManifest.svelte` (a report's writer, items, left-out rows, and lane spend, shared
-  with `ContextMeter`), `memoryText.ts`, the stored codes as text, and `memoryRecordPress.ts`, the `memoryRecord` press
-  the panel shares with the receipt line, and `pressMemoryTest`. `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: the
-  status line it shares with the modal.
-- `src/ts/process/structuredMemory.svelte.ts`, the pure parts the panel reads with: `reconcileMemoryCoverage`,
-  `memoryMessageHash`, `memoryMessageHasher`, `joinMemoryCoverage`, `groupMemoryCoverage`, `memoryMessageExcerpt`,
-  `memoryRunView`, `memoryTimelineRows`, `memoryPageTree`, `memoryPageHistoryView`, `memoryEventView`,
-  `memoryWriterNotice`, `MemoryPanelTabProps`. `memoryTextDiff` loads `diff` when the first history entry opens.
-- The same file, pure, for what a send reported: `memoryStatusWord`, `memoryItemsUsed`, `usedMemoryCoverageGroups`,
-  `memoryItemKey`, `memoryItemTitles`, `memoryBlockEntries`.
-- `src/lib/ChatScreens/MemoryReceiptLine.svelte`: the line, from `Chat.svelte`'s `genInfo`. `memoryReceiptView` and
-  `newestAssistantMessageId` in `structuredMemory.svelte.ts` are its pure part.
-- `src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`: the fine-tuning controls and the test run's result.
-  `memoryTestResultView` and `readStructuredMemoryDefaultPrompts` are its parts in `structuredMemory.svelte.ts`, and
-  `StructuredMemoryTestResult` in `shared/structuredMemory.ts` is that job's `done.result`.
+Read each module's header or component contract, then read the named export's comment with its code.
+
+- `server/src/prompt/memory/structured/lanes.ts`: pure budget sharing; `readBudget`, `spendLanes`, `LaneItem`,
+  `LaneCandidate`, `Lane`, `ExcludedItem`, `itemKey`, `rawWindow`.
+- `server/src/prompt/memory/structured/retrieve.ts`: candidate retrieval; `retrieveLanes`, `RETRIEVAL_LIMITS`,
+  `readsAsPast`, `eventVectorTexts`, `lexicalTerms`.
+- `server/src/prompt/memory/structured/card.ts`: card rendering and reservation; `buildMemoryCard`, `RequiredOverLimit`,
+  `pageLine`, `itemTag`.
+- `server/src/prompt/memory/structured/step.ts`: a send's read selection; `readMemoryRecords`, `MemoryRecords`,
+  `readEntries`, `blankEntry`, `selectMemory`, `writerState`, `sendManifest`.
+- `shared/contextReport.ts`: report contract; `ContextReport.memory`, `reportedMemoryExclusions`,
+  `CONTEXT_MEMORY_EXCLUDED`.
+- `src/ts/process/index.svelte.ts`: preview entrypoint; `previewChatReport`. `shared/jobs.ts`: preview result contract;
+  `GenerationPreviewResult`.
+- `src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte`: panel coordinator; `TABS`, `refresh`, `readOnly`.
+- `src/lib/Others/StructuredMemory/CoverageTab.svelte`: message coverage view; `reconciled`, `coverage`, `countedChats`.
+- `src/lib/Others/StructuredMemory/PreviewTab.svelte`: preview view; `run`.
+- `src/lib/Others/StructuredMemory/PagesTab.svelte`: page view and section editor; `readRecord`, `sendChange`,
+  `keepRecord`, `openAskedEntry`.
+- `src/lib/Others/StructuredMemory/TimelineTab.svelte`: event view and repairs; `reconciled`, `sendRepair`, `rerecord`.
+- `src/lib/Others/StructuredMemory/ThreadsTab.svelte`: thread view and state editor; `read`, `setState`.
+- `src/lib/Others/StructuredMemory/LogTab.svelte`: run viewer; `readRound`, `exportLog`.
+- `src/lib/Others/StructuredMemory/SettingsTab.svelte`: chat override editor; `setLanguage`, `setHighlightMode`.
+- `src/lib/Others/StructuredMemory/MemoryLinkButton.svelte`: record and message link; `Props`.
+- `src/lib/Others/StructuredMemory/MemoryManifest.svelte`: shared report view; `Props`, `writerReasonText`.
+- `src/lib/Others/StructuredMemory/memoryText.ts`: stored-code text; `codeText`, `memoryReasonText`,
+  `memoryReadFailureText`.
+- `src/lib/Others/StructuredMemory/memoryRecordPress.ts`: shared command presses; `pressMemoryRecord`,
+  `pressMemoryTest`.
+- `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: shared task line; `memoryTaskStatusLine`.
+- `src/ts/process/structuredMemory.svelte.ts`: receipt and panel views; `memoryReceiptView`, `MemoryReceiptView`,
+  `newestAssistantMessageId`, `reconcileMemoryCoverage`, `memoryMessageHash`, `memoryMessageHasher`,
+  `joinMemoryCoverage`, `MemoryCoverageState`, `MemoryCoverageJoin`, `groupMemoryCoverage`, `memoryMessageExcerpt`.
+- `src/ts/process/structuredMemory.svelte.ts`: record views and navigation; `memoryRunView`, `memoryTimelineRows`,
+  `memoryPageTree`, `memoryPageHistoryView`, `memoryEventView`, `memoryWriterNotice`, `MemoryPanelTabProps`,
+  `memoryTextDiff`, `requestMemoryPanelTarget`.
+- `src/ts/process/structuredMemory.svelte.ts`: report and settings views; `memoryStatusWord`, `memoryItemsUsed`,
+  `usedMemoryCoverageGroups`, `memoryItemKey`, `memoryItemTitles`, `memoryBlockEntries`, `memoryTestResultView`,
+  `readStructuredMemoryDefaultPrompts`.
+- `src/lib/ChatScreens/MemoryReceiptLine.svelte`: per-message receipt view; `stored`, `view`, `openChange`, `revert`.
+- `src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`: preset prompt editor; `tick`, `loadDefaults`, `test`.
 
 ## Flows
 
 ### The read path
 
-Nothing here writes: `retrieveLanes` offers candidates, and `buildMemoryCard` spends the budget on them. The modules'
-comments hold the lane rules.
+`structuredMemoryStep` in `server/src/prompt/assemble.ts` reads before the [writer hand-off](writer.md#the-writer-task).
+With `memoryJob.structuredMemory`, previews and service-free sends read as sends do; without it, history stays raw with
+no memory report.
 
-`selectMemory` runs once for every job with `memoryJob.structuredMemory`, a preview and a service-free send included,
-which read as a send does. With no `memoryJob` the history stays raw and no report says otherwise.
+1. The read step calls `readMemoryRecords`, then `selectMemory`, which calls `retrieveLanes` and `buildMemoryCard`.
+   Selection runs `reconcileEvents` on a copy against stored messages
+   ([reconciliation](lifecycle.md#reconciliation-and-repairs)). `coveredMessages` reads active, unsuppressed events from
+   that copy to decide what may leave; `recordedMessages` reads any stored status for what the writer leaves alone.
+   History cited only by stale or retracted events stays raw.
+2. The card enters history as `memo: "supaMemory"`. Under `volatileBeforeLastUser`, its volatile part bypasses history
+   to survive chat ranges and memory cards; assembly inserts it after formatting by provenance before the latest user,
+   else after the last memory entry, else at the end.
+3. `trimHistoryToContext` in `server/src/prompt/memory/hypav3.ts` protects the window and older continue target through
+   `protectedEntries` and final recheck; an unfit tail fails `TOO_MUCH_TOKEN`. Trimmed history means `coverage: "gap"`.
+   `selectMemory`'s comment holds the empty-card gap rule: only `gapTokens` drives the writer's question and gap stage.
+   Required pages that do not fit cause the card to refuse, the step to return `alert`, and assembly to raise
+   `SendError` naming pages and tokens. This ends previews and the gap run's second selection too, without an
+   `inlayErrorResponse` reply.
 
-1. Records: one synchronous read of every event and page, then `reconcileEvents` over the stored messages, on a copy
-   ([reconciliation](lifecycle.md#reconciliation-and-repairs)). `coveredMessages` (active, not suppressed) reads the
-   copy to say what may leave, and `recordedMessages` (any status) reads the events as stored to say what the writer
-   leaves alone, so history cited only by a stale or retracted event stays raw.
-2. Window: `rawWindow`, then the message a continue extends leaves `dropped` before retrieval, so an older one stays in
-   the prompt and out of the evidence.
-3. Card: one `memo: "supaMemory"` entry at the front of the history, with no entry when no item is included. Under
-   `volatileBeforeLastUser` the volatile part is its own entry, which never joins the history: a chat range could cut it
-   there, and a `memory` prompt card would pull it away. Assembly splices it into `formated` once the cards are
-   formatted, right before the entry holding the latest user message, found by provenance. A range that left that
-   message out puts it after the last memory entry, else at the end.
-4. Trim: `trimHistoryToContext`, as HypaV3's select-only path, with the window as its protected tail and an older
-   continue target pinned. Both go into `protectedEntries`. A tail that does not fit ends the send with
-   `TOO_MUCH_TOKEN`. Trimmed history is `coverage: "gap"`, and the gap question is
-   [the writer's](writer.md#the-writer-task). So is covered history with something to send that left behind an empty
-   card, because the model saw neither. That one asks nothing and adds no `gap` stage: `gapTokens` alone drives both,
-   and `stages` says `card: empty`.
+After scripts, `editRequest`, and recheck, `buildContextReport` writes `ContextReport.memory`, kind `structuredMemory`.
+It verifies included `items` by `itemTag` anywhere in the final prompt; a lost tag makes `coverage` unknown.
+`shared/structuredMemory.ts` owns the shared tag. `reportedMemoryExclusions` keeps at most `CONTEXT_MEMORY_EXCLUDED`
+exclusion rows, worst reason first; `excludedTotal` retains the full count. Neither producer bounds its list.
+`sendManifest` and `writerState` hold the stage and state rules; `confirmedThrough` is the writer ceiling's newest
+confirmed reply. The writer stage `due` promises no queue: hand-off follows the reply and can be skipped.
 
-The report (`ContextReport.memory`, kind `structuredMemory`):
-
-- `items` are the included records. `verified` is set in `buildContextReport` by finding `itemTag(item)` in the final
-  prompt, whichever entry holds it, so after scripts, `editRequest`, and the recheck. One not found makes `coverage`
-  `unknown`, because the two parts can be lost apart.
-- `excluded` keeps `CONTEXT_MEMORY_EXCLUDED` rows, worst reason first, and `excludedTotal` the count: `retrieveLanes`
-  lists every not-relevant event, and a stale one with its `staleReason`. `lanes` holds each lane's target and spend.
-  `budgetReduced` holds only `memory`: the preset's headroom and extra are the summarizer's, and this budget spends
-  neither.
-- The meter's line shows `tokens` and `memoryStatusWord`, the worst of a `coverage` that is not `covered` and the
-  writer's state. Its popover reads titles from the contents as it opens, and a failed read leaves rows untitled.
-- `confirmedThrough` is the newest reply the writer's ceiling confirms. `writer.state` says, in order, `notAutomatic` or
-  `paused` (`writerNotice`), `failed` (the newest run that recorded or failed did not record), `pending` (that reply is
-  not recorded), else `recorded`.
-- `stages` is the ledger, each a stage and a reason code: `window`, `lanes`, `gap` (only with a gap), `card`, and on an
-  input job with a service `writer`. `writer` says `due`, not queued: the hand-off comes after the reply and may be
-  skipped.
-
-Lane rules:
-
-- `ReadEntry.role` is the stored message's, because assembly rewrites a prompt role in a group chat and under
-  `sendName`, undefined on the greeting. `text` is the processed content, so evidence quotes what the prompt would have
-  shown.
-- An event with no source among the entries has no place, which says nothing about staleness: a disabled message is just
-  not in this send.
-- `rawWindow` leaves every uncovered entry raw for the caller's gap trim, and an event wholly inside the window with
-  text is not retrieved. Older sources do not count as in the prompt: that trim may remove them.
-- A `requires` names an `itemKey`, so a flow title never satisfies an excerpt's event, and a flow tag differs from the
-  event's, so it never verifies the event's text. Flow has no token target: its `target` reaches `spend` as
-  `Number.MAX_SAFE_INTEGER`.
-- `maximum` bounds the two card parts counted as one system chat each, so it holds wherever the volatile part goes. A
-  wrapper the prompt adds is not part of it.
-- An embedding failure answers `similarity: "failed"` and the send goes on, where HypaV3 fails it. Cancellation still
-  escapes through `host.fence()`.
-- `excluded` is per lane, so an event in flow can be excluded from `events`: `retrieveLanes` lists what is no candidate,
-  `buildMemoryCard` what lost on budget. Neither bounds its list, so a report does.
-- The required lane is reserved before anything else is spent: a line sum over `requiredCap`, or a required-only card
-  over `maximum`, ends the send with a `SendError` naming each page and its tokens, a preview and a gap run's second
-  pass included. That is assembly's `alert`, not `error`, so `inlayErrorResponse` writes no reply in its place.
-- A page has one item and one tag in either lane, so `required` and `pages` never hold the same page. What it knows and
-  does not know is part of its line: an on-stage `always` page counts them against the cap, and a reader finds titles by
-  page id.
-- `pageId` on a knowledge item is who learned it, and no field names whom a fact is about, so "subject" is `pageId` and
-  a secret is an item with `knowers`, an empty list included. The writer does not reconcile records, so `knownFacts`
-  joins them by exact text before any cap: a page that learned a secret later is not denied it.
-- `never` hides a page, not what it shares: a fact a visible page also holds still shows there, without the hidden
-  title. A `never` scene gives no item and still drives the stage.
+The meter reads tokens and `memoryStatusWord`; on opening, its popover reads contents for titles, retaining untitled
+rows on failure, and shares `MemoryManifest` with Preview.
 
 ### Receipts
 
-`generationInfo.memory` on a message says what happened to its turn. The stored kinds, by who writes them:
+`generationInfo.memory` has two writers:
 
-- `recorded` and `failed`: `commitWindow` ([the writer's commit](writer.md#the-writer-task)), from the receipt of the
-  run in `changes`, right after the memory write and in the same synchronous step, one `patchMessage` per assistant
-  message of the window, each keeping its other generation info. So every turn of an `everyK` or `tokens` window carries
-  the same receipt. Two transactions, not one: a receipt that conflicts anyway is logged, the commit stands, and
-  `MemoryRun.receipt` keeps it.
-- `notAutomatic` (`awaitingAdoption`, `pluginModel`, `requestTrigger`, `localSummarization`) and `skipped`
-  (`writerPaused`): the send's job, on its own reply's generation info (`structuredMemoryStep`), so no extra chat write.
-  It cannot be left to the task, which is handed off only when a window is due. A run that records the turn replaces it,
-  because the patch sets the whole `memory` field.
-- `pending` is never stored. On the newest assistant message with no receipt the line reads as the writer working while
-  the chat's task is live (about the chat, not that row), else as having no receipt yet. Older rows without one show
-  nothing: no receipt proves nothing, see `Invariants`.
+- `commitWindow` in `server/src/prompt/memory/structured/writer.ts`, for a task or a record now (`runMemoryRecord` in
+  `server/src/prompt/memory/structured/recordJob.ts`), copies the run's `recorded` or `failed` receipt to every
+  assistant in the window after the memory write, synchronously, preserving other generation info. These are two
+  transactions: receipt conflict is logged, memory stays committed, and `MemoryRun.receipt` keeps it.
+- The send's `structuredMemoryStep` in `server/src/prompt/assemble.ts`, whose `writerNotice` builds it, puts
+  `notAutomatic` (`awaitingAdoption`, `pluginModel`, `requestTrigger`, `localSummarization`) or `skipped` with reason
+  `writerPaused` on its own reply without another write. It cannot wait for a task, since no window may be due. A later
+  recording replaces the whole `memory` field.
 
-The row list mounts `Chat` once per text, so `messageGenerationInfo` keeps what the row was mounted with: the line reads
-the held chat, and a feed patch moves it.
-
-The line's details list what the recording changed (`receiptChanges`). Each row opens the panel at that page's history
-diff through `requestMemoryPanelTarget`, which the panel takes as it mounts, because a link can only be pressed while
-the panel is closed. A highlighted row also carries a revert, as does every writer's section entry in the Pages history;
-both go through `revertStructuredMemoryChange`, which reads the page for its revision first. The receipt is a stored
-copy that no revert changes, so the row shows reverted only for its own mount, and a later press answers that nothing is
-left to undo. The Settings tab holds the chat's own highlight mode, a chat field written through `setChatMeta`.
+`pending` is never stored; `memoryReceiptView` owns missing-row display. `src/lib/ChatScreens/Chat.svelte` mounts by
+text, so `MemoryReceiptLine` reads the held chat to follow receipt-only feed patches. `receiptChanges` links reach page
+diffs through `requestMemoryPanelTarget` before panel mount; highlighted changes and writer section-history rows both
+use `revertStructuredMemoryChange`, which reads the page's revision first. The component contract holds revert display
+rules.
 
 ### The memory panel
 
-`StructuredMemoryPanel` replaces `HypaV3Modal` when `memoryAlgorithmType` selects the algorithm, under the same
-`hypaV3ModalOpen` store, so `chatStatus.svelte.ts` still counts the transcript as hidden. `App.svelte` picks it, and the
-menu row in `DefaultChatScreen` and the button in `CharConfig` open it ahead of any older memory flag. A tab is one
-component in `TABS`, taking `MemoryPanelTabProps`, mounted while it shows. Pages, Timeline, Threads, and Settings write;
-the rest read.
+`src/App.svelte` selects `StructuredMemoryPanel` under `hypaV3ModalOpen`, so `chatStatus.svelte.ts` still treats the
+transcript as hidden. The menu in `src/lib/ChatScreens/DefaultChatScreen.svelte` and button in
+`src/lib/SideBars/CharConfig.svelte` prefer it over older memory flags. The panel contract holds tab mounting and
+refresh. Preview runs only on its button because its local send moves `refresh`.
 
-- "Used in the last send" comes from `memoryItemsUsed`: the newest valid report, found as the meter finds its own, and
-  its `verified` items of one kind. A newer report of another kind means none, and no older report is reached. Coverage
-  badges a row by `eventId` and a closed group by any of its rows, Log a run by the event it committed, Timeline an
-  event, and Pages a page.
-- The contents route adds `adoption` (`StructuredMemoryAdoption`), as the server sees the chat, so the tab's mirror
-  decides nothing. A [held chat](lifecycle.md#the-adoption-choice), `adoptable` above 0, is offered adoption and decline
-  above the writer line, where it meets them first. An adopted chat that still stores summaries, `resettable`, is
-  offered the reset under it. Decline and reset each ask first. The routes check again, so a stale panel's press answers
-  `adopted: 0`, `declined: false`, or `reset: false`.
-- Under the reset sit [Fill gaps and Rebuild](rebuild.md#a-run), each priced first and hidden while held, with a line
-  when the writer's language left `recordedLanguage`. A chat with a run shows its progress, Pause while its task is
-  live, Resume while stopped and `resumable`, and Abandon always, and the panel stays read-only until it ends.
-- Preview runs only on its button. A preview is a local send, so it flips `readOnly`, which moves `refresh`: a run on
-  `refresh` would never stop. It answers the prompt with no next message, so it says the next send can differ.
-- `memoryBlockEntries` finds the block by `itemTag`, because `editRequest` can rebuild entries without their `memo`. A
-  stable part holding only the rule header has no tag and is not shown.
+Contents from `server/src/routes/structuredMemory.ts` supplies `adoption`, `rebuild`, `recordedLanguage`, and `health`;
+the tab's HypaV3 mirror decides none. A [held chat](lifecycle.md#the-adoption-choice) offers adoption of HypaV3
+summaries or decline above the writer line; an adopted chat can offer reset below. Every choice is rechecked by its
+route. [Rebuild controls](rebuild.md#a-run) coordinate contents reads with read-only state: a run holds the fence beyond
+its task's end, which must reread contents to release it. Read-only falling also catches record-now work inside a
+generation job.
 
-- Read-only is the modal's `memoryWriteFence`, a local send, a generating chat key, or `memoryTaskFenced`, or a run,
-  rechecked each second while the fence only waits for a held revision. `refresh` moves on the button and when read-only
-  falls, which catches a task's end and a record-now job that ran inside a generation job and ended no task. A held
-  message that changes needs no request: the join is derived.
-- Coverage joins the held messages with the coverage route's facts in the tab, because the tab holds the selected chat
-  whole and a route has no job scope. The newest reply reads `pending` too: "confirmed" is the job's to say.
-- Coverage and Timeline read those facts through `reconcileMemoryCoverage`, the send's rule over the held messages, so
-  an edit shows at once, before it reaches the server, with no request. The tab hashes with `memoryMessageHash`, pure
-  JavaScript because `crypto.subtle` needs a secure context, and each tab keeps `memoryMessageHasher`'s memo. An
-  unloaded chat is not found, and reconciling against no messages would call every event `missing`, so the facts then
-  stay as answered.
-- `joinMemoryCoverage` takes a row's state from the first that holds: not in `eligibleHistory`, `excluded` (`disabled`);
-  an event that covers it, `covered`; a stale event, `stale`; a suppressed one, `excluded` (`suppressed`); a retracted
-  one, `excluded` (`retracted`); [screened](#reply-screening), `excluded` (`screenedRefusal`, `screenedFormat`); the
-  newest unrecorded run naming it, by result; its own receipt when that is a notice no run stands behind
-  (`notAutomatic`, `writerPaused`), `skipped`; else `pending`.
-- The gap is the eligible messages older than `rawWindow`'s start that no covering event cites, less screened replies,
-  and leaving is its `dropped`, emptied when the owner's `supaMemory` is off. Tokens are counted on those rows alone,
-  and only when their texts change, so a reply streaming into the window starts no count.
-- Coverage groups consecutive rows of one state and renders 200 rows at a time. One group opens at a time.
-- The Log reads a round at a time; a 409 on a later round restarts the list. A row expands to `MemoryRun.analysis`, each
-  item by its quote, marked when the receipt's `unverified` names it. That list names items by kind and text, so of two
-  equal quotes both are marked. An unreadable `answer` shows too.
-- A stored run is data of any shape (`memoryRunView`), and all model and message text renders as plain text. The export
-  is `{ logVersion, revision, runs }` as JSON, read whole at one revision and restarted on a 409 as the package is.
+The coverage route answers each event's stored `status`, `sources`, `keptState`, and `rerecord`. Coverage and Timeline
+apply the send's rule to held messages through `reconcileMemoryCoverage`: an active event whose sources changed reads
+`stale` in the tab's copy unless `keptState` matches; the stored record stays unchanged. This needs no request before
+server save; the route has no job scope. Their contracts hold the unloaded-chat exception. The join's comment owns row
+priority and windows. The newest reply with nothing else deciding its row reads `pending`, never confirmed, because
+confirmation is the job's to say.
+
+`memoryItemsUsed` supplies last-send badges from the same newest-valid-report boundary as the meter. Its comment and the
+tabs' `usedEvents`, `usedPages`, and `usedGroups` hold badge selection and placement.
 
 ### Pages, Timeline, and Threads
 
-- Pages lists the contents through `memoryPageTree`, the scene first, and reads a page by id when selected. A section's
-  heading is a key, shown through `pages.headings`, and a key it does not know shows as it is. There is no editor for a
-  page's title, aliases, type, or links. The tab also holds [the page tools](pages.md): the trash under the tree, merge,
-  split, the lorebook export, and import on an empty chat.
-- History comes from `memoryPageHistoryView`, newest first. An entry's "after" is the next entry of the same heading, or
-  the live section, because no `after` is stored ([the rule](records.md#invariants)). The diff renders as spans, one
-  open at a time.
-- Timeline reads the coverage route, not the contents: it already answers every event's `messageIds` at one revision,
-  and `readContents` stays free of `data` because a send and every round call it. `memoryTimelineRows` sorts by an
-  event's first message still present, else its stored `sourceIndex`, else last, and ages it from its newest message
-  still present, as the flow lane does. `memory_events.seq` says nothing of message order. Opening a row reads its
-  record through `memoryEventView`, and a stale row holds the repairs ([Panel edits](#panel-edits)).
-- An open event whose `writerRun` is `ADOPTED_WRITER_RUN` says it came from HypaV3 data without a model call.
-- Threads lists the contents, with the state on each row, and opening one reads its `who`, `openedBy`, and `closedBy`.
-- A link between tabs is `open(target)`, which the panel turns into `focus` for the tab it shows. A message link is
-  `jump(messageId)`: `setChatOpen`, `requestMessageJump`, then the panel closes. The panel can sit over a closed chat.
+Timeline reads coverage's `messageIds` at one revision, keeping `readContents` free of record `data` on sends and
+rounds; `memory_events.seq` is storage order. `memoryTimelineRows` owns message order and aging. Pages hosts
+[page tools](pages.md); each tab's contract holds its view rules. `open(target)` becomes the chosen tab's `focus`;
+`jump(messageId)` opens the chat with `setChatOpen`, calls `requestMessageJump`, then closes the panel.
 
 ### Panel edits
 
-Each goes through [the edit route](records.md#the-edit-route), naming the revision of the copy it was made on, one at a
-time per tab. A tab applies the edit to its copy, and a refusal restores the copy, shows the notice (none for `epoch`,
-which halts on its own), and reads again. A success keeps the answer and its revision. `readOnly` only turns the
-controls off first: the server's fence decides.
-
-A repair differs in one way: a stale row's status comes from the held messages, so the tab applies nothing to its copy
-and reads the round again either way. Keep names the anchor state computed from the held messages, so a chat that moved
-on is refused `changed`, and a local edit not yet on the server is too. Retract asks first, because no control takes it
-back. Re-record sends the mark, then presses `memoryRecord` through `memoryRerecordTarget`. An event already marked goes
-straight to the press, so a failed press can be pressed again.
-
-An open section editor keeps the body it opened on. A read that brings another body for that section closes it with the
-`changed` notice, so a draft written against old text cannot replace the writer's new text. Read-only keeps the draft
-and turns Save off, and the read when it falls applies the same rule.
+Pages and Threads send revision-bound edits through [the edit route](records.md#the-edit-route), one at a time per tab;
+their contracts hold optimistic copies and refusal recovery. Timeline rereads after either repair outcome because held
+messages decide stale status. Keep sends the held anchor state; Re-record marks then presses `memoryRecord` through
+`memoryRerecordTarget`. The server fence decides after `readOnly` disables controls. Settings writes chat overrides
+through `setChatMeta` in `src/ts/storage/chatStore.svelte.ts`.
 
 ### The writer line
 
-`memoryWriterNotice` decides the line under the status lines from the current state, because a receipt or a report is a
-copy of its moment. The first that holds: memory off, no action, because the command refuses; a held chat as the
-contents say, `awaitingAdoption`, no action; `writerPaused` over the current runs (from the contents) or a newest
-receipt that reads paused, resume; events waiting for a re-record (`health.pendingRepairs`), the action the newest
-message would have; a newest `notAutomatic` receipt, its reason and `memoryReceiptView`'s action; a `manual` cadence,
-reason `manual`. Past those only the action shows. A newest `awaitingAdoption` receipt on a chat no longer held reads as
-no receipt, or it would hide record now after the choice. The press is `pressMemoryRecord`, as on the receipt line, off
-while pressing, read-only, or the task is live.
+`memoryWriterNotice` combines the contents' current pause state and `health.pendingRepairs`, current settings, and the
+newest receipt; its comment owns priority and adoption-receipt handling. The panel and receipt line share
+`pressMemoryRecord`.
 
 ### Prompt fine-tuning
 
-`StructuredMemoryPrompts.svelte` sits in the Memory settings page and edits the preset's `fineTuning`, `analysisPrompt`,
-and `patchPrompt`. Ticking the box warns, then seeds blank prompts from `GET /api/memory/structured/default-prompts`; a
-read that fails leaves the box off. Unticking keeps the texts. The same answer shows the defaults, and `promptGuide` in
-`en.ts` is the stored guide.
+The settings component edits the preset's `fineTuning`, `analysisPrompt`, and `patchPrompt`; its contract owns warning
+and default seeding from `GET /api/memory/structured/default-prompts`.
 
-Under `fineTuning` a call's text is its whole frame (`parseCustomFrame`): the same ChatML parser, CBS, and slot filling,
-and the same validation of the answer. `instructions` reach no custom frame, only compaction, whose default frame stays.
-A frame fails the run `customPromptInvalid`, with a failed receipt and no call, when it is blank, parses to no message,
-or lacks a required slot. Slots are read after CBS and before filling, so a CBS branch cannot hide one:
+`server/src/prompt/memory/structured/prompts.ts`'s `parseCustomFrame` owns the whole ChatML frame and CBS processing,
+required slots, and compaction's unchanged frame. Analysis requires `messages` and `scene`; patch requires `cast` and
+`previous`. Scene and cast carry `takenBack` in either mode, preserving replay checks. The writer's header owns
+`customPromptInvalid`, its failed receipt without a call for that frame, and the custom patch's margin check
+(`inputTooLarge`). Both invalid-frame failures count toward the pause.
 
-| Call     | Required            | Why                                                                                |
-| -------- | ------------------- | ---------------------------------------------------------------------------------- |
-| Analysis | `messages`, `scene` | Quotes come from the window; the scene slot lists what a person took back          |
-| Patch    | `cast`, `previous`  | The cast carries `takenBack`, and admission treats its pages and sections as shown |
-
-So what a person took back reaches a custom prompt as it reaches the default one, and replay's check of the taken-back
-lines holds in both modes. A bad analysis frame fails in the opening write, a bad patch frame after the analysis call,
-and either counts toward the pause. A custom patch prompt is checked against the record margin before its call and fails
-`inputTooLarge`, since a frame can be any length.
-
-`customPrompt` means `fineTuning` was on, not that a frame ran: it is on the run, on the failed and recorded receipts,
-and on `writerNotice`'s. A failed receipt under it also keeps the bounded, redacted `error`, so a missing field is named
-on the line and not only in the Log. The panel's line reads the current settings; a receipt and a Log row read what they
-stored. The [health badge](#the-health-badge) reads the current settings too.
+`customPrompt` means fine-tuning was enabled, even if no frame ran, on runs, failed and recorded receipts, and send
+notices. Failed custom receipts carry bounded, redacted `error` for the receipt line and Log. The panel and
+[health badge](#the-health-badge) read current settings; receipt and Log rows read their stored mode.
 
 ### The test run
 
-The `memoryTest` command job (`testRun.ts`) runs the writer once over a window and answers on `done.result`.
+`runMemoryTest` in `server/src/prompt/memory/structured/testRun.ts` serves the `memoryTest` job. Its header holds replay
+or open-window selection and detached dry-run execution. After `admitRecord`, admission refuses a tab-bound `memory`
+slot or `request` trigger, or a queued or running memory task. No writer lease is taken, since that would cancel a task;
+the job holds the chat slot, and `rebuildLocks` and `chatBusy` refuse it before execution.
 
-1. Admission is `admitRecord`'s, then a refusal for a tab-bound `memory` slot or `request` trigger, naming it, and for a
-   queued or running task of the chat. It takes no writer lease, because acquiring one cancels a running task; the job
-   holds the chat's slot, and `rebuildLocks` and `chatBusy` refuse it before it runs.
-2. It runs on the detached `createMemoryTaskHost`, so no tool, inlay, chat variable, or tab callback is in reach.
-3. Window: the newest run's, while each of its messages is still eligible with the same hash, whatever the ceiling; else
-   the first open window; else `none`.
-4. `createStructuredWriter` runs with `dryRun` and a `commit` that keeps the changes and writes nothing. `dryRun` builds
-   the prompt anew, skips the last event, so the window's own event cannot dedupe the patch call away, and skips
-   compaction and warming. `commitPages` still runs, so its refusals appear in the result.
-
-`pressMemoryTest` treats a followed job and a terminal without the result, which a retained one is, as no result.
+The contract for `createMemoryTaskHost` in `server/src/prompt/memory/memoryTaskHost.ts` allows no tool, inlay, tab
+callback, or chat-variable write. `createStructuredWriter`'s `dryRun` skips the last event to prevent self-deduping the
+patch, while `commitPages` validation still runs. Its header holds prompt rebuilding, skipped compaction and warming,
+and a commit that stores nothing. The answer crosses `done.result` as `StructuredMemoryTestResult` in
+`shared/structuredMemory.ts`; `pressMemoryTest`'s comment holds missing-result handling.
 
 ### Reply screening
 
-The preset's `screening` lists keep a reply out of what the writer records. `memoryScreenReason` is the rule: a reply
-whose stored `data` holds a listed text, without case, refusal first. It is decided at each read and stored nowhere, so
-a list change or an edit needs no repair.
+`memoryScreenReason` in `shared/structuredMemory.ts` owns case-insensitive stored-`data` matching, refusal first,
+recomputed without storage. It reaches the writer; raw prompt text and retrieval stay unchanged, screened ids are not
+added to `rawWindow`'s covered set, and existing event coverage survives.
 
-- Reach: the writer only. The raw text stays in the prompt and trims as it does today, so screened ids stay out of the
-  `covered` set `rawWindow` takes, and retrieval knows nothing of screening.
-- Windows: the ceiling is found first, so a press on a screened reply confirms what lies before it. Screened replies
-  then drop, and the user message before one folds into the next turn. `confirmedThrough` skips them, or a screened
-  newest reply would read `pending` for ever. `WriterCadence` carries the lists.
-- A message an event cites stays `covered`: screening changes no stored record.
-- A person's start re-records a marked event through its screened messages. An automatic start leaves it, marked.
-- Rebuild and backfill screen at the plan, at the cost, and again in `rebuildWindow`, since a reply can be edited after
-  the plan. `memoryWorkCost` has no job scope, so it reads `store.memory.readWriterSettings`.
-- A test run drops a replayed window that holds a screened reply and takes the window the cadence would close.
+`server/src/prompt/memory/structured/window.ts` finds the ceiling before screening, so pressing a screened reply
+confirms earlier text; preceding user text folds into the next turn. `WriterCadence` carries the lists and
+`confirmedThrough` skips screened replies. A manual re-record can cross screened sources; an automatic start leaves the
+mark. Rebuild and backfill screen during planning, cost estimation, and `rebuildWindow` after possible edits;
+`memoryWorkCost` has no job scope, so it reads `store.memory.readWriterSettings`. A test run drops a replay window that
+holds a screened reply and takes the window the cadence would close.
 
 ### The health badge
 
-`memoryHealthStates` (`chatStatus.svelte.ts`) gives the worst of `MEMORY_HEALTH_STATES` for the open chat and the pinned
-chats, while the algorithm is selected and the character's `supaMemory` is on. `health` is last in
-`CHAT_STATUS_PRIORITY`, so a lasting state hides no `unseen`.
+`memoryHealthStates()` in `src/ts/process/chatStatus.svelte.ts` combines `POST /health` facts, the open chat's newest
+report, current `fineTuning`, and tab-held over-cap marks for open and pinned chats while the algorithm and owner's
+`supaMemory` are on. Its comment owns selection; `MEMORY_HEALTH_STATES` gives the worst state, and `health` is last in
+`CHAT_STATUS_PRIORITY`, hiding no `unseen`.
 
-| State                 | Comes from                                                         |
-| --------------------- | ------------------------------------------------------------------ |
-| `writerPaused`        | `paused`, or the open chat's newest report; never a receipt        |
-| `gap`                 | The open chat's newest report: `gapTokens` over `gapConfirmTokens` |
-| `staleEvents`         | `storedStale`, `pendingRepairs`, the report's `stale` exclusions   |
-| `unsupportedSections` | `unsupportedSections`                                              |
-| `requiredOverCap`     | The tab's mark of a send failed `memoryRequiredOverCap`            |
-| `pageOverBudget`      | `overBudgetSections`                                               |
-| `customPrompt`        | The preset's `fineTuning`, with no read; neutral                   |
+| State                 | Input                                                                       |
+| --------------------- | --------------------------------------------------------------------------- |
+| `writerPaused`        | Health `paused` or the open report sets it; a receipt does not.             |
+| `gap`                 | The open report's `gapTokens` exceeds `gapConfirmTokens`.                   |
+| `staleEvents`         | It combines `storedStale`, `pendingRepairs`, and report `stale` exclusions. |
+| `unsupportedSections` | It reads health's `unsupportedSections`.                                    |
+| `requiredOverCap`     | It reads the tab's `memoryRequiredOverCap` failure mark.                    |
+| `pageOverBudget`      | It reads health's `overBudgetSections`.                                     |
+| `customPrompt`        | It reads current `fineTuning` without a request and is neutral.             |
 
-- `watchChatVisibility` reads the facts from an effect, deferred and awaited by nothing, so boot and the first chat
-  render do not wait: after boot, for a new key, for the open chat on opening and on the panel closing, and on a page
-  return at most once a minute. Never on a send, a task end, or streaming. A failed read keeps what is held.
-- `POST /health` ([the read routes](records.md#the-read-routes)) can answer a prefix, and the tab asks again from where
-  it stopped. [Measured](../../audit/structured-memory-health-read-2026-11-03.md).
-- The mark is keyed by chat: an `error` terminal with `code: "memoryRequiredOverCap"` sets that chat's, a `done` with a
-  `messageId` clears only that chat's. A preview that fails over cap sets it too: that is a true observation.
-- `DefaultChatScreen` shows the state inline on a line under the `ContextMeter` row, with the meter off too, and a press
-  opens the panel. Character and folder badges take `groupHealthState`.
-- The contents answer carries the facts as `health`, so the panel's writer line and the badge read one fact.
-  `writerState` answers `pending`, reason `repair`, from `records.events`, already in hand at a send.
+`watchChatVisibility` owns deferred read triggers and failed-read retention. `POST /health` can answer a prefix and the
+tab resumes ([routes](records.md#the-read-routes),
+[measurement](../../audit/structured-memory-health-read-2026-11-03.md)); contents' `health` feeds the same writer-line
+facts. A send's `writerState` gets `pending` with reason `repair` from in-hand `records.events`.
+
+Job terminals reach `noteJobDone`. An `error` terminal with code `memoryRequiredOverCap` sets that chat's mark, a
+preview's included; a `done` terminal with a `messageId` clears only that chat's. `DefaultChatScreen` shows health under
+`ContextMeter` even with the meter off; pressing opens the panel. Character and folder badges use `groupHealthState` in
+`src/lib/SideBars/chatStatus.ts`.
 
 ## State
 

@@ -34,11 +34,21 @@
     import { pressMemoryRecord } from "./memoryRecordPress";
     import { memoryReadFailureText, memoryReasonText } from "./memoryText";
 
-    // The Timeline tab: the chat's events in the order of its messages as they stand. The coverage route
-    // already answers each event's messages, status, and title at one revision, so the list reads no
-    // record, and the rows follow the held messages with no request: a source that changes turns its
-    // event stale here at once. Opening one reads its record, and the page titles the first time a row
-    // opens after a refresh, and a stale row opened offers its repairs. Everything shown is plain text.
+    /**
+     * Timeline reads server/src/routes/structuredMemory.ts's coverage answer, which already has each
+     * event's message ids, status, and title at one revision; listing events reads no individual record.
+     * Rows use `reconcileMemoryCoverage` and `memoryTimelineRows` in src/ts/process/structuredMemory.svelte.ts
+     * over held messages, with a per-mount hash memo. An unloaded chat leaves the facts unreconciled.
+     * Storage sequence is not message order, especially after backfill. Opening an event reads its record
+     * and reads page titles once per refresh. All model and message text stays plain; `ADOPTED_WRITER_RUN`
+     * identifies HypaV3 adoption without a model call.
+     *
+     * Repairs name the coverage revision and reread whether accepted or refused: a record answer alone
+     * cannot replace a status derived from held messages. Keep sends the held anchor state; an unsaved
+     * local edit can therefore be refused `changed`. Retract asks first because no control reverses it.
+     * Re-record marks before pressing through `memoryRerecordTarget`; an existing mark goes straight to
+     * the press, so a failed press remains retryable.
+     */
 
     let { chatRef, readOnly, refresh, focus, open, jump }: MemoryPanelTabProps = $props();
 

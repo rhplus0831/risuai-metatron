@@ -11,10 +11,15 @@
     import type { ContextReport } from "../../../../shared/contextReport.ts";
     import MemoryManifest from "./MemoryManifest.svelte";
 
-    // The Preview tab: the memory block the next send would get and its manifest, from a preview job,
-    // which marks nothing. Only the button starts one. A preview is a local send, so it turns the panel
-    // read-only and back, and that moves `refresh`: a run on `refresh` would never stop, and clearing on
-    // `refresh` would clear the run's own answer. Everything shown is plain text.
+    /**
+     * Only the button starts a preview through src/ts/process/index.svelte.ts's `previewChatReport`.
+     * It marks no memory record; its local send makes the panel read-only and moves `refresh`, so neither
+     * running nor clearing on refresh is safe. The answer has no next message and can differ from a send.
+     *
+     * `memoryBlockEntries` in src/ts/process/structuredMemory.svelte.ts finds item tags after prompt edits;
+     * entry memos cannot identify the block reliably, and a tagless rule header is not a block. A failed
+     * titles read leaves the manifest visible without titles. Model and message text stays plain.
+     */
 
     interface Props {
         chatRef: ChatRef;

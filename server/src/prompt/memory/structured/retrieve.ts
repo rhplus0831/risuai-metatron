@@ -22,9 +22,10 @@ import { sectionVectorText } from "./pages.ts";
  * What a send's lanes offer the card, from the records and the prompt's own entries.
  *
  * - Places: an event's place is the entry of its newest source. With no source among the entries it has
- *   no place, so neither flow nor the events lane lists it.
- * - Required is the scene page in whatever mode, then the `always` pages in stored order, each with every
- *   section not suppressed. The scene also says who is present, which no section holds. In this lane and
+ *   no place, so neither flow nor the events lane lists it. That is not staleness: a source can simply
+ *   be disabled in this send.
+ * - Required is the scene page unless `never`, then the `always` pages in stored order, each with every
+ *   nonblank, unsuppressed section. The scene also says who is present, which no section holds. In this lane and
  *   the next, a page with nothing to show gives no item.
  * - Pages are found by four channels, in rank order: on stage, named in the last `pageNameMessages`
  *   messages by lore's matching, linked from either of those by one hop, and near the query by a
@@ -33,6 +34,7 @@ import { sectionVectorText } from "./pages.ts";
  *   leads, then similarity. A character offers only its `currentState` and `relationships`, whole.
  * - Flow is the story's recent order, not retrieval: the last `flowEvents` events by place, never by
  *   storage order, since a backfill stores out of order, and whether or not they are inside the window.
+ *   Flow has no token target; `Number.MAX_SAFE_INTEGER` is the sentinel passed to spending.
  * - Retrieval leaves out an event whose every source is inside the window with text, since the prompt
  *   holds that text already. An older source keeps the event in: uncovered history can be trimmed.
  * - The events lane opens when the user's messages read as past, causal, or chronological, or when an
@@ -44,24 +46,15 @@ import { sectionVectorText } from "./pages.ts";
  * - Threads: any not ended, so a paused one stays. One naming nobody is listed low, as a thread recorded
  *   before its chat had pages is; one naming someone needs them on stage, which is the scene page's
  *   attendance.
- * - Knowledge is stored on events, so what a page knows comes from every event that covers its messages,
- *   before any cap. Facts are one by their text with whitespace collapsed. A fact's knowers are every
- *   record's page and `knowers` list, and a fact that any record states without `knowers` is no secret,
- *   since a false "does not know" is worse than a missing one. A page on stage shows its own newest
- *   facts, a secret labelled private, and a character on stage says which secrets of others it does not
- *   know, those held on stage first, the holder not having to be on stage. Both belong to the page's one
- *   line, so an `always` page counts them against the required cap.
- * - `never` hides a page everywhere: it has no item, its title is in no attendance or private label, its
- *   links are not followed, and a secret only it holds reaches nobody's line. A `never` scene still gives
- *   the stage.
  * - A failed embedding never fails the send: the prompt stays valid without it and the answer says why.
  *   The events lane then opens by the reading alone, over events sharing someone with the stage, and the
  *   pages lane goes on without its similarity channel. A cancelled job or a latched failure still
  *   escapes through `host.fence()`.
  *
  * `excluded` holds every event, page, and open thread that is no candidate, however many: what reaches a
- * report is its reader's choice. One past `eventCandidates`, `pageCandidates`, or `threadCandidates` is
- * `budget`, since it passed relevance and lost on rank. A stale event says why it is stale. A retracted
+ * report is its reader's choice. Exclusions are per lane: flow can include an event that events excludes.
+ * One past `eventCandidates`, `pageCandidates`, or `threadCandidates` is `budget`, since it passed
+ * relevance and lost on rank. A stale event says why it is stale. A retracted
  * event and an ended thread are not listed, and neither is an `always` page the required lane shows.
  */
 
@@ -730,7 +723,27 @@ async function relatedPages(
     return { items, excluded };
 }
 
-/** The lanes this send can offer, and every other record they reach, with why it is not offered. */
+/**
+ * The lanes this send can offer, and every other record they reach, with why it is not offered.
+ * Required pages never also enter the pages lane, so a page has only one item and tag.
+ *
+ * - Knowledge is stored on events, so what a page knows comes from every event that covers its messages,
+ *   before any cap. Facts are one by their text with whitespace collapsed. A fact's knowers are every
+ *   record's page and `knowers` list, and a fact that any record states without `knowers` is no secret,
+ *   since a false "does not know" is worse than a missing one. A page on stage shows its own newest
+ *   facts, a secret labelled private, and a character on stage says which secrets of others it does not
+ *   know, those held on stage first, the holder not having to be on stage. Both belong to the page's one
+ *   line, so an `always` page counts them against the required cap.
+ * - `never` hides a page everywhere: it has no item, its title is in no attendance or private label, its
+ *   links are not followed, and a secret only it holds reaches nobody's line. A `never` scene still gives
+ *   the stage.
+ *
+ * `MemoryKnowledge.pageId` is the learner; no field identifies the subject of a fact. Presence of
+ * `knowers`, including an empty list, makes that record private. The writer in
+ * server/src/prompt/memory/structured/writer.ts does not reconcile knowledge across records, so this
+ * read joins by whitespace-collapsed fact text before caps: learning a secret later must prevent a
+ * false denial of it.
+ */
 export async function retrieveLanes(host: RetrievalHost, input: RetrievalInput): Promise<RetrievedLanes> {
     const { events, threads, pages, entries, window, settings } = input;
     const targets = settings.laneTargets;

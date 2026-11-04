@@ -1,6 +1,12 @@
 import { language } from "src/lang";
 import type { StructuredMemoryResult } from "src/ts/process/structuredMemory.svelte";
 
+/**
+ * Stored codes can outlive this tab's vocabulary. Unknown codes stay visible as themselves, so a
+ * new server reason never becomes an empty row. This module supplies text only; callers own notices
+ * and suppress duplicate epoch alerts raised by src/ts/storage/resourceClient.ts.
+ */
+
 /** A stored code's text from `table`; the code itself for one this tab does not know. */
 export function codeText(table: Record<string, string>, code: string): string {
     return Object.hasOwn(table, code) ? table[code] : code;

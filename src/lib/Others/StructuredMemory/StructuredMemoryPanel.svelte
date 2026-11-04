@@ -52,29 +52,31 @@
     import ThreadsTab from "./ThreadsTab.svelte";
     import TimelineTab from "./TimelineTab.svelte";
 
-    // The memory panel of a Structured Memory chat: `App.svelte` mounts it in place of the HypaV3 modal,
-    // under the same `hypaV3ModalOpen` store. A tab is one component taking `MemoryPanelTabProps`, mounted
-    // while it shows, so opening it is its first read and a new entry here adds one. `open` takes the
-    // panel to a record in another tab, and `jump` out of the panel to a message. A receipt's link opens
-    // the panel at a record too: it asks before the panel exists, so the panel reads that as it mounts.
-    //
-    // A tab reads again each time `refresh` moves: on the button, and when the panel stops being
-    // read-only, which is when a memory task or a record-now job has finished writing. It joins held
-    // data itself, so a change of the held messages needs no request. Preview is the exception: a
-    // preview makes the panel read-only itself, so it runs only on its own button.
-    //
-    // Pages, Timeline, and Threads write, each edit checked against the revision it was made on and fenced
-    // on the server; read-only here only turns their controls off first. The writer line says when recording
-    // is not automatic and why, from the current state, and holds the buttons that start it. Above it, a
-    // chat with HypaV3 summaries and no records, which the server holds until a person chooses, offers
-    // adopting or declining them. Under it, an adopted chat that still stores them offers their reset. What
-    // these offer comes from the contents route, and the server checks it again on each press.
-    //
-    // Below those a chat is offered a rebuild and a backfill, each priced and asked first, and a language
-    // change is one more reason to take the rebuild. A chat that holds a run shows it instead: the run is
-    // the server's and outlives this panel, so it stays read-only until the swap or an abandon, and the
-    // writer line's buttons stay off. Pausing, resuming, and above all abandoning are always a press away,
-    // and the contents are read again when the run's task ends.
+    /**
+     * The memory panel mounted by src/App.svelte under the shared `hypaV3ModalOpen` store. Each `TABS`
+     * component takes `MemoryPanelTabProps` and exists only while selected. `open` carries a record target
+     * between tabs; `jump` opens the chat before requesting its message and closing the panel. Receipt links
+     * arrive before mount through src/ts/process/structuredMemory.svelte.ts's `requestMemoryPanelTarget`.
+     *
+     * A tab rereads when `refresh` moves: on demand, when read-only falls, and when a rebuild's task ends
+     * while its run still holds read-only up. This catches record-now work inside a generation job too.
+     * Held-message edits need no read. Preview alone runs on its button, since its local send moves refresh.
+     * The fence's wait for a held revision notifies nothing, so that wait is checked each second.
+     *
+     * Pages, Timeline, and Threads write through the memory routes; read-only disables their controls
+     * before the server's write fence decides. Settings writes chat fields through
+     * src/ts/storage/chatStore.svelte.ts's `setChatMeta`, with read-only disabling its controls locally.
+     * The writer line uses current contents and settings, since receipts are copies.
+     * Adoption, reset, rebuild, and recorded language come from server/src/routes/structuredMemory.ts's
+     * contents answer, never the tab's HypaV3 mirror. Adoption and decline precede the writer line; reset
+     * follows it, and decline and reset ask first. The server rechecks every choice.
+     *
+     * Below those a chat is offered a rebuild and a backfill, each priced and asked first, and a language
+     * change is one more reason to take the rebuild. A chat that holds a run shows it instead: the run is
+     * the server's and outlives this panel, so it stays read-only until the swap or an abandon, and the
+     * writer line's buttons stay off. Pausing, resuming, and above all abandoning are always a press away,
+     * and the contents are read again when the run's task ends.
+     */
 
     const text = language.structuredMemory.panel;
     const receiptText = language.structuredMemory.receipt;

@@ -22,9 +22,15 @@
     import MemoryLinkButton from "./MemoryLinkButton.svelte";
     import { codeText, memoryReadFailureText } from "./memoryText";
 
-    // The Threads tab: the chat's open promises and questions, each with its state as a person can set
-    // it. A row comes from the contents, so the list reads no record; opening one reads who it concerns
-    // and the events that opened and closed it. Everything shown is plain text.
+    /**
+     * The contents answer supplies each thread's state; opening a row reads its `who`, `openedBy`, and
+     * `closedBy`. Links use panel targets rather than retaining another tab's component. All text is plain.
+     *
+     * State edits through src/ts/process/structuredMemory.svelte.ts name the contents revision and apply
+     * to this tab's copy first. Only one edit is in flight and no read replaces its copy meanwhile. A
+     * refusal restores it and rereads; success keeps the server's state and next revision. Read-only
+     * disables the controls before server/src/routes/structuredMemory.ts's write fence decides.
+     */
 
     let { chatRef, readOnly, refresh, open }: MemoryPanelTabProps = $props();
 
