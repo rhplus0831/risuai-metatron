@@ -265,13 +265,16 @@ type RoundRead = {
  *   `revision` too under another algorithm, which reads no memory table. Stored events over
  *   `packageRoundBytes` are 413 `{ error, reason: "tooLarge" }` before any message is read. 404 `chatGone`.
  * - `POST /api/memory/structured/:characterId/:chatId/edits` `{ revision, edit }`: one person's edit
- *   (`StructuredMemoryEdit`, `structured/edits.ts`), answered `StructuredMemoryEditAnswer`. An edit that
- *   changes nothing still names a revision, so a stale one is refused like any other. An event's repair
- *   reads the chat as stored, a `retract` excepted, which reads none. 400 for a malformed edit or one
- *   the record refuses, a page in the trash included, 404 `chatGone` or `recordGone` (a heading the page
- *   lacks too), 409 `{ error, reason: "fenced" }` while `fenced` holds, 409 `{ error, reason: "changed" }`
- *   when a `keep` names a state the chat has left, and 409 `{ error, revision }` when `revision` is not the
- *   current token. The body is read after authentication and capped at 64 KiB.
+ *   (`StructuredMemoryEdit`, `server/src/prompt/memory/structured/edits.ts`), answered
+ *   `StructuredMemoryEditAnswer`. Admission checks ids, the body, then the edit shape (`parseMemoryEdit`,
+ *   including blank or over-long section text) before the epoch and fence; only then is the record read,
+ *   edited, and written. An edit that changes nothing still names a revision, so a stale one is refused
+ *   like any other. An event's repair reads the chat as stored, a `retract` excepted, which reads none.
+ *   400 for a malformed edit or one the record refuses, a page in the trash included, 404 `chatGone` or
+ *   `recordGone` (a heading the page lacks too), 409 `{ error, reason: "fenced" }` while `fenced` holds,
+ *   409 `{ error, reason: "changed" }` when a `keep` names a state the chat has left, and
+ *   409 `{ error, revision }` when `revision` is not the current token. The body is read after
+ *   authentication and capped at 64 KiB.
  * - `POST /api/memory/structured/:characterId/:chatId/revert` `{ revision, pageId, historyId }`: a person's
  *   undoing of one writer's change of a section (`revertChange`, `structured/pages.ts`), answered
  *   `StructuredMemoryRevertAnswer`, with the events after the change's own that are not retracted. A change
@@ -367,9 +370,10 @@ type RoundRead = {
  *   job holds the chat (`chatHeld`).
  *
  * All are authenticated, rate-limited, and epoch-checked (412 `EpochMismatch`); 400 for an id that is
- * not a resource id, 503 (`Retry-After`) when the store is closed. The app makes every answer
- * `no-store` and refuses them during shutdown. The epoch check and the store reads run in one
- * synchronous step, so a round is one snapshot; separate rounds are tied together only by `revision`.
+ * not a resource id, 503 (`Retry-After`) when the store is closed. Read-route ids and cursors are
+ * checked before the epoch. The app makes every answer `no-store` and refuses them during shutdown.
+ * The epoch check and the store reads run in one synchronous step, so a round is one snapshot;
+ * separate rounds are tied together only by `revision`.
  * An edit's, a revert's, a page tool's, an import's, an inherit's, a restore's, an adoption's, a decline's,
  * a reset's, or an abandon's checks and its write share one such step too, after any body is read, so
  * nothing can take the chat between the fence and the write, and no writer of the source chat comes between

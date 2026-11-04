@@ -1204,7 +1204,11 @@ export function memoryGrade(axes: MemoryAxes | undefined): number | undefined {
     return axes ? axes.persistence + axes.change + axes.reach : undefined;
 }
 
-/** Whether a thread in `state` is over: it takes no more transitions. */
+/**
+ * Whether a thread in `state` is ended (`done` or `cancelled`). The writer gives it no more transitions
+ * (`endedThread` in `server/src/prompt/memory/structured/analysis.ts`); only a person's edit through
+ * `applyThreadEdit` in `server/src/prompt/memory/structured/edits.ts` can reopen it.
+ */
 export function memoryThreadEnded(state: MemoryThreadState): boolean {
     return state === "done" || state === "cancelled";
 }

@@ -41,12 +41,13 @@ import {
 } from "./resourceStore.ts";
 
 /**
- * Structured memory's tables in the resource database (`MEMORY_TABLES_SQL` in `chatStore.ts`): a chat's
- * pages, events, threads, and writer runs, and `memory_state` with the one revision that covers them
- * all and whether a person declined adopting the chat's HypaV3 summaries. Every row belongs to a chat's
- * incarnation and goes with it by cascade. `data` holds the whole record, so a page's sections stay
- * embedded in its row. A page in the trash (`trashedAt`) keeps its record and takes `trashed` as its
- * `type` column, which is what lists it apart from the chat's pages without a statement reading `data`.
+ * Structured memory's tables in the resource database (`MEMORY_TABLES_SQL` in
+ * `server/src/data/chatStore.ts`): a chat's pages, events, threads, and writer runs, and `memory_state` with
+ * the one revision that covers them all and whether a person declined adopting the chat's HypaV3 summaries.
+ * Every row belongs to a chat's incarnation and goes with it by cascade. `data` holds the whole record, so a
+ * page's sections stay embedded in its row. A page in the trash (`trashedAt`) keeps its record and takes
+ * `trashed` as its `type` column, which is what lists it apart from the chat's pages without a statement
+ * reading `data`.
  *
  * The resource store owns the connection, the epoch, and the transactions: the writers here join the
  * caller's open transaction and never begin or commit one, so a caller can compose them with its own
@@ -62,8 +63,9 @@ import {
  * else: a token carries the chat's incarnation, so a writer that read a deleted chat cannot match the
  * chat recreated under its ids. An existing chat with no `memory_state` row is at revision 0.
  *
- * A write checks a record's id, what it copies into columns, and its stored size. Full record shape is
- * not validated here: the callers own it.
+ * A write refuses invalid resource ids, non-string titles, closed values outside the lists in
+ * `shared/structuredMemory.ts`, and final stored text over `MAX_READ_RESPONSE_BYTES`. Full record shape
+ * is not validated here: the callers own it.
  */
 
 type TokenFunctions = {
@@ -85,6 +87,8 @@ export type MemoryEventWrite = Omit<MemoryEvent, "createdRevision">;
  * What one write changes: records to insert or update by id, ids to remove, and a person's decline of
  * adopting the chat's HypaV3 summaries, which is one-way, so nothing here clears it. A decline moves the
  * revision as a record does, on a chat that has not declined yet; on one that has it names nothing.
+ * Within each kind an id may be named only once, including removals: duplicate ids or an id both
+ * written and removed refuse the whole write. The same id in different kinds is legal.
  */
 export type MemoryChanges = {
     pages?: MemoryPage[];

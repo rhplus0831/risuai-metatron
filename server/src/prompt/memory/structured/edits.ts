@@ -27,7 +27,8 @@ import { isPlainObject } from "../../../../../shared/valueKinds.ts";
  *   `sources` stay, and so does `unsupported`, which states a fact about them. `disputed` goes, because a
  *   person's edit is the review a dispute waits for, and `userCorrected` says who wrote the text.
  * - The scene page stays `always`: it is the stage every send reads.
- * - A thread that leaves an ended state loses `closedBy`, which only an ended thread can have.
+ * - A thread that moves from an ended state to a non-ended state loses `closedBy`; moving between
+ *   ended states keeps it.
  * - A repair settles what reconciliation found. Retract takes an event out for good, and no control
  *   brings it back. Keep accepts what the person saw (`keptState`), and only that: a chat that moved on
  *   since then is refused, and a later change shows again. Re-record only marks the event, because the
@@ -186,7 +187,8 @@ function editFields(page: MemoryPage, { contextMode, grade }: Extract<PageEdit, 
 /**
  * `edit` over `page`, the page as stored: the page to store, or null for no change. A `MemoryEditRefusal`
  * says why it does not fit. A section body's change is kept in the page's history as one `edit` entry,
- * bounded by `pageHistoryEntries`.
+ * bounded by `pageHistoryEntries`, with no `eventId`: it is a person's change, not a writer's.
+ * A page's grade edit sets `gradeByUser`; a null grade clears both fields.
  */
 export function applyPageEdit(page: MemoryPage, edit: PageEdit, stamp: EditStamp): MemoryPage | null {
     switch (edit.kind) {
@@ -199,7 +201,11 @@ export function applyPageEdit(page: MemoryPage, edit: PageEdit, stamp: EditStamp
     }
 }
 
-/** `edit` over `thread`, the thread as stored: the thread to store, or null for no change. */
+/**
+ * `edit` over `thread`, the thread as stored: the thread to store, or null for no change. A person can
+ * choose any state, including reopening an ended thread. Only an ended-to-non-ended transition clears
+ * `closedBy`; switching between `done` and `cancelled` keeps it.
+ */
 export function applyThreadEdit(thread: MemoryThread, { state }: ThreadEdit): MemoryThread | null {
     if (thread.state === state) {
         return null;

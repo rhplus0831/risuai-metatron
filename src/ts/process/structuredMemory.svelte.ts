@@ -132,6 +132,11 @@ import { authFetch } from "../storage/serverAuth";
 export type StructuredMemoryRefusal =
     "chatGone" | "recordGone" | "epoch" | "changed" | "fenced" | "superseded" | "tooLarge";
 
+/**
+ * A route's checked value, an expected refusal, or a failed request/invalid answer with error text.
+ * `readAnswer` catches request failures; a 412 `EpochMismatch` calls `epochMismatch` in
+ * `src/ts/storage/resourceClient.ts` and ends the read without a retry. Callers own the notices.
+ */
 export type StructuredMemoryResult<T> =
     | { outcome: "ok"; value: T }
     | { outcome: "refused"; reason: StructuredMemoryRefusal }
@@ -1254,7 +1259,10 @@ export function readStructuredMemoryRuns(
     );
 }
 
-/** A metadata value on one line, or undefined for a value JSON has no text for. */
+/**
+ * A metadata value as one-line JSON, also valid YAML, or undefined for a value JSON has no text for.
+ * Unicode escapes cover controls and separators YAML cannot safely print verbatim.
+ */
 function metadataValue(value: unknown): string | undefined {
     return (JSON.stringify(value) as string | undefined)?.replace(
         /[\u007f-\u009f\u2028\u2029\ufeff]/g,
@@ -1274,6 +1282,7 @@ function collapsed(text: string): string {
     return text.replace(/\s+/g, " ").trim();
 }
 
+/** Body and summary lengths count `split("\n")` pieces, including a trailing empty piece. */
 function lineCount(text: string): number {
     return text.split("\n").length;
 }
@@ -1294,7 +1303,12 @@ export function memoryPagePath(page: MemoryPage): string {
     return `pages/${page.type}/${title} [${id}].md`;
 }
 
-/** A page's file: its fields as frontmatter, then each section under its heading with the body verbatim. */
+/**
+ * A page's file: frontmatter keeps every field except `history`, with each section's body replaced by
+ * `bodyLines`. Bodies follow verbatim under `##` headings: metadata keeps the exact `heading`, while
+ * the display line collapses whitespace. Line counts let
+ * `server/src/prompt/memory/structured/importPackage.ts` split bodies containing headings or fences.
+ */
 export function renderMemoryPage(page: MemoryPage): string {
     const sections = page.sections.map(({ body, ...section }) => ({ ...section, bodyLines: lineCount(body) }));
     const lines = [
@@ -1327,8 +1341,11 @@ function firstSourceIndex(event: MemoryEvent): number {
 }
 
 /**
- * The timeline file: the events in message order (an event with no anchored source last, ties in the
- * given order), each with its fields in a YAML fence, its summary verbatim, and its key lines.
+ * The timeline file starts with `packageVersion` and `revision`. Each event has a `##` title, a YAML
+ * fence with every field except `summary` plus `summaryLines`, its verbatim summary, and one quote
+ * line per key line. Metadata is authoritative; line counts delimit text that can contain Markdown.
+ * Order uses the smallest anchored source `index` at recording, not current message positions; an
+ * event without an anchored source goes last and ties retain the given order (contents order in a package).
  */
 export function renderMemoryTimeline(events: readonly MemoryEvent[], revision: string): string {
     const ordered = events
@@ -1389,7 +1406,9 @@ function zipPackage(
 /**
  * The chat's pages, events, and threads as a zip for `downloadFile`, all read at one revision. A change of
  * the chat's memory during the read restarts it with nothing kept, and a chat that keeps changing is
- * refused `changed`.
+ * refused `changed` after `WHOLE_READ_ATTEMPTS` (3) attempts in all, through `readAtOneRevision`.
+ * The zip holds `timeline.md`, `threads.md`, and one file per page at `memoryPagePath`; it carries no
+ * runs or page history. Threads use the package rounds' revision, so a restart discards both collections.
  */
 export function buildStructuredMemoryPackage(
     ref: ChatRef,

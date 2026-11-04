@@ -22,124 +22,92 @@
 
 ## Files
 
-- `shared/structuredMemory.ts`: types and pure rules only, safe in the tab and on the server.
-  - `STRUCTURED_MEMORY_ALGORITHM`: the persisted discriminator. `ADOPTED_WRITER_RUN`: the `writerRun` of an adopted
-    event, which names no run.
-  - `STRUCTURED_MEMORY_LIMITS`: the record limits, `CHARACTER_SECTION_SLOTS`: the fixed character sections, and
-    `MEMORY_SECTION_BUDGETS`: what [compaction](writer.md#compaction) holds a section to.
-  - Records: `MemoryEvent`, `MemoryPage`, `MemorySection`, `MemoryThread`, `MemoryRun`, `MemoryReceipt`.
-  - Writer output: `MemoryEventDraft`, `MemoryAnalysisResult`, `MemoryPageCandidate`.
-  - Evidence anchors: `MemorySource`, `MemoryAnchoredSource`, `MemoryUnanchoredSource`.
-  - Chat files: `StructuredMemoryFileRecords`, `StructuredMemoryFileEntry`, `MEMORY_RESTORE_BODY_BYTES`.
-  - Per-send: `MemoryManifest`, `MemoryManifestItem`.
-  - `memoryGrade`: a record's grade from its axes. `memoryThreadEnded`: `done` and `cancelled`. `writerPaused`: the
-    pause rule, shared with the panel's writer line; `writer.ts` re-exports it.
-  - The raw window, shared with the tab: `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`, `memoryEventCovers`.
-- `server/src/data/memoryStore.ts`: `createMemoryTables`, the synchronous reads and the writes over the tables;
-  `MemoryChanges`, `MemoryContents`, `MemoryRowTexts`; `checkMemoryRow`, the one check of a record's stored text;
-  `messageSourceHash`, what a `MemoryAnchoredSource` keeps as its `hash`. The projection's part:
-  [projection](projection.md#files).
-- `server/src/data/chatStore.ts`: `MEMORY_TABLES_SQL`, part of `CHAT_OPEN_SCHEMA_SQL`.
-- `server/src/data/resourceStore.ts`: `store.memory`, `readContents`, `readRecord`, and `write`. The projection's part:
-  [projection](projection.md#files); the checkpoint's part: [the lifecycle guide](lifecycle.md#files).
-- `server/src/routes/structuredMemory.ts`: `registerStructuredMemoryRoutes`. Its path and answers are shared:
-  `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`, `StructuredMemoryContentsAnswer`,
-  `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`, `StructuredMemoryCoverageRound`,
-  `StructuredMemoryRunsRound`, `StructuredMemoryThreadsRound`, `StructuredMemoryLogRun`, `StructuredMemoryEdit`,
-  `StructuredMemoryEditAnswer`.
-- The route answers of a copy, a chat file, adoption, and the reset, shared too: `StructuredMemoryInheritAnswer`,
-  `StructuredMemoryRestoreAnswer`, `StructuredMemoryAdoptAnswer`, `StructuredMemoryDeclineAnswer`,
-  `StructuredMemoryResetAnswer`, `StructuredMemoryAdoption`.
-- `server/src/prompt/memory/structured/edits.ts`: what a person's edit does, pure: `parseMemoryEdit`, `applyPageEdit`,
-  `applyThreadEdit`, `MemoryEditRefusal`. The repairs, `applyEventRepair` and `flagUnsupportedSections`:
-  [the lifecycle guide](lifecycle.md#files).
-- `src/ts/process/structuredMemory.svelte.ts`: the reads `readStructuredMemoryContents`, `readStructuredMemoryRecord`,
-  `readStructuredMemoryCoverage`, `readStructuredMemoryRuns`, `buildStructuredMemoryPackage`,
-  `buildStructuredMemoryLog`, which answer a `StructuredMemoryResult`; `editStructuredMemory`; the pure
-  `renderMemoryPage`, `renderMemoryTimeline`, and `memoryPagePath`.
+- `shared/structuredMemory.ts`: shared types, limits and pure rules, safe in tab and server.
+  - Records and evidence: `MemoryEvent`, `MemoryPage`, `MemorySection`, `MemoryThread`, `MemoryRun`, `MemoryReceipt`,
+    `MemorySource`, `MemoryAnchoredSource`, `MemoryUnanchoredSource`.
+  - Writer and send shapes: `MemoryEventDraft`, `MemoryAnalysisResult`, `MemoryPageCandidate`, `MemoryManifest`,
+    `MemoryManifestItem`; `memoryGrade`, `memoryThreadEnded`, `writerPaused`.
+  - Limits and window: `STRUCTURED_MEMORY_ALGORITHM`, `ADOPTED_WRITER_RUN`, `STRUCTURED_MEMORY_LIMITS`,
+    `CHARACTER_SECTION_SLOTS`, `MEMORY_SECTION_BUDGETS`, `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`,
+    `memoryEventCovers`.
+  - Read contracts: `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`,
+    `StructuredMemoryContentsAnswer`, `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`,
+    `StructuredMemoryCoverageRound`, `StructuredMemoryRunsRound`, `StructuredMemoryThreadsRound`,
+    `StructuredMemoryLogRun`, `StructuredMemoryHealthAnswer`.
+  - Edit and lifecycle contracts: `StructuredMemoryEdit`, `StructuredMemoryEditAnswer`, `StructuredMemoryRevertAnswer`,
+    `StructuredMemoryFileRecords`, `StructuredMemoryFileEntry`, `MEMORY_RESTORE_BODY_BYTES`,
+    `StructuredMemoryInheritAnswer`, `StructuredMemoryRestoreAnswer`, `StructuredMemoryAdoptAnswer`,
+    `StructuredMemoryDeclineAnswer`, `StructuredMemoryResetAnswer`, `StructuredMemoryAdoption`.
+- `server/src/data/memoryStore.ts`: synchronous record storage; `createMemoryTables`, `MemoryChanges`, `MemoryContents`,
+  `MemoryRowTexts`, `readContents`, `readRecord`, `write`, `checkMemoryRow`; `messageSourceHash` supplies
+  `MemoryAnchoredSource.hash`. The projection's part: [projection](projection.md#files).
+- `server/src/data/chatStore.ts`: table declarations; `MEMORY_TABLES_SQL`, `CHAT_OPEN_SCHEMA_SQL`.
+- `server/src/data/resourceStore.ts`: transaction and epoch boundary; `store.memory`, `readContents`, `readRecord`,
+  `write`. Other parts: [projection](projection.md#files), [checkpoints](lifecycle.md#files).
+- `server/src/routes/structuredMemory.ts`: HTTP contracts and admission; `registerStructuredMemoryRoutes`, `roundOf`.
+- `server/src/app.ts`: route registration and fence wiring; `registerStructuredMemoryRoutes`, `chatHeld`, `fenced`.
+- `server/src/prompt/memory/structured/edits.ts`: pure edit admission and application; `parseMemoryEdit`,
+  `applyPageEdit`, `applyThreadEdit`, `MemoryEditRefusal`. Repairs (`applyEventRepair`, `flagUnsupportedSections`):
+  [lifecycle](lifecycle.md#files).
+- `server/src/prompt/memory/structured/pages.ts`: revert rules; `revertChange`, `revertGroup`, `revertedSection`,
+  `laterEventCount`. Owner: [page tools](pages.md).
+- `server/src/prompt/memory/structured/writer.ts`: pause-rule re-export shared with the panel's writer line;
+  `writerPaused`. Owner: [writer](writer.md).
+- `src/ts/process/structuredMemory.svelte.ts`: tab route client and package renderer; `StructuredMemoryResult`,
+  `readStructuredMemoryContents`, `readStructuredMemoryRecord`, `readStructuredMemoryCoverage`,
+  `readStructuredMemoryRuns`, `readStructuredMemoryHealth`, `editStructuredMemory`, `buildStructuredMemoryPackage`,
+  `buildStructuredMemoryLog`, `renderMemoryPage`, `renderMemoryTimeline`, `renderMemoryThreads`, `memoryPagePath`.
 
 ## Flows
 
 ### The read routes
 
-All are `GET` under `STRUCTURED_MEMORY_PATH/:characterId/:chatId`, authenticated, rate-limited, and epoch-checked (412
-`EpochMismatch`), with the check and every store read in one synchronous step. Ids are checked first (400).
+The tab's reads reach `server/src/routes/structuredMemory.ts` through `STRUCTURED_MEMORY_PATH`. Routes authenticate,
+rate-limit and check the epoch (412 `EpochMismatch`). The route header owns paths, answers, round ordering, limits and
+refusals. Epoch check and store reads share one synchronous step: each round is one snapshot, and only the opaque
+`revision` comparison ties separate rounds together.
 
-- The chat's path answers the table of contents, `adoption`, `rebuild`, and `recordedLanguage`, which
-  [the panel](read.md#the-memory-panel) reads; `/records/:kind/:id` answers one record of a `MEMORY_RECORD_KINDS` kind
-  as stored. A missing chat or record is 404 with `reason` `chatGone` or `recordGone`.
-- `/package?cursor=N&revision=R` answers one round of the chat's pages followed by its events, in contents order, whole
-  records as stored. It charges each record's `bytes` from the contents, so it reads no body it will not send. The
-  budget is `RouteLimits.memoryPackageRoundBytes`, default `MAX_READ_RESPONSE_BYTES`, and soft as
-  [the read budget](../server-resources.md#read-budget) is: a round's first record is served whatever its size. `next`
-  is the position to continue from, null at the end.
-- `/coverage?cursor=N&revision=R` answers one round of the chat's events followed by its runs that are not `recorded`:
-  what each says of its messages (`messageIds`), an event's title and `sourceIndex` (the smallest stored anchored
-  position, for an event with no message left), and a run's `reason`, or its receipt's, which is where a failed run
-  keeps its code. No error and no message text. The list comes from the contents, so a recorded run's `input` is never
-  parsed.
-- An event in that round also answers its `sources`, `keptState`, and `rerecord`, because
-  [the tab reconciles](read.md#the-memory-panel): `status` there is the stored one, and the route reads no chat, whose
-  read parses every message.
-- `/runs?cursor=N&revision=R` answers one round of the chat's runs, newest first, without `input` and
-  `settingsFingerprint`, and `total`. A round also stops at `MEMORY_RUNS_ROUND_ROWS`, however small the runs are.
-- `/cost` answers [the cost preview](rebuild.md#the-cost-preview), with no record sent.
-- `/threads?cursor=N&revision=R` answers one round of the chat's threads, in contents order, whole records as stored,
-  which [a chat file](lifecycle.md#chat-files) reads beside `/package`.
-- All three charge and budget as `/package` does, before any record is read: a round's first record is served whatever
-  its size.
-- `revision` is compared whole as an opaque token, and a different one is 409 naming the current one. A round is one
-  snapshot, and that comparison is what ties rounds into one.
-- `POST /health` answers [the badge's](read.md#the-health-badge) facts for up to `MEMORY_HEALTH_CHATS_MAX` chats by
-  position, live tables only, no message read, null for a missing chat. It scans `MEMORY_HEALTH_ROUND_BYTES` of pages,
-  always the first chat, so the answer can be a prefix.
+- The panel reads contents (`adoption`, `rebuild`, `recordedLanguage` included) and records through
+  `store.memory.readContents` and `store.memory.readRecord`. Coverage sends stored facts (`status`, `sources`,
+  `keptState`, `rerecord`) for [the tab to reconcile](read.md#the-memory-panel) against its held messages; the route
+  avoids a whole-chat read, which would parse every message.
+- Package and [chat-file](lifecycle.md#chat-files) reads collect `/package` and `/threads` at one revision. The byte
+  budget comes from `RouteLimits.memoryPackageRoundBytes` in `server/src/app.ts`, default `MAX_READ_RESPONSE_BYTES`;
+  `roundOf` defines charging before body reads and the soft first-record rule. `/runs` feeds the Log; `/cost` is
+  [rebuild's cost preview](rebuild.md#the-cost-preview), with no record sent.
+- `readStructuredMemoryHealth` calls `POST /health` for [the badge](read.md#the-health-badge), reading live tables and
+  no messages. An answer can be a prefix of the requested chats; the tab resumes from that position. The route header
+  and `StructuredMemoryHealthAnswer` define the caps and positional answers.
 
 ### The edit route
 
-`POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/edits`, `{ revision, edit }`, capped at 64 KiB, answers
-`StructuredMemoryEditAnswer`: the record as it now stands, with the revision the next edit names. `edit` is the closed
-union `StructuredMemoryEdit`, one change per request, so the tab never sends a record and cannot set history, evidence,
-a type, or an id.
+The panel calls `editStructuredMemory` with the revision of its read and one `StructuredMemoryEdit`. The route header
+defines the request, body cap and refusals; `parseMemoryEdit`, `applyPageEdit` and `applyThreadEdit` own admission and
+the changes to stored records.
 
-1. Ids, the body, and the edit's shape: 400, a blank or over-long section body included.
-2. Epoch (412), then, with no await from here to the write, `fenced` (409 `reason: "fenced"`): the chat's task queued or
-   running, or a job or generation lock holding the chat. The job half is what stops a writer's retry after a revision
-   conflict from reapplying an old answer over a person's edit, because a record-now job or a send's gap run has no
-   task.
-3. The record is read and the edit applied to it. A missing chat, record, or heading is 404 `chatGone` or `recordGone`,
-   a change the record refuses is 400, and a `keep` that names a state the chat has left is 409 `reason: "changed"`.
-4. `store.memory.write` at the client's `revision`, stale 409. An edit that changes nothing goes through as an empty
-   change set, so a stale one is still refused.
+1. The route checks ids, body and edit shape, then the epoch, then the fence. From the epoch check through
+   `store.memory.write` there is no await. `server/src/app.ts` supplies the fence: a queued/running task, a job or
+   generation lock, or a rebuild's run, including a stopped one, refuses 409 `fenced`. A record-now job or send's gap
+   run has no task; the job fence prevents [a writer's retry](writer.md#a-writer-run) of an old answer from overwriting
+   a person's edit. A rebuild's fence prevents its swap from losing the edit.
+2. The route reads the stored record, applies the pure edit and calls `store.memory.write` at the client's revision. A
+   no-op still sends an empty change set through the revision check, so a stale edit is refused too.
+3. `StructuredMemoryEditAnswer` gives the current record and the revision the next edit must name.
 
-What an edit does (`edits.ts`):
-
-- A section body gains one `edit` history entry with no `eventId`, bounded by `pageHistoryEntries`, and
-  `userCorrected: true`. `provenance`, `sources`, and `unsupported` stay, since the edit changes no evidence; `disputed`
-  goes, because a person's edit is the review a dispute waits for. A locked section can be edited: the lock binds the
-  writer.
-- A lock takes no history entry and no `updatedAt`. A grade sets `gradeByUser`, and null clears both.
-- The scene page's `contextMode` stays `always`.
-- A thread takes any state, and leaving an ended one drops `closedBy`.
-- [A repair](lifecycle.md#reconciliation-and-repairs) acts on an event, and reads the chat in that same step unless it
-  is a retract.
+[Event repairs](lifecycle.md#reconciliation-and-repairs) call `applyEventRepair`, reading the stored chat in the same
+step except for retract. Retraction also passes through `withUnsupportedSections` before the write.
 
 ### The revert route
 
-`POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/revert`, `{ revision, pageId, historyId }`, capped at 64 KiB, answers
-`StructuredMemoryRevertAnswer`. Its checks and order are the edit route's, so a running or stopped rebuild refuses it
-409 `fenced`, and a write the swap would lose never happens. `revertChange` (`pages.ts`) undoes one writer's change:
+The tab's `revertStructuredMemoryChange` reads the page's current revision, then calls `POST .../revert`. The route uses
+the edit route's admission order and fence, so a running or stopped rebuild refuses 409 `fenced` and its swap loses no
+write. The route header owns `StructuredMemoryRevertAnswer`, the cap and refusals.
 
-- Only a writer's section entry can be undone. A page's creation, an `edit`, and a `revert` are 400, and an entry the
-  bounded history lost is 404 `recordGone`. A repeat answers `reverted: false` through an empty change set.
-- A `compact` is one change with the entry just before it, by place and event, never by event id alone: a repeated
-  turn's scene rewrites share one. A `compact` whose patch left the history is 409 `reason: "superseded"`.
-- A later entry of the heading that still stands is 409 `superseded`, so undoing goes newest first and never overwrites
-  a later patch or a person's edit. A lock does not stop a revert.
-- The section takes the first `before` of the change, with its marks, or goes when that is null. The entries gain
-  `revertedBy: "user"`, and one `revert` entry keeps the text taken back, which the writer's next input reads.
-
-`laterEvents`, which the notice counts, is the non-retracted events after the change's own in insertion order, 0 when it
-is not listed.
+The route passes the stored page to `revertChange` in `server/src/prompt/memory/structured/pages.ts`, flags restored
+evidence through `flagUnsupportedSections`, then commits through `store.memory.write`. A later standing change refuses
+`superseded`, so reverting goes newest first. `revertChange` and `revertGroup` define grouping and no-ops;
+`revertedSection` defines which marks come back, and `laterEventCount` the notice's count. The new `revert` history
+entry is read by the writer's next input.
 
 ### The restore route
 
@@ -149,44 +117,26 @@ whole shape check of `parseRestoredRecords`, and only when the chat holds no row
 
 ### The Markdown package
 
-`buildStructuredMemoryPackage` reads every round, renders in the tab, and answers `{ name, bytes }` for `downloadFile`.
-A 409 restarts the read with nothing kept, 3 attempts in all, then refused `changed`. A 412 calls `epochMismatch` and
-ends the read at once.
+`buildStructuredMemoryPackage` crosses the tab client and the read routes:
 
-- The zip holds `timeline.md`, `threads.md`, and `pages/<type>/<title part> [<id part>].md`, one per page.
-  [The import route](pages.md#the-import-route) reads it back. Threads come from `/threads` at the package's revision,
-  each a `##` line and a `yaml` fence. Trash stays out.
-- Metadata is the authority and Markdown is display. A metadata line is `key: <JSON>`, which is valid YAML on one line;
-  `\u` escapes cover what YAML does not print.
-- A page's frontmatter has every field but `history`, and `sections` without bodies but with `bodyLines`. Each body
-  follows verbatim under a `##` line. `heading` in the frontmatter is the exact value; the `##` line collapses
-  whitespace.
-- `timeline.md` opens with `packageVersion` and `revision`. Each event is a `##` line, a `yaml` fence with every field
-  but `summary`, plus `summaryLines`; then the summary verbatim, then one quote line per key line.
-- `bodyLines` and `summaryLines` count `split("\n")` pieces. They are what splits a body holding `## x`, a fence, or
-  `---`, so a reader counts lines and never searches for a delimiter.
-- Events sort by their smallest anchored source `index`, which is the position when recorded, not the current one. An
-  event with no anchored source goes last, and ties keep contents order.
+1. The client collects `/package` rounds, then `/threads` at that revision, through `store.memory.readContents` and
+   `store.memory.readRecord`. Trash stays out of the contents' live pages and therefore out of the package.
+2. The tab renders and zips the records for `downloadFile`. The builder's comment defines retries and the file set;
+   `renderMemoryPage`, `renderMemoryTimeline`, `renderMemoryThreads` and `memoryPagePath` define serialization and
+   ordering. `StructuredMemoryResult` defines failures and epoch handling.
+3. [Package import](pages.md#the-import-route) reads those files back on the server. Metadata is authoritative; line
+   counts delimit text containing headings, fences or `---`, so the reader counts lines rather than searching for a
+   delimiter.
 
 ### A memory write
 
-`store.memory.write(characterId, chatId, { epoch, baseRevision }, changes)` commits one declarative change set in its
-own transaction. Nothing async can run inside it.
+`store.memory.write(characterId, chatId, { epoch, baseRevision }, changes)` in `server/src/data/resourceStore.ts`
+commits one declarative change set in its own transaction, with nothing async inside. Its epoch check precedes
+`server/src/data/memoryStore.ts`'s synchronous `write`, which owns revision checks, validation, no-op behavior and write
+ordering; any failure rolls the transaction back. Inherit and restore use this same boundary.
 
-1. Another epoch, or none, is a `ResourceEpochError`. A missing chat is a `ResourceConflictError` with `current: null`,
-   and a `baseRevision` that is not the current token one naming the current token.
-2. A change set that names nothing stops here: it answers the current token and writes nothing, not even a
-   `memory_state` row. A stale empty write is still refused. `adoptionDeclined: true` names something once: on a chat
-   that declined already it names nothing.
-3. Every record is checked before anything is written, so a `ResourceValidationError` changes nothing: an id repeated
-   within a kind, or both written and removed; an invalid id; a `title` that is not a string; a closed value outside its
-   `const` list; a stored text over `MAX_READ_RESPONSE_BYTES`;
-   [a second scene page, or losing the one a chat has](writer.md#the-scene-page).
-4. Removals, then upserts, then the revision moves up by exactly one, however much changed. Removing an absent id is no
-   refusal and still moves it.
-
-The write publishes nothing: the chat's revision and the change feed stay as they were, and it counts toward snapshots
-like a checkpoint write.
+The write publishes nothing: the chat's revision and the change feed stay as they were, and a real write counts toward
+snapshots like a checkpoint write.
 
 ## State
 
