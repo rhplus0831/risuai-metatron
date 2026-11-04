@@ -15,7 +15,7 @@ drafted that day after its pilot landed.
   guides are rewritten in three churn-ordered waves (one guide per session, the chat-store pilot cut 45% with
   no fact lost), STRUCTURE.md's Path Ownership becomes a validated `ownership.json` that `check:changed`
   queries and Doc Maintenance moves out, use is measured once from local transcripts as aggregated counts, and
-  the tree ratchet comes down with every slice; D1–D11 recommended, Q1–Q4 answered, Slice 0, 1-self-host-server, and 1-persistence landed.
+  the tree ratchet comes down with every slice; D1–D11 recommended, Q1–Q4 answered, Slice 0, 1-self-host-server, 1-persistence, and 1-chat-pipeline landed.
 
 - [Job Handoff](job-handoff.md): another tab of the same user (a PC marked as a worker) takes over
   the owner role of a running generation job when the creating tab goes silent, asked at creation, or
