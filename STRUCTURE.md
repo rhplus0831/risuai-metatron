@@ -13,10 +13,10 @@ run.
 1. Read **Repository-Wide Invariants** below.
 2. Choose one owner in **Choose By Task**, or use **Path Ownership** for a supplied path. A folder row's `README.md`
    routes on to one of its guides.
-3. List that guide's headings with their sizes (`pnpm docs:read <guide>`), read `Scope` and `Invariants`, then the
-   relevant subsection (`pnpm docs:read <guide> <heading>`), not the whole file. For an add/change task, check `Recipes`
-   for the edit path and `Tests` for focused verification. A `Files` entry points at the module's contract comment: read
-   that comment with the code.
+3. List that guide's headings with their sizes (`pnpm docs:read <guide>`), read `Scope`, then the relevant subsection
+   (`pnpm docs:read <guide> <heading>`), not the whole file. For an add/change task, also read `Invariants`, `Recipes`
+   for the edit path, and `Tests` for focused verification. A `Files` entry points at the module's contract comment:
+   read that comment with the code.
 4. Follow its `Coupling` links only when the change crosses a boundary. Do not load every guide.
 5. Confirm the named identifier with a bounded `rg -n "<identifier>" <path>` before editing.
 6. Run V1's gates and the affected guide's focused checks.
@@ -331,6 +331,9 @@ Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_sta
   loses, with its destination (a source path and identifier, a guide heading, or `derivable:` and the entrypoint to
   read). Check the ledger on the result; for parallel trims, on the combined tree before the last one lands, since two
   trims can each leave a fact to the other.
+- Draft the ledger from `pnpm docs:contracts <owned files>`, which shows what the modules already document, and check it
+  with `pnpm docs:ledger <guide>`, which lists each old `Files` or `Flows` identifier that neither the guide nor a file
+  it names still holds.
 - Budgets: at most 40,000 bytes per guide, 8,000 under any leaf heading, 600 characters per list item or table row
   (continuation lines and code spans included), and parentheses at most two deep outside code spans. They are the same
   for every guide and this file: `pnpm check:docs` fails on any of them, and

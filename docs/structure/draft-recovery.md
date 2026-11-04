@@ -218,8 +218,8 @@
   mirror holds the local work carries its final projection as `pending.createSnapshot`; recovered resends never do.
 - A `generating` refusal drafts only the removed ops of the locked messages.
 - Orders: the vector actually discarded (a differing recovering `sent` vector, the queued `latest` or `refused` vector,
-  a queued reorder a live rebase drops), never a surviving newer reorder. Parked resends a server list supersedes are
-  drafted as `resend`.
+  the queued reorder the acknowledgement rebase drops, `keepPendingOrder`), never a surviving newer reorder. Parked
+  resends a server list supersedes are drafted as `resend`.
 - An explicit Discard (`discardRefused`) drafts none of the intent the user chose to discard; collateral losses in the
   same call are drafted.
 

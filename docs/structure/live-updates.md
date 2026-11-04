@@ -82,6 +82,9 @@
   write.
 - A miss marks nothing stale and takes the ordinary notice and idle refresh. A newer order ref or a new chat queues the
   chat list.
+- A list that meets this client's order work: `canApplyRemoteCollection` and `applyRemoteCollection` in
+  [chat store](chat-store.md#summaries-and-refresh); only the acknowledgement rebase (`keepPendingOrder`) takes a list
+  over a queued reorder.
 - A chat an idle read or list finds gone is removed only when its held revision is unchanged since issue, never by
   creating a replacement. A list keeps out a chat deleted here but unsaved, and drops a notice only when the adopted
   copy covers it.

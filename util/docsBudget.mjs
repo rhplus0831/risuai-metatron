@@ -101,7 +101,7 @@ function replaceCodeSpans(text, replace) {
 
 const stripCodeSpans = (text) => replaceCodeSpans(text, () => "");
 /** The contents of the code spans in `text`, in order. */
-function codeSpans(text) {
+export function codeSpans(text) {
     const spans = [];
     replaceCodeSpans(text, (content) => {
         spans.push(content);
@@ -330,9 +330,9 @@ function linkProblem(rel, destination, readAnchors) {
     return target.anchor && !anchors.has(target.anchor) ? "no such anchor" : null;
 }
 
-const PATH_SPAN = /^[\w@.{},*/-]+$/;
+export const PATH_SPAN = /^[\w@.{},*/-]+$/;
 /** Root directories whose contents are not tracked, so a path under one is not checked. */
-const UNCHECKED_ROOTS = new Set(["node_modules", "dist", ".git", ".claude"]);
+export const UNCHECKED_ROOTS = new Set(["node_modules", "dist", ".git", ".claude"]);
 
 /** `pattern` with its `{a,b}` groups expanded, outermost first, in order; a brace group without a comma stays literal. */
 export function expandBraces(pattern) {

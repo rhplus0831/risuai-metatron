@@ -36,7 +36,7 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
 | `check`                   | `svelte-check` for the client, then `tsc -p server/tsconfig.json` for server/shared code, with an incremental cache in `node_modules/.cache/tsc/`.        |
 | `check:changed`           | `util/changedChecks.mjs types`: the same two programs in parallel, skipping one no changed path reaches; see [Changed-file checks](#changed-file-checks). |
 | `check:docs`              | `util/docsBudget.mjs`: guide budgets, targets, and the tree ratchet, outline, Markdown links, and code-span paths; no tests.                              |
-| `docs:read`               | `util/docsRead.mjs <guide> [heading]`: a guide's headings with their bytes, or one section; see [Documentation check](#documentation-check).              |
+| `docs:*`                  | `docs:read`, `docs:contracts`, `docs:ledger`, `docs:reads`: the guide reader and the trim tools; see [Documentation check](#documentation-check).         |
 | `server`                  | Node runs `server/src/main.ts` with type stripping.                                                                                                       |
 | `dev:agent` / `dev:human` | Isolated agent stack or normal-login human stack; see [Dev runner](#dev-runner).                                                                          |
 | `format` / `format:check` | Repository-wide Prettier write/check; `format:check` keeps Prettier's cache in `node_modules/.cache/prettier/`.                                           |
@@ -104,11 +104,14 @@ Run scripts with `pnpm <script>`; `package.json` is the executable inventory. Te
   `pnpm check:docs` as the gate.
 - Identifiers in code spans are not validated, nor a path without a `/` (`package.json`, `vitest.*`). Confirm them with
   targeted `rg` searches; the link rule checks only relative Markdown destinations and heading anchors.
-- `pnpm docs:read <guide>` (`util/docsRead.mjs`) prints a guide's headings with their own bytes and, for a heading with
-  subsections, the total; `pnpm docs:read <guide> <heading>` prints that section through its subsections. The guide is a
-  name (`chat-store`, `structured-memory/read`), an area folder (`structured-memory`, its README), `STRUCTURE`, or a
-  path; a heading matches by whole text, then prefix, then substring, and an ambiguous query lists its matches. No
-  guide, or an unknown one, lists the guide names.
+- The guide tools; each header comment holds its contract:
+  - `pnpm docs:read <guide> [heading]` (`util/docsRead.mjs`): a guide's headings with their bytes, or one section.
+  - `pnpm docs:contracts <file-or-dir>...` (`util/docsContracts.mjs`): each export with the `/** */` comment above it,
+    the exports without one, and the documented count.
+  - `pnpm docs:ledger <guide> [--base <ref>]` (`util/docsLedger.mjs`): the base's `Files` and `Flows` identifiers that
+    neither the guide nor a file it names holds; exit 1 on any.
+  - `pnpm docs:reads [--out <file>] [<dir>...]` (`util/guideReads.mjs`): guide reads counted over local session
+    transcripts, for a one-off `docs/audit/guide-reads-<date>.md`; not a gate.
 
 ### Config files
 
@@ -418,13 +421,12 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   against the real auth store through `GET /api/asset/<hex>`.
 - `util/agentDevHost.test.ts` and `util/agentDataSandbox.test.ts` (node) cover the `dev:agent` runner's host resolution
   and the sandbox.
-- `util/docsBudget.test.ts` (node) runs the documentation check over small guide trees in a temporary directory, through
-  its exported functions; `util/docsRead.test.ts` (node) covers the guide reader's resolution, outline, and section
-  matching the same way.
-- Not tested: the exit codes and output streams of the `util/docsRead.mjs` command line.
+- `util/{docsBudget,docsRead,docsContracts,docsLedger,guideReads}.test.ts` (node) run the documentation scripts over
+  small fixtures in a temporary directory, through their exported functions.
 - Not tested: the `/sw/check` route, the `fetch` handler's default `/sw/*` and `/tf` responses, the rest of the `push`
   display (icon, title and body fallbacks), and the userscript; verify those manually.
-- Not tested: the exit codes and output streams of the `util/docsBudget.mjs` command line.
+- Not tested: the exit codes and output streams of the documentation scripts' command lines (`util/docs*.mjs`,
+  `util/guideReads.mjs`).
 - Not tested: the dev runner's process handling (process groups, the lock, the readiness wait); verify it manually when
   changing that code.
 
