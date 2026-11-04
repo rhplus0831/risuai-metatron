@@ -243,6 +243,9 @@ parallel guides). A session that merges `dev` mid-way reruns `pnpm check:docs` a
 
 ## Later
 
-- Lower the guide ceiling and target once wave 3 has landed, from the tree as it is then.
+- Guide ceiling, decided 2026-11-05 on the tree after wave 3: keep the 40,000-byte ceiling and 36,000-byte target
+  (option A of the [final audit](../audit/guide-reads-2026-11-05-wave3.md#ceiling-proposal-d11); the largest guide,
+  `memory`, is 34,227 bytes). The leaf (8,000 / 7,000) and item (600) budgets stay too; the tree ratchet is the
+  only force against regrowth. Revisit with the same measurement when a guide passes 36,000.
 - An identifier check: a backticked identifier in a `Files` entry exists in the path the entry names.
 - A `Files` generator for the identifier lists, from the exports of the owned modules, if the hand-kept lists drift.
