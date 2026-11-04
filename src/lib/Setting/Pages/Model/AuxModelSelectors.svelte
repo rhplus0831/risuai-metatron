@@ -6,6 +6,16 @@
     import ProfileSlotSelect from "./ProfileSlotSelect.svelte";
     import type { AuxModelMode } from "../../../../../shared/database.ts";
 
+    /**
+     * Edits the model preset's persisted `seperateModelsForAxModels` toggle and
+     * `auxSlots.{memory,translate,emotion,otherAx}` via
+     * `src/lib/Setting/Pages/Model/ProfileSlotSelect.svelte`: picks profiles, marks deleted
+     * ones missing, shows bare plugin model ids as "no profile". Preserve the toggle's spelling.
+     * `shared/llm/modelSlots.ts` `resolveSlotProfile`: without a request's explicit profile id
+     * or static-model override, disabled or unset aux slots and `submodel` use sub. A dangling profile
+     * in the selected slot refuses. Turning the toggle off ignores aux slots. `submodel` is not auxiliary.
+     */
+
     const modes: readonly AuxModelMode[] = ["memory", "translate", "emotion", "otherAx"];
 </script>
 

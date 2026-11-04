@@ -3,6 +3,12 @@
     import TextInput from "../UI/GUI/TextInput.svelte";
     import { parseMarkdownSafe } from "src/ts/parser/parser.svelte";
 
+    /**
+     * Live public CBS reference collected from `src/ts/cbs.ts` `registerCBS`;
+     * internal-only functions are omitted and search matches names or aliases.
+     * Mounted by `src/lib/Playground/PlaygroundMenu.svelte` for `PlaygroundStore` id 13.
+     */
+
     let doc: {
         name: string;
         description: string;

@@ -2,6 +2,11 @@
     // @ts-nocheck - Legacy file, not currently in use
     import { onDestroy, onMount } from "svelte";
 
+    /**
+     * Legacy Three.js/MMD canvas prototype with no importers. It was for rendering
+     * models and poses at the supplied width/height; its model and pose paths are placeholders.
+     */
+
     /** @type {{width?: number, height?: number}} */
     let { width = 800, height = 600 } = $props();
 

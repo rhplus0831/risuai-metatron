@@ -1,6 +1,13 @@
 <script lang="ts">
     import { Template } from "@huggingface/jinja";
     import TextAreaInput from "../UI/GUI/TextAreaInput.svelte";
+
+    /**
+     * Renders a Jinja template with JSON input through `@huggingface/jinja`;
+     * render/parse failures become the displayed output.
+     * Mounted by `src/lib/Playground/PlaygroundMenu.svelte` for `PlaygroundStore` id 6.
+     */
+
     let input = $state("");
     let json = $state(
         JSON.stringify(

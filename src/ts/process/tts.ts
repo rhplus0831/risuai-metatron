@@ -18,6 +18,21 @@ import {
     type AfterTTSResult,
 } from "./ttsHooks";
 
+/**
+ * Character TTS, dispatched by the literal `character.ttsMode` values. Each `sayTTS` run
+ * registers its own AbortController in `activeSpeechControllers`; HTTP provider requests
+ * receive its signal as `signal` for fetch/auxFetch and `abortSignal` for globalFetch.
+ * `src/ts/globalApi.svelte.ts` returns `ok: false` on abort rather than throwing, so the
+ * provider branches check cancellation after requests and body reads before alerts or
+ * further work. Translation and the unabortable `loadAsset` and `runVITS` awaits also
+ * have cancellation checks; an aborted run ends without a TTS alert.
+ *
+ * Each run captures the Stop generation at entry and carries it in `TTSPlaybackContext`,
+ * so work finishing after `stopTTS` cannot start playback. Preprocessors run before the
+ * provider request; audio postprocessors run in playback before decoding. Web Speech
+ * and VITS bypass audio postprocessors, but still receive preprocessed text.
+ */
+
 type SpeechPlayback = { source: AudioBufferSourceNode; context: AudioContext };
 type TTSPlaybackContext = { ttsMode: string; characterId: string; generation: number };
 const activeSpeech = new Set<SpeechPlayback>();
@@ -57,7 +72,17 @@ function retireSpeech(playback: SpeechPlayback) {
     void playback.context.close().catch(() => {});
 }
 
-/** Both buffered playback paths share cancellation and context cleanup. */
+/**
+ * Both buffered playback paths share cancellation and context cleanup. `playAudio`,
+ * the GPT-SoVITS gain path, and VITS all arrive here with their final bytes. VITS's
+ * `runVITS` in `src/ts/process/transformers.ts` only synthesizes WAV bytes; no audio
+ * hooks run on those bytes.
+ *
+ * The captured generation is checked before decoding and before starting a source.
+ * Each playing source/context enters `activeSpeech` and is retired on `ended`.
+ * A cancelled or failed decode closes its unused context; rejection after Stop closed
+ * the decoding context is suppressed so cancellation produces no alert.
+ */
 async function playProcessedAudio(audio: ArrayBuffer, ctx: TTSPlaybackContext, volume = 1) {
     if (ctx.generation !== stopGeneration) return;
     const context = new AudioContext();
@@ -101,7 +126,9 @@ async function playProcessedAudio(audio: ArrayBuffer, ctx: TTSPlaybackContext, v
  * multiple hooks would leave all hooks after the first with a detached buffer.
  *
  * Returns the final audio bytes (possibly replaced by a hook), the final
- * mimeType, and whether a hook requested a skip.
+ * mimeType, and whether a hook requested a skip. Hooks run sequentially; a thrown
+ * error is logged and the next hook runs. There is no timeout, so a hanging hook
+ * stalls this speech run.
  */
 async function runPostprocessorPipeline(
     audio: ArrayBuffer,
@@ -147,6 +174,19 @@ async function playAudio(audio: ArrayBuffer, mimeType: string, ctx: TTSPlaybackC
     await playProcessedAudio(processed.audio, ctx);
 }
 
+/**
+ * Speaks through webspeech, elevenlab, VOICEVOX, openai, novelai, huggingface, vits,
+ * gptsovits, or fishspeech, selected by `character.ttsMode`; null uses the selected
+ * non-group character. Preprocessors have no timeout, so a hanging hook stalls speech.
+ *
+ * VOICEVOX and Hugging Face pass the run's signal to their translators in
+ * `src/ts/translator/translator.ts`, suppressing translator alerts after cancellation.
+ * When `character.hfTTS.language !== "en"`, Hugging Face calls `runTranslator` once
+ * before the retry loop and reuses its result. A JSON 503 `estimated_time` waits with
+ * `retryDelay` on the same signal before retrying.
+ * GPT-SoVITS with non-default gain runs `runPostprocessorPipeline` explicitly before
+ * `playProcessedAudio`, preserving audio hooks while adding its GainNode.
+ */
 export async function sayTTS(character: ClientCharacter, text: string) {
     const generation = stopGeneration;
     const controller = new AbortController();
@@ -551,8 +591,15 @@ export async function sayTTS(character: ClientCharacter, text: string) {
     }
 }
 
+/** OpenAI voice ids for the voice picker in `src/lib/SideBars/CharConfig.svelte`. */
 export const oaiVoices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"];
 
+/**
+ * Advances the playback generation and aborts every registered speech run, including
+ * pending provider requests and Hugging Face retry waits; this does not cancel the
+ * provider's remote job. Stops and retires every `activeSpeech` source, closes their
+ * contexts and all still-decoding `pendingContexts`, then cancels Web Speech.
+ */
 export function stopTTS() {
     stopGeneration++;
     for (const controller of activeSpeechControllers) controller.abort();
@@ -571,12 +618,14 @@ export function stopTTS() {
     }
 }
 
+/** Returns browser voice names for `src/lib/SideBars/CharConfig.svelte`. */
 export function getWebSpeechTTSVoices() {
     return speechSynthesis.getVoices().map((v) => {
         return v.name;
     });
 }
 
+/** Returns ElevenLabs voice records for `src/lib/SideBars/CharConfig.svelte`. */
 export async function getElevenTTSVoices() {
     const data = await fetch("https://api.elevenlabs.io/v1/voices", {
         headers: {
@@ -589,6 +638,7 @@ export async function getElevenTTSVoices() {
     return res.voices;
 }
 
+/** Returns VOICEVOX speakers with JSON style lists and a None entry for `src/lib/SideBars/CharConfig.svelte`. */
 export async function getVOICEVOXVoices() {
     const base = settings.memoryTranslateMedia.voicevoxUrl.replace(/\/+$/, "");
     const speakerData = await fetch(new URL(base + "/speakers"));
@@ -603,6 +653,7 @@ export async function getVOICEVOXVoices() {
     return speakersInfo;
 }
 
+/** Returns built-in NovelAI voice seeds grouped by gender for `src/lib/SideBars/CharConfig.svelte`. */
 export function getNovelAIVoices() {
     return [
         {
@@ -620,6 +671,7 @@ export function getNovelAIVoices() {
     ];
 }
 
+/** Fills an undefined NovelAI TTS config with voice/version defaults and returns the character; has no callers. */
 export function FixNAITTS(data: character) {
     if (data.naittsConfig === undefined) {
         // Mirror the defaults used by CharConfig.svelte's $effect.pre

@@ -9,6 +9,15 @@
     import Button from "../UI/GUI/Button.svelte";
     import CheckInput from "../UI/GUI/CheckInput.svelte";
 
+    /**
+     * Browses and deletes inlays through `src/ts/process/files/inlays.ts`.
+     * `listInlayAssets` reads server metadata without media bytes; previews load on
+     * request. Sizes use metadata `size`, falling back to text length and then zero.
+     * Deletion and destruction revoke URLs already cached in `previewURLs`;
+     * a pending preview load is not cancelled.
+     * Mounted by `src/lib/Playground/PlaygroundMenu.svelte` for `PlaygroundStore` id 14.
+     */
+
     const PAGE_SIZE = 36;
 
     let allAssets = $state<[string, InlayResource][]>([]);

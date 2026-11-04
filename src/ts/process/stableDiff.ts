@@ -15,10 +15,28 @@ import random from "lodash/random";
 import { language } from "src/lang";
 
 /**
+ * Image generation dispatches on `settings.memoryTranslateMedia.sdProvider`: webui,
+ * novelai (ZIP decoded by `processZip` in `src/ts/process/processzip.ts`), dalle,
+ * stability, comfy/comfyui, fal, Imagen, openai-compat, and wavespeed (polling).
+ * The literal provider values are case-sensitive.
+ *
+ * The optional signal reaches every request, including character-image reads and
+ * their retries through `src/ts/storage/assetClient.ts` `readAsset`. `pollingDelay`
+ * makes ComfyUI's 1 s and Wavespeed's 3 s polling waits abortable. Checks after awaits
+ * cover response bodies and image processing before alerts or delivery. Both public
+ * generation entry points reject cancellation with the signal's own reason, without
+ * an error alert or image delivery; cancellation requires a caller-supplied signal.
+ */
+
+/**
  * `chatRef` and `pluginContext` are the send's: the prompt request runs for that chat and that
  * frozen preset and persona, not the tab's selection when it starts. `check` (a server job's image
  * callback) throws once the job no longer wants the image: no image request is started after that.
  * When supplied, `signal` cancels the prompt and image requests, polling, and delivery.
+ * Builds the prompt with `requestChatData(..., "submodel", target.signal)` from
+ * `src/ts/process/request/request.ts`, then calls `generateAIImage` in emotion mode
+ * with `{ signal: target.signal }`. Without a supplied signal, those operations are
+ * not cancellable through this entry point.
  */
 export async function stableDiff(
     currentChar: character,
@@ -94,6 +112,12 @@ export async function stableDiff(
     }
 }
 
+/**
+ * All successful provider results pass this cancellation check. `"inlay"` returns
+ * the image URI without persisting it; other modes replace this character's emotion
+ * image and return `returnSdData` (normally `""`). `CharEmotion.update` merges against
+ * the store's value at write time so other characters' intervening changes survive.
+ */
 function deliverGeneratedImage(
     img: string,
     currentChar: character,
@@ -129,6 +153,17 @@ function pollingDelay(ms: number, signal?: AbortSignal): Promise<void> {
     });
 }
 
+/**
+ * Generates an image with optional request/polling cancellation (`options.signal`).
+ * `options.orientation` accepts landscape/portrait and affects only NovelAI's txt2img
+ * and img2img dimensions; every other provider ignores it.
+ *
+ * `returnSdData === "inlay"` returns the image URI; callers that need an inlay record
+ * must persist it via `src/ts/process/files/inlays.ts` `writeInlayImage`. Emotion mode
+ * uses `""`, updating `CharEmotion` and returning `returnSdData` on success. Other
+ * non-inlay strings follow the same delivery rule. Failures may return false or an
+ * empty string; an aborted run rejects with the signal's own reason before delivery.
+ */
 export async function generateAIImage(
     genPrompt: string,
     currentChar: character,
@@ -403,6 +438,9 @@ async function generateAIImageForProvider(
                 const ctx = canvas.getContext("2d");
                 const imageObj = new Image();
 
+                // Character-reference decoding rejects on load failure or cancellation and
+                // removes image handlers and the abort listener when it settles. The outer
+                // catch falls back to the original image on failure, but rethrows cancellation.
                 await new Promise<void>((resolve, reject) => {
                     signal?.throwIfAborted();
                     const cleanup = () => {
@@ -601,6 +639,7 @@ async function generateAIImageForProvider(
             return false;
         }
 
+        // Native Response headers use `get`; JSON error bodies must never be delivered as image bytes.
         if ((da.headers.get("content-type") ?? "").startsWith("application/json")) {
             alertError(Buffer.from(res).toString());
             return false;
@@ -679,6 +718,10 @@ async function generateAIImageForProvider(
 
             const startTime = Date.now();
             const timeout = settings.memoryTranslateMedia.comfyConfig.timeout * 1000;
+            // Check the deadline before every history request. Poll the URL-encoded
+            // `/history/{prompt_id}` and read `[prompt_id]`; a scoped 404/405 switches
+            // once per run to `/history` before reading the body. All other non-OK
+            // history responses fail, including a 404/405 from the fallback endpoint.
             while (true) {
                 signal?.throwIfAborted();
                 if (Date.now() - startTime >= timeout) {
@@ -726,6 +769,7 @@ async function generateAIImageForProvider(
                 },
             );
             signal?.throwIfAborted();
+            // A non-OK `/view` reaches the failure alert before its body can be delivered as an image.
             if (!imgResponse.ok) {
                 throw new Error(`${language.errors.httpError} ${imgResponse.status}`);
             }
@@ -1064,7 +1108,11 @@ async function generateAIImageForProvider(
     return "";
 }
 
-/** Places the longer edge on the width for landscape and on the height for portrait. */
+/**
+ * Places the longer edge on the width for landscape and on the height for portrait.
+ * Without orientation the configured dimensions are unchanged. Only NovelAI uses
+ * this adjustment, for both txt2img and img2img.
+ */
 export function applyImageOrientation(width: number, height: number, orientation?: ImageOrientation) {
     if (!orientation) {
         return { height, width };

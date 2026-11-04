@@ -6,6 +6,12 @@
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import { language } from "src/lang";
 
+    /**
+     * Tokenizer inspector using `src/ts/tokenizer.ts` `encodeWithTokenizer` for ids,
+     * count, and elapsed time; edits flow through the disposable token-count field.
+     * Mounted by `src/lib/Playground/PlaygroundMenu.svelte` for `PlaygroundStore` id 4.
+     */
+
     let input = $state("");
     let output = $state("");
     let outputLength = $state(0);

@@ -1,5 +1,10 @@
+/** Signature classification only; Unknown is the fallback when no signature matches. */
 export type ImageType = "JPEG" | "PNG" | "GIF" | "BMP" | "AVIF" | "WEBP" | "Unknown";
 
+/**
+ * Detects JPEG (SOI and terminal EOI), PNG, GIF87a/GIF89a, BMP, AVIF (`ftypavif`),
+ * and WEBP (RIFF/WEBP) from magic bytes, without decoding; otherwise returns Unknown.
+ */
 export function getImageType(arr: Uint8Array): ImageType {
     switch (true) {
         case arr[0] === 0xff && arr[1] === 0xd8 && arr[arr.length - 2] === 0xff && arr[arr.length - 1] === 0xd9:
