@@ -176,7 +176,7 @@ import {
  * collections (`shared/sections.ts`; `llmSecrets` also carries `llmSecretPresets`), `presets`,
  * `modules`, `plugins`, `pluginStorage`, and one `characters` record per `chaId`. Chats are not part
  * of a character record: the chat module (`chatStore.svelte.ts`) queues explicit chat operations,
- * and each cycle sends them in the same batch, after the resource ops.
+ * and each cycle orders them after resource ops, splitting requests when needed.
  *
  * - The settings records (the sections, the collections, `presets`, `modules`, `plugins`,
  *   `pluginStorage`) are write-through records (`records.svelte.ts`): every local write of one
@@ -188,8 +188,8 @@ import {
  * - A cycle serializes each dirty collection and skips it when the text equals what the server
  *   holds (`persisted`), so hydration and no-op re-renders never become writes. Character membership
  *   is diffed by `chaId` every cycle: a new id is created, a vanished one deleted.
- * - One batch per cycle, one cycle in flight. A key stays dirty if it was marked again while its
- *   batch was in flight.
+ * - Requests split at the operation/byte caps or isolate refusals; one cycle is in flight. A key
+ *   stays dirty if it was marked again while its batch was in flight.
  * - Eligible record, chat, and order intent is mirrored to the page's draft journal. One serialized
  *   queue coalesces pre-dispatch deltas and debounces later outcomes; hide flushes run independently
  *   of the network. Creates wait at most 200 ms; a split chat batch waits for journal confirmation.
@@ -208,7 +208,7 @@ import {
  *   has no unsent change of them; nothing is discarded and no notice is shown. A record with a local
  *   change waits: its save then lands (the update is older) or conflicts (the normal 409 path).
  *
- * Transport state here is plain (no runes); only `saving` is reactive.
+ * Transport maps are plain; `saving` and the refusal inventory counter are reactive.
  */
 
 type ListCollection = "presets" | "modules" | "plugins" | "pluginStorage";
@@ -1452,6 +1452,10 @@ function emitSaveWait(entries: { key: string; seq: number; category: "records" |
     }
 }
 
+/**
+ * Record a content-free `sync` / `saveWait` diagnostic for batch work waiting over 2 s;
+ * retain its blocker even when that blocker cleared before dispatch.
+ */
 function recordSaveWait(batch: Batch, captured: ReadonlyMap<string, number>, membership: number) {
     emitSaveWait([
         ...batch.ops.map((op) => ({
@@ -1527,7 +1531,12 @@ function hasRefreshWork(): boolean {
     );
 }
 
-/** A read deadline belongs to this adapter, including conflict dependencies, never to other readers. */
+/**
+ * Bound adapter reads, including conflict dependencies and every `readRefs` continuation round, to
+ * `READ_DEADLINE_MS` (20 s), or abort on halt. No partial answer can reach an installer. Replacing an
+ * owner does not cancel its read; adoption fences reject it and the deadline still bounds it.
+ * `watchForRestore` uses its own shorter bound; external callers use `readDeadline.ts`.
+ */
 async function deadlineRead<T>(read: (signal: AbortSignal) => Promise<T>): Promise<T> {
     assertSaveAdmission();
     const controller = new AbortController();
@@ -1591,7 +1600,12 @@ function failedRefresh(error: unknown) {
     scheduleRefresh(0);
 }
 
-/** Each stage starts independently: a failed or stalled read cannot starve another kind of refresh. */
+/**
+ * Refreshes have their own flight, timer and backoff (2 s doubling to 30 s), independent of writes.
+ * Each stage starts independently: a failed or stalled read cannot starve another kind of refresh
+ * or change write backoff. A completed stage wakes pending writes even while other reads remain.
+ * `flushResources` joins only the reads its captured writes depend on.
+ */
 function runRefresh(): Promise<void> {
     if (refreshInFlight) {
         return refreshInFlight;
@@ -2214,6 +2228,12 @@ function hasUnsavedWork(): boolean {
     );
 }
 
+/**
+ * Hold the exact refused text; quarantine suppresses automatic retries of unchanged content.
+ * Indexed `ops[i]` errors and the pre-dispatch 413 check alert once per key/session. An isolated
+ * unindexed refusal alerts on every rejected attempt, including explicit Retry with unchanged text.
+ * Other records and unrelated chat work keep saving.
+ */
 function quarantineRecord(op: PendingOp, error: ResourceRequestError, indexed = true) {
     quarantinedRecords.set(op.key, { text: op.text, error });
     const view = journalView(op.key);
@@ -2226,8 +2246,9 @@ function quarantineRecord(op: PendingOp, error: ResourceRequestError, indexed = 
         journalSettled(op.key);
     }
     notifyRefusals();
-    // Indexed errors alert once per key per session. An isolated unindexed refusal alerts once
-    // per content change; unchanged content never makes it back to this function.
+    // Indexed errors alert once per key per session. An isolated unindexed refusal alerts on every
+    // rejected attempt. Quarantine suppresses automatic retries; explicit Retry releases it even
+    // when the text is unchanged.
     if (!indexed || !recordAlerts.has(op.key)) {
         alertError(`${language.resourceRecordRefused}\n${op.kind}/${op.id}: ${error.message}`);
         recordAlerts.add(op.key);
@@ -2266,7 +2287,10 @@ export function refusedItems(): RefusedItem[] {
     return [...refusedRecords(), ...refusedChatItems()];
 }
 
-/** Releases one current refusal for one new save attempt, preserving its session alert guard. */
+/**
+ * Release one current refusal for one new save attempt, preserving its session alert guard.
+ * Halted adapters reject Retry just as they reject new writes.
+ */
 export function retryRefused(key: string) {
     assertSaveAdmission();
     if (refusedRecords().some((item) => item.key === key)) {
@@ -2277,7 +2301,11 @@ export function retryRefused(key: string) {
     }
 }
 
-/** Reads and discards only the refusal still current after the read; newer local intent wins. */
+/**
+ * Discard by reading the server copy, only while refusal identity, projection, edit generation and
+ * character membership/owner fences still match after the read. An edit, Retry or recreation wins
+ * over the older Discard. Halted adapters reject admission; chat discards also fence character writes.
+ */
 export async function discardRefused(key: string): Promise<void> {
     assertSaveAdmission();
     const item = refusedRecords().find((item) => item.key === key);
@@ -2478,6 +2506,9 @@ function recordPatchText(base: RecordParts, local: RecordParts): string | null {
  * parts (an object's changed fields, an array's changed items), unless it is not smaller in UTF-8
  * bytes than the whole data; otherwise the whole record. Null when only key order differs: the local
  * text is held as the saved one (the same JSON values at the same revision), and nothing is sent.
+ * Creates and records without parts go whole; `llmSecrets` never has patch parts. A changed own
+ * `__proto__` forces the object record, or the affected item, whole. Hooks detected by `hasJsonHook`
+ * at a serialization boundary also disable parts; `Date.prototype.toJSON` is excluded.
  */
 function updateOperation(
     key: string,
@@ -2505,6 +2536,9 @@ function updateOperation(
 /**
  * Builds this cycle's operations and the generation each dirty key had when it was captured, then
  * takes the chat work: a new character's chats are created with it, a deleted one's are dropped.
+ * Diff membership by `chaId` against `persisted`: a held id removed/re-added before collection updates,
+ * never two ops for one id. A quarantined or oversized character create stays out of `creating`,
+ * holding its chats and membership obligation without keeping an idle save cycle scheduled.
  */
 function collectOperations(): {
     ops: PendingOp[];
@@ -2752,7 +2786,7 @@ function planBatches(ops: readonly PendingOp[], work: ChatWork): { batches: Batc
 
 /**
  * Splits operations into batches under the operation and byte caps, measured in UTF-8 bytes as the
- * server counts them (only a boot pass needs more than one batch).
+ * server counts them. Later cycles can split too; one chat group remains indivisible.
  */
 export function splitBatches<T extends { bytes: number; weight?: number }>(ops: readonly T[]): T[][] {
     const batches: T[][] = [];
@@ -2778,6 +2812,11 @@ export function splitBatches<T extends { bytes: number; weight?: number }>(ops: 
     return batches;
 }
 
+/**
+ * One write cycle at a time, after the normal 500 ms debounce; `schedule` keeps an earlier wakeup.
+ * Network failures, 5xx and 429 retry with backoff capped at 30 s. Refresh failures never change
+ * that backoff. Acknowledgements hold sent text, while marks made in flight remain dirty.
+ */
 function runCycle(): Promise<boolean> {
     if (halted) {
         return Promise.resolve(false);
@@ -2841,6 +2880,14 @@ function runCycle(): Promise<boolean> {
     return inFlight;
 }
 
+/**
+ * Collect writes without awaiting unrelated refresh reads, applying only ready feed patches first.
+ * A refused batch's conflict read and a credential revision reread are write dependencies and may
+ * still be awaited. Unindexed 400/413 on several units enables one request per unit; a single
+ * unit is quarantined, so unrelated work can proceed. Every request is its own server transaction.
+ * Capture credential op ids at collection: send them after resource batches, so a newly queued
+ * owner's credential waits for the next cycle. Batch success holds sent record text as the baseline.
+ */
 async function cycle() {
     // Nothing is saved before the boot installed the records.
     if (halted || trackedCharacters() === undefined) {
@@ -3120,6 +3167,9 @@ async function rereadSecrets() {
  * revision. A stale revision rereads the record and retries (a set is a blind write of one path),
  * a few times per cycle; a refused write (400, 404) is dropped and reported as a discard; any
  * other failure keeps the queue for the next cycle (the save backoff; 412 halts for a restore).
+ * `SECRET_CONFLICT_RETRIES` permits two reread/retries per op/cycle. Refusals report `llmSecrets/<path>`
+ * without exposing values. Cleanup sends only after the owner leaves both mirror and saved copy;
+ * a restored live owner drops it, an unsaved deletion holds it without scheduling another cycle.
  */
 async function sendSecretOps(captured: ReadonlySet<number>) {
     const key = collectionKey(SECTION_KIND.llmSecrets);
@@ -3187,7 +3237,8 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
 /**
  * Waits until every credential write queued now is saved: an auxiliary call that uses a stored key
  * (`auxFetch`) goes out only after the key the user just entered is on the server. Throws when one
- * of them was refused, when saving fails, or when the data was restored.
+ * of them was refused, when saving fails, or when the data was restored. Cleanups held only by an
+ * unsaved owner deletion also throw: another credential cycle cannot save that owner.
  */
 export async function awaitSecretWrites(): Promise<void> {
     assertSaveAdmission();
@@ -3944,7 +3995,11 @@ function adoptInDoubt(key: string, revision: string, text: string): boolean {
     return true;
 }
 
-/** A conflicting revision already received over the feed or the job's hydration connection. */
+/**
+ * Reconstruct only the exact conflicting revision: a feed patch at the held base, one write ahead
+ * in the loaded epoch/incarnation, or an exact-revision `deferredHydrations` entry. Both use the
+ * same merge/acceptance path as a read-back; anything else requires `readRefs`.
+ */
 function rebuildConflictRecord(conflict: { kind: string; id: string; revision: string | null }): RemoteItem | null {
     if (conflict.revision === null || parseRevisionToken(conflict.revision)?.epoch !== getResourceEpoch()) {
         return null;
@@ -3970,8 +4025,10 @@ function rebuildConflictRecord(conflict: { kind: string; id: string; revision: s
 
 /**
  * Another tab or device wrote records this batch was based on. Rebuilds an already received revision
- * or reads it back, then puts the server version into the mirror, unless the server already holds
- * exactly what this client sent (a retry after a lost response). The rest of the batch goes out in the next cycle.
+ * or reads it back. An exact JSON match of sent text recognizes a lost reply; otherwise independent
+ * changes merge before accepting the server copy and drafting discarded local intent. The rest of
+ * the batch goes out next cycle. This read is a write dependency under `deadlineRead`; `hydrate` lists
+ * queued by recovery run in the background refresh queue instead.
  * The reload notice is shown once per recovery, when it discarded anything, also when a read after
  * the first discard throws.
  */
@@ -3989,7 +4046,12 @@ async function recoverFromConflict(error: ResourceConflictError, batch: readonly
     }
 }
 
-/** The body of `recoverFromConflict`: sets `notice.owed` as soon as anything is discarded. */
+/**
+ * Drop generating refusals' named locked-message edits through `chatStore.svelte.ts` before any
+ * unrelated conflict read can fail; retained work alone waits `JOB_RETRY_MS`. Character deletes
+ * receive the same retry block. Server `messageIds` decide the split even for an observing tab.
+ * Set `notice.owed` as soon as a discard occurs, so a later read failure still shows the reload notice.
+ */
 async function recoverConflictedWork(
     error: ResourceConflictError,
     batch: readonly PendingOp[],
@@ -4231,6 +4293,12 @@ function refreshCharacter(id: string): Promise<boolean> {
     return request;
 }
 
+/**
+ * Lists read beside writes may apply only while `listReadGenerations`, `characterWriteSerials`,
+ * `writingCharacters` and `chatOwnerToken` still permit the issued snapshot. Dispatch and settlement
+ * both fence it, even after an unanswered write. A stale answer leaves the character queued;
+ * `holdOrders` prevents a reorder using the old revision without stopping its chat groups.
+ */
 async function readCharacter(id: string, purpose: "hydrate" | "listRefresh"): Promise<boolean> {
     const ids = [id];
     const requestGeneration = listReadGenerations.get(id);
@@ -5160,10 +5228,10 @@ export type HydrationRecord = {
  * notice. Applied only when the token is of the loaded epoch and newer by `(seq, revision)` than
  * the one this client holds, and the client has no local change of it: not in the batch in flight,
  * its projection still equal to the saved text (a dirty mark alone is no change), and not a character
- * delete the server refused for a generating message (`isRecordJobBlocked`). A generating character's
- * record is applied at once. A record refused for a local change is kept (the newest) and checked
- * again after the next save cycle. A record this client does not hold, a deletion, `llmSecrets`,
- * and `authRefreshes` are not hydrated. A chat goes to `hydrateChat`.
+ * delete the server refused for a generating message (`isRecordJobBlocked`), nor `inDoubt`. A
+ * generating character's record is applied at once. A record refused for a local change is kept
+ * (the newest) and checked again after the next save cycle. A record this client does not hold,
+ * a deletion, `llmSecrets`, and `authRefreshes` are not hydrated. A chat goes to `hydrateChat`.
  * Returns whether it applied.
  */
 export function applyHydration(record: HydrationRecord): boolean {
@@ -5277,6 +5345,7 @@ export class GenerationBlockedError extends Error {
 /** How many times `chatGenerating` was shown by the save adapter (a caller tells whether its flush showed it). */
 let generatingNotices = 0;
 
+/** Number of `chatGenerating` notices shown, so a flush caller can avoid showing the same refusal twice. */
 export function generatingNoticeCount(): number {
     return generatingNotices;
 }
@@ -5333,7 +5402,15 @@ export function resourceSyncIdle(): boolean {
  * since the scope began), and every key still refused locally when the flush resolves;
  * rejects when saving fails or when a character that must be saved is still being generated.
  * Writes and dependency reads that leave their dependency pending share a ten-attempt limit;
- * an outstanding unload answer has a separate twenty-second bound on the caller's wait.
+ * outstanding unload answers and split journal dependencies each have a twenty-second wait bound;
+ * a split timeout rejects without releasing its prefix. Captures record generations, membership,
+ * chat/order sequences and credential ids; unrelated background reads and later edits do not add
+ * obligations. Relevant dependency reads alone are joined and propagate errors.
+ * Result keys are `<kind>/<id>`, `chats/<chaId>/<chatId>`, and `chats/<chaId>` for orders.
+ * `discarded` covers a conservative time window; `refused` is the inventory at resolution. An empty
+ * discard list does not prove every change durable. Quarantined chat/order work is nonblocking
+ * and remains refused; its discard event appears only in the refusal's window. A quarantined
+ * record rejects immediately (`quarantineReason`); generation-blocked work throws `GenerationBlockedError`.
  */
 export async function flushResources(
     options: { scope?: MutationScope } = {},
@@ -5497,6 +5574,13 @@ function collectMembershipChanges(): boolean {
  * Starts saving. Every collection and every character is marked once, and the membership once, so
  * the client's load-time writes (the boot's defaults, its trash pruning and order repair) reach
  * the server; unchanged records compare equal and are not sent.
+ * Hidden visibility bypasses debounce/backoff, joining a running cycle and following it with one
+ * more only if work remains and it did not fail. `beforeunload` protects refused content too, but
+ * never warns after halt; refusals alone keep no retry loop running. `pagehide` uses only whole eligible
+ * by-id chat batches under existing ids, one keepalive per chat with a shared `UNLOAD_BODY_LIMIT`
+ * (60 KiB) including outstanding requests. Only a dispatched group becomes in flight; failed sends
+ * retain it. Records, credentials, creates/deletes, replacements and orders use normal cycles only,
+ * avoiding competing writes on the same revision. Keepalive settlement belongs to `chatStore.svelte.ts`.
  */
 export function startResourceSync() {
     if (started || halted) {
@@ -5637,7 +5721,10 @@ export function startResourceSync() {
     markMembership();
 }
 
-/** Terminal teardown of this adapter instance, without saving, alerting, or reloading the page. */
+/**
+ * Terminal teardown: fence mutations, detach listeners, clear timers and abort adapter reads without
+ * saving, alerting or reloading. The shared page draft journal is closed separately by its owner.
+ */
 export function stopResourceSync() {
     stopped = true;
     halted = true;

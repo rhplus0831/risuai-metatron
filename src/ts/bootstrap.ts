@@ -49,7 +49,12 @@ import {
 } from "./safeBoot";
 
 /**
- * Loads the application data.
+ * Load through `src/ts/storage/bootCache.ts`, seeding server baselines before any local installation.
+ * `loadSelection` precedes `installBootRecords`; `applyFirstBootDefaults` precedes `recoverJournal`, so
+ * recovered intent wins that overlay. Recovery precedes service-worker reload, `maintainCharacters`
+ * (order repair over the complete recovered inventory) and `initializeChats`. Saving must start
+ * before browser-local imports, remote-owner/feed registration and plugin startup. Only captured
+ * server boot texts reach the idle cache commit; recovered/local changes never seed it.
  */
 export async function loadData() {
     const loaded = get(loadedStore);

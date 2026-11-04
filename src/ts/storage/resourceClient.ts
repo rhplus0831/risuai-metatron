@@ -19,7 +19,9 @@ import { clearTransformResults } from "../parser/transformResults";
 /**
  * Transport for the server resource routes (`/api/resources`, `/api/backups`). Every mutation sends
  * the database epoch the client loaded (`setResourceEpoch`); the server answers 412 when a restore
- * replaced the data since, which surfaces as `ResourceEpochMismatchError`.
+ * replaced the data since, which surfaces as `ResourceEpochMismatchError`. Once an epoch is loaded,
+ * every epoch-bearing read is checked too; a mismatch calls the listener before throwing. Normal
+ * requests use `authFetch` in `src/ts/storage/serverAuth.ts`; unload uses its prepared token directly.
  */
 
 /** A write named a stale revision; `conflicts` has the current revision of each record, chat, or chat order. */
@@ -269,7 +271,9 @@ function mergeRounds(rounds: ResourceReadRefsResult[], requested: ReadonlySet<st
  * budget, and this re-sends what it left `unanswered` until nothing is left. Every round carries
  * `signal`, so a deadline on the call bounds the whole read. The rounds share an epoch, not a moment
  * (a character's record and its collections come from one round; separate entries may not), and a
- * round of another epoch halts through `epochMismatch` like any other read.
+ * round of another epoch halts through `epochMismatch` like any other read, discarding all rounds.
+ * A continuation that makes no progress throws `ResourceRequestError`; an aborted signal stops
+ * continuation. Callers install only the complete result, never partially collected rounds.
  */
 export async function readRefs(
     refs: readonly { kind: string; id: string }[],

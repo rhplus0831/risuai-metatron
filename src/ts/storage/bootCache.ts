@@ -82,6 +82,10 @@ export type BootCacheWrite = {
     items: Map<string, string>;
 };
 
+/**
+ * Writes and clears are atomic across all stores. Clear retains fresh generation meta so delayed
+ * writes cannot resurrect discarded content; another format or `appVer` clears old content on next write.
+ */
 export interface BootCacheStore {
     /** The cache in one read (throws when it cannot be read). */
     load(): Promise<BootCacheContents>;
@@ -328,6 +332,8 @@ function mergeBySeq<T extends { characterId: string; revision: string }>(
  * or an item without `data` is accepted only for an exact advertised claim. Throws `BootCacheMiss`
  * for an answer of another format or shape, or an omission the request did not allow; a cached
  * text that does not parse throws its `SyntaxError`.
+ * A cached chat collection (`@chatCollection`, `chatCollectionClaim`) is usable and retained only with
+ * matching `chatSummaryFormat` / `CHAT_SUMMARY_FORMAT`; projection changes must bump the shared format.
  */
 export function expandBootAnswer(answer: unknown, context: BootRequestContext): ExpandedBoot {
     if (!isPlainObject(answer) || answer.format !== BOOT_RESOURCE_FORMAT) {
@@ -835,6 +841,8 @@ function once(run: () => Promise<void>): () => Promise<void> {
  * expands the answer; a cache that cannot be read, a failed boot request, or an unusable answer
  * falls back to one plain read (`readKinds`), whose failure propagates. Content-free performance
  * marks: `risu-boot-cache:read-start`, `:read`, `:answer`, `:write-start`, `:written`.
+ * Fallback reports `bootCache` and starts a best-effort fenced clear for an unusable answer before
+ * the plain read: boot may fail or reload before commit. A failed commit also attempts a fenced clear.
  */
 export async function loadBootSnapshot(deps: BootCacheDeps): Promise<BootSnapshot> {
     const fallback = async (

@@ -3,6 +3,16 @@ import { itemIds } from "../../../shared/recordPatch.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import type { CollectionKind, SectionKind } from "../../../shared/sections.ts";
 
+/**
+ * Pure three-way record merge policy; no mirror is changed here. A unit is a whole field value,
+ * a declared coupled tuple (`SECTION_MERGE_GROUPS`, `CHARACTER_MERGE_GROUPS`), or a whole id-addressed
+ * item (`COLLECTION_MERGE_POLICIES`). Objects/arrays inside a field stay atomic. One changed side
+ * wins, equal unit values converge, and differing concurrent values conflict. Absence differs from `null`.
+ * Required lists cannot merge to empty: no client default is manufactured. The adapter in
+ * `src/ts/storage/resourceSync.svelte.ts` validates and detaches the complete result before applying
+ * it, and owns `llmSecrets` siblings, `statics` counts and `pluginStorage`'s dictionary merge separately.
+ */
+
 export const ABSENT = Symbol("absent");
 const CONFLICT = Symbol("conflict");
 type Fields = Record<string, unknown>;
@@ -137,7 +147,13 @@ export function isItemMergeKind(kind: string): kind is keyof typeof COLLECTION_M
     return policy === "items" || policy === "nonemptyItems" || policy === "selectedItems";
 }
 
-/** Whole items merge by id; both reorders conflict, one reorder wins, otherwise server order wins. */
+/**
+ * Every input must pass `itemIds`; normalizers alone do not grant item independence. Concurrent
+ * same-id additions need equal values; an edit against deletion conflicts. Reordering compares
+ * surviving base ids: two reorders conflict even when equal, one wins, otherwise server order wins.
+ * Start from the winning side's full id order, then append unseen ids from the other side.
+ * Unchanged items can accept the other side's deletion.
+ */
 function mergeItems(base: unknown, theirs: unknown, ours: unknown): Fields[] | null {
     const [baseIds, theirIds, ourIds] = [itemIds(base), itemIds(theirs), itemIds(ours)];
     if (!baseIds || !theirIds || !ourIds) return null;

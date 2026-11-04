@@ -11,320 +11,259 @@
 
 ## Files
 
-- `src/ts/storage/resourceSync.svelte.ts`: the save adapter. Beyond Flows: `saving`, `heldRecordRevision` (the job
-  channel's barrier), `stopResourceSync` (terminal: fences writes, clears timers and listeners, aborts reads; it saves,
-  alerts, and reloads nothing, and the page journal closes separately).
-- `setRemoteResourceOwner(kind, { apply, reconcile? })`: the owner of a kind outside the mirror; boot registers
-  `noteRemoteInlay`/`reconcileInlays` and `refreshPluginPermissions` (three retries 5 s apart).
-- `src/ts/storage/resourceClient.ts`: transport for `/api/resources` and `/api/backups`; `prepareUnloadAuth` +
-  `sendBatchOnUnload` send a `keepalive` batch with a pre-signed token.
-- `src/ts/storage/{bootCache.ts,recordMerge.ts,readDeadline.ts}`: cache validation, record merge policy, and read
-  deadlines.
-- `src/ts/bootstrap.ts` `loadData`: boot ordering and the handoff from record installation through sync and feed
-  startup.
+- `src/ts/storage/resourceSync.svelte.ts`: save and refresh adapter; `startResourceSync`, `runCycle`, `cycle`,
+  `runRefresh`, `collectOperations`, `planBatches`, `recoverFromConflict`, `mergeConcurrentChange`, `inDoubt`, `saving`,
+  `heldRecordRevision`, `flushResources`, `stopResourceSync`.
+- `src/ts/storage/resourceClient.ts`: resource and backup transport; `readBoot`, `readKinds`, `readRefs`,
+  `setResourceEpoch`, `applyBatchText`, `sendSecretRequest`, `prepareUnloadAuth`, `sendBatchOnUnload`.
+- `src/ts/storage/bootCache.ts`: boot cache and answer validation; `loadBootSnapshot`, `prepareBootRequest`,
+  `expandBootAnswer`, `BootCacheStore`, `indexedDbBootCacheStore`, `scheduleBootCacheCommit`, `clearBootCache`.
+- `src/ts/storage/recordMerge.ts`: pure record merge policy; `mergeSectionFields`, `mergeCharacterFields`,
+  `mergeItemCollection`, `mergeSelectedItems`, `SECTION_MERGE_GROUPS`, `CHARACTER_MERGE_GROUPS`,
+  `COLLECTION_MERGE_POLICIES`.
+- `src/ts/storage/readDeadline.ts`: caller-selected read bounds; `readWithDeadline`.
+- `src/ts/bootstrap.ts`: boot ordering and handoff; `loadData`. The rest belongs to [app-shell](app-shell.md).
+- `src/ts/storage/records.svelte.ts`: live record wrappers and cache stamps; `characterFieldStamp`,
+  `moduleItemFieldStamp`, `adoptCharacterValue`, `adoptModuleValue`. Owned by [persistence](persistence.md).
+- `src/ts/storage/chatStore.svelte.ts`: chat/order work and acknowledgement policy; `takeChatWork`, `ackChatWork`,
+  `requeueChatWork`, `recoverChatConflicts`, `dropLockedEdits`, `applyRemoteCollection`, `unloadPendingChatWork`,
+  `settleUnloadWork`, `assembleChats`, `orderChats`. Owned by [chat-store](chat-store.md).
 
 ## Flows
 
 ### Boot load
 
-`bootstrap.ts` `loadData`, after the [boot cache](#boot-cache) read:
+`src/ts/bootstrap.ts` `loadData` hands the [boot cache](#boot-cache) snapshot to the resource owners:
 
-1. `seedResources`, `seedChats`, `seedInlays`, `seedPluginPermissions` record the server's state before anything changes
-   it.
-2. `loadSelection`, then `installBootRecords`. A missing section, collection, or `presets` record is an error: the
-   server creates and normalizes every record, the client none.
-3. `assembleChats` replaces whatever the chat module held (`orderChats` logs a chat or order entry missing from the
-   other). `initializeRecords` replaces a missing or repeated `chaId` before any wrapper exists.
-4. [Boot recovery](draft-recovery.md#boot-recovery) (`recoverJournal`).
-5. The service worker may request a reload. `maintainCharacters` runs `checkCharOrderAtBoot` against the complete
-   recovered inventory before saving and the feed start. `initializeChats` gives a chatless character a chat; recovered
-   creation reruns no import transform.
-6. `startResourceSync()` marks every record once so boot's local writes are saved; unchanged ones are not sent.
-7. `importBrowserLocalData`, the remote-record owners, `startEventFeed`, `loadPluginsForBoot`, the UI flags.
+1. `seedResources`, `seedChats`, `seedInlays`, `seedPluginPermissions` record server state before any local change.
+2. `loadSelection`, then `installBootRecords` installs into the record and chat owners. A missing section, collection,
+   or `presets` record is an error: the server creates and normalizes every record, the client none.
+3. `assembleChats` replaces the chat module's inventory; `initializeRecords` establishes unique character ids before
+   wrappers exist.
+4. `applyFirstBootDefaults`, then [boot recovery](draft-recovery.md#boot-recovery) (`recoverJournal`).
+5. The service worker may reload. `maintainCharacters` runs `checkCharOrderAtBoot` over the complete recovered inventory
+   before saving/feed startup; `initializeChats` gives a chatless character a chat. Recovered creation reruns no import
+   transform.
+6. `startResourceSync` starts saving boot's local writes; unchanged records are not sent.
+7. `importBrowserLocalData`, remote-record owners, `startEventFeed`, `loadPluginsForBoot`, UI flags. Owners registered
+   through `setRemoteResourceOwner` are `noteRemoteInlay`/`reconcileInlays` and `refreshPluginPermissions` (three
+   retries 5 s apart).
 
 ### Boot cache
 
-- `loadBootSnapshot` reads IndexedDB `risu-boot-cache` (`BOOT_CACHE_TIMEOUT_MS`), then `readBoot` claims cached records,
-  item hashes, and chat collections (at most 5,000 claims and 2 MiB). `expandBootAnswer` yields the plain
-  `ResourceReadKindsResult`, so nothing after it changes.
-- `BOOT_CACHE_ELIGIBILITY` (`shared/resources.ts`) decides per kind; a kind with a server `project` is never cached,
-  whatever the table says, nor a character with a non-empty managed `oaiTTSConfig.apiKey`. Secrets embedded in other
-  cached content can remain.
-- A chat collection (`@chatCollection`, `chatCollectionClaim`) is cached only from an answer whose `chatSummaryFormat`
-  equals the client's: bump `CHAT_SUMMARY_FORMAT` when the summary projection changes.
-- An unreadable cache, a failed boot request, or an unusable answer falls back to one plain `readKinds` (its failure
-  propagates) with a `bootCache` event; an unusable answer starts a best-effort fenced clear at once.
-- The cache holds only what the server sent, never live state. `scheduleBootCacheCommit` (idle or within 5 s) writes one
-  transaction fenced by the meta's `generation`, so a tab never overwrites a newer tab's; a failed write clears it, a
-  clear keeps a fresh generation to reject delayed writes, and another format or `appVer` clears it on the next write.
-- It outlives the tab in the browser profile (`clearBootCache` is the entry point for a future sign-out). A new epoch
-  needs no clearing, but two independently written servers must not share an epoch behind one origin.
+- `loadBootSnapshot` in `src/ts/storage/bootCache.ts` combines IndexedDB and `resourceClient.ts`'s `readBoot` into the
+  same plain `ResourceReadKindsResult` that installation consumes. Read its module header and `prepareBootRequest`,
+  `expandBootAnswer`, `loadBootSnapshot`, `BootCacheStore` for claims, validation, fallback and write fences.
+- `BOOT_CACHE_ELIGIBILITY` (`shared/resources.ts`) decides per kind; a server `project` vetoes caching regardless of the
+  table. A character with a non-empty managed `oaiTTSConfig.apiKey` is excluded; secrets embedded in other cached
+  content can remain.
+- The `@chatCollection` claim (`chatCollectionClaim`) requires matching `chatSummaryFormat`: bump shared
+  `CHAT_SUMMARY_FORMAT` when the server summary projection changes.
+- Boot schedules `scheduleBootCacheCommit` after installation; captured server texts alone enter the cache. It outlives
+  the tab in the browser profile (`clearBootCache` for a future sign-out). A new epoch needs no clear, but independently
+  written servers must not share an epoch behind one origin.
 
 ### Dirty marking
 
-- Every local write of a settings record (`records.svelte.ts`) marks it at once; `llmSecrets`' text is its readable
-  siblings, its credentials are [queued](#credential-writes).
-- A write of a character's own fields at any depth, selected or not, marks it (`setCharacterWriteListener`); `chats`,
-  `chatPage`, `reloadKeys` are outside the record. A membership change (only through `characterStore`) and chat work
-  wake the loop.
+- Local settings writes in `records.svelte.ts` mark the adapter immediately. Character own-field writes at any depth,
+  selected or not, do too (`setCharacterWriteListener`); `chats`, `chatPage`, `reloadKeys` are outside the record.
+  Membership changes go only through `characterStore`, and chat work wakes the adapter through its listener.
+- `llmSecrets` projects readable siblings; credential values take the [separate queue](#credential-writes).
 
 ### Save cycle
 
-- After a 500 ms debounce one cycle runs, never two at once; a later mark never postpones a scheduled cycle. A cycle
-  only writes: it never awaits a read of another record, but applies waiting feed patches that need none
-  (`applyRemotePatches`).
-- Reads run in the background `runRefresh` (own pass, timer, backoff 2 s doubling to 30 s): `reloadDeferredChats`,
-  `hydrateCharacters`, `applyRemoteUpdates`, `refreshIdleSummaries`, `readIdleChats`. Stages start independently, a read
-  failure never touches the write loop's backoff, and a stage ending with write work pending wakes the loop.
-- A batch holding work that waited over 2 s records a `sync` `saveWait` event with its blocker.
+- `runCycle`, `cycle` and `schedule` in `src/ts/storage/resourceSync.svelte.ts` define debounce, single-flight writes
+  and backoff. A cycle collects records and `takeChatWork`, sends through `applyBatchText`, then acknowledges the
+  resource baseline and `ackChatWork`. A mark made in flight stays dirty. Ready feed patches apply before collection.
+- `runRefresh` owns reads beside writes: it reloads deferred chats and lists through `resourceClient.ts`, applies feed
+  records, and refreshes idle summaries/chats through the chat module. Stages start independently; a completed stage
+  wakes pending writes. Only conflict and credential dependency reads remain inside a write cycle.
 
 ### Read deadlines
 
-- Every adapter read goes through `deadlineRead`: aborted after 20 s (`READ_DEADLINE_MS`) or on a halt; `authFetch`
-  never dispatches an aborted request. The exception is `watchForRestore`'s own 5 s bound.
-- Other reads use `readWithDeadline`: 30 s for an order-repair chunk (`characterOrder.ts`) and the callback barrier's
-  chat read (`jobChannel.ts`), 60 s for an export chunk (`chatEdits.ts`), 120 s for each boot read. Chat loads have
-  [their own](chat-store.md#limitations).
-- A timer around `readRefs` bounds the whole call, continuation rounds included; a call that misses it installs nothing.
-  A read whose owner lifetime was replaced is not cancelled; it ends at its deadline.
+- Adapter reads use `deadlineRead` (20 s, including `readRefs` continuations, or halt); `watchForRestore` has its own 5
+  s bound. `authFetch` in `src/ts/storage/serverAuth.ts` never dispatches an aborted request.
+- Other readers use `readWithDeadline`: 30 s for an order-repair chunk (`characterOrder.ts`) and the callback barrier's
+  chat read (`jobChannel.ts`), 60 s for an export chunk (`chatEdits.ts`), 120 s per boot read. Chat loads have
+  [their own](chat-store.md#limitations) bound. Only a complete read installs; owner replacement leaves its read running
+  until its deadline, with adoption fenced separately.
 
 ### Serialization
 
-- A settings record serializes from its live record, a section in `SECTION_FIELDS` order, so an own `__proto__` key
-  survives and the text equals the server's normalized text. Characters (`characterProjection`) and `modules`
-  (`moduleProjection`) go field by field through text caches; others are uncached.
-- A text equal to the server's is skipped; `shareSavedText` then holds a large record's text once.
-- A character field reuses its text (`characterTexts`: 8 characters, 64 Mi UTF-16 units) while its value identity and
-  `characterFieldStamp` match. A wrapper write under the field or a raw change moves its stamp; fresh data (installed,
-  replaced from the server, created) moves all.
-- The wrappers copy every plain JSON value written into a character (`adoptCharacterValue`), so nothing shares it; a
-  mutator commits cache taint only after preparation succeeds; a local `reloadKeys` input holding record state is
-  detached. The raw paths (`initializeRecords`, `applyRawCharacter`, `patchRawCharacter`) take detached JSON, and no
-  other module writes through `characterData()`.
-- State shared between two fields, or anything not plain JSON (accessor, `toJSON`, function, class instance, null
-  prototype, cycle), nulls the character's stamps: it serializes whole every cycle until fresh. A `toJSON` hook also
-  gives no cached parts.
-- Modules reuse a field's text while value identity and `moduleItemFieldStamp` match (`moduleTexts`, keyed by the
-  element's `$state` identity, not its id), and written JSON is copied (`adoptModuleValue`). State shared across fields
-  or elements, non-JSON data, or symbol keys nulls all stamps until `applyRaw` installs fresh JSON.
-- `canonicalCharacter` runs `normalizeCharacter` on field texts (`canonicalShape`: `CHARACTER_SHAPE_FIELDS` parsed, the
-  rest as present or `null`), not a whole parse.
+- Adapter contracts: `projectCollection`, `characterProjection`, `moduleProjection`, `shareSavedText`,
+  `canonicalCharacter` and `canonicalShape`. Wrapper stamp/copy contracts: `characterFieldStamp`,
+  `moduleItemFieldStamp`, `adoptCharacterValue` and `adoptModuleValue` in `src/ts/storage/records.svelte.ts`.
+- Across that boundary, a mutator commits cache taint only after preparation succeeds; a local `reloadKeys` input
+  holding record state is detached. Raw `initializeRecords`, `applyRawCharacter`, `patchRawCharacter` accept detached
+  JSON; other modules never write through `characterData()`. Shared field/element state, non-JSON data or symbol keys
+  disable module stamps until fresh JSON is installed.
 
 ### Batch composition
 
-- One `POST /api/resources/batch` carries records, then chat groups (`takeChatWork`; a group is never split inside a
-  request), then reorders, in one server transaction; it splits above 5,000 operations or the client's 100 MiB body cap
-  minus a 64 KiB envelope margin, or to isolate an unindexed refusal. A chat created with its character travels with or
-  after it.
-- The `chaId` list is diffed against the saved characters. A character removed and re-added under one id before a cycle
-  is a field update, its chats the [chat module's reconciliation](chat-store.md#character-lifecycle), never a
-  delete-then-create: the server refuses two ops of one id, and a delete beside changes to its chats.
-- Over 5,000 unsent ops, a chat becomes a held resend prefix under its batch id and a suffix under a fresh id; neither
-  is sent that cycle. `takeChatWork` withholds the prefix until
+- `planBatches` sends records, whole `takeChatWork` groups, then reorders through `POST /api/resources/batch`; each
+  request is one server transaction. It splits at 5,000 operations or the client's 100 MiB cap less 64 KiB, or isolates
+  an unindexed refusal. A new character travels with or before its chats.
+- Membership diffs by `chaId`: remove/re-add before collection is an update, with
+  [chat reconciliation](chat-store.md#character-lifecycle). The server refuses two resource ops for one id, or a parent
+  delete beside its chat changes.
+- Above 5,000 unsent chat ops, the chat module holds a resend prefix under the batch id and a suffix under a fresh id;
+  neither sends that cycle. `takeChatWork` withholds the prefix until
   [split confirmation](draft-recovery.md#split-confirmation); the suffix follows its acknowledgement.
-- A same-id chat recreation sends the old delete alone on its held revision, then the create on a null base once the
-  delete is acknowledged or confirmed absent. The delete keeps the old id, the create gets a fresh one, and the delete
-  alone does not settle the recreation's flush sequence. Deleting the recreation before collection still sends the old
-  delete.
-- On success the sent text is the saved text; a key marked during the request stays dirty.
-- An acknowledged order listing unknown chats keeps the older revision and queues `listRefresh` (`applyRemoteCollection`
-  with `keepPendingOrder`, during a generation too). A queued reorder is held (`holdOrders`), then sent on the new
-  revision with the new chats after its own, unless a kept chat with a held revision is missing from the list: then it
-  is discarded and reported, with the notice.
-- A `stale: true` result keeps its base and marks an idle re-base: after the read-back, an idle chat takes the server
-  copy with no discard or notice; a busy one keeps the mark.
+- Same-id chat recreation sends the old delete alone on its held revision/id, then a null-base create under a fresh id
+  after acknowledgement or confirmed absence. Delete alone does not settle the recreation's flush sequence; deleting the
+  recreation before collection still sends the old delete.
+- An acknowledged order naming unknown chats keeps its old revision and queues `listRefresh`. The read enters
+  `applyRemoteCollection` with `keepPendingOrder`, even during generation; `holdOrders` holds a queued reorder until it
+  can use the new revision with new chats after its own. A missing kept chat with a held revision instead discards and
+  reports the reorder with the notice.
+- A chat result with `stale: true` keeps its base and queues idle rebase: the idle read takes the server copy without
+  discard/notice, while a busy chat keeps the mark.
 
 ### Record patches
 
-- `updateOperation` sends a held record with parts as a patch, diffed by text against `baseParts`: object records
-  `{ set, remove }` of top-level fields, arrays accepted by `itemIds` `{ items, changes, order? }`.
-- `llmSecrets` never gets parts: the server refuses its patch ops, even for readable siblings.
-- A create, a record without parts, or a patch no smaller in UTF-8 bytes goes whole. A changed top-level `__proto__`
-  sends the object record, or that item, whole; a `toJSON` hook that prevents parts also keeps the whole write.
-- Texts differing only in key order become the saved text at the same revision, with nothing sent.
+`updateOperation`, `baseParts` and `recordPatchText` in `src/ts/storage/resourceSync.svelte.ts` define patch selection
+and whole-record fallbacks. `llmSecrets` never has parts: the server refuses its patches, including readable siblings.
 
 ### Lost answers
 
-- A network error, 5xx, or 429 retries with backoff up to 30 s.
-- A chat group whose answer was lost (a network error or 5xx, or a failed pagehide request) becomes the chat's
-  `Pending.resend`: resent alone, exactly as sent, with `retry`, before anything else of that chat. Newer work, even an
-  empty entry with a newer sequence, waits for its answer and goes under a new id, so a replayed group's answer never
-  carries newer work down.
-- A definitely unapplied group merged back in front of newer work takes the requeued group's id.
-- A resend rolled back unanswered (another group's 409, a request never sent) stays a resend. A group a 409 names did
-  not land and loses its doubt, except `reason: "expired"`: it takes the ordinary discard with the notice and never gets
-  a new identity.
-- A lost chat create replays the same way, recognized by a conflict read's exact match unless refused as expired.
-  Matching membership in a collection read acknowledges nothing.
-- A reorder waits while a batch resends an in-doubt create or delete, until the acknowledgement's order revision or a
-  `listRefresh` read (also after a delete confirmed absent); a failed refresh keeps it held.
-- A record's lost text stays `inDoubt`: on its base only one write can land. Every cycle resends exactly that text on
-  that base, an absent character's lost create included, and newer local text, a revert included, waits with the key
-  dirty. The answer, or its 409's read, settles it, and the newer text goes on the server's revision with no discard or
-  notice.
-- A feed patch or conflict read equal to the in-doubt text becomes the saved base the same way, the mirror keeping this
-  client's text. Meanwhile no whole live update or job record enters the mirror, so the echo never overwrites a revert.
-- It is cleared by any acknowledgement of the key, a 400/413 refusal, a conflict replacing the record, and the boot
-  seed.
+- Network/5xx uncertainty is handed from the adapter to `requeueChatWork({ lost: true })`: `Pending.resend` replays
+  exactly the sent group, alone with `retry`, before newer work. Newer work, even an empty newer sequence, uses another
+  id, so the replay's answer cannot settle it. Failed pagehide requests take the same path through `settleUnloadWork`.
+- A definitely unapplied group merged in front of newer work keeps that group's id. A rolled-back unanswered resend
+  remains a resend; a named 409 clears doubt. Expired live groups discard with the notice and no fresh identity; expired
+  recovered groups quarantine for explicit Retry/Discard.
+- A lost chat create replays and is recognized by an exact conflict-read match unless expired. Collection membership
+  acknowledges nothing. Reorders wait behind in-doubt creates/deletes for the acknowledgement's order revision or
+  `listRefresh`, also after a confirmed-absent delete; failed refresh keeps the hold.
+- A record's lost text is held by `noteInDoubt` and resent by `resendInDoubt` (inside `collectOperations`); replay and
+  echo handling live on `inDoubt` and `adoptInDoubt`: exact sent text/base precedes newer local text, including a
+  revert, while whole live/job adoptions wait. A matching feed patch or conflict read advances the saved base without
+  replacing the mirror.
 
 ### Refusals and quarantine
 
-- A 400 naming `chats[i]...` quarantines that chat and resends the rest; a 400 naming `ops[i]`, or the client-side 413
-  pre-check (before dependent chat work is taken), quarantines that resource key at its refused text. Each key alerts
-  once per session, unchanged refused content is skipped, and other work keeps saving.
-- An unindexed 400/413 from a request of several units sets `isolateBatches`: every later cycle sends one request per
-  resource, chat group, and reorder, characters before chats. A request that is already one unit is quarantined
-  directly; such a resource alerts once per content change.
-- A refused order keeps its intent until its sendable ids change or a Retry. While `isOrderQuarantined` holds it is
-  outside the flush's obligations, in `refused`, and still protects page close.
-- A refused chat keeps its ops, create/delete intent, and reason. An explicit edit, Retry, or recreation releases it,
-  never adoption, requeueing, remote updates, or a no-op edit: a loaded chat then queues a whole replacement at the
-  front of pending work on its held revision, a refused create a create, an unloaded chat its metadata ops, a refused
-  delete its delete. Deleting a refused create settles it.
-- A quarantined character create stays out of `creating`, so its chats wait and membership is unacknowledged. Quarantine
-  keeps no idle cycle scheduled.
-- `refusedItems()` reads refusals reactively without pruning; treat `key` as opaque. `retryRefused` and `discardRefused`
-  refuse once halted. Discard reads and accepts the server copy, re-checking identity and the edit and owner fences
-  after its read, so an intervening edit, retry, or recreation wins.
+- The adapter routes an indexed `chats[i]` 400 to `quarantineChat` and requeues the rest; `ops[i]` or the client 413
+  pre-check quarantines the record before dependent chat work is taken. `quarantineRecord`, `cycle` and `planBatches`
+  define suppression of automatic retries, alerts and per-unit isolation after unindexed 400/413.
+- A quarantined character create is excluded from `creating`: its chats wait and membership stays unacknowledged, while
+  other work saves. Quarantine alone schedules no idle cycle.
+- A refused order keeps its intent until sendable ids change or Retry. While `isOrderQuarantined` holds it, it is
+  outside flush obligations, in `refused`, and still protects page close.
+- Chat refusal retention and release: `quarantineChat`, `releaseChatRefusal`, `retryRefusedChat` and `deleteChat` in
+  `src/ts/storage/chatStore.svelte.ts`.
+- Read `refusedItems`, `retryRefused` and `discardRefused` for opaque keys, reactive reads, halt admission and read
+  fences. Discard accepts the server copy only if newer local intent has not superseded it.
 
 ### Conflicts
 
-- A 409 first tries `rebuildConflictRecord` (a waiting feed patch exactly one write past the held revision, or an
-  exact-revision `deferredHydrations` entry), else `readRefs`; both run the same steps.
-- A server copy equal as JSON to what was sent (a lost response) reloads nothing. Otherwise the record
-  [merges](#record-merge).
-- An unresolved merge writes the server record into the mirror in place (a removed selected character → home) and
-  discards local edits, first [drafted](draft-recovery.md#conflict-capture). `alertReloadNotice` shows once per recovery
-  after the last read, also when a read throws after a discard.
-- The 409's read stays in the write cycle under the 20 s deadline, since the refused batch depends on it; characters it
-  puts in `hydrate` are read by the refresh queue, never inside the refused cycle.
-- Every reloaded record reaches `onRemoteRecordApplied` (boot: inlay cache invalidation and, for `characterOrder`, the
-  [order repair](persistence.md#character-order-repair)).
-- An adopted character create queues `listRefresh` with `keepPendingOrder`, so its chat work saves in one flush. A
-  create losing to another writer's under the same id drops its local chats (`forgetCharacter` with `capture`, reported
-  on the character only) and reads the server's list (`hydrate`).
-- A locally absent character's refresh is parked, scheduling no reads, until a same-id re-add or a confirmed deletion.
-- A conflict's acceptance is immediate even for a character a generation runs on: the job refreshes records at its
-  barriers, and the server's locks guard the message. Only a `hydrate` list read waits while this tab streams into it
-  (`isCharacterStreamedHere`).
+- A 409 enters `recoverFromConflict`, which takes the server copy from `rebuildConflictRecord` (a fitting feed patch or
+  exact-revision job hydration), otherwise `readRefs`; both go through lost-reply recognition, merge, then acceptance. A
+  failed merge accepts the server record in place (removed selected character → home), first
+  [drafting](draft-recovery.md#conflict-capture) local edits. The reload notice also survives a read error after a
+  discard.
+- Conflict read-back is a write dependency under `deadlineRead`; queued `hydrate` lists run in the independent refresh
+  queue. Acceptance is immediate even during generation: the job refreshes records at barriers and server locks guard
+  messages. Only `hydrate` list reads wait on this tab's `isCharacterStreamedHere`.
+- `onRemoteRecordApplied` reaches boot's inlay cache invalidation and, for `characterOrder`,
+  [order repair](persistence.md#character-order-repair).
+- An adopted create queues `listRefresh` with `keepPendingOrder`, allowing chat work in one flush. A same-id create lost
+  to another writer calls `forgetCharacter` with `capture`, reporting the loss on the character only, then reads the
+  server list through `hydrate`.
 
 ### Record merge
 
-- `mergeConcurrentChange` merges the saved base, the server record, and the current projection by `recordMerge.ts`
-  (`SECTION_MERGE_GROUPS`, `CHARACTER_MERGE_GROUPS`, `COLLECTION_MERGE_POLICIES`). A unit (a field, coupled tuple, or
-  whole item) keeps the side that changed; equal changes converge, different ones conflict. Objects and arrays in a
-  field stay atomic.
-- Everything is checked before the mirror changes. A success applies detached data raw, rebases with `adoptMergedBase`,
-  and keeps the key dirty (equal to the server: no echo), with no draft or notice; any taken field reaches
-  `onRemoteRecordApplied`. A failure takes the [whole-record acceptance](#conflicts).
-- `llmSecrets` keeps its sibling body as one unit (`adoptSecretSiblings`, shared by the 409, credential-reply, and
-  live-update paths); two changed bodies conflict. Masked status always comes from the server record.
-- Sections and characters need a saved base; deletions do not merge. Unequal `chaId` or `type` conflict. A taken field
-  the mirror only inherits (`assignsInherited`) conflicts: the Svelte proxy cannot store it.
-- `statics` counts (`benignChanges`) are best effort: the server's plus local increments.
-- `pluginStorage` (`mergePluginStorage`) merges by key, one level down in `_pluginStorage` and
-  `_safeLocalPluginStorage`, other top-level keys whole; a reserved name held as no dictionary conflicts. The result is
-  a fresh object of own keys. On a discard, `onPluginStorageDiscarded` hears the replaced keys after the record settles.
-- Item collections (`mergeItemCollection`): all three lists must pass `itemIds`, which the `customModels` and `modules`
-  normalizers do not guarantee. Edit against delete conflicts; same-id additions need equal values; concurrent
-  creations, `pluginStorage`'s too, merge against an empty base. Reorders compare surviving base ids: both sides
-  reordering, even identically, conflicts; one side's order wins; additions append.
-- A merged empty required list conflicts: no client default is manufactured. A merged credential deletion waits for its
-  acknowledged owner deletion before secret cleanup.
-- A selectable collection keeps this tab's `selectedId` only when this tab alone changed it and its item survives; a
-  chosen id absent from the merged items conflicts.
+- `mergeConcurrentChange` in `src/ts/storage/resourceSync.svelte.ts` uses `recordMerge.ts`'s three-way field/tuple/item
+  policy. A success applies detached data raw, rebases through `adoptMergedBase`, and keeps the key dirty without a
+  draft or notice; equal server values produce no echo. Taken fields reach `onRemoteRecordApplied`; a failure takes
+  [whole-record acceptance](#conflicts).
+- For module lists accepted by `itemIds`, a fresh-id addition merges with independent remote changes and rebases without
+  a discard.
+- `pluginStorage` merges by key, one level down in `_pluginStorage` and `_safeLocalPluginStorage`, other top-level keys
+  whole (`mergePluginStorage`). Conflicting reserved values that cannot merge as dictionaries fail; unchanged or equal
+  values still converge. `onPluginStorageDiscarded` hears replaced keys after acceptance settles the record.
+- `statics` counts are best effort: server counts plus local increments (`benignChanges`). `llmSecrets` sibling-body
+  rules live on `adoptSecretSiblings`, shared by save conflicts, credential replies and live updates; masked status
+  comes from the server.
+- `customModels` and `modules` normalizers do not guarantee `itemIds`: merge admission checks all inputs. A merged
+  credential deletion still waits for acknowledged owner deletion before secret cleanup.
 
 ### Chat and order conflicts
 
-- `recoverChatConflicts` reads a conflicting chat back: other groups requeue, recognized create/delete replays settle,
-  the rest discard queued edits with the notice, a chat gone on the server included.
-- A conflicted reorder keeps its sent vector until the list read (`hydrate`), which settles it quietly when the server
-  order equals the vector, else reports `chats/<chaId>` (`markOrderDiscarded`) with the notice; a failed or deferred
-  read settles nothing. A newer queued reorder keeps its sequence.
-- The read reports work of a chat the list lacks (`chats/<chaId>/<chatId>`; idle ones go silently). A character found
-  gone is removed only when neither its held revision nor `chatOwnerToken` moved during the read; otherwise it stays in
-  `hydrate`.
-- List reads run beside writes: an answer applies only when `listReadGenerations`, `characterWriteSerials` (moved at
-  dispatch and settlement of any write carrying the character), `writingCharacters`, and `chatOwnerToken` are unchanged
-  since issue; otherwise the id stays queued. Reorders of such a character are held, its chat groups are not.
-- A refused create that reads back null is quarantined and kept in the mirror, unless its character is gone.
-- A chat a job streams into defers its reload until the locks release (`isChatDeferred`); the reload then discards its
-  queued edits.
+- The adapter reads conflicts through `readRefs`, then `recoverChatConflicts` in `src/ts/storage/chatStore.svelte.ts`
+  requeues unrelated groups, recognizes create/delete replays, and otherwise discards queued work with the notice, gone
+  chats included. A non-expired append with a missing anchor can instead reanchor and retry.
+- A conflicted reorder keeps its sent vector until the `hydrate` list read: equal server order settles quietly;
+  otherwise `markOrderDiscarded` reports `chats/<chaId>` with the notice. A failed/deferred read settles nothing, and a
+  newer queued reorder keeps its sequence.
+- A list reports work of missing chats as `chats/<chaId>/<chatId>`; idle ones go silently. A gone parent is removed only
+  if its held revision and `chatOwnerToken` stayed unchanged during the read, otherwise it remains in `hydrate`.
+- `readCharacter` fences lists against dispatch, settlement and owner changes while writes proceed. Such characters'
+  reorders are held, their chat groups are not. A locally absent `listRefresh` is parked without reads until re-add or
+  confirmed deletion (`hydrateCharacters`).
+- A refused create that reads back null stays quarantined in the mirror unless its parent is gone. A chat streamed into
+  by this tab defers reload (`isChatDeferred`) until locks release; the deferred reload discards its queued edits.
 
 ### Generating refusals
 
-- A 409 entry with `reason: "generating"` blocks the chat's surviving work for `JOB_RETRY_MS` (5 s); a refused character
-  delete stays unsaved as long. One cycle is scheduled at that time, `chatGenerating` shows once per episode, and
-  blocked work is unsaved but not runnable.
-- `dropLockedEdits`, before unrelated conflict reads, drops the by-id edits of the entry's `messageIds` in the refused
-  group and newer work, since a retry after the job would land over the finished reply. They are reported as discards
-  with `resourceReloaded`; the chat goes stale, read whole once its remaining work landed and this tab's locks released.
-- Chat-level ops, a multi-id `remove`, and ops on other messages keep the retry path. The sent sequence settles when
-  none is kept.
-- The split follows the server's ids, not this tab's locks, so an observer and a tab whose follow ended `lost` are
-  alike. It is the fallback for an edit sent before the [lock frame](live-updates.md#feed-locks).
+- Before unrelated conflict reads, `recoverConflictedWork` hands a `reason: "generating"` refusal's `messageIds` to
+  `recoverChatConflicts` / `dropLockedEdits`. Edits of those locked messages in the refused group and newer work are
+  dropped and reported with `resourceReloaded`; the stale chat is read whole after surviving work lands and this tab's
+  locks release.
+- Surviving work, including chat-level ops, multi-id `remove` and other-message edits, waits `JOB_RETRY_MS` (5 s), as
+  does a refused character delete. One retry cycle is scheduled and `chatGenerating` shows once per episode. With no
+  surviving work there is no chat retry block; the sent sequence settles when none is kept.
+- The split uses server ids independently of tab locks, treating observer and lost-follow tabs alike. It is the fallback
+  for an edit sent before the [lock frame](live-updates.md#feed-locks).
 
 ### Record hydration
 
-- `applyHydration` applies a job's record with no discard, settled key, or notice: only a loaded-epoch token newer by
-  `compareRevision`, with no local change (not in flight, in doubt, or blocked; projection equal to the saved text). A
-  dirty mark alone is no change.
-- A record with a local change keeps its newest event for after the next cycle. An unheld record, a deletion, and
-  `HIDDEN_HYDRATION_KINDS` are skipped; chats go to [`hydrateChat`](chat-store.md#job-hydration).
+Server job records enter the adapter's `applyHydration`; read its comment for admission and deferred adoption. Chats
+enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patches use `applyPatchHydration` /
+`hydrateChatPatch`.
 
 ### Credential writes
 
-- After the batch, the `llmSecrets` ops queued at collection go one at a time through `/api/llm-secrets/*` on the held
-  revision; a later one waits for the next cycle, after its resource.
-- A cleanup goes only once its owner left the mirror and the saved copy; it is dropped while the mirror holds the owner,
-  and waits, unscheduled, while only the saved copy does.
-- A reply's siblings take [`adoptSecretSiblings`](#record-merge); a conflict takes the server's copy with a recorded
-  discard and the notice.
-- A 409 rereads and retries, at most twice per op per cycle; a 400 or 404 drops the op, reports `llmSecrets/<path>`, and
-  alerts; other failures keep the queue.
-- `awaitSecretWrites()` throws on a refused op, on only cleanups behind an unsaved deletion, or when halted; `auxFetch`
-  calls it first. Unload sends no credential ops.
+- After resource batches, `sendSecretOps` sends the captured `llmSecrets.svelte.ts` queue one at a time through
+  `resourceClient.ts`'s `/api/llm-secrets/*` transport on the held revision. A later credential waits for the next cycle
+  after its owner record. Cleanup waits until owner deletion is acknowledged; comment contracts on `sendSecretOps`,
+  `entryOwnerState`, `adoptSecretRecord` and `adoptSecretSiblings` define retries, refusals and sibling adoption.
+- `auxFetch` calls `awaitSecretWrites` before using a stored key; refused ops, cleanups behind unsaved owner deletion,
+  saving failure or halt reject that barrier. Unload sends no credential ops.
 
 ### flushResources
 
-- It settles what was queued before the call (record generations, membership, chat and order sequences, credential ops),
-  nothing else, and does not wait for background reads.
-- Its ten attempts count write cycles and dependency reads that leave the dependency pending. An obligation waiting only
-  on a read starts or joins that one read, never the whole pass, and rejects with its error; other background failures
-  neither count nor reject.
-- An unanswered pagehide request and a stalled split journal dependency each wait at most 20 s; the timeout rejects
-  without releasing the split.
-- It resolves `{ discarded, refused }`. `discarded`: events since the call or `beginMutationScope()` (a conservative
-  time window). `refused`: `refusedItems()` at resolution. Both use `chats/<chaId>/<chatId>`, `chats/<chaId>` for an
-  order, `<kind>/<id>`. An empty discard list does not mean every change is durable.
-- A refused chat or order does not block it and remains in `refused` while quarantined; its discard event appears only
-  in the flush or scope of that refusal. A refused resource rejects at once (`quarantineReason()`), as does
-  generation-blocked work (`GenerationBlockedError`; `generatingNoticeCount()` tells whether `chatGenerating` showed).
-- Send admission, `startMemoryTask`, `requestStoredTranslation`, and `readChatsDetached` (also on a refused character
-  record) check the target chat and its order against the result, so none acts on the server's older copy of a draft
-  held only here. Backup export reports refused changes.
+- `flushResources` captures queued record generations, membership, chat/order sequences and credential ops. Its comment
+  defines the ten-attempt budget and relevant dependency reads; it does not wait for unrelated background reads.
+- Unanswered pagehide and stalled split-journal dependencies each wait at most 20 s. Timeout rejects without releasing
+  the split prefix.
+- The result is `{ discarded, refused }`: discards since the call or `beginMutationScope` (a conservative time window),
+  and `refusedItems` at resolution. Keys are `<kind>/<id>`, `chats/<chaId>/<chatId>` or `chats/<chaId>` for an order. An
+  empty discard list does not guarantee all changes are durable; refused chats/orders are nonblocking. Refused records
+  reject via `quarantineReason`; generation-blocked work throws `GenerationBlockedError` (`generatingNoticeCount` tracks
+  whether the notice showed).
+- Send admission, `startMemoryTask` and `requestStoredTranslation` check the target chat and order in the refusal
+  result. `readChatsDetached` also checks character keys. Refused records reject the flush itself. Backup export reports
+  refused changes.
 
 ### Unload
 
-- While work is unsaved the loop keeps a signed unload token ready. `visibilitychange` to hidden runs a normal cycle at
-  once, bypassing debounce and backoff, then a follow-up if one was running.
-- `beforeunload` warns for `hasUnsavedWork`, refused content included, but never once halted, so the notice's reload
-  goes through. Refusals keep no loop running.
-- `pagehide` sends each chat's pending by-id ops under the batch's existing id, one request per chat, in a shared 60 KiB
-  budget counting outstanding keepalives, only when the whole batch is eligible and fits (`unloadPendingChatWork`). A
-  failed send keeps the batch.
-- A sent group counts as in flight and settles through `settleUnloadWork`; a failed one requeues ahead of newer edits.
-  An answer for a group no longer in flight (a confirmed-gone character, a list discard) holds no revision and queues
-  nothing.
-- Records, creates, deletes, replacements, and reorders use normal cycles only. Keepalive is best effort.
+- `startResourceSync` owns lifecycle handlers, warning rules and the shared keepalive budget; `prepareUnloadAuth` in
+  `resourceClient.ts` keeps a signed token ready while unsaved work exists. Hidden visibility requests an immediate
+  normal cycle, bypassing debounce/backoff, with a follow-up if needed after joining an existing cycle.
+- `pagehide` asks `unloadPendingChatWork` for whole eligible by-id batches under existing ids, one request per chat in
+  the shared 60 KiB budget including outstanding keepalives. Only a successful `sendBatchOnUnload` dispatch calls
+  `trackUnloadWork`; answers enter `settleUnloadWork`, failures requeue ahead of newer edits. Answers for retired work
+  change no revision or queue. Records, credentials, creates/deletes, replacements and reorders use normal cycles only;
+  keepalive is best effort.
 
 ### Transport
 
-- Every mutation sends the loaded epoch (`setResourceEpoch`); every read's epoch is checked once one is loaded.
-- `readRefs` re-sends what an answer leaves `unanswered` and returns one answer in request order or throws, never a
-  partial merge: no progress is a `ResourceRequestError`, another epoch discards every round, an aborted signal stops
-  the loop. Only a character's record and its two collection entries are one round's read
-  ([server](server-resources.md)).
+- `src/ts/storage/resourceClient.ts` owns loaded-epoch checks, `readRefs` continuation and pre-signed unload transport.
+  Mutations carry the loaded epoch; a read of another epoch reaches the adapter's restore halt through the registered
+  listener. Normal requests pass through `authFetch` in `src/ts/storage/serverAuth.ts`.
+- `readRefs` returns a complete result in request order or throws. Its rounds share an epoch, not a moment: only a
+  character record and its collection entries are guaranteed the same round's read
+  ([server contract](server-resources.md)).
 
 ## State
 
