@@ -14,6 +14,13 @@
     import SideBarArrow from "../UI/GUI/SideBarArrow.svelte";
     import ModuleChatMenu from "../Setting/Pages/Module/ModuleChatMenu.svelte";
 
+    /**
+     * The chat screen's layout around `DefaultChatScreen.svelte`: the `waifu` theme puts the selected character's
+     * emotion image (unless its `viewScreen` is "none") beside the chat column, both widths from the settings;
+     * every other theme keeps the classic layout. A custom background that finishes loading after a newer one was
+     * chosen is dropped, so the newest choice always wins.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     let openChatList = $state(false);
     let openModuleList = $state(false);

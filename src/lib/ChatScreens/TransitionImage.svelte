@@ -1,4 +1,9 @@
 <script lang="ts">
+    /**
+     * Shows `src` and cross-fades from the previous images when it changes. An older (promised) `src`
+     * that resolves after a newer one is dropped, so a slow image never replaces the current one.
+     */
+
     let currentSrc: string[] = $state([]);
     let oldSrc: string[] = $state([]);
     let showOldImage = $state(false);

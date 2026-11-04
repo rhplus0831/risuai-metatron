@@ -2,6 +2,11 @@
     import { language } from "src/lang";
     import CheckInput from "./CheckInput.svelte";
 
+    /**
+     * A numeric slider. `-1000` (or `undefined`) is a "disabled" sentinel, not a lock: it shows as disabled with the
+     * slider at `min`, and a drag or key still sets a value. With `disableable`, the checkbox writes the sentinel or
+     * `min`.
+     */
     // A touch or pen moving this far decides whether it drags the slider or scrolls the page.
     const TOUCH_SLOP_PX = 8;
 

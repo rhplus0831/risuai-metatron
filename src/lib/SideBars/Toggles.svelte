@@ -28,6 +28,14 @@
     import { alertConfirm, alertInput } from "src/ts/alert";
     import { CircleAlertIcon, CopyPlusIcon, PencilIcon, SaveIcon, TrashIcon } from "@lucide/svelte";
 
+    /**
+     * The prompt toggles of `chatRef`'s chat, and its toggle preset link. A value resolves as the chat's value, then
+     * the legacy global, then the toggle's kind default (`resolveGlobalChatVar`, `shared/prompt/toggles.ts`); a write
+     * sets one key (`setChatToggle`, `src/ts/toggles/chatToggles.svelte.ts`). The chat-value and preset actions
+     * capture `chatRef` at their start and check again after each await and at write time that the chat is still
+     * loaded, so a dialog cannot land on another chat or a removed one.
+     */
+
     interface Props {
         chara?: AnyClientCharacter;
         chatRef: ChatRef | null;

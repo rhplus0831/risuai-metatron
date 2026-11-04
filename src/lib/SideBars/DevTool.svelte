@@ -29,6 +29,14 @@
     import { loadLoreBookV3Prompt } from "src/ts/process/lorebook.svelte";
     import { getModules } from "src/ts/process/modules";
 
+    /**
+     * The developer pane: chat variables, token counts, an autopilot that sends lines into the selected chat, and the
+     * prompt and lorebook previews. The prompt preview is a server preview job (`previewChat`,
+     * `src/ts/process/index.svelte.ts`) for the chat selected at the click, refused while that chat is busy. The
+     * instruct preview takes the character and user names of that chat before the await, so a selection change
+     * meanwhile cannot rename the result.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
     let previewMode = $state("chat");

@@ -19,6 +19,14 @@
     import { discardRefused, refusedItems, retryRefused, type RefusedItem } from "src/ts/storage/resourceSync.svelte";
     import { refusedItemsFor, refusedRecordExportText, type RefusedRecordItem } from "./refusedData";
 
+    /**
+     * The save adapter's refused writes (`refusedItems`, `src/ts/storage/resourceSync.svelte.ts`) in two forms: the
+     * `chat` form, mounted by `src/lib/ChatScreens/DefaultChatScreen.svelte` for its displayed chat, and the `app`
+     * pill, mounted by `src/App.svelte`. A mounted chat form registers its chat key and the app form leaves that
+     * chat's refusal out until it unmounts, so settings, home, or a loading chat hands the refusal back to the app
+     * list. Rows resolve their chats through `chatEntry`, so a chat that is not loaded still has its name.
+     */
+
     type Props = { form: "chat"; chaId: string; chatId: string } | { form: "app" };
 
     let props: Props = $props();

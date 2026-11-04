@@ -18,7 +18,12 @@ export function refusedItemsFor(
 
 const CHARACTER_LOCAL_KEYS = new Set(["chats", "chatPage", "reloadKeys"]);
 
-/** The save projection in a JSON envelope. Values stay live until serialized, preserving own user keys. */
+/**
+ * The save projection in a JSON envelope, `{ kind, id, data }`. Values stay live until serialized, preserving own
+ * user keys. A section record keeps only its kind's `SECTION_FIELDS`; `llmSecrets` keeps its readable siblings
+ * (`llmSecretsText`), so no managed credential and none of the queued credential writes are exported; a character
+ * drops its client-only fields; any other record is exported whole.
+ */
 export function refusedRecordExportText(item: RefusedRecordItem, record: unknown): string | undefined {
     if (record === undefined) return undefined;
     let data = record;

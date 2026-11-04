@@ -3,6 +3,10 @@
     import { popupStore } from "src/ts/stores.svelte";
     import { sleep } from "src/ts/util";
 
+    /**
+     * A menu button: a click puts its snippet and the pointer position in `popupStore`, which
+     * `src/lib/UI/PopupList.svelte` renders; a click on the same button while its menu is open closes it.
+     */
     const {
         children,
     }: {

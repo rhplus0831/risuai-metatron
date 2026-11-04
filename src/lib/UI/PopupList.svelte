@@ -3,6 +3,12 @@
     import { sleep } from "src/ts/util";
     import { onDestroy, onMount } from "svelte";
 
+    /**
+     * The fixed-position host of `popupStore`'s menu, mounted by `src/App.svelte` while the store holds one. It closes
+     * on the next document click; its listener is added after a zero-delay timer, so the click that opened it does
+     * not close it.
+     */
+
     let styleString = $derived.by(() => {
         let styleString = "";
         const windowWidth = window.innerWidth;

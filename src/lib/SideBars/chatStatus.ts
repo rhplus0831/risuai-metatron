@@ -4,6 +4,10 @@ import { MEMORY_HEALTH_STATES, type MemoryHealthState } from "../../../shared/st
 
 export type ChatStatus = "recovery" | "refused" | "generating" | "memory" | "unseen" | "health";
 
+/**
+ * Status priority, most urgent first: a chat shows the first status that holds for it, and a character (any of its
+ * chats) or a folder (any of its members' characters) the first that holds for any of them.
+ */
 export const CHAT_STATUS_PRIORITY: readonly ChatStatus[] = [
     "recovery",
     "refused",
@@ -27,7 +31,10 @@ export type ChatStatusSets = {
     health?: ReadonlyMap<string, MemoryHealthState>;
 };
 
-/** Chat status keys, distinct from the save adapter's opaque refusal keys. */
+/**
+ * Chat status keys, distinct from the save adapter's opaque refusal keys. Only `chat` refusals give a chat its
+ * refused badge; a refused record or order shows in the app-level refusal list only.
+ */
 export function refusedChatKeys(items: readonly RefusedItem[]): ReadonlySet<string> {
     return new Set(items.filter((item) => item.kind === "chat").map((item) => `${item.chaId}\u0000${item.chatId}`));
 }

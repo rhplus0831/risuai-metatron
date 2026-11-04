@@ -627,7 +627,8 @@ annotation {
     WebKit (Safari, iOS browsers) draws native <select> with a fixed-height
     menulist that ignores our padding, so the selected text gets clipped.
     Drop the native appearance and draw the chevron ourselves in currentColor
-    so it follows the active color scheme.
+    so it follows the active color scheme. The rule is unlayered, so its right
+    padding for the chevron overrides Tailwind's `px-*`/`pr-*` utilities.
 */
 .risu-select {
     -webkit-appearance: none;

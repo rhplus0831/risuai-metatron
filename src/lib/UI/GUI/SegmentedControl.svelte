@@ -1,5 +1,7 @@
 <script lang="ts">
     import { tick } from "svelte";
+    /** A single-choice row of buttons; pass `label` when the group needs an accessible name. */
+
     interface SegmentOption {
         value: string | number;
         label: string;

@@ -34,11 +34,19 @@
     import MemoryManifest from "../Others/StructuredMemory/MemoryManifest.svelte";
     import Portal from "../UI/GUI/Portal.svelte";
 
-    // The composer's context line: how the last request spent the model's context, read from the open
-    // chat's latest `generationInfo.context` (`shared/contextReport.ts`). The prompt is rebuilt and
-    // trimmed every send, so the line shows the history window kept and the share of the prompt budget
-    // used; the popover breaks the last request down. While the user types, the line estimates how many
-    // older messages the send would push out (`displacement`).
+    /**
+     * The composer's context line: how the last request spent the model's context, read from the open chat's
+     * latest `generationInfo.context` (`shared/contextReport.ts`). The prompt is rebuilt and trimmed every send,
+     * so the line shows the history window kept and the share of the prompt budget (`maxContext - maxResponse`)
+     * used; the popover breaks the last request down. While the user types, the line estimates how many older
+     * messages the send would push out (`displacement`).
+     *
+     * `DefaultChatScreen.svelte` mounts it above the composer row, keyed by the open chat; it is hidden in group
+     * chats and with `settings.ui.contextMeter` off. A lore budget rejection replaces the gauge icon (unless the
+     * chat set `loreBudgetWarnOff`), and the memory and task marks sit outside the truncated part of the line.
+     * The popover is portaled and follows its line on resize, scroll, and composer growth. The estimate is counted
+     * asynchronously; a failed count clears it.
+     */
 
     interface Props {
         /** The displayed chat; the mount is keyed by it, so a chat switch starts closed. */
@@ -566,7 +574,10 @@
         );
     });
 
-    // Prefer above the chip, then below; use the viewport when neither side has enough room.
+    /**
+     * Prefer above the chip, then below; use the viewport when neither side has enough room. A chip scrolled out
+     * of the viewport vertically, or a viewport too short for the popover, closes it instead.
+     */
     function position() {
         if (!trigger) {
             return false;

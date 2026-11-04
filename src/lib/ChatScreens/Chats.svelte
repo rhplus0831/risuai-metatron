@@ -17,6 +17,23 @@
     import { chatFoldedStateMessageIndex } from "src/ts/globalApi.svelte";
     import { CHAT_ROW_CAP, getAdditionalChatLoadPages } from "src/ts/chatLoadPages";
 
+    /**
+     * The transcript of the chat screen (`DefaultChatScreen.svelte`), in a reversed scroller: the newest row comes
+     * first and `scrollTop` 0 is the bottom. Rows (`Chat.svelte`) are mounted by hand, keyed by the chat and
+     * `Message.chatId`. The structural diff tracks row identity and order, the streaming entry, the window, and
+     * the reload inputs, never message text; each row's own effect sends its text and display updates
+     * (`updateRow`), so a stream chunk reaches only that chat's active row.
+     *
+     * Rows that come in above every shown row (an opening's deferred rows, a loaded or unfolded page) are held
+     * out of the layout until rendered and the reader is not scrolling; appended or newer rows never wait. A new
+     * path that adds rows above the shown ones goes through this hold too (`holdRow`).
+     *
+     * Scrolling follows a scroll anchor (`ScrollAnchor`) that input releases to the reader. `suspendTrim` (a
+     * screenshot or a message jump) and an unbounded window (`loadPages === Infinity`, a screenshot) skip the
+     * opening's staging and reveal, show held rows at once, release the anchor, and never trim; only the unbounded
+     * window also turns containment off.
+     */
+
     const getCurrentChatRoomId = () => {
         const ref = currentChatRef();
         return ref ? `${ref.chaId}\u0000${ref.chatId}` : null;
@@ -98,6 +115,11 @@
     let mountBatch: MountBatch | undefined;
     let mountTimer: ReturnType<typeof setTimeout>;
 
+    /**
+     * Mounts an opening's deferred older rows. An opening mounts its newest rows first; the rest are armed once
+     * those have rendered (`settleFirstStageRow`), at the reader's first wheel, touch, or press on the scroller,
+     * after 3 s, or at a diff that changes the shown rows (one that shows the same rows keeps the staging).
+     */
     function armDeferredRows() {
         clearTimeout(mountTimer);
         const batch = mountBatch;
@@ -137,6 +159,10 @@
     // animation in this reversed scroller at its distance from the top, so content that grows
     // above the view mid-animation moves the reader up by the grown height.
     const heldRows = new Set<Row>();
+    /**
+     * The reader is scrolling: from a wheel, scroll, or touch event until `scrollend`, or until 400 ms pass
+     * without another of them (the end where `scrollend` is missing), and while a finger is down.
+     */
     let readerScrolling = false;
     let touching = false;
     let quietTimer: ReturnType<typeof setTimeout>;
@@ -467,6 +493,11 @@
         advanceReveal();
     }
 
+    /**
+     * Hides an opening's rows (`chat-row-pending`, by visibility) and reveals them newest first, each once it has
+     * rendered and its unfinished images in the view have loaded. The mask lifts from the rest when a revealed row
+     * reaches the scroller's top, or at a 1200 ms deadline; deferred and held rows keep their own waits.
+     */
     function startReveal(shown: Row[]) {
         finishReveal();
         if (capturing || suspendTrim) return;
@@ -479,6 +510,8 @@
         for (const entry of batch.rows) void settleRevealRow(entry);
     }
 
+    // A capture or a suspension (a screenshot, a message jump) shows every mounted row at once and releases the
+    // anchor. While `suspendTrim` holds, a new reply never anchors again (with auto-scroll on it sets the indicator).
     $effect(() => {
         if (capturing || suspendTrim) {
             anchor = null;
@@ -505,6 +538,11 @@
         );
     }
 
+    /**
+     * The containment observer: a row farther than two view heights from the view gets `far`
+     * (`content-visibility: auto`, `src/styles.css`), except a held row, a row with an open editor, and every
+     * row during a capture.
+     */
     let observer: IntersectionObserver | undefined;
     // The first observation follows layout. Use that measured block size as the fallback too:
     // browsers need not remember a size rendered before content-visibility became auto.
@@ -857,7 +895,12 @@
         return opening;
     }
 
-    // Called before changing the DOM, only on an append at the bottom of this same open chat.
+    /**
+     * The smaller window an append asks the screen for (`onTrim`), dropping only old rows. Called before changing
+     * the DOM, only on an append at the bottom of this same open chat. It keeps at least `CHAT_ROW_CAP` rows, and
+     * every visible row plus one load page above it. A fold, a screenshot or jump (`suspendTrim`, an unbounded
+     * window), a reader scrolled up from the bottom, or an open editor in a row it would drop blocks the trim.
+     */
     function trimWindow(length: number): number | undefined {
         if (
             !onTrim ||
@@ -902,6 +945,10 @@
         return !chatBody?.parentElement || chatBody.parentElement.scrollTop > -4;
     }
 
+    /**
+     * Settles once every mounted row has rendered its current markdown (a jump's or a screenshot's wait). It
+     * first mounts deferred rows, ends the reveal, and shows held rows at once, so every row is laid out.
+     */
     export async function whenRendered() {
         do {
             armDeferredRows();
@@ -913,11 +960,20 @@
         await Promise.all([...rows.values()].map((row) => row.instance?.whenRendered?.()));
     }
 
-    /** Whether the reader follows the newest message: anchored to it, or at the bottom. */
+    /**
+     * Whether the reader follows the newest message: anchored to it, or at the bottom. With
+     * `autoScrollToNewMessage`, a reply's anchor, and a swiped reroll's in `DefaultChatScreen.svelte`, applies
+     * only while this holds or `alwaysScrollToNewMessage` is on; otherwise a reply sets the new-message indicator.
+     */
     export function followsLatest() {
         return anchor !== null || checkIfAtBottom();
     }
 
+    /**
+     * Anchors the newest row's start (its bottom while it streams or waits empty) and clears the new-message
+     * indicator, wherever the reader is: the new-message button, a followed swiped reroll, and a notification's
+     * chat (`ShowLatestMessageStore`) use it.
+     */
     export const scrollToLatestMessage = () => {
         if (!chatBody) return;
         hasNewUnreadMessage = false;

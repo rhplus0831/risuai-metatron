@@ -44,6 +44,13 @@
     import { type CapturedTransform, captureTransform } from "../../ts/parser/transformClient";
     import { getFileSrc } from "src/ts/globalApi.svelte";
 
+    /**
+     * A message row's body (`Chat.svelte`): `markParsing` translates and parses the display text, and the result
+     * goes in through `{@html}`. While a render is pending the body shows `lastParsed`: the last finished render,
+     * or the loading markup a translation sets with `showTranslationLoading`.
+     * Raw streaming (`renderRawStreaming`, untranslated) shows the text as it is and needs no parse.
+     */
+
     interface Props {
         character?: simpleCharacterArgument | string | null;
         firstMessage?: boolean;
@@ -479,7 +486,11 @@
         return markParsing(msgDisplay, character, idx, renderRevision, ++parseRun);
     });
 
-    /** Wait for a settled DOM render, including auto-translation and replacement parses. */
+    /**
+     * Wait for a settled DOM render, including auto-translation and replacement parses (the ordered reveal and
+     * screenshot capture rely on it). The auto-translate path's first, empty result is not settled: the wait
+     * covers its delayed `translated` update and the real parse after it. Raw streaming settles at once.
+     */
     export async function whenRendered() {
         while (!shouldRenderRawStreaming) {
             const pending = markParsingResult;

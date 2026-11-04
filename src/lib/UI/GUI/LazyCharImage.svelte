@@ -2,6 +2,12 @@
     import type { Snippet } from "svelte";
     import { getCharImage } from "src/ts/characters";
 
+    /**
+     * A character or persona icon whose `getCharImage` read (`src/ts/characters.ts`) waits until the wrapper first
+     * comes within 200px of the viewport (at once without `IntersectionObserver`), so a long list reads only the
+     * icons near the screen.
+     */
+
     interface Props {
         /** The stored image path, passed to `getCharImage` once the wrapper nears the viewport. */
         path: string;

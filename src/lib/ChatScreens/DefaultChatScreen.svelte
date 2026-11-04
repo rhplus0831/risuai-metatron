@@ -131,6 +131,19 @@
     import { runMessageJump } from "./messageJump";
     import { SCREENSHOT_CAPTURE_OPTIONS } from "./screenshotCapture";
 
+    /**
+     * The chat screen inside the layout of `ChatScreen.svelte`: the composers, send/reroll, and the menus. It shows
+     * the home menu or the playground menu without a selected character, `ClosedChatScreen.svelte` while
+     * `selection.chatOpen` is false (the playground chat is always open), a loading or load-failure state while the
+     * selected chat loads, and otherwise the chat.
+     *
+     * The screen owns the transcript's row window (`loadPages`); `Chats.svelte` renders it and asks for trims
+     * (`onTrim`), which the screen refuses during a screenshot, a message jump, or an unbounded window. The chat
+     * scroller publishes `settings.ui.chatScreenWidth` as `--chat-screen-width`; the transcript, the composer, and
+     * the rows around them carry `chat-screen-content-width` (`src/styles.css`), and a new row in the scroller gets
+     * the class too.
+     */
+
     const subModel = $derived(getModelInfoForMode("submodel").id);
     /** The memory menu row opens the panel, whatever older flags the settings still hold. */
     const structuredMemorySelected = $derived(settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
@@ -175,9 +188,13 @@
     let toggleStickers: boolean = $state(false);
     let showNewMessageButton = $state(false);
     let chatsInstance: any = $state();
+    /**
+     * `Chats.revealing`: the opening's reveal is still running (some of its rows may already show). The separate
+     * greeting row (`pendingReveal`) stays hidden until it ends, by visibility, so its layout does not change.
+     */
     let revealing = $state(false);
     // Rows added above the view wait out the reader's scroll; loading more meanwhile would only
-    // stack more of them while the transcript's top stays in reach.
+    // stack more of them while the transcript's top stays in reach (held rows add no height).
     let rowsHeld = $state(false);
     let greetingInstance: { whenRendered: () => Promise<void> } | undefined = $state();
     // Running jumps to a message: trimming waits for them.
@@ -203,8 +220,13 @@
     );
     // While the selected chat loads (null when it is loaded or nothing is selected).
     let selectedLoad = $derived(selectedChatLoad());
-    // The selected chat cannot be sent until its binding is complete: the send button sets it up, and
-    // the composers are read-only. They stay focusable so Enter still opens the setup.
+    /**
+     * The selected chat cannot be sent until its binding is complete: the send button sets it up, and both
+     * composers are `readonly`, not `disabled`, so they keep their text, focus, and the focus hotkey, and Enter
+     * still opens the setup. Nothing can be typed meanwhile, and a pasted image is ignored. Text other controls
+     * add (a suggestion, an additional asset) still lands in the draft, which a send keeps until the setup is
+     * done; a `/` command line still runs first and is consumed.
+     */
     let bindingIncomplete = $derived.by(() => {
         const ref = currentChatRef();
         return ref !== null && chatBinding(ref)?.ok === false;
@@ -232,7 +254,11 @@
             inputTranslation.invalidate();
         }
     });
-    // How many messages render from the end; load more grows it, an append at the bottom may trim it.
+    /**
+     * How many messages render from the end (or from the fold); load more grows it, an append at the bottom may
+     * trim it. Unfolding (the show-all button) adds `messages.length - foldedIndex`, so the folded window's oldest
+     * row stays shown.
+     */
     let loadPages = $derived.by(() => {
         chatKey;
         return untrack(() => getInitialChatLoadPages(settings.ui));
@@ -293,6 +319,10 @@
             void tick().then(() => chatsInstance?.scrollToLatestMessage());
         }
     });
+    /**
+     * A bookmark's jump (`ScrollToMessageStore`, an index into the selected chat). The index names its message
+     * id once, when the jump starts; from there the jump follows the id, as a search hit's does.
+     */
     let pendingBookmark: Pick<MessageJump, "ref" | "messageId"> | null = null;
     $effect(() => {
         const index = ScrollToMessageStore.value;
@@ -402,8 +432,10 @@
     }
 
     /**
-     * Runs a bookmark or claimed search jump. A newer jump, a chat switch, or a replaced transcript
-     * stops it; the message is found by id in the selected chat after every await.
+     * Runs a bookmark or claimed search jump through `runMessageJump` (`messageJump.ts`), as the screen's one
+     * owned jump. A newer jump, a chat switch, a replaced transcript, or the screen's destruction stops it; after
+     * every await the chat must still be selected and shown, and the message is found by id in it. While it runs,
+     * trimming is suspended and the transcript's scroll anchor is released.
      */
     async function scrollToMessageId(jump: Pick<MessageJump, "ref" | "messageId"> & { token?: number }) {
         const { token, ref, messageId } = jump;
@@ -714,7 +746,10 @@
         const ref = currentChatRef();
         return !stoppable && ref !== null && foreignJobChatKeys().has(chatStatusKey(ref));
     });
-    // The selected chat's own job stage.
+    /**
+     * The Stop button's `chat-process-stage-<n>`: 1 to 4 for the stage (`GENERATION_STAGES` order) of the selected
+     * chat's newest staged job, else 0. Another chat's job never colors it.
+     */
     const processStage = $derived.by(() => {
         const ref = currentChatRef();
         const stage = ref ? chatStageOf($jobStages, ref) : null;
@@ -932,6 +967,14 @@
         updateInputSizeAll();
     });
 
+    /**
+     * Captures the transcript as one image. `loadPages = Infinity` mounts every row (while folded, every row up to
+     * the fold), which `Chats.svelte` takes as a capture: no staging, reveal batch, held rows, or containment, and
+     * `takingScreenshot` suspends trimming.
+     * The capture starts only once every row and the greeting have rendered their current markdown
+     * (`whenRendered`). The previous window and scroll offset come back in `finally`, only while the same chat is
+     * still open.
+     */
     async function screenShot() {
         const previousWindow = loadPages;
         const capturedChat = chatKey;
@@ -1769,6 +1812,9 @@
 {/if}
 
 <style>
+    /* The Stop button's ring by job stage: preparing, memory, generating, finishing. `.autoload` (auto mode)
+       is declared after them, so it wins over every stage. The class names and colors stay as they are:
+       `display.customCSS` can target them. */
     .chat-process-stage-1 {
         border-top: 0.4rem solid #60a5fa;
         border-left: 0.4rem solid #60a5fa;

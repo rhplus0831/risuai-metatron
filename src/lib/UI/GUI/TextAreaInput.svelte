@@ -16,6 +16,22 @@
     import { isImeComposing } from "src/ts/ime";
     import { language } from "src/lang";
     import { Maximize2Icon } from "@lucide/svelte";
+    /**
+     * A text field: a textarea, or with `highlight` (unless `disableHighlight` is set) a contenteditable with CBS
+     * highlighting and, off mobile, `{{` autocomplete.
+     *
+     * The popup editor opens from the `popupEditor` hotkey, and from contextmenu or long-press while
+     * `settings.ui.longPressToPopupEditor` is on, at every field height unless `popupEditor={false}`. `"auto"` shows
+     * the expand button only for heights `32`, `36`, and `full`, or `default` while `$textAreaSize >= -2`; `true`
+     * always shows it.
+     *
+     * Closing the popup writes its text to the binding, then, after the DOM flush, calls `onInput` and `onchange` and
+     * refreshes the highlighting. A change of the value, of `popupEditorContext`, of the open run, or of the session,
+     * or the field's unmount, drops the write-back; a value or context change while the popup is open also closes it.
+     * A field tied to a selected record passes the record's id as `popupEditorContext`: equal text alone cannot tell
+     * which record the popup was opened for.
+     */
+
     interface Props {
         size?: "xs" | "sm" | "md" | "lg" | "xl" | "default";
         autocomplete?: "on" | "off";

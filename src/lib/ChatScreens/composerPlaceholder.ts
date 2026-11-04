@@ -10,7 +10,12 @@ function shortenedPersona(name: string) {
     return characters.length > PERSONA_LIMIT ? `${characters.slice(0, PERSONA_LIMIT).join("")}…` : name;
 }
 
-/** The main composer's placeholder: who writes to whom, or that the chat needs its setup first. */
+/**
+ * The main composer's placeholder: who writes to whom, or that the chat needs its setup first. The composer
+ * shows it with `white-space: pre` (`placeholder:whitespace-pre` in `DefaultChatScreen.svelte`): it never wraps,
+ * so the composer's height does not grow with the names' length, and a persona without a name keeps the leading
+ * space of ` → character`.
+ */
 export function composerPlaceholder(options: {
     setupNeeded: boolean;
     playground: boolean;

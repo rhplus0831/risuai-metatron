@@ -70,12 +70,29 @@
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
     import { RISU_SIDEBAR_DRAG_TYPE } from "src/ts/dragTypes";
 
+    /**
+     * The sidebar: the character rail (the characters and folders of `settings.characterOrder`, reordered by
+     * drag/drop carrying `RISU_SIDEBAR_DRAG_TYPE` from `src/ts/dragTypes.ts`; each order write is followed by
+     * `checkCharOrder`, `src/ts/storage/characterOrder.ts`) and the settings pane (`SideChatList`, `OpenChatPanel`,
+     * `CharConfig`, or `DevTool`). The chat tab shows `SideChatList` while the chat is closed and `OpenChatPanel`
+     * while it is open (`selection.chatOpen`); the playground always shows the list.
+     *
+     * The pane publishes its side padding as `--sidebar-gutter`. A child that scrolls itself (the `SideChatList`
+     * list, the `OpenChatPanel` root) stretches over it with `-mr-(--sidebar-gutter) pr-(--sidebar-gutter)`, so its
+     * scrollbar sits at the pane's edge; a new self-scrolling child does the same.
+     *
+     * Status badges come from `src/lib/SideBars/chatStatus.ts` over `statusSets`: a top-level character and a member
+     * of an open folder show their character's status, a collapsed folder shows `folderStatus` over its members, and
+     * an open folder's own row has no badge.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     const pinnedChats = $derived(
         collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
     );
     const summarizing = $derived(summarizingChats());
     const healthStates = $derived(memoryHealthStates());
+    /** Read reactively; only chat refusals count (`refusedChatKeys`). */
     const statusSets = $derived({
         recovery: $recoveryChatKeys,
         refused: refusedChatKeys(refusedItems()),
@@ -84,8 +101,10 @@
         unseen: $unseenChatKeys,
         health: healthStates,
     });
+    /** Each character's status, aggregated once per change of `statusSets`; rows and folders read from it. */
     const characterStatuses = $derived(collectCharacterStatuses(statusSets));
     const memoryProgress = $derived(collectMemoryProgress(summarizing));
+    /** Each pinned chat's own status, resolved per chat rather than read from its character. */
     const pinnedStatuses = $derived.by(() => {
         const statuses = new Map<string, ChatStatus>();
         for (const item of pinnedChats) {
@@ -97,7 +116,10 @@
         }
         return statuses;
     });
-    /** A character's or folder's memory count, only when memory is the status it shows. */
+    /**
+     * A character's or folder's memory count, only when memory is the status it shows; with several summarizing
+     * chats, or only a queued task, the badge shows the status without a count (`groupMemoryCount`).
+     */
     function memoryCountOf(status: ChatStatus | null, chaIds: readonly string[]): MemoryCount | null {
         return status === "memory" ? groupMemoryCount(memoryProgress, chaIds) : null;
     }

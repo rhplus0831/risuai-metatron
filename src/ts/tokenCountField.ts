@@ -1,5 +1,13 @@
 import { untrack } from "svelte";
 
+/**
+ * Token counts for editor fields. An input carries everything its count depends on, including the tokenizer scope
+ * (`tokenCountInput` or `tokenScopeKey`, `src/ts/tokenizer.ts`), so switching the main model recounts unchanged text
+ * in a field counted with the model's tokenizer; each consumer's `same` decides which inputs are unchanged. `reset`
+ * (a field closed) drops the pending count, aborts the running one's signal and ignores its result, and makes the
+ * next update a first count again; after `dispose` (unmount) no result is applied.
+ */
+
 export const TOKEN_COUNT_DELAY_MS = 400;
 
 /** Runs first immediately or via scheduleFirst, then after delayMs of quiet; aborts and ignores superseded runs, and keeps the last result on failure unless onError handles it. */

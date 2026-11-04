@@ -6,6 +6,12 @@
     import { chatStatusLabel, type ChatStatus, type MemoryCount } from "./chatStatus";
     import type { PinnedChatItem } from "./pinnedChats";
 
+    /**
+     * The sidebar's rail of pinned chats, the `collectPinnedChats` projection of `src/lib/SideBars/pinnedChats.ts`.
+     * Each pin's badge is its own chat's status (keyed by chat status key), not its character's; opening is the
+     * caller's (`onOpen`).
+     */
+
     interface Props {
         items: readonly PinnedChatItem[];
         selectedChaId: string | null;

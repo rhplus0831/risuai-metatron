@@ -12,6 +12,13 @@
     import CheckInput from "../UI/GUI/CheckInput.svelte";
     import { readPopupEditorMonaco, writePopupEditorMonaco } from "src/ts/gui/popupEditorMode";
 
+    /**
+     * The full-page popup editor over `popUpEditorStore` (`src/ts/popupEditorSession.svelte.ts`). `src/App.svelte`
+     * mounts it keyed by the session id, so each open gets a new instance, and it closes only the session it was
+     * mounted for. It edits the store's text only: the field that opened it polls the session and writes the text
+     * back. Monaco or the plain textarea is a per-device choice (`src/ts/gui/popupEditorMode.ts`).
+     */
+
     const sessionId = untrack(() => popUpEditorStore.sessionId);
     let languageMode = $state(popUpEditorStore.language || "markdown");
     let previewing = $state(false);

@@ -9,6 +9,11 @@
     import { makeCharacterAgoText } from "../UI/mainMenuProjection";
     import { matchesAny, prepareQuery } from "src/ts/util/koreanSearch";
 
+    /**
+     * The list view of the character catalog (`src/lib/Others/GridCatalog.svelte`), not a mobile shell: there is
+     * none, and small screens use the desktop layout.
+     */
+
     interface Props {
         endGrid?: () => void;
         search?: string;

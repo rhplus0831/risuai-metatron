@@ -9,6 +9,13 @@
     import { applyRecoveryDraft, recoveryDraftDetails } from "src/ts/storage/journalRecovery";
     import { exportDrafts, recoveryDrafts } from "src/ts/storage/recoveryDrafts.svelte";
 
+    /**
+     * The recovery drafts modal over `recoveryDrafts` (`src/ts/storage/recoveryDrafts.svelte.ts`). It sits under the
+     * alerts (z-index 45 against their 50), so its confirmations show above it. While it is open no key reaches the
+     * app's shortcuts, even with focus moved outside it, except while an alert or the terminal notice is up. Apply
+     * reports the operations `applyRecoveryDraft` (`src/ts/storage/journalRecovery.ts`) skipped.
+     */
+
     let busy = $state(false);
     const disabled = $derived(busy || recoveryDrafts.refreshing);
     let panel: HTMLDivElement;

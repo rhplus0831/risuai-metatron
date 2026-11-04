@@ -1,3 +1,10 @@
+/**
+ * When `Chat.svelte`'s message editors open the popup editor by themselves, and when they keep a stable height
+ * instead of growing with the text. These rules are pure: the row passes its state in. The setting only
+ * decides the automatic popup: the inline editors keep their expand button and popup hotkey either way (the
+ * `cardboard` theme's original editor is a plain textarea without them).
+ */
+
 export const MESSAGE_EDIT_POPUP_LENGTH_THRESHOLD = 600;
 
 const MESSAGE_EDIT_POPUP_DISABLED_THEMES = new Set(["cardboard", "customHTML", "mobilechat"]);

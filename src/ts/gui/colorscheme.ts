@@ -230,6 +230,13 @@ export function updateCustomColorScheme() {
     } catch (error) {}
 }
 
+/**
+ * Applies `settings.ui.colorScheme` to the page: the `--risu-theme-*` variables that the `src/styles.css` `@theme`
+ * tokens read, and the root's inline `color-scheme`, so native controls follow the app's scheme instead of the OS
+ * (`src/styles.css` declares `color-scheme: dark` on `:root` for the page before boot). Boot, the display settings'
+ * scheme changes, and the plugin API call it; nothing re-applies it when the settings change otherwise (a settings
+ * record from another tab).
+ */
 export function updateColorScheme() {
     try {
         let colorScheme = settings.ui.colorScheme;

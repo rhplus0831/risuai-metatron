@@ -138,10 +138,34 @@
         shouldUseStableMessageEditor,
     } from "./messageEditPopup";
 
+    /**
+     * One message row: the transcript's rows (`Chats.svelte`), the greeting, and bookmark previews. The row's
+     * look follows `settings.ui.theme`: `mobilechat`, `cardboard`, `customHTML` (the GUI HTML through
+     * `renderGuiHtmlPart`, the classic row in safe mode), and classic for every other theme. The body is
+     * `ChatBody.svelte`.
+     *
+     * The row addresses its own chat (`chatRef`, captured from `Chats.svelte` or from the selection at mount):
+     * message actions, Lua buttons, manual triggers, and forms write to that chat, never to the selection at the
+     * event. A Lua button, a trigger, or a form reloads its row only when its job started (or replayed), so a
+     * refused one keeps the values typed beside it.
+     *
+     * Branching (the branch button) copies the chat up to this message without `pinned`. With
+     * `createFolderOnBranch`, a source chat that `chatFolderOf` lists under no folder (none, or a dangling
+     * `folderId`) first goes into a new "Branches of" folder, which the branch inherits.
+     */
+
     let translating = $state(false);
     let editMode = $state(false);
-    // A cancelled long press keeps the draft available, without changing the rendered/stored message.
+    /**
+     * Both original-message editors bind this draft, not `message`: opening fills it from the message (unless a
+     * cancelled one is left), and a save clears it. A long-press cancel keeps it for reopening and never changes
+     * the message, its display, the partial editor's source, or storage.
+     */
     let draft: string | null = $state(null);
+    /**
+     * An original or translation editor is open (or loading): `Chats.svelte` neither trims this row away nor
+     * contains it meanwhile.
+     */
     export function isEditing() {
         return editMode || editTranslationMode || loadingTranslationEdit;
     }
@@ -153,11 +177,16 @@
     /** What the open translation editor writes back to: a rendered translation's cache key, or a stored translation. */
     let editTranslationTarget: { kind: "cache"; key: string } | { kind: "stored"; edit: StoredTranslationEdit } | null =
         null;
+    /** Renders the body again in place (`ChatBody`'s `renderRevision`), without remounting it. */
     let chatBodyRevision = $state(0);
     /** Whether this message was locked when last seen (the server transform skips a locked message). */
     let wasLocked = false;
     let bodyRoot: HTMLElement | null = $state(null);
     let parsedBody: { whenRendered: () => Promise<void> } | undefined = $state();
+    /**
+     * Settles once the row's body has rendered its current text. `ChatBody` is keyed only by the reload pointer,
+     * so the wait loops until the bound body stays the same across its render wait and the DOM flush.
+     */
     export async function whenRendered() {
         await tick();
         while (true) {
@@ -172,10 +201,14 @@
         message?: string;
         name?: string;
         largePortrait?: boolean;
+        /** Overrides the memory limit line; an explicit false (bookmark previews, the greeting) never draws it. */
         isLastMemory?: boolean;
         img?: string | Promise<string>;
         idx?: number;
-        /** The message's id (`Message.chatId`); handlers address the message by it, not by `idx`. */
+        /**
+         * The message's id (`Message.chatId`); handlers address the message by it, not by `idx`. A bookmark
+         * preview passes none.
+         */
         messageId?: string;
         chatRef?: ChatRef | null;
         messageGenerationInfo?: MessageGenerationInfo | null;
@@ -191,9 +224,11 @@
         isComment?: boolean;
         disabled?: boolean | "allBefore";
         isOptimizedStreamingMessage?: boolean;
+        /** Whether the message streams, for a row without a `messageId` to look it up (a bookmark preview). */
         streamingOverride?: boolean;
         streamingOptimizationMode?: StreamingDisplayOptimizationMode;
         rawStreamingText?: string;
+        /** Hides the whole row by visibility, keeping its layout (the greeting while the opening reveals). */
         pendingReveal?: boolean;
     }
 
@@ -271,6 +306,12 @@
     let translationViewControlsDisabled = $derived(editMode || editTranslationMode || loadingTranslationEdit);
     /** The chat this message is shown in (a branched or copied chat shares its source's message ids). */
     let displayedChat = $derived(chatRef);
+    /**
+     * The memory limit line (`showMemoryLimit`, a `memoryLimitThickness` top border): on the row whose message is
+     * its chat's stored `lastMemory`. The no-memory trim in `server/src/prompt/assemble.ts` sets it to the first
+     * history entry it kept, before the final token recheck (which can remove more); SupaMemory writes its own
+     * marker, and the other memory kinds leave it as it was.
+     */
     let memoryBoundary = $derived(
         isLastMemory ??
             (settings.ui.showMemoryLimit &&
@@ -452,6 +493,14 @@
         );
     }
 
+    /**
+     * The popup editor a stored row's original edit opens by itself, once per edit-mode entry
+     * (`shouldAutoPopupMessageEditor`, off with `disableAutoPopupMessageEditor`). Closing the popup writes its
+     * text to the draft and saves through `edit()`; a refused write keeps the inline editor open with the draft,
+     * and the popup does not open again until edit mode is left. A changed message target (chat or message id), a
+     * changed draft, ended edit mode, a superseded popup session, or a destroyed row discards the popup's text and
+     * closes only this popup's own session.
+     */
     async function openAutoPopupMessageEditor() {
         if (activeAutoPopupMessageSessionId !== null || popUpEditorStore.open) return;
         const target = messageTarget();
@@ -488,6 +537,11 @@
         }
     }
 
+    /**
+     * The translation edit's popup, by the same rules as `openAutoPopupMessageEditor`, saving through
+     * `saveTranslationEdit()`; a changed translation target discards it too. After its save no other automatic
+     * popup opens until translation edit mode is left.
+     */
     async function openAutoPopupTranslationEditor() {
         if (activeAutoPopupTranslationSessionId !== null || popUpEditorStore.open) return;
         const target = editTranslationTarget;
@@ -1040,7 +1094,7 @@
     /**
      * Submissions never navigate. The chat is captured before any await and must hold the row's
      * message when `messageId` is present. Only string values are sent, with repeated names as arrays,
-     * for the server to run Lua `onFormSubmit`. Only a started job remounts the row, so a refused
+     * for the server to run Lua `onFormSubmit`. Only a started (or replayed) job remounts the row, so a refused
      * submit keeps the typed values.
      */
     async function handleFormTriggerWithin(event: SubmitEvent) {

@@ -15,6 +15,13 @@
 
     import { longpress } from "src/ts/gui/longtouch";
 
+    /**
+     * A textarea that grows with its text, or with `stableHeight` keeps a fixed height and scrolls. The popup editor
+     * (button and hotkey) is opt-in with `popupEditor`. Its text is written back only while the value is the one it
+     * opened with and the session is still current; a value change while it is open, or the unmount, closes it
+     * unwritten.
+     */
+
     let textarea: HTMLTextAreaElement = $state();
     let previousScrollHeight = 0;
     let resizeRequest = 0;

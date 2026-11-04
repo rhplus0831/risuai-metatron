@@ -1,4 +1,9 @@
-/** The full-page popup editor (`PopupEditor.svelte`), shared without importing the UI's module effects. */
+/**
+ * The full-page popup editor (`PopupEditor.svelte`), shared without importing the UI's module effects. While `open`
+ * is set the prompt preset hotkeys do nothing (`changeToPreset`, `src/ts/hotkey.ts`), since the opener writes the
+ * text back into a field that may belong to the shown preset, and the transcript counts as hidden (`visibleChatKey`,
+ * `src/ts/process/chatStatus.svelte.ts`).
+ */
 export const popUpEditorStore = $state({
     open: false,
     value: "",
@@ -16,6 +21,11 @@ let nextPopupEditorSessionId = 0;
  */
 let currentSessionId = 0;
 
+/**
+ * Opens the editor on `value` as a new session and returns its id. The opener owns the session: it polls until the
+ * editor closes, then writes the text back only while `isPopupEditorSessionCurrent` still holds, so an opener a newer
+ * session replaced can neither write into it nor close it.
+ */
 export function openPopupEditorSession(value: string, language = "markdown"): number {
     const sessionId = ++nextPopupEditorSessionId;
     currentSessionId = sessionId;

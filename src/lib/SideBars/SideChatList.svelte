@@ -52,6 +52,24 @@
     import { chatCheckpointsDialog } from "src/ts/checkpoints/chatCheckpoints.svelte";
     import { createInheritingChat } from "src/ts/process/chatMemoryInherit.svelte";
 
+    /**
+     * A character's chat list, its chat folders, and the chat actions.
+     *
+     * - A row action captures the row's chat ref before its first dialog and resolves it again afterward
+     *   (`chatEntry`, `isChatGenerating`), never the selection, so a selection change or a reorder meanwhile cannot
+     *   redirect it.
+     * - Chat structure (create, delete, rename, folder, order) goes through the chat module
+     *   (`src/ts/storage/chatStore.svelte.ts`); the folder definitions are the character's `chatFolders`. A new chat
+     *   opens through `changeChatTo`; imports go through `importChat` (`src/ts/characters.ts`), where a JSONL import
+     *   opens its chat while the importing character is still selected and a JSON or HTML import only adds entries.
+     * - A chat whose `folderId` names no folder lists at the root and keeps the id (`chatFolderOf`). A drop writes a
+     *   complete chat order (`completeOrder`).
+     * - The filter is Korean-aware (`prepareQuery`, `matchesAny` of `src/ts/util/koreanSearch.ts`, which the character
+     *   catalog also uses). It hides rows without unmounting them, so SortableJS keeps its containers and the drop
+     *   handlers their indexes, turns sorting off while a query is set, and shows matching folders open without
+     *   writing `folded`.
+     */
+
     /** Sets a chat's folder (null or undefined: no folder) through the chat module. */
     function setChatFolder(chat: ChatListEntry, folderId: string | null | undefined) {
         const ref = { chaId: chara.chaId, chatId: chat.id };

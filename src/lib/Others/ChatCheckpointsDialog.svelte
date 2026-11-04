@@ -32,6 +32,14 @@
         type CheckpointSummary,
     } from "../../../shared/chatCheckpoints.ts";
 
+    /**
+     * The checkpoint dialog of one chat (`chatCheckpointsDialog`, `src/ts/checkpoints/chatCheckpoints.svelte.ts`).
+     * An action captures the chat ref and the selected row, with its revision, before its prompt and checks
+     * afterward that the chat is still listed; one action runs at a time and the list and policy are read again
+     * after each. The dialog closes itself once the chat's entry is gone, but not while a load holds
+     * `checkpointLoadBusy` (from before its flush until its refresh ends).
+     */
+
     interface Props {
         chatRef: ChatRef;
         close: () => void;
