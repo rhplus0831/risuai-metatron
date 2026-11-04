@@ -54,6 +54,7 @@ git show 2a8f7b93a:docs/plan/boot-bytes.md
 git show aff71b423:docs/plan/per-event-server-work.md
 git show 0009c22f3:docs/plan/server-byte-budgets.md
 git show 78dbb078f:docs/plan/server-plugin-runtime.md
+git show 786dfc3d3:docs/plan/guides-to-source.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -111,6 +112,7 @@ it is not a current architecture guide.
 | Guide Budgets                            | `9a1bf0afe`: `docs/plan/guide-budgets.md`                                 | [STRUCTURE](../../STRUCTURE.md), [build/test platforms](../structure/build-test-platforms.md)                                                                                                                                                                                                                                                                                                                                                                                               |
 | Structured Memory                        | `0cd49a3d3`: `docs/plan/structured-memory.md`                             | [structured memory](../structure/structured-memory/records.md), [writer](../structure/structured-memory/writer.md), [read path](../structure/structured-memory/read.md), [lifecycle](../structure/structured-memory/lifecycle.md), [rebuild](../structure/structured-memory/rebuild.md), [pages](../structure/structured-memory/pages.md)                                                                                                                                                   |
 | Server Plugin Runtime (retired unbuilt)  | `78dbb078f`: `docs/plan/server-plugin-runtime.md`                         | None: no slice landed; [plugins](../structure/plugin-sandbox.md) keeps the tab runtime and the skip-and-replay path                                                                                                                                                                                                                                                                                                                                                                         |
+| Guides To Source                         | `786dfc3d3`: `docs/plan/guides-to-source.md`                              | [STRUCTURE](../../STRUCTURE.md) (Doc Maintenance, `ownership.json`), [build/test platforms](../structure/build-test-platforms.md) (`util/docsBudget.mjs`, `util/docsLedger.mjs`, `util/guideReads.mjs`)                                                                                                                                                                                                                                                                                     |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1043,6 +1045,20 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     role to another tab.
   - Its design notes (why `node:vm` and `isolated-vm` were rejected, the host API subset, the
     `getRuntimeInfo().runtime` discriminator) are in the archived file if the idea returns.
+- Guides To Source:
+  - All 40 slices landed on 2026-11-04 and 2026-11-05 (plan-runner, on `dev`). The guides tree went from
+    1,055,065 to 824,152 bytes (21.9% cut, about 104,000 bytes short of the plan's 720,000 expectation) and
+    STRUCTURE.md from 33,151 to 19,083 bytes; per-module facts moved into source doc comments, every trim
+    carried a fact ledger checked by `pnpm docs:ledger`, and `TREE_BYTES_RATCHET` stands at 825,000.
+  - Path Ownership became `ownership.json`, validated by `pnpm check:docs` and queried by `check:changed`.
+  - Use was measured in `docs/audit/guide-reads-2026-11-05-wave3.md`: whole-file guide reads fell from
+    30.6% of section-capable reads before `docs:read` to 5.7% in waves 2 and 3.
+  - Owner decision: the 40,000-byte ceiling, 36,000 target, 8,000 leaf, and 600-character item budgets stay
+    (option A of that audit); revisit when a guide passes 36,000.
+  - Not planned (the plan's Later list): a check that a `Files` entry's backticked identifiers exist in its
+    path, and a `Files` generator from the owned modules' exports.
+  - Found by the run: 51 findings, as 34 new entries and one updated entry, across most sections of
+    `docs/research/found-issues.md`.
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.
