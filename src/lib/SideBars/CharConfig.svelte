@@ -82,6 +82,20 @@
     import Toggles from "./Toggles.svelte";
     import { convertCharacterToModule } from "src/ts/interchangeability";
 
+    /**
+     * The character and group editor of the selected character, its tabs picked by `CharConfigSubMenu`. A
+     * `private`-licensed card hides its card fields and the other tabs (the `licensed` guards);
+     * `customNotificationMessage` (a character's or group's completion text for Web Push) sits outside those guards,
+     * since it is local and never in a card.
+     *
+     * The additional assets and the emotion image table page by `ASSET_LIST_PAGE`, reset per character; only the
+     * assets have a search. A rename writes nothing once its index is past the list's end. The asset pickers save the
+     * picked `File`s with `savePickedFiles` (`src/ts/storage/assetQueue.ts`) and, once all are saved, append every row
+     * in one write to the list as it then is; a failed save alerts and adds none. `addCharEmotion`
+     * (`src/ts/characters.ts`), `src/lib/Setting/Pages/Module/ModuleMenu.svelte`, and
+     * `src/lib/ChatScreens/AssetInput.svelte` add assets the same way.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
     // Popup editors of chat fields belong to the chat they opened on.

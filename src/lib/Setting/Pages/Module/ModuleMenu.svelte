@@ -24,6 +24,12 @@
 
     import { v4 } from "uuid";
 
+    /**
+     * The module editor (`ModuleSettings.svelte`'s create and edit views): it edits `currentModule` in place, so an
+     * edit of a stored module saves at once. The asset picker saves the picked files with `savePickedFiles` and, once
+     * all are saved, appends every row in one write; a failed save alerts and adds none.
+     */
+
     let submenu = $state(0);
     interface Props {
         currentModule: RisuModule;

@@ -7,6 +7,12 @@
     import { pickedId } from "src/ts/storage/chatBinding.svelte";
     import { personaNoteFirstLine } from "../../../shared/personas.ts";
 
+    /**
+     * The persona picker. A pick goes through `changeUserPersona` and closes the list when the pick is accepted (also
+     * for the persona already picked; not when the persona or the chat is gone);
+     * opened for `chatRef`, it binds that chat and closes once the chat is gone, never falling back to the open chat.
+     */
+
     interface Props {
         close?: any;
         /** The chat whose persona a pick binds (the binding panel's row); else the open chat, else the tab's selection. */

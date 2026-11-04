@@ -22,6 +22,22 @@
     import LoreEntryFields from "./LoreEntryFields.svelte";
     import LoreBookList from "./LoreBookList.svelte";
 
+    /**
+     * One lorebook row (an entry, a folder with its nested list, or a chat's `child` link) and its open body.
+     * `activateLocally` adds a live `mode: "child"` link to the chat's local lore draft, independent of the chat's
+     * frozen overrides; the checkbox shows, and unchecking removes, only `mode: "child"` links with the entry's id, so
+     * a plain chat entry that kept the same id (an import) is neither shown as linked nor deleted. Off wins over a
+     * local activation: an off override (`offOverrideIds`, `shared/lore/overrides.ts`) shows its notice under the
+     * checkbox and on a `child` row.
+     *
+     * Delete captures the entry's id, a folder's member ids (`folder === key`), whether it is in the selected
+     * character's `globalLore`, the chat ref, and the owner token before either dialog. Only a successful `onRemove`
+     * of a character entry deactivates those ids in the captured chat: after `ensureChatLoaded` it checks the owner
+     * token and the local-send/job fence at the write, then removes the matching `child` links in one `setChatMeta`.
+     * A chat-local row (a child link or a nested folder member included) is removed only through its list's draft,
+     * with no separate id cascade.
+     */
+
     interface Props {
         value: loreBook;
         onRemove?: () => boolean | void;

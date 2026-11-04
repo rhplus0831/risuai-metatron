@@ -20,6 +20,35 @@
     import { mergeOwnerLore, offOverrideIds } from "../../../../shared/lore/overrides.ts";
     import LoreOverrideRow, { type EntryState, type FolderState } from "./LoreOverrideRow.svelte";
 
+    /**
+     * The selected chat's lore overrides: the chat owner's `globalLore` (the group's own lore for a group), nested by
+     * non-empty string folder key with repeated and cyclic keys guarded, and the orphans. An entry's override is the
+     * first draft override with the id of the owner's first entry with that id, as `mergeOwnerLore`
+     * (`shared/lore/overrides.ts`) matches before any folder grouping.
+     *
+     * Override or Off pins a full copy into `useLoreOverridesDraft` (`src/ts/storage/loreOverridesDraft.svelte.ts`)
+     * in one push, after the loaded-chat and send-fence (`loreWriteFenced`) checks, giving a missing or duplicate
+     * original id a fresh UUID through a nested character write; Override ↔ Off flips `off` on the copy and keeps its
+     * edits. A folder's Off sets `off` on its override, or pins the folder with `off: true`; On removes every override
+     * with its id from the draft without confirmation, so members return to their own states; a parent never changes
+     * a nested folder. Turn-off-all sets each entry inside the folder, nested folders' included, Off on its own in one
+     * draft change, without confirmation (an existing override keeps its edits, a missing one is pinned); no folder's
+     * state changes, so a later-added entry is not turned off.
+     *
+     * Release (an entry back to Original, and a folder's bulk release of the overrides its indicator counts by the
+     * owner's current keys: entry overrides and nested folders that are off, never the folder's own) captures the
+     * chat ref, owner token, and target ids, reloads the captured chat, and rechecks the owner and fence. Only an
+     * entry release re-reads its owner's lore by the captured `chaId`, to confirm only when a collected copy differs
+     * from its owner entry (an owner folder's copy never counts); bulk always confirms the collected count and keeps
+     * its captured ids. After a dialog it reloads and rechecks the owner, the fence, and the collected overrides
+     * again, writing nothing if they changed; then one `setChatMeta` removes every override with a target id.
+     *
+     * Orphans: delete and move target the selected override object, never every duplicate id; move, only for an on
+     * override, removes it while appending a deep copy to `localLore` (a fresh id, its mode, no folder key) in one
+     * write. Both confirm and recheck the captured owner and send fence. Off wins over a local activation: a row whose
+     * override is off while the chat holds its `child` link gets the off-precedence notice (`offOverrideIds`).
+     */
+
     const draft = useLoreOverridesDraft();
     // The section remounts for another chat; stale input events cannot edit its draft.
     const mountedRef = currentChatRef();

@@ -20,6 +20,12 @@
     import { mergeOwnerLore } from "../../../../shared/lore/overrides.ts";
     import { untrack } from "svelte";
 
+    /**
+     * The lorebook tab of the character editor: the character's lore (submenu 0), the selected chat's local lore (1,
+     * edited on its draft), and the lore settings (2). The chat tab's overrides section (`LoreOverrideList.svelte`)
+     * opens on a switch to a chat with orphaned overrides, or when a new orphan appears in the same chat.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
     let submenu = $state(0);

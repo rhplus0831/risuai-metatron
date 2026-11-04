@@ -47,8 +47,28 @@ import {
     readModuleFileHeader,
 } from "../../../shared/moduleImport.ts";
 
+/**
+ * Modules in the tab. The `.risum` codec: `exportModuleLegacy` writes it and `readModule` reads it in the tab; the
+ * format and the server's reader are `shared/moduleImport.ts`'s, and the rpack codec is `shared/rpack.ts`'s
+ * (`encodeRPack`/`decodeRPack`, re-exported by `src/ts/rpack/rpack_js.js`). `exportModule` writes a module as CharX
+ * instead.
+ *
+ * The import entry points: `importModuleFile` (a `.risum` file, through the server), `addImportedModule` (the add
+ * every file or data module import ends with), and `importModule` (the module dialog). The MCP URL import
+ * (`importMCPModule`, `src/ts/process/mcp/mcp.ts`) is the exception: it adds through `addModule` directly and alerts
+ * success without waiting for the save. The effective set: `getModules` and the
+ * `getModule*` getters built on it, and `moduleUpdate`, which publishes the selected chat's icon and background
+ * stores and reloads the GUI once when the set changes.
+ */
+
 export type { MCPModule, RisuModule } from "../../../shared/modules.ts";
 
+/**
+ * Exports `module` as a CharX file through character conversion (`convertModuleToCharacter`, then
+ * `exportCharacterCard` with this writer); a module without an icon gets `/none.webp`, saved as an asset, and the
+ * `moduleNoneImage` mark. It catches every failure (one before the writer is handed over too), aborts the writer, and
+ * alerts once; it never rethrows. It reports completion, with the empty-asset count, only when `alertEnd` is true.
+ */
 export async function exportModule(
     module: RisuModule,
     arg: {
@@ -88,6 +108,18 @@ export async function exportModule(
     }
 }
 
+/**
+ * Writes `module` as a `.risum` file: magic byte 111, version 0, the RPack-encoded JSON main record, one record per
+ * asset, then the end mark (the layout is `shared/moduleImport.ts`'s). The asset tuples are snapshotted before the
+ * first await, so the metadata and the payloads keep one order while the live module is edited. Assets are read
+ * through `loadAssetsInBatches` (`src/ts/storage/assetQueue.ts`); a `null` record (a missing or empty file) is
+ * written as an empty asset, counted, warned with its key, and reported in the end alert (`exportMissingAssets`).
+ * `saveData: false` writes to memory and returns the bytes, so it still buffers the whole `.risum`.
+ *
+ * It alerts its failure and, when `alertEnd` is true, its completion, except `saveData: false, alertEnd: false`
+ * (caller-owned bytes, the CharX embed of `exportCharacterCard`), which aborts and rethrows. A failure aborts the
+ * writer and the pending read either way.
+ */
 export async function exportModuleLegacy(
     module: RisuModule,
     arg: {
@@ -309,7 +341,8 @@ export async function prepareModuleImport(module: { name?: unknown; lorebook?: u
  * with the reader the server uses, `shared/moduleImport.ts`), and on that module, before anything
  * is sent, the low-level access question is asked and `prepareModuleImport` runs. Then the file
  * itself is uploaded (`importModuleOverServer`, its progress in the wait alert), and only the
- * stored assets' keys are taken from the server's result. Returns the prepared module under a fresh
+ * stored assets' keys (`assets[i][1]`) are copied from the server's module into the prepared one; a
+ * server module with another asset count is `noData`. Returns the prepared module under a fresh
  * id, or null when nothing is to be added: a question was declined, or the failure is already
  * alerted.
  */
@@ -413,6 +446,8 @@ export type ServerImportTexts = {
  * with its own text, shown as it is). Busy, maintenance, a timeout, and an interrupted upload share
  * the module import's texts. A network failure may be a refusal the browser did not see (see
  * `serverImportClient.ts`).
+ * The route's invalid-file text maps to `noData`, an unrecognized refusal shows the server's text,
+ * and a `TypeError` is an interrupted upload (possibly a refusal the browser never saw).
  */
 export function serverImportErrorMessage(error: unknown, texts: ServerImportTexts): string {
     if (error instanceof ServerImportRequestError) {
@@ -476,6 +511,8 @@ function moduleImportErrorMessage(error: unknown): string {
  * refused or unreachable save) is `moduleImportUnconfirmed`; the module stays in the list unless a
  * conflict discarded it, in which case it is `moduleImportDiscarded` even if the flush later fails.
  * The flush saves every pending change, not only the module.
+ * With `announce`, `successImport` comes only after that acknowledgement, and only while its
+ * `moduleImportSaving` wait alert is still the status: an alert that replaced it meanwhile stays.
  */
 export async function addImportedModule(module: unknown, { announce }: { announce: boolean }): Promise<boolean> {
     const scope = beginMutationScope();
@@ -514,6 +551,15 @@ export async function addImportedModule(module: unknown, { announce }: { announc
     return true;
 }
 
+/**
+ * The module dialog's import of a picked `.charx`, `.risum`, or JSON file (`.json`, `.lorebook`). A `.risum` goes
+ * through `importModuleFile`. A `.charx` is imported as a character without adding it (`importCharacterProcess` with
+ * `returnCharacter`) and converted (`convertCharacterToModule`): `null` or `undefined` adds no alert (already
+ * alerted), and `false` (a declined question) or a string is `noData`. A CharX whose embedded module `readModule`
+ * refuses alerts `noData` and adds neither a module nor a character (the counted import and the stored assets stay).
+ * The JSON branches (a `risuModule`, a risu or external lorebook, a regex list) stay silent: `addImportedModule` only
+ * clears its wait alert. A file none of them reads is `noData`.
+ */
 export async function importModule() {
     const file = await selectSingleFileHandle(["json", "lorebook", "risum", "charx"]);
     if (!file) {
@@ -672,9 +718,13 @@ export type ModuleChatRef = { chaId: string; chatId: string } | null | undefined
 
 /**
  * The enabled modules for `chatRef`'s chat and character (default: the selected ones): the global
- * list, the chat's and the character's modules, the bound persona's embedded module, and the
- * prompt preset's integration list, all matched by id or namespace, plus the bound persona's linked
- * modules, matched apart (by id only, MCP modules excepted: `personaLinksModule`). The integration
+ * list, the chat's and the character's modules, the bound persona's embedded module's id, and the
+ * prompt preset's integration list, all matched by id or namespace against `settings.modules` only
+ * (`getModuleByIds`), plus the bound persona's linked modules, matched apart (by id only, MCP modules
+ * excepted: `personaLinksModule`). The persona's `embeddedModule.id` joins the id list like the
+ * others, so the embedded module itself is never returned: the id resolves only when a stored module
+ * has that id (or namespace), and an embedded module that is not stored contributes nothing (the
+ * server's `jobModules`, `server/src/jobs/cbsHost.ts`, does the same). The integration
  * list is `scope`'s preset's (a parse for a captured context, a `presetChain` pick included), else
  * `chatRef`'s display preset's (the chat's binding), else the settings view's, which
  * follows the selected chat.

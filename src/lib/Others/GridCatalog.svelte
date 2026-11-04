@@ -11,6 +11,13 @@
     import MobileCharacters from "../Mobile/MobileCharacters.svelte";
     import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
     import { openMessageSearch } from "src/ts/messageSearch.svelte";
+
+    /**
+     * The character catalog: the simple (mobile) list, the grid, the list, and the trash, searched by name. Trashed
+     * characters show only in the trash view, which restores them (`restoreChar`) or deletes them for good; the list
+     * view's delete is the soft one (`removeChar`, `trashTime`).
+     */
+
     interface Props {
         endGrid?: any;
     }

@@ -24,6 +24,17 @@
     import { importMCPModule } from "src/ts/process/mcp/mcp";
     import { convertModuleToCharacter } from "src/ts/interchangeability";
     import { addCharacter } from "src/ts/storage/characterStore.svelte";
+
+    /**
+     * The module catalog, with its create (mode 1) and edit (mode 2) views of `ModuleMenu.svelte`. Edit mode retains
+     * only the module id and resolves its live record wrapper from the current list, so the editor's edits save
+     * immediately and follow a remote list replacement; a missing module returns to the catalog without a write.
+     * Create mode adds its plain-object draft to `settings.modules` once, by the final button, only when a non-`id`
+     * field has content; asset bytes uploaded meanwhile stay stored. The share button adds no error alert (both
+     * exporters alert their own failure); once the export settles, `clearStaleExportWait` clears only the exact status
+     * the export last passed to `onInstall`, so a newer status and any error or success dialog stay.
+     */
+
     let tempModule: RisuModule = $state({
         name: "",
         description: "",

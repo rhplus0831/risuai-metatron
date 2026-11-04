@@ -75,6 +75,27 @@ import {
     type RealmPrepared,
 } from "../../shared/realmImport.ts";
 
+/**
+ * Character cards: the import (`importCharacterProcess`, which every card file goes through; a Realm card goes
+ * through `downloadRisuHub`), the export (`exportChar`, the editor's dialog, and `exportCharacterCard`), the Realm hub
+ * helpers (`hubURL`, `getRisuHub`, `downloadRisuHub`), and the page-address and launch-queue import
+ * (`characterURLImport`). A dropped file is dispatched by `src/App.svelte`'s drop handler, not here.
+ *
+ * `statics.imports` (`incrementStatic("imports")`) counts a card file before it is parsed. `importCharacterProcess`
+ * counts every file whose name does not end in `json` (PNG, JPG, CharX, and a name it then refuses), so a card refused
+ * or declined later still counts, and a JSON card never does. `downloadRisuHub` counts once the server answered a
+ * staged CharX or PNG card (`prepareRealmImport`): a failed download or a file the server refused does not count, a
+ * card declined afterwards does, and a Realm JSON card does not.
+ *
+ * Every importer builds the character under a fresh `chaId` and adds it through `addCharacter`
+ * (`src/ts/storage/characterStore.svelte.ts`), except with `returnCharacter` (`returnValue`), which returns it unadded
+ * (the module dialog converts it to a module). The card's `lowLevelAccess` question comes before the importer saves
+ * an asset of its own. Before it, a PNG's asset chunks and a server-read CharX's entries are already stored, and the
+ * in-tab `CharXImporter`'s entry saves are stored or still queued (its `done()` is awaited only after the question is
+ * accepted); the Realm import asks before its commit.
+ */
+
+/** The Realm hub's base path: the self-host server's same-origin `/hub-proxy` (`server/src/routes/proxy.ts`). */
 export const hubURL = "/hub-proxy";
 
 export async function importCharacter() {
@@ -111,6 +132,17 @@ export async function importCharacter() {
  * takes bytes, a stream, or a `Blob`, which it streams: a stream is read once (a running asset
  * count), bytes or a `Blob` are counted in a first pass. Returns the new character's id (with
  * `returnCharacter`, the character), or null/undefined once the failure is alerted.
+ *
+ * A JSON card (a name ending in `json`) is read whole: `importCharacterCardSpec`, else `convertOffSpecCards` for an
+ * off-spec card with a name, a description and a greeting, else `noData`; a stream under such a name returns null
+ * without an alert. A CharX upload that fails is alerted (`serverImportErrorMessage`) and returns null.
+ *
+ * A PNG is streamed, not read into bytes first (only a `Blob` without `stream()` is read whole). Its `chara` (V2) and
+ * `ccv3` (V3) text chunks are kept, `ccv3` winning when both exist; a later chunk of the same key replaces the text
+ * held only while that text is shorter than `5 * 1024 * 1024` UTF-16 code units, a replacement threshold rather than
+ * a cap, so the kept text can be longer (`PngChunk` caps no chunk). The `chara-ext-asset_<id>` chunks feed
+ * `saveAssets` as they are read, written in batches (`POST /api/assets/write`), the reader held back once a batch's
+ * worth is waiting; they are stored before the card's text is read, so before its questions (`importPngCard`).
  */
 export async function importCharacterProcess<T extends boolean = false>(f: {
     name: string;
@@ -297,7 +329,10 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
     return (await importPngCard(readedChara, img, assets)) as any;
 }
 
-/** A CharX file's card text as a v3 card; null (alerted) for no text or a card of another spec. Throws for text that is not JSON. */
+/**
+ * A CharX file's card text as a v3 card; null, alerting `noData`, for no text or a card whose `spec` is not
+ * `chara_card_v3`. Throws for text that is not JSON.
+ */
 function readCharxCard(cardData: string | null | undefined): CharacterCardV3 | null {
     if (!cardData) {
         alertError(language.errors.noData);
@@ -319,6 +354,13 @@ function readCharxCard(cardData: string | null | undefined): CharacterCardV3 | n
  * assets are saved), unless `lowLevelAccessAsked` (the Realm import asked before its commit). Returns
  * the new character's id (with `returnCharacter`, the character), or null/undefined/false once the
  * failure is alerted or the question declined.
+ *
+ * The embedded module is read by `readModule`, which stores its assets (a module it refuses, alerted, makes this
+ * throw): its triggers and regex replace the card's (`extensions.risuai.triggerscript`/`customScripts`; a list the
+ * module lacks empties them), and its lorebook, when it has one, replaces the `character_book` entries (the book's
+ * settings still apply). Then `importCharacterCardSpec` runs with `readAssets`'s entry name → stored key map. The
+ * character's gate is the card's `extensions.risuai.lowLevelAccess`; the embedded module's own `lowLevelAccess` is
+ * not carried onto the character, so it is not asked.
  */
 async function importCharxCard(
     card: CharacterCardV3,
@@ -356,6 +398,11 @@ type PngCard = { kind: "spec"; card: CharacterCardV2Risu | CharacterCardV3 } | {
  * Reads a PNG card's text (`ccv3`, else `chara`): base64 JSON, or an `rcc||` card, whose password is
  * asked when it has one. Null once a failure is alerted (a malformed or tampered rcc card, a wrong
  * password) or the password prompt is dismissed; throws for base64 text that is not JSON.
+ * Only the legacy `rccv1` version is decrypted, after its hash is checked: a malformed or tampered card, or a payload
+ * that is not a v2/v3 card, is `noData`; under a password, a failed decryption or JSON parse is `wrongPassword`, and
+ * a dismissed prompt adds nothing and alerts nothing. Its metadata parse and a password-free decryption can throw.
+ * An `rcc||` card of another version falls through to the base64 JSON parse. JSON of another spec is an off-spec
+ * (Tavern) card.
  */
 async function readPngCard(readedChara: string): Promise<PngCard | null> {
     if (readedChara.startsWith("rcc||")) {
@@ -423,6 +470,7 @@ async function readPngCard(readedChara: string): Promise<PngCard | null> {
  * (`readPngCard`, its password asked), its `lowLevelAccess` asked, then the image without its text
  * chunks and each asset chunk's stored key by index (`importPngCharacter`). Returns the new
  * character's id, or null/undefined once the failure is alerted or a question declined.
+ * `confirmCardLowLevelAccess` asks only a v2/v3 card's `lowLevelAccess`; an off-spec card has none to ask.
  */
 async function importPngCard(
     readedChara: string,
@@ -441,7 +489,8 @@ async function importPngCard(
 
 /**
  * Adds the character of a read PNG card (its questions asked): the image (bytes, or the key the
- * server stored it under) and each asset chunk's stored key by index.
+ * server stored it under) and each asset chunk's stored key by index. An off-spec card is added through
+ * `convertOffSpecCards`, a v2/v3 card through `importCharacterCardSpec` with `lowLevelAccessAsked`.
  */
 async function importPngCharacter(
     read: PngCard,
@@ -565,6 +614,19 @@ async function importPendingShare(
     }
 }
 
+/**
+ * Runs the import the page address asks for, once at startup: `?realm=` (the Realm info dialog), `?charahub=` (a
+ * Chub download, read as a stream), `#import=<url>`, `#import_module=`, `#import_preset=`, the `#share_*` files cached
+ * under `/sw/share/`, and the launch queue (files opened with the installed app). A fetched or launched file is
+ * dispatched by name (`importFile`): `.charx`/`.jpg`/`.jpeg`/`.png` → `importCharacterProcess`, `.risup`/`.risupreset`
+ * → `importPreset`, a name ending in `risum` → `importModuleFile` then `addImportedModule`; the checks are
+ * case-sensitive, and a file no check matches is ignored.
+ * Cards and modules go as the `Blob` itself; only presets are read into bytes.
+ *
+ * The module settings open only when `addImportedModule` reports the save. `#share_module` consumes its pending share
+ * once the module was added, whatever the save's outcome (a second import would add it twice); a declined or failed
+ * read keeps it.
+ */
 export async function characterURLImport() {
     // Read now: the router (started later in `loadData`) writes URLs without a query or hash.
     const hash = location.hash;
@@ -824,6 +886,13 @@ function convertOffSpecCards(
     };
 }
 
+/**
+ * The editor's export dialog (`alertCardExport`) for character `chaId`; a group is not exportable. The V3 formats:
+ * PNG (`ccv3` plus `chara-ext-asset_*` chunks), JSON (assets as data URIs, capped by `JSON_EXPORT_ASSET_LIMIT`),
+ * CharX (`card.json`, `module.risum`, `assets/...`, `x_meta/...`), and CharX-JPEG (the portrait as a JPEG, then the
+ * CharX zip); the `ccv2` choice is V2 PNG (`chara`). The export is not awaited: `exportCharacterCard` alerts its own
+ * failure or success. Returns "", or the dialog's answer when it is no export (a cancel).
+ */
 export async function exportChar(chaId: string): Promise<string> {
     let char = characterSnapshot(chaId);
     if (!char) {
@@ -926,6 +995,21 @@ async function saveEmbeddedAssets(
     return paths;
 }
 
+/**
+ * Builds the character of a v2 or v3 card (false for anything else) under a fresh `chaId` and adds it through
+ * `addCharacter`, or with `returnValue` returns it unadded. It asks `lowLevelAccess` before it saves any asset, the
+ * portrait included, so a declined card leaves none of its own behind; a caller that asked already passes
+ * `lowLevelAccessAsked`. `img` as a string is the key the server stored the portrait under.
+ *
+ * V3 asset URIs: `__asset:<id>` and `embeded://<path>` resolve through `assetDict` (a key it lacks throws),
+ * `ccdefault:` is the portrait as it is at that entry, and a `data:` URI is saved (one whose base64 text is
+ * `50 * 1024 * 1024` characters or more is alerted and skipped); any other URI is skipped. `overrideLorebook` (a
+ * CharX's module lore) replaces the `character_book` entries.
+ *
+ * Not transactional: a card `addCharacter` refuses throws after the portrait and the assets were saved, and nothing
+ * of that is undone (any import count already made remains); the character list, its chats, and the order stay
+ * unchanged.
+ */
 async function importCharacterCardSpec<T extends boolean = false>(
     card: CharacterCardV2Risu | CharacterCardV3,
     img?: Uint8Array | string,
@@ -1342,6 +1426,11 @@ function convertCharbook(arg: {
     };
 }
 
+/**
+ * The V2 card (`chara_card_v2`) of `char`, which it changes (`loreExt.risu_fullWordMatching`; the export passes a
+ * snapshot). It never carries `customNotificationMessage`: a local field, which the editor shows even for a
+ * `private`-licensed card (`src/lib/SideBars/CharConfig.svelte`) and the card import never sets.
+ */
 function createBaseV2(char: ClientCharacter) {
     let charBook: charBookEntry[] = [];
     for (const lore of char.globalLore) {
@@ -1440,9 +1529,33 @@ function createBaseV2(char: ClientCharacter) {
 /**
  * The most asset bytes a JSON card export embeds: past this, the base64 data URIs make a card
  * `JSON.stringify` cannot produce, so the export refuses and points to CharX instead.
+ * It is 64 MiB of read bytes of the V3 card's embedded assets, the `ccdefault:` portrait included, summed as each
+ * arrives, before compression. One byte over refuses the export with `jsonExportTooLarge` before `JSON.stringify`,
+ * cancelling the pending batch read, with no download and no success alert (a supplied writer gets the rethrow
+ * instead).
  */
 export const JSON_EXPORT_ASSET_LIMIT = 64 * 1024 * 1024;
 
+/**
+ * Writes `char` as a card file. PNG and CharX go to a download or to the supplied `writer`; a JSON card always goes
+ * to a download (`downloadFile`, its writer a `BlankWriter`), while a supplied writer still suppresses the alerts and
+ * is aborted on failure. `type` and `spec` pick the format; the
+ * default is V2 PNG, for compatibility (a V2 JSON card holds `__asset:N` references only, so it has no cap; no caller
+ * asks for one). Assets are read through `loadAssetsInBatches` (`src/ts/storage/assetQueue.ts`: 200 keys per
+ * `POST /api/assets/read`, at most one request in flight), so read memory is bounded by two batches plus the asset
+ * being written; a JSON card still accumulates its data URIs, up to `JSON_EXPORT_ASSET_LIMIT`.
+ *
+ * A `null` record means a missing or empty file: it is written as an empty asset, counted, and warned with its key,
+ * and the end alert reports the count (`exportMissingAssets`); the result carries it (`missingAssets`). Transport,
+ * framing, compression and output errors stay fatal. A missing or empty portrait exports as `/none.webp` with a
+ * console warning naming its key (none when no portrait is set), without counting as an empty asset; a portrait read
+ * that throws fails the export.
+ *
+ * Any failure aborts the open `LocalWriter`, cancels and settles the pending read, and shows no success alert;
+ * whether the partial download is removed is streamSaver's and the browser's behavior. Without a supplied writer it
+ * alerts its own failure or success; with one it aborts that writer and rethrows, without an alert (the caller, such
+ * as `exportModule` in `src/ts/process/modules.ts`, alerts).
+ */
 export async function exportCharacterCard(
     char: ClientCharacter,
     type: "png" | "json" | "charx" | "charxJpeg" = "png",
@@ -1801,6 +1914,10 @@ type RisuLorebookEntry = LorebookEntry & {
     folder?: string;
 };
 
+/**
+ * The V3 card (`chara_card_v3`) of `char`, which it changes as `createBaseV2` does; its `assets` still name stored
+ * keys for the export to embed. It never carries `customNotificationMessage`, for the same reason as `createBaseV2`.
+ */
 export function createBaseV3(char: ClientCharacter) {
     let charBook: RisuLorebookEntry[] = [];
     let assets: Array<{

@@ -22,6 +22,13 @@
     import { CircleCheckIcon } from "@lucide/svelte";
     import { normalizePersonaModules } from "../../../../shared/personas.ts";
 
+    /**
+     * The persona settings page. The editor and the module links it edits (`RisuPersona.modules`) are the persona the
+     * screen shows (`currentPersonaRecord`: the open chat's bound persona, else the tab's), read at each write.
+     * Creation captures its target chat before its dialog and picks the new persona there; an imported one is not
+     * picked. A deletion moves only the tab's selection, never a chat's binding; the last persona is never deleted.
+     */
+
     let stb: Sortable = null;
     let ele: HTMLDivElement = $state();
     let sorted = $state(0);

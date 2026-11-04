@@ -56,10 +56,26 @@ import { importCharacter } from "./characterCards";
 import { savePickedFiles } from "./storage/assetQueue";
 import { PngChunk } from "./pngChunk";
 
+/**
+ * Characters and groups in the tab: creation (`createNewCharacter`, `createNewGroup`, and the add dialog
+ * `addCharacter`), selection (`changeChar`), deletion (`removeChar`, `restoreChar`), a character's chats as files
+ * (`importChat`, `exportChat`, `exportAllChats`), its images (`selectCharImg`, `changeCharImage`, `makeGroupImage`),
+ * and its emotion images (`addCharEmotion`, `rmCharEmotion`).
+ *
+ * An importer or a creator adds a character only through `addCharacter` of `src/ts/storage/characterStore.svelte.ts`
+ * (imported here as `addCharacterRecord`); this module's own `addCharacter` is the add dialog. An action that awaits a
+ * dialog or a save captures the character's id first and finds its record again afterwards, since it can be deleted
+ * meanwhile.
+ */
+
 export function createNewCharacter() {
     return addCharacterRecord(createBlankChar());
 }
 
+/**
+ * Adds an empty group chat and returns its id. The add dialog (`alertAddCharacter`) does not offer it; `addCharacter`
+ * still handles its `createGroup` answer, and groups already in the list keep working.
+ */
 export function createNewGroup() {
     const chaId = addCharacterRecord({
         type: "group",
@@ -217,6 +233,10 @@ export function changeCharImage(chaId: string, changeIndex: number) {
 
 export const addingEmotion = writable(false);
 
+/**
+ * Adds picked images as emotion images of `chaId`: the files are saved first (`savePickedFiles`), then every row is
+ * appended in one write to the list as it then is, if the character still exists; a failed save alerts and adds none.
+ */
 export async function addCharEmotion(chaId: string) {
     addingEmotion.set(true);
     try {
@@ -477,6 +497,12 @@ export async function exportChat(chatId: string) {
     }
 }
 
+/**
+ * Imports chats from a file into the character selected when it starts: its id is captured before the file dialog
+ * and resolved again afterwards (a deleted one stops with `importTargetGone`). Only the Tavern `.jsonl` import
+ * switches to the new chat, and only while that character is still selected; the JSON and HTML imports leave the open
+ * chat as it is, and a `.txt` file adds nothing and alerts nothing.
+ */
 export async function importChat() {
     // The character is the one selected when the import starts, captured by id before the file dialog.
     const chaId = selectedCharacter()?.chaId;
@@ -757,6 +783,11 @@ export function createBlankChar(): character {
     };
 }
 
+/**
+ * Draws the selected group's icon as a grid of its members' portraits and sets it on the group. A member image that
+ * fails to load is skipped: the grid holds the images that loaded, in the order they loaded. The loading status is
+ * cleared after the save; a dialog that opened meanwhile stays.
+ */
 export async function makeGroupImage() {
     try {
         const group = selectedCharacter();
@@ -847,6 +878,12 @@ export function restoreChar(chaId: string) {
     checkCharOrder();
 }
 
+/**
+ * Deletes a character after two confirmations (`permanentForce` asks none), found by its id after them (an index
+ * `identifier` is read before them): `normal` is a soft delete (`trashTime`, undone by `restoreChar`), `permanent`
+ * and `permanentForce` remove it for good and are refused while a reply is generated for it. A deletion clears the
+ * selection.
+ */
 export async function removeChar(
     identifier: string | number,
     name: string,
@@ -882,6 +919,11 @@ export async function removeChar(
     selectCharacter(null);
 }
 
+/**
+ * The add dialog: Realm opens the hub; `createfromScratch`, `importCharacter`, and `createGroup` (which the dialog
+ * does not offer) add a character, which is then selected. The record is added by `createNewCharacter`,
+ * `createNewGroup`, or the card import, not here.
+ */
 export async function addCharacter(
     arg: {
         reseter?: () => any;
@@ -915,6 +957,10 @@ export async function addCharacter(
     }
 }
 
+/**
+ * Selects `chaId`, first making sure it has a chat (`ensureChat`). It applies no defaults and writes no activity
+ * field.
+ */
 export async function changeChar(
     chaId: string,
     arg: {

@@ -11,6 +11,13 @@
     import LazyFileSrc from "../UI/GUI/LazyFileSrc.svelte";
     import TextInput from "../UI/GUI/TextInput.svelte";
     import { language } from "../../lang";
+
+    /**
+     * A character's additional assets as a picker (`onSelect` gets the picked row), with search and paging reset per
+     * character. Adding saves the picked files with `savePickedFiles` and, once all are saved, appends every row in
+     * one write to the character found again by id; a failed save alerts and adds none.
+     */
+
     interface Props {
         currentCharacter: AnyClientCharacter;
         onSelect: (additionalAsset: readonly [string, string, string]) => void;

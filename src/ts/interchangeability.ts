@@ -4,6 +4,19 @@ import type { RisuModule } from "./process/modules.ts";
 import type { character, RisuPersona } from "./storage/database.svelte.js";
 import { createBlankChar } from "src/ts/characters";
 
+/**
+ * Conversions between modules, characters, and personas; each returns a detached copy. A character's description,
+ * first messages, and global-note replacement travel through a module as constant lore entries marked
+ * `@@indicator character_desc`, `character_first_message`, and `replace_global_note` (the old marker `phi` is read
+ * too), and a persona's prompt as `@@indicator persona`; the reverse conversion takes them out of the lore again. An
+ * MCP module converts to no character (it throws).
+ *
+ * Only `convertModuleToPersona` sets the embedded module's id to `$embedded`, the id `getModuleById`
+ * (`src/ts/process/modules.ts`) resolves to the bound persona's embedded module. `convertCharacterToPersona` embeds a
+ * module under a fresh id, and `convertPersonaToModule` keeps the embedded module's id (`$embedded` included), with
+ * the persona prompt as its only lore entry.
+ */
+
 export function convertModuleToCharacter(m: RisuModule): character {
     const char = createBlankChar();
 

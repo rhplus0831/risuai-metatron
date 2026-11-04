@@ -70,6 +70,25 @@
     import { prepareQuery } from "src/ts/util/koreanSearch";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
 
+    /**
+     * A lorebook list: the selected character's (`submenu` 0), the selected chat's local draft (1), or
+     * `externalLoreBooks` (a module's); a folder's entries are a nested list (`showFolder`, mounted by
+     * `LoreBookData.svelte`). `removeEntry` deletes by identity (a folder with its entries), returning whether it
+     * removed the entry, and does nothing when the shown list no longer holds it.
+     *
+     * Open details count only `mode !== "folder"` rows, and drag is off while any is open; a nested list owns its
+     * members' open state. A membership change (an owner switch or a chat draft resync included) prunes stale open
+     * refs and recounts, recreating Sortable synchronously at zero; creation never adds a second live instance.
+     *
+     * Filter: the outermost list owns the query and the match set; folder lists read them through the `LORE_FILTER`
+     * context. The query resets when the owner changes (the character, the chat, or the tab between them). Matches
+     * (`filterMatches`) are computed once at the root from a tracked copy of the list, reading fields untracked, so a
+     * row renamed under the filter stays shown until the query or the membership changes. Hidden rows stay mounted,
+     * keeping their open details; a shown folder opens through `forceOpen` without writing `openedRefs`. Every
+     * SortableJS instance is disabled while the query is non-empty, and a drop that ends while filtering writes
+     * nothing.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     // The selected chat's local lorebook is edited on a copy that is saved through the chat module.
     const localLore = useLocalLoreDraft();

@@ -11,6 +11,14 @@
     import SegmentedControl from "../../UI/GUI/SegmentedControl.svelte";
     import LoreEntryFields from "./LoreEntryFields.svelte";
 
+    /**
+     * One row of `LoreOverrideList.svelte`. The `stateFor(name)` control shows an entry's state from its override
+     * (Original: none, Override: `off: false`, Off: `off: true`) and a folder's On or Off; it binds through a
+     * getter/setter pair, so a refused, cancelled, or aborted change keeps the old segment. An entry's editable body
+     * is keyed by its override object and bound through `liveOverride`, which returns a throwaway once the draft
+     * released the object or switched chats; without an override the body shows the original, disabled.
+     */
+
     interface Props {
         original: () => loreBook;
         override?: ChatLoreOverride;

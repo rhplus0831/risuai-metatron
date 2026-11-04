@@ -14,6 +14,15 @@
     import { checkPersonaBinded } from "src/ts/util";
     import { personaLinksModule, personaModuleIdSet } from "../../../../../shared/personas.ts";
 
+    /**
+     * The chat's module toggles, or with `alertMode` the module picker of `alertModuleSelect` (closing with the picked
+     * id). A click toggles the selected chat's `modules` (nothing while the chat loads), a right click the character's;
+     * a globally enabled module is not toggled here. It writes only the chat's or the character's list. `getModules`
+     * matches those tokens by id or namespace (persona links by id only) and keeps the first module of an id, so
+     * toggling a module already active through another source usually leaves the effective set as it was, but can
+     * change it when ids and namespaces collide.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
     // The modules the selected chat's bound persona links: active for this chat besides its own toggles.

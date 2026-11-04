@@ -3,6 +3,23 @@ import crc32 from "crc/crc32";
 import { AppendableBuffer, VirtualWriter, type LocalWriter } from "./globalApi.svelte";
 import { blobToUint8Array } from "./util";
 
+/**
+ * The in-tab PNG text-chunk reader and writer (`PngChunk`): a card's `chara`, `ccv3`, and `chara-ext-asset_*` chunks,
+ * a persona's `persona` chunk. No chunk has a size cap: its data is held whole, also when streamed; a caller decides
+ * what it keeps (`importCharacterProcess` in `src/ts/characterCards.ts` for the card text). A reader takes the
+ * keyword from the first 70 bytes of a chunk's data (no NUL there: the empty key).
+ *
+ * CRC is checked only with `checkCrc`, which no production caller passes (tests do), and `readGenerator` checks it
+ * only for bytes in hand, never for a stream or a streamed `Blob`. `write` and `trim` drop every `tEXt` chunk of the
+ * image; `streamWriter` drops only the card's.
+ */
+
+/**
+ * `PngChunk.streamWriter`, the card export's PNG writer, which writes to the stream as it goes. `init` copies every
+ * chunk of the portrait whole, CRC included, up to `IEND`, except the `chara` and `ccv3` text chunks it replaces; that
+ * keyword is read from the chunk's own start (at most 79 bytes, up to its NUL), so other `tEXt` chunks survive with
+ * valid CRCs. `write` appends one `tEXt` chunk; `end` writes `IEND` and awaits the writer's close.
+ */
 class StreamChunkWriter {
     constructor(
         private data: Uint8Array,

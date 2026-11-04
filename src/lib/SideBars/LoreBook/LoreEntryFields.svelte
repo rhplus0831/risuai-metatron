@@ -10,6 +10,11 @@
     import NumberInput from "../../UI/GUI/NumberInput.svelte";
     import TextAreaInput from "../../UI/GUI/TextAreaInput.svelte";
 
+    /**
+     * The shared fields and token counter of a non-folder entry (`LoreBookData.svelte`, `LoreOverrideRow.svelte`),
+     * mounted only while an entry body is open; `disabled` refuses every write, and unmount disposes pending counts.
+     */
+
     interface Props {
         value: loreBook;
         disabled?: boolean;

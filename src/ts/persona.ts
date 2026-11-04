@@ -30,10 +30,11 @@ export async function selectUserImg() {
 }
 
 /**
- * Picks persona `id` where the screen shows it: `target` names the chat, `null` the tab's selection,
- * and `undefined` the open chat now, else (home) the tab's selection. The persona fields are forwarded
- * to the shown persona, so nothing is copied. Returns false when nothing changed (the persona or the
- * chat is gone).
+ * Picks persona `id` where the screen shows it, through `pickBinding` (`src/ts/storage/chatBindingPick.ts`): with a
+ * chat open it binds that chat, at home it selects for this client. `target` names the chat, `null` the tab's
+ * selection, and `undefined` the open chat now, else (home) the tab's selection. The persona fields are forwarded
+ * to the shown persona, so nothing is copied. Returns false, changing nothing, when the persona or the
+ * chat is gone; true otherwise, also when the persona was already picked there.
  */
 export function changeUserPersona(id: string, target?: ChatRef | null): boolean {
     return pickBinding("personaId", id, target);
@@ -45,6 +46,10 @@ interface PersonaCard {
     note?: string;
 }
 
+/**
+ * Downloads the selected persona as a PNG with a `persona` tEXt chunk (base64 JSON of its name, prompt, and note): its
+ * icon re-encoded, or a plain square without one. The fields are read once, before the awaits.
+ */
 export async function exportUserPersona() {
     // The selected persona's fields, read once now: the selection can change during the awaits below.
     const username = activePersona.name;
@@ -99,6 +104,11 @@ export async function exportUserPersona() {
     alertNormal(language.successExport);
 }
 
+/**
+ * Imports a persona PNG (its `persona` tEXt chunk). It saves the PNG as the icon first, then adds the persona under a
+ * fresh id to the live list (`addPersona`), so a collection another client replaced meanwhile keeps both the new list
+ * and the icon. The imported persona is not picked.
+ */
 export async function importUserPersona() {
     try {
         const v = await selectSingleFile(["png"]);
