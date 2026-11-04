@@ -1,6 +1,6 @@
 # Guides To Source Plan
 
-Status: drafted 2026-11-04 after the chat-store pilot (`c0f4cabae`); landed: 0 (`2b6450a82`), 1-self-host-server (`5b9f23744`), 1-persistence (`b677864b1`), 1-chat-pipeline (`0effa9d4c`), 1-ui-theming (`c3267ac3a`), so Slice 1 is complete; 2-audit (`af0111a0f`); 4 (`630ffc06a`); 2-characters-modules (`e3837199c`); 2-cbs-rendering (`547e12e9c`); 2-memory (`6782ac3fa`); 2-llm-requests (`245c22b4a`); 2-build-test-platforms (`6f2976735`). Decisions D1–D11 are
+Status: drafted 2026-11-04 after the chat-store pilot (`c0f4cabae`); landed: 0 (`2b6450a82`), 1-self-host-server (`5b9f23744`), 1-persistence (`b677864b1`), 1-chat-pipeline (`0effa9d4c`), 1-ui-theming (`c3267ac3a`), so Slice 1 is complete; 2-audit (`af0111a0f`); 4 (`630ffc06a`); 2-characters-modules (`e3837199c`); 2-cbs-rendering (`547e12e9c`); 2-memory (`6782ac3fa`); 2-llm-requests (`245c22b4a`); 2-build-test-platforms (`6f2976735`); 2-app-shell (`322b9cd57`). Decisions D1–D11 are
 recommendations for the owner; the **Open questions** Q1–Q4 were answered by the owner on 2026-11-04 (the
 recommended option each time). Code anchors and measurements are
 at `c0f4cabae` on `dev`; verify them again before editing (STRUCTURE.md protocol step 5).
