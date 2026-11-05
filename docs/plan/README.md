@@ -4,7 +4,7 @@ Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) records completed plans,
 historical paths/commits, retrieval commands, and pending manual follow-ups. The three feature
 plans below were revised on 2026-11-04 after the
-[plan design audit](../audit/plan-design-audit-2026-11-04.md); Job Handoff (since landed and archived), Asset Lifecycle and Reroll
+[plan design audit](../manual-audit/plan-design-audit-2026-11-04.md); Job Handoff (since landed and archived), Asset Lifecycle and Reroll
 Candidates were then challenged again and revised a second time the same day. Plugin Storage and Data API was drafted on 2026-11-05.
 
 - [Asset Lifecycle](asset-lifecycle.md): the server marks every stored asset from one retention graph (every

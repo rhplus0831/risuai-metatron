@@ -1,7 +1,7 @@
 # Asset Lifecycle Plan
 
 Status: drafted 2026-11-03, revised 2026-11-04 after the design audit and again after its adversarial challenge
-([plan design audit](../audit/plan-design-audit-2026-11-04.md), items AL1–AL5, X7, X8, and the same day's
+([plan design audit](../manual-audit/plan-design-audit-2026-11-04.md), items AL1–AL5, X7, X8, and the same day's
 independent cross-audit of the sweep's check-to-unlink gap; the challenge's findings are cited as "challenge
 F1"–"F6"), no slice landed. Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q3
 were answered by the owner on 2026-11-03 (the recommended option each time; Q1's minimum is superseded by D4's

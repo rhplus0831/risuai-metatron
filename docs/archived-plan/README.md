@@ -129,7 +129,7 @@ The archived Status and Decisions paragraphs list its commits and the choices ea
 Still open: `e2e/settingsPages.spec.ts` was updated in each slice but never run; the fetched
 WaveSpeed model list still resets when Image Generation is left; the subtitle tool's Whisper mode
 uses the OpenAI key with no status or link there.
-Data-Loss Under Concurrency (the fix plan for `docs/audit/data-loss-concurrency-2026-10-18.md`)
+Data-Loss Under Concurrency (the fix plan for `docs/manual-audit/data-loss-concurrency-2026-10-18.md`)
 landed all 18 slices on 2026-10-18 and 2026-10-19; the archived Status line lists each slice's
 commit and its "Decisions made by landed slices" paragraph records the choices the slices made
 (1a's `setMessage` rule, 1c's summary merge rule, 5a's `onStorageDiscarded` event, 6b's 100-id
