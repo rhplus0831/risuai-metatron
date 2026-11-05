@@ -70,7 +70,7 @@ Candidates were then challenged again and revised a second time the same day. Pl
   moved, `setDatabase` loads only characters whose chats changed, new plugins get a summaries option and a paged chat
   read, and a browser spec checks the sandbox; drafted 2026-11-05, D1–D12 recommended, Q1–Q5 answered;
   landed: 0 (c140f2db7), 1 (d5c824f99), 2 (b3e3417a8), 4 (c81a3fab7), 5 (2b778c365), 9 (e6e02d2ba),
-  3 (86ac8b272), 6 (d7e305392).
+  3 (86ac8b272), 6 (d7e305392), 7 (aab3052ef).
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
