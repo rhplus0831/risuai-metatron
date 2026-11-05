@@ -95,6 +95,76 @@ const round = (revision: string, pages: MemoryPage[], events: MemoryEvent[], nex
 const NO_SCREENING = { refusal: [], format: [] };
 const noThreads = (revision: string) => Response.json({ revision, threads: [], next: null });
 
+it("shares pending contents only for the same chat and epoch before a memory write answer settles", async () => {
+    const pending: { resolve: (response: Response) => void; promise: Promise<Response> }[] = [];
+    authFetch.mockImplementation(() => {
+        let resolve!: (response: Response) => void;
+        const promise = new Promise<Response>((done) => {
+            resolve = done;
+        });
+        pending.push({ resolve, promise });
+        return promise;
+    });
+    const reads: ReturnType<typeof readStructuredMemoryContents>[] = [];
+    const read = (chat = ref) => {
+        const answer = readStructuredMemoryContents(chat);
+        reads.push(answer);
+        return answer;
+    };
+    const contents = (revision: string) => Response.json({ revision, pages: [], events: [], threads: [], runs: [] });
+    try {
+        read();
+        read();
+        expect(authFetch).toHaveBeenCalledTimes(1);
+        read({ ...ref, chatId: "other" });
+        expect(authFetch).toHaveBeenCalledTimes(2);
+        setResourceEpoch("replacement");
+        read();
+        read();
+        expect(authFetch).toHaveBeenCalledTimes(3);
+        const write = structuredMemoryPageTool(ref, "seen", { kind: "merge", sourceId: "a", targetId: "b" });
+        read();
+        expect(authFetch).toHaveBeenCalledTimes(4);
+        // A refusal is also a settled write answer: it can reveal a newer server revision.
+        pending[3].resolve(Response.json({ revision: "changed" }, { status: 409 }));
+        expect(await write).toEqual({ outcome: "refused", reason: "changed" });
+        read();
+        read();
+        expect(authFetch).toHaveBeenCalledTimes(5);
+        // Settling an older read must leave the newer in-flight read available to share.
+        pending[2].resolve(contents("before-write"));
+        expect(await reads[3]).toMatchObject({ outcome: "ok", value: { revision: "before-write" } });
+        read();
+        expect(authFetch).toHaveBeenCalledTimes(5);
+        pending[4].resolve(contents("after-write"));
+        expect(await reads.at(-1)).toMatchObject({ outcome: "ok", value: { revision: "after-write" } });
+        read();
+        expect(authFetch).toHaveBeenCalledTimes(6);
+    } finally {
+        pending.forEach(({ resolve }) => resolve(contents("cleanup")));
+        await Promise.all(reads);
+    }
+});
+
+it("exports every Log round using decreasing inclusive seq cursors", async () => {
+    authFetch
+        .mockResolvedValueOnce(Response.json({ revision: "r", total: 3, runs: [{ id: "newest" }], next: 73 }))
+        .mockResolvedValueOnce(Response.json({ revision: "r", total: 3, runs: [{ id: "middle" }], next: 12 }))
+        .mockResolvedValueOnce(Response.json({ revision: "r", total: 3, runs: [{ id: "oldest" }], next: null }));
+    const result = await buildStructuredMemoryLog(ref);
+    expect(result.outcome).toBe("ok");
+    if (result.outcome !== "ok") throw new Error(JSON.stringify(result));
+    expect(JSON.parse(strFromU8(result.value.bytes))).toMatchObject({
+        revision: "r",
+        runs: [{ id: "newest" }, { id: "middle" }, { id: "oldest" }],
+    });
+    expect(authFetch.mock.calls.map(([url]) => url)).toEqual([
+        `${base}/runs`,
+        `${base}/runs?cursor=73&revision=r`,
+        `${base}/runs?cursor=12&revision=r`,
+    ]);
+});
+
 /** Read only metadata and its advertised lengths; never search the bodies for Markdown delimiters. */
 function metadata(lines: string[], start: number, end: string) {
     const fields: Record<string, any> = {};

@@ -774,6 +774,36 @@ async function chooseTab(name: "pages" | "timeline" | "threads" | "settings") {
     await settle();
     expect(query(`[data-memory-panel="${name}"]`)).not.toBeNull();
 }
+
+it.each(["pages", "threads"] as const)("makes exactly one contents request per refresh with %s open", async (tab) => {
+    const state = serveMemory();
+    await open();
+    await chooseTab(tab);
+    const fetch = io.authFetch.getMockImplementation()!;
+    const pending = deferred<Response>();
+    const contentsPath = "/api/memory/structured/c/k";
+    io.authFetch.mockImplementation((url, init, options) =>
+        url === contentsPath ? pending.promise.then((response) => response.clone()) : fetch(url, init, options),
+    );
+    io.authFetch.mockClear();
+    click("[data-memory-panel-refresh]");
+    await settle();
+    const contentsRequests = () => io.authFetch.mock.calls.filter(([url]) => url === contentsPath);
+    try {
+        expect(contentsRequests()).toHaveLength(1);
+        expect(contentsRequests()[0][1]?.method ?? "GET").toBe("GET");
+    } finally {
+        // Every caller gets its own Response when sharing is broken, so body reuse cannot mask the count.
+        const response = await fetch(contentsPath);
+        pending.resolve(response);
+        await settle();
+    }
+    expect(contentsRequests()).toHaveLength(1);
+    expect(query(`[data-memory-panel="${tab}"]`)?.textContent).toContain(
+        tab === "pages" ? state.page.title : state.thread.title,
+    );
+});
+
 function press(selector: string) {
     const button = query(selector)?.closest("button");
     expect(button).toBeDefined();

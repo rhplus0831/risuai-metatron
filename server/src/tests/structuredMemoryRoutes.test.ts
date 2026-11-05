@@ -654,6 +654,169 @@ const run = (id: string, result: MemoryRun["result"] = "failed"): MemoryRun => (
     error: "Private error text",
 });
 
+function observeMemoryRows() {
+    const metadata = { pages: 0, events: 0, threads: 0, runs: 0 };
+    const bodies = { ...metadata };
+    const statements = new Map<string, unknown[]>();
+    // Count results at the SQLite I/O boundary, including rows a caller materializes then discards.
+    // Wrapping iteration lazily preserves its early exit and closes the underlying iterator.
+    const spies = (["all", "get", "iterate"] as const).map((method) => {
+        const original = StatementSync.prototype[method];
+        return vi.spyOn(StatementSync.prototype, method).mockImplementation(function (
+            this: StatementSync,
+            ...args: unknown[]
+        ) {
+            const value = Reflect.apply(original, this, args);
+            const kind = /\bFROM\s+memory_(pages|events|threads|runs)\b/i.exec(this.sourceSQL)?.[1] as
+                keyof typeof metadata | undefined;
+            if (!kind) return value;
+            const sql = this.sourceSQL;
+            const count = (row: Record<string, unknown> | undefined) => {
+                if (!row) return;
+                if (typeof row.id === "string") {
+                    metadata[kind] += 1;
+                    statements.set(sql, args);
+                }
+                if (typeof row.data === "string") bodies[kind] += 1;
+            };
+            if (method === "iterate") {
+                return (function* () {
+                    for (const row of value) {
+                        count(row);
+                        yield row;
+                    }
+                })();
+            }
+            if (method === "all") value.forEach(count);
+            else count(value);
+            return value;
+        });
+    });
+    return { metadata, bodies, statements, restore: () => spies.forEach((spy) => spy.mockRestore()) };
+}
+
+it("reads at most one Log page of metadata per round and serves every run newest first exactly once", async () => {
+    const s = await server();
+    const runs = Array.from({ length: MEMORY_RUNS_ROUND_ROWS * 4 + 3 }, (_, i) => run(`run-${i}`, "recorded"));
+    // Another chat consumes seq values, so a positional continuation cannot accidentally work.
+    writeMemory(s.store, characterId, "other", { runs: [run("foreign-a"), run("foreign-b")] });
+    const revision = s.write({ runs, events: runs.map(({ id }) => event(id)) });
+    const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"), { readOnly: true });
+    cleanups.push(() => db.close());
+    const seqs = new Map(
+        (db.prepare("SELECT id, seq FROM memory_runs").all() as { id: string; seq: number }[]).map(({ id, seq }) => [
+            id,
+            seq,
+        ]),
+    );
+    const newest = [...runs].reverse().map(({ input, settingsFingerprint, ...logged }) => logged);
+    const served: string[] = [];
+    let cursor = 0;
+    let materialized = 0;
+    for (let offset = 0; offset < newest.length; offset += MEMORY_RUNS_ROUND_ROWS) {
+        const observed = observeMemoryRows();
+        try {
+            const round = await answer(
+                await s.request(`${base}/runs?${new URLSearchParams({ cursor: String(cursor), revision })}`),
+            );
+            const expected = newest.slice(offset, offset + MEMORY_RUNS_ROUND_ROWS);
+            const older = newest[offset + expected.length];
+            const next = older ? seqs.get(older.id)! : null;
+            expect(round).toEqual({ revision, total: runs.length, runs: expected, next });
+            expect(observed.metadata).toEqual({ pages: 0, events: 0, threads: 0, runs: expect.any(Number) });
+            expect(observed.metadata.runs).toBeGreaterThanOrEqual(expected.length);
+            expect(observed.metadata.runs).toBeLessThanOrEqual(expected.length + (older ? 1 : 0));
+            expect(observed.bodies).toEqual({ pages: 0, events: 0, threads: 0, runs: expected.length });
+            materialized += observed.metadata.runs;
+            served.push(...round.runs.map(({ id }: { id: string }) => id));
+            cursor = next ?? 0;
+        } finally {
+            observed.restore();
+        }
+    }
+    expect(served).toEqual(newest.map(({ id }) => id));
+    expect(materialized).toBeLessThanOrEqual(runs.length + Math.ceil(runs.length / MEMORY_RUNS_ROUND_ROWS) - 1);
+});
+
+it.each(["runs", "threads"] as const)(
+    "reads %s in inclusive seq byte rounds using the open-time chat index without sorting",
+    async (kind) => {
+        const ordered = ["a", "b", "c", "d", "e"].map((id) =>
+            kind === "runs"
+                ? { ...run(id), input: "문😀".repeat(id === "c" ? 1000 : 20) }
+                : ({ id, title: "문😀".repeat(id === "c" ? 1000 : 20), who: [], state: "open" } as MemoryThread),
+        );
+        const budget = bytes(ordered[0]) + bytes(ordered[1]);
+        const s = await server({ routeLimits: { memoryPackageRoundBytes: budget } });
+        writeMemory(s.store, characterId, "other", {
+            runs: [run("foreign")],
+            threads: [{ id: "foreign", title: "Other chat", who: [], state: "open" }],
+        });
+        const stored = kind === "runs" ? [...ordered].reverse() : ordered;
+        const revision = s.write(
+            kind === "runs" ? { runs: stored as MemoryRun[] } : { threads: stored as MemoryThread[] },
+        );
+        const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"), { readOnly: true });
+        cleanups.push(() => db.close());
+        const seqs = new Map(
+            (db.prepare(`SELECT id, seq FROM memory_${kind}`).all() as { id: string; seq: number }[]).map(
+                ({ id, seq }) => [id, seq],
+            ),
+        );
+        const expectedRounds = [ordered.slice(0, 2), ordered.slice(2, 3), ordered.slice(3)];
+        const pageStatements = new Map<string, unknown[]>();
+        const served: string[] = [];
+        let offset = 0;
+        let cursor = 0;
+        for (const records of expectedRounds) {
+            const observed = observeMemoryRows();
+            try {
+                const round = await answer(
+                    await s.request(`${base}/${kind}?${new URLSearchParams({ cursor: String(cursor), revision })}`),
+                );
+                offset += records.length;
+                const next = offset < ordered.length ? seqs.get(ordered[offset].id)! : null;
+                const expected =
+                    kind === "runs"
+                        ? (records as MemoryRun[]).map(({ input, settingsFingerprint, ...logged }) => logged)
+                        : records;
+                expect(round).toEqual({
+                    revision,
+                    [kind]: expected,
+                    ...(kind === "runs" ? { total: ordered.length } : {}),
+                    next,
+                });
+                expect(observed.metadata).toEqual({
+                    pages: 0,
+                    events: 0,
+                    threads: 0,
+                    runs: 0,
+                    [kind]: expect.any(Number),
+                });
+                expect(observed.metadata[kind]).toBeGreaterThanOrEqual(records.length);
+                expect(observed.metadata[kind]).toBeLessThanOrEqual(records.length + (next === null ? 0 : 1));
+                expect(observed.bodies).toEqual({ pages: 0, events: 0, threads: 0, runs: 0, [kind]: records.length });
+                for (const [sql, args] of observed.statements) pageStatements.set(sql, args);
+                served.push(...round[kind].map(({ id }: { id: string }) => id));
+                cursor = next ?? 0;
+            } finally {
+                observed.restore();
+            }
+        }
+        expect(served).toEqual(["a", "b", "c", "d", "e"]);
+        expect(pageStatements.size).toBeGreaterThan(0);
+        // Explain the SQL and bindings actually used by the route, on the file opened by the app.
+        for (const [sql, args] of pageStatements) {
+            const statement = db.prepare(`EXPLAIN QUERY PLAN ${sql}`);
+            const details = (Reflect.apply(statement.all, statement, args) as { detail: string }[])
+                .map(({ detail }) => detail)
+                .join("\n");
+            expect(details).not.toContain("USE TEMP B-TREE");
+            expect(details).toMatch(new RegExp(`USING (?:COVERING )?INDEX memory_${kind}_chat_seq\\b`));
+        }
+    },
+);
+
 it("serves coverage facts in storage order without reading recorded runs or disclosing bodies", async () => {
     const s = await server();
     const active = { ...event("z"), sources: [{ messageId: "m1", hash: "h", index: 0 }] };
@@ -779,18 +942,15 @@ it("pages runs newest first with a row cap, total, and no input or settings fing
     const runs = Array.from({ length: MEMORY_RUNS_ROUND_ROWS + 2 }, (_, i) => run(`run-${i}`, "recorded"));
     const revision = s.write({ runs });
     const publicRuns = runs.map(({ input, settingsFingerprint, ...logged }) => logged).reverse();
-    expect(await answer(await s.request(`${base}/runs`))).toEqual({
+    const first = await answer(await s.request(`${base}/runs`));
+    expect(first).toEqual({
         revision,
         total: runs.length,
         runs: publicRuns.slice(0, MEMORY_RUNS_ROUND_ROWS),
-        next: MEMORY_RUNS_ROUND_ROWS,
+        next: expect.any(Number),
     });
     expect(
-        await answer(
-            await s.request(
-                `${base}/runs?${new URLSearchParams({ cursor: String(MEMORY_RUNS_ROUND_ROWS), revision })}`,
-            ),
-        ),
+        await answer(await s.request(`${base}/runs?${new URLSearchParams({ cursor: String(first.next), revision })}`)),
     ).toEqual({ revision, total: runs.length, runs: publicRuns.slice(MEMORY_RUNS_ROUND_ROWS), next: null });
 });
 
@@ -1684,12 +1844,9 @@ it("reads whole threads in revision-bound byte rounds and refuses a stale contin
     ];
     const s = await server({ routeLimits: { memoryPackageRoundBytes: bytes(threads[0]) + bytes(threads[1]) } });
     const revision = s.write({ threads });
-    expect(await answer(await s.request(`${base}/threads`))).toEqual({
-        revision,
-        threads: threads.slice(0, 2),
-        next: 2,
-    });
-    const continuation = `${base}/threads?cursor=2&revision=${encodeURIComponent(revision)}`;
+    const first = await answer(await s.request(`${base}/threads`));
+    expect(first).toEqual({ revision, threads: threads.slice(0, 2), next: expect.any(Number) });
+    const continuation = `${base}/threads?cursor=${first.next}&revision=${encodeURIComponent(revision)}`;
     expect(await answer(await s.request(continuation))).toEqual({ revision, threads: [threads[2]], next: null });
     s.write({ threads: [{ ...threads[2], state: "cancelled" }] });
     await answer(await s.request(continuation), 409);

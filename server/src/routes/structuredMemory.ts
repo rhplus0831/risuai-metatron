@@ -143,7 +143,7 @@ function parseChatRefs(body: unknown, max: number): MemoryChatRef[] | null {
     return refs;
 }
 
-/** A round's starting position: 0 when absent, null for anything but a non-negative safe integer. */
+/** A round's cursor: 0 when absent, null for anything but a non-negative safe integer. */
 function parseCursor(value: string | undefined): number | null {
     if (value === undefined) {
         return 0;
@@ -204,9 +204,11 @@ function editedRecordId(edit: StructuredMemoryEdit): string {
     }
 }
 
-/** What a round's answer reads: the chat's contents, the position it starts at, and a record that is listed. */
+/** A round's chat, memory revision, cursor, and a reader for records admitted by its metadata listing. */
 type RoundRead = {
-    contents: MemoryContents;
+    characterId: string;
+    chatId: string;
+    revision: string;
     cursor: number;
     read: <K extends StructuredMemoryRecordKind>(kind: K, id: string) => StructuredMemoryRecordOf[K];
 };
@@ -239,12 +241,16 @@ type RoundRead = {
  *   package round.
  * - `GET /api/memory/structured/:characterId/:chatId/runs?cursor=N&revision=R`: one round of the chat's
  *   runs, newest first, answered `StructuredMemoryRunsRound`, each without `input` and
- *   `settingsFingerprint`. A round also stops at `MEMORY_RUNS_ROUND_ROWS` runs. Bytes, `cursor`,
- *   `revision`, and the refusals work as in the package round.
+ *   `settingsFingerprint`. A round also stops at `MEMORY_RUNS_ROUND_ROWS` runs. Cursor 0 starts at the
+ *   newest run; otherwise it is the inclusive starting `seq`, descending. `next` is the first unserved
+ *   older seq, or null when done. `total` counts all the chat's runs. Only this kind's metadata is read,
+ *   stopping in SQL at the row or byte budget. Bytes, `revision`, and refusals work as in the package round.
  * - `GET /api/memory/structured/:characterId/:chatId/threads?cursor=N&revision=R`: one round of the chat's
- *   threads, in contents order, whole as stored, answered `StructuredMemoryThreadsRound`: what a chat file
- *   takes beside the package rounds. Bytes, `cursor`, `revision`, and the refusals work as in the package
- *   round.
+ *   threads, in ascending storage order, whole as stored, answered `StructuredMemoryThreadsRound`: what
+ *   a chat file takes beside the package rounds. Cursor is the inclusive starting `seq` (0 starts the
+ *   list); `next` is the first unserved seq, or null when done. Only thread metadata is read, stopping
+ *   in SQL at the byte budget. Bytes, `revision`, and refusals work as in the package round. A cursor
+ *   past the end of either seq-cursored list answers an empty list and null `next`.
  * - `POST /api/memory/structured/revisions` `{ chats: { characterId, chatId }[] }`: at most
  *   `MEMORY_REVISION_CHATS_MAX` chats' memory revisions, answered `StructuredMemoryRevisionsAnswer`, by
  *   position. An entry is null unless the algorithm is selected, the chat exists, its stored `hypaV3Data`
@@ -530,22 +536,23 @@ export function registerStructuredMemoryRoutes(
             return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
         }
         try {
-            const contents = store.memory.readContents(characterId, chatId);
-            if (!contents) {
+            const currentRevision = store.memory.readRevision(characterId, chatId);
+            if (currentRevision === null) {
                 return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
             }
-            if (revision !== undefined && revision !== contents.revision) {
-                return c.json({ error: "The chat's memory changed", revision: contents.revision }, 409);
+            if (revision !== undefined && revision !== currentRevision) {
+                return c.json({ error: "The chat's memory changed", revision: currentRevision }, 409);
             }
             const read: RoundRead["read"] = (kind, id) => listedRecord(characterId, chatId, kind, id);
-            return compressedJson(c, answer({ contents, cursor, read }));
+            return compressedJson(c, answer({ characterId, chatId, revision: currentRevision, cursor, read }));
         } catch (error) {
             return storeErrorResponse(c, error);
         }
     };
 
     app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/package`, limiter, authenticated, (c) =>
-        answerRound(c, ({ contents, cursor, read }) => {
+        answerRound(c, ({ characterId, chatId, revision, cursor, read }) => {
+            const contents = store.memory.readKinds(characterId, chatId, ["pages", "events"])!;
             const listed = [
                 ...contents.pages.map(({ id, bytes }) => ({ kind: "pages", id, bytes }) as const),
                 ...contents.events.map(({ id, bytes }) => ({ kind: "events", id, bytes }) as const),
@@ -560,12 +567,13 @@ export function registerStructuredMemoryRoutes(
                     events.push(read(kind, id));
                 }
             }
-            return { revision: contents.revision, pages, events, next } satisfies StructuredMemoryPackageRound;
+            return { revision, pages, events, next } satisfies StructuredMemoryPackageRound;
         }),
     );
 
     app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/coverage`, limiter, authenticated, (c) =>
-        answerRound(c, ({ contents, cursor, read }) => {
+        answerRound(c, ({ characterId, chatId, revision, cursor, read }) => {
+            const contents = store.memory.readKinds(characterId, chatId, ["events", "runs"])!;
             const listed = [
                 ...contents.events.map(({ id, bytes }) => ({ kind: "events", id, bytes }) as const),
                 ...contents.runs
@@ -595,21 +603,25 @@ export function registerStructuredMemoryRoutes(
                     runs.push({ id, result, reason: reason ?? receipt?.reason, messageIds: sourceIds(window) });
                 }
             }
-            return { revision: contents.revision, events, runs, next } satisfies StructuredMemoryCoverageRound;
+            return { revision, events, runs, next } satisfies StructuredMemoryCoverageRound;
         }),
     );
 
     app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/runs`, limiter, authenticated, (c) =>
-        answerRound(c, ({ contents, cursor, read }) => {
-            const newestFirst = [...contents.runs].reverse();
-            const { rows, next } = roundOf(newestFirst, cursor, packageRoundBytes, MEMORY_RUNS_ROUND_ROWS);
+        answerRound(c, ({ characterId, chatId, revision, cursor, read }) => {
+            const { rows, next } = store.memory.readKindPage(characterId, chatId, "runs", {
+                cursor,
+                direction: "desc",
+                byteBudget: packageRoundBytes,
+                rowCap: MEMORY_RUNS_ROUND_ROWS,
+            })!;
             const runs = rows.map(({ id }): StructuredMemoryLogRun => {
                 const { input, settingsFingerprint, ...logged } = read("runs", id);
                 return logged;
             });
             return {
-                revision: contents.revision,
-                total: contents.runs.length,
+                revision,
+                total: store.memory.countKind(characterId, chatId, "runs")!,
                 runs,
                 next,
             } satisfies StructuredMemoryRunsRound;
@@ -617,10 +629,14 @@ export function registerStructuredMemoryRoutes(
     );
 
     app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/threads`, limiter, authenticated, (c) =>
-        answerRound(c, ({ contents, cursor, read }) => {
-            const { rows, next } = roundOf(contents.threads, cursor, packageRoundBytes);
+        answerRound(c, ({ characterId, chatId, revision, cursor, read }) => {
+            const { rows, next } = store.memory.readKindPage(characterId, chatId, "threads", {
+                cursor,
+                direction: "asc",
+                byteBudget: packageRoundBytes,
+            })!;
             return {
-                revision: contents.revision,
+                revision,
                 threads: rows.map(({ id }) => read("threads", id)),
                 next,
             } satisfies StructuredMemoryThreadsRound;

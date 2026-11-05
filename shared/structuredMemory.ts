@@ -970,8 +970,9 @@ export type StructuredMemoryDeclineAnswer = { revision: string; declined: boolea
 export type StructuredMemoryResetAnswer = { chatRevision: string; reset: boolean };
 
 /**
- * One round of the threads route, which a chat file reads beside the package rounds. `next` is the position
- * to continue from in the list of the chat's threads, or null when the list is done.
+ * One round of the threads route, which a chat file reads beside the package rounds, in ascending storage
+ * seq order. Cursor is the inclusive starting seq (0 starts the list). `next` is the first unserved seq,
+ * or null when the list is done.
  */
 export type StructuredMemoryThreadsRound = {
     revision: string;
@@ -1031,8 +1032,9 @@ export type StructuredMemoryProjectionAnswer = { revision: string | null; hypaV3
 export type StructuredMemoryLogRun = Omit<MemoryRun, "input" | "settingsFingerprint">;
 
 /**
- * One round of the runs route. `total` counts the chat's runs, and `next` is the position to continue
- * from in that list, newest first, or null when the list is done.
+ * One round of the runs route, newest first. Cursor 0 starts at the newest run; otherwise it is the
+ * inclusive starting storage seq, descending. `total` counts the chat's runs, and `next` is the first
+ * unserved older seq, or null when the list is done.
  */
 export type StructuredMemoryRunsRound = {
     revision: string;

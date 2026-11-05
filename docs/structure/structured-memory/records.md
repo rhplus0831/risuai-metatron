@@ -39,8 +39,8 @@
     `StructuredMemoryInheritAnswer`, `StructuredMemoryRestoreAnswer`, `StructuredMemoryAdoptAnswer`,
     `StructuredMemoryDeclineAnswer`, `StructuredMemoryResetAnswer`, `StructuredMemoryAdoption`.
 - `server/src/data/memoryStore.ts`: synchronous record storage; `createMemoryTables`, `MemoryChanges`, `MemoryContents`,
-  `MemoryRowTexts`, `readContents`, `readRecord`, `write`, `checkMemoryRow`; `messageSourceHash` supplies source hashes.
-  The projection's part: [projection](projection.md#files).
+  `MemoryRowTexts`, `readContents`, `readKindPage`, `readRecord`, `write`, `checkMemoryRow`; `messageSourceHash`
+  supplies source hashes. The projection's part: [projection](projection.md#files).
 - `server/src/data/chatStore.ts`: table declarations; `MEMORY_TABLES_SQL`, `CHAT_OPEN_SCHEMA_SQL`.
 - `server/src/data/resourceStore.ts`: transaction and epoch boundary; `store.memory`, `readContents`, `readRecord`,
   `write`. Other parts: [projection](projection.md#files), [checkpoints](lifecycle.md#files).
@@ -68,16 +68,17 @@ refusals. Epoch check and store reads share one synchronous step: each round is 
 `revision` comparison ties separate rounds together.
 
 - The panel reads contents (`adoption`, `rebuild`, `recordedLanguage` included) and records through
-  `store.memory.readContents` and `store.memory.readRecord`. Coverage sends stored facts (`status`, `sources`,
-  `keptState`, `rerecord`) for [the tab to reconcile](read.md#the-memory-panel) against its held messages; the route
-  avoids a whole-chat read, which would parse every message.
-- Package and [chat-file](lifecycle.md#chat-files) reads collect `/package` and `/threads` at one revision. The byte
-  budget comes from `RouteLimits.memoryPackageRoundBytes` in `server/src/app.ts`, default `MAX_READ_RESPONSE_BYTES`;
-  `roundOf` defines charging before body reads and the soft first-record rule. `/runs` feeds the Log; `/cost` is
-  [rebuild's cost preview](rebuild.md#the-cost-preview), with no record sent.
+  `store.memory.readContents` and `store.memory.readRecord`. A tab joins the panel's in-flight contents read unless a
+  write answer settled since it began. Coverage sends stored facts (`status`, `sources`, `keptState`, `rerecord`) for
+  [the tab to reconcile](read.md#the-memory-panel) against its held messages, reading no chat.
+- Package and [chat-file](lifecycle.md#chat-files) reads collect `/package` and `/threads` at one revision. A round
+  reads the revision alone and lists only its kinds: `/runs` and `/threads` by `seq` cursor (`readKindPage`), the others
+  by position. The byte budget comes from `RouteLimits.memoryPackageRoundBytes` in `server/src/app.ts`, default
+  `MAX_READ_RESPONSE_BYTES`; `roundOf` defines charging before body reads and the soft first-record rule. `/runs` feeds
+  the Log; `/cost` is [rebuild's cost preview](rebuild.md#the-cost-preview), with no record sent.
 - `readStructuredMemoryHealth` calls `POST /health` for [the badge](read.md#the-health-badge), reading live tables and
-  no messages. An answer can be a prefix of the requested chats; the tab resumes from that position. The route header
-  and `StructuredMemoryHealthAnswer` define the caps and positional answers.
+  no messages. An answer can be a prefix of the requested chats, which the tab resumes; the route header defines the
+  caps.
 
 ### The edit route
 
@@ -88,8 +89,8 @@ the changes to stored records.
 1. The route checks ids, body and edit shape, then the epoch, then the fence. From the epoch check through
    `store.memory.write` there is no await. `server/src/app.ts` supplies the fence: a queued/running task, a job or
    generation lock, or a rebuild's run, including a stopped one, refuses 409 `fenced`. A record-now job or send's gap
-   run has no task; the job fence prevents [a writer's retry](writer.md#a-writer-run) of an old answer from overwriting
-   a person's edit. A rebuild's fence prevents its swap from losing the edit.
+   run has no task, so the job fence keeps [a writer's retry](writer.md#a-writer-run) of an old answer, and the rebuild
+   fence its swap, from overwriting the edit.
 2. The route reads the stored record, applies the pure edit and calls `store.memory.write` at the client's revision. A
    no-op still sends an empty change set through the revision check, so a stale edit is refused too.
 3. `StructuredMemoryEditAnswer` gives the current record and the revision the next edit must name.
@@ -100,8 +101,7 @@ step except for retract. Retraction also passes through `withRetractedEvidence` 
 ### The revert route
 
 The tab's `revertStructuredMemoryChange` reads the page's current revision, then calls `POST .../revert`. The route uses
-the edit route's admission order and fence, so a running or stopped rebuild refuses 409 `fenced` and its swap loses no
-write. The route header owns `StructuredMemoryRevertAnswer`, the cap and refusals.
+the edit route's admission order and fence. The route header owns `StructuredMemoryRevertAnswer`, the cap and refusals.
 
 The route passes the stored page to `revertChange` in `server/src/prompt/memory/structured/pages.ts`, flags restored
 evidence through `flagUnsupportedSections`, then commits through `store.memory.write`. A later standing change refuses
@@ -119,14 +119,13 @@ whole shape check of `parseRestoredRecords`, and only when the chat holds no row
 
 `buildStructuredMemoryPackage` crosses the tab client and the read routes:
 
-1. The client collects `/package` rounds, then `/threads` at that revision, through `store.memory.readContents` and
-   `store.memory.readRecord`. Trash stays out of the contents' live pages and therefore out of the package.
+1. The client collects `/package` rounds, then `/threads` at that revision. Trash stays out of the live pages and
+   therefore out of the package.
 2. The tab renders and zips the records for `downloadFile`. The builder's comment defines retries and the file set;
    `renderMemoryPage`, `renderMemoryTimeline`, `renderMemoryThreads` and `memoryPagePath` define serialization and
    ordering. `StructuredMemoryResult` defines failures and epoch handling.
-3. [Package import](pages.md#the-import-route) reads those files back on the server. Metadata is authoritative; line
-   counts delimit text containing headings, fences or `---`, so the reader counts lines rather than searching for a
-   delimiter.
+3. [Package import](pages.md#the-import-route) reads those files back on the server. Metadata is authoritative, and line
+   counts, not delimiters, bound text that holds headings, fences or `---`.
 
 ### A memory write
 
@@ -171,7 +170,8 @@ group: no walk reads them.
 - `memory_pages` (`type`, `title`), `memory_events` (`title`, `status`, `createdRevision`), `memory_threads` (`title`,
   `state`), `memory_runs` (`result`): each with `seq` autoincrement, `chatSeq`, `id`, and `data`, the whole record as
   stored JSON, unique `(chatSeq, id)`. Sections stay embedded in the page's row.
-- `seq` is storage order, not message order; an update keeps it, because upserts never use `INSERT OR REPLACE`.
+- `seq` is storage order, not message order; an update keeps it, because upserts never use `INSERT OR REPLACE`. Runs and
+  threads have a `(chatSeq, seq)` index, made at open, so a cursor round sorts nothing.
 - A restore (`walkMemorySnapshot`, `createMemoryStagingSink`, `copyStagedMemory`) keeps `data` and every revision as
   stored, gives records fresh `seq`s in the source's order, and moves `chatSeq` through the staged chat seq map. Listed
   columns come from the record, never the source's, which a live write can leave unequal.

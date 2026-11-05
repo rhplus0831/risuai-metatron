@@ -2202,6 +2202,22 @@ export function createResourceStore(options: {
                 assertOpen();
                 return memoryTables.readContents(...args);
             },
+            readRevision(...args: Parameters<typeof memoryTables.readRevision>) {
+                assertOpen();
+                return memoryTables.readRevision(...args);
+            },
+            readKinds(...args: Parameters<typeof memoryTables.readKinds>) {
+                assertOpen();
+                return memoryTables.readKinds(...args);
+            },
+            readKindPage(...args: Parameters<typeof memoryTables.readKindPage>) {
+                assertOpen();
+                return memoryTables.readKindPage(...args);
+            },
+            countKind(...args: Parameters<typeof memoryTables.countKind>) {
+                assertOpen();
+                return memoryTables.countKind(...args);
+            },
             readRecord<K extends MemoryRecordKind>(characterId: string, chatId: string, kind: K, id: string) {
                 assertOpen();
                 return memoryTables.readRecord(characterId, chatId, kind, id);

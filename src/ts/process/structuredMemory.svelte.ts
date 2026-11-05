@@ -234,6 +234,9 @@ function projectionRefusalOf(response: Response, body: AnswerBody): Unanswered {
     return response.status === 413 ? { outcome: "refused", reason: "tooLarge" } : refusalOf(response, body);
 }
 
+/** Settled non-GET answers invalidate contents reads that began before them, including refused writes. */
+let settledMemoryWrites = 0;
+
 /** Asks `path` and turns its answer into a result: `parse` answers null for a body of the wrong shape. */
 async function readAnswer<T>(
     path: string,
@@ -255,6 +258,10 @@ async function readAnswer<T>(
         return value === null ? { outcome: "failed", error: "Unexpected answer" } : { outcome: "ok", value };
     } catch (error) {
         return { outcome: "failed", error: errorText(error) };
+    } finally {
+        if (init.method !== undefined && init.method.toUpperCase() !== "GET") {
+            settledMemoryWrites += 1;
+        }
     }
 }
 
@@ -713,7 +720,8 @@ function parseRunsRound(body: AnswerBody, cursor: number): StructuredMemoryRunsR
     return typeof revision === "string" &&
         storedCount(total) !== undefined &&
         Array.isArray(runs) &&
-        isForward(next, cursor)
+        (next === null ||
+            (Number.isSafeInteger(next) && (next as number) > 0 && (cursor === 0 || (next as number) < cursor)))
         ? (body as StructuredMemoryRunsRound)
         : null;
 }
@@ -754,11 +762,40 @@ function parseProjection(body: AnswerBody): StructuredMemoryProjectionAnswer | n
     return answered ? (body as StructuredMemoryProjectionAnswer) : null;
 }
 
-/** The chat's table of contents, read without any record's body. */
+const contentsReads = new Map<
+    string,
+    {
+        epoch: string;
+        writes: number;
+        promise: Promise<StructuredMemoryResult<StructuredMemoryContentsAnswer>>;
+    }
+>();
+
+/**
+ * The chat's table of contents, read without any record's body. Concurrent callers in the same resource
+ * epoch share an in-flight answer unless a non-GET answer has settled since it started. The entry is
+ * dropped on settlement so later calls read fresh. Callers must treat the shared answer as immutable.
+ */
 export function readStructuredMemoryContents(
     ref: ChatRef,
 ): Promise<StructuredMemoryResult<StructuredMemoryContentsAnswer>> {
-    return readAnswer(chatPath(ref), parseContents);
+    const path = chatPath(ref);
+    const epoch = getResourceEpoch();
+    const held = contentsReads.get(path);
+    if (held?.epoch === epoch && held.writes === settledMemoryWrites) {
+        return held.promise;
+    }
+    const entry = {
+        epoch,
+        writes: settledMemoryWrites,
+        promise: readAnswer(path, parseContents).finally(() => {
+            if (contentsReads.get(path) === entry) {
+                contentsReads.delete(path);
+            }
+        }),
+    };
+    contentsReads.set(path, entry);
+    return entry.promise;
 }
 
 /** One record of the chat by id, as stored. */
@@ -1245,8 +1282,9 @@ export function chatFileMemory(list: unknown): ReadonlyMap<string, StructuredMem
 }
 
 /**
- * One round of the chat's runs, newest first, from position `cursor`. `revision` ties a later round to
- * the first's: refused `changed` when the memory moved on, which restarts the list from the top.
+ * One round of the chat's runs, newest first, from inclusive storage seq `cursor` (0 starts at the
+ * newest). `revision` ties a later round to the first's: refused `changed` when the memory moved on,
+ * which restarts the list from the top.
  */
 export function readStructuredMemoryRuns(
     ref: ChatRef,

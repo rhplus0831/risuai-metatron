@@ -362,10 +362,19 @@ const MESSAGE_CHECKPOINT_PREDICATE_SQL = `(instr(data, '"scriptstateCheckpoint":
 const MESSAGE_CHECKPOINT_INDEX_SQL = `CREATE INDEX IF NOT EXISTS messages_checkpoints ON messages (chatSeq) WHERE ${MESSAGE_CHECKPOINT_PREDICATE_SQL};`;
 
 /**
+ * Lets memory rounds seek within one chat in storage order without sorting. Created when missing at
+ * open, including staged restores, and outside the snapshot layout; updates keep each record's `seq`.
+ */
+const MEMORY_ROUND_INDEXES_SQL = `
+    CREATE INDEX IF NOT EXISTS memory_runs_chat_seq ON memory_runs (chatSeq, seq);
+    CREATE INDEX IF NOT EXISTS memory_threads_chat_seq ON memory_threads (chatSeq, seq);
+`;
+
+/**
  * What `openChatSchema` adds to `CHAT_TABLES_SQL`, each created when missing, and a staged store's
  * writer too, so a staged file has the live schema.
  */
-export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MEMORY_REBUILD_TABLES_SQL}${MEMORY_EVENT_SOURCES_SQL}${MESSAGE_ROLE_INDEX_SQL}${MESSAGE_CHECKPOINT_INDEX_SQL}`;
+export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MEMORY_REBUILD_TABLES_SQL}${MEMORY_EVENT_SOURCES_SQL}${MESSAGE_ROLE_INDEX_SQL}${MESSAGE_CHECKPOINT_INDEX_SQL}${MEMORY_ROUND_INDEXES_SQL}`;
 
 /** A chat's user messages, answered from `messages_role` alone: no message row is read. */
 export const COUNT_USER_TURNS_SQL = `SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ? AND ${MESSAGE_ROLE_SQL} = 'user'`;

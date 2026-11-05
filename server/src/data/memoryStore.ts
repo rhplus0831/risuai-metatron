@@ -113,6 +113,11 @@ export type MemoryWriteResult = { revision: string; wrote: boolean };
  */
 export type MemoryContents = StructuredMemoryContents & { adoptionDeclined?: true };
 
+/** One kind's metadata admitted by a round, and the first unserved storage seq, if any. */
+type MemoryContentsPage = { rows: { id: string; bytes: number }[]; next: number | null };
+
+type MemoryPageOptions = { cursor: number; direction: "asc" | "desc"; byteBudget: number; rowCap?: number };
+
 /** A chat as the revision check names it. */
 export type MemoryChatRef = { characterId: string; chatId: string };
 
@@ -234,6 +239,17 @@ function prepareTable(db: DatabaseSync, description: MemoryTable) {
         selectContents: db.prepare(
             `SELECT ${listed.join(", ")}, octet_length(data) AS bytes FROM ${table} WHERE chatSeq = ? ORDER BY seq`,
         ),
+        // The (chatSeq, seq) index supplies storage order without a temp sort. Lazy iteration stops
+        // after the first unserved row, so SQLite steps through only the served rows and one lookahead.
+        selectPage: {
+            asc: db.prepare(
+                `SELECT seq, id, octet_length(data) AS bytes FROM ${table} WHERE chatSeq = ? AND seq >= ? ORDER BY seq LIMIT ?`,
+            ),
+            desc: db.prepare(
+                `SELECT seq, id, octet_length(data) AS bytes FROM ${table} WHERE chatSeq = ? AND seq <= ? ORDER BY seq DESC LIMIT ?`,
+            ),
+        },
+        count: db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE chatSeq = ?`),
         selectRecord: db.prepare(`SELECT data FROM ${table} WHERE chatSeq = ? AND id = ?`),
         selectSeqs: db.prepare(`SELECT seq FROM ${table} WHERE chatSeq = ? ORDER BY seq`),
         selectRow: db.prepare(`SELECT id, data FROM ${table} WHERE seq = ?`),
@@ -508,11 +524,16 @@ function createRecordSet(db: DatabaseSync, descriptions: Record<MemoryRecordKind
          * Each kind's table of contents, with no record's body. `citing` limits only the event list to
          * events citing any of those message ids, once each. A page row whose column says trashed is
          * listed in `trash`, by id and title alone, so every reader that starts from `pages` leaves it out.
+         * With `kinds`, only those tables are read; every other list is empty.
          */
-        listing(seq: number, citing?: readonly string[]): Omit<MemoryContents, "revision" | "adoptionDeclined"> {
+        listing(
+            seq: number,
+            citing?: readonly string[],
+            kinds: readonly MemoryRecordKind[] = MEMORY_RECORD_KINDS,
+        ): Omit<MemoryContents, "revision" | "adoptionDeclined"> {
             const pages: MemoryContents["pages"] = [];
             const trash: MemoryContents["trash"] = [];
-            const rows = tables.pages.selectContents.all(seq) as {
+            const rows = (kinds.includes("pages") ? tables.pages.selectContents.all(seq) : []) as {
                 id: string;
                 title: string;
                 type: string;
@@ -528,11 +549,15 @@ function createRecordSet(db: DatabaseSync, descriptions: Record<MemoryRecordKind
             return {
                 pages,
                 trash,
-                events: (citing === undefined
-                    ? tables.events.selectContents.all(seq)
-                    : selectCitingEvents.all(seq, seq, JSON.stringify(citing))) as MemoryContents["events"],
-                threads: tables.threads.selectContents.all(seq) as MemoryContents["threads"],
-                runs: tables.runs.selectContents.all(seq) as MemoryContents["runs"],
+                events: (kinds.includes("events")
+                    ? citing === undefined
+                        ? tables.events.selectContents.all(seq)
+                        : selectCitingEvents.all(seq, seq, JSON.stringify(citing))
+                    : []) as MemoryContents["events"],
+                threads: (kinds.includes("threads")
+                    ? tables.threads.selectContents.all(seq)
+                    : []) as MemoryContents["threads"],
+                runs: (kinds.includes("runs") ? tables.runs.selectContents.all(seq) : []) as MemoryContents["runs"],
             };
         },
 
@@ -772,6 +797,64 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                 ...live.listing(chat.seq, options?.citing),
                 ...(adoptionDeclined === 1 ? { adoptionDeclined: true as const } : {}),
             };
+        },
+
+        /** The chat's memory revision token alone, or null for a missing chat; no records are listed. */
+        readRevision(characterId: string, chatId: string): string | null {
+            const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+            return chat ? tokens.token(chat.seq, revisionOf(chat.seq)) : null;
+        },
+
+        /** Only the requested kinds' metadata, in storage order, with all other lists empty. */
+        readKinds(
+            characterId: string,
+            chatId: string,
+            kinds: readonly MemoryRecordKind[],
+        ): Omit<MemoryContents, "revision" | "adoptionDeclined"> | null {
+            const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+            return chat ? live.listing(chat.seq, undefined, kinds) : null;
+        },
+
+        /**
+         * One indexed kind's metadata from an inclusive storage seq, ascending or descending. Cursor
+         * zero starts at the beginning in either direction. Iteration stops at the row cap or stored-byte
+         * budget, always admitting the first row and reading one unserved row for `next`. SQL limits a
+         * capped read to the cap plus one; no record body is selected. A missing chat answers null, and
+         * a cursor past the end an empty page.
+         */
+        readKindPage(
+            characterId: string,
+            chatId: string,
+            kind: "runs" | "threads",
+            { cursor, direction, byteBudget, rowCap = Infinity }: MemoryPageOptions,
+        ): MemoryContentsPage | null {
+            const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+            if (!chat) {
+                return null;
+            }
+            const listed = tables[kind].selectPage[direction].iterate(
+                chat.seq,
+                direction === "desc" && cursor === 0 ? Number.MAX_SAFE_INTEGER : cursor,
+                rowCap === Infinity ? -1 : rowCap + 1,
+            ) as Iterable<{ seq: number; id: string; bytes: number }>;
+            const rows: MemoryContentsPage["rows"] = [];
+            let charged = 0;
+            let next: number | null = null;
+            for (const { seq, id, bytes } of listed) {
+                if (rows.length > 0 && (rows.length >= rowCap || charged + bytes > byteBudget)) {
+                    next = seq;
+                    break;
+                }
+                rows.push({ id, bytes });
+                charged += bytes;
+            }
+            return { rows, next };
+        },
+
+        /** One kind's count, with no metadata or record body materialized. Missing chat: null. */
+        countKind(characterId: string, chatId: string, kind: MemoryRecordKind): number | null {
+            const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+            return chat ? (tables[kind].count.get(chat.seq) as { count: number }).count : null;
         },
 
         /** One record by id, as stored. Missing chat or record: null. */
