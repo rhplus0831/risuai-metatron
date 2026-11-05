@@ -179,12 +179,12 @@ client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the 
 
 ### Job chat and barriers
 
-- The job chat `chatPatch`, the same for every job socket, diffs (`diffChat`) two stored states: `sentChat`, the last
-  copy a socket took, and `workingChat`, the chat after the job's own writes (`writeAsJob`'s `committed` hook); rules:
-  the `Job` members' comments, `jobChatEvent`, `deliverJobChat`.
-- `rows=streamed`: with no viewer attached and every owner socket flagged, `chatPatchEvent` sends a generated row as
-  `streamed: { generationId, seq }` if its watermark is the stream checkpoint's (the one `raw` cover) matching
-  `streaming`, with that text and `sentChat`'s other fields.
+- `chatPatch` diffs (`diffChat`) the stored `sentChat` last taken by any socket and `workingChat` after job writes
+  (`writeAsJob`'s `committed` hook). Projections differ only in `messages`; either advances one baseline and retires
+  generated ids once (`jobChatEvent`, `deliverJobChat`).
+- `rows=streamed` owners get a generated row as `streamed: { generationId, seq }` when `chatPatchEvent` proves its raw
+  watermark matches `streaming`, its text matches that checkpoint, and other fields match `sentChat`. Viewers and
+  unflagged owners get whole rows from the same diff.
 - The callback barrier (`hydrateAll`, `hydrateJobChat`) flushes the job's pending own write first. When every socket
   attached with `hydration=patch`, a job chat still at `sentChat`'s revision sends no chat event and the receipt names
   that revision; otherwise the patch-mode event and its receipt go; without the flag, [whole](#limitations).

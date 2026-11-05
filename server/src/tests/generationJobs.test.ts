@@ -2318,37 +2318,124 @@ describe("generation ownership handoffs", () => {
         expect(owner.events.filter((frame) => frame.type === "progress")).toEqual([event]);
     });
 
-    it("sends raw checkpoint rows by stream reference only while no viewer shares the job chat", async () => {
+    it("keeps owner checkpoint bytes compact with a creator viewer while sharing full rows from one baseline", async () => {
+        const query = "&hydration=patch&rows=streamed";
+        const chunk = "한".repeat(1024);
+        const run = async (watching: boolean) => {
+            const h = await live({ preferred: true });
+            const viewer = watching ? await h.follow(h.job.id, "tab", query) : undefined;
+            await viewer?.fence();
+            const owner = await h.take("worker", query);
+            h.job.write(() => ({ chats: [group(h.revision(), [begin("r", "g1")])] }));
+            h.job.emit({
+                type: "accepted",
+                jobId: h.job.id,
+                messageId: "r",
+                generationId: "g1",
+                text: "",
+                revision: h.revision(),
+            });
+            await owner.fence();
+            await viewer?.fence();
+            owner.events.length = owner.frames.length = 0;
+            if (viewer) viewer.events.length = viewer.frames.length = 0;
+
+            const checkpoints: { baseRevision: string; revision: string; text: string; seq: number }[] = [];
+            for (let seq = 1; seq <= 20; seq++) {
+                const text = chunk.repeat(seq);
+                const baseRevision = h.revision();
+                h.job.emit({ type: "chunk", messageId: "r", generationId: "g1", seq, text });
+                h.job.write(() => ({ chats: [group(baseRevision, [checkpoint("r", "g1", seq, text)])] }), {
+                    covers: [{ messageId: "r", generationId: "g1", seq, raw: true }],
+                });
+                checkpoints.push({ baseRevision, revision: h.revision(), text, seq });
+                h.job.emitRecords({ chats: [{ characterId: "c", id: "k" }] });
+                await owner.fence();
+                await viewer?.fence();
+            }
+            const capture = (socket: { frames: string[]; events: GenerationEvent[] }) => {
+                const frames = socket.frames.filter((frame) => JSON.parse(frame).type === "chatPatch");
+                expect(frames).toHaveLength(20);
+                expect(chats(socket.events)).toHaveLength(20);
+                expect(socket.events.filter((event) => event.type === "chunk")).toHaveLength(20);
+                return {
+                    bytes: frames.reduce((bytes, frame) => bytes + Buffer.byteLength(frame, "utf8"), 0),
+                    patches: socket.events.filter((event) => event.type === "chatPatch"),
+                };
+            };
+            return { checkpoints, owner: capture(owner), viewer: viewer ? capture(viewer) : undefined };
+        };
+
+        const alone = await run(false);
+        const watched = await run(true);
+        expect(watched.owner.bytes).toBeLessThanOrEqual(alone.owner.bytes * 2);
+        expect(watched.owner.bytes).toBeLessThan(watched.viewer!.bytes / 20);
+        for (const result of [alone, watched]) {
+            result.checkpoints.forEach(({ baseRevision, revision, text, seq }, index) => {
+                const ownerPatch = result.owner.patches[index];
+                expect(ownerPatch).toMatchObject({
+                    type: "chatPatch",
+                    characterId: "c",
+                    id: "k",
+                    baseRevision,
+                    revision,
+                    streaming: [{ messageId: "r", generationId: "g1", seq }],
+                });
+                expect(ownerPatch.messages).toEqual([{ after: "u", id: "r", streamed: { generationId: "g1", seq } }]);
+                if (result.viewer) {
+                    expect(result.viewer.patches[index]).toEqual({
+                        ...ownerPatch,
+                        messages: [{ after: "u", message: m("r", text, "char") }],
+                    });
+                }
+            });
+        }
+    });
+
+    it.each([
+        { reason: "the owner did not negotiate streamed rows", rows: "", raw: true },
+        { reason: "the checkpoint is not raw", rows: "&rows=streamed", raw: false },
+    ])("sends full checkpoint rows to the owner and viewer when $reason", async ({ rows, raw }) => {
         const h = await live({ preferred: true });
         const viewer = await h.follow(h.job.id, "tab", "&hydration=patch&rows=streamed");
         await viewer.fence();
-        const owner = await h.take("worker", "&hydration=patch&rows=streamed");
-        await owner.fence();
-        await viewer.fence();
+        const owner = await h.take("worker", `&hydration=patch${rows}`);
         h.job.write(() => ({ chats: [group(h.revision(), [begin("r", "g1")])] }));
-        h.job.emitRecords({ chats: [{ characterId: "c", id: "k" }] });
-        const raw = (seq: number, text: string) => {
-            h.job.write(() => ({ chats: [group(h.revision(), [checkpoint("r", "g1", seq, text)])] }), {
-                covers: [{ messageId: "r", generationId: "g1", seq, raw: true }],
-            });
-            h.job.emitRecords({ chats: [{ characterId: "c", id: "k" }] });
-        };
-        raw(1, "one");
+        h.job.emit({
+            type: "accepted",
+            jobId: h.job.id,
+            messageId: "r",
+            generationId: "g1",
+            text: "",
+            revision: h.revision(),
+        });
         await owner.fence();
         await viewer.fence();
-        // The viewer gets the same event and cannot be assumed to hold the owner's stream buffer.
-        expect(chats(owner.events).at(-1)).toMatchObject({
-            type: "chatPatch",
-            messages: [{ after: "u", message: expect.objectContaining({ chatId: "r", data: "one" }) }],
+        owner.events.length = viewer.events.length = 0;
+
+        const baseRevision = h.revision();
+        const text = "checkpoint text";
+        h.job.emit({ type: "chunk", messageId: "r", generationId: "g1", seq: 1, text });
+        h.job.write(() => ({ chats: [group(baseRevision, [checkpoint("r", "g1", 1, text)])] }), {
+            covers: [{ messageId: "r", generationId: "g1", seq: 1, ...(raw ? { raw: true as const } : {}) }],
         });
-        expect(chats(viewer.events).at(-1)).toEqual(chats(owner.events).at(-1));
-        await viewer.close();
-        raw(2, "one two");
+        h.job.emitRecords({ chats: [{ characterId: "c", id: "k" }] });
         await owner.fence();
-        expect(chats(owner.events).at(-1)).toMatchObject({
-            type: "chatPatch",
-            messages: [{ after: "u", id: "r", streamed: { generationId: "g1", seq: 2 } }],
-        });
+        await viewer.fence();
+        const expected = [
+            expect.objectContaining({
+                type: "chatPatch",
+                epoch: h.store.epoch(),
+                characterId: "c",
+                id: "k",
+                baseRevision,
+                revision: h.revision(),
+                messages: [{ after: "u", message: m("r", text, "char") }],
+                streaming: [{ messageId: "r", generationId: "g1", seq: 1 }],
+            }),
+        ];
+        expect(chats(owner.events)).toEqual(expected);
+        expect(chats(viewer.events)).toEqual(expected);
     });
 
     it("shares whole hydration, speaker checkpoints, viewer resync, and a legacy viewer's callback barrier with every socket", async () => {

@@ -1345,7 +1345,11 @@ export function createGenerationJobs(options: {
         job: Job,
         mode: "patch" | "whole",
         stored?: string,
-    ): { event: GenerationEvent; baseline: ChatBaseline } | null {
+    ): {
+        event: GenerationEvent;
+        ownerEvent?: () => GenerationChatPatchEvent;
+        baseline: ChatBaseline;
+    } | null {
         const { characterId, chatId } = job.context;
         const base = mode === "patch" ? job.sentChat : null;
         const working = job.workingChat;
@@ -1357,7 +1361,7 @@ export function createGenerationJobs(options: {
             // A diff that cannot be a patch (survivors reordered) goes whole from the read below.
             const diff = revision === working.revision ? diffChat(base, working, job.generated) : null;
             if (diff) {
-                return { event: chatPatchEvent(job, base, working.revision, diff), baseline: working };
+                return { ...chatPatchEvent(job, base, working.revision, diff), baseline: working };
             }
         }
         const chat = readChat(job, characterId, chatId);
@@ -1369,11 +1373,10 @@ export function createGenerationJobs(options: {
             job.workingChat = baseline;
         }
         const diff = base ? diffChat(base, baseline, job.generated) : null;
-        const event =
-            base && diff
-                ? chatPatchEvent(job, base, chat.revision, diff)
-                : wholeChatEvent(job, characterId, chatId, chat);
-        return { event, baseline };
+        if (base && diff) {
+            return { ...chatPatchEvent(job, base, chat.revision, diff), baseline };
+        }
+        return { event: wholeChatEvent(job, characterId, chatId, chat), baseline };
     }
 
     function chatPatchEvent(
@@ -1381,44 +1384,10 @@ export function createGenerationJobs(options: {
         base: ChatBaseline,
         revision: string,
         diff: NonNullable<ReturnType<typeof diffChat>>,
-    ): GenerationEvent {
+    ): { event: GenerationChatPatchEvent; ownerEvent: () => GenerationChatPatchEvent } {
         const { characterId, chatId } = job.context;
         const streaming = streamingIn(job, characterId, chatId);
-        let messages: GenerationChatPatchEvent["messages"] = diff.messages;
-        // Every socket gets the same event and shares one baseline. A viewer cannot be assumed to
-        // hold the owner's stream buffer, so rows go whole while any viewer is attached.
-        if (
-            job.viewers.size === 0 &&
-            job.sockets.size > 0 &&
-            [...job.sockets].every((ws) => streamedRows.has(ws)) &&
-            messages
-        ) {
-            const live = new Map(streaming.map((entry) => [entry.messageId, entry]));
-            messages = diff.messages!.map((entry) => {
-                const row = entry.message as Chat["message"][number];
-                const id = row.chatId!;
-                const mark = job.watermarks.get(id);
-                const active = live.get(id);
-                const before = baselineText(base, id);
-                if (
-                    !job.generated.has(id) ||
-                    before === undefined ||
-                    !mark?.raw ||
-                    !active ||
-                    active.generationId !== mark.generationId ||
-                    active.seq !== mark.seq ||
-                    row.data !== mark.rawText
-                ) {
-                    return entry;
-                }
-                const { data: _beforeData, ...beforeFields } = JSON.parse(before) as Chat["message"][number];
-                const { data: _data, ...fields } = row;
-                return isDeepStrictEqual(fields, beforeFields)
-                    ? { after: entry.after, id, streamed: { generationId: mark.generationId, seq: mark.seq } }
-                    : entry;
-            });
-        }
-        return {
+        const event: GenerationChatPatchEvent = {
             type: "chatPatch",
             epoch: job.epoch,
             characterId,
@@ -1426,8 +1395,41 @@ export function createGenerationJobs(options: {
             baseRevision: base.revision,
             revision,
             ...diff,
-            ...(messages ? { messages } : {}),
             streaming,
+        };
+        return {
+            event,
+            // Both projections share the stored baseline and streaming claims. Only negotiated
+            // owners can use stream references; viewers cannot be assumed to hold that buffer.
+            ownerEvent() {
+                if (!diff.messages) return event;
+                const live = new Map(streaming.map((entry) => [entry.messageId, entry]));
+                let converted = false;
+                const messages = diff.messages.map((entry) => {
+                    const row = entry.message as Chat["message"][number];
+                    const id = row.chatId!;
+                    const mark = job.watermarks.get(id);
+                    const active = live.get(id);
+                    const before = baselineText(base, id);
+                    if (
+                        !job.generated.has(id) ||
+                        before === undefined ||
+                        !mark?.raw ||
+                        !active ||
+                        active.generationId !== mark.generationId ||
+                        active.seq !== mark.seq ||
+                        row.data !== mark.rawText
+                    ) {
+                        return entry;
+                    }
+                    const { data: _beforeData, ...beforeFields } = JSON.parse(before) as Chat["message"][number];
+                    const { data: _data, ...fields } = row;
+                    if (!isDeepStrictEqual(fields, beforeFields)) return entry;
+                    converted = true;
+                    return { after: entry.after, id, streamed: { generationId: mark.generationId, seq: mark.seq } };
+                });
+                return converted ? { ...event, messages } : event;
+            },
         };
     }
 
@@ -1452,13 +1454,33 @@ export function createGenerationJobs(options: {
         return owner?.token === job.token && owner.generationId === current.generationId ? current : null;
     }
 
-    /** Sends the job chat (`jobChatEvent`); a socket taking it makes its copy the next patch's base. */
+    /** Builds and encodes each needed projection once, sharing the text when no row converts. */
+    function sendJobChat(job: Job, event: GenerationEvent, ownerEvent?: () => GenerationChatPatchEvent): boolean {
+        expireSilentOwners(job);
+        let owner: GenerationChatPatchEvent | undefined;
+        const frames = new Map<GenerationEvent, { text: string; bytes: number }>();
+        let taken = false;
+        for (const ws of allSockets(job)) {
+            const projection =
+                job.sockets.has(ws) && streamedRows.has(ws) && ownerEvent ? (owner ??= ownerEvent()) : event;
+            let frame = frames.get(projection);
+            if (!frame) {
+                const text = JSON.stringify(projection);
+                frame = { text, bytes: Buffer.byteLength(text) };
+                frames.set(projection, frame);
+            }
+            taken = sendSocket(job, ws, frame.text, frame.bytes) || taken;
+        }
+        return taken;
+    }
+
+    /** Either chat projection being taken advances the one baseline; callers receive the full-row event. */
     function deliverJobChat(job: Job, mode: "patch" | "whole", stored?: string): GenerationEvent | null {
         const built = jobChatEvent(job, mode, stored);
         if (!built) {
             return null;
         }
-        if (send(job, built.event)) {
+        if (sendJobChat(job, built.event, built.ownerEvent)) {
             job.sentChat = built.baseline;
             // Delivery releases finished or removed rows; an undelivered event changes neither
             // the sent baseline nor the forced rows. There is no client acknowledgement.
@@ -2544,7 +2566,7 @@ export function createGenerationJobs(options: {
     }
 
     /**
-     * Every attach begins with its role and a chat copy shared by all sockets, keeping one baseline.
+     * Every attach begins with its role and a chat projected per socket from one shared baseline.
      * Reconnects replace only this client's sockets. A ticket is consumed on attach: the current
      * owner's ticket reattaches it as owner, without a pending takeover or deferred transfer, even
      * with role=viewer. Owner attaches clear absence, close an absent offer and replay outstanding
