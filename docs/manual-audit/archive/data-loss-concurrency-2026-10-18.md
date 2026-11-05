@@ -64,13 +64,13 @@ Counts after cross-verification: critical 1, high 10, medium 7, low 8, refuted/u
 Found independently by Sol T1, Sol T3 and Opus T1; reproduced against the store by both.
 
 - Mechanism: `setMessage` needs only the chat incarnation, not the current revision
-  (`server/src/data/chatStore.ts` `needsCurrent` ~373, admission ~768); the branch at ~931-950
+  (`../../../server/src/data/chatStore.ts` `needsCurrent` ~373, admission ~768); the branch at ~931-950
   takes only `translation` from the stored row and writes the client's whole message. A tab
   whose copy of message M is stale (pending work blocks `canRefreshChat`, socket reconnecting,
   or simply inside the 500 ms debounce window) sends M whole and reverts the other tab's
   `setText`. Result is `stale: true`, so both tabs quietly re-base to the reverted text.
 - Callers of the whole-message path (`replaceMessage`): the Disable toggle and Disable-above
-  buttons in `src/lib/ChatScreens/Chat.svelte` (~1584, ~1605), the playground role swap
+  buttons in `../../../src/lib/ChatScreens/Chat.svelte` (~1584, ~1605), the playground role swap
   (~1905), `applyChatResult`'s per-message merge (`src/ts/storage/chatStore.svelte.ts`
   ~2275-2291, which starts from the current mirror message), and through it the v3 plugin
   chat setters. Text edits, partial edits, `/comment` and stored-translation edits use
@@ -89,7 +89,7 @@ Found independently by Sol T1, Sol T3 and Opus T1; reproduced against the store 
 the HypaV3 modal from its mirror copy; each overwrites the other** — high (Opus auditors:
 medium; both Sol challengers: high). Found by Opus T1 and Opus T3.
 
-- Mechanism: `server/src/prompt/assemble.ts` ~1078-1101 reads `room.hypaV3Data`, awaits the
+- Mechanism: `../../../server/src/prompt/assemble.ts` ~1078-1101 reads `room.hypaV3Data`, awaits the
   summary provider (seconds to minutes), then `host.writeMemory(() => ({ hypaV3Data: data }))`.
   `writeChat` does refresh the chat first (slice 3a is intact), but the zero-argument builder
   ignores the refreshed chat and writes the stale value at the fresh revision. `meta set` is
@@ -107,7 +107,7 @@ medium; both Sol challengers: high). Found by Opus T1 and Opus T3.
 or another tab set** — high (Opus: medium; Sol challenger: high). Found by Opus T3; the
 server-side half of the same mechanism was found by Opus T1 (F3).
 
-- Mechanism: `src/ts/parser/chatVar.svelte.ts` ~70-77 queues
+- Mechanism: `../../../src/ts/parser/chatVar.svelte.ts` ~70-77 queues
   `meta set { scriptstate: { ...snapshot(chat.scriptstate), [key]: value } }`. The server's own
   setters were made key-level in slice 3a precisely so other tabs' variables survive
   (`server/src/jobs/jobScope.ts` ~421), but tab writers (`/setvar`, `/addvar`, plugin
@@ -123,7 +123,7 @@ Opus T3; confirmed by Sol with the observer-tab trace.
   feed carries rows and metadata but not streaming owners, so an observer tab shows the
   checkpoint text as editable. Its `setText`/`setMessage`/single `remove` gets a 409
   `reason: "generating"`, which `recoverChatConflicts` requeues and blocks for `JOB_RETRY_MS`
-  (`src/ts/storage/chatStore.svelte.ts` ~3204-3208) with the "This chat is generating a reply.
+  (`../../../src/ts/storage/chatStore.svelte.ts` ~3204-3208) with the "This chat is generating a reply.
   Wait until it finishes." notice. Pending work keeps the observer from taking job patches. After
   the final write releases the lock, the retry is a stale by-id op the server accepts
   (`server/src/data/chatStore.ts` ~768-772, ~914-973): the final reply is replaced by an edit of
@@ -144,7 +144,7 @@ Opus T3; confirmed by Sol with the observer-tab trace.
 reports describe the same path; the challengers confirmed all of them.
 
 - The stage loop ignores the stage's `reloaded` result
-  (`src/ts/storage/resourceSync.svelte.ts` ~1330-1331), and `acceptRemoteCollection`
+  (`../../../src/ts/storage/resourceSync.svelte.ts` ~1330-1331), and `acceptRemoteCollection`
   (`src/ts/storage/chatStore.svelte.ts` ~3780-3869) settles the current pending order and
   drops absent members' work without reporting a discard. Reachable consequences:
   - A reorder queued after a chat-create acknowledgement that listed another tab's new chat is
@@ -169,7 +169,7 @@ reports describe the same path; the challengers confirmed all of them.
 Found by Sol T3, Opus T2 and Sol T4.
 
 - `showReloadedNotice` uses a tab-global 10 s `noticeShown` latch
-  (`src/ts/storage/resourceSync.svelte.ts` ~1761-1770) not tied to acknowledgement, so a second
+  (`../../../src/ts/storage/resourceSync.svelte.ts` ~1761-1770) not tied to acknowledgement, so a second
   discard episode within 10 s of a dismissed notice is silent; `reloadDeferredChats` calls it
   even when nothing was discarded (~2153) and consumes the window. `alertNormal`, `alertWait` and
   `alertError` share one store with no queue (`src/ts/alert.ts` ~63, ~165, ~242), so any later
@@ -204,7 +204,7 @@ queued op of that chat, including a newly appended message** — high (Opus: low
 challenger: high; the lost content is a new message and the notice blames another writer).
 Found by Opus T1.
 
-- `setText`/`setMessage` on a message another tab removed conflicts (`server/src/data/chatStore.ts`
+- `setText`/`setMessage` on a message another tab removed conflicts (`../../../server/src/data/chatStore.ts`
   ~914-920) while a single `remove` of a missing id is a no-op; the conflict entry carries no
   cause; `acceptRemoteChat` → `discardChatWork` drops the whole pending queue including work
   queued during the read-back (`chatStore.svelte.ts` ~3298-3314).
@@ -218,7 +218,7 @@ Found by Opus T1.
 it** — critical by the brief's definition (Opus: low; Sol challenger: critical; deterministic,
 ordinary single-tab use, no concurrency needed). Found by Opus T3.
 
-- `src/ts/process/rerollHistory.ts`: `begin` keeps the slot when the removed bundle's ids match
+- `../../../src/ts/process/rerollHistory.ts`: `begin` keeps the slot when the removed bundle's ids match
   (~48-54) without refreshing its content, and `move` swaps in the stored clone (~61-90). Edit
   R1 → R1′ (saved), reroll (R2), swipe back: R1 returns and R1′ is gone, persisted by
   `editChatSync`. Also: edit R2, swipe back, swipe forward. `Prereroll` candidates have the same
@@ -349,7 +349,7 @@ new finding). Listed for the plan's UX note only.
 ## Documentation corrections found on the way
 
 - `docs/structure/persistence.md:277`: a folder inconsistency does not end "until a reload" (D6).
-- `docs/structure/persistence.md` Save step 9 and the `applyHydration` doc comment claim a
+- `../../structure/persistence.md` Save step 9 and the `applyHydration` doc comment claim a
   "deferred or generating" character guard that the code no longer has (slice 3c removed the
   tab-side deferral; `resourceSyncLive.test.ts:911` pins the new contract).
 - `docs/structure/self-host-server.md:460` says asset writes are not retried; `assetClient.ts`

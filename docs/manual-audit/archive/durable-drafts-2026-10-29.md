@@ -10,7 +10,7 @@ uncommitted journal fixes in the shared checkout. The plan is retrievable with:
 git show bbc747f24:docs/plan/durable-drafts.md
 ```
 
-The [archive](../archived-plan/README.md) identifies twelve implementation commits:
+The [archive](../../archived-plan/README.md) identifies twelve implementation commits:
 `2a8ce1e83`, `62277946b`, `f5023bf8b`, `ca3e30b7b`, `8a1ea95e9`, `cfb27e86c`,
 `0814b3634`, `f5ef5033e`, `5d46c6e61`, `40b026930`, `abbe42f87`, and `257a2a60c`.
 The review used this explicit set because the chronological range includes other
@@ -55,20 +55,20 @@ new character's create that loses to another tab's same-id character now keeps i
 local chats as recovery drafts instead of leaving their creates pending. Remaining
 limits (Apply still removes a draft whose ops it skipped; a deleted Apply destination
 is recreated by a retry after reload; the read deadline is per request) are in the
-[draft recovery guide's Known Hazards](../structure/draft-recovery.md#known-hazards) and the
-[chat store guide's Limitations](../structure/chat-store.md#limitations).
+[draft recovery guide's Known Hazards](../../structure/draft-recovery.md#known-hazards) and the
+[chat store guide's Limitations](../../structure/chat-store.md#limitations).
 
 ## Plan-related findings
 
 ### DD1 — Apply recreates an old snapshot and deletes the newer operations
 
-**Code.** [journalRecovery.ts](../../src/ts/storage/journalRecovery.ts), `draftChat`
+**Code.** [journalRecovery.ts](../../../src/ts/storage/journalRecovery.ts), `draftChat`
 and the missing-chat branch of `applyRecoveryDraft`; the branch originates in
-`cfb27e86c`. [chatStore.svelte.ts](../../src/ts/storage/chatStore.svelte.ts),
+`cfb27e86c`. [chatStore.svelte.ts](../../../src/ts/storage/chatStore.svelte.ts),
 `queuedChatLayer` and `resendLayer`, produce the relevant layered state.
 
 **Trigger and reproduction.** A temporary copy of the real
-[bootstrap recovery harness](../../src/ts/bootstrap.journalRecovery.test.ts)
+[bootstrap recovery harness](../../../src/ts/bootstrap.journalRecovery.test.ts)
 exercised the following sequence, using the real mutation modules, IndexedDB
 implementation double, save adapter, and SQLite-backed server store:
 
@@ -110,10 +110,10 @@ covering a dispatched create followed by text, append, and metadata changes.
 
 ### DD2 — A new character can recover with an empty replacement chat
 
-**Code.** [characterStore.svelte.ts](../../src/ts/storage/characterStore.svelte.ts),
-`addCharacter`; [chatStore.svelte.ts](../../src/ts/storage/chatStore.svelte.ts),
+**Code.** [characterStore.svelte.ts](../../../src/ts/storage/characterStore.svelte.ts),
+`addCharacter`; [chatStore.svelte.ts](../../../src/ts/storage/chatStore.svelte.ts),
 `installCharacterChats`, `normalizeNewCharacter`, `adoptCharacter`, and
-`queuedChatLayer`; [resourceSync.svelte.ts](../../src/ts/storage/resourceSync.svelte.ts),
+`queuedChatLayer`; [resourceSync.svelte.ts](../../../src/ts/storage/resourceSync.svelte.ts),
 `collectOperations`, `flushJournal`, and `onPageHide`.
 
 **Trigger and reproduction.** Add a new character with an imported chat containing
@@ -166,12 +166,12 @@ outstanding save so capture cannot depend on the next cycle starting promptly.
 
 ### DD3 — Retrying a missing-chat Apply creates another copy
 
-**Code.** [journalRecovery.ts](../../src/ts/storage/journalRecovery.ts),
+**Code.** [journalRecovery.ts](../../../src/ts/storage/journalRecovery.ts),
 `applyRecoveryDraft`'s missing-chat branch and post-flush draft removal; introduced
 by `cfb27e86c`.
 
 **Trigger and reproduction.** Using the real
-[recovery-dialog harness](../../src/lib/Others/RecoveryDrafts.test.ts):
+[recovery-dialog harness](../../../src/lib/Others/RecoveryDrafts.test.ts):
 
 1. Store a draft for a missing chat with a `pending.createSnapshot`.
 2. Apply it, allow the new chat to commit, and drop the batch response.
@@ -203,9 +203,9 @@ remote deletion.
 ### U1 — An on-demand chat read can remain pending indefinitely
 
 **Code and attribution.**
-[chatStore.svelte.ts](../../src/ts/storage/chatStore.svelte.ts), `readUnloaded`,
+[chatStore.svelte.ts](../../../src/ts/storage/chatStore.svelte.ts), `readUnloaded`,
 `loadUnloaded`, and `ensureChatLoaded`;
-[resourceClient.ts](../../src/ts/storage/resourceClient.ts), `readRefs`.
+[resourceClient.ts](../../../src/ts/storage/resourceClient.ts), `readRefs`.
 The signal-free read predates Durable Drafts (`git blame` attributes it to
 `089adfcb57`, 2026-10-07). The plan's `deadlineRead` protects adapter refreshes and
 does not wrap this caller. This was already noted in the findings inbox; the

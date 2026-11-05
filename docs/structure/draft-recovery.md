@@ -231,7 +231,7 @@
   settlement keeps it as a plain draft, but a reload before that settlement cannot tell it from the send's text placed
   back after a failure: `composerDrafts.svelte.ts` `restore` finds the message landed and deletes the draft, so the
   retyped text is lost. Keeping it would bring already-sent text back after every uncertain end that landed
-  ([JR1](../manual-audit/cross-plan-2026-10-29.md#jr1--a-landed-send-deletes-an-identical-drafts-journal-row), remaining
+  ([JR1](../manual-audit/archive/cross-plan-2026-10-29.md#jr1--a-landed-send-deletes-an-identical-drafts-journal-row), remaining
   case).
 - `updateComposerRequest` reports one `journalSkipped` event with `entries: 1` even when both of the chat's rows are
   unreadable and skipped; both rows stay untouched.
@@ -241,7 +241,7 @@
 - A missing-chat Apply creates its chat under the draft's id so a retry finds it; a destination that another tab deleted
   after the create landed is created again by an Apply retried after a reload (the server keeps no tombstone of the
   deleted chat). Decision: DD3,
-  [durable drafts audit](../manual-audit/durable-drafts-2026-10-29.md#dd3--retrying-a-missing-chat-apply-creates-another-copy).
+  [durable drafts audit](../manual-audit/archive/durable-drafts-2026-10-29.md#dd3--retrying-a-missing-chat-apply-creates-another-copy).
 - After two failed split-journal writes (or with the journal off or the row skipped), the prefix can dispatch without a
   durable split record. Oversized pending batches become drafts instead of replaying a prefix; see
   [Split confirmation](#split-confirmation). Decision: Durable Drafts D7, archive.

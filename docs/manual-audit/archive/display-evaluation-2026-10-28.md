@@ -10,7 +10,7 @@ The final plan is available with:
 git show 1db8c10a8:docs/plan/display-evaluation.md
 ```
 
-The [archive entry](../archived-plan/README.md) identifies the nine slices:
+The [archive entry](../../archived-plan/README.md) identifies the nine slices:
 `fd7f50766`, `15ed61b6c`, `6b0d485f5`, `3b0e047ff`, `cf326ef1e`, `4a1d870f3`,
 `f5eda0ff6`, `aa4f2a68a`, and `31b75a1e3`. Review covered their changes and the integrated
 behavior after merge `05e4be8c1`: server cache dependencies and admission, shared display
@@ -36,17 +36,17 @@ not imply an observed production incident or an authorization bypass.
 **Resolution (2026-10-29).** All four are fixed: DE1 and U1 in `a123c4596`, U2 and U3 in
 `341108f1c`, each with regression tests on the harnesses named below. U1 was fixed as a
 read-only contract for both transform modes; its accepted limits are in the
-[CBS/rendering guide](../structure/cbs-rendering.md#limitations).
+[CBS/rendering guide](../../structure/cbs-rendering.md#limitations).
 
 ## Plan-related finding
 
 ### DE1 — The provisional-result handoff bypasses mixed-state detection
 
-**Code.** [transformClient.ts](../../src/ts/parser/transformClient.ts),
+**Code.** [transformClient.ts](../../../src/ts/parser/transformClient.ts),
 `serverProcessScript`'s `captured.provisionalOutcome` branch and its later `completion` handler;
-[ChatBody.svelte](../../src/lib/ChatScreens/ChatBody.svelte), `markParsing`,
+[ChatBody.svelte](../../../src/lib/ChatScreens/ChatBody.svelte), `markParsing`,
 `pendingTransformOutcome`, and `reportMixed`;
-[parser.svelte.ts](../../src/ts/parser/parser.svelte.ts), `ParseMarkdown`'s first asset pass.
+[parser.svelte.ts](../../../src/ts/parser/parser.svelte.ts), `ParseMarkdown`'s first asset pass.
 
 **Confirmed behavior.** A differing full answer to a provisional render is handed to the next
 local render so that it need not request the same answer again. That correction captures a
@@ -58,7 +58,7 @@ handler, which the handoff bypasses. `mixedDisplay` consequently remains false a
 row never registers with `waitForSettledRender`.
 
 **Reproduction.** A temporary copy of the existing
-[Chat.settledRender.svelte.test.ts](../../src/lib/ChatScreens/Chat.settledRender.svelte.test.ts)
+[Chat.settledRender.svelte.test.ts](../../../src/lib/ChatScreens/Chat.settledRender.svelte.test.ts)
 harness mounted the real `Chat` and `ChatBody`, using the real chat store and controlled
 transport and asset I/O:
 
@@ -104,17 +104,17 @@ own regression test. No production-frequency estimate was attempted.
 
 ### U1 — A display plugin handler can write persistent character data
 
-**Code.** [v3.svelte.ts](../../src/ts/plugins/apiV3/v3.svelte.ts),
+**Code.** [v3.svelte.ts](../../../src/ts/plugins/apiV3/v3.svelte.ts),
 `makeRisuaiAPIV3`, `withContext`, `addRisuScriptHandler`, `setCharacter`, and `setChar`;
-[pluginContext.ts](../../src/ts/plugins/apiV3/pluginContext.ts), `PluginCallContext` and
-`invokeHook`; [transformClient.ts](../../src/ts/parser/transformClient.ts), `runHandlers`.
+[pluginContext.ts](../../../src/ts/plugins/apiV3/pluginContext.ts), `PluginCallContext` and
+`invokeHook`; [transformClient.ts](../../../src/ts/parser/transformClient.ts), `runHandlers`.
 
 **Confirmed behavior.** The server transform refuses persistent writes, but its client plugin
 continuation invokes the normal plugin API with a chat context that has no display/read-only
 capability. `setCharacter` reaches `applyPluginCharacter` and the save adapter normally.
 
 **Reproduction.** Adapted
-[pluginContextSaved.test.ts](../../src/ts/plugins/apiV3/pluginContextSaved.test.ts)'s `boot`
+[pluginContextSaved.test.ts](../../../src/ts/plugins/apiV3/pluginContextSaved.test.ts)'s `boot`
 helper to register a `display` script handler instead of a chat-output listener. Inside the
 registered, context-wrapped handler:
 
@@ -143,17 +143,17 @@ from hooks whose purpose permits them. If persistent display writes are intentio
 document that exception and test its interaction with automatic retries and settled refreshes.
 
 **Attribution.** This confirms the existing unconfirmed plugin-setter hazard in the
-[CBS/rendering guide](../structure/cbs-rendering.md). The ordinary setter/context path predates
+[CBS/rendering guide](../../structure/cbs-rendering.md). The ordinary setter/context path predates
 Display Evaluation (`0d7c1cd642` already wired `setCharacter` through `currentContext`). The
 plan's accepted caching of opaque plugin output is not evidence that persistent display writes
 were reviewed or accepted. No render/save feedback loop was measured in this audit.
 
 ### U2 — Recovery ignores the generation of a failure after a successful retry
 
-**Code.** [displayTransformRecovery.svelte.ts](../../src/ts/parser/displayTransformRecovery.svelte.ts),
+**Code.** [displayTransformRecovery.svelte.ts](../../../src/ts/parser/displayTransformRecovery.svelte.ts),
 `failures`, `markDisplayTransformFailed`, and `publishRetryRound`;
-[Chat.svelte](../../src/lib/ChatScreens/Chat.svelte), the `displayTransformRetryRound` effect;
-[transformClient.ts](../../src/ts/parser/transformClient.ts), `rerenderMessage`.
+[Chat.svelte](../../../src/lib/ChatScreens/Chat.svelte), the `displayTransformRetryRound` effect;
+[transformClient.ts](../../../src/ts/parser/transformClient.ts), `rerenderMessage`.
 
 **Confirmed behavior.** Recovery stores a failure's Re-render generation, but publishes only
 its message key. The generation is never used to reject an obsolete failure, and a newer
@@ -183,7 +183,7 @@ recovery change, not a Display Evaluation slice.
 
 ### U3 — Character-image expansion can switch characters after an await
 
-**Code.** [parser.svelte.ts](../../src/ts/parser/parser.svelte.ts),
+**Code.** [parser.svelte.ts](../../../src/ts/parser/parser.svelte.ts),
 `parseAdditionalAssets`'s `needsSourceAccess` block.
 
 **Confirmed behavior.** The asset pass receives a character and captured chat ref, but after
@@ -191,7 +191,7 @@ awaiting `replaceAsync` it resolves `{{source::char}}` through `selectedCharacte
 It can therefore use the image of a character selected after this parse began.
 
 **Reproduction.** In the existing
-[assetFuzzy.test.ts](../../src/ts/parser/tests/assetFuzzy.test.ts) harness, install characters
+[assetFuzzy.test.ts](../../../src/ts/parser/tests/assetFuzzy.test.ts) harness, install characters
 A and B with distinct images, select A, and run:
 
 ```ts
@@ -225,7 +225,7 @@ the source placeholders.
 - **Shared reads and accounting:** inspected the raw configuration/transcript caches, target
   overlays, reservation accounting, and pin-release paths, together with their existing tests.
   The duplicated character-reading helpers in `displayScope.ts` and `jobScope.ts` remain
-  maintenance debt already recorded in [found-issues](../research/found-issues.md); no current
+  maintenance debt already recorded in [found-issues](../../research/found-issues.md); no current
   behavioral divergence was established here.
 - **Budget-refused targets:** the plan explicitly accepts raw text on snapshot-budget refusal.
   The existing note that rows stay raw _until remount_ omits the subsequently integrated

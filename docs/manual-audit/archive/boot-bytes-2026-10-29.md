@@ -33,7 +33,7 @@ P3 means a narrower tooling or documentation defect.
 
 All five remain open. Verified findings are also indexed in the owning guides;
 the corresponding inbox entries have been moved or narrowed, following
-[STRUCTURE.md](../../STRUCTURE.md#doc-maintenance).
+[STRUCTURE.md](../../../STRUCTURE.md#doc-maintenance).
 
 **Resolution (2026-10-29).** All five are fixed, each with a regression test except U3
 and U4 (a driver path and a guide paragraph): BB1 and U1 in `d01c3934e`, U2 in
@@ -59,9 +59,9 @@ version of the fixes; both were fixed before landing.
 
 ### BB1 — The optional asset preflight can prevent the upload indefinitely
 
-**Code and attribution.** [assetClient.ts](../../src/ts/storage/assetClient.ts),
+**Code and attribution.** [assetClient.ts](../../../src/ts/storage/assetClient.ts),
 `missingAssets`, `requestWithRetry`, and `writeAssets`;
-[globalApi.svelte.ts](../../src/ts/globalApi.svelte.ts), `saveAsset`. Commit
+[globalApi.svelte.ts](../../../src/ts/globalApi.svelte.ts), `saveAsset`. Commit
 `2f35afe02` added an awaited `POST /api/assets/missing` before canonical uploads.
 Before that commit, `writeAssets` dispatched its upload directly.
 
@@ -108,9 +108,9 @@ and a healthy upload route, plus a caller-abort case.
 
 ### U1 — A live socket does not rescue a stalled reconciliation read
 
-**Code and attribution.** [eventFeed.ts](../../src/ts/network/eventFeed.ts),
-`reconcile`; [resourceClient.ts](../../src/ts/storage/resourceClient.ts),
-`listRevisions`; [socketLiveness.ts](../../src/ts/network/socketLiveness.ts),
+**Code and attribution.** [eventFeed.ts](../../../src/ts/network/eventFeed.ts),
+`reconcile`; [resourceClient.ts](../../../src/ts/storage/resourceClient.ts),
+`listRevisions`; [socketLiveness.ts](../../../src/ts/network/socketLiveness.ts),
 `watchSocket`. The unconditional, signal-free listing read already exists at the
 pre-plan baseline `4a95f84bf`. The new digest avoids that read only when it matches;
 the first connection and a reconnect after a missed change still need it. This
@@ -142,9 +142,9 @@ HTTP case, not only a silent socket or a rejected listing.
 ### U2 — Server reimports preserve corrupt content-addressed files
 
 **Code and attribution.**
-[contentAsset.ts](../../server/src/http/contentAsset.ts), `writeContentAsset` and
-`publishStagedContentAsset`; [importModule.ts](../../server/src/routes/importModule.ts),
-the `storageFileExists` branch; [backups.ts](../../server/src/routes/backups.ts),
+[contentAsset.ts](../../../server/src/http/contentAsset.ts), `writeContentAsset` and
+`publishStagedContentAsset`; [importModule.ts](../../../server/src/routes/importModule.ts),
+the `storageFileExists` branch; [backups.ts](../../../server/src/routes/backups.ts),
 `restoreValidated`. These paths predate Boot Bytes. The plan explicitly left them
 outside D7, and the findings inbox already described the defect.
 
@@ -171,12 +171,12 @@ damaged existing target through each import/restore entry point.
 ### U3 — Relative build paths break the measurement driver
 
 **Code and attribution.**
-[measureBoot.mjs](../../util/playwright/measureBoot.mjs), `measureBoot`'s `dist`
+[measureBoot.mjs](../../../util/playwright/measureBoot.mjs), `measureBoot`'s `dist`
 initialization and `symlink(dist, path.join(workDir, "dist"), "dir")`. The logic
 already appears before the plan, introduced by `723700902`; slice 1 moved it into
 the function. The current header nevertheless advertises `RISU_DIST=dist`.
 
-**Evidence.** The initial existence check resolves `dist/index.html` against the
+**Evidence.** The initial existence check resolves `../../../dist/index.html` against the
 repository working directory, so it succeeds after a build. The symlink target
 resolves relative to the temporary directory instead. A filesystem reproduction
 of the exact `dist` link produced:
@@ -199,7 +199,7 @@ misleading header example.
 ### U4 — The build guide has lost its separate development instructions
 
 **Code and attribution.**
-[build-test-platforms.md](../structure/build-test-platforms.md#flows), the paragraph
+[build-test-platforms.md](../../structure/build-test-platforms.md#flows), the paragraph
 beginning ``- Development: `pnpm run server`- CI:`` and ending with the duplicated
 ``test:agent` (V1).``. `git blame` attributes it to `6336e29549` on 2026-10-25,
 before Boot Bytes. This is a source-confirmed documentation defect already noted

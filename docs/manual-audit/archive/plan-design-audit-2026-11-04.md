@@ -2,11 +2,11 @@
 
 ## Scope and result
 
-Audited the five active plans listed in [docs/plan/README.md](../plan/README.md) at `d31fa9a48` on `dev`
+Audited the five active plans listed in [docs/plan/README.md](../../plan/README.md) at `d31fa9a48` on `dev`
 (all drafted 2026-11-03, no slice landed): [Job Handoff](../plan/job-handoff.md),
-[Asset Lifecycle](../archived-plan/README.md) (archived), [Reroll Candidates](../plan/reroll-candidates.md),
-[Render Work Budget](../archived-plan/README.md) (archived) and
-[Incremental Chat Transport](../archived-plan/README.md) (archived). The question was whether each plan's
+[Asset Lifecycle](../../archived-plan/README.md) (archived), [Reroll Candidates](../plan/reroll-candidates.md),
+[Render Work Budget](../../archived-plan/README.md) (archived) and
+[Incremental Chat Transport](../../archived-plan/README.md) (archived). The question was whether each plan's
 decisions work against the code as it is, whether the plans contradict themselves, and whether they
 contradict each other.
 
@@ -23,12 +23,12 @@ decision, or a narrower flaw; P3 a stale anchor, wording, or an unacknowledged f
 
 | Plan                       | P1  | P2  | P3  | Report                                                                                      |
 | -------------------------- | --- | --- | --- | ------------------------------------------------------------------------------------------- |
-| Job Handoff                | 4   | 10  | 4   | [job-handoff.md](plan-design-audit-2026-11-04/job-handoff.md)                               |
-| Asset Lifecycle            | 5   | 8   | 1   | [asset-lifecycle.md](plan-design-audit-2026-11-04/asset-lifecycle.md)                       |
-| Reroll Candidates          | 7   | 11  | 6   | [reroll-candidates.md](plan-design-audit-2026-11-04/reroll-candidates.md)                   |
-| Render Work Budget         | 5   | 7   | 2   | [render-work-budget.md](plan-design-audit-2026-11-04/render-work-budget.md)                 |
-| Incremental Chat Transport | 5   | 6   | 5   | [incremental-chat-transport.md](plan-design-audit-2026-11-04/incremental-chat-transport.md) |
-| Cross-plan                 | 2   | 2   | 7   | [cross-plan.md](plan-design-audit-2026-11-04/cross-plan.md)                                 |
+| Job Handoff                | 4   | 10  | 4   | [job-handoff.md](../plan-design-audit-2026-11-04/job-handoff.md)                               |
+| Asset Lifecycle            | 5   | 8   | 1   | [asset-lifecycle.md](../plan-design-audit-2026-11-04/asset-lifecycle.md)                       |
+| Reroll Candidates          | 7   | 11  | 6   | [reroll-candidates.md](../plan-design-audit-2026-11-04/reroll-candidates.md)                   |
+| Render Work Budget         | 5   | 7   | 2   | [render-work-budget.md](../plan-design-audit-2026-11-04/render-work-budget.md)                 |
+| Incremental Chat Transport | 5   | 6   | 5   | [incremental-chat-transport.md](../plan-design-audit-2026-11-04/incremental-chat-transport.md) |
+| Cross-plan                 | 2   | 2   | 7   | [cross-plan.md](../plan-design-audit-2026-11-04/cross-plan.md)                                 |
 
 The counts overlap where two reviewers reached the same defect from different sides (the reroll row size
 and the handoff viewer mode are each counted in a per-plan report and in the cross-plan report).
@@ -42,7 +42,7 @@ below are the plan files' at `d31fa9a48`.
 
 - **JH1. A takeover re-sends outstanding callbacks as replays, and the worker refuses every replay** (D2
   lines 109–110, D7). `sendText` counts any open socket as having received a callback
-  (`server/src/jobs/generationJobs.ts` around line 747), a sleeping phone keeps an open socket for 45 s,
+  (`../../../server/src/jobs/generationJobs.ts` around line 747), a sleeping phone keeps an open socket for 45 s,
   and the tab refuses a `replay: true` it has no state for with `failed`/`protocol`
   (`src/ts/network/jobChannel.ts` around line 111), which ends the job for `editoutput`,
   `bodyIntercepter` and the other request-side kinds. The core scenario (phone sleeps mid-callback, PC
@@ -56,7 +56,7 @@ below are the plan files' at `d31fa9a48`.
   current owner and move queued requests at takeover.
 - **JH3. The attach stamp compares wall clocks of different devices** (D2, D4). One stamp per job; a
   phone ahead of the PC makes the PC's takeover a 409 (`generationJobs.ts` around line 2100, the stamp from
-  `performance.timeOrigin` in `src/ts/network/generationJobs.ts` around line 847). Correction: one stamp per
+  `performance.timeOrigin` in `../../../src/ts/network/generationJobs.ts` around line 847). Correction: one stamp per
   client, compared only within that client.
 - **JH4. Skipped `chatOutput` listeners are lost when the owner at the end is a dead worker** (D2, D5).
   The creator always attaches as a viewer, viewers get `skipped: []`, and kept outcomes stay keyed by the
@@ -81,7 +81,7 @@ below are the plan files' at `d31fa9a48`.
 ### Asset Lifecycle
 
 - **AL1. Server-side imports bypass the lease, the lock and the young-file rule** (D3, D7). CharX, PNG and
-  module imports skip the write when the file already holds the bytes (`server/src/http/contentAsset.ts`
+  module imports skip the write when the file already holds the bytes (`../../../server/src/http/contentAsset.ts`
   around lines 35 and 67; `server/src/routes/importModule.ts` around line 125): the file keeps its old
   mtime, takes no lease, holds no lock, and the import does not run under `snapshots.exclusive`. A
   re-import during a sweep can lose the image the new record names. Correction: one helper in
@@ -116,7 +116,7 @@ below are the plan files' at `d31fa9a48`.
 ### Reroll Candidates
 
 - **RC1. D7 step (2) opens the generation fence and closes it in the same group** (lines 231–239).
-  `patchMessage` "closes an open generation fence" (`shared/chats.ts` line 76), after which every
+  `patchMessage` "closes an open generation fence" (`../../../shared/chats.ts` line 76), after which every
   generation write is `ignored` and `finalize` throws 409. The `begin` → `patchMessage` order breaks every
   reroll. Correction: `patchMessage` and the D5 `meta` op before `begin`; every later carrier write carries
   the generation; step (4)'s `candidates[selected]` refresh goes into `finalize`'s final `setMessage`.
@@ -221,16 +221,16 @@ From every slice's Files paragraph (the cross-plan report has the full table):
 
 | File                                                         | Slices                                 | Plans' own statement                                           |
 | ------------------------------------------------------------ | -------------------------------------- | -------------------------------------------------------------- |
-| `server/src/jobs/generationJobs.ts`, `shared/jobs.ts`        | JH1, RC1, TR2                          | JH names only the retired plugin runtime plan; RC omits TR2    |
-| `server/src/routes/events.ts`, `src/ts/network/eventFeed.ts` | JH1, JH3, TR2, TR3; JH2, JH3, TR2, TR3 | TR line 291 omits TR2 against JH3 and JH2                      |
-| `src/ts/network/generationJobs.ts`                           | JH2, TR2 (same URL line)               | none                                                           |
-| `src/ts/process/serverCommands.ts`                           | JH2, RC2 (same callback)               | none                                                           |
-| `src/lib/ChatScreens/DefaultChatScreen.svelte`               | JH3, RC2, RW4                          | RW lines 43–46 say Job Handoff shares no file with it: wrong   |
-| `src/lib/ChatScreens/Chats.svelte`                           | RC2, TR0                               | none                                                           |
-| `src/ts/storage/chatStore.svelte.ts`                         | RW0, TR0, TR1, TR2, TR4                | RW0/TR0 acknowledged; TR line 408 "0, 2 and 3 disjoint": wrong |
-| `shared/resources.ts`, `src/ts/storage/resourceClient.ts`    | AL3, TR1, TR3, TR4                     | TR covers TR1/TR3 only                                         |
-| `server/src/app.ts`                                          | JH1, AL1, TR3                          | JH1/TR3 only                                                   |
-| `src/lang/en.ts`, `ko.ts`                                    | JH2, JH3, RC1, RC2, AL4, RW4           | none (append-only keys)                                        |
+| `../../../server/src/jobs/generationJobs.ts`, `shared/jobs.ts`        | JH1, RC1, TR2                          | JH names only the retired plugin runtime plan; RC omits TR2    |
+| `../../../server/src/routes/events.ts`, `src/ts/network/eventFeed.ts` | JH1, JH3, TR2, TR3; JH2, JH3, TR2, TR3 | TR line 291 omits TR2 against JH3 and JH2                      |
+| `../../../src/ts/network/generationJobs.ts`                           | JH2, TR2 (same URL line)               | none                                                           |
+| `../../../src/ts/process/serverCommands.ts`                           | JH2, RC2 (same callback)               | none                                                           |
+| `../../../src/lib/ChatScreens/DefaultChatScreen.svelte`               | JH3, RC2, RW4                          | RW lines 43–46 say Job Handoff shares no file with it: wrong   |
+| `../../../src/lib/ChatScreens/Chats.svelte`                           | RC2, TR0                               | none                                                           |
+| `../../../src/ts/storage/chatStore.svelte.ts`                         | RW0, TR0, TR1, TR2, TR4                | RW0/TR0 acknowledged; TR line 408 "0, 2 and 3 disjoint": wrong |
+| `../../../shared/resources.ts`, `src/ts/storage/resourceClient.ts`    | AL3, TR1, TR3, TR4                     | TR covers TR1/TR3 only                                         |
+| `../../../server/src/app.ts`                                          | JH1, AL1, TR3                          | JH1/TR3 only                                                   |
+| `../../../src/lang/en.ts`, `ko.ts`                                    | JH2, JH3, RC1, RC2, AL4, RW4           | none (append-only keys)                                        |
 
 Job Handoff lines 200–202 still schedule against the server plugin runtime plan, retired unbuilt on
 2026-11-03, and against no active plan.
@@ -260,13 +260,13 @@ Job Handoff lines 200–202 still schedule against the server plugin runtime pla
   Asset P2 on records never deleted).
 - **X8 (P3). The transport's change log (about 4 MB at the 20,000-row bound) is copied into every
   snapshot**, and the asset plan allows 40 of them; Transport D5 should say so.
-- Compatible: the three plans' edits to `shared/jobs.ts` and the socket query strings; the reroll lock is
+- Compatible: the three plans' edits to `../../../shared/jobs.ts` and the socket query strings; the reroll lock is
   keyed by the job, so a takeover does not touch it (Reroll D8 should still decide `shutdown` and
   `maintenance`, which its list omits).
 
 ### README summaries
 
-The [plan README](../plan/README.md) line for Reroll Candidates says a reroll "puts the chat variables
+The [plan README](../../plan/README.md) line for Reroll Candidates says a reroll "puts the chat variables
 back" and a switch "switches to that candidate's variable state" without D5's per-key rule and D10's
 newest-reply-only condition, and omits D9; Render Work Budget's line omits Slice 0; Asset Lifecycle's
 omits the daily scan and the disk preflight; Incremental Chat Transport's omits `proto=1`. Job Handoff's

@@ -6,14 +6,14 @@ Reviewed the integrated result of the commit range `3c0d10e1..8ea35c16e` on `dev
 about 40,000 added lines, produced by agent-run plans with little human review) at
 `8ea35c16eb2d32525530a267295dc4ad3348777c` (`8ea35c16e`), from clean detached worktrees.
 The range holds the Display Evaluation, Durable Drafts, Job Protocol, and Boot Bytes plans, each of
-which already has a per-plan audit under `docs/manual-audit/` whose findings were fixed; the Deep Audit Fixes
+which already has a per-plan audit under `..` whose findings were fixed; the Deep Audit Fixes
 and HypaV3 Token Budget plans and about forty standalone commits, which had no audit; the thirteen
 commits that fixed the four audits' findings; and eight merge commits between the plan runs.
 
 This review therefore cut the range by seam rather than by plan: the files that two or three plans
 changed and the merges resolved by hand, the audit-fix commits as a set, and the work no audit had
 covered. Eight independent read-only reviewers each took one seam (Method below). Prior audit
-findings, recorded decisions, and `docs/research/found-issues.md` entries were excluded from their
+findings, recorded decisions, and `../../research/found-issues.md` entries were excluded from their
 reports; the session re-ran every reproducing probe at HEAD and read the code behind each finding.
 
 **Seven product defects were reproduced (one P1, two P2, four P3), plus one test that cannot fail
@@ -94,7 +94,7 @@ it. Every finding of this review is now resolved.
 
 Reports, briefs, and the per-seam probe logs are kept outside the repository at
 `/home/codex/review-reports/cross-plan-2026-10-29/` (`reports/`, `briefs/`). The probes that
-reproduce the findings are under [`cross-plan-2026-10-29/probes/`](cross-plan-2026-10-29/probes/):
+reproduce the findings are under [`../cross-plan-2026-10-29/probes`](cross-plan-2026-10-29/probes/):
 they are Vitest files renamed `*.probe.ts` so the gate does not collect them. To run one, copy it
 beside the module it imports from (the original path is in its header or in the finding below) with
 a `.test.ts` suffix and run `pnpm --silent test:agent <file>`; each asserts the expected behavior and
@@ -132,7 +132,7 @@ fails at HEAD.
 
 ### JR2 — Typing a follow-up erases an unanswered send's journal row
 
-**Code.** `src/ts/process/composerDrafts.svelte.ts`: `beginSend` writes the hand-off
+**Code.** `../../../src/ts/process/composerDrafts.svelte.ts`: `beginSend` writes the hand-off
 (`state: "sending"`, `userMessageId`, the request id and epoch) under the chat's composer key;
 `write` (the debounced composer write) calls `journal.putComposer(key, value)` for a nonempty draft
 under the same key, replacing that row; the empty-draft branch's `removeComposer(key,
@@ -157,7 +157,7 @@ layer) and settle it by its attempt identity, as the existing `keepSendingIds` i
 
 ### UI-01 — A preset field's popup writes back into the preset resolved at close
 
-**Code.** `src/lib/UI/GUI/TextAreaInput.svelte` `openPopupEditor` writes the popup's value back when
+**Code.** `../../../src/lib/UI/GUI/TextAreaInput.svelte` `openPopupEditor` writes the popup's value back when
 the field is still current: same run, same value, same `popupEditorContext` and context revision.
 `src/lib/Setting/Pages/PromptPresetSettings.svelte` binds `moduleIntergration`, `mainPrompt`,
 `jailbreak`, and `globalNote` through `activePreset` (the open chat's bound preset, else the tab's
@@ -182,7 +182,7 @@ fields and to any other selection-resolved editor a sweep finds.
 
 ### DT1 — A permanent display failure retries and toasts every round
 
-**Code.** `src/ts/parser/transformClient.ts`: `sendBatch` settles a source over
+**Code.** `../../../src/ts/parser/transformClient.ts`: `sendBatch` settles a source over
 `MAX_TRANSFORM_TEXT_BYTES` as `{ ok: false }` without a request; `postOnce` turns any non-OK HTTP
 answer into a plain `Error`; the completion handler registers every `ok: false` message display with
 `markDisplayTransformFailed`, and `settle` shows the `serverTransformFailed` toast once per batch.
@@ -226,7 +226,7 @@ next edit. Same root as JR2 (text equality standing in for attempt identity); fi
 
 ### SJ1 — Boot discovery drops the ended status it read
 
-**Code.** `src/ts/process/serverCommands.ts` `discover` returns only `{ chaId, chatId }` from a
+**Code.** `../../../src/ts/process/serverCommands.ts` `discover` returns only `{ chaId, chatId }` from a
 successful status read, discarding `terminal`, `state`, and `kept`; `followJobToEnd` then runs
 `followOnce` with no known terminal, while owned create replays keep theirs in `replayedStatuses`.
 
@@ -269,7 +269,7 @@ source identity as well.
 
 ### DT3 — A reply finished behind the bookmark modal counts as viewed
 
-**Code.** `src/ts/process/chatStatus.svelte.ts` `visibleChatKey` returns null only for a hidden
+**Code.** `../../../src/ts/process/chatStatus.svelte.ts` `visibleChatKey` returns null only for a hidden
 page, open Settings, or the grid; `noteJobDone` adds no unseen mark while it returns the chat's key,
 and the visibility watcher clears recovery marks on the same predicate. `App.svelte` mounts
 `BookmarkList` over the chat with a fixed full-page backdrop.
@@ -289,7 +289,7 @@ same time.
 
 ### JR3 — The split-commit test passes with the collector guard removed
 
-`src/ts/storage/tests/resourceSyncJournal.test.ts`, "commits the split before sending its first
+`../../../src/ts/storage/tests/resourceSyncJournal.test.ts`, "commits the split before sending its first
 5000 operations, then sends the remainder under a new id", starts `flushResources()` with the journal
 commit held and checks for no dispatch after advancing zero milliseconds. The ordinary collector's
 protection is `chatStore.svelte.ts` `if (resend.unconfirmed) continue;`; with that line replaced by
@@ -301,13 +301,13 @@ releasing it.
 
 ### R1 — Three guide statements contradicted the audit fixes (corrected)
 
-- `docs/structure/persistence.md` listed the reconcile's `listRevisions` among the reads with no
+- `../../structure/persistence.md` listed the reconcile's `listRevisions` among the reads with no
   deadline; `eventFeed.ts` bounds it with `RECONCILE_DEADLINE_MS` since the Boot Bytes audit's U1
   fix.
 - The same guide said by-id ops answered `missing` are settled without a draft; `chatStore.svelte.ts`
   `ackChatWork` hands those text ops to the conflict listener since the Durable Drafts conflict
   capture, and `resourceSyncChats.test.ts` checks the draft.
-- `docs/structure/self-host-server.md` said imports preserve existing content-addressed asset files;
+- `../../structure/self-host-server.md` said imports preserve existing content-addressed asset files;
   `restoreValidated` and the module and card imports replace a damaged one since `91a1493cb`.
 
 All three are corrected in this change.

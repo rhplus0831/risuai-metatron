@@ -9,7 +9,7 @@ Reviewed the completed Job Protocol plan against
 git show 73c12d29c:docs/plan/job-protocol.md
 ```
 
-The [archive](../archived-plan/README.md) identifies the implementation commits:
+The [archive](../../archived-plan/README.md) identifies the implementation commits:
 `d0b6c096c` (receipts), `b532a95e2` (request identity and cancellation), `fdf7a1235`
 (composer request identity), `d4586f152` (command sequences), `31dd5c2f0` (owner liveness),
 `2864a806e` (Stop from another client), and `0fb58b456` (browser verification).
@@ -50,21 +50,21 @@ driver, rerun instead): JP1 in `9bfd29b73`, JP2 in `035a76416`, U1 in `0afb40afe
 the delayed original can pass as well. JP3 was fixed rather than scoped: a queued root now
 expires at its own job's absence deadline. The inbox's second absence-bound path (a provider
 disconnect ended through `endWith`, not bounded by the abort grace) remains unreproduced and is
-an `Unconfirmed` issue in the [server generation guide](../structure/server-generation.md#issues).
+an `Unconfirmed` issue in the [server generation guide](../../structure/server-generation.md#issues).
 U1 uses a synchronous live-page claim in `sessionStorage`, not a coordinated lease, because
 `generationClientId` is read synchronously; its accepted gaps are in the
-[network and jobs guide](../structure/network-jobs.md#limitations).
+[network and jobs guide](../../structure/network-jobs.md#limitations).
 
 ## Plan-related findings
 
 ### JP1 — A negative lookup does not settle an earlier POST that has not reached admission
 
-**Code.** [Client generationJobs.ts](../../src/ts/network/generationJobs.ts),
+**Code.** [Client generationJobs.ts](../../../src/ts/network/generationJobs.ts),
 `registryRefusal`, `exchange` and `createGenerationJob`;
-[serverCommands.ts](../../src/ts/process/serverCommands.ts), `runPinnedServerJob`'s create-error
-handling; [sendDraft.ts](../../src/ts/process/sendDraft.ts), `settle` and `idsFor`;
-[server generations.ts](../../server/src/routes/generations.ts), the POST handler;
-[server generationJobs.ts](../../server/src/jobs/generationJobs.ts), `create`.
+[serverCommands.ts](../../../src/ts/process/serverCommands.ts), `runPinnedServerJob`'s create-error
+handling; [sendDraft.ts](../../../src/ts/process/sendDraft.ts), `settle` and `idsFor`;
+[server generations.ts](../../../server/src/routes/generations.ts), the POST handler;
+[server generationJobs.ts](../../../server/src/jobs/generationJobs.ts), `create`.
 
 **Confirmed behavior.** After an unanswered POST, `exchange` preserves uncertainty for generic
 errors, but treats recognized registry refusals as definite. This includes the registry's
@@ -122,10 +122,10 @@ existing same-ID replay and explicit-cancellation semantics.
 
 ### JP2 — The new Stop exchange has no deadline and prevents another attempt
 
-**Code.** [Client generationJobs.ts](../../src/ts/network/generationJobs.ts), `request`,
+**Code.** [Client generationJobs.ts](../../../src/ts/network/generationJobs.ts), `request`,
 `readChatGeneration` and `stopChatGeneration`;
-[serverCommands.ts](../../src/ts/process/serverCommands.ts), `stoppingChats` and `stopChatJob`;
-[serverAuth.ts](../../src/ts/storage/serverAuth.ts), `authFetch`.
+[serverCommands.ts](../../../src/ts/process/serverCommands.ts), `stoppingChats` and `stopChatJob`;
+[serverAuth.ts](../../../src/ts/storage/serverAuth.ts), `authFetch`.
 
 **Confirmed behavior.** Both new network methods call `request` without an abort signal or a
 deadline. Authentication, fetch, and response-body consumption can therefore remain pending.
@@ -156,11 +156,11 @@ timeout. Keep cancellation addressed to the confirmed job ID; a retry must retai
 
 ### JP3 — A newer queued job still misses the absence bound
 
-**Code.** [channel.ts](../../server/src/jobs/channel.ts), `expireIfDue`, `expireOverdue`,
+**Code.** [channel.ts](../../../server/src/jobs/channel.ts), `expireIfDue`, `expireOverdue`,
 `holdDraining` and `dispatch`.
 
 This is a revalidation of **Owner absence bound is not universal** in the
-findings inbox (since moved to the [server generation guide](../structure/server-generation.md#issues)), also noted
+findings inbox (since moved to the [server generation guide](../../structure/server-generation.md#issues)), also noted
 in the plan's archive. It is not a newly discovered regression.
 
 **Reproduction.** An injected-clock probe used the real channel hub with two jobs of the same
@@ -183,7 +183,7 @@ a disconnected provider was inspected in source but not independently reproduced
 
 ### JP4 — The browser driver's absence override can invalidate its reload scenario
 
-**Code.** [checkJobProtocol.mjs](../../util/playwright/checkJobProtocol.mjs), `ABSENT_MS`,
+**Code.** [checkJobProtocol.mjs](../../../util/playwright/checkJobProtocol.mjs), `ABSENT_MS`,
 the loader hook, and the `reload-mid-sequence` case.
 
 **Observed failure.** The unchanged browser driver passed `lost-create-answer`, then failed
@@ -215,12 +215,12 @@ the unchanged driver's failure rate.
 
 ### U1 — Opening a window with an opener duplicates the job owner's identity
 
-**Code.** [Client generationJobs.ts](../../src/ts/network/generationJobs.ts),
+**Code.** [Client generationJobs.ts](../../../src/ts/network/generationJobs.ts),
 `generationClientId`, `readSavedJobs` and `followGenerationJob`;
-[bootstrap.ts](../../src/ts/bootstrap.ts), `resumeServerJobs` call;
-[serverCommands.ts](../../src/ts/process/serverCommands.ts), `resumeServerJobs` and `followOnce`;
-[server generationJobs.ts](../../server/src/jobs/generationJobs.ts), `attach`;
-[jobChannel.ts](../../src/ts/network/jobChannel.ts), `handleCallback`.
+[bootstrap.ts](../../../src/ts/bootstrap.ts), `resumeServerJobs` call;
+[serverCommands.ts](../../../src/ts/process/serverCommands.ts), `resumeServerJobs` and `followOnce`;
+[server generationJobs.ts](../../../server/src/jobs/generationJobs.ts), `attach`;
+[jobChannel.ts](../../../src/ts/network/jobChannel.ts), `handleCallback`.
 
 **Confirmed behavior.** The implementation treats `sessionStorage` as unique per tab, but a
 same-origin window opened with an opener inherits a copy. `generationClientId` accepts the
@@ -253,9 +253,9 @@ can clone a tab.
 
 ### U2 — The unused resume helper still describes itself as the boot path
 
-**Code.** [generationJobs.ts](../../src/ts/network/generationJobs.ts), its module comment and
-`resumeSavedGenerations`; [bootstrap.ts](../../src/ts/bootstrap.ts);
-[persistence guide](../structure/persistence.md) and [network and jobs guide](../structure/network-jobs.md).
+**Code.** [generationJobs.ts](../../../src/ts/network/generationJobs.ts), its module comment and
+`resumeSavedGenerations`; [bootstrap.ts](../../../src/ts/bootstrap.ts);
+[persistence guide](../../structure/persistence.md) and [network and jobs guide](../../structure/network-jobs.md).
 
 **Confirmed by reference search.** Product boot invokes `resumeServerJobs`, which uses
 `followJobToEnd`. The only callers of `resumeSavedGenerations` are tests; the other reference
