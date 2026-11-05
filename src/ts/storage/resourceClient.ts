@@ -6,6 +6,7 @@ import {
     type ResourceBatchResult,
     type ResourceBootRequest,
     type ResourceBootResult,
+    type ResourceChangesSince,
     type ResourceReadEntries,
     type ResourceReadKindsResult,
     type ResourceReadRefsAnswer,
@@ -324,6 +325,23 @@ export async function readRefs(
 export async function listRevisions(options: { signal?: AbortSignal } = {}): Promise<ResourceRevisionListing> {
     return checkedEpoch(
         await sendJson<ResourceRevisionListing>("/api/resources/revisions", { signal: options.signal }),
+    );
+}
+
+/** Refs in an epoch's bounded cursor interval, or an expired answer; epoch checks match the whole listing. */
+export async function listChanges(options: {
+    since: number;
+    until: number;
+    epoch: string;
+    signal?: AbortSignal;
+}): Promise<ResourceChangesSince> {
+    const query = new URLSearchParams({
+        since: String(options.since),
+        until: String(options.until),
+        epoch: options.epoch,
+    });
+    return checkedEpoch(
+        await sendJson<ResourceChangesSince>(`/api/resources/revisions?${query}`, { signal: options.signal }),
     );
 }
 

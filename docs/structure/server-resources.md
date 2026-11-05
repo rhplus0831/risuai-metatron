@@ -51,16 +51,19 @@ headers and method comments.
 ### Resource routes
 
 `server/src/routes/resources.ts` `registerResourceRoutes` and `server/src/routes/resourceBoot.ts` (`parseBootRequest`,
-`readBoot`): `checkAuth` (JWT), authenticated limiter. Writes need the [epoch](#epoch-and-response-rules); reads, `POST`
-reads included, do not. A reverse proxy must keep the encoded ids ([Gotchas](self-host-server.md#gotchas)). Shapes:
-`shared/resources.ts` (`ResourceBootRequest`, `ResourceBootResult`, `ChatReadRecord`) and `shared/chats.ts`.
+`readBoot`): JWT (`checkAuth`) and authenticated limiter. Only writes need the [epoch](#epoch-and-response-rules).
+Proxies must preserve encoded ids ([Gotchas](self-host-server.md#gotchas)). Shapes: `shared/resources.ts`
+(`ResourceBootRequest`, `ResourceBootResult`, `ChatReadRecord`) and `shared/chats.ts`.
 
 - Reads: `GET /api/resources?kinds=` (whole kinds, one committed state), `POST /api/resources/read` (named records,
   chats, and collections; the [read budget](#read-budget)), `POST /api/resources/boot` (skips what the tab holds),
-  `GET /api/resources/revisions` (no data: the live-update reconcile), `GET /api/resources/:kind`, and
-  `GET /api/resources/:kind/:id`, all compressed per `Accept-Encoding` (`compressedJson`).
+  `GET /api/resources/revisions` (revision refs), `GET /api/resources/:kind`, and `GET /api/resources/:kind/:id`, all
+  compressed per `Accept-Encoding` (`compressedJson`).
 - Writes, + epoch: `POST /api/resources/batch` (resource ops, chat groups, chat orders; a conflict applies nothing),
   `PUT` and `DELETE /api/resources/:kind/:id` (`baseRevision`; 409 with the current revision).
+- `revisions?since=&until=&epoch=`: coalesced refs/tombstones (`ResourceChangesSince`); no `since`: whole listing.
+  Bounds require nonnegative safe integers and epoch nonempty (else 400). Coverage/expiry: `resourceStore.ts`
+  `listChanges`; epoch checks match listings.
 
 ### Credential routes
 
@@ -259,6 +262,11 @@ settings sections and collections, no `root` record; tables as in version 2).
   row; `openChatSchema` creates it when missing, parsing every message row once on an older file's first open; it makes
   SQLite refuse a non-JSON `data`.
 - `chatOrders` (`characterId`, `seq`, `revision`, `ids` JSON).
+- `changes` (`cursor` autoincrement, `kind`, `characterId`, `id`, `revision`): transactional refs/tombstones; order ids
+  are character ids. Created at open beside `openChatSchema`, outside `STORE_TABLES_SQL` and the layout check; no
+  version bump. Open-time writes bypass it.
+- The log prunes to 20,000 rows (a few MB with typical ids; deletion does not shrink the file). `replaceAll` truncates
+  it without resetting the sequence. Whole-file snapshots and backups contain it; restore ignores it.
 - `chatGroups` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `groupId`, `revision`,
   `result` JSON, unique `(chatSeq, groupId)`), which `openChatSchema` creates when missing, with no version change. It
   is outside the layout check, a snapshot's copy is not restored, and a restore leaves it empty (deleting the chats

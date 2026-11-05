@@ -23,7 +23,9 @@
 // readKinds([], { chatSummaries: true }) first/median time after shutdown on the temp-dir SQLite file,
 // with its filesystem reported (tmpfs is memory-backed).
 // Resume requires no revision listing and reports API reads and hello WebSocket payload bytes; resumeAway
-// requires exactly one listing and the away change shown; scripts reports same-origin
+// requires exactly one reconcile read (a listing or a bounded ?since= replay), reports their bytes
+// separately and the time from setting visible to that read ending, and requires the away change shown.
+// Scripts reports same-origin
 // non-API transfer/decoded bytes after network idle. Final Markdown tables use median bytes/ms.
 // Every cached boot checks its request, expanded answer and written cache against a plain read;
 // warm claims every eligible character and module. CDP blocks the page's four known public hosts:
@@ -1300,14 +1302,13 @@ async function measureBoot() {
                 );
                 const character = characters[1 + (run % (characters.length - 1))];
                 const previousSocket = socketNumber;
-                // The window covers the whole hidden interval: a listing a reconnect reads while
-                // hidden counts too.
+                // The window covers the whole hidden interval: a reconcile read while hidden counts too.
                 const start = await page.evaluate(() => performance.now());
                 await page.evaluate(() => window.__setVisibility("hidden"));
                 // The feed stays connected while hidden (the socket is replaced only on the resume), so
                 // its frames are dropped here, as a frozen or disconnected page misses them. Another
                 // client's change then leaves the advertised revisions behind: the resume's hello digest
-                // no longer matches, so the resume pays exactly one listing and shows the change.
+                // no longer matches, so the resume pays exactly one replay or listing and shows the change.
                 await page.evaluate(() => window.__dropSocketFrames(true));
                 const current = await single("characters", character.chaId);
                 const description = `${current.data.desc} Saved away ${run}.`;
@@ -1329,13 +1330,17 @@ async function measureBoot() {
                 console.log(`resumeAway ${run}: hidden for 31 s`);
                 await page.waitForTimeout(31000);
                 await page.evaluate(() => window.__dropSocketFrames(false));
-                await page.evaluate(() => window.__setVisibility("visible"));
+                const visibleAt = await page.evaluate(() => {
+                    const now = performance.now();
+                    window.__setVisibility("visible");
+                    return now;
+                });
                 for (
                     const until = Date.now() + 30000;
                     Date.now() < until && !hellos.some((hello) => hello.socket > previousSocket);
                 )
                     await page.waitForTimeout(50);
-                // The listing starts after the hello is processed, later than `idle()` may return:
+                // The reconcile read starts after the hello is processed, later than `idle()` may return:
                 // wait for one to finish (a missing one fails the check below after this bound).
                 await page
                     .waitForFunction(
@@ -1362,16 +1367,20 @@ async function measureBoot() {
                             )
                             .map((entry) => ({
                                 path: new URL(entry.name).pathname,
+                                since: new URL(entry.name).searchParams.has("since"),
+                                responseEnd: entry.responseEnd,
                                 transfer: entry.transferSize,
                                 decoded: entry.decodedBodySize,
                             })),
                     start,
                 );
-                const listings = reads.filter((entry) => entry.path === "/api/resources/revisions");
+                const reconcileReads = reads.filter((entry) => entry.path === "/api/resources/revisions");
+                const listings = reconcileReads.filter((entry) => !entry.since);
+                const sinceReads = reconcileReads.filter((entry) => entry.since);
                 const hello = hellos.find((entry) => entry.socket > previousSocket);
                 check(
-                    `resumeAway ${run}: new socket hello and exactly one revision listing`,
-                    !!hello && listings.length === 1,
+                    `resumeAway ${run}: new socket hello and exactly one replay or revision listing`,
+                    !!hello && reconcileReads.length === 1 && reconcileReads[0].responseEnd >= visibleAt,
                     {
                         hello,
                         reads,
@@ -1398,13 +1407,16 @@ async function measureBoot() {
                 const sample = {
                     transfer: listings.reduce((sum, entry) => sum + entry.transfer, 0),
                     decoded: listings.reduce((sum, entry) => sum + entry.decoded, 0),
+                    sinceTransfer: sinceReads.reduce((sum, entry) => sum + entry.transfer, 0),
+                    sinceDecoded: sinceReads.reduce((sum, entry) => sum + entry.decoded, 0),
+                    reconnectTime: reconcileReads.length === 1 ? reconcileReads[0].responseEnd - visibleAt : null,
                     hello: hello?.bytes ?? 0,
                     apiTransfer: reads.reduce((sum, entry) => sum + entry.transfer, 0),
                     apiDecoded: reads.reduce((sum, entry) => sum + entry.decoded, 0),
                 };
                 (samples.resumeAway ??= []).push(sample);
                 console.log(
-                    `resumeAway: listing ${sample.transfer} wire / ${sample.decoded} decoded bytes, hello ${sample.hello} WebSocket payload bytes; all API reads ${sample.apiTransfer} wire / ${sample.apiDecoded} decoded bytes`,
+                    `resumeAway: listing ${sample.transfer} wire / ${sample.decoded} decoded bytes; since ${sample.sinceTransfer} wire / ${sample.sinceDecoded} decoded bytes; reconnect ${sample.reconnectTime} ms; hello ${sample.hello} WebSocket payload bytes; all API reads ${sample.apiTransfer} wire / ${sample.apiDecoded} decoded bytes`,
                 );
             }
         if (SCENARIOS.includes("scripts"))
@@ -1431,15 +1443,15 @@ async function measureBoot() {
             `\nfixture ${FIXTURE}: median bytes and milliseconds; wire includes browser-reported transfer overhead`,
         );
         console.log(
-            "| Scenario | Boot wire B | Decoded B | Compressed answer B | Encoding | Server TTFB ms | Main screen ms | Listing wire / decoded B | Hello WS payload B | Static wire / decoded B |",
+            "| Scenario | Boot wire B | Decoded B | Compressed answer B | Encoding | Server TTFB ms | Main screen ms | Listing wire / decoded B | Since wire / decoded B | Reconnect ms | Hello WS payload B | Static wire / decoded B |",
         );
-        console.log("| --- | ---: | ---: | ---: | --- | ---: | ---: | --- | ---: | --- |");
+        console.log("| --- | ---: | ---: | ---: | --- | ---: | ---: | --- | --- | ---: | ---: | --- |");
         const resumes = new Set(["resume", "resumeAway"]);
         for (const [scenario, list] of Object.entries(samples)) {
             const pick = (key) => median(list.map((sample) => sample[key]));
             const value = (key) => (pick(key) === null ? "-" : Number(pick(key).toFixed(2)));
             console.log(
-                `| ${scenario} | ${resumes.has(scenario) ? "-" : value("transfer")} | ${resumes.has(scenario) ? "-" : value("decoded")} | ${value("compressed")} | ${[...new Set(list.map((sample) => sample.encoding).filter(Boolean))].join(", ") || "-"} | ${value("ttfb")} | ${value("loaded")} | ${resumes.has(scenario) ? `${value("transfer")} / ${value("decoded")}` : "-"} | ${value("hello")} | ${scenario === "scripts" ? `${value("staticTransfer")} / ${value("staticDecoded")}` : "-"} |`,
+                `| ${scenario} | ${resumes.has(scenario) ? "-" : value("transfer")} | ${resumes.has(scenario) ? "-" : value("decoded")} | ${value("compressed")} | ${[...new Set(list.map((sample) => sample.encoding).filter(Boolean))].join(", ") || "-"} | ${value("ttfb")} | ${value("loaded")} | ${resumes.has(scenario) ? `${value("transfer")} / ${value("decoded")}` : "-"} | ${scenario === "resumeAway" ? `${value("sinceTransfer")} / ${value("sinceDecoded")}` : "-"} | ${value("reconnectTime")} | ${value("hello")} | ${scenario === "scripts" ? `${value("staticTransfer")} / ${value("staticDecoded")}` : "-"} |`,
             );
         }
         console.log(

@@ -18,6 +18,8 @@ import {
 } from "../data/resourceStore.ts";
 import { INJECTED_COPY_FAILURE, installSnapshot, stageSnapshot, withFailingInstallCopy } from "./stagedRestore.ts";
 import { verifyStagedFile } from "../data/restore/stageValidatedSnapshot.ts";
+import type { ChatOp } from "../../../shared/chats.ts";
+import type { ChangeSet } from "../../../shared/resources.ts";
 
 const root: ResourceKind = { name: "root", schemaVersion: 1, normalize: (input) => input };
 const presets: ResourceKind = { name: "presets", schemaVersion: 2, normalize: (input) => input };
@@ -50,6 +52,261 @@ const conflictWith = (fn: () => unknown, current: string | null, label: string) 
     expect(error, label).toBeInstanceOf(ResourceConflictError);
     expect((error as ResourceConflictError).current, label).toBe(current);
 };
+
+describe("bounded revision replay", () => {
+    const characters: ResourceKind = { name: "characters", schemaVersion: 1, normalize: (input) => input };
+    const registry = createKindRegistry([root, presets, characters]);
+    const empty: ChangeSet = { resources: [], chats: [], chatOrders: [] };
+    const createChat = (characterId: string, id: string) => ({
+        characterId,
+        chatId: id,
+        baseRevision: null,
+        ops: [{ op: "create", chat: { id, name: id, note: "", localLore: [], message: [] } } as ChatOp],
+    });
+    function open(changeLogLimit?: number) {
+        const store = createResourceStore({ file: ":memory:", kinds: registry, changeLogLimit });
+        stores.push(store);
+        return store;
+    }
+    function replay(store: ResourceStore, since: number, until: number, changes: ChangeSet) {
+        expect(store.cursor()).toBeGreaterThanOrEqual(until);
+        expect(store.listChanges(since, until, store.epoch())).toEqual({
+            epoch: store.epoch(),
+            cursor: until,
+            changes,
+        });
+    }
+
+    it("logs each committed ref once across puts, batches, transactions and character cascades, and nothing from rollbacks", () => {
+        const store = open();
+        expect(store.cursor()).toBe(0);
+        replay(store, 0, 0, empty);
+        const character = store.put(characters, "c", { chaId: "c" }, null).revision;
+        const order = () => store.listRevisions().chatOrders.find((row) => row.characterId === "c")!;
+        expect(store.cursor()).toBe(2); // Character plus its new order.
+        replay(store, 0, 2, {
+            ...empty,
+            resources: [{ kind: "characters", id: "c", revision: character }],
+            chatOrders: [order()],
+        });
+        const batch = store.applyChanges({
+            ops: [{ kind: root, id: "r", baseRevision: null, data: { private: "not a replay payload" } }],
+            chats: [createChat("c", "k"), createChat("c", "j")],
+        });
+        expect(store.cursor()).toBe(6); // Record, two chats, one final order.
+        replay(store, 2, 6, {
+            resources: [{ kind: "root", id: "r", revision: batch.results[0].revision }],
+            chats: batch.chats.map(({ characterId, id, revision }) => ({ characterId, id, revision })),
+            chatOrders: [order()],
+        });
+        const reordered = store.applyChanges({
+            chatOrders: [{ characterId: "c", baseRevision: order().revision, ids: ["j", "k"] }],
+        });
+        expect(store.cursor()).toBe(7);
+        replay(store, 6, 7, {
+            ...empty,
+            chatOrders: reordered.chatOrders.map(({ characterId, revision }) => ({ characterId, revision })),
+        });
+
+        let final!: string;
+        store.transaction(() => {
+            const first = store.put(root, "r", 2, batch.results[0].revision).revision;
+            final = store.put(root, "r", 3, first).revision;
+            store.put(presets, "r", [], null);
+            expect(store.cursor()).toBe(7); // Uncommitted writes cannot advance the public cursor.
+        });
+        expect(store.cursor()).toBe(9);
+        replay(store, 7, 9, {
+            ...empty,
+            resources: [
+                { kind: "root", id: "r", revision: final },
+                { kind: "presets", id: "r", revision: store.get(presets, "r")!.revision },
+            ],
+        });
+        expect(() =>
+            store.transaction(() => {
+                store.put(root, "r", 4, final);
+                store.put(root, "rolled-back", 1, null);
+                throw new Error("rollback body");
+            }),
+        ).toThrow("rollback body");
+        expect(() =>
+            store.applyChanges({
+                ops: [
+                    { kind: root, id: "r", baseRevision: final, data: 5 },
+                    { kind: presets, id: "r", baseRevision: null, data: [] },
+                ],
+            }),
+        ).toThrow(ResourceBatchConflictError);
+        expect(store.cursor()).toBe(9);
+        replay(store, 9, 9, empty);
+        expect(store.get(root, "r")).toEqual({ revision: final, data: 3 });
+
+        store.delete(characters, "c", character);
+        expect(store.cursor()).toBe(13);
+        replay(store, 9, 13, {
+            resources: [{ kind: "characters", id: "c", revision: null }],
+            chats: [
+                { characterId: "c", id: "k", revision: null },
+                { characterId: "c", id: "j", revision: null },
+            ],
+            chatOrders: [{ characterId: "c", revision: null }],
+        });
+        const created = store.applyChanges({
+            ops: [{ kind: characters, id: "d", baseRevision: null, data: { chaId: "d" } }],
+            chats: [createChat("d", "k")],
+        });
+        expect(store.cursor()).toBe(16);
+        replay(store, 13, 16, {
+            resources: [{ kind: "characters", id: "d", revision: created.results[0].revision }],
+            chats: [{ characterId: "d", id: "k", revision: created.chats[0].revision }],
+            chatOrders: created.chatOrders.map(({ characterId, revision }) => ({ characterId, revision })),
+        });
+        store.applyChanges({
+            ops: [{ kind: characters, id: "d", baseRevision: created.results[0].revision, delete: true }],
+        });
+        expect(store.cursor()).toBe(19);
+        replay(store, 16, 19, {
+            resources: [{ kind: "characters", id: "d", revision: null }],
+            chats: [{ characterId: "d", id: "k", revision: null }],
+            chatOrders: [{ characterId: "d", revision: null }],
+        });
+    });
+
+    it("replays tombstones and only the newest incarnation per key within the requested upper bound", () => {
+        const store = open();
+        for (const id of ["c", "d"]) store.put(characters, id, { chaId: id }, null);
+        store.applyChanges({ chats: [createChat("c", "k"), createChat("d", "k")] });
+        expect(store.cursor()).toBe(8);
+        store.applyChanges({
+            chats: [
+                { characterId: "c", chatId: "k", baseRevision: store.chatRevision("c", "k"), ops: [{ op: "delete" }] },
+            ],
+        });
+        expect(store.cursor()).toBe(10);
+        const deletedOrder = store.listRevisions().chatOrders.find((row) => row.characterId === "c")!;
+        const recreated = store.applyChanges({ chats: [createChat("c", "k")] });
+        const updated = store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: recreated.chats[0].revision,
+                    ops: [{ op: "meta", set: { name: "new incarnation" } }],
+                },
+            ],
+        });
+        expect(store.cursor()).toBe(13);
+        replay(store, 8, 10, {
+            ...empty,
+            chats: [{ characterId: "c", id: "k", revision: null }],
+            chatOrders: [deletedOrder],
+        });
+        replay(store, 8, 13, {
+            ...empty,
+            chats: [{ characterId: "c", id: "k", revision: updated.chats[0].revision }],
+            chatOrders: recreated.chatOrders.map(({ characterId, revision }) => ({ characterId, revision })),
+        });
+        const all = store.listChanges(4, 13, store.epoch());
+        expect(all.changes?.chats).toEqual([
+            { characterId: "c", id: "k", revision: updated.chats[0].revision },
+            { characterId: "d", id: "k", revision: store.chatRevision("d", "k") },
+        ]);
+    });
+
+    it("retains exactly the newest rows and expires uncovered bounds without resetting the high-water cursor", () => {
+        const store = open(3);
+        const revisions = Array.from({ length: 5 }, (_, i) => store.put(root, String(i), i, null).revision);
+        expect(store.cursor()).toBe(5);
+        replay(store, 2, 5, {
+            ...empty,
+            resources: [2, 3, 4].map((i) => ({ kind: "root", id: String(i), revision: revisions[i] })),
+        });
+        replay(store, 2, 3, { ...empty, resources: [{ kind: "root", id: "2", revision: revisions[2] }] });
+        replay(store, 5, 5, empty);
+        for (const [since, until] of [
+            [1, 5],
+            [6, 6],
+            [2, 6],
+            [4, 3],
+            [-1, 5],
+            [2.5, 5],
+            [2, Number.NaN],
+        ]) {
+            expect(store.listChanges(since, until, store.epoch()), `${since}..${until}`).toEqual({
+                epoch: store.epoch(),
+                cursor: 5,
+                expired: true,
+            });
+        }
+        expect(store.listChanges(2, 5, "another epoch")).toEqual({ epoch: store.epoch(), cursor: 5 });
+        store.put(root, "last", 6, null);
+        expect(store.cursor()).toBe(6);
+        expect(store.listChanges(2, 6, store.epoch())).toEqual({ epoch: store.epoch(), cursor: 6, expired: true });
+    });
+
+    it("opens a current-version file without a log, normalizes without logging, and keeps later cursors across reopen", () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-log-open-"));
+        dirs.push(dir);
+        const file = path.join(dir, "resources.sqlite");
+        const first = createResourceStore({ file, kinds: registry });
+        first.put(root, "legacy", { old: true }, null);
+        first.close();
+        const db = new DatabaseSync(file);
+        const version = db.prepare("PRAGMA user_version").get();
+        db.exec("DROP TABLE changes");
+        db.close();
+        const normalized: ResourceKind = { ...root, normalize: () => ({ normalized: true }) };
+        const nextKinds = createKindRegistry([normalized, presets, characters]);
+        const reopened = createResourceStore({ file, kinds: nextKinds });
+        stores.push(reopened);
+        expect(reopened.get(normalized, "legacy")?.data).toEqual({ normalized: true });
+        expect(reopened.cursor()).toBe(0);
+        replay(reopened, 0, 0, empty);
+        const written = reopened.put(presets, "p", [], null).revision;
+        expect(reopened.cursor()).toBe(1);
+        replay(reopened, 0, 1, { ...empty, resources: [{ kind: "presets", id: "p", revision: written }] });
+        reopened.close();
+        const again = createResourceStore({ file, kinds: nextKinds });
+        stores.push(again);
+        expect(again.cursor()).toBe(1);
+        replay(again, 0, 1, { ...empty, resources: [{ kind: "presets", id: "p", revision: written }] });
+        const check = new DatabaseSync(file);
+        try {
+            expect(check.prepare("PRAGMA user_version").get()).toEqual(version);
+        } finally {
+            check.close();
+        }
+    });
+
+    it("empties replay on replacement without importing a snapshot log or restarting its cursor", async () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-log-restore-"));
+        dirs.push(dir);
+        const store = open();
+        store.put(root, "old", 1, null);
+        store.put(root, "other", 2, null);
+        const oldEpoch = store.epoch();
+        const source = open();
+        for (const id of ["a", "b", "c", "d"]) source.put(root, id, id, null);
+        const snapshot = path.join(dir, "snapshot.sqlite");
+        await source.backupTo(snapshot);
+        const db = new DatabaseSync(snapshot);
+        try {
+            expect(db.prepare("SELECT COUNT(*) AS n FROM changes").get()).toEqual({ n: 4 });
+        } finally {
+            db.close();
+        }
+        const epoch = await installSnapshot(store, snapshot, registry);
+        expect(epoch).not.toBe(oldEpoch);
+        expect(store.cursor()).toBe(2);
+        replay(store, 2, 2, empty);
+        expect(store.listChanges(0, 2, epoch)).toEqual({ epoch, cursor: 2, expired: true });
+        expect(store.listChanges(2, 2, oldEpoch)).toEqual({ epoch, cursor: 2 });
+        const next = store.put(root, "after", 3, null).revision;
+        expect(store.cursor()).toBe(3);
+        replay(store, 2, 3, { ...empty, resources: [{ kind: "root", id: "after", revision: next }] });
+    });
+});
 
 describe("connection durability", () => {
     it("selects FULL durability for resources by default and NORMAL by option, while history and vectors use NORMAL", () => {

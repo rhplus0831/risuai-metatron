@@ -511,6 +511,7 @@ describe("checkpoint load transactions", () => {
                     chats: [{ characterId: ref.characterId, id: ref.chatId, revision }],
                     chatOrders: [],
                 },
+                cursor: t.store.cursor(),
             },
         ]);
         expect(t.store.chatSourceGeneration(ref.characterId, ref.chatId)).toBe(before.sourceGeneration + 1);

@@ -28,11 +28,11 @@ export type EventSockets = ReturnType<typeof createEventSockets>;
  * publishes goes to every connected client as refs and revisions (`shared/events.ts`). The handshake
  * needs a JWT (`risu-auth` query or header), never the raw password. On connect the socket sends
  * `hello` with the epoch, current generation locks (`streaming`), and every chat's memory task
- * status (`memoryTasks`), plus an optional revision-listing `digest`, all read in the same synchronous
- * step before the socket is registered and the hello sent. Nothing is replayed: a client reconciles
- * from its advertised map when the digest matches, otherwise from a fetched revision listing.
- * A failed `digest` logs only the error name (or the type of a non-Error throw) and omits only that
- * field; failure of any other hello snapshot closes the socket with 1011.
+ * status (`memoryTasks`), plus optional revision-listing `digest` and log `cursor`, all read in the
+ * same synchronous step before the socket is registered and the hello sent. A client reconciles
+ * from its advertised map when the digest matches, otherwise through bounded log replay or a
+ * whole revision listing. A failed `digest` or `cursor` logs only the error name (or the type of a
+ * non-Error throw) and omits only that field; failure of another snapshot closes the socket with 1011.
  * Every published event goes to every socket in publication order, also one published
  * while another is being sent; a socket too far behind to take a frame (`MAX_BUFFERED_BYTES`) is
  * terminated before it is queued, and the other sockets still receive the frame. Sockets are not
@@ -49,8 +49,10 @@ export function createEventSockets(options: {
     memoryTasks: () => MemoryTaskEntry[];
     /** Digest of the revision listing, sampled synchronously with the other hello snapshots. */
     digest?: () => string;
+    /** Committed log high-water cursor, sampled synchronously with the digest. */
+    cursor?: () => number;
 }) {
-    const { feed, epoch, authorize, streaming, memoryTasks, digest } = options;
+    const { feed, epoch, authorize, streaming, memoryTasks, digest, cursor } = options;
     const wsServer = new WebSocketServer({ noServer: true });
     const sockets = new Set<WebSocket>();
     let closed = false;
@@ -85,6 +87,7 @@ export function createEventSockets(options: {
                     type: "change",
                     epoch: event.epoch,
                     changes: event.changes,
+                    ...(event.cursor !== undefined ? { cursor: event.cursor } : {}),
                     ...(event.streaming ? { streaming: event.streaming } : {}),
                 };
             case "memoryTask":
@@ -148,6 +151,14 @@ export function createEventSockets(options: {
                 // Without the digest the client reads the listing; the other snapshots stay usable.
                 console.error(
                     "[Live updates] hello digest failed:",
+                    error instanceof Error ? error.name : typeof error,
+                );
+            }
+            try {
+                if (cursor) frame.cursor = cursor();
+            } catch (error) {
+                console.error(
+                    "[Live updates] hello cursor failed:",
                     error instanceof Error ? error.name : typeof error,
                 );
             }

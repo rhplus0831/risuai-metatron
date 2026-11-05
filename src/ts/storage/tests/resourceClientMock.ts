@@ -47,6 +47,7 @@ export async function createResourceClientMock(
         })),
         readRefs: vi.fn(async () => ({ epoch: "", items: [] })),
         listRevisions: vi.fn(async () => ({ epoch: "", resources: [], chats: [], chatOrders: [] })),
+        listChanges: vi.fn<ResourceClientModule["listChanges"]>(async () => ({ epoch: "", cursor: 0, expired: true })),
         getResource: vi.fn(async () => null),
         // A `Mock` drops the call's type parameter, hence the cast.
         putResource: vi.fn(async (_kind: string, _id: string, data: unknown) => ({

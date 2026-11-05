@@ -149,6 +149,89 @@ describe("the live-update socket on the server", () => {
     const epochOf = async () =>
         ((await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing).epoch;
 
+    it("sends committed cursors with hello and changes and serves bounded replay alongside the whole listing", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        await listen({ resourceKinds: digestKinds });
+        const initial = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+        const epoch = initial.epoch;
+        const put = async (baseRevision: string | null, text: string) => {
+            const response = await request("/api/resources/notes/r", {
+                ...json({ baseRevision, data: { text } }, { "x-resource-epoch": epoch }),
+                method: "PUT",
+            });
+            expect(response.status).toBe(200);
+            return ((await response.json()) as { revision: string }).revision;
+        };
+        const first = await open();
+        expect(await frameAt(first, 0)).toMatchObject({
+            type: "hello",
+            epoch,
+            cursor: 0,
+            digest: revisionDigest(initial),
+        });
+        const one = await put(null, "one");
+        const two = await put(one, "two");
+        expect(
+            (
+                await request(`/api/resources/notes/r?baseRevision=${encodeURIComponent(two)}`, {
+                    method: "DELETE",
+                    headers: { "x-resource-epoch": epoch },
+                })
+            ).status,
+        ).toBe(200);
+        for (const [index, revision] of [one, two, null].entries()) {
+            expect(await frameAt(first, index + 1)).toEqual({
+                type: "change",
+                epoch,
+                cursor: index + 1,
+                changes: {
+                    resources: [{ kind: "notes", id: "r", revision }],
+                    chats: [],
+                    chatOrders: [],
+                },
+            });
+        }
+        const reconnect = await open();
+        expect(await frameAt(reconnect, 0)).toMatchObject({
+            type: "hello",
+            epoch,
+            cursor: 3,
+            digest: revisionDigest(initial),
+        });
+        const replay = await request(`/api/resources/revisions?since=0&until=2&epoch=${epoch}`);
+        expect(replay.status).toBe(200);
+        expect(await replay.json()).toEqual({
+            epoch,
+            cursor: 2,
+            changes: { resources: [{ kind: "notes", id: "r", revision: two }], chats: [], chatOrders: [] },
+        });
+        expect(await (await request(`/api/resources/revisions?since=2&until=3&epoch=${epoch}`)).json()).toEqual({
+            epoch,
+            cursor: 3,
+            changes: { resources: [{ kind: "notes", id: "r", revision: null }], chats: [], chatOrders: [] },
+        });
+        expect(await (await request(`/api/resources/revisions?since=0&until=4&epoch=${epoch}`)).json()).toEqual({
+            epoch,
+            cursor: 3,
+            expired: true,
+        });
+        expect(await (await request("/api/resources/revisions?since=0&until=3&epoch=old")).json()).toEqual({
+            epoch,
+            cursor: 3,
+        });
+        expect(await (await request("/api/resources/revisions")).json()).toEqual(initial);
+        for (const query of [
+            "since=0&until=3",
+            `since=0&epoch=${epoch}`,
+            `since=&until=3&epoch=${epoch}`,
+            `since=-1&until=3&epoch=${epoch}`,
+            `since=0.5&until=3&epoch=${epoch}`,
+            `since=0&until=NaN&epoch=${epoch}`,
+            `since=0&until=9007199254740992&epoch=${epoch}`,
+        ])
+            expect((await request(`/api/resources/revisions?${query}`)).status, query).toBe(400);
+    });
+
     it("admits a JWT in the query or the header and sends `hello` with the epoch and the (empty) memory task snapshot", async () => {
         await listen();
         const epoch = await epochOf();
@@ -161,6 +244,7 @@ describe("the live-update socket on the server", () => {
             streaming: [],
             memoryTasks: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+            cursor: 0,
         });
         const byHeader = await open("", { "risu-auth": await signer.jwt() });
         expect(await byHeader.opened).toBe("open");
@@ -171,6 +255,7 @@ describe("the live-update socket on the server", () => {
             streaming: [],
             memoryTasks: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+            cursor: 0,
         });
         expect(server.context.eventSockets.size()).toBe(2);
     });
@@ -219,6 +304,7 @@ describe("the live-update socket on the server", () => {
             streaming: [],
             memoryTasks: [],
             digest: revisionDigest(listing),
+            cursor: expect.any(Number),
         });
         expect(revisionDigest(listing)).not.toBe(revisionDigest(before));
         await delivered(reconnected);
@@ -544,6 +630,7 @@ describe("createEventSockets", () => {
         authorize: (token: string | undefined) => Promise<boolean>,
         memoryTasks: () => MemoryTaskEntry[] = () => [],
         digest?: () => string,
+        cursor?: () => number,
     ) {
         const feed = createChangeFeed();
         const sockets = createEventSockets({
@@ -553,6 +640,7 @@ describe("createEventSockets", () => {
             streaming: () => [],
             memoryTasks,
             digest,
+            cursor,
         });
         const node = http.createServer((_req, res) => res.end());
         node.on("upgrade", (req, socket, head) => {
@@ -566,6 +654,38 @@ describe("createEventSockets", () => {
         const { port } = node.address() as { port: number };
         return { feed, sockets, url: `ws://127.0.0.1:${port}/api/events/ws?risu-auth=t` };
     }
+
+    it("samples hello's digest and cursor before a queued commit can intervene", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        let cursor = 7;
+        const rows: ResourceRevisionListing = {
+            epoch: "E",
+            resources: [{ kind: "notes", id: "r", revision: "E:1:7" }],
+            chats: [],
+            chatOrders: [],
+        };
+        const digest = revisionDigest(rows);
+        const { sockets, url } = await host(
+            async () => true,
+            () => [],
+            () => {
+                queueMicrotask(() => {
+                    cursor = 8;
+                    rows.resources[0].revision = "E:1:8";
+                });
+                return revisionDigest(rows);
+            },
+            () => cursor,
+        );
+        const client = connect(url);
+        try {
+            expect(await frameAt(client, 0)).toMatchObject({ type: "hello", digest, cursor: 7 });
+            expect(cursor).toBe(8);
+        } finally {
+            sockets.close();
+            await client.closed;
+        }
+    });
 
     it("refuses (503) a socket whose authorization finished after `close()`", async () => {
         let finish!: (ok: boolean) => void;

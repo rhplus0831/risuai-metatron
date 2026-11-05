@@ -8,7 +8,7 @@ import type { ChangeSet } from "../../../shared/resources.ts";
  * status change, which the memory task service publishes in the epoch of its transition (`memoryTask`).
  */
 export type ChangeFeedEvent =
-    | { type: "change"; epoch: string; changes: ChangeSet; streaming?: ChatStreaming[] }
+    | { type: "change"; epoch: string; changes: ChangeSet; streaming?: ChatStreaming[]; cursor?: number }
     | ({ type: "memoryTask"; epoch: string } & MemoryTaskEntry)
     | { type: "epoch"; epoch: string };
 
@@ -18,9 +18,10 @@ export type ChangeFeed = ReturnType<typeof createChangeFeed>;
 
 /**
  * The listeners of committed changes. Publications during a dispatch wait until every listener has
- * received the current event. There is no replay, so a client that was disconnected reconciles from
- * the revision listing. A listener that throws is logged and never fails the write that published
- * (the write has committed already); dispatch continues with the other listeners and queued events.
+ * received the current event. Disconnected clients reconcile through the resource store's bounded
+ * log or whole revision listing; this dispatcher retains no history. A listener that throws is
+ * logged and never fails the write that published (it has committed already); dispatch continues
+ * with the other listeners and queued events.
  */
 export function createChangeFeed() {
     const listeners = new Set<ChangeFeedListener>();

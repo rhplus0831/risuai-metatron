@@ -43,6 +43,7 @@ import {
     MAX_FEED_PUBLICATION_PATCH_BYTES,
     RESOURCE_KIND,
     type RecordPatch,
+    type ResourceChangesSince,
     type ResourceReadEntries,
     type ResourceRevisionListing,
     SINGLETON_RESOURCE_ID,
@@ -418,12 +419,17 @@ type PreparedOperation =
     | { operation: ResourceBatchOperation; mode: "patch"; patch: PreparedPatch; index: number };
 
 type ChangeAccumulator = {
+    /** Newest log row committed by this publication's transactions, never sampled at dispatch. */
+    cursor?: number;
     resources: Map<string, ChangeSet["resources"][number]>;
     chats: Map<string, ChangeSet["chats"][number]>;
     chatOrders: Map<string, ChangeSet["chatOrders"][number]>;
     /** Generation locks per chat (`characterId\0id`); the last list given for a chat wins. */
     streaming: Map<string, ChatStreaming>;
 };
+
+/** Orders use their character id in both `characterId` and `id`; resources have no character id. */
+type ChangeLogRow = { kind: string; characterId: string | null; id: string; revision: string | null };
 
 type ChatChange = ChangeSet["chats"][number];
 
@@ -810,6 +816,8 @@ export function createResourceStore(options: {
     feed?: ChangeFeed;
     /** The `patchBases` cache's budget in estimated units (default `PATCH_BASES_MAX_UNITS`; tests lower it). */
     patchBaseMaxUnits?: number;
+    /** Retained change-log rows (default 20,000; tests lower it). */
+    changeLogLimit?: number;
     /**
      * The build of the code behind `kinds`' normalizers. Without one, with no commit, or dirty, this
      * store has no stamp: every open runs the normalization pass, and the pass removes a stored stamp.
@@ -825,6 +833,10 @@ export function createResourceStore(options: {
 }) {
     const { kinds, guard, feed, normalizationIdentity: identity } = options;
     const patchBaseMaxUnits = options.patchBaseMaxUnits ?? PATCH_BASES_MAX_UNITS;
+    const changeLogLimit = options.changeLogLimit ?? 20_000;
+    if (!Number.isSafeInteger(changeLogLimit) || changeLogLimit < 0) {
+        throw new Error("Invalid change log limit");
+    }
     /** This store's normalization stamp, or null when no identity vouches for its code. */
     const ownStamp = identity?.commit && !identity.dirty ? normalizationStamp(identity.commit, kinds) : null;
     if (options.file !== ":memory:") {
@@ -982,12 +994,35 @@ export function createResourceStore(options: {
                 : normalizeStoredRecords();
         db.exec("COMMIT");
         openChatSchema(db);
+        // Reconnect history is created on every open, outside the snapshot layout and restore copy.
+        // Open-time normalization deliberately bypasses it; a changed digest forces a full listing.
+        db.exec(`CREATE TABLE IF NOT EXISTS changes (
+            cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            characterId TEXT,
+            id TEXT NOT NULL,
+            revision TEXT
+        ) STRICT`);
     } catch (error) {
         if (db.isTransaction) {
             db.exec("ROLLBACK");
         }
         db.close();
         throw error;
+    }
+    const insertChange = db.prepare("INSERT INTO changes (kind, characterId, id, revision) VALUES (?, ?, ?, ?)");
+    const pruneChanges = db.prepare(
+        "DELETE FROM changes WHERE cursor <= (SELECT cursor FROM changes ORDER BY cursor DESC LIMIT 1 OFFSET ?)",
+    );
+    const selectCursor = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'changes'");
+    const selectChangeFloor = db.prepare("SELECT MIN(cursor) AS oldest FROM changes");
+    const selectChanges = db.prepare(
+        "SELECT kind, characterId, id, revision FROM changes WHERE cursor > ? AND cursor <= ? ORDER BY cursor",
+    );
+
+    function cursor(): number {
+        assertOpen();
+        return (selectCursor.get() as { seq: number } | undefined)?.seq ?? 0;
     }
     /** Set while `transaction` runs; the first conflict inside it makes the whole unit roll back. */
     let transactionState: { conflict: ResourceConflictError | null; writes: number } | null = null;
@@ -1018,6 +1053,8 @@ export function createResourceStore(options: {
      * `transaction` or `atomically` joins the open one).
      */
     let transactionInvalidations: Map<string, { characterId: string; id: string }> | null = null;
+    /** One final ref per key in the open transaction, independent of the attached feed. */
+    let transactionChanges: Map<string, ChangeLogRow> | null = null;
     const invalidationListeners = new Set<(notice: ChatInvalidation) => void>();
     /** Notices of committed writes not delivered yet, oldest first. */
     const pendingInvalidations: ChatInvalidation[] = [];
@@ -1048,6 +1085,7 @@ export function createResourceStore(options: {
     function beginTransaction() {
         db.exec("BEGIN IMMEDIATE");
         transactionInvalidations = new Map();
+        transactionChanges = new Map();
         transactionMessageChanges = [];
     }
 
@@ -1055,13 +1093,23 @@ export function createResourceStore(options: {
      * Commits the open transaction and, in the same synchronous step, advances the source
      * generation of every chat it invalidated and queues their notices and its message changes
      * (`deliverInvalidations`). A rebuild outlives this process and its generations, so a chat's run takes
-     * the same news in the transaction itself.
+     * the same news in the transaction itself. Final refs and retention pruning commit with the
+     * write; only after COMMIT succeeds may the publication carry their newest cursor.
      */
     function commitTransaction() {
         for (const { characterId, id } of transactionInvalidations?.values() ?? []) {
             memoryTables.rebuild.noteSourceReplaced(characterId, id);
         }
+        let newestCursor: number | undefined;
+        for (const { kind, characterId, id, revision } of transactionChanges?.values() ?? []) {
+            newestCursor = Number(insertChange.run(kind, characterId, id, revision).lastInsertRowid);
+        }
+        if (newestCursor !== undefined) pruneChanges.run(changeLogLimit);
         db.exec("COMMIT");
+        if (newestCursor !== undefined && publishingScope) {
+            publishingScope.changes.cursor = Math.max(publishingScope.changes.cursor ?? 0, newestCursor);
+        }
+        transactionChanges = null;
         const invalidated = transactionInvalidations;
         const messageChanges = transactionMessageChanges;
         transactionInvalidations = null;
@@ -1076,8 +1124,9 @@ export function createResourceStore(options: {
         }
     }
 
-    /** Rolls back the open transaction, if any, with the invalidations and message changes it recorded. */
+    /** Rolls back the open transaction, if any, dropping its refs, invalidations and message changes. */
     function rollbackTransaction() {
+        transactionChanges = null;
         transactionInvalidations = null;
         transactionMessageChanges = null;
         if (db.isTransaction) {
@@ -1138,6 +1187,7 @@ export function createResourceStore(options: {
      * committed nested accumulator is merged again when its enclosing write fails.
      */
     function mergeChanges(target: ChangeAccumulator, source: ChangeAccumulator) {
+        if (source.cursor !== undefined) target.cursor = Math.max(target.cursor ?? 0, source.cursor);
         for (const [key, entry] of source.resources) {
             const { kind, id, revision } = entry;
             target.resources.set(key, target.resources.has(key) ? { kind, id, revision } : entry);
@@ -1198,6 +1248,7 @@ export function createResourceStore(options: {
      * in this scope loses it: its base would be a revision no client was told about.
      */
     function recordResource(kind: string, id: string, revision: string | null, patch?: RecordPatch) {
+        transactionChanges?.set(JSON.stringify([kind, null, id]), { kind, characterId: null, id, revision });
         const changes = publishingScope?.changes;
         const key = `${kind}\u0000${id}`;
         changes?.resources.set(
@@ -1211,6 +1262,12 @@ export function createResourceStore(options: {
      * written in this scope coalesces with its earlier entry (`coalescedChat`).
      */
     function recordChat(characterId: string, id: string, revision: string | null, payloads?: ChatFeedPayloads) {
+        transactionChanges?.set(JSON.stringify(["chats", characterId, id]), {
+            kind: "chats",
+            characterId,
+            id,
+            revision,
+        });
         const changes = publishingScope?.changes;
         const key = `${characterId}\u0000${id}`;
         const entry: ChangeSet["chats"][number] = { characterId, id, revision, ...payloads };
@@ -1223,6 +1280,12 @@ export function createResourceStore(options: {
     }
 
     function recordOrder(characterId: string, revision: string | null) {
+        transactionChanges?.set(JSON.stringify(["chatOrders", characterId]), {
+            kind: "chatOrders",
+            characterId,
+            id: characterId,
+            revision,
+        });
         publishingScope?.changes.chatOrders.set(characterId, { characterId, revision });
     }
 
@@ -1285,6 +1348,7 @@ export function createResourceStore(options: {
                         type: "change",
                         epoch,
                         changes: { resources, chats, chatOrders: [...changes.chatOrders.values()] },
+                        ...(changes.cursor !== undefined ? { cursor: changes.cursor } : {}),
                         ...(changes.streaming.size > 0 ? { streaming: [...changes.streaming.values()] } : {}),
                     });
                 }
@@ -1804,9 +1868,6 @@ export function createResourceStore(options: {
             if (options.inTransaction?.after) {
                 runCheckpointCallback((tx) => options.inTransaction!.after!(applied, tx));
             }
-            commitTransaction();
-            committed = true;
-            writeCount += prepared.length + chatOutcome.applied + checkpointWrites;
             for (const [index, result] of results.entries()) {
                 recordResource(result.kind, result.id, result.revision, patches.get(index));
             }
@@ -1818,6 +1879,9 @@ export function createResourceStore(options: {
             for (const order of chatOutcome.orders) {
                 recordOrder(order.characterId, order.revision);
             }
+            commitTransaction();
+            committed = true;
+            writeCount += prepared.length + chatOutcome.applied + checkpointWrites;
             if (written && chatOutcome.changes) {
                 written.chats = chatOutcome.changes;
             }
@@ -2497,6 +2561,49 @@ export function createResourceStore(options: {
             return { epoch, resources, ...chatTables.listRevisions() };
         },
 
+        /** Committed high-water cursor, including pruned rows; zero before the first logged write. */
+        cursor,
+
+        /**
+         * Bounded reconnect replay, coalesced to the last revision or tombstone per key, without
+         * payloads. Coverage starts at MIN(cursor) - 1, or the high-water cursor when empty.
+         * Invalid or uncovered bounds expire; a different epoch returns this epoch without changes.
+         */
+        listChanges(since: number, until: number, requestedEpoch: string = epoch): ResourceChangesSince {
+            const high = cursor();
+            if (requestedEpoch !== epoch) return { epoch, cursor: high };
+            const { oldest } = selectChangeFloor.get() as { oldest: number | null };
+            const floor = oldest === null ? high : oldest - 1;
+            if (
+                !Number.isSafeInteger(since) ||
+                !Number.isSafeInteger(until) ||
+                since < floor ||
+                since > until ||
+                until > high
+            ) {
+                return { epoch, cursor: high, expired: true };
+            }
+            const changes = changeAccumulator();
+            for (const { kind, characterId, id, revision } of selectChanges.all(since, until) as ChangeLogRow[]) {
+                if (kind === "chats" && characterId !== null) {
+                    changes.chats.set(JSON.stringify([characterId, id]), { characterId, id, revision });
+                } else if (kind === "chatOrders" && characterId !== null) {
+                    changes.chatOrders.set(characterId, { characterId, revision });
+                } else {
+                    changes.resources.set(JSON.stringify([kind, id]), { kind, id, revision });
+                }
+            }
+            return {
+                epoch,
+                cursor: until,
+                changes: {
+                    resources: [...changes.resources.values()],
+                    chats: [...changes.chats.values()],
+                    chatOrders: [...changes.chatOrders.values()],
+                },
+            };
+        },
+
         /**
          * One chat (missing: revision and data null, as in `readRefs`) with its source generation,
          * read in one synchronous call: a snapshot of the chat and the generation it belongs to.
@@ -2908,6 +3015,7 @@ export function createResourceStore(options: {
                     DELETE FROM main.chatOrders;
                     DELETE FROM main.chats;
                     DELETE FROM main.checkpointPages;
+                    DELETE FROM main.changes;
                     INSERT INTO main.resources (kind, id, revision, schemaVersion, data)
                         SELECT kind, id, revision, schemaVersion, data FROM staged.resources ORDER BY seq;
                 `);

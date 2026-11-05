@@ -694,6 +694,45 @@ describe("following a job", () => {
         await follow.closed;
     });
 
+    it("ignores unknown job frames without changing the followed job and continues applying later frames", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+        const { jobStages } = await import("../process/jobStages");
+        const ref = { chaId: "c", chatId: "k" };
+        transport.rememberGenerationJob(ref, "j1");
+        const dispatch = vi.fn((event: Parameters<Transport["applyGenerationEvent"]>[2]) =>
+            transport.applyGenerationEvent("j1", ref, event),
+        );
+        const follow = startFollow("j1", dispatch);
+        stubs.auth[0].resolve("jwt");
+        await vi.advanceTimersByTimeAsync(0);
+        const [socket] = FakeSocket.instances;
+        socket.open();
+        socket.message({ type: "stage", epoch: EPOCH, stage: "generating" });
+        expect(() =>
+            socket.message({
+                type: "future-frame",
+                epoch: EPOCH,
+                stage: "finishing",
+                revision: null,
+                data: { bad: true },
+            }),
+        ).not.toThrow();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(get(jobStages).get("j1")).toEqual({ chatKey: "c\u0000k", stage: "generating" });
+        expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
+        expect(stubs.applyHydration).not.toHaveBeenCalled();
+        expect(stubs.applyServerGeneration).not.toHaveBeenCalled();
+        expect(stubs.endServerJob).not.toHaveBeenCalled();
+        expect(stubs.handleChannelEvent).not.toHaveBeenCalled();
+        expect(socket.closeCalls).toBe(0);
+        socket.message({ type: "stage", epoch: EPOCH, stage: "finishing" });
+        expect(get(jobStages).get("j1")).toEqual({ chatKey: "c\u0000k", stage: "finishing" });
+        socket.message({ type: "done", epoch: EPOCH, revision: null });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(stubs.endServerJob).toHaveBeenCalledExactlyOnceWith("j1");
+        expect(transport.savedGenerationJobs()).toEqual({});
+    });
+
     it("drops another epoch's stage before dispatch and keeps the followed job's stage", async () => {
         const { jobStages } = await import("../process/jobStages");
         const ref = { chaId: "c", chatId: "k" };

@@ -469,6 +469,21 @@ export type ResourceRevisionListing = {
     chatOrders: { characterId: string; revision: string }[];
 };
 
+/**
+ * `GET /api/resources/revisions?since=&until=&epoch=`: refs with `since < cursor <= until`,
+ * coalesced per key, without payloads. A different epoch returns only its epoch and current cursor.
+ * Older servers omit the replay fields; callers then use the whole revision listing.
+ */
+export type ResourceChangesSince = {
+    epoch: string;
+    /** Optional on older servers. The requested `until`, or the high-water cursor if unavailable. */
+    cursor?: number;
+    /** Optional on older servers and unavailable replays; null revisions are deletion tombstones. */
+    changes?: ChangeSet;
+    /** Optional on older servers; true when the bounds are outside the retained coverage. */
+    expired?: boolean;
+};
+
 const revisionEncoder = new TextEncoder();
 const murmurMultipliers = [0x239b961b, 0xab0e9789, 0x38b34ae5, 0xa1e38b93];
 const murmurAddends = [0x561ccd1b, 0x0bcaa747, 0x96cd1c35, 0x32ac3b17];

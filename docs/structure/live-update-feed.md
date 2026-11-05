@@ -36,12 +36,13 @@
 
 ### Live-update hello
 
-The `hello` (`createEventSockets`) samples the epoch, the generation locks (`streaming`), the memory task statuses
-(`memoryTasks`), and the optional `digest` (`revisionDigest(resources.listRevisions())`, wired in `server/src/app.ts`)
-in one synchronous step before the socket is registered; a failed digest omits only that field, any other failed
-snapshot closes the socket. Nothing is replayed: a client whose seeded advertised map has the loaded epoch and the
-matching digest reconciles from that map, otherwise it reads `/api/resources/revisions`
-([feed connection](live-updates.md#feed-connection)).
+`createEventSockets` samples epoch, locks (`streaming`), memory statuses (`memoryTasks`), optional `hello.digest`
+(`revisionDigest`) and `hello.cursor` (`resources.cursor()`) synchronously before registration; `server/src/app.ts`
+wires the samplers. Failed digest/cursor samples omit that field; other failures close.
+[Reconciliation](live-updates.md#feed-connection) uses the map, bounded replay, or whole listing.
+
+`change.cursor` is its refs' newest committed log row, nested commits included, never resampled during dispatch.
+Streaming-only frames have none; older servers omit both cursors.
 
 ### Frame admission
 

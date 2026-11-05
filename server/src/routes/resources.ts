@@ -359,6 +359,8 @@ export function registerResourceRoutes(
      * GET /api/resources/revisions: { epoch, resources: [{ kind, id, revision }],
      * chats: [{ characterId, id, revision }], chatOrders: [{ characterId, revision }] }.
      * The live-update reconciliation read carries no data and is compressed per Accept-Encoding.
+     * With `since`, requires nonnegative safe integer `since`/`until` and a nonempty `epoch` (400
+     * otherwise), returning the store's bounded, coalesced replay or its expired/epoch answer.
      */
     // Before `/api/resources/:kind`, which would take `revisions` as a kind name.
     app.get("/api/resources/revisions", limiter, async (c) => {
@@ -366,7 +368,18 @@ export function registerResourceRoutes(
         if (denied) {
             return denied;
         }
-        return compressedJson(c, store.listRevisions());
+        const sinceText = c.req.query("since");
+        if (sinceText === undefined) return compressedJson(c, store.listRevisions());
+        const untilText = c.req.query("until");
+        const epoch = c.req.query("epoch");
+        const parseCursor = (value: string | undefined) =>
+            value !== undefined && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
+        const since = parseCursor(sinceText);
+        const until = parseCursor(untilText);
+        if (since === null || until === null || !epoch) {
+            return c.json({ error: "Expected since, until and epoch for revision replay" }, 400);
+        }
+        return compressedJson(c, store.listChanges(since, until, epoch));
     });
 
     /** GET returns compressed { epoch, items: [{ id, revision, data }] } in creation order,

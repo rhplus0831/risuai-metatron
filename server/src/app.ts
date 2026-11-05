@@ -306,6 +306,7 @@ export function createServerContext(options: {
         feed: changeFeed,
         epoch: () => resources.epoch(),
         digest: () => revisionDigest(resources.listRevisions()),
+        cursor: () => resources.cursor(),
         authorize: auth.isAuthorizedToken,
         // The services are built below; a socket connects only once the context exists.
         streaming: () => generationJobs.streamingSnapshot(),

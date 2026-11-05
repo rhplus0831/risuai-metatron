@@ -1419,6 +1419,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
             streaming: [],
             memoryTasks: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+            cursor: expect.any(Number),
         });
         const generation = await createOk();
         const owner = await follow(generation);

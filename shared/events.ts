@@ -29,8 +29,9 @@ export type MemoryTaskEntry = { characterId: string; chatId: string; status: Mem
  * - `hello`: sent once on every connection with the database epoch, current generation locks
  *   (`streaming`), and every chat's memory task status (`memoryTasks`); both snapshots replace the
  *   client's whole sets. The optional `digest` fingerprints the revision listing sampled with those
- *   snapshots. A matching advertised map reconciles locally; otherwise the client reads
- *   `GET /api/resources/revisions` (nothing is replayed);
+ *   snapshots with an optional log `cursor`. A matching advertised map reconciles locally;
+ *   otherwise a bounded replay through that cursor is checked against the digest, with the whole
+ *   revision listing as fallback;
  * - `change`: one committed write's refs and revisions, optionally with record or by-id chat patches;
  *   `streaming` lists the locks of every chat a generation job's write touched, or whose locks the
  *   job's end released (then `changes` may be empty);
@@ -46,8 +47,17 @@ export type EventFeedFrame =
           streaming: ChatStreamingSnapshot[];
           memoryTasks: MemoryTaskEntry[];
           digest?: string;
+          /** Optional on older servers; the log high-water cursor sampled with the digest. */
+          cursor?: number;
       }
-    | { type: "change"; epoch: string; changes: ChangeSet; streaming?: ChatStreaming[] }
+    | {
+          type: "change";
+          epoch: string;
+          changes: ChangeSet;
+          streaming?: ChatStreaming[];
+          /** Optional on older servers and lock-only frames; the newest log row of these refs. */
+          cursor?: number;
+      }
     | ({ type: "memoryTask"; epoch: string } & MemoryTaskEntry)
     | { type: "epoch"; epoch: string }
     | { type: "ping"; ts: number };
