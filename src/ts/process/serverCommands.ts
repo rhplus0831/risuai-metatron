@@ -16,7 +16,7 @@ import type {
     GenerationStatus,
 } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
-import { get, writable } from "svelte/store";
+import { get, readonly, writable } from "svelte/store";
 import { alertConfirm, alertError, alertJobError, alertToast } from "../alert";
 import {
     abortGenerationJob,
@@ -185,7 +185,7 @@ function handleFollowRole(
     ref: ChatRef,
     event: Extract<GenerationEvent, { type: "handoff" }>,
 ) {
-    lifecycle.role = event.pending ? "pending" : event.owner === "self" ? "owner" : "viewer";
+    setFollowRole(lifecycle, jobId, event.pending ? "pending" : event.owner === "self" ? "owner" : "viewer");
     if (event.owner === "self") {
         lifecycle.everOwner = true;
         lifecycle.attemptOwner = true;
@@ -214,8 +214,25 @@ const replayedStatuses = new Map<string, GenerationStatus>();
  * make a followed job of the selected chat (command jobs included) stoppable through
  * `abortGenerationJob` in `src/ts/network/generationJobs.ts`. Its separate `stopChatJob` button
  * stops a job another tab started. `src/ts/process/chatStatus.svelte.ts` also reads this registry.
+ * `viewingJobs` identifies creator-viewers among these follows for the chat's Take back control.
  */
 export const followedJobs = writable<ReadonlyMap<string, string>>(new Map());
+
+const viewers = writable<ReadonlySet<string>>(new Set());
+/** Jobs this tab follows as their creator while another tab owns them. */
+export const viewingJobs = readonly(viewers);
+
+function setFollowRole(lifecycle: FollowLifecycle, jobId: string, role: GenerationFollow["role"]) {
+    lifecycle.role = role;
+    const viewing = lifecycle.creator && role === "viewer";
+    viewers.update((jobs) => {
+        if (jobs.has(jobId) === viewing) return jobs;
+        const next = new Set(jobs);
+        if (viewing) next.add(jobId);
+        else next.delete(jobId);
+        return next;
+    });
+}
 
 /** The jobs this tab follows for a chat. */
 export function followedJobsOf(jobs: ReadonlyMap<string, string>, ref: ChatRef): string[] {
@@ -334,7 +351,7 @@ export function followJobToEnd(
         creator: !options.ticket,
         everOwner: false,
         attemptOwner: false,
-        role: initialStatus?.handedOff ? "viewer" : null,
+        role: null,
         notified: false,
         ref,
         ticket: options.ticket,
@@ -342,6 +359,7 @@ export function followJobToEnd(
         wakeUp: () => {},
         pluginHold: options.ticket ? holdGenerationPluginWork() : undefined,
     };
+    setFollowRole(lifecycle, jobId, initialStatus?.handedOff ? "viewer" : null);
     resetFollowWake(lifecycle);
     let resolveFollow!: (end: GenerationTerminalEvent | "lost") => void;
     let rejectFollow!: (error: unknown) => void;
@@ -377,7 +395,7 @@ export function followJobToEnd(
             const replay = replayedStatuses.get(jobId);
             // Discovery's ended status stands, as a replay does, when the chat cannot be loaded.
             const read = discovered === "lost" ? undefined : discovered.status;
-            if (read?.handedOff) lifecycle.role = "viewer";
+            if (read?.handedOff) setFollowRole(lifecycle, jobId, "viewer");
             let result: FollowEnd = replay?.terminal
                 ? { terminal: replay.terminal, applied: false, kept: replay.kept === true }
                 : !loaded
@@ -456,6 +474,7 @@ export function followJobToEnd(
             return end;
         } finally {
             lifecycle.active?.close();
+            setFollowRole(lifecycle, jobId, null);
             lifecycle.pluginHold?.();
             setHandoffWork(jobId, null);
             replayHolds.get(jobId)?.();
@@ -814,7 +833,7 @@ async function followOnce(
         if (ticket && !lifecycle.attemptOwner) {
             setHandoffWork(jobId, null);
             if (!lifecycle.creator) return "takeoverLost";
-            lifecycle.role = "viewer";
+            setFollowRole(lifecycle, jobId, "viewer");
             attached = false;
             continue;
         }
@@ -851,7 +870,7 @@ async function followOnce(
                 : "gone";
         if (status.epoch !== getResourceEpoch()) return "gone";
         if (status.kept && status.terminal) return { terminal: status.terminal, applied: false, kept: true };
-        if (lifecycle.creator && status.handedOff) lifecycle.role = "viewer";
+        if (lifecycle.creator && status.handedOff) setFollowRole(lifecycle, jobId, "viewer");
         if (status.state === "ended" && status.terminal) known = status.terminal;
     }
     return known ? { terminal: known, applied: false, kept: false } : "lost";

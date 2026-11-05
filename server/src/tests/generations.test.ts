@@ -289,6 +289,46 @@ describe("generation jobs over HTTP and WebSocket", () => {
             return worker;
         }
 
+        it("refuses handoff to the current owner without opening an offer or displacing its callback socket", async () => {
+            controlledClock();
+            await listen();
+            const entered = capture();
+            const created = await create({
+                kind: "send",
+                clientId: "tab",
+                context: await context(),
+                hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+            });
+            expect(created.status).toBe(200);
+            const id = created.body.jobId as string;
+            const job = await entered;
+            const creator = await follow(id, { keepOpen: true });
+            await creator.fence();
+            for (const [ownerId, socket] of [
+                ["tab", creator],
+                ["worker", null],
+            ] as const) {
+                const owner = socket ?? (await transfer(id));
+                const pending = job.channel.callback("editoutput", { text: "still owned here" });
+                await owner.fence();
+                const callback = owner.events.findLast((event) => event.type === "callback")!;
+                expect(callback).toMatchObject({ type: "callback", name: "editoutput" });
+                expect((await post(id, "handoff", { clientId: "tab", target: ownerId })).status).toBe(409);
+                expect((await post(id, "takeover", { clientId: ownerId })).status).toBe(409);
+                owner.ws.send(
+                    JSON.stringify({
+                        type: "answer",
+                        id: callback.id,
+                        outcome: "answered",
+                        value: `answer:${ownerId}`,
+                    }),
+                );
+                expect(await pending).toMatchObject({ value: `answer:${ownerId}` });
+                await owner.fence();
+                expect(owner.ws.readyState).toBe(WsClient.OPEN);
+            }
+        });
+
         it("authorizes participant controls while current stays readable by every authenticated client", async () => {
             controlledClock();
             await listen();
@@ -1607,6 +1647,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
             streaming: [],
             memoryTasks: [],
             handoffs: [],
+            clients: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
         });
         const generation = await createOk();

@@ -375,7 +375,7 @@ export function registerGenerationRoutes(
     /**
      * POST GenerationHandoffBody { clientId, target? } with x-resource-epoch: { offered: true }.
      * 400 invalid ids; 404 unknown job or non-participant; 412 another epoch;
-     * 409 ended, unavailable, or a takeover already reserved. Opens a requested offer.
+     * 409 ended, unavailable, target already owns the job, or a takeover already reserved. Opens a requested offer.
      */
     app.post("/api/generations/:id/handoff", limiter, async (c) => {
         const denied = await auth.checkAuth(c);

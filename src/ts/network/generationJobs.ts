@@ -738,6 +738,33 @@ export async function stopChatGeneration(ref: ChatRef, jobId: string): Promise<"
     }
 }
 
+/** Requests a targeted handoff; 404/409 mean the job or target is unavailable. */
+export async function requestGenerationHandoff(jobId: string, target: string): Promise<"offered" | "unavailable"> {
+    try {
+        const answer: unknown = await boundedAttempt(
+            async (signal) =>
+                (
+                    await request(`/api/generations/${encodeURIComponent(jobId)}/handoff`, {
+                        method: "POST",
+                        signal,
+                        headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+                        body: JSON.stringify({ clientId: generationClientId(), target }),
+                    })
+                ).json(),
+            undefined,
+            language.serverJob.handoff.requestTimedOut,
+        );
+        if (!object(answer) || answer.offered !== true) {
+            throw new ResourceRequestError(0, language.serverJob.handoff.invalidHandoff);
+        }
+        return "offered";
+    } catch (error) {
+        if (error instanceof ResourceRequestError && (error.status === 404 || error.status === 409))
+            return "unavailable";
+        throw error;
+    }
+}
+
 /** Claims an open offer with a bounded control request; 404/409 mean it is unavailable. */
 export async function takeoverGenerationJob(jobId: string): Promise<string | null> {
     try {

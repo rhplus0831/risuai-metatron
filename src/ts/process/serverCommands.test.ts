@@ -2336,6 +2336,41 @@ describe("handoff lifecycles", () => {
         ...extra,
     });
 
+    it("tracks creator viewers for Take back and reuses their follow when a ticket returns ownership", async () => {
+        vi.useFakeTimers();
+        let ready = attached();
+        const end = commands.followJobToEnd("take-back", ref);
+        await ready;
+        const viewer = follows().at(-1)!;
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+        viewer.onEvent(role("other"));
+        expect([...get(commands.viewingJobs)]).toEqual(["take-back"]);
+        ready = attached();
+        expect(commands.followJobToEnd("take-back", ref, undefined, { ticket: "take-back-ticket" })).toBe(end);
+        await ready;
+        const owner = follows().at(-1)!;
+        expect(owner).not.toBe(viewer);
+        expect(owner.options).toEqual({ ticket: "take-back-ticket", initiallyViewing: true });
+        owner.onEvent(role("self"));
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+        owner.onEvent(role("other"));
+        expect([...get(commands.viewingJobs)]).toEqual(["take-back"]);
+        endWith(owner, done);
+        await end;
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+
+        ready = attached();
+        const foreign = commands.followJobToEnd("foreign-job", ref, undefined, { ticket: "worker-ticket" });
+        await ready;
+        const worker = follows().at(-1)!;
+        worker.onEvent(role("other", { pending: true }));
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+        worker.onEvent(role("other"));
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+        endWith(worker, done);
+        await foreign;
+    });
+
     it("releases a refused or closed pending takeover without chat recovery or loss notices", async () => {
         vi.useFakeTimers();
         const { recoveryChatKeys } = await import("./chatStatus.svelte");

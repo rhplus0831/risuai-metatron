@@ -2098,6 +2098,7 @@ describe("the server wiring", () => {
             streaming: [],
             memoryTasks: [],
             handoffs: [],
+            clients: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
         });
 
@@ -2278,6 +2279,7 @@ describe("the server wiring", () => {
             streaming: [],
             memoryTasks: [],
             handoffs: [],
+            clients: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
         });
         // The old epoch's retained input is gone with the registry: a start waits for the next send.

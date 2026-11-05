@@ -175,6 +175,21 @@ afterEach(() => {
 });
 
 describe("handoff transport", () => {
+    it("posts a manual handoff for the named job with this tab, the chosen target and the loaded epoch", async () => {
+        vi.useFakeTimers();
+        stubs.fetch.mockResolvedValue(Response.json({ offered: true }));
+        expect(await transport.requestGenerationHandoff("job/one", "chosen-worker")).toBe("offered");
+        expect(stubs.fetch).toHaveBeenCalledTimes(1);
+        const [path, request] = stubs.fetch.mock.calls[0];
+        expect(path).toBe("/api/generations/job%2Fone/handoff");
+        expect(request?.method).toBe("POST");
+        expect(new Headers(request?.headers).get(RESOURCE_EPOCH_HEADER)).toBe(EPOCH);
+        expect(JSON.parse(String(request?.body))).toEqual({
+            clientId: transport.generationClientId(),
+            target: "chosen-worker",
+        });
+    });
+
     it("posts a takeover with this client, treats 409 and 404 as unavailable, and preserves handedOff on reads", async () => {
         vi.useFakeTimers();
         const jobId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";

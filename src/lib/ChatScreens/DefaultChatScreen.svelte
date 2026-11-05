@@ -75,6 +75,7 @@
     import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { createSendAborts } from "src/ts/process/sendAborts.svelte";
     import { followedJobs, followedJobsOf, stopChatJob } from "src/ts/process/serverCommands";
+    import HandoffControls from "./HandoffControls.svelte";
     import { jobStages, chatStageOf } from "src/ts/process/jobStages";
     import { abortGenerationJob } from "src/ts/network/generationJobs";
     import { sleep } from "../../ts/util";
@@ -1290,6 +1291,7 @@
                         >
                             <div class="loadmove chat-process-stage-{processStage}" class:autoload={autoMode}></div>
                         </button>
+                        <HandoffControls jobIds={ownedJobIds} height={inputHeight} />
                     {:else if bindingIncomplete}
                         <!-- Keeps `button-icon-send`: the send hotkey clicks it and opens the setup too. -->
                         <button

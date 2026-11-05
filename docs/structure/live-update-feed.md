@@ -22,8 +22,9 @@
   [frame admission](#frame-admission) (`send`, `MAX_BUFFERED_BYTES`). WS upgrade `/api/events/ws` (`EVENT_FEED_PATH`),
   dispatched by `attachWebSocket` in `server/src/app.ts` outside the HTTP app, so no HTTP limiter; JWT in the
   `risu-auth` query or header, never the password.
-- `shared/events.ts`: the frames (`EventFeedFrame`: `hello`, `change`, `memoryTask`, `handoff`, `epoch`, `ping`),
-  `ChatStreaming`, `ChatStreamingSnapshot`, `MemoryTaskEntry`.
+- `shared/events.ts`: the frames (`EventFeedFrame`: `hello`, `change`, `memoryTask`, `handoff`, `clients`, `epoch`,
+  `ping`), the one client message (`EventFeedClientMessage`), `ChatStreaming`, `ChatStreamingSnapshot`,
+  `MemoryTaskEntry`.
 - `shared/resources.ts`: what a `change` frame carries (`ChangeSet`, `ChatDeltaBody`, `ChatMetaFields`) and its caps
   (`MAX_FEED_PATCH_BYTES`, `MAX_FEED_PUBLICATION_PATCH_BYTES`).
 - `server/src/data/chatStore.ts`, feed parts: a by-id group's entry, built in `applyGroup` (`ChatFeedPayloads`,
@@ -36,20 +37,22 @@
 
 ### Live-update hello
 
-The `hello` (`createEventSockets`) samples the epoch, the generation locks (`streaming`), the memory task statuses
-(`memoryTasks`), the open handoff offers (`handoffs`), and the optional `digest`
-(`revisionDigest(resources.listRevisions())`, wired in `server/src/app.ts`) in one synchronous step before the socket is
-registered; a failed digest omits only that field, any other failed snapshot closes the socket. Nothing is replayed: a
-client whose seeded advertised map has the loaded epoch and the matching digest reconciles from that map, otherwise it
-reads `/api/resources/revisions` ([feed connection](live-updates.md#feed-connection)).
+The `hello` samples the epoch, the generation locks (`streaming`), the memory task statuses (`memoryTasks`), the open
+handoff offers (`handoffs`), the registered clients (`clients`), and the optional `digest`
+(`revisionDigest(resources.listRevisions())`, wired in `server/src/app.ts`); failures: `createEventSockets` comment.
+Nothing is replayed: a client whose seeded advertised map has the loaded epoch and the matching digest reconciles from
+that map, otherwise it reads `/api/resources/revisions` ([feed connection](live-updates.md#feed-connection)).
 
 ### Frame admission
 
-Every frame but the `hello` is admitted per socket by its own UTF-8 size, measured once for every socket (`send`,
-`MAX_BUFFERED_BYTES`, 4 MiB): a socket the frame would push past the bound is terminated before the frame is queued, the
-other sockets still get it, and its client reconnects and [reconciles](#live-update-hello). The `hello` is checked on
-the queued bytes alone. What a `change` frame's patches may add is bounded by the
-[publication budget](#publication-budget).
+Every frame but the `hello` is admitted per socket by its own UTF-8 size (`send`, `MAX_BUFFERED_BYTES`, 4 MiB; the rules
+are on both): a socket that cannot take it is terminated, and its client [reconciles](#live-update-hello). What a
+`change` frame's patches may add is bounded by the [publication budget](#publication-budget).
+
+### Presence
+
+A socket's `register` message lists it in the `clients` frame every socket gets (rules: `createEventSockets` comment);
+the tab side is [feed connection](live-updates.md#feed-connection).
 
 ### Own chat changes
 

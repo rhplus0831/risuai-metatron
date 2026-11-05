@@ -176,14 +176,15 @@ stage.
 
 - A chat with a server lock or a known job this tab does not follow shows an extra Stop beside Send (or chat setup). The
   advisory `foreignJobs` mark never participates in `isChatBusy` or removes the Send hotkey.
-- `stopChatJob(ref)` admits one confirmation flow per chat, even across screen remounts. `readChatGeneration` looks up
-  the current slot without attaching or holding plugin work; `stopChatGeneration` sends that exact job id. Each exchange
-  has a 10 s deadline; a timeout ends the flow. The confirmation wait is not bounded.
+- `stopChatJob(ref)` admits one confirmation flow per chat, even across screen remounts. It uses `readChatGeneration`
+  and `stopChatGeneration` (their comments). Each exchange has a 10 s deadline; a timeout ends the flow. The
+  confirmation wait is not bounded.
 - A 409 `jobChanged` reads and confirms the replacement; 404 clears the mark and stops nothing.
 - A successful stop leaves the mark through abort grace; a later idle lookup, an owned/followed lookup, the release of
   that chat's server lock, or a new local send/follow clears it.
-- Creator viewers and current workers use the followed-job Stop; pending/former workers use the foreign-job Stop.
-  Participant and chat stops attribute the stopper; request-id cancel remains an ordinary silent abort.
+- Creator viewers and current workers use the followed-job Stop, with `HandoffControls.svelte` beside it (Take back for
+  `viewingJobs`, Hand off to a worker); pending/former workers use the foreign-job Stop. Participant and chat stops
+  attribute the stopper; request-id cancel remains an ordinary silent abort.
 
 ### Replays and uncertain creates
 

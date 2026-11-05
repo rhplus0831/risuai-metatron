@@ -2582,6 +2582,8 @@ export function createGenerationJobs(options: {
         const job = participantJob(jobId, body.clientId);
         if (!job || job.epoch !== store.epoch())
             return { ok: false, status: 404, body: { error: "Generation not found" } };
+        // A ticket attach by the current owner would supersede its own callback-answering socket.
+        if (body.target === job.ownerClientId) return { ok: false, status: 409, body: { error: "alreadyOwner" } };
         expireTicket(job);
         if (!canHandoff(job) || job.ticket || job.pendingTakeover)
             return { ok: false, status: 409, body: { error: "handoffUnavailable" } };

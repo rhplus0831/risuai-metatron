@@ -1,9 +1,16 @@
 import { get, readonly, writable, type Writable } from "svelte/store";
-import type { HandoffOffer } from "../../../shared/events.ts";
+import {
+    MAX_FEED_CLIENT_NAME,
+    MAX_FEED_CLIENTS,
+    type EventFeedClientMessage,
+    type FeedClient,
+    type HandoffOffer,
+} from "../../../shared/events.ts";
+import { language } from "src/lang";
 import { getResourceEpoch } from "../storage/resourceClient";
 
 /**
- * Device-local worker preferences and epoch-scoped offers. No plugin or follow module loads until
+ * Device-local worker preferences, connected clients and epoch-scoped offers. No plugin or follow module loads until
  * an offer needs evaluation. Saved ids prove creation; unsaved offers require /current's owned
  * bit, since a preferred offer can beat the create response. Take a self-targeted offer, an own
  * absent job, or an untargeted foreign job with acceptance enabled; leave own preferred/requested
@@ -11,6 +18,8 @@ import { getResourceEpoch } from "../storage/resourceClient";
  * per acceptance revision, with at most one claim in flight per job. Plugin work stays held from startup
  * through the claim and the lifecycle's own hold, so deferred reloads cannot empty the registries.
  * A successful claim may close its offer before its response arrives: that never cancels its ticket.
+ * Manual requests use the same acceptance policy, with one best-effort reminder per job after 10 s
+ * if that epoch's requested offer is still open for the same target. This does not track completion.
  */
 function preference<T extends boolean | string>(key: string, fallback: T): Writable<T> {
     const read = (): T => {
@@ -45,7 +54,103 @@ function preference<T extends boolean | string>(key: string, fallback: T): Writa
 
 export const acceptHandoffs = preference<boolean>("risu-handoff-accept", false);
 export const preferHandoff = preference<boolean>("risu-handoff-prefer", false);
-export const clientName = preference<string>("risu-handoff-name", (globalThis.navigator?.userAgent ?? "").slice(0, 64));
+export const clientName = preference<string>(
+    "risu-handoff-name",
+    (globalThis.navigator?.userAgent ?? "").slice(0, MAX_FEED_CLIENT_NAME),
+);
+
+const clients = writable<readonly FeedClient[]>([]);
+export const connectedClients = readonly(clients);
+
+/** Presence snapshots replace the whole list; malformed entries are ignored. */
+export function replaceConnectedClients(snapshot: unknown): void {
+    const next: FeedClient[] = [];
+    const seen = new Set<string>();
+    if (Array.isArray(snapshot)) {
+        for (const client of snapshot) {
+            if (
+                typeof client !== "object" ||
+                client === null ||
+                typeof client.clientId !== "string" ||
+                !client.clientId ||
+                typeof client.name !== "string" ||
+                typeof client.worker !== "boolean" ||
+                seen.has(client.clientId)
+            )
+                continue;
+            seen.add(client.clientId);
+            next.push({
+                clientId: client.clientId,
+                name: client.name.slice(0, MAX_FEED_CLIENT_NAME),
+                worker: client.worker,
+            });
+            if (next.length === MAX_FEED_CLIENTS) break;
+        }
+    }
+    clients.set(next);
+}
+
+/** Each name targets its first worker in list order (the server lists newest registrations first). */
+export function handoffTargets(clients: readonly FeedClient[], selfId: string) {
+    const groups = new Map<string, { name: string; clientId: string; count: number }>();
+    for (const client of clients) {
+        if (!client.worker || client.clientId === selfId) continue;
+        const group = groups.get(client.name);
+        if (group) group.count++;
+        else groups.set(client.name, { name: client.name, clientId: client.clientId, count: 1 });
+    }
+    return [...groups.values()];
+}
+
+export function registration(selfId: string): EventFeedClientMessage {
+    return {
+        type: "register",
+        clientId: selfId,
+        name: get(clientName).slice(0, MAX_FEED_CLIENT_NAME),
+        worker: get(acceptHandoffs),
+    };
+}
+
+export const HANDOFF_REMINDER_MS = 10_000;
+const reminders = new Map<string, { timer?: ReturnType<typeof setTimeout> }>();
+
+/** A new request replaces the job's reminder, even if an earlier request is still awaiting its answer. */
+export async function handOffJob(jobId: string, target: string): Promise<void> {
+    clearTimeout(reminders.get(jobId)?.timer);
+    const reminder: { timer?: ReturnType<typeof setTimeout> } = {};
+    reminders.set(jobId, reminder);
+    const epoch = getResourceEpoch();
+    const { alertToast } = await import("../alert");
+    try {
+        const { requestGenerationHandoff } = await import("./generationJobs");
+        if ((await requestGenerationHandoff(jobId, target)) === "unavailable") {
+            alertToast(language.serverJob.handoff.unavailable);
+            return;
+        }
+        if (reminders.get(jobId) !== reminder || getResourceEpoch() !== epoch) return;
+        reminder.timer = setTimeout(() => {
+            if (reminders.get(jobId) !== reminder) return;
+            reminders.delete(jobId);
+            const offer = get(offers).get(jobId);
+            if (
+                getResourceEpoch() === epoch &&
+                offer?.epoch === epoch &&
+                offer.state === "open" &&
+                offer.reason === "requested" &&
+                offer.target === target
+            )
+                alertToast(language.serverJob.handoff.notTaken);
+        }, HANDOFF_REMINDER_MS);
+    } catch (error) {
+        alertToast(
+            language.serverJob.handoff.requestFailed.replace("{error}", () =>
+                error instanceof Error ? error.message : String(error),
+            ),
+        );
+    } finally {
+        if (!reminder.timer && reminders.get(jobId) === reminder) reminders.delete(jobId);
+    }
+}
 
 const offers = writable<ReadonlyMap<string, HandoffOffer>>(new Map());
 export const handoffOffers = readonly(offers);

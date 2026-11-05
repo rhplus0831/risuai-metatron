@@ -46,6 +46,8 @@
   `epoch` frame [halts](#restore-halt).
 - The fetched listing itself goes unchanged to reconciliation and `src/ts/process/memoryTasks.svelte.ts` fences; the
   advertised map alone overlays changes received since `hello`.
+- Handoff offers and presence go to `src/ts/network/handoff.ts`; the tab sends `register` after each same-epoch `hello`
+  and on a name or worker change (`eventFeed.ts` header).
 - A dead socket (a phone freeze leaves it open and silent) is abandoned by `watchSocket`, and a page that comes back
   replaces it through `watchResume` (`src/ts/network/socketLiveness.ts` header); the new `hello` reconciles as above.
 
@@ -74,10 +76,9 @@
 
 ### Feed locks
 
-- A `change` frame's lock lists reach `noteRemoteStreaming` after its refs, so a fitting `begin` patch puts the row in
-  before its lock; otherwise the lock is installed by id and the row arrives locked. Each listed chat's list replaces
-  its `feedLocks`. Deletion/forget paths (`removeRemoteChat`, `dropChatRevision`, `forgetCharacter`) clear locks without
-  retiring the generation; its next job write can lock again.
+- A `change` frame's lock lists reach `noteRemoteStreaming` after its refs (`eventFeed.ts` header). Each listed chat's
+  list replaces its `feedLocks`. Deletion/forget paths (`removeRemoteChat`, `dropChatRevision`, `forgetCharacter`) clear
+  locks without retiring the generation; its next job write can lock again.
 - Whole reads carry `ChatReadRecord.streaming`, sampled with the read, never on summaries. The adapter stamps issue with
   `issueChatReadStamp`; an adopted read replaces the chat's locks regardless of revision only when issued after its
   newest feed list, the newest `hello` and its last honored read. `dropFeedLocksOf` defines suppression and the revision

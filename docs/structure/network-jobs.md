@@ -46,11 +46,12 @@ The transport below retains this tab's in-memory log.
   `generationClientId`, `savedGenerationJobs`, `rememberGenerationJob`, `forgetGenerationJob`.
 - Admission/control: `createGenerationJob`, `GenerationCreateError`, `GenerationBusyError`, `GenerationStaleError`,
   `ChatBindingRefusedError`, `ChatLoreOverrideOrphanedError`, `readGenerationJob`, `abortGenerationJob`,
-  `takeoverGenerationJob`.
+  `takeoverGenerationJob`, `requestGenerationHandoff`.
 - Socket/events: `GenerationFollow`, `followGenerationJob`, `applyGenerationEvent`, `releaseGenerationJob`,
   `resyncAfterLocalWork`, `requestResync`, `dispatcher`.
-- `src/ts/network/handoff.ts`: local preferences, offers and acceptance; module contract, `replaceHandoffOffers`,
-  `receiveHandoffOffer`, `setHandoffWork`. `src/lib/Others/HandoffStatus.svelte` renders worker progress.
+- `src/ts/network/handoff.ts`: local preferences, offers, acceptance, presence and manual requests; module contract,
+  `replaceHandoffOffers`, `receiveHandoffOffer`, `setHandoffWork`, `connectedClients`, `handoffTargets`, `handOffJob`.
+  `src/lib/Others/HandoffStatus.svelte` renders worker progress.
 
 ### Job channel
 
@@ -95,8 +96,7 @@ The transport below retains this tab's in-memory log.
   contracts cover recovery, roles, warnings and late listeners. Control-response 412s reach the resource client's
   `epochMismatch` and resource sync's restore halt.
 - `handoff.ts` holds plugin work through `pluginsStarted` and takeover; the follow holds it through attach and, when
-  needed, terminal application and late listeners. Delivered listeners are never replayed; the server projects `skipped`
-  to one recipient.
+  needed, terminal application and late listeners.
 
 ### Job callbacks
 
@@ -118,14 +118,13 @@ The transport below retains this tab's in-memory log.
 - `pushBrowserState` feeds `src/lib/Setting/Pages/Display/NotificationToggle.svelte` and
   `src/lib/Others/PushPrompt.svelte`, the one-time banner mounted by `src/App.svelte` after loading. A failed enable
   from either alerts `pushNotifications.failed`.
-- An `unsubscribe()` rejection or false result remains in `error` with the opt-out kept; the settings' off button alerts
-  it. `risu-push-pending-unsubscribe` retries while opted out on the next sync; failed server removal is retried too
-  (`flushPendingUnsubscribe`, `flushPendingRemoval` in `src/ts/network/pushNotifications.ts`).
+- A failed disable (`error`, which the settings' off button alerts) retries at the next sync:
+  `disablePushOnThisBrowser`, `flushPendingUnsubscribe`, `flushPendingRemoval` comments.
 
 ## State
 
-- `handoff.ts` keeps device preferences in localStorage, offers by job id and epoch, and per-job worker status.
-  `eventFeed.ts` supplies offers; `serverCommands.ts` owns the role transitions and lifetime.
+- `handoff.ts` state is in its module contract and `setHandoffWork`; `eventFeed.ts` feeds offers and presence, and
+  `serverCommands.ts` owns roles and lifetime.
 
 - `fetchLog[]` is private, this tab's list only (the durable history is the server's). `getFetchLogs` exposes the live
   array (the popup's "This tab" and plugins' `getFetchLogs`); its identity stays fixed.
