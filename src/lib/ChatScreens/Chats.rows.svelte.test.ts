@@ -5,10 +5,11 @@ import { writable } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHAT_ROW_CAP } from "../../../shared/chatLoadPages.ts";
 
-type Message = { chatId: string; data: string; role: "char" | "user"; disabled?: boolean };
+type Message = { chatId: string; data: string; role: "char" | "user"; disabled?: boolean; isComment?: boolean };
 type RowProps = {
     messageId: string;
     message: string;
+    isComment: boolean;
     idx: number;
     name: string;
     img: string | Promise<string>;
@@ -337,6 +338,25 @@ describe("chat row invalidation", () => {
         expect(untouchedReads).not.toHaveBeenCalled();
         expect(scrollRead).not.toHaveBeenCalled();
         expect(log).not.toHaveBeenCalled();
+    });
+
+    it("updates the comment flag both ways without remounting when text and role stay the same", () => {
+        const input = messages(6);
+        input[2].isComment = false;
+        const { props } = render(input);
+        const row = latest("m2");
+        expect(row.props.isComment).toBe(false);
+
+        for (const isComment of [true, false]) {
+            clearUpdates();
+            props.messages[2].isComment = isComment;
+            flushSync();
+
+            expect(row.updates).toEqual([{ isComment }]);
+            expect(latest("m2")).toBe(row);
+            expect(row.destroyed).toBe(false);
+            expect(state.rows).toHaveLength(6);
+        }
     });
 
     it.each(["text", "reload", "disabled"])("remounts only the row whose %s changes", (field) => {

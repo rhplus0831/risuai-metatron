@@ -390,11 +390,12 @@
 
     /**
      * `Chats` keys a row by its message id and passes these here instead of mounting the row again: a
-     * new position (a message before it was added or removed), the text while it streams, and
+     * new position (a message before it was added or removed), the text while it streams, the comment flag, and
      * display-only name/image changes. Only the fields given change; name/image never reset ChatBody.
      */
     export function updateRow(update: {
         message?: string;
+        isComment?: boolean;
         messageGenerationInfo?: MessageGenerationInfo | null;
         candidateCount?: number;
         candidateIndex?: number;
@@ -408,6 +409,7 @@
         img?: string | Promise<string>;
     }) {
         if ("message" in update) message = update.message;
+        if ("isComment" in update) isComment = update.isComment;
         if ("messageGenerationInfo" in update) messageGenerationInfo = update.messageGenerationInfo;
         if ("candidateCount" in update) candidateCount = update.candidateCount;
         if ("candidateIndex" in update) candidateIndex = update.candidateIndex;

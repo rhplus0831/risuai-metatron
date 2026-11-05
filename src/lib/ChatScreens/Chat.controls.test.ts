@@ -126,6 +126,35 @@ async function render(
     flushSync();
 }
 
+it("switches a mounted row between comment and normal presentation through updateRow", async () => {
+    await render("off", { isComment: false });
+    const row = target.querySelector(".risu-chat");
+    const expectNormalPresentation = () => {
+        expect(target.querySelector(".chattext")?.textContent).toContain(message);
+        expect(target.querySelector(".justify-center.italic")).toBeNull();
+        for (const control of [".button-icon-edit", ".button-icon-copy", ".button-icon-remove"]) {
+            expect(target.querySelector(control)).not.toBeNull();
+        }
+    };
+    expectNormalPresentation();
+
+    instance.updateRow({ isComment: true });
+    flushSync();
+    expect(target.querySelector(".justify-center.italic")?.textContent?.trim()).toBe(message);
+    expect(target.querySelector(".chattext")).toBeNull();
+    const remove = target.querySelector(".button-icon-remove");
+    expect(remove).not.toBeNull();
+    expect([...target.querySelectorAll("button")]).toEqual([remove]);
+    expect(target.querySelector(".risu-chat")).toBe(row);
+
+    instance.updateRow({ isComment: false });
+    flushSync();
+    await instance.whenRendered();
+    flushSync();
+    expectNormalPresentation();
+    expect(target.querySelector(".risu-chat")).toBe(row);
+});
+
 it.each(["off", "balanced", "strong"] as const)(
     "hides translate and retranslate while the message streams in %s mode and restores them afterwards",
     async (mode) => {

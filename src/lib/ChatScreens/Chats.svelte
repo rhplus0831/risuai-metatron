@@ -78,6 +78,7 @@
     let chatBody: HTMLDivElement = $state();
     type RowUpdate = {
         message: string;
+        isComment: boolean;
         messageGenerationInfo: Message["generationInfo"] | null;
         candidateCount: number;
         candidateIndex: number;
@@ -692,6 +693,7 @@
                 const nextImageThumb = avatarThumb;
                 const next: RowUpdate = {
                     message: data,
+                    isComment: message.isComment ?? false,
                     messageGenerationInfo: message.generationInfo ?? null,
                     candidateCount: message.candidates?.length ?? 1,
                     candidateIndex: message.selected ?? 0,
@@ -737,7 +739,6 @@
                                 character: createSimpleCharacter(ctx.character),
                                 largePortrait: portrait,
                                 role: message.role,
-                                isComment: message.isComment ?? false,
                                 disabled: message.disabled ?? false,
                             },
                         });

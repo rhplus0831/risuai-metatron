@@ -215,8 +215,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - Message identity: `Chats` keys a row by the chat and `chatId` (a message without one by its index); see
   `updateChatBody` and the per-row effect for remount conditions. Never read every row's text in the structural effect;
   per-chunk transcript JavaScript work must not grow with mounted row count.
-- `Chat.updateRow` changes only supplied position/streaming fields or display-only `name?: string` and
-  `img?: string | Promise<string>` props; name/image updates never reset the `ChatBody` key.
+- `Chat.updateRow` changes only supplied position/streaming fields, `isComment`, or display-only `name` and `img` props;
+  name/image updates never reset the `ChatBody` key.
 - Chat structure operations go through the [chat module](chat-store.md#chat-writes) (`createChat`, `deleteChat`,
   `reorderChats`, `setChatMeta` for `folderId`) and [select](chat-store.md#selection) with `changeChatTo`/`selectChat`;
   `chatPage` is derived from the per-tab selected chat id and is never assigned.
