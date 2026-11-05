@@ -135,6 +135,38 @@ describe("chat lore overrides", () => {
         }
     });
 
+    it("searches the first message of a short chat at or above its length, but no rows at depth zero", async () => {
+        const messages = [user("Blue Bird was here"), char("Nothing here"), user("Still nothing")];
+        for (const { depth, matched } of [
+            { depth: 5, matched: true },
+            { depth: 3, matched: true },
+            { depth: 0, matched: false },
+        ]) {
+            const host = makeHost();
+            expect(
+                await searchMatch(
+                    messages,
+                    {
+                        keys: ["Blue Bird"],
+                        searchDepth: depth,
+                        fullWordMatching: false,
+                        dontSearchWhenRecursive: true,
+                    },
+                    { host, userName: "User", charName: "Bot", recursivePrompt: [], matchLog: [] },
+                ),
+                `depth ${depth}`,
+            ).toBe(matched);
+            const activated = await activateLore(
+                makeInput([lore("bird", "Blue Bird", "Bird lore")], messages, { loreBookDepth: depth }),
+                host,
+            );
+            expect(
+                activated.actives.map(({ prompt }) => prompt),
+                `depth ${depth}`,
+            ).toEqual(matched ? ["Bird lore"] : []);
+        }
+    });
+
     it("replaces or removes only the first owner match, keeps the first override, and reports orphans without mutating inputs", () => {
         const owners = [
             lore("no id", "x", "unlinked"),

@@ -3881,23 +3881,23 @@ describe("structured memory job hand-offs", () => {
                     const beforeChat = await readChat(chaId);
                     const beforeMemory = readRecordSet(store.memory, chaId, "k");
                     const result = await testJob(chaId, pluginHooks);
-                    const expected = {
-                        plugin: /plugin model/i,
-                        trigger: /request trigger/i,
-                        queued: /writer is working/i,
-                        running: /writer is working/i,
-                        adoption: /adopt or decline/i,
-                        algorithm: /not this chat's memory/i,
-                        rebuild: /being rebuilt/i,
-                    }[reason];
                     if (reason === "rebuild") {
                         expect(result.status).toBe(409);
-                        expect(JSON.stringify(result.body)).toMatch(expected);
+                        expect(result.body).toEqual({ error: "memoryRebuilding" });
                         expect(result.events).toEqual([]);
                     } else
                         expect(result.terminal).toMatchObject({
                             type: "error",
-                            message: expect.stringMatching(expected),
+                            message: expect.stringMatching(
+                                {
+                                    plugin: /plugin model/i,
+                                    trigger: /request trigger/i,
+                                    queued: /writer is working/i,
+                                    running: /writer is working/i,
+                                    adoption: /adopt or decline/i,
+                                    algorithm: /not this chat's memory/i,
+                                }[reason],
+                            ),
                         });
                     expect(fake.service.status()).toEqual(status);
                     expect(fake.leases).toEqual([]);

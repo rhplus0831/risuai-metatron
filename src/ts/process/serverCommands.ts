@@ -1166,8 +1166,11 @@ async function runPinnedServerJob(
         const error = failure instanceof GenerationCreateError ? failure.cause : failure;
         const requestUncertain = failure instanceof GenerationCreateError && failure.uncertain;
         const refusal = { ...refused, requestUncertain };
+        const memoryRebuilding =
+            error instanceof ResourceRequestError && error.status === 409 && error.message === "memoryRebuilding";
         const admissionRefused =
             error instanceof GenerationBusyError ||
+            memoryRebuilding ||
             (error instanceof ChatBindingRefusedError && error.code === "chatBindingIncomplete") ||
             error instanceof ChatLoreOverrideOrphanedError ||
             (error instanceof ResourceRequestError &&
@@ -1189,6 +1192,10 @@ async function runPinnedServerJob(
         }
         if (error instanceof ChatLoreOverrideOrphanedError) {
             alertError(chatLoreOverrideRefusalText(error.entries));
+            return refusal;
+        }
+        if (memoryRebuilding) {
+            alertError(language.serverJob.memoryRebuilding);
             return refusal;
         }
         if (error instanceof GenerationBusyError) {

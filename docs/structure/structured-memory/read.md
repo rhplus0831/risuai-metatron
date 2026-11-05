@@ -361,9 +361,8 @@ preview's included; a `done` terminal with a `messageId` clears only that chat's
   model change, a cleared cache), it is one provider call per 50 texts, in sequence, inside the send.
 - `readMemoryRecords` parses every page whole on every send, up to 60 history entries each that the prompt never reads.
   The store has no read without them.
-- `searchMatch` counts its depth from the end of the list, so a depth over the length reads a short slice. The pages
-  lane passes exactly the rows it means and their count. Name matching ignores `loreSettings.fullWordMatching`, so a
-  short alias such as "Al" also finds "also": an extra candidate, never a wrong record.
+- Name matching ignores `loreSettings.fullWordMatching`, so a short alias such as "Al" also finds "also": an extra
+  candidate, never a wrong record.
 - A window message with no `generationInfo` (an imported chat) gains `{ memory }` alone, so with `requestInfoInsideChat`
   its row shows an "Unknown" model button after its next mount.
 - A copied or branched chat carries its receipts along with its messages.

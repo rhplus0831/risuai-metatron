@@ -369,6 +369,7 @@ describe("the requests", () => {
         { status: 503, refusal: { error: "The server is not accepting generations now" }, uncertain: true },
         { status: 503, refusal: { error: "The server is shutting down" }, uncertain: true },
         { status: 409, refusal: { error: "chatBusy", jobId: "busy-job" }, uncertain: true },
+        { status: 409, refusal: { error: "memoryRebuilding" }, uncertain: true },
         {
             status: 409,
             refusal: { error: "chatBindingIncomplete", problems: [{ field: "personaId", reason: "gone" }] },

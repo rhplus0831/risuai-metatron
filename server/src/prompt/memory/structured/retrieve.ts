@@ -618,7 +618,7 @@ async function foundPages(
     { visible, stage }: PageReading,
     entries: readonly ReadEntry[],
 ): Promise<Map<string, PageMatch>> {
-    // `searchMatch` counts its depth from the end of the list, so these are exactly the rows meant.
+    // Keep the last pageNameMessages rows; `searchMatch` scans them all with their count as its depth.
     const rows = entries
         .filter(hasText)
         .slice(-RETRIEVAL_LIMITS.pageNameMessages)

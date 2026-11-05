@@ -43,7 +43,7 @@
 - `src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte`: rebuild controls and contents refresh; component
   contract, `rebuild`, `readOnly`, `languageChange`. Other controls: [read](read.md#the-memory-panel).
 - `server/src/jobs/commandRunner.ts`: rebuild dispatch; `createGenerationRunner`, `prepare`.
-- `server/src/jobs/generationJobs.ts`: run-based job lock; `rebuildLocks`, `REBUILD_LOCK_TEXT`.
+- `server/src/jobs/generationJobs.ts`: run-based job lock; `rebuildLocks`, `memoryRebuilding`.
 - `server/src/app.ts`: rebuild route and checkpoint-load fences; `fenced`, `chatHeld`, `loadLocked`.
 - `server/src/prompt/memory/structured/recordJob.ts`: shared command admission; `admitRecord`. Owner:
   [writer](writer.md).
@@ -127,7 +127,7 @@ send could write live records through a gap run or hand-off that the swap would 
 
 | During a run                              | What happens                                                                 |
 | ----------------------------------------- | ---------------------------------------------------------------------------- |
-| Send, continue, command, `memoryRecord`   | Admission refuses 409 beside `chatBusy`, with text naming the panel          |
+| Send, continue, command, `memoryRecord`   | Admission refuses 409 `memoryRebuilding`; the tab's words name the panel     |
 | Preview                                   | Allowed: no write                                                            |
 | `memoryRebuild`                           | Reaches admission; an existing run requires resume                           |
 | Panel edit, revert, adopt, decline, reset | 409 `fenced`; restore and inherit into the chat too                          |

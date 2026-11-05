@@ -115,6 +115,7 @@ vi.mock("src/lang", () => ({
                 stopTimedOut: "Stop request timed out",
             },
             lost: "job lost",
+            memoryRebuilding: "memory rebuilding",
             endedAway: "ended away",
             hooksSkipped: "hooks skipped: {hooks}",
             handoff: {
@@ -1161,6 +1162,28 @@ describe("runServerJob", () => {
         expect(onStart).not.toHaveBeenCalled();
         expect(follows()).toHaveLength(0);
     });
+
+    it.each([
+        { answer: "a directly answered create", uncertain: false },
+        { answer: "a retry after an unanswered create", uncertain: true },
+    ])(
+        "shows the localized memory rebuild refusal for $answer with requestUncertain=$uncertain",
+        async ({ uncertain }) => {
+            const { GenerationCreateError } = await import("../network/generationJobs");
+            const refusal = new ResourceRequestError(409, "memoryRebuilding");
+            stubs.create.mockRejectedValueOnce(uncertain ? new GenerationCreateError(refusal, true) : refusal);
+            const onStart = vi.fn();
+
+            expect(await send({ input: "hi" }, { onStart })).toEqual({
+                outcome: "refused",
+                terminal: null,
+                requestUncertain: uncertain,
+            });
+            expect(stubs.alertError).toHaveBeenCalledExactlyOnceWith("memory rebuilding");
+            expect(onStart).not.toHaveBeenCalled();
+            expect(follows()).toHaveLength(0);
+        },
+    );
 
     it("reports `unknown` for a create request without an answer and `refused` for an answered refusal, alerting once each", async () => {
         const { GenerationCreateError, GenerationStaleError } = await import("../network/generationJobs");

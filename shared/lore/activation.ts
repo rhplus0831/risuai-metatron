@@ -134,8 +134,8 @@ export type LoreSearchScope = {
  * whole word under `fullWordMatching`, else as a substring with spaces removed from both sides.
  *
  * Not `async`: the answer is a promise only when a regex test gives one, so a caller that awaits just
- * that case does not yield on any other search. A `searchDepth` over the list's length counts back from
- * the end of the list, so a caller that wants every row passes its length.
+ * that case does not yield on any other search. A `searchDepth` at or over the list's length searches
+ * every row.
  */
 export function searchMatch(
     messages: readonly DeepReadonly<Pick<Message, "role" | "data" | "name" | "saying">>[],
@@ -149,7 +149,8 @@ export function searchMatch(
     },
     { host, userName, charName, recursivePrompt, matchLog }: LoreSearchScope,
 ): boolean | Promise<boolean> {
-    const sliced = messages.slice(messages.length - arg.searchDepth, messages.length);
+    // Unlike the upstream slice, an oversized depth includes the first rows of a short chat.
+    const sliced = messages.slice(Math.max(0, messages.length - arg.searchDepth), messages.length);
     const newKeys = [];
     for (const key of arg.keys) {
         const trimmed = key.trim();

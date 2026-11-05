@@ -269,9 +269,8 @@ export function registerGenerationRoutes(
      * x-resource-epoch, so request lookup follows the epoch check, before ordinary admission gates.
      * 400 for a malformed body; 404 for a missing chat; 412 for another epoch; 503 with Retry-After: 5
      * during shutdown or maintenance. 409: requestIdReused, requestCancelled, chatBusy { jobId },
-     * stale, chatBindingIncomplete { problems }, chatBindingMismatch, or
-     * chatLoreOverrideOrphaned { entries: [{ id, name }] }. A memory rebuild also refuses with 409,
-     * whose JSON `error` is a human-readable message rather than a structured refusal code.
+     * stale, chatBindingIncomplete { problems }, chatBindingMismatch, memoryRebuilding, or
+     * chatLoreOverrideOrphaned { entries: [{ id, name }] }.
      */
     app.post("/api/generations", limiter, async (c) => {
         const denied = await auth.checkAuth(c);

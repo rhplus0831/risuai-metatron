@@ -1757,6 +1757,8 @@ export const languageEnglish = {
             },
         },
         requestIdReused: "This request id was already used for a different action. Send again to start a new request.",
+        memoryRebuilding:
+            "This chat's memory is being rebuilt. Resume or abandon the rebuild in the memory panel to use the chat again.",
         lost: "The connection to the server job was lost; reload the chat to see its changes",
         endedAway: "The response job ended while this page was away; the chat was reloaded",
         hooksSkipped: "Plugin processing skipped while this page was away: {hooks}",
