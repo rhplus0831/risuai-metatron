@@ -286,6 +286,92 @@ describe("the hub: notices and questions", () => {
         void link.channel.ask({ kind: "alertConfirm", payload: { message: "ok" } });
         expect(h.ofType("question")).toHaveLength(1);
     });
+
+    it("drains 10,000 buffered notices in order with one sort and at most n log n comparisons", () => {
+        const h = harness();
+        h.attached.value = false;
+        const link = h.open("a");
+        const messages = Array.from({ length: 10_000 }, (_, index) => String(index));
+        for (const message of messages) {
+            link.channel.notice({ kind: "alertNormal", payload: { message } });
+        }
+        expect(h.sent).toEqual([]);
+        h.attached.value = true;
+
+        const originalSort = Array.prototype.sort;
+        let sorts = 0;
+        let comparisons = 0;
+        const sort = vi.spyOn(Array.prototype, "sort").mockImplementation(function (this: unknown[], compare) {
+            sorts++;
+            return originalSort.call(
+                this,
+                compare &&
+                    ((a, b) => {
+                        comparisons++;
+                        return compare(a, b);
+                    }),
+            );
+        });
+        try {
+            link.handleAttach();
+        } finally {
+            sort.mockRestore();
+        }
+
+        expect(sorts).toBe(1);
+        expect(comparisons).toBeGreaterThan(0);
+        expect(comparisons).toBeLessThanOrEqual(messages.length * Math.ceil(Math.log2(messages.length)));
+        expect(h.sent).toHaveLength(messages.length);
+        expect(h.ofType("notice").map((event) => (event.payload as { message: string }).message)).toEqual(messages);
+        expect(link.takeEarly()).toEqual([]);
+    });
+
+    it("drains only attached audiences in insertion order and releases their UTF-8 bytes for remaining audiences", () => {
+        const h = harness();
+        const link = h.hub.open({
+            jobId: "a",
+            clientId: "tab",
+            epoch: "e",
+            targets,
+            hooks: NO_GENERATION_HOOKS,
+            send: (event) => {
+                h.sent.push({ ...event, job: "a" });
+                return true;
+            },
+            hydrate: () => [],
+            ownerAttached: () => false,
+            noticeAudience: (notice) => (notice.kind === "alertNormal" ? "owner" : "creator"),
+        });
+        // Two 300 KB owner notices and two 150 KB creator notices share the 1 MiB budget.
+        const ownerMessage = "가".repeat(100_000);
+        const creatorMessage = "나".repeat(50_000);
+        const replacementMessage = ownerMessage + ownerMessage;
+        link.channel.notice({ kind: "alertNormal", payload: { message: ownerMessage } });
+        link.channel.notice({ kind: "alertToast", payload: { message: creatorMessage } });
+        link.channel.notice({ kind: "alertNormal", payload: { message: "owner-last" } });
+        link.channel.notice({ kind: "alertToast", payload: { message: "creator-last" } });
+        link.channel.notice({ kind: "alertNormal", payload: { message: ownerMessage } });
+        link.channel.notice({ kind: "alertToast", payload: { message: creatorMessage } });
+        // A further 600 KB will fit only after the owner's UTF-8 bytes have been released.
+        link.channel.notice({ kind: "alertToast", payload: { message: replacementMessage } });
+        expect(h.sent).toEqual([]);
+        link.handleAttach(["owner"]);
+        expect(h.ofType("notice").map((event) => (event.payload as { message: string }).message.length)).toEqual([
+            ownerMessage.length,
+            "owner-last".length,
+            ownerMessage.length,
+        ]);
+
+        link.channel.notice({ kind: "alertToast", payload: { message: replacementMessage } });
+        // The retained creator notices still consume 300 KB, so another 300 KB cannot fit.
+        link.channel.notice({ kind: "alertToast", payload: { message: ownerMessage } });
+        const remaining = link.takeEarly(["creator"]);
+        expect(
+            remaining.map((event) => event.type === "notice" && (event.payload as { message: string }).message.length),
+        ).toEqual([creatorMessage.length, "creator-last".length, creatorMessage.length, replacementMessage.length]);
+        expect(h.sent).toHaveLength(3);
+        expect(link.takeEarly()).toEqual([]);
+    });
 });
 
 describe("the hub: deadlines", () => {
@@ -1008,6 +1094,61 @@ describe("the hub: callbacks and nesting", () => {
 });
 
 describe("the hub: delivery, replay, and close", () => {
+    it("interleaves a callback promoted by a nested attach with unsent notices and keeps equal-order sends stable", async () => {
+        const h = harness();
+        h.attached.value = false;
+        const nested = h.open("b");
+        const outer = h.hub.open({
+            jobId: "a",
+            clientId: "tab",
+            epoch: "e",
+            targets,
+            hooks: NO_GENERATION_HOOKS,
+            send: (event) => {
+                h.sent.push({ ...event, job: "a" });
+                if (event.type === "notice" && (event.payload as { message: string }).message === "first") {
+                    // Delivery advances the injected clock, then another job's attach expires its question.
+                    h.clock.value += 100;
+                    nested.handleAttach();
+                    // A second attach adds a replay after the promoted callback's pending first delivery.
+                    nested.handleAttach();
+                }
+                return true;
+            },
+            hydrate: () => [],
+            ownerAttached: () => h.attached.value,
+        });
+        outer.channel.notice({ kind: "alertNormal", payload: { message: "first" } });
+        nested.channel.notice({ kind: "alertNormal", payload: { message: "nested-before" } });
+        const expiring = nested.channel.ask(
+            { kind: "alertInput", payload: { message: "expiring" } },
+            { timeoutMs: 100 },
+        );
+        outer.channel.notice({ kind: "alertNormal", payload: { message: "between" } });
+        const promoted = nested.channel.callback("editoutput", { text: "promoted" });
+        nested.channel.notice({ kind: "alertNormal", payload: { message: "nested-after" } });
+        outer.channel.notice({ kind: "alertNormal", payload: { message: "last" } });
+        h.sent.length = 0;
+        h.attached.value = true;
+
+        outer.handleAttach();
+
+        expect(
+            h.sent
+                .filter((event) => event.type === "notice" || event.type === "callback")
+                .map((event) =>
+                    event.type === "notice"
+                        ? (event.payload as { message: string }).message
+                        : `promoted:${event.replay ? "replay" : "first"}`,
+                ),
+        ).toEqual(["first", "nested-before", "between", "promoted:first", "promoted:replay", "nested-after", "last"]);
+        expect(await expiring).toMatchObject({ outcome: "timedOut" });
+        const callbacks = h.ofType("callback");
+        expect(callbacks[1]).toMatchObject({ id: callbacks[0].id, replay: true });
+        h.answer(nested, callbacks[0].id);
+        expect(await promoted).toMatchObject({ outcome: "answered" });
+    });
+
     it("orders first-attach notices, replays, and a request promoted by expiry, delivering the promoted request once", async () => {
         for (const expiry of ["none", "collection", "delivery"] as const) {
             const h = harness();

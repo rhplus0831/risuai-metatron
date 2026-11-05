@@ -745,11 +745,19 @@ export function createChannelHub(options: { now?: () => number } = {}) {
 
             function takeEarly(audiences: NoticeAudience[]) {
                 for (const audience of audiences) state.attachedAudiences.add(audience);
-                const taken = state.early.filter(({ event }) =>
-                    audiences.includes(transport.noticeAudience?.(event) ?? "owner"),
-                );
-                state.early = state.early.filter((entry) => !taken.includes(entry));
-                state.earlyBytes -= taken.reduce((sum, entry) => sum + entry.bytes, 0);
+                const taken: ChannelState["early"] = [];
+                const remaining: ChannelState["early"] = [];
+                let takenBytes = 0;
+                for (const entry of state.early) {
+                    if (audiences.includes(transport.noticeAudience?.(entry.event) ?? "owner")) {
+                        taken.push(entry);
+                        takenBytes += entry.bytes;
+                    } else {
+                        remaining.push(entry);
+                    }
+                }
+                state.early = remaining;
+                state.earlyBytes -= takenBytes;
                 return taken;
             }
 
@@ -887,6 +895,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                  * Buffered notices, replays, and first deliveries promoted by expiry share the original
                  * request/notice order. A promoted request joins this batch once, through dispatch,
                  * rather than also being collected as an outstanding replay.
+                 * Sort once, then insert arrivals into the unsent portion after any equal orders.
                  */
                 handleAttach(audiences: NoticeAudience[] = ["owner", "all", "creator"]) {
                     const clientId = transport.clientId;
@@ -927,9 +936,23 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                         if (active) {
                             return;
                         }
-                        while (sends.length > 0) {
-                            sends.sort((a, b) => a.order - b.order);
-                            const entry = sends.shift()!;
+                        sends.sort((a, b) => a.order - b.order);
+                        for (let cursor = 0, sortedLength = sends.length; cursor < sends.length; cursor++) {
+                            // Dispatch or a nested attach may append sends while the previous one runs.
+                            while (sortedLength < sends.length) {
+                                const entry = sends[sortedLength];
+                                let low = cursor;
+                                let high = sortedLength;
+                                while (low < high) {
+                                    const middle = low + Math.floor((high - low) / 2);
+                                    if (sends[middle].order <= entry.order) low = middle + 1;
+                                    else high = middle;
+                                }
+                                sends.splice(sortedLength, 1);
+                                sends.splice(low, 0, entry);
+                                sortedLength++;
+                            }
+                            const entry = sends[cursor];
                             try {
                                 entry.send();
                             } catch (error) {
