@@ -6,7 +6,7 @@ Reviewed the integrated result of the commit range `3c0d10e1..8ea35c16e` on `dev
 about 40,000 added lines, produced by agent-run plans with little human review) at
 `8ea35c16eb2d32525530a267295dc4ad3348777c` (`8ea35c16e`), from clean detached worktrees.
 The range holds the Display Evaluation, Durable Drafts, Job Protocol, and Boot Bytes plans, each of
-which already has a per-plan audit under `docs/audit/` whose findings were fixed; the Deep Audit Fixes
+which already has a per-plan audit under `docs/manual-audit/` whose findings were fixed; the Deep Audit Fixes
 and HypaV3 Token Budget plans and about forty standalone commits, which had no audit; the thirteen
 commits that fixed the four audits' findings; and eight merge commits between the plan runs.
 

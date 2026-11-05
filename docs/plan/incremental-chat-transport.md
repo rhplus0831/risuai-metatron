@@ -1,7 +1,7 @@
 # Incremental Chat Transport Plan
 
 Status: drafted 2026-11-03, revised 2026-11-04 after the [design
-audit](../audit/plan-design-audit-2026-11-04.md) (its Incremental Chat Transport items TR1–TR5 and the
+audit](../manual-audit/plan-design-audit-2026-11-04.md) (its Incremental Chat Transport items TR1–TR5 and the
 cross-plan items X1–X4 and X8), no slice landed. Decisions D1–D10 are recommendations for the owner; the
 revision applies the owner's decisions on the audit's corrections, and each changed decision lists its earlier
 choice under "Rejected". The **Open questions** Q1–Q4 were answered by the owner on 2026-11-03 (the recommended
@@ -25,8 +25,8 @@ updates, Limitations), the [resource sync guide](../structure/resource-sync.md) 
 [server generation guide](../structure/server-generation.md) (Job chat and barriers), the
 [chat store guide](../structure/chat-store.md) (Job chunks, Summaries and refresh) and the [server resources
 guide](../structure/server-resources.md) (Resource routes, Store tables) at `215cbce1d`; the design audit's
-[per-plan report](../audit/plan-design-audit-2026-11-04/incremental-chat-transport.md) and [cross-plan
-report](../audit/plan-design-audit-2026-11-04/cross-plan.md).
+[per-plan report](../manual-audit/plan-design-audit-2026-11-04/incremental-chat-transport.md) and [cross-plan
+report](../manual-audit/plan-design-audit-2026-11-04/cross-plan.md).
 
 Owning guides when sliced: [live updates](../structure/live-updates.md) (the cursor replay on reconnect, the
 new feed entry forms a tab applies, the by-id row read), [live-update feed](../structure/live-update-feed.md)
@@ -39,7 +39,7 @@ store](../structure/chat-store.md) (the message index, what a streamed row means
 
 Relation to the other active plans: the [Render Work Budget plan](../archived-plan/README.md) (archived) dropped its F1 memo after
 the design audit (X3); this plan's Slice 0 owns the message position index (D1). The [Job Handoff
-plan](job-handoff.md) adds viewer sockets, `role`, `register` and `clients` to the same sockets (its D2, D3,
+plan](../archived-plan/README.md) adds viewer sockets, `role`, `register` and `clients` to the same sockets (its D2, D3,
 D6): this plan adds no frame those need; under it every socket of a job shares the one `sentChat` baseline, and
 D3 says what a viewer gets (X2). The [Reroll Candidates plan](reroll-candidates.md) D12 relies on reroll writes
 reaching the feed and the job `chatPatch` as any by-id write does; its carrier rows (candidates up to its

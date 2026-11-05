@@ -55,6 +55,7 @@ git show aff71b423:docs/plan/per-event-server-work.md
 git show 0009c22f3:docs/plan/server-byte-budgets.md
 git show 78dbb078f:docs/plan/server-plugin-runtime.md
 git show 786dfc3d3:docs/plan/guides-to-source.md
+git show c34f69365:docs/plan/job-handoff.md
 git show a72c5f736:docs/plan/render-work-budget.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
@@ -114,6 +115,7 @@ it is not a current architecture guide.
 | Structured Memory                        | `0cd49a3d3`: `docs/plan/structured-memory.md`                             | [structured memory](../structure/structured-memory/records.md), [writer](../structure/structured-memory/writer.md), [read path](../structure/structured-memory/read.md), [lifecycle](../structure/structured-memory/lifecycle.md), [rebuild](../structure/structured-memory/rebuild.md), [pages](../structure/structured-memory/pages.md)                                                                                                                                                   |
 | Server Plugin Runtime (retired unbuilt)  | `78dbb078f`: `docs/plan/server-plugin-runtime.md`                         | None: no slice landed; [plugins](../structure/plugin-sandbox.md) keeps the tab runtime and the skip-and-replay path                                                                                                                                                                                                                                                                                                                                                                         |
 | Guides To Source                         | `786dfc3d3`: `docs/plan/guides-to-source.md`                              | [STRUCTURE](../../STRUCTURE.md) (Doc Maintenance, `ownership.json`), [build/test platforms](../structure/build-test-platforms.md) (`util/docsBudget.mjs`, `util/docsLedger.mjs`, `util/guideReads.mjs`)                                                                                                                                                                                                                                                                                     |
+| Job Handoff                              | `c34f69365`: `docs/plan/job-handoff.md`                                   | [server](../structure/server-generation.md) (Job handoff, Limitations), [live-update feed](../structure/live-update-feed.md), [network and jobs](../structure/network-jobs.md), [chat pipeline](../structure/chat-pipeline.md), [plugins](../structure/plugin-sandbox.md) (Job owner presence), [test harness](../structure/test-harness.md) (`checkJobHandoff.mjs`)                                                                                                                        |
 | Render Work Budget                       | `a72c5f736`: `docs/plan/render-work-budget.md`                            | [CBS and rendering](../structure/cbs-rendering.md), [UI and theming](../structure/ui-theming.md), [translation](../structure/translation.md), [test harness](../structure/test-harness.md) (`measureRenderWork.mjs`)                                                                                                                                                                                                                                                                        |
 
 The archived Web Push file still says “planned”; the implementation shipped in
@@ -127,7 +129,7 @@ The archived Status and Decisions paragraphs list its commits and the choices ea
 Still open: `e2e/settingsPages.spec.ts` was updated in each slice but never run; the fetched
 WaveSpeed model list still resets when Image Generation is left; the subtitle tool's Whisper mode
 uses the OpenAI key with no status or link there.
-Data-Loss Under Concurrency (the fix plan for `docs/audit/data-loss-concurrency-2026-10-18.md`)
+Data-Loss Under Concurrency (the fix plan for `docs/manual-audit/data-loss-concurrency-2026-10-18.md`)
 landed all 18 slices on 2026-10-18 and 2026-10-19; the archived Status line lists each slice's
 commit and its "Decisions made by landed slices" paragraph records the choices the slices made
 (1a's `setMessage` rule, 1c's summary merge rule, 5a's `onStorageDiscarded` event, 6b's 100-id
@@ -1061,6 +1063,19 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     path, and a `Files` generator from the owned modules' exports.
   - Found by the run: 51 findings, as 34 new entries and one updated entry, across most sections of
     `docs/research/found-issues.md`.
+- Job Handoff:
+  - All four slices landed on 2026-11-05 (plan-runner, on `dev`): `d60741baf` (server creator/owner,
+    takeover tickets, offers), `5ea1222a4` (tab roles, worker policy, the creator's view), `c9344075d` (presence
+    and the manual handoff), `0a9c56d20` (the two-tab browser driver and the final guide pass, after the `dev`
+    merge `2f48542c5`).
+  - Owner decisions recorded in the server-generation guide's Limitations: `handoff: "prefer"` does not guarantee
+    that the first callback runs on the worker (no first-dispatch gate), and a queued root cascaded `disconnected`
+    behind another job's expired root can end before the `absent` offer's 50 s budget.
+  - Still open: the device checks (a phone with its screen off handing a job to a PC worker, a PC worker minimized
+    for over 5 minutes, the phone's toast, stream, Stop and "Take back", the "Hand off to" menu across two browsers).
+  - Found by the run: 4 entries in `docs/research/found-issues.md` (a retaken job's dropped live stream, a current
+    owner taking its own offer, the role event's missing `clientName`, a cancelled hook overlapping the worker's
+    next callback).
 - Render Work Budget:
   - All slices landed on 2026-11-05 (plan-runner, on `dev`; Slice 5 split into 5a, the baseline before Slices 1–4,
     and 5b, the comparison after): obsolete row renders abort, failures are classified transient or final, shared

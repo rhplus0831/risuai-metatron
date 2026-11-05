@@ -1,7 +1,7 @@
 # Reroll Candidates Plan
 
 Status: drafted 2026-11-03, revised 2026-11-04 after the [design
-audit](../audit/plan-design-audit-2026-11-04.md) and again after its adversarial challenge. Landed: 1 (`30bec41a4`), 3 (`4976a15f0`).
+audit](../manual-audit/plan-design-audit-2026-11-04.md) and again after its adversarial challenge. Landed: 1 (`30bec41a4`), 3 (`4976a15f0`).
 Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q4 were answered by the owner on
 2026-11-03 (the recommended option each time). The first revision corrected D2–D5 and D7–D10 (D10 took the
 server op its draft rejected) and added D13 and D14; the second corrects D2–D8, D10 and D13 (a trigger's
@@ -37,8 +37,8 @@ store guide](../structure/chat-store.md) (By-id ops, Map merges, Job hydration),
 guide](../structure/structured-memory/writer.md) (The writer's windows), the [memory
 guide](../structure/memory.md) (Selection, Memory writes), and the [backup and sync hub
 guide](../structure/backup-sync-hub.md) (Upstream database export) at `8f0db0fb7`; the 2026-11-04 [design
-audit](../audit/plan-design-audit-2026-11-04.md) (its Reroll Candidates section RC1–RC7 and the cross-plan
-items X1, X5, X6, X7), its [per-plan report](../audit/plan-design-audit-2026-11-04/reroll-candidates.md) (24
+audit](../manual-audit/plan-design-audit-2026-11-04.md) (its Reroll Candidates section RC1–RC7 and the cross-plan
+items X1, X5, X6, X7), its [per-plan report](../manual-audit/plan-design-audit-2026-11-04/reroll-candidates.md) (24
 findings with file and line evidence), and an independent cross-check of that audit (the failed attempt's own
 variable writes and the stale switch's variable decision, both answered by D10 and D13); and the adversarial
 challenge of that revision (2026-11-04: failures F1–F7 with file and line evidence, its additional contract
@@ -67,7 +67,7 @@ plan](incremental-chat-transport.md) carries the rows this plan makes larger: it
 text-only checkpoint small, and its Slice 4 (the over-cap row manifest and the by-id row read, with that
 plan's D6 amended so the read also carries the chat's changed metadata fields) is a merge-time dependency of
 this plan's Slice 2 (D4): no code here calls what it adds, so the two may be built on separate branches, but
-Slice 2 reaches `dev` only in the same merge or after it; its Slice 2 is no dependency at all. The [Job Handoff plan](job-handoff.md) keys nothing this plan needs
+Slice 2 reaches `dev` only in the same merge or after it; its Slice 2 is no dependency at all. The [Job Handoff plan](../archived-plan/README.md) keys nothing this plan needs
 by owner (the reroll lock is the job's, so a takeover does not touch it), but its notices reach the job's
 owner only (D12); the slices that share files are listed under **Slices**.
 

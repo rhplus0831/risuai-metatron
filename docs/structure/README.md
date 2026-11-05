@@ -48,7 +48,7 @@ The rules for editing the guides in this folder and `STRUCTURE.md`, the index ev
   It does not list a test file's cases: the file is the inventory, and V4 finds it after a rename.
 - A measurement (anything with a date, a browser or Node version, a median, or a byte or millisecond count tied to a
   run) lives in `docs/audit/<topic>-<date>.md`. The guide keeps one sentence with the conclusion that changes how to
-  edit the code, and a link.
+  edit the code, and a link. Owner-requested audits go to `docs/manual-audit/`.
 - Remove inventories and step-by-step paraphrases the source already makes clear. Keep the entrypoint and the
   non-obvious constraint, ownership boundary, or failure behavior an agent needs before editing.
 - Keep only cross-cutting rules in `STRUCTURE.md`. Put subsystem contracts and focused test anchors in their owner; link
