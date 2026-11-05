@@ -15,8 +15,8 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (3)
 - [Client and plugins](#client-and-plugins) (6)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (10)
-- [Guides](#guides) (7)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
+- [Guides](#guides) (6)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (16)
 
@@ -274,35 +274,6 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 **Why it matters:** the comment and the guide disagree on what the browser check expects.
 **Suggested handling:** run the check's scenario to see which holds, then fix the comment or add the failure to the Gotcha.
 
-### docs:contracts takes a typedef for the module header
-
-`util/docsContracts.mjs`'s header rule (~14: the first `/** */` block after the imports) makes `pnpm docs:contracts util/agentDataSandbox.mjs` report "module header: line 9", the `/** @typedef ... AgentDataSandboxMode */` block, while the real contract is the leading `//` block above the imports, which the tool never counts; the util scripts therefore show "module header: none". Found in the Guides To Source run (2026-11-05). Owner: build-test-platforms.
-
-**Why it matters:** the header counts feed every slice's documented share: a typedef inflates it and `//` headers deflate it.
-
-**Suggested handling:** skip a lone `@typedef` block, and count a leading `//` block in `.mjs` scripts as the header.
-
-### docs:ledger counts broad Scope globs as named files
-
-`util/docsLedger.mjs` `namedTargets` (~118) and `resolveNamed` (~185) take every path span of the working guide, globs matched, as a file a dropped identifier may live in. A broad Scope glob (`self-host-server.md`'s `server/{src/**,tsconfig.json,ssl/*}` matched 428 files) lets `pnpm docs:ledger` pass for almost any identifier some server file mentions. In the Guides To Source run (2026-11-04) a strict pass without the glob found one real miss. Owner: build-test-platforms.
-
-**Why it matters:** the ledger is the mechanical guarantee that a guide trim lost no fact, and several guides have similar globs.
-
-**Suggested handling:** add a `--strict` flag that ignores glob spans, or run such a pass by hand on trims of glob-scoped guides.
-
-### docs:read and guide-reads script gaps
-
-Found in the Guides To Source run (2026-11-04/05); owner build-test-platforms.
-
-- `util/docsRead.mjs` `sectionText` (~57) strips backticks from the headings but not from the query, so a heading passed as the listing prints it (``'Not in `sendChat`'``) "matches no heading"; agents copy the backticks, at the cost of a call and a reprinted heading list.
-- `resolveGuide` (~12) tries the name as given first, so `pnpm docs:read README.md` prints the repository-root README instead of `docs/structure/README.md` (Doc Maintenance); bare `README` works. `util/guideReads.mjs` mirrors this now.
-- `util/guideReads.mjs` `scanTranscripts` (~497) validates a guide name only for `docs:read` events, so a Bash command naming a fixture path such as `docs/structure/a.md` becomes a guide row (`a` and `g`, 3 of 12,273 in `docs/audit/guide-reads-2026-11-05-wave3.md`). Validating against git history would drop 63 real counts of 18 retired guides, so the fix needs another signal, such as the tool result showing the file was missing.
-- A `docs:read` of a guide's title heading covers only the title in `countEvent` (`under`, ~253), since child labels omit the title, so every `##` would show as untouched; no audit so far had such a query.
-
-**Why it matters:** the first two cost lookups and can skip the guide-edit rules; the last two would skew a later audit's rows and untouched lists.
-
-**Suggested handling:** strip backticks from the query and prefer `docs/structure/README.md` for `README.md` (with node tests, updating `guideOfArgument`); for an audit rerun, note the bogus rows and count title queries first, or cover every heading when the resolved section is level 1.
-
 ### checkServerSend once hit an alert after its mid-stream reload
 
 On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the first `node util/playwright/checkServerSend.mjs` passed 11 checks, then `openCharacterChat` after the "reload in the middle of a slow stream" step (~340) timed out because a `[data-alert-dialog]` overlay covered the sidebar. The run overlapped a `docker build`; four reruns passed 19/19, two of them logging no alert after the reload, and the base `9bf28c429` passed 19/19. The alert text was not captured. Candidates: the automatic safe-boot notice (the driver does not clear safe-boot attempts) or an error alert from the owner's resync after the reload.
@@ -350,14 +321,6 @@ Lookup trials of the Guides To Source run (2026-11-04/05) hesitated or guessed a
 **Why it matters:** a reader following the hazard's link finds no explanation.
 
 **Suggested handling:** point the link at the server-generation section on job creation and lock acquisition (or drop the "see"), and relabel line 285's link.
-
-### docs:owner sends the asset lifecycle client to persistence
-
-`pnpm docs:owner src/ts/storage/assetLifecycleClient.ts` (and its test `src/ts/storage/tests/assetLifecycleClient.test.ts`) answers `persistence` through the `src/ts/storage/` fallback, while the client is documented in `docs/structure/assets.md` (Asset client, Tests). The Asset Lifecycle run's Storage panel slice (2026-11-05) added the files and could not edit `docs/structure/ownership.json`.
-
-**Why it matters:** an agent routed by `docs:owner` reads the persistence guide and finds nothing about the report, scan, and sweep client.
-
-**Suggested handling:** add `assetLifecycleClient` to the assets rules in `docs/structure/ownership.json` beside `src/ts/storage/{assetClient,assetQueue}.ts` and their tests rule, then run `pnpm check:docs`.
 
 ### The global-api guide misses the checkbox confirm
 
