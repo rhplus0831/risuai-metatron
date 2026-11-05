@@ -39,7 +39,7 @@ store](../structure/chat-store.md) (the message index, what a streamed row means
 
 Relation to the other active plans: the [Render Work Budget plan](render-work-budget.md) drops its F1 memo after
 the design audit (X3); this plan's Slice 0 owns the message position index (D1). The [Job Handoff
-plan](job-handoff.md) adds viewer sockets, `role`, `register` and `clients` to the same sockets (its D2, D3,
+plan](../archived-plan/README.md) adds viewer sockets, `role`, `register` and `clients` to the same sockets (its D2, D3,
 D6): this plan adds no frame those need; under it every socket of a job shares the one `sentChat` baseline, and
 D3 says what a viewer gets (X2). The [Reroll Candidates plan](reroll-candidates.md) D12 relies on reroll writes
 reaching the feed and the job `chatPatch` as any by-id write does; its carrier rows (candidates up to its

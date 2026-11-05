@@ -49,7 +49,7 @@ cancellation beneath them and changes none of them (D7). Files shared with the o
 [Reroll Candidates plan](reroll-candidates.md) Slice 2 edits `reroll` in
 `src/lib/ChatScreens/DefaultChatScreen.svelte`, the file of this plan's Slice 4 (`screenShot`): different
 functions, so a rebase, not a conflict, but not the same worktree at once. The
-[Job Handoff plan](job-handoff.md) Slice 3 edits the same file (its "Hand off to…" control beside Stop) and
+[Job Handoff plan](../archived-plan/README.md) Slice 3 edits the same file (its "Hand off to…" control beside Stop) and
 `src/lang/en.ts` and `ko.ts`, which Slice 4 edits if its progress text changes: the same rule, and the language
 files only gain keys. The [Asset Lifecycle plan](asset-lifecycle.md) Slice 4 edits `en.ts` and `ko.ts` too (its
 `storage.*` keys). The [Incremental Chat Transport plan](incremental-chat-transport.md) Slice 0 owns the

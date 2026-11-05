@@ -318,7 +318,7 @@ Runtime limits of other subsystems live with their owners: [chat-pipeline](chat-
   deduplication also ends at the memory caps. WAL `synchronous=NORMAL` may lose recent writes on power loss, and the tab
   shows `serverJob.endedAway` when no outcome receipt remains. Decision: Job Protocol D1, archive.
 - A callback delivered to an owner whose device then sleeps is not handed over; `handoff: "prefer"` only opens an offer.
-  Decision: Job Handoff Q4.
+  Decision: Job Handoff Q4, archive.
 - An `absent` offer leaves a worker 50 s before the job's first undelivered callback expires, but a queued root that
   another job's expired root settles `disconnected` (the cascade in `createChannelHub`) can end sooner. Decision: Job
   Handoff D3.

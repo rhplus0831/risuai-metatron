@@ -2,20 +2,11 @@
 
 Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) records completed plans,
-historical paths/commits, retrieval commands, and pending manual follow-ups. The five feature
+historical paths/commits, retrieval commands, and pending manual follow-ups. The feature
 plans below were revised on 2026-11-04 after the
-[plan design audit](../audit/plan-design-audit-2026-11-04.md); Job Handoff, Asset Lifecycle and Reroll
+[plan design audit](../audit/plan-design-audit-2026-11-04.md); Job Handoff (since landed and archived), Asset Lifecycle and Reroll
 Candidates were then challenged again and revised a second time the same day. Plugin Storage and Data API was drafted on 2026-11-05.
 
-- [Job Handoff](job-handoff.md): another tab of the same user (a PC marked as a worker) takes over
-  the owner role of a running generation job when the creating tab goes silent, asked at creation, or
-  picked by name; a takeover is a ticketed attach against an open offer whose owner switch takes effect
-  only when no callback delivered to the old owner is outstanding (a callback in flight on a device that
-  then sleeps is never re-delivered and settles by the owner-absent policy, which the creator is told),
-  request lanes follow the owner, every socket of a job shares one chat baseline so the creator keeps
-  watching the stream, notices go by kind (dialogs to the owner, display effects to every socket, device
-  effects to the creator), and the creator replays skipped listeners when no owner is attached at the
-  end; D1–D8 recommended, Q1–Q4 answered (Q3 superseded by the notice groups), Slices 1–4 landed.
 - [Asset Lifecycle](asset-lifecycle.md): the server marks every stored asset from one retention graph (every
   text column of the live store, chat metadata and the memory tables included, the checkpoint pages a checkpoint
   names, every retained snapshot, exports from their copy to the end of their stream, recent uploads and a

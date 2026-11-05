@@ -67,7 +67,7 @@ plan](incremental-chat-transport.md) carries the rows this plan makes larger: it
 text-only checkpoint small, and its Slice 4 (the over-cap row manifest and the by-id row read, with that
 plan's D6 amended so the read also carries the chat's changed metadata fields) is a merge-time dependency of
 this plan's Slice 2 (D4): no code here calls what it adds, so the two may be built on separate branches, but
-Slice 2 reaches `dev` only in the same merge or after it; its Slice 2 is no dependency at all. The [Job Handoff plan](job-handoff.md) keys nothing this plan needs
+Slice 2 reaches `dev` only in the same merge or after it; its Slice 2 is no dependency at all. The [Job Handoff plan](../archived-plan/README.md) keys nothing this plan needs
 by owner (the reroll lock is the job's, so a takeover does not touch it), but its notices reach the job's
 owner only (D12); the slices that share files are listed under **Slices**.
 
