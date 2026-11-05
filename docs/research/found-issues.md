@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (14)
+- [Structured Memory](#structured-memory) (12)
 
 ## Chat store, sync, and change feeds
 
@@ -315,13 +315,6 @@ In `src/ts/process/structuredMemory.svelte.ts` and `StructuredMemoryPanel.svelte
 **Why it matters:** an extra prompt row, never a wrong record; the writer and the read path disagree on "named".
 **Suggested handling:** use `searchMatch` in `castSlice`.
 
-### Lore search depth skips a short chat's first messages
-
-`searchMatch` (`shared/lore/activation.ts`) slices `messages.slice(messages.length - searchDepth, messages.length)`. A negative start counts from the end, so three messages and depth 5 start at index 1 and skip message 0 (`[0,1,2].slice(-2, 3)` is `[1, 2]`). The pages lane avoids it by passing exactly the rows it wants. Found 2026-11-02.
-
-**Why it matters:** a key only in the first messages of a short chat does not activate.
-**Suggested handling:** clamp the start to 0 and update `server/src/tests/fixtures/baseline/`, after checking upstream parity.
-
 ### Hand-written resourceSync mocks
 
 `src/lib/ChatScreens/Chat.test.ts` keeps a hand-written `vi.mock` of `src/ts/storage/resourceSync.svelte`, and other files mock it too, though `src/ts/tests/bootMocks.ts` has a typed factory. Slice 5c met three tests failing at run time on a missing `beginMutationScope`.
@@ -335,13 +328,6 @@ Left by slice 5g. A journal recovery that replays a real `hypaV3Data` while Stru
 
 **Why it matters:** a wrong actor in a rare notice, a stale comment, a stale payload, and a brittle test.
 **Suggested handling:** a recovery wording, the comment in the next `app.ts` change, and moving the constants to `shared/structuredMemory.ts`.
-
-### Rebuild lock refusal has no code
-
-`server/src/jobs/generationJobs.ts` refuses a job during a rebuild with a plain-text 409, and the tab's `registryRefusal` knows only coded refusals, so a create retried after a lost answer shows the generic lost message. Slice 6b, by reading.
-
-**Why it matters:** rare, and the panel shows the run anyway.
-**Suggested handling:** give the refusal a code and words in `src/lang/en.ts`.
 
 ### Adopted summaries
 
