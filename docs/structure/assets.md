@@ -2,12 +2,11 @@
 
 ## Scope
 
-- Owns the tab's asset transport: how `assets/` keys become URLs (direct mode and the worker fallback, thumbnails, holds
-  and releases, the signed fetch for copies and screenshots), the asset client's reads and writes with the missing check
-  and the batch caps, the bounded save queues and batched reads of bulk imports and exports, and the batch record
-  framing both sides share.
-- Paths: the asset functions of `src/ts/globalApi.svelte.ts`, `src/ts/storage/{assetClient,assetQueue}.ts`, and
-  `shared/assetBatch.ts`.
+- Owns the tab's asset transport: how `assets/` keys become URLs (direct or fallback, thumbnails, holds, signed
+  fetches), the asset and storage report clients, the bulk save queues and batched reads, and the batch record framing
+  both sides share.
+- Paths: the asset functions of `src/ts/globalApi.svelte.ts`, `src/ts/storage/asset{Client,Queue,LifecycleClient}.ts`,
+  and `shared/assetBatch.ts`.
 - Not here:
   - The asset routes, their verification budget, and the HTTP cache → [self-host server](self-host-server.md).
   - The worker that signs subresource loads → [build-test-platforms](build-test-platforms.md).
@@ -42,6 +41,7 @@ errors.
 - Batches: `writeAssets` (the skip rule for `AssetWriteItem.sha256`, asked per batch), `readAssets`, and
   `missingAssets`, behind globalApi's `saveAssetBatch` and `loadAssets`; `ASSET_BATCH_CLIENT_RECORDS`,
   `ASSET_BATCH_CLIENT_BYTES`, `MISSING_CHECK_DEADLINE_MS`, and `assetContentHash`.
+- `src/ts/storage/assetLifecycleClient.ts`: the Storage panel's report, scan, and sweep calls.
 
 ### Asset queues
 
@@ -95,7 +95,7 @@ probe answers, and URLs already handed out stay as they are ([Issues](#issues)).
 ## Tests
 
 - Vitest:
-  `pnpm --silent test:agent src/ts/globalApi{Retention,Thumbnails}.test.ts src/ts/screenshotCaptureCache.test.ts src/ts/storage/tests/asset{Client,Queue}.test.ts shared/tests/assetBatch.test.ts`.
+  `pnpm --silent test:agent src/ts/globalApi{Retention,Thumbnails}.test.ts src/ts/screenshotCaptureCache.test.ts src/ts/storage/tests/asset{Client,Queue,LifecycleClient}.test.ts shared/tests/assetBatch.test.ts`.
 - Asset fixture: `src/ts/storage/tests/assetClientMock.ts` (`createAssetClientMock`) reports every asset missing.
   `src/ts/storage/tests/assetClient.test.ts` uses fake routes controlled through mocked `authFetch` and
   `answer.current`.
@@ -103,7 +103,7 @@ probe answers, and URLs already handed out stay as they are ([Issues](#issues)).
   `util/playwright/measureFileSources.mjs` and `probeDirectAssets.mjs`.
 - Slow: no client tests; the server asset batch cap in `server/src/tests/assets.test.ts` is `slow`
   ([test-harness](test-harness.md)).
-- Not tested: none recorded beyond that; the browser spec and the probes cover the worker paths.
+- Not tested: none; the browser spec and the probes cover the worker paths.
 
 ## Known Hazards
 

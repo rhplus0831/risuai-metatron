@@ -20,6 +20,7 @@ import BanCharacterSetSettings from "src/lib/Setting/Pages/Advanced/BanCharacter
 import CustomModelsSettings from "src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte";
 import SettingsExportButtons from "src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte";
 import DiagnosticsPanel from "src/lib/Setting/Pages/Advanced/DiagnosticsPanel.svelte";
+import StoragePanel from "src/lib/Setting/Pages/Advanced/StoragePanel.svelte";
 import ColorSchemeSelect from "src/lib/Setting/Pages/Display/ColorSchemeSelect.svelte";
 import CustomColorSchemeEditor from "src/lib/Setting/Pages/Display/CustomColorSchemeEditor.svelte";
 import CustomTextThemeEditor from "src/lib/Setting/Pages/Display/CustomTextThemeEditor.svelte";
@@ -37,6 +38,7 @@ export const customComponents: Record<string, Component<any>> = {
     CustomModelsSettings: CustomModelsSettings,
     SettingsExportButtons: SettingsExportButtons,
     DiagnosticsPanel: DiagnosticsPanel,
+    StoragePanel: StoragePanel,
     ColorSchemeSelect: ColorSchemeSelect,
     CustomColorSchemeEditor: CustomColorSchemeEditor,
     CustomTextThemeEditor: CustomTextThemeEditor,

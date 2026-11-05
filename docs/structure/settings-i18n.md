@@ -114,7 +114,8 @@ These live in `src/lib/Setting/Pages/`.
   Images): runtime behavior is in [media](media-aux.md).
 - `HotkeySettings` (menu 15): `activeHotkeys` (`src/ts/hotkey.ts`) hides `quickSettings` ([app-shell](app-shell.md)).
 - Other handwritten pages: `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `UserSettings`, `ThanksPage`,
-  `Translation/TranslatorStepEditor`, `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, and `Display/*`.
+  `Translation/TranslatorStepEditor`, `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`,
+  `Advanced/StoragePanel`, and `Display/*`.
 
 ### Preset lists
 
