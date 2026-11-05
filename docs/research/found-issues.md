@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run) and the eleventh (the Reroll Candidates run) on 2026-11-05; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -9,14 +9,14 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
 - [Server routes and resource store](#server-routes-and-resource-store) (1)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
-- [Display transform](#display-transform) (2)
-- [Chat screen and input](#chat-screen-and-input) (3)
-- [Client and plugins](#client-and-plugins) (5)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
-- [Guides](#guides) (0)
+- [Display transform](#display-transform) (3)
+- [Chat screen and input](#chat-screen-and-input) (4)
+- [Client and plugins](#client-and-plugins) (10)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
+- [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (10)
 
@@ -89,6 +89,13 @@ The no-memory trim question (aad461e63, 2026-10-11; `server/src/prompt/runner.ts
 **Why it matters:** a user can still see a silent trim or an English error from a feature meant to ask first.
 **Suggested handling:** raise when a silent trim or an English job error is reported; the cleanup gap needs a design, the other two are small.
 
+### The trim question counts blank history
+
+`server/src/prompt/assemble.ts` (~1890–1902): with a memory method configured but off, the dry-run trim loop asks the no-memory trim question (`host.memoryTrim.confirm()`) when `dropped > historyStart`. A greeting or message its editprocess scripts blanked (`blankEntry`, `ContextSource.empty`) counts as history there, so a trim that would drop only blank entries still asks. The Found Issues Sweep's F2 (2026-11-05) fixed the gap question (`trimHistoryToContext`) and the trim ledger, not this one.
+
+**Why it matters:** the user is asked to turn memory on to protect history that nothing would lose.
+**Suggested handling:** ask only when a non-blank history entry is among the dropped ones.
+
 ## Server routes and resource store
 
 ### The change log's bound is a row count, not 4 MB
@@ -142,6 +149,13 @@ The Render Work Budget comparison run ([audit](../audit/render-work-budget-2026-
 **Why it matters:** the server still evaluates several chunks nobody will show after a switch on long chats; the cancellation arrives only after the unmount work.
 **Suggested handling:** owner decision whether the plan's one-chunk bound matters; if it does, cap the chunks in flight per chat, or abort a chat's transform subscriptions when the screen leaves the chat, before the rows unmount.
 
+### A single combined paragraph is written back as HTML
+
+`src/ts/translator/translator.ts` `translateHTML`, the combineTranslation branch (~617, `node.innerHTML = sentences[0]`): the single-sentence case assigns `getNodetextToSentence`'s decoded text as HTML, while the multi-sentence case uses `textContent`. So `<p>&lt;b&gt;x&lt;/b&gt;</p>` becomes a real `<b>` before translation. Seen while doing the Found Issues Sweep's E3 (2026-11-05), not run in the app; whether a later sanitizer catches injected markup (`<img onerror>`) was not checked. Owner: translation.
+
+**Why it matters:** escaped text can become live markup on the rendered translation path.
+**Suggested handling:** confirm the sanitizer order in `ChatBody`, then use `textContent` like the other branch.
+
 ## Chat screen and input
 
 ### Latest-message start scroll untested in DefaultChatScreen
@@ -164,6 +178,13 @@ After the paged export (`src/lib/ChatScreens/screenshotExport.ts`), the Render W
 
 **Why it matters:** a 600-row export still costs about 4 GiB of renderer memory, enough to crash a tab on phones.
 **Suggested handling:** take a heap snapshot and `VmHWM` per page during a 150-row export to find what scales with rows, then release it per page.
+
+### /multisend keeps its quotes
+
+`/multisend "one|||two"` sends `"one` and `two"`: `processPinnedCommands` in `src/ts/process/command.ts` (~75–90) splits the line on `|` outside double quotes but keeps the quote characters, and `commandParser` (~360) joins the arguments verbatim. The unquoted form is split by the pipe parser (`["/multisend one", "", "", "two"]`), so the quoted form is the only one that works. `src/ts/process/command.test.ts` (~445) pins `'"one'`. Server twin: `server/src/prompt/commands.ts`. Found by the Found Issues Sweep's B1 (2026-11-05). Owner: chat-pipeline.
+
+**Why it matters:** every use of the documented example sends stray quotes in the first and last messages.
+**Suggested handling:** strip one pair of surrounding quotes from a command argument on client and server, and update the pinned test.
 
 ## Client and plugins
 
@@ -207,6 +228,41 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 
 **Why it matters:** the user asked for the data to be deleted, and some keys come back after a removal with the plugin open in another tab.
 **Suggested handling:** raise with the owner; a fix needs a tombstone or a removed-plugin refusal in `setOwnedPluginStorageItem`.
+
+### Scheme writers skip the text theme
+
+`src/ts/gui/colorscheme.ts` `changeColorScheme` (~217) and `updateCustomColorScheme` (~226) call only `updateColorScheme()`, but `updateTextThemeAndCSS` (~310) picks the `standard`/`highcontrast` font colors by `settings.ui.colorScheme.type`; the plugin API's `setColorScheme` (`src/ts/plugins/apiV3/v3.svelte.ts` ~2297) has the same omission (`changeColorSchemeType` calls both). A probe saw a light scheme keep the dark text color (`--FontColorStandard` `#fafafa`). Found by the D2 challenger of the Found Issues Sweep (2026-11-05). Owner: ui-theming.
+
+**Why it matters:** switching from a dark to a light preset leaves light text on a light background until the text theme is touched or the page reloads.
+**Suggested handling:** call `updateTextThemeAndCSS()` after `updateColorScheme()` in those writers.
+
+### Local ui writers skip the display apply
+
+The Found Issues Sweep's D2 re-applies the display only for remote `ui` records (`watchRemoteRecords` in `src/ts/bootstrap.ts`). Applying a recovered `ui` draft (`src/ts/storage/journalRecovery.ts` ~901) replaces the record and updates the language but calls none of `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`, and fires no `onRemoteRecordApplied`; the generic plugin database setters (`src/ts/plugins/apiV3/v3.svelte.ts` ~1701) can write display fields of `settings.ui` without applying them. Found by the D2 challenger (2026-11-05). Owner: ui-theming.
+
+**Why it matters:** the page shows a theme or size that differs from its settings until a reload.
+**Suggested handling:** run the same apply step D2 runs for remote records.
+
+### #import_preset opens the settings after a refusal
+
+`src/ts/characterCards.ts` `characterURLImport`, the `#import_preset=` branch (~860): it ignores `importPreset`'s return and always opens the prompt settings, while the drop, launch-queue and `#share_preset` paths act only on a returned id. A refused `.risup` (`errors.unsupportedPreset`) shows the refusal and then the settings page opens anyway. Found by the Found Issues Sweep's A1 (2026-11-05). Owner: characters-modules.
+
+**Why it matters:** low; the user lands on a settings page for a preset that was not imported.
+**Suggested handling:** gate `SettingsMenuIndex`/`settingsOpen` on the returned id.
+
+### A stray }} ends CBS highlighting
+
+`src/ts/gui/highlight.ts` `simpleCBSHighlightParser` (~358–478): the `}}` branch does `depth--` without a floor. Text such as `}} {{char}}` (a JSON snippet in a prompt or lorebook editor) leaves `depth` at -1; the next `{{` raises it to 0, which `checkHighlight` skips, so `{{char}}` and every later call stay unhighlighted. Writes at index -1 are dropped silently. Found by the Found Issues Sweep's C1 (2026-11-05). Owner: cbs-rendering.
+
+**Why it matters:** editor highlighting disappears for the rest of the text after one stray close pair.
+**Suggested handling:** clamp the depth at 0 (ignore an unmatched `}}`).
+
+### Inlay explorer hard-codes two strings
+
+`src/lib/Playground/PlaygroundInlayExplorer.svelte` renders the card `Delete` button label (~250) and the load-more `Loading...` (~258) as literal English, while the rest of the component reads `language.playground.*`. Found by the Found Issues Sweep's J1 (2026-11-05).
+
+**Why it matters:** STRUCTURE.md U2; non-English users see English there.
+**Suggested handling:** move both to `language.playground` keys; `PlaygroundInlayExplorer.test.ts` finds the button by the text "Delete", so update that lookup.
 
 ## Build, drivers, and e2e
 
@@ -260,7 +316,21 @@ On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the firs
 
 **Suggested handling:** if it shows again, print the dialog text before `openCharacterChat` to tell the two apart; consider clearing safe-boot attempts in the driver.
 
+### docs:contracts crashes on EPIPE under head
+
+`pnpm --silent docs:contracts <file> | head -3` prints the first lines, then Node's `Error: write EPIPE` / "Unhandled 'error' event" stack from `util/docsContracts.mjs`'s command-line block, which writes to `process.stdout` with no `error` handler. Other `util/docs*.mjs` tools may share it. Seen 2026-11-05.
+
+**Why it matters:** agents pipe these tools into `head`; the stack looks like a tool failure and costs a second call.
+**Suggested handling:** ignore `EPIPE` on `process.stdout` in the command-line blocks.
+
 ## Guides
+
+### The non-fencing refusal list misses memoryRebuilding
+
+`docs/structure/chat-pipeline.md` (~194) lists the generation-create refusals that do not fence an unanswered create (`503`, `chatBusy`, `chatBindingIncomplete`, `chatLoreOverrideOrphaned`). The Found Issues Sweep's I1 (9440f4ccd, 2026-11-05) added `409 { error: "memoryRebuilding" }`, which `serverCommands.ts` `admissionRefused` also treats as non-fencing; the list was not updated.
+
+**Why it matters:** low; the list does not claim to be complete, but a reader checking the non-fencing codes misses one.
+**Suggested handling:** add the code, paid with a trim in the same paragraph.
 
 ## Test timing
 
