@@ -168,10 +168,13 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
     if (typeof context.chatRevision !== "string") {
         return "context.chatRevision must be a string";
     }
-    for (const field of ["continueMessageId", "speakerChaId", "userMessageId"] as const) {
+    for (const field of ["continueMessageId", "rerollMessageId", "speakerChaId", "userMessageId"] as const) {
         if (context[field] !== undefined && !isValidResourceId(context[field])) {
             return `context.${field} must be an id when present`;
         }
+    }
+    if (context.rerollMessageId !== undefined && body.kind !== "reroll") {
+        return "context.rerollMessageId is only for reroll jobs";
     }
     // Only a send runs the input stage that appends the user message.
     if (context.userMessageId !== undefined && !INPUT_KINDS.includes(body.kind)) {
@@ -211,6 +214,7 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
         input: context.input,
         chatRevision: context.chatRevision,
         ...(context.continueMessageId !== undefined ? { continueMessageId: context.continueMessageId as string } : {}),
+        ...(context.rerollMessageId !== undefined ? { rerollMessageId: context.rerollMessageId as string } : {}),
         ...(context.speakerChaId !== undefined ? { speakerChaId: context.speakerChaId as string } : {}),
         ...(context.userMessageId !== undefined ? { userMessageId: context.userMessageId as string } : {}),
         ...(context.triggerId !== undefined ? { triggerId: context.triggerId as string } : {}),

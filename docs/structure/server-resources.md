@@ -42,11 +42,9 @@ headers and method comments.
 - `server/src/http/spool.ts`, `server/src/http/fileImport.ts` (`serveFileImport`, `serveStagedImport`,
   `createImportSlot`), `server/src/http/contentAsset.ts`, and `server/src/http/recordStream.ts` handle archive and card
   file transfer for the routes below.
-- A content-named asset (`assets/<sha256 hex>.<ext>`) that already exists is kept only when it holds its bytes
-  (`holdsVerifiedAsset` in `server/src/http/assetVerification.ts`, a recorded verification of the same file included):
-  the module, CharX, PNG, and Realm imports replace an empty, truncated, or wrong file by rename, and an archive restore
-  (`server/src/routes/backups.ts` `restoreValidated`) replaces it when the archive's copy hashes to the name. Other
-  existing names are never overwritten by a restore.
+- An existing content-named asset (`assets/<sha256 hex>.<ext>`) is kept only when it holds its bytes
+  (`holdsVerifiedAsset`): the file imports replace a damaged one by rename, and `restoreValidated` (`routes/backups.ts`)
+  when the archive's copy hashes to the name. A restore never overwrites other existing names.
 
 ### Resource routes
 
@@ -184,10 +182,9 @@ leave absence as absence (upstream reads it as now).
 
 ### Archive export and import
 
-The version-2 archive export streams a database snapshot and asset records; its exported database omits `llmSecrets`.
-Import authenticates and checks the epoch before reading, spools the full archive and validates it, its database in a
-turn of the same queue that ends before maintenance, then installs it under maintenance with a safety snapshot, adding
-missing asset files and repairing damaged ones under the [content-name rule](#backup-and-import-internals).
+The version-2 export and import contracts are the comments above their routes in `routes/backups.ts`: the export's
+database omits `llmSecrets`; the import validates the whole archive, its database in a restore queue turn, then installs
+under maintenance by the [content-name rule](#backup-and-import-internals).
 
 ### Validation
 
@@ -206,11 +203,9 @@ after the commit are its comment.
 
 ### Shutdown during a restore
 
-Shutdown aborts a restore before its install (`restoreShutdown` in `app.ts`, `restoreSignal` in `routes/backups.ts`):
-its worker is terminated, a waiter ends at its turn, and it answers 503 with its staging removed. The signal is checked
-at the turn, through the hash pass, before maintenance, inside it, and right before `replaceAll`; an install past that
-check completes. An upstream commit stops the same way (`staging.signal`). A version-2 import admitted before shutdown
-finishes, its worker included, and `dispose` waits for it.
+Shutdown aborts a restore before its install (`restoreShutdown` in `app.ts`; `restoreSignal`'s comment in
+`routes/backups.ts` has where it is checked), answering 503 with its staging removed. An upstream commit stops the same
+way (`staging.signal`). A version-2 import admitted before shutdown finishes, and `dispose` waits for it.
 
 ### Upstream backups
 
@@ -218,9 +213,8 @@ finishes, its worker included, and `dispose` waits for it.
   heap cap; staged work expires after ten minutes. `RISU_MAX_UPSTREAM_DB_BYTES` caps the decoded database.
 - The prepare's worker stages from its build store with `stageValidatedSnapshot`, on the default kinds
   (`importStage.ts`).
-- Import reports changes for review; the commit reads no row and checks the epoch and the accepted write count again
-  right before maintenance, and a change answers 412 or `409 changedSinceReview` (the comment above the commit route has
-  when the import is handed back).
+- Import reports changes for review; the commit's recheck, its 412 and `409 changedSinceReview`, and when the import is
+  handed back are the comment above the commit route.
 - Export reads the snapshot without checkpoint tables, so upstream saves hold no named checkpoint history. A failed
   memory walk does not stop it ([projection](structured-memory/projection.md#the-hypav3-projection)).
 

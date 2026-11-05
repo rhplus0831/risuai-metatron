@@ -1,3 +1,4 @@
+import { normalizeCandidateFields } from "../../../shared/rerollCandidates.ts";
 import { randomUUID } from "node:crypto";
 import { CHAT_META_FORBIDDEN_KEYS, MAX_TOOL_CALL_RECORD_BYTES } from "../../../shared/chats.ts";
 import { isToolContentEntry } from "../../../shared/llm/validate.ts";
@@ -138,8 +139,9 @@ export function assertPatchableMetaKeys(keys: readonly string[]) {
  * One message as stored: a `user` or `char` role, string `data`, and a valid `chatId`. A `translation`
  * that is not a `MessageTranslation` is dropped (a copy without it is returned), never refused: an
  * imported chat keeps its messages (the tab's chat module drops it the same way, `prepareMessages`).
+ * Candidate fields are checked independently: op writes refuse invalid fields; imports drop them.
  */
-export function normalizeMessage(input: unknown): Record<string, unknown> {
+export function normalizeMessage(input: unknown, strictCandidates = false): Record<string, unknown> {
     if (!isPlainObject(input)) {
         throw new ResourceValidationError("message must be an object");
     }
@@ -152,12 +154,20 @@ export function normalizeMessage(input: unknown): Record<string, unknown> {
     if (!isValidResourceId(input.chatId)) {
         throw new ResourceValidationError("message.chatId must be a valid id");
     }
-    if (Object.hasOwn(input, "translation") && !isMessageTranslation(input.translation)) {
-        const message = { ...input };
-        dropInvalidTranslation(message);
-        return message;
+    const message = normalizeCandidateFields(
+        input,
+        strictCandidates
+            ? (field) => {
+                  throw new ResourceValidationError(`message.${field} is malformed or exceeds its size limit`);
+              }
+            : undefined,
+    );
+    if (Object.hasOwn(message, "translation") && !isMessageTranslation(message.translation)) {
+        const copy = { ...message };
+        dropInvalidTranslation(copy);
+        return copy;
     }
-    return input;
+    return message;
 }
 
 /**
@@ -165,7 +175,7 @@ export function normalizeMessage(input: unknown): Record<string, unknown> {
  * gets a new one, and a later duplicate within the list is renamed (the first keeps its id). Returns
  * copies; the input is not changed.
  */
-export function normalizeMessageList(input: unknown): Record<string, unknown>[] {
+export function normalizeMessageList(input: unknown, strictCandidates = false): Record<string, unknown>[] {
     if (input === undefined) {
         return [];
     }
@@ -182,6 +192,6 @@ export function normalizeMessageList(input: unknown): Record<string, unknown>[] 
             message.chatId = randomUUID();
         }
         seen.add(message.chatId as string);
-        return normalizeMessage(message);
+        return normalizeMessage(message, strictCandidates);
     });
 }

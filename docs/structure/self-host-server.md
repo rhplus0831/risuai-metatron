@@ -274,10 +274,9 @@ files of the flat layout (hex file names and `__password` directly in `save/`) a
 created when an entry is ready to be staged. `/api/list`, full and upstream exports (`listAssetKeys`), and snapshots
 never see it, and a restore or an import leaves it in place.
 
-- Each entry is `<sha256(key)>-w<size>-v<THUMBNAIL_VERSION>-<size>-<mtimeNs>-<ino>-<dev>` plus `.webp`, or `.orig` (an
-  empty marker for a deterministic "serve the original" decision: small, animated, non-raster or unsupported, or over
-  the input caps; never for a transient failure). Entries are staged under `.tmp/` and renamed into place, outside the
-  maintenance gate.
+- Each entry is `<sha256(key)>-w<size>-v<THUMBNAIL_VERSION>-<size>-<mtimeNs>-<ino>-<dev>` plus `.webp`, or `.orig`, an
+  empty marker for a deterministic "serve the original" decision (`createThumbnailService`'s comment has when). Entries
+  are staged under `.tmp/` and renamed into place, outside the maintenance gate.
 - Publication and removal touch only that key's directory: after publishing, the service lists it and drops entries
   whose identity differs from the source file's current stat (all of them when the source is gone, including the one
   just written), removing the directory if empty; `/api/remove` removes the directory.

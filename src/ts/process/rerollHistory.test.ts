@@ -7,7 +7,6 @@ import { initializeRecords, takeRecordFields } from "../storage/records.svelte";
 import { selectCharacterAt } from "../storage/selection.svelte";
 import type { Message } from "../storage/database.svelte";
 import { createRerollHistory, restoreRerolledReplies } from "./rerollHistory";
-import { addRerolls, PreUnreroll, Prereroll } from "./prereroll";
 
 // The chat screen's swipe history (`rerollHistory.ts`) over the real chat module and the real
 // server store. The history is keyed by chat, and a bundle is swapped in only while its anchor
@@ -16,9 +15,8 @@ import { addRerolls, PreUnreroll, Prereroll } from "./prereroll";
 // every chat's bundles and Undo Reroll wrote the previous bundle over whatever chat was selected,
 // by tail position.
 //
-// The bundle at the cursor and the prereroll candidate on display are refreshed from the chat
-// before they are kept or swapped away, so an edit made since they were recorded is what a later
-// back or forward brings.
+// The bundle at the cursor is refreshed from the chat before it is kept or swapped away, so an edit
+// made since it was recorded is what a later back or forward brings.
 
 const m = (id: string, data: string, role: "user" | "char" = "char") => ({ role, data, chatId: id }) as Message;
 const edit = (ref: chat.ChatRef, id: string, text: string) => chat.setMessageText(ref, id, text);
@@ -574,77 +572,5 @@ describe("restoreRerolledReplies", () => {
         expect(ids(ref)).toEqual(["u"]);
         commit();
         expect(server.texts("c", ref.chatId)).toEqual(["Hi, edited"]);
-    });
-});
-
-describe("prereroll candidates", () => {
-    const reply = (id: string, data: string, generationId: string) =>
-        ({ ...m(id, data), generationInfo: { generationId } }) as Message;
-    /** The screen's swipe over the candidates: a candidate is applied with `setMessageText`. */
-    const swipe = (ref: chat.ChatRef, id: string, step: typeof Prereroll, genId: string) => {
-        const text = step(genId);
-        if (text !== null) {
-            edit(ref, id, text);
-        }
-        return text;
-    };
-
-    it("an edit of a candidate is what swiping back to it brings", () => {
-        const ref = freshChat([m("u", "Hi", "user"), reply("r1", "A", "gen-edit")]);
-        chat.selectChat("c", ref.chatId);
-        addRerolls("gen-edit", ["A", "B", "C"], ref, "r1");
-        edit(ref, "r1", "A, edited");
-        expect(swipe(ref, "r1", Prereroll, "gen-edit")).toBe("B");
-        edit(ref, "r1", "B, edited");
-        expect(swipe(ref, "r1", Prereroll, "gen-edit")).toBe("C");
-        expect(swipe(ref, "r1", Prereroll, "gen-edit")).toBeNull();
-        expect(swipe(ref, "r1", PreUnreroll, "gen-edit")).toBe("B, edited");
-        expect(swipe(ref, "r1", PreUnreroll, "gen-edit")).toBe("A, edited");
-        expect(swipe(ref, "r1", PreUnreroll, "gen-edit")).toBeNull();
-        expect(swipe(ref, "r1", Prereroll, "gen-edit")).toBe("B, edited");
-        commit();
-        expect(server.texts("c", ref.chatId)).toEqual(["Hi", "B, edited"]);
-    });
-
-    it("an emptied candidate is shown again by swiping back to it", () => {
-        const ref = freshChat([m("u", "Hi", "user"), reply("r1", "A", "gen-empty")]);
-        chat.selectChat("c", ref.chatId);
-        addRerolls("gen-empty", ["A", "B", "C"], ref, "r1");
-        expect(swipe(ref, "r1", Prereroll, "gen-empty")).toBe("B");
-        edit(ref, "r1", "");
-        expect(swipe(ref, "r1", Prereroll, "gen-empty")).toBe("C");
-        expect(swipe(ref, "r1", PreUnreroll, "gen-empty")).toBe("");
-        expect(texts(ref)).toEqual(["Hi", ""]);
-        expect(swipe(ref, "r1", PreUnreroll, "gen-empty")).toBe("A");
-        expect(swipe(ref, "r1", Prereroll, "gen-empty")).toBe("");
-        expect(swipe(ref, "r1", Prereroll, "gen-empty")).toBe("C");
-    });
-
-    it("an empty alternative is shown and saved, and the ends stay where they are", () => {
-        const ref = freshChat([m("u", "Hi", "user"), reply("r1", "A", "gen-blank")]);
-        chat.selectChat("c", ref.chatId);
-        addRerolls("gen-blank", ["A", "", ""], ref, "r1");
-        expect(swipe(ref, "r1", PreUnreroll, "gen-blank")).toBeNull();
-        expect(swipe(ref, "r1", Prereroll, "gen-blank")).toBe("");
-        expect(swipe(ref, "r1", Prereroll, "gen-blank")).toBe("");
-        expect(swipe(ref, "r1", Prereroll, "gen-blank")).toBeNull();
-        commit();
-        expect(server.texts("c", ref.chatId)).toEqual(["Hi", ""]);
-        expect(swipe(ref, "r1", PreUnreroll, "gen-blank")).toBe("");
-        expect(swipe(ref, "r1", PreUnreroll, "gen-blank")).toBe("A");
-        commit();
-        expect(server.texts("c", ref.chatId)).toEqual(["Hi", "A"]);
-    });
-
-    it("a copy of the chat holding the same reply does not use or change the candidates", () => {
-        const ref = freshChat([m("u", "Hi", "user"), reply("r1", "A", "gen-copy")]);
-        const copy = freshChat([m("u", "Hi", "user"), reply("r1", "A, in the copy", "gen-copy")]);
-        addRerolls("gen-copy", ["A", "B"], ref, "r1");
-        chat.selectChat("c", copy.chatId);
-        expect(swipe(copy, "r1", Prereroll, "gen-copy")).toBeNull();
-        expect(texts(copy)).toEqual(["Hi", "A, in the copy"]);
-        chat.selectChat("c", ref.chatId);
-        expect(swipe(ref, "r1", Prereroll, "gen-copy")).toBe("B");
-        expect(swipe(ref, "r1", PreUnreroll, "gen-copy")).toBe("A");
     });
 });

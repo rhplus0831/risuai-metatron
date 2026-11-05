@@ -144,12 +144,10 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 - `.png`: `PngChunk.readGenerator` streams the chunks; `chara-ext-asset_<id>` chunks go to the server in batches
   (`saveAssets`, `POST /api/assets/write`) while the card is read; then `importPngCard`.
 - `.charx` and `.jpg`/`.jpeg` (a `charxJpeg`): a `File` or `Blob` is uploaded once (`importCharxOverServer`); the server
-  stores the assets and answers the card's text, the embedded `module.risum`, each asset entry's stored key, and the
-  excluded entries. Bytes or a stream (tests) go to the in-tab `CharXImporter`. Either way `importCharxCard` follows.
-- The card's `lowLevelAccess` is asked before the importer saves an asset of its own; a PNG's asset chunks and a CharX's
-  entries are already stored or queued by then. Right before `addCharacter`
-  ([characters and chats](#characters-and-chats)) its own keys are checked again; one it cannot re-upload refuses the
-  card.
+  stores the assets and answers the card (`server/src/routes/importCharx.ts`'s route comment). Bytes or a stream (tests)
+  go to the in-tab `CharXImporter`. Either way `importCharxCard` follows.
+- When `lowLevelAccess` is asked relative to the asset saves, and the key check right before `addCharacter`
+  ([characters and chats](#characters-and-chats)), are the header of `src/ts/characterCards.ts`.
 
 ### Realm download
 
