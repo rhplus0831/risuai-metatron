@@ -1,7 +1,7 @@
 # Reroll Candidates Plan
 
 Status: drafted 2026-11-03, revised 2026-11-04 after the [design
-audit](../audit/plan-design-audit-2026-11-04.md) and again after its adversarial challenge; no slice landed.
+audit](../audit/plan-design-audit-2026-11-04.md) and again after its adversarial challenge. Landed: 1 (`30bec41a4`).
 Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q4 were answered by the owner on
 2026-11-03 (the recommended option each time). The first revision corrected D2–D5 and D7–D10 (D10 took the
 server op its draft rejected) and added D13 and D14; the second corrects D2–D8, D10 and D13 (a trigger's
