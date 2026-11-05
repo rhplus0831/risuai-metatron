@@ -57,8 +57,8 @@ export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: read
  *
  * Commands are piped with `|` (outside double quotes): each one's result fills the first `{{pipe}}` and
  * the first `{{slot}}` of the next one's argument, and is that argument when it has none. `false` means
- * the line is not a command (an unknown one, or `/setinput`), even when an earlier part of it ran: the
- * screen then sends the line as ordinary text. `/send` only appends a user message; it does not generate.
+ * the line contains an unknown command, even when an earlier part of it ran: the screen then sends
+ * the line as ordinary text. `/send` only appends a user message; it does not generate.
  */
 export async function processMultiCommand(command: string, ref: ChatRef | null = currentChatRef()) {
     const release = ref ? pinChat(ref) : null;
@@ -160,10 +160,6 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
                 } catch (error) {}
             }
             return pipe;
-        }
-        case "setinput": {
-            //NOT IMPLEMENTED
-            return false;
         }
         case "speak": {
             if (currentChar.type === "character") {
@@ -317,6 +313,11 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
             # /len [array]
             - Return length of array
             - Example: /len Hello§World
+            # /multisend [text]
+            - Split text on ||| and send each part as a user message in turn
+            - If the first part is clear, remove all chat messages before sending each remaining part
+            - Quote the text: | outside quotes pipes commands
+            - Example: /multisend "Hello|||World"
             # /setvar key=[key] [value]
             - Set variable
             - Example: /setvar key=hello world
@@ -326,6 +327,9 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
             # /getvar key=[key]
             - Get variable
             - Example: /getvar key=damage
+            # /test_lorebook
+            - Show the active lorebook entries' prompts
+            - Return the lore prompt result as JSON
             # /trigger [name]
             - Run trigger
             # /?

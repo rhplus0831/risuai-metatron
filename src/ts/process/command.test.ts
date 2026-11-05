@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { get } from "svelte/store";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
@@ -67,7 +69,7 @@ vi.mock("./serverCommands", async () =>
 );
 
 import { processMultiCommand, runMultisend } from "./command";
-import { alertConfirm, alertError } from "../alert";
+import { alertConfirm, alertError, alertMd } from "../alert";
 import { sendChat } from "./index.svelte";
 import { beginLocalSend, localSends } from "./localSends";
 import { followedJobs } from "./serverCommands";
@@ -168,6 +170,23 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.restoreAllMocks();
+});
+
+describe("/?", () => {
+    it("documents every command handled by processCommand in the help dialog", async () => {
+        const source = readFileSync(resolve(__dirname, "command.ts"), "utf8");
+        const commandSource = source.match(/^async function processCommand\b[\s\S]*?^}/m)?.[0];
+        expect(commandSource).toBeDefined();
+        const commands = Array.from(commandSource!.matchAll(/^\s*case\s+"([^"]+)"\s*:/gm), ([, name]) => name);
+        expect(commands.length).toBeGreaterThan(0);
+
+        vi.mocked(alertMd).mockClear();
+        expect(await processMultiCommand("/?", freshChat())).toBe("help");
+        expect(alertMd).toHaveBeenCalledTimes(1);
+        const markdown = vi.mocked(alertMd).mock.calls[0][0];
+        const headings = Array.from(markdown.matchAll(/^\s*# \/(\S+)/gm), ([, name]) => name);
+        expect(headings).toEqual(expect.arrayContaining(commands));
+    });
 });
 
 describe("/cut and /del", () => {

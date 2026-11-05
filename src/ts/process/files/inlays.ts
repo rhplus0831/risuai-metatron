@@ -355,7 +355,7 @@ async function writeMedia(
 
 /**
  * A picked or pasted file as a new inlay, by extension: an image is redrawn (`writeInlayImage`), audio
- * and video are stored as given; null for any other extension (`mpeg` and `avi` included).
+ * and video are stored as given; null for any other extension.
  */
 export async function postInlayAsset(img: { name: string; data: Uint8Array }) {
     const extention = img.name.split(".").at(-1);

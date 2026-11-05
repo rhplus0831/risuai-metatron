@@ -6,6 +6,7 @@ import { downloadFile } from "src/ts/globalApi.svelte";
 import { HypaProcesser } from "../memory/hypamemory";
 import { BufferToText as BufferToText, selectMultipleFile } from "src/ts/util";
 import { postInlayAsset } from "./inlays";
+import { alertError } from "src/ts/alert";
 
 type sendFileArg = {
     file: string;
@@ -204,9 +205,10 @@ type postFileResultText = {
  * Turns files into composer attachments, by extension: images, audio, and video become inlays
  * (`postInlayAsset`; its id as `asset`), `txt`, `pdf`, and `xml` become `text` for the caller to append
  * as a `{{file::name::data}}` tag, and a `po` file runs its translation sends and download (`void`);
- * any other extension adds nothing, and so do `mpeg` and `avi`, which the picker offers but
- * `postInlayAsset` does not store. A string `query` opens the file picker (and is the query a PDF's
- * passages are searched by). The picker's own list offers no `pdf` or `xml`, and the screen's other
+ * any other extension adds nothing. Failed inlay writes show an error and skip that file, continuing
+ * with the remaining files. A string `query` opens the file picker (and is the query a PDF's passages
+ * are searched by). The picker offers only media extensions stored by `postInlayAsset`, plus `po`
+ * and `txt`. The picker's own list offers no `pdf` or `xml`, and the screen's other
  * caller passes only pasted images, so those arrive only when the picker accepts every extension
  * (`selectFileByDom` in `src/ts/util.ts`: `allowAllExtentionFiles` on, or iOS).
  */
@@ -238,8 +240,6 @@ export async function postChatFile(
                   //video format
                   "mp4",
                   "webm",
-                  "mpeg",
-                  "avi",
 
                   //other format
                   "po",
@@ -309,10 +309,14 @@ export async function postChatFile(
 
             //video format
             case "mp4":
-            case "webm":
-            case "mpeg":
-            case "avi": {
-                const postData = await postInlayAsset(file);
+            case "webm": {
+                let postData: string | null;
+                try {
+                    postData = await postInlayAsset(file);
+                } catch (error) {
+                    alertError(error);
+                    continue;
+                }
                 if (!postData) {
                     continue;
                 }
