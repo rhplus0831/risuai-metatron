@@ -1701,6 +1701,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         before: ReadonlyMap<string, string>,
         insertedHere: ReadonlySet<string>,
     ): Pick<ChatFeedPayloads, "patch" | "delta" | "rowDelta" | "rows"> {
+        const removedIds = [...removed].filter((id) => !insertedHere.has(id));
         const head = Buffer.byteLength(JSON.stringify({ baseRevision, count }));
         const capped = (size: number) => Math.min(size, MAX_FEED_PATCH_BYTES + 1);
         let patchBytes = capped(head + (meta === undefined ? 0 : Buffer.byteLength(meta.stored) + ',"meta":'.length));
@@ -1719,7 +1720,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             const rows = {
                 baseRevision,
                 changed: [...touched],
-                removed: [...removed],
+                removed: removedIds,
                 count,
                 meta: fields
                     ? [
@@ -1744,9 +1745,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             rowDeltaBytes > MAX_FEED_PATCH_BYTES;
         if (considerAlternatives()) readFields();
         if (allOver()) return manifest();
-        if (removed.size > 0) {
+        if (removedIds.length > 0) {
             let index = 0;
-            for (const id of removed) {
+            for (const id of removedIds) {
                 const size = Buffer.byteLength(JSON.stringify(id)) + (index++ > 0 ? 1 : ',"removed":[]'.length);
                 patchBytes = capped(patchBytes + size);
                 deltaBytes = capped(deltaBytes + size);
@@ -1818,7 +1819,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         } else if (!usePatch && fields) {
             body.metaFields = fields;
         }
-        if (removed.size > 0) body.removed = [...removed];
+        if (removedIds.length > 0) body.removed = removedIds;
         const selected = useRowDelta ? whole : kept;
         if (useRowDelta ? selected.length > 0 : rows !== null) {
             body.messages = selected.map((row) => ({ after: row.after, message: parsed(row) }));

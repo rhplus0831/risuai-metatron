@@ -259,6 +259,28 @@ function rerollRows() {
 }
 
 describe("feed patches through the tab save adapter", () => {
+    it("applies a filtered patch after an appended id is removed with base rows without rereading the chat", async () => {
+        const b = await boot();
+        const baseRevision = b.chat.heldChatRevision(refK);
+        remote(b, [
+            { op: "append", anchor: { start: true }, messages: [m("temporary", "TEMP")] },
+            { op: "setText", id: "c", text: "C!" },
+            { op: "remove", ids: ["b", "temporary", "a"] },
+        ]);
+
+        const patch = latest(b);
+        expect(patch.baseRevision).toBe(baseRevision);
+        expect(patch.count).toBe(1);
+        expect(mirror(b).message).toEqual([m("c", "C!")]);
+        expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toEqual([]);
+        quiet(b);
+    });
+
     it.each(["begin", "write-back", "switch"] as const)(
         "reads an oversized reroll %s carrier and restored variables by id without a whole-chat read",
         async (step) => {

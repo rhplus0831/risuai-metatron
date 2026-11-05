@@ -223,6 +223,44 @@ describe("display install state", () => {
         expect(chat.chatHasUnackedWork(ref)).toBe(false);
     });
 
+    it.each(["chat", "order"] as const)(
+        "times out discarding a refused %s at the chat read deadline and preserves the refusal and local copy",
+        async (kind) => {
+            const { server, chat, ref, take, commit } = await boot();
+            const { language } = await import("src/lang");
+            if (kind === "chat") {
+                chat.setMessageText(ref, "a", "refused edit");
+                chat.quarantineChat(take().groups[0], "refused");
+            } else {
+                chat.createChat("c", { id: "j", name: "J", message: [] } as any);
+                commit();
+                chat.reorderChats("c", ["j", "k"]);
+                chat.quarantineChatOrder(take().orders[0], "refused");
+            }
+            const refused = chat.refusedChatItems();
+            expect(refused).toMatchObject([{ kind }]);
+            const local = clone(chat.findChat(ref));
+            const read = vi.spyOn(server, "fetch").mockImplementation(() => new Promise<Response>(() => {}));
+            let failure: unknown;
+            const discarding = chat
+                .discardRefusedChat(refused[0].key, () => true)
+                .catch((error: unknown) => {
+                    failure = error;
+                    return false;
+                });
+
+            const CHAT_READ_DEADLINE_MS = 60_000;
+            await vi.advanceTimersByTimeAsync(CHAT_READ_DEADLINE_MS);
+            expect(failure).toEqual(new Error(language.chatLoadTimedOut));
+            await discarding;
+            expect(read).toHaveBeenCalledTimes(1);
+            expect(read.mock.calls[0][1]?.signal?.aborted).toBe(true);
+            expect(chat.refusedChatItems()).toEqual(refused);
+            expect(chat.findChat(ref)).toEqual(local);
+            expect(chat.chatList("c").map(({ id }) => id)).toEqual(kind === "chat" ? ["k"] : ["j", "k"]);
+        },
+    );
+
     it("does not advance for a stale acknowledgment that only requests a refresh", async () => {
         const { server, chat, ref, commit } = await boot();
         const initial = chat.chatInstallVersion(ref);

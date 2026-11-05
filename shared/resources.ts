@@ -416,7 +416,7 @@ export type RecordWritePatch =
 /**
  * A chat's stored changes from `baseRevision` to the containing entry's revision. `messages` holds
  * new or changed rows once each, in final stored order, with the preceding row's id (`after`, null
- * at the start). `removed` names deleted ids; `meta`, when present, replaces all chat fields except
+ * at the start). `removed` names ids deleted from the base; `meta`, when present, replaces all chat fields except
  * `message`. `count` is the final message count. Job socket patches also carry generated rows and
  * always carry the metadata whole.
  */

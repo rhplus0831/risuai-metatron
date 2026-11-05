@@ -609,8 +609,8 @@ const MAX_LOAD_READS = 3;
 /** Chats per read request of a load (well inside the server's per-request cap). */
 const LOAD_CHUNK = 500;
 /**
- * One read request of a load (`deadlineChatRead`) aborts after this and rejects with `chatLoadTimedOut`;
- * the shared load drops, so the next request reads again.
+ * A read request (`deadlineChatRead`) aborts after this and rejects with `chatLoadTimedOut`;
+ * a shared load drops, so the next request reads again.
  */
 const CHAT_READ_DEADLINE_MS = 60_000;
 
@@ -4949,7 +4949,9 @@ export async function discardRefusedChat(key: string, canApply: () => boolean): 
         const chatKey = keyOf(item.chaId, item.chatId);
         const refused = quarantined.get(chatKey);
         const readStamp = issueChatReadStamp();
-        const read = await readRefs([], { chats: [{ characterId: item.chaId, id: item.chatId }] });
+        const read = await deadlineChatRead((signal) =>
+            readRefs([], { chats: [{ characterId: item.chaId, id: item.chatId }], signal }),
+        );
         if (!canApply() || chatOwnerToken(item.chaId) !== owner || quarantined.get(chatKey) !== refused) return false;
         const server = read.chats?.find((chat) => chat.characterId === item.chaId && chat.id === item.chatId);
         if (!server) return false;
@@ -4958,7 +4960,7 @@ export async function discardRefusedChat(key: string, canApply: () => boolean): 
     } else {
         const refused = quarantinedOrders.get(item.chaId);
         const seq = pendingOrders.get(item.chaId);
-        const read = await readRefs([], { chatSummaryCollections: [item.chaId] });
+        const read = await deadlineChatRead((signal) => readRefs([], { chatSummaryCollections: [item.chaId], signal }));
         if (
             !canApply() ||
             chatOwnerToken(item.chaId) !== owner ||

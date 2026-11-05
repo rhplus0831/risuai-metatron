@@ -921,7 +921,7 @@ describe("a writer's own chat changes", () => {
         ]);
     });
 
-    it("reports base removals and stored metadata while the feed also lists an appended then removed id", () => {
+    it("reports base removals and stored metadata, listing an appended then removed id in neither removal list", () => {
         const storedMeta = storedMetadata();
         for (const changes of [false, true]) {
             const b = setup();
@@ -961,7 +961,7 @@ describe("a writer's own chat changes", () => {
                     baseRevision,
                     count: 1,
                     meta,
-                    removed: ["b", "temporary", "a"],
+                    removed: ["b", "a"],
                     messages: [{ after: null, message: m("c", "C!") }],
                 },
             });
