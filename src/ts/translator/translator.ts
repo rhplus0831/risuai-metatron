@@ -154,8 +154,13 @@ function acquireTranslationSlot(onGranted: () => void, signal?: AbortSignal): Pr
 }
 
 /** Cache hits and joins take no permit; a new rendered producer holds one until it settles. */
-function translateWithSlot(text: string, reverse: boolean, signal?: AbortSignal): Promise<string> {
-    return translateShared(text, reverse, true, signal);
+function translateWithSlot(
+    text: string,
+    reverse: boolean,
+    signal?: AbortSignal,
+    onFailure?: (error: unknown) => void,
+): Promise<string> {
+    return translateShared(text, reverse, true, signal, onFailure);
 }
 
 /**
@@ -192,7 +197,7 @@ function memoryTranslationContext() {
 type MemoryTranslationFlight = {
     promise: Promise<string>;
     controller: AbortController;
-    subscribers: number;
+    subscribers: Set<{ onFailure?: (error: unknown) => void }>;
     started: boolean;
 };
 const memoryInFlight = new Map<string, MemoryTranslationFlight>();
@@ -205,6 +210,8 @@ export async function translate(text: string, reverse: boolean) {
 /**
  * Owns the non-LLM pair cache and flights by configuration, direction and exact text. A queued
  * flight leaves when its last caller aborts; admitted producers finish without caller signals.
+ * Producer failures notify subscribed callbacks synchronously before releasing the permit, so
+ * failed render attempts can withdraw their queued flights before another producer is admitted.
  * Only successful results under the original configuration populate the cache. Direct
  * `runTranslator` calls bypass both maps; LLM calls retain their separate cache and flights.
  */
@@ -213,6 +220,7 @@ async function translateShared(
     reverse: boolean,
     rendered: boolean,
     signal?: AbortSignal,
+    onFailure?: (error: unknown) => void,
 ): Promise<string> {
     signal?.throwIfAborted();
     const context = memoryTranslationContext();
@@ -235,7 +243,7 @@ async function translateShared(
                 reject = rej;
             }),
             controller: new AbortController(),
-            subscribers: 0,
+            subscribers: new Set(),
             started: !rendered,
         };
         // Register before admission so callers can also join while all permits are occupied.
@@ -262,6 +270,9 @@ async function translateShared(
                     writeMemoryCache(context.key, reverse ? result : text, reverse ? text : result);
                 }
                 return result;
+            } catch (error) {
+                for (const subscriber of created.subscribers) subscriber.onFailure?.(error);
+                throw error;
             } finally {
                 if (memoryInFlight.get(key) === created) memoryInFlight.delete(key);
                 release?.();
@@ -271,19 +282,20 @@ async function translateShared(
         flight = created;
     }
     const shared = flight;
-    shared.subscribers += 1;
+    const subscriber = { onFailure };
+    shared.subscribers.add(subscriber);
     return new Promise((resolve, reject) => {
         let subscribed = true;
         const leave = () => {
             if (!subscribed) return false;
             subscribed = false;
             signal?.removeEventListener("abort", onAbort);
-            shared.subscribers -= 1;
+            shared.subscribers.delete(subscriber);
             return true;
         };
         const onAbort = () => {
             if (!leave()) return;
-            if (!shared.started && shared.subscribers === 0) {
+            if (!shared.started && shared.subscribers.size === 0) {
                 if (memoryInFlight.get(key) === shared) memoryInFlight.delete(key);
                 shared.controller.abort();
             }
@@ -591,8 +603,10 @@ export function isExpTranslator() {
  * `MAX_TRANSLATION_WORKERS` slots (10), including each DeepLX batch and fallback call. Flights are
  * joinable by configuration, direction and exact text, even while queued; the last caller leaving
  * withdraws a queued flight. Admitted producers keep their permit until settlement and warm the
- * pair cache even after all callers abort. Each signal aborts only its caller's await; workers check
- * it before taking a job and before each chunk.
+ * pair cache even after all callers leave. Each signal aborts only its caller's await. On a worker
+ * attempt's first failure, its workers take no new job or chunk and its subscriptions leave before
+ * the failed producer releases its permit; queued flights with no remaining caller are withdrawn.
+ * The attempt rejects with that same error, and a retry can join admitted producers or read their cache.
  * Both DOM dispatch modes share result application: combined paragraph jobs may rerun editdisplay
  * through `src/ts/parser/transformClient.ts`, then Markdown, before the final edittrans pass. The
  * LLM path goes straight to edittrans. A missing transform skips the server display-script stage.
@@ -769,22 +783,36 @@ export async function translateHTML(
         }
         await translateBatch();
     } else {
+        const attempt = new AbortController();
+        const abortAttempt = (error: unknown) => attempt.abort(error);
+        const onAbort = () => abortAttempt(signal!.reason);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
         let nextJob = 0;
         async function translateJobs() {
-            while (nextJob < jobs.length) {
-                signal?.throwIfAborted();
-                const i = nextJob++;
-                const chunks: string[] = [];
-                for (const chunk of jobs[i].text.split(/\n\n+/g)) {
-                    signal?.throwIfAborted();
-                    chunks.push(await translateWithSlot(chunk, reverse, signal));
+            try {
+                while (nextJob < jobs.length) {
+                    attempt.signal.throwIfAborted();
+                    const i = nextJob++;
+                    const chunks: string[] = [];
+                    for (const chunk of jobs[i].text.split(/\n\n+/g)) {
+                        attempt.signal.throwIfAborted();
+                        chunks.push(await translateWithSlot(chunk, reverse, attempt.signal, abortAttempt));
+                    }
+                    results[i] = chunks.join("\n\n");
                 }
-                results[i] = chunks.join("\n\n");
+            } catch (error) {
+                abortAttempt(error);
+                throw attempt.signal.reason;
             }
         }
-        await Promise.all(
-            Array.from({ length: Math.min(MAX_TRANSLATION_WORKERS, jobs.length) }, () => translateJobs()),
-        );
+        try {
+            await Promise.all(
+                Array.from({ length: Math.min(MAX_TRANSLATION_WORKERS, jobs.length) }, () => translateJobs()),
+            );
+        } finally {
+            signal?.removeEventListener("abort", onAbort);
+        }
     }
 
     // Every provider uses the same display-script and Markdown application path.

@@ -20,11 +20,11 @@
 
 ### Translator
 
-- `src/ts/translator/translator.ts`: tab provider adapters and rendered translation; `translate`, `runTranslator`,
+- `src/ts/translator/translator.ts`: tab providers and rendered translation; `translate`, `runTranslator`,
   `translateMain`, `memoryTranslationContext`, `translateVox`, `isExpTranslator`, `translateHTML`,
-  `applyEdittransRegex`, `applyEdittransToStoredTranslation`; the `runTranslator` comment holds its chunking, Exclude
-  Chain-of-Thought, prepared-chunk cache-key and failure rules; the `translateHTML` comment its signal, the permits and
-  shared non-LLM flights, and the LLM in-flight map with its regeneration rule and cache-write generations.
+  `applyEdittransRegex`, `applyEdittransToStoredTranslation`; the `runTranslator` comment owns chunking, Exclude
+  Chain-of-Thought, prepared-chunk cache keys and failures; the `translateHTML` comment owns signals, permits, attempt
+  failure, shared flights and LLM regeneration/cache-write rules.
 - `server/src/data/normalize/memoryTranslateMedia.ts`: persisted translator normalization;
   `normalizeMemoryTranslateMedia`. Stored `translatorType: "bergamot"` becomes `"google"` with `translator` empty and
   `useAutoTranslateInput` off: translation and chat auto-translate remain inactive until the user enables translation
