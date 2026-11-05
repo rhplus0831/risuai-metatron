@@ -135,8 +135,8 @@ refusal the memory step recovered from or outlived replaces no later error.
 - One `command` job runs a Lua button, form, or manual trigger, then its queued `/multisend` parts under one id, chat
   slot, channel, owner and hooks: `createCommandExecutor` parses, `createRunSetup` queues (`MAX_SEQUENCE_PARTS`,
   `MAX_SEQUENCE_PART_CHARS`), `finishCommand` runs each part after the registry's synchronous preflight
-  (`RunningJob.sequence.beginPart`) and sends it through `runPromptSend`. The boundary checks, the clear-and-append
-  write, the send view, progress and the terminal are those comments.
+  (`RunningJob.sequence.beginPart`) and sends it through `runPromptSend`. Boundary checks, the clear-and-append write,
+  the send view, progress and the terminal are those comments.
 - Each part gets `JOB_MAX_DURATION_MS` (30 minutes) anew. After a part returns, the tab receives the live-only
   `sequence` event, the [receipt](#job-receipts) keeps `progress`, and the one terminal carries
   `sequence: { total, sent, stopped? }`. A part needing a browser callback waits under the channel's absence rules;
@@ -145,7 +145,7 @@ refusal the memory step recovered from or outlived replaces no later error.
 ### Chat-slot lookup and stop
 
 `current` reads the chat slot (`chatSlots`) without attaching; `stop` aborts only the confirmed job id. The first stop's
-client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the rules and the `jobChanged` retry.
+client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the rules and `jobChanged` retry.
 
 ### Generation channels
 
@@ -202,8 +202,8 @@ Rules: the comments of `participantJob`, `attach`, `switchOwner`, `takeover`, `a
 - A job keeps its creator (`clientId`: receipts, `owned`, device notices) and gains a current owner (`ownerClientId`:
   callbacks, lanes). Only owner sockets answer and count for `ownerAttached` (MCP included).
 - Offers go on the live-update feed (`HandoffOffer`). A ticketed attach takes one; the switch waits until nothing
-  delivered to the old owner is outstanding, and the old owner's sockets become viewers. The owner's own ticket only
-  reattaches it. Role events carry the owner's registered name (`clientName`).
+  delivered to the old owner is outstanding, and the old owner's sockets become viewers. An owner's own ticket
+  reattaches it; role events name the owner (`clientName`).
 - `skipped` reaches only the late-replay recipient; `done.missed` lists delivered `chatOutput` callbacks that settled
   `disconnected`.
 
@@ -318,8 +318,8 @@ Runtime limits of other subsystems live with their owners: [chat-pipeline](chat-
   shows `serverJob.endedAway` when no outcome receipt remains. Decision: Job Protocol D1, archive.
 - A callback delivered to an owner whose device then sleeps is not handed over; `handoff: "prefer"` only opens an offer.
   Decision: Job Handoff Q4, archive.
-- A callback cancelled before a switch can still run its hook on the old tab, writes included, beside the worker's next
-  callback: the drain hold (`holdDraining`) keeps only the old lane. Decision: Found Issues Sweep Q5.
+- A callback cancelled before a switch may still run its hook, writes included, on the old tab beside the worker's next
+  one; `holdDraining` keeps only the old lane busy. Decision: Found Issues Sweep Q5.
 - An `absent` offer leaves a worker 50 s before the job's first undelivered callback expires, but a queued root that
   another job's expired root settles `disconnected` (the cascade in `createChannelHub`) can end sooner. Decision: Job
   Handoff D3.
