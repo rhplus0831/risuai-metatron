@@ -72,16 +72,16 @@ no memory report.
    Selection runs `reconcileEvents` on a copy against stored messages
    ([reconciliation](lifecycle.md#reconciliation-and-repairs)). `coveredMessages` reads active, unsuppressed events from
    that copy to decide what may leave; `recordedMessages` reads any stored status for what the writer leaves alone.
-   History cited only by stale or retracted events stays raw.
 2. The card enters history as `memo: "supaMemory"`. Under `volatileBeforeLastUser`, its volatile part bypasses history
    to survive chat ranges and memory cards; assembly inserts it after formatting by provenance before the latest user,
    else after the last memory entry, else at the end.
-3. `trimHistoryToContext` in `server/src/prompt/memory/hypav3.ts` protects the window and older continue target through
-   `protectedEntries` and final recheck; an unfit tail fails `TOO_MUCH_TOKEN`. Trimmed history means `coverage: "gap"`.
-   `selectMemory`'s comment holds the empty-card gap rule: only `gapTokens` drives the writer's question and gap stage.
-   Required pages that do not fit cause the card to refuse, the step to return `alert`, and assembly to raise
-   `SendError` naming pages and tokens. This ends previews and the gap run's second selection too, without an
-   `inlayErrorResponse` reply.
+3. `trimHistoryToContext` in `server/src/prompt/memory/hypav3.ts` protects the window and older continue target via
+   `protectedEntries` and final recheck; an unfit tail fails `TOO_MUCH_TOKEN`. Trimmed history means `coverage: "gap"`;
+   evidence also searches its uncovered messages, in a rebuilt card that keeps them out, dropped if it fails a fitting
+   send. `selectMemory`'s comment holds the empty-card gap rule: only `gapTokens` drives the writer's question and gap
+   stage.
+4. Required pages over the cap make the card refuse and the step return `alert`; assembly raises `SendError` naming
+   pages and tokens, ending previews and the gap run's second selection, with no `inlayErrorResponse` reply.
 
 Both page lanes keep character relationship lines naming another visible on-stage, named, linked, or `always` page, or
 no visible page. Titles and aliases match case-insensitive substrings with collapsed whitespace; `never` names do not
@@ -249,7 +249,7 @@ preview's included; a `done` terminal with a `messageId` clears only that chat's
 ## Invariants
 
 - A report never bounds `items`, which the memory budget does, and always bounds `excluded`.
-- History leaves the prompt only where `coveredMessages` says so; "recorded" never decides it.
+- Only `coveredMessages` and the trim remove history; "recorded" never decides it.
 - A receipt is a display copy: `memory_runs` is the record. A message with no receipt is no proof that nothing was
   recorded, since a checkpoint load restores older rows while the tables survive and a whole-row `setMessage` replaces
   the field. Nothing reads a receipt to decide what to record.
@@ -303,8 +303,8 @@ preview's included; a `done` terminal with a `messageId` clears only that chat's
 ### Issues
 
 - A paraphrase of an old message that shares no query term is not found: in the evidence lane semantic scoring only
-  reranks lexical matches, to keep embedding at `lexicalCandidates` texts a send. D6 names both as channels. The pages
-  lane has similarity as a channel of its own.
+  reranks lexical matches, to keep embedding at `lexicalCandidates` texts a pass. The pages lane has similarity as a
+  channel of its own.
 - The writer line learns a tab-bound reason (`pluginModel`, `requestTrigger`) only from the newest reply's receipt: the
   rule needs a job's scope, which a route does not load. So it says nothing before the first send, or right after a
   record now replaced that receipt, until the next send. Record now still works there.

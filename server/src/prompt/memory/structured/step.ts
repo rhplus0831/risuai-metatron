@@ -22,7 +22,7 @@ import type { MemoryContents } from "../../../data/memoryStore.ts";
 import type { ResourceStore } from "../../../data/resourceStore.ts";
 import type { MemoryHost, MemoryTokenizer } from "../host.ts";
 import { blankEntry, trimHistoryToContext } from "../hypav3.ts";
-import { buildMemoryCard, type MemoryCard } from "./card.ts";
+import { buildMemoryCard, type MemoryCard, type RequiredOverLimit } from "./card.ts";
 import {
     coveredMessages,
     type ExcludedItem,
@@ -44,13 +44,15 @@ import { chatAdoptionHold, writerPaused } from "./writer.ts";
  * - Two sets come from the same events and answer different questions: `coveredMessages` (active and
  *   not suppressed) says what may leave the prompt, `recordedMessages` (any status) what the writer must
  *   not record again. History cited only by a stale or retracted event is recorded but not covered, so
- *   it stays raw with no work left to offer.
+ *   it stays raw unless context pressure trims it, with no work left to offer.
  * - A selection reconciles the events it is given against the stored messages (`reconcileEvents`), on a
  *   copy, before it reads them: an event whose source changed stands in for nothing in this send, and
  *   the report says why. `recordedMessages` reads the events as stored.
- * - History before the window leaves where an event covers it. The message a continue extends stays,
- *   out of the evidence too. What remains trims oldest first as HypaV3's select-only path does. The
- *   window and that message are never dropped, and the final recheck never removes them.
+ * - History before the window leaves where an event covers it, then under context pressure oldest first
+ *   as HypaV3's select-only path does. Evidence also searches uncovered messages that trim removes. Its
+ *   rebuilt card keeps those removals; if it would make a fitting send fail, the first card and trim
+ *   stand. The window and the message a continue extends are never dropped or excerpted, and the final
+ *   recheck never removes them.
  * - A card with no item adds no entry, so it costs nothing. The volatile part goes into the card's
  *   entry, or under `volatileBeforeLastUser` stays out of the history altogether: there a chat range
  *   could cut it, and a `memory` prompt card would pull it away from the latest user message.
@@ -222,12 +224,19 @@ function cardEntries(
 /**
  * What `records` make of the send's history. Every step counts with the job's tokenizer: the entries
  * that leave come off the count, the card's entries go on it, then the trim runs over what is left.
+ * When it removes older uncovered messages and evidence is on, that lane searches them too and the
+ * card is rebuilt. Its placed entries' token difference adjusts the count; growth continues trimming
+ * from the history already kept, while shrinkage never restores removed entries. Excerpts therefore
+ * never duplicate surviving raw text. A rebuild that would make a fitting first pass fail is discarded;
+ * a smaller rebuild can rescue a first pass that did not fit. With no eligible removal or evidence off,
+ * the first pass is final.
  * `input` and `records` are not changed, and every entry `chats` keeps is the same object, so a second
  * pass after the records changed starts over from it, and reconciles what it is given again.
  *
  * `coverage` is `gap` when the trim dropped non-blank history, or when covered history with something to send
  * left and the card that stands in for it is empty: the events cover it, but the model does not see
- * them. Only `gapTokens` drives the gap question, so that second case asks nothing.
+ * them. An excerpt does not undo a gap: `gapTokens` counts non-blank history removed by the accepted trims.
+ * Only `gapTokens` drives the gap question, so that second case asks nothing.
  * `budget.reduced` reports only memory: headroom and extra belong to the summarizer, not this read.
  */
 export async function selectMemory(
@@ -254,8 +263,7 @@ export async function selectMemory(
         settings: structured,
     });
     const { maximum, reduced } = readBudget(settings, maxContextTokens, host.db.maxResponse);
-    const card = await buildMemoryCard(tokenizer, { maximum, lanes: retrieved.lanes });
-    if (card.type === "requiredOverLimit") {
+    const requiredAlert = (card: RequiredOverLimit): MemorySelection => {
         const titles = new Map(records.pages.map(({ id, title }) => [id, title]));
         const pages = card.pages.map(({ id, tokens }) => `${titles.get(id) ?? id} (${tokens})`);
         return {
@@ -263,25 +271,31 @@ export async function selectMemory(
             error: requiredOverCap(card.tokens, card.limit, pages.join(", ")),
             code: "memoryRequiredOverCap",
         };
+    };
+    let card = await buildMemoryCard(tokenizer, { maximum, lanes: retrieved.lanes });
+    if (card.type === "requiredOverLimit") {
+        return requiredAlert(card);
     }
-    const placed = cardEntries(card, structured.volatileBeforeLastUser);
+    let placed = cardEntries(card, structured.volatileBeforeLastUser);
 
     const history = chats.slice(historyStart);
     let currentTokens = input.currentTokens;
     for (const index of window.dropped) {
         currentTokens -= await tokenizer.tokenizeChat(history[index]);
     }
+    let placedTokens = 0;
     for (const entry of [placed.card, placed.volatile]) {
         if (entry) {
-            currentTokens += await tokenizer.tokenizeChat(entry);
+            placedTokens += await tokenizer.tokenizeChat(entry);
         }
     }
+    currentTokens += placedTokens;
 
     const raw = [...chats.slice(0, historyStart), ...history.filter((_, index) => !window.dropped.has(index))];
     // Nothing from the window on left, so the tail is as long in `raw` as in `history`.
     const protectedStart = raw.length - (history.length - window.start);
     const pinned = new Set(continued !== -1 && continued < window.start ? [history[continued]] : []);
-    const trimmed = await trimHistoryToContext({
+    let trimmed = await trimHistoryToContext({
         raw,
         protectedStart,
         pinned,
@@ -289,6 +303,62 @@ export async function selectMemory(
         currentTokens,
         tokenizer,
     });
+    let gapTokens = trimmed.gap.tokens;
+    let similarity = retrieved.similarity;
+    if (structured.laneTargets.evidence > 0 && trimmed.history.length < raw.length) {
+        const kept = new Set(trimmed.history);
+        const removed = new Set<number>();
+        history.forEach((entry, index) => {
+            if (
+                index < window.start &&
+                entries[index].messageId !== undefined &&
+                !window.dropped.has(index) &&
+                !pinned.has(entry) &&
+                !kept.has(entry)
+            ) {
+                removed.add(index);
+            }
+        });
+        if (removed.size > 0) {
+            const evidence = await retrieved.evidence(removed);
+            const nextCard = await buildMemoryCard(tokenizer, {
+                maximum,
+                lanes: retrieved.lanes.map((lane) => (lane.lane === "evidence" ? { ...lane, items: evidence } : lane)),
+            });
+            if (nextCard.type === "requiredOverLimit") {
+                return requiredAlert(nextCard);
+            }
+            const nextPlaced = cardEntries(nextCard, structured.volatileBeforeLastUser);
+            let nextPlacedTokens = 0;
+            for (const entry of [nextPlaced.card, nextPlaced.volatile]) {
+                if (entry) {
+                    nextPlacedTokens += await tokenizer.tokenizeChat(entry);
+                }
+            }
+            const nextTokens = trimmed.currentTokens - placedTokens + nextPlacedTokens;
+            let nextTrimmed = { ...trimmed, currentTokens: nextTokens, fits: nextTokens <= maxContextTokens };
+            let nextGapTokens = gapTokens;
+            if (nextPlacedTokens > placedTokens) {
+                nextTrimmed = await trimHistoryToContext({
+                    raw: trimmed.history,
+                    // Shift by removals, not scans: a scanned pinned entry still occupies its place.
+                    protectedStart: protectedStart - (raw.length - trimmed.history.length),
+                    pinned,
+                    maxContextTokens,
+                    currentTokens: nextTokens,
+                    tokenizer,
+                });
+                nextGapTokens += nextTrimmed.gap.tokens;
+            }
+            if (nextTrimmed.fits || !trimmed.fits) {
+                card = nextCard;
+                placed = nextPlaced;
+                trimmed = nextTrimmed;
+                gapTokens = nextGapTokens;
+                similarity = retrieved.similarity;
+            }
+        }
+    }
     if (!trimmed.fits) {
         return { type: "error", error: `${input.tooMuchToken}\n\nRequired Tokens: ${trimmed.currentTokens}` };
     }
@@ -299,14 +369,14 @@ export async function selectMemory(
         currentTokens: trimmed.currentTokens,
         protectedEntries: [...raw.slice(protectedStart), ...pinned],
         volatile: placed.volatile,
-        gapTokens: trimmed.gap.tokens,
-        coverage: trimmed.gap.tokens > 0 || unseen ? "gap" : "covered",
+        gapTokens,
+        coverage: gapTokens > 0 || unseen ? "gap" : "covered",
         // The preset's headroom and extra are the summarizer's: this budget spends neither.
         budget: { maximum, reduced: reduced.filter(({ field }) => field === "memory") },
         items: card.items,
         excluded: [...retrieved.excluded, ...card.excluded],
         lanes: card.spend,
-        lanesStage: retrieved.similarity === "failed" ? "similarityFailed" : card.items.length > 0 ? "filled" : "empty",
+        lanesStage: similarity === "failed" ? "similarityFailed" : card.items.length > 0 ? "filled" : "empty",
     };
 }
 

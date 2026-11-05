@@ -42,9 +42,11 @@ import { sectionVectorText } from "./pages.ts";
  * - The events lane opens when the user's messages read as past, causal, or chronological, or when an
  *   event's similarity is high. Open, it takes only events over a floor, so lending cannot turn its
  *   target into a quota.
- * - Evidence is the sources of the lane's events, then older messages by lexical match. Semantic scoring
- *   only reranks those matches, so embedding stays at `lexicalCandidates` texts a send, and a paraphrase
- *   sharing no term is not found.
+ * - Evidence is the covered sources of the lane's events, then older messages that leave the prompt by
+ *   coverage or context trimming, by lexical match. Each pass searches at most `evidencePoolMessages`
+ *   older messages and embeds at most `lexicalCandidates` matching excerpts for semantic reranking.
+ *   A selection makes at most two passes; widening the pool after trimming reuses the event ranks and
+ *   query vectors. A paraphrase sharing no term is not found.
  * - Threads: any not ended, so a paused one stays. One naming nobody is listed low, as a thread recorded
  *   before its chat had pages is; one naming someone needs them on stage, which is the scene page's
  *   attendance.
@@ -148,6 +150,8 @@ type RetrievalInput = {
 type RetrievedLanes = {
     /** In `MEMORY_MANIFEST_LANES` order. A lane with target 0 has no items. */
     lanes: Lane<LaneCandidate>[];
+    /** Recompute evidence with uncovered message indices actually trimmed before the protected window. */
+    evidence(trimmed?: ReadonlySet<number>): Promise<LaneCandidate[]>;
     excluded: ExcludedItem[];
     similarity: "used" | "off" | "failed";
     /** Why `similarity` is `failed`, without the embedding keys. */
@@ -403,13 +407,15 @@ function lexicalMatches(
 /**
  * The evidence lane in rank order. First the sources of `ranked` events that leave the prompt, newest
  * first, each message once, each needing its event's item. Then older messages, whether or not the
- * events lane opened: entries that leave the prompt and nothing above used, newest first, by lexical
- * match, reranked by similarity when there are vectors. Only an excerpt is ever embedded.
+ * events lane opened: covered entries in `window.dropped` plus uncovered message indices in `trimmed`
+ * that the caller actually removed, excluding anything above used. That pool is bounded newest first,
+ * then matched lexically and reranked by similarity when there are vectors. The protected window and
+ * pinned continue target stay out of both sets. Only an excerpt is ever embedded.
  */
 async function evidenceItems(
     ranked: readonly RankedEvent[],
     query: readonly ReadEntry[],
-    { entries, window }: Pick<RetrievalInput, "entries" | "window">,
+    { entries, window, trimmed }: Pick<RetrievalInput, "entries" | "window"> & { trimmed?: ReadonlySet<number> },
     embeddings: SendEmbeddings,
 ): Promise<LaneCandidate[]> {
     const queryTerms = new Set(query.flatMap(({ text }) => [...lexicalTerms(text)]));
@@ -418,7 +424,7 @@ async function evidenceItems(
         excerpt: string,
         fields: Pick<LaneCandidate, "reason" | "score" | "requires">,
     ): LaneCandidate => {
-        // Every index here came from a message id: a source's, or one `rawWindow` found covered.
+        // Every index here names a message: covered by an event or removed by the caller's trim.
         const id = entries[index].messageId!;
         const line = evidenceLine(id, entries[index].role, excerpt);
         return { id, kind: "evidence", lane: "evidence", order: index, line, ...fields };
@@ -442,7 +448,7 @@ async function evidenceItems(
         }
     }
 
-    const pool = [...window.dropped]
+    const pool = [...(trimmed ? new Set([...window.dropped, ...trimmed]) : window.dropped)]
         .filter((index) => !used.has(index))
         .sort((a, b) => b - a)
         .slice(0, RETRIEVAL_LIMITS.evidencePoolMessages);
@@ -856,8 +862,9 @@ export async function retrieveLanes(host: RetrievalHost, input: RetrievalInput):
         leaveOut(event, "budget");
     }
 
-    const evidence =
-        targets.evidence > 0 ? await evidenceItems(candidates, query, { entries, window }, embeddings) : [];
+    const evidence = async (trimmed?: ReadonlySet<number>): Promise<LaneCandidate[]> =>
+        targets.evidence > 0 ? evidenceItems(candidates, query, { entries, window, trimmed }, embeddings) : [];
+    const evidenceCandidates = await evidence();
     const openThreads = threadItems(threads, stage, targets.threads);
 
     const scene = pages.find(({ type }) => type === "scene");
@@ -896,11 +903,22 @@ export async function retrieveLanes(host: RetrievalHost, input: RetrievalInput):
                     line: eventLine(event),
                 })),
             },
-            { lane: "evidence", target: targets.evidence, limit: RETRIEVAL_LIMITS.evidenceItems, items: evidence },
+            {
+                lane: "evidence",
+                target: targets.evidence,
+                limit: RETRIEVAL_LIMITS.evidenceItems,
+                items: evidenceCandidates,
+            },
             { lane: "threads", target: targets.threads, items: openThreads.items },
         ],
         excluded: [...excluded, ...openThreads.excluded, ...required.excluded, ...related.excluded],
-        ...embeddings.state,
+        evidence,
+        get similarity() {
+            return embeddings.state.similarity;
+        },
+        get failure() {
+            return embeddings.state.failure;
+        },
         eventsOpen: open,
     };
 }

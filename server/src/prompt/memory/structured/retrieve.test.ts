@@ -3,6 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
+import type { Message } from "../../../../../shared/database.ts";
+import { createHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
+import type { OpenAIChat } from "../../../../../shared/openai.ts";
 import {
     normalizeStructuredMemorySettings,
     type MemoryEvent,
@@ -18,6 +21,7 @@ import type { MemoryHost } from "../host.ts";
 import { buildMemoryCard } from "./card.ts";
 import type { ReadEntry } from "./lanes.ts";
 import { eventVectorTexts, readsAsPast, RETRIEVAL_LIMITS, retrieveLanes } from "./retrieve.ts";
+import { readEntries, selectMemory, type MemorySelectionInput } from "./step.ts";
 
 const event = (id: string, sources = ["old"], fields: Partial<MemoryEvent> = {}): MemoryEvent => ({
     ...memoryRecords([id], id).events[0],
@@ -124,6 +128,199 @@ function harness(vector: (text: string) => number[] = () => [1, 0]) {
     };
     return { host, calls, control };
 }
+
+describe("selectMemory evidence from trimmed history", () => {
+    const answer = "The bronze key code is 4712.";
+    const question = "What is the bronze key code?";
+    const longAnswer = `${answer}\n\n`.padEnd(1800, "x");
+    const tail: Message[] = [
+        { chatId: "recent-user", role: "user", data: "Continue." },
+        { chatId: "recent-reply", role: "char", data: "Ready." },
+        { chatId: "question", role: "user", data: question },
+    ];
+    const records = { events: [], threads: [], pages: [], stage: [] };
+    const scene = page("scene", { type: "scene", sections: [section("currentState", "At the vault.")] });
+
+    function selectionInput(messages: Message[], fields: Partial<MemorySelectionInput> = {}): MemorySelectionInput {
+        const { host } = harness();
+        const chats: OpenAIChat[] = messages.map(({ chatId, role, data }) => ({
+            role: role === "char" ? "assistant" : "user",
+            content: data,
+            memo: chatId,
+        }));
+        return {
+            host: { ...host, db: { ...host.db, maxResponse: 0 } },
+            settings: createHypaV3Preset("Evidence", {
+                budgetMode: "tokens",
+                memoryBudgetTokens: 1000,
+                structured: settings({
+                    windowTurns: 1,
+                    laneTargets: { pages: 0, events: 0, evidence: 1000, threads: 0 },
+                }),
+            }).settings,
+            tokenizer: { tokenizeChat: async ({ content }) => content.length },
+            chats,
+            historyStart: 0,
+            entries: readEntries(chats, messages),
+            messages,
+            currentTokens: chats.reduce((sum, { content }) => sum + content.length, 0),
+            maxContextTokens: 2000,
+            continueMessageId: undefined,
+            tooMuchToken: "TOO_MUCH_TOKEN",
+            ...fields,
+        };
+    }
+
+    it("excerpts an unrecorded answer trimmed by raw history pressure and counts every removed entry in the gap", async () => {
+        const request = selectionInput([
+            { chatId: "answer", role: "char", data: longAnswer },
+            { chatId: "older-reply", role: "char", data: "x".repeat(1900) },
+            ...tail,
+        ]);
+        expect(request.currentTokens).toBeGreaterThan(request.maxContextTokens);
+
+        const result = await selectMemory(request, records);
+        expect(result.type).toBe("selected");
+        if (result.type !== "selected") throw new Error(JSON.stringify(result));
+        expect(result.items.filter(({ lane }) => lane === "evidence")).toEqual([
+            expect.objectContaining({ id: "answer" }),
+        ]);
+        expect(result.chats.filter(({ memo }) => memo !== "supaMemory")).toEqual(request.chats.slice(2));
+        expect(result.chats.find(({ memo }) => memo === "supaMemory")?.content).toContain(
+            `[m:answer] character: "${answer}"`,
+        );
+        // The excerpt's card also displaces the 1900-character reply. Both raw entries count as a gap.
+        expect(result.gapTokens).toBe(longAnswer.length + 1900);
+        expect(result.coverage).toBe("gap");
+    });
+
+    it("excerpts an unrecorded answer only when a required scene page displaces otherwise fitting raw history", async () => {
+        const request = selectionInput([{ chatId: "answer", role: "char", data: longAnswer }, ...tail]);
+        expect(request.currentTokens).toBeLessThan(request.maxContextTokens);
+
+        const withoutPage = await selectMemory(request, records);
+        expect(withoutPage).toMatchObject({
+            type: "selected",
+            chats: request.chats,
+            items: [],
+            gapTokens: 0,
+            coverage: "covered",
+        });
+
+        const result = await selectMemory(request, { ...records, pages: [scene] });
+        expect(result.type).toBe("selected");
+        if (result.type !== "selected") throw new Error(JSON.stringify(result));
+        expect(result.chats.filter(({ memo }) => memo !== "supaMemory")).toEqual(request.chats.slice(1));
+        expect(result.items).toContainEqual(expect.objectContaining({ id: "scene", lane: "required" }));
+        expect(result.items.filter(({ lane }) => lane === "evidence")).toEqual([
+            expect.objectContaining({ id: "answer" }),
+        ]);
+        expect(result.chats.find(({ memo }) => memo === "supaMemory")?.content).toContain(
+            `[m:answer] character: "${answer}"`,
+        );
+        expect(result.gapTokens).toBe(longAnswer.length);
+        expect(result.coverage).toBe("gap");
+    });
+
+    it("does not excerpt an older answer that stays raw after an earlier entry is trimmed", async () => {
+        const request = selectionInput([
+            { chatId: "unrelated", role: "char", data: "x".repeat(2500) },
+            { chatId: "answer", role: "char", data: answer },
+            ...tail,
+        ]);
+
+        const result = await selectMemory(request, records);
+        expect(result.type).toBe("selected");
+        if (result.type !== "selected") throw new Error(JSON.stringify(result));
+        expect(result.chats).toEqual(request.chats.slice(1));
+        expect(result.items.filter(({ lane }) => lane === "evidence")).toEqual([]);
+        expect(result.gapTokens).toBe(2500);
+        expect(result.coverage).toBe("gap");
+    });
+
+    it.each(["raw window", "pinned continue target"] as const)(
+        "keeps an answer in the %s raw and unexcerpted under pressure",
+        async (protection) => {
+            const protectedAnswer: Message = {
+                chatId: "protected-answer",
+                role: "char",
+                data: `${answer}\n\n`.padEnd(1850, "x"),
+            };
+            const older: Message[] = [
+                { chatId: "old-key", role: "char", data: "The bronze key is on the desk.\n\n".padEnd(1800, "x") },
+                { chatId: "older-reply", role: "char", data: "Earlier." },
+            ];
+            // Tight context exercises protection during card growth; more room would allow a duplicate excerpt.
+            for (const maxContextTokens of [2000, 2400]) {
+                const request = selectionInput(
+                    protection === "raw window"
+                        ? [...older, tail[0], protectedAnswer, tail[2]]
+                        : [protectedAnswer, ...older, ...tail],
+                    {
+                        maxContextTokens,
+                        continueMessageId: protection === "pinned continue target" ? "protected-answer" : undefined,
+                    },
+                );
+                expect(request.currentTokens).toBeGreaterThan(request.maxContextTokens);
+
+                const result = await selectMemory(request, records);
+                expect(result.type).toBe("selected");
+                if (result.type !== "selected") throw new Error(JSON.stringify(result));
+                expect(result.chats.map(({ memo }) => memo)).toContain("protected-answer");
+                expect(result.chats.find(({ memo }) => memo === "protected-answer")?.content).toBe(
+                    protectedAnswer.data,
+                );
+                expect(result.chats.some(({ memo }) => memo === "old-key")).toBe(false);
+                expect(result.items.some(({ lane, id }) => lane === "evidence" && id === "protected-answer")).toBe(
+                    false,
+                );
+                expect(result.coverage).toBe("gap");
+            }
+        },
+    );
+
+    it("keeps the first card when an excerpt would overflow an otherwise fitting send", async () => {
+        const messages: Message[] = [
+            { chatId: "answer", role: "char", data: longAnswer },
+            tail[0],
+            { ...tail[1], data: "x".repeat(1700) },
+            tail[2],
+        ];
+        const withScene = { ...records, pages: [scene] };
+        const request = selectionInput(messages);
+        const evidenceOff = structuredClone(request.settings);
+        evidenceOff.structured!.laneTargets.evidence = 0;
+        const first = await selectMemory({ ...request, settings: evidenceOff }, withScene);
+        expect(first.type).toBe("selected");
+        if (first.type !== "selected") throw new Error(JSON.stringify(first));
+        expect(first.items).toEqual([expect.objectContaining({ id: "scene", lane: "required" })]);
+
+        // With more room in the protected tail, this same answer fits in the evidence lane.
+        const room = await selectMemory(
+            selectionInput(
+                messages.map((message) =>
+                    message.chatId === "recent-reply" ? { ...message, data: "x".repeat(1500) } : message,
+                ),
+            ),
+            withScene,
+        );
+        expect(room.type).toBe("selected");
+        if (room.type !== "selected") throw new Error(JSON.stringify(room));
+        expect(room.items).toContainEqual(expect.objectContaining({ id: "answer", lane: "evidence" }));
+        expect(room.chats.find(({ memo }) => memo === "supaMemory")?.content).toContain(
+            `[m:answer] character: "${answer}"`,
+        );
+
+        const result = await selectMemory(request, withScene);
+        expect(result.type).toBe("selected");
+        if (result.type !== "selected") throw new Error(JSON.stringify(result));
+        expect(result.items).toEqual(first.items);
+        expect(result.chats).toEqual(first.chats);
+        expect(result.currentTokens).toBeLessThanOrEqual(request.maxContextTokens);
+        expect(result.gapTokens).toBe(longAnswer.length);
+        expect(result.coverage).toBe("gap");
+    });
+});
 
 describe("structured memory retrieval", () => {
     it("keeps scene attendance and every required section stable while filtering character sections in related pages", async () => {
