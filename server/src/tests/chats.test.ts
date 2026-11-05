@@ -194,14 +194,23 @@ describe("normalizeMessage", () => {
         const expected = cases.map(({ kept }, index) => ({ ...message(`m${index}`, "kept", "char"), ...kept }));
         const before = JSON.stringify(messages);
         expect(messages.map((entry) => normalizeMessage(entry))).toEqual(expected);
+        // Each case is its chat's newest reply, the only message an import lets keep a checkpoint.
         const imported = convertUpstreamDatabase(
-            { characters: [{ chaId: "c", type: "character", name: "C", chats: [{ id: "k", message: messages }] }] },
+            {
+                characters: [
+                    {
+                        chaId: "c",
+                        type: "character",
+                        name: "C",
+                        chats: messages.map((entry, index) => ({ id: `k${index}`, message: [entry] })),
+                    },
+                ],
+            },
             { now: 1 },
         );
-        const created = imported.chats.flatMap((group) => group.ops).find((op) => op.op === "create");
-        expect(created?.op).toBe("create");
-        if (created?.op !== "create") throw new Error("import did not create a chat");
-        expect(created.chat.message).toEqual(expected);
+        const created = imported.chats.flatMap((group) => group.ops).filter((op) => op.op === "create");
+        expect(created).toHaveLength(cases.length);
+        expect(created.flatMap((op) => (op.op === "create" ? op.chat.message : []))).toEqual(expected);
         expect(JSON.stringify(messages)).toBe(before);
     });
 

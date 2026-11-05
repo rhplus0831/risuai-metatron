@@ -43,6 +43,8 @@ export const UPSTREAM_EXPORT_EXCLUDED_CODES = [
     "chat-fields",
     /** Stored message translations; counted per message. */
     "message-translations",
+    /** Reroll candidates of a reply and its variable checkpoint; counted per message with candidates. */
+    "message-candidates",
     /** Persona module links; the examples are persona names. */
     "persona-modules",
     /** Translator pipeline settings upstream has no place for; the examples are preset names. */
