@@ -183,6 +183,20 @@ it("preserves conflict history, disputes weak contradictions, and refuses overfl
             disputed: false,
         },
         {
+            name: "nested was",
+            fields: { was: "Old Gate\n(was: Older Gate\n(was: Oldest Gate))" },
+            body: "New Gate\n(was: Old Gate)",
+            kind: "change",
+            disputed: false,
+        },
+        {
+            name: "was of only a was line",
+            fields: { was: " (was: Old Gate)" },
+            body: "New Gate",
+            kind: "change",
+            disputed: false,
+        },
+        {
             name: "strong contradiction",
             fields: { conflict: "contradiction", confidence: LIMITS.contradictionConfidence },
             body: "New Gate",

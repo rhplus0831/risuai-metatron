@@ -142,7 +142,7 @@ const RULES = `Rules:
 - A scene field never repeats a text listed as taken back unless the messages establish it again.`;
 
 const PATCH_FORMAT = `Answer with one JSON object and nothing else:
-{ "patches": [{ "pageId": "page id", "heading": "section heading", "op": "${MEMORY_PATCH_OPS.join(" or ")}", "body": "the section's whole new text, on an upsert", "conflict": "${MEMORY_PATCH_CONFLICTS.join(" or ")}, when it replaces a value", "was": "the value it replaces", "confidence": 0.9 }] }
+{ "patches": [{ "pageId": "page id", "heading": "section heading", "op": "${MEMORY_PATCH_OPS.join(" or ")}", "body": "the section's whole new text, on an upsert", "conflict": "${MEMORY_PATCH_CONFLICTS.join(" or ")}, when it replaces a value", "was": "the value it replaces, without its \\"(was: ...)\\" line", "confidence": 0.9 }] }
 At most ${LIMITS.patchesPerCall} patches, each body at most ${LIMITS.sectionBodyChars} characters. With nothing to change, answer { "patches": [] }.`;
 
 const PATCH_RULES = `Rules:

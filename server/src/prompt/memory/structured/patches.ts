@@ -199,11 +199,22 @@ export function parsePatches(text: string): ParsedPatches {
     };
 }
 
+/**
+ * The replaced value alone: a model often answers the whole old body as `was`, its own `(was: ...)` line
+ * included, and wrapping that again would nest one line inside the next on every change. The page's
+ * history keeps the whole old body, so what is cut here is not lost.
+ */
+function replacedValue(was: string | undefined): string {
+    const text = was ?? "";
+    const nested = text.indexOf("(was:");
+    return (nested === -1 ? text : text.slice(0, nested)).trim();
+}
+
 /** What an upsert makes of `section`, or `sectionTooLong` when a joined body would not fit. */
 function upsertOver(section: MemorySection, patch: MemoryPatch, body: string): SectionEdit | string {
     const { heading, conflict, confidence } = patch;
     const disputed = conflict === "contradiction" && (confidence ?? 0) < LIMITS.contradictionConfidence;
-    const was = patch.was?.trim() ?? "";
+    const was = replacedValue(patch.was);
     const wasLine = `(was: ${was})`;
     const joined = disputed
         ? `${section.body}\n[disputed] ${body}`
@@ -291,7 +302,8 @@ function emptiesPage(page: MemoryPage, edits: readonly SectionEdit[]): boolean {
  * An upsert of existing text is `change`, or `contradiction` for that conflict. At or above
  * `contradictionConfidence` it replaces; below it, missing confidence counting as zero, it joins
  * `<old>\n[disputed] <new>`, sets `disputed` and warns. A replacing upsert appends `(was: ...)` for
- * nonblank `was` unless that exact line is already present. Neither conflict waits for approval.
+ * nonblank `was`, cut before any `(was:` it carries, unless that exact line is already present. Neither
+ * conflict waits for approval.
  */
 export function applyPatches(arg: {
     changes: PageChanges;
