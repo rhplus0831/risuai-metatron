@@ -9,7 +9,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (7)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (5)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
 - [Server routes and resource store](#server-routes-and-resource-store) (1)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
@@ -103,22 +103,6 @@ The no-memory trim question (aad461e63, 2026-10-11; `server/src/prompt/runner.ts
 **Why it matters:** card authors may expect a comment to vanish from what the model or the reader sees.
 
 **Suggested handling:** ask the owner whether comments should be stripped; a change keeps client/server parity (`server/src/tests/fixtures/cbs-parity.json`).
-
-### The regex cache key runs CBS for a disabled flag
-
-`shared/scripts/regex.ts` `regexScriptCacheKey` (~285) expands `script.in` through `parse` whenever `script.flag` contains `<cbs>`, without checking `ableFlag`, while `parseScripts` reads `<...>` actions only with `ableFlag`. A probe in the Guides To Source run (2026-11-05) with `ableFlag: false` saw `{{setvar::x::1}}` evaluated during key building. The key is built on the server (`server/src/prompt/scripts.ts`). Owner: scripts-triggers.
-
-**Why it matters:** a disabled custom flag still evaluates CBS (side effects and budget) on every cache lookup, and the key differs from what runs.
-
-**Suggested handling:** test `ableFlag` before parsing in the key, with a test of the side effect.
-
-### v2BreakLoop may stop at an inner loop's end
-
-`server/src/prompt/triggers.ts` `case "v2BreakLoop"` (~854) scans forward to the first `v2EndIndent` with `endOfLoop`, at any indent, while the backward loop jump matches `indent - 1`. A break in an outer loop placed before a nested loop would then stop at the inner loop's closing entry and jump back into the inner loop instead of leaving the outer one. Read in code by a lookup trial of the Guides To Source run (2026-11-05); unconfirmed, no test reproduces it. Owner: scripts-triggers (the runtime file is server-generation's).
-
-**Why it matters:** a trigger author's `break` could loop or skip effects in nested loops.
-
-**Suggested handling:** write a nested-loop trigger test first; if it fails, match the break's indent the way the loop jump does.
 
 ## Server routes and resource store
 
