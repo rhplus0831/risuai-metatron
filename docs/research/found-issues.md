@@ -9,13 +9,13 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (7)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (6)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (5)
 - [Server routes and resource store](#server-routes-and-resource-store) (1)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
-- [Chat screen and input](#chat-screen-and-input) (6)
+- [Chat screen and input](#chat-screen-and-input) (3)
 - [Client and plugins](#client-and-plugins) (9)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (12)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (18)
@@ -95,14 +95,6 @@ The no-memory trim question (aad461e63, 2026-10-11; `server/src/prompt/runner.ts
 
 **Why it matters:** a user can still see a silent trim or an English error from a feature meant to ask first.
 **Suggested handling:** raise when a silent trim or an English job error is reported; the cleanup gap needs a design, the other two are small.
-
-### Unreferenced client copies of server prompt helpers
-
-These client exports have no caller in `src/`, `shared/` or `server/`, while a send uses the server's copy: `groupOrder` in `src/ts/process/group.ts` (~79; live in `server/src/prompt/runner.ts`), `runInlayScreen` in `src/ts/process/inlayScreen.ts` (~16; live in `server/src/prompt/postProcess.ts`, while `updateInlayScreen` there is still used), and `stringlizeChatOba` and the empty `multiChatReplacer` in `src/ts/process/stringlize.ts` (the server copies in `server/src/llm/stringlize.ts` are equally unused). The Guides To Source run (2026-11-04) marked them unreferenced in their comments only. Owner: chat-pipeline.
-
-**Why it matters:** dead copies look live and invite edits that change nothing.
-
-**Suggested handling:** delete them in a cleanup; `vi.mock("./process/inlayScreen")` in tests mocks only `updateInlayScreen`.
 
 ### `{{// ...}}` stays literal in rendered and prompt text
 
@@ -203,27 +195,6 @@ After the paged export (`src/lib/ChatScreens/screenshotExport.ts`), the Render W
 
 **Why it matters:** a 600-row export still costs about 4 GiB of renderer memory, enough to crash a tab on phones.
 **Suggested handling:** take a heap snapshot and `VmHWM` per page during a 150-row export to find what scales with rows, then release it per page.
-
-### The screenshot page fill is black
-
-`composeScreenshot` in `src/lib/ChatScreens/screenshotExport.ts` (~131, carried over from the old merge in `DefaultChatScreen.svelte`) sets `ctx.fillStyle = "var(--risu-theme-bgcolor)"`. Canvas `fillStyle` does not resolve `var(...)`, so the assignment is ignored and the fill stays `#000000`: a row narrower than its page leaves a black strip on its right, whatever the theme. Found in the Render Work Budget run (2026-11-05).
-
-**Why it matters:** visible in exports with mixed row widths on light themes.
-**Suggested handling:** resolve the color in the caller (`getComputedStyle(document.documentElement).getPropertyValue("--risu-theme-bgcolor")`) and pass it to `composeScreenshot`.
-
-### A render run pending at raw streaming is not aborted
-
-`src/lib/ChatScreens/ChatBody.svelte` aborts the previous run's `parseController` inside the `markParsingResult` `$derived.by` (~545). While `shouldRenderRawStreaming` is true neither the template nor the `$effect` reads `markParsingResult`, so the lazy derived does not re-run and the run pending when the row entered raw streaming keeps a live signal and runs to completion, hidden. Rows kept mounted across a reroll (`Chat.svelte`, `Chats.svelte`) reach it. Aborting there without a new `parseRun` would let the aborted run's `finally` write `lastParsed` (its guard is `run === parseRun`). Found in the Render Work Budget run (2026-11-05).
-
-**Why it matters:** bounded obsolete work, one run per streaming row.
-**Suggested handling:** on the transition into raw streaming, abort `parseController` and bump `parseRun` together.
-
-### The dynamic reroll icon variant is dead
-
-Since Reroll Candidates Slice 2 (2026-11-05) `Chats.svelte` passes `rerollIcon` as a boolean, true only on the last non-comment row, and nothing passes `"dynamic"` any more. `class:dyna-icon={rerollIcon === "dynamic"}` in `src/lib/ChatScreens/Chat.svelte` (the `rerolls` snippet, ~1869, ~1883, ~1893), the `"dynamic"` member of the `rerollIcon` prop type (~215, ~402), and the `.chat-message-container .dyna-icon` and `:first-of-type .dyna-icon` rules in `src/styles.css` (~564) have no producer. Re-checked on the merged Reroll Candidates target.
-
-**Why it matters:** the dead variant suggests CSS still decides which row shows the reroll arrows.
-**Suggested handling:** drop the `"dynamic"` variant and the two CSS rules, after checking that no theme or plugin CSS the guides document targets `.dyna-icon`.
 
 ## Client and plugins
 
@@ -380,14 +351,6 @@ Found in the Guides To Source run (2026-11-04/05); owner build-test-platforms.
 **Why it matters:** the first two cost lookups and can skip the guide-edit rules; the last two would skew a later audit's rows and untouched lists.
 
 **Suggested handling:** strip backticks from the query and prefer `docs/structure/README.md` for `README.md` (with node tests, updating `guideOfArgument`); for an audit rerun, note the bogus rows and count title queries first, or cover every heading when the resolved section is level 1.
-
-### public/sw.js has an empty unused check()
-
-`public/sw.js` declares `async function check(){ }` (~331, between `getSource` and `registerCache`) with no caller; it looks like part of the `/sw/check` route, which `checkCache` serves. Found in the Guides To Source run (2026-11-05). Owner: build-test-platforms.
-
-**Why it matters:** dead code a reader can mistake for live.
-
-**Suggested handling:** delete it at the next worker edit.
 
 ### measureChats.mjs trips safe boot and fakes its scrolled-up input
 
