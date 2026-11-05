@@ -1,12 +1,18 @@
 import type { Hono, MiddlewareHandler } from "hono";
-import { ASSET_REPORT_PATH, ASSET_SCAN_PATH, ASSET_SWEEP_PATH } from "../../../shared/assetLifecycle.ts";
+import {
+    ASSET_REPORT_PATH,
+    ASSET_STATUS_PATH,
+    ASSET_SCAN_PATH,
+    ASSET_SWEEP_PATH,
+} from "../../../shared/assetLifecycle.ts";
 import { AssetSweepConflict, type AssetLifecycle } from "../data/assetLifecycle.ts";
 import { readJsonBody } from "../http/body.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
 /**
- * GET /api/assets/report answers 200 with the latest report. POST /api/assets/scan answers 202 with
+ * GET /api/assets/report answers 200 with the latest versioned report. GET /api/assets/status answers
+ * 200 with only { running, version }. POST /api/assets/scan answers 202 with
  * the running report, or 409 while a scan or sweep is running. POST /api/assets/sweep validates
  * { dryRun, keys?, inlays? }, waits for completion, and answers 200 with deleted/skipped entries, or
  * 409 when its process-local scan/epoch/uptime gates fail. All require auth, use the storage rate-limit
@@ -33,6 +39,16 @@ export function registerAssetLifecycleRoutes(
             return c.json({ error: "The server is shutting down" }, 503);
         }
         return c.json(arg.lifecycle.report());
+    });
+    app.get(ASSET_STATUS_PATH, noStore, arg.limiter, async (c) => {
+        const denied = await arg.auth.checkAuth(c);
+        if (denied) {
+            return denied;
+        }
+        if (arg.lifecycle.closed) {
+            return c.json({ error: "The server is shutting down" }, 503);
+        }
+        return c.json({ running: arg.lifecycle.running, version: arg.lifecycle.version });
     });
     app.post(ASSET_SCAN_PATH, noStore, arg.limiter, async (c) => {
         const denied = await arg.auth.checkAuth(c);

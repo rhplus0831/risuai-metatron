@@ -3,7 +3,12 @@
     import { language } from "src/lang";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import { alertConfirm, alertNormalWait } from "src/ts/alert";
-    import { readStorageReport, startStorageScan, sweepAssets } from "src/ts/storage/assetLifecycleClient";
+    import {
+        readStorageReport,
+        readStorageStatus,
+        startStorageScan,
+        sweepAssets,
+    } from "src/ts/storage/assetLifecycleClient";
     import {
         listBackups,
         takeSnapshot,
@@ -16,11 +21,12 @@
 
     /**
      * Settings → Advanced → Storage reads the retention report and live snapshots on mount without
-     * writing settings or resource records. Scans poll every second until finished; cleanup sends
+     * writing settings or resource records. Scans and sweeps poll status every second, reading the full
+     * report when its version changes or the run ends; cleanup sends
      * explicit, confirmed asset or inlay selections and requires a complete run. Snapshot controls
      * refresh the live list, while held bytes come from the last report. Snapshot actions wait until
      * scans and sweeps finish. Button requests are serialized, server errors are shown unchanged,
-     * and a successful restore reloads the app. Unmount stops polling.
+     * and restores reload the app after a success or epoch-conflict notice. Unmount stops polling.
      */
 
     let report: AssetLifecycleReport | null = $state(null);
@@ -118,8 +124,12 @@
         }
         busy = true;
         try {
-            applyReport(await readStorageReport());
-            if (!disposed && !report.running) await refreshSnapshots();
+            const status = await readStorageStatus();
+            if (disposed) return;
+            if (!status.running || status.version !== report.version) {
+                applyReport(await readStorageReport());
+                if (!disposed && !report.running) await refreshSnapshots();
+            }
         } catch (cause) {
             if (!disposed) error = message(cause);
         } finally {
@@ -224,18 +234,21 @@
         if (running) return;
         return runAction(async () => {
             if (!(await alertConfirm(language.storage.restoreConfirm(date(createdAt)))) || disposed) return;
+            let notice: string;
             try {
                 await restoreBackup(id);
+                notice = language.storage.restored;
             } catch (cause) {
                 if (!(cause instanceof ResourceEpochMismatchError)) throw cause;
+                notice = language.storage.restoreConflict;
             }
-            // A failed list refresh must not prevent reloading the restored resources.
+            // A failed list refresh must not prevent reloading the current resources.
             try {
                 await refreshSnapshots();
             } catch (cause) {
                 if (!disposed) error = message(cause);
             }
-            await alertNormalWait(language.storage.restored);
+            await alertNormalWait(notice);
             location.reload();
         });
     }

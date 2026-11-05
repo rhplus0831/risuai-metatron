@@ -1,13 +1,15 @@
 /**
- * Authenticated, no-store JSON calls to GET /api/assets/report, POST /api/assets/scan, and
+ * Authenticated, no-store JSON calls to GET /api/assets/{report,status}, POST /api/assets/scan, and
  * POST /api/assets/sweep. Requests never retry; HTTP failures preserve the server message in ResourceRequestError,
  * and fetch/auth failures use status 0. Sweeps always send explicit key and inlay selections.
  */
 import {
     ASSET_REPORT_PATH,
+    ASSET_STATUS_PATH,
     ASSET_SCAN_PATH,
     ASSET_SWEEP_PATH,
     type AssetLifecycleReport,
+    type AssetLifecycleStatus,
     type AssetSweepResult,
 } from "../../../shared/assetLifecycle.ts";
 import { ResourceRequestError } from "./resourceClient";
@@ -34,6 +36,11 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
 /** Reads the latest retention report without starting a scan. */
 export function readStorageReport(): Promise<AssetLifecycleReport> {
     return request(ASSET_REPORT_PATH, { method: "GET" });
+}
+
+/** Reads run state and report version without transferring candidate lists. */
+export function readStorageStatus(): Promise<AssetLifecycleStatus> {
+    return request(ASSET_STATUS_PATH, { method: "GET" });
 }
 
 /** Starts a scan and returns its initial report. */

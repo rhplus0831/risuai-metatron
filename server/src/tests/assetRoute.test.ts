@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { matureSweep, seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AssetLifecycleStatus } from "../../../shared/assetLifecycle.ts";
 import { assetVerification } from "../http/assetVerification.ts";
 import { resolveStorageKey } from "../routes/storage.ts";
 import { buildArchive, createResourceTestClient, hex, parseArchive, type ResourceTestClient } from "./testSupport.ts";
@@ -540,6 +541,32 @@ describe("missing asset checks", () => {
         expect((await missing(Array(512).fill(name))).status).toBe(200);
         expect((await missing(Array(513).fill(name))).status).toBe(400);
     });
+});
+
+it("requires auth for no-store asset status and returns only running and the report version, advanced after a scan", async () => {
+    for (const token of [undefined, "invalid"]) {
+        const denied = await s.app.request("/api/assets/status", {
+            headers: token === undefined ? {} : { "risu-auth": token },
+        });
+        expect(denied.ok).toBe(false);
+        expect(denied.headers.get("cache-control")).toBe("no-store");
+    }
+    const initial = await s.request("/api/assets/status");
+    expect(initial.status).toBe(200);
+    expect(initial.headers.get("cache-control")).toBe("no-store");
+    const before = (await initial.json()) as AssetLifecycleStatus;
+    expect(before).toEqual({ running: false, version: expect.any(Number) });
+
+    await s.context.assetLifecycle.scan();
+    const completed = await s.request("/api/assets/status");
+    expect(completed.status).toBe(200);
+    expect(completed.headers.get("cache-control")).toBe("no-store");
+    const after = (await completed.json()) as AssetLifecycleStatus;
+    expect(after).toEqual({ running: false, version: expect.any(Number) });
+    expect(after.version).toBeGreaterThan(before.version);
+    const report = await s.request("/api/assets/report");
+    expect(report.status).toBe(200);
+    expect(await report.json()).toMatchObject({ complete: true, running: false, version: after.version });
 });
 
 it("deletes candidate bytes, every thumbnail version, verification, and its ledger row", async () => {

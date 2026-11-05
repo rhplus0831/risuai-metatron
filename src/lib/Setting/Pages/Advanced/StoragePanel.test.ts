@@ -6,6 +6,7 @@ import type { BackupSnapshotInfo } from "../../../../../shared/resources.ts";
 
 const deps = vi.hoisted(() => ({
     readStorageReport: vi.fn<(typeof import("src/ts/storage/assetLifecycleClient"))["readStorageReport"]>(),
+    readStorageStatus: vi.fn<(typeof import("src/ts/storage/assetLifecycleClient"))["readStorageStatus"]>(),
     startStorageScan: vi.fn<(typeof import("src/ts/storage/assetLifecycleClient"))["startStorageScan"]>(),
     sweepAssets: vi.fn<(typeof import("src/ts/storage/assetLifecycleClient"))["sweepAssets"]>(),
     listBackups: vi.fn<(typeof import("src/ts/storage/resourceClient"))["listBackups"]>(),
@@ -21,6 +22,7 @@ vi.mock(
     () =>
         ({
             readStorageReport: deps.readStorageReport,
+            readStorageStatus: deps.readStorageStatus,
             startStorageScan: deps.startStorageScan,
             sweepAssets: deps.sweepAssets,
         }) satisfies typeof import("src/ts/storage/assetLifecycleClient"),
@@ -57,6 +59,7 @@ const snapshot = (id: string, label: string, pinned = false): BackupSnapshotInfo
 
 function report(overrides: Partial<AssetLifecycleReport> = {}): AssetLifecycleReport {
     return {
+        version: 1,
         generatedAt: SCANNED_AT,
         complete: true,
         reasons: [],
@@ -254,33 +257,49 @@ describe("StoragePanel", () => {
         expect(deps.alertConfirm).not.toHaveBeenCalled();
     });
 
-    it("starts a scan, polls until it finishes, and disables action buttons while running", async () => {
-        const runningReport = report({ running: true });
-        deps.startStorageScan.mockResolvedValue(runningReport);
-        deps.readStorageReport
-            .mockResolvedValueOnce(report())
-            .mockResolvedValueOnce(runningReport)
-            .mockResolvedValue(report());
+    it("starts a scan, polls status until it finishes, reads the full report once at the end, and disables action buttons while running", async () => {
+        deps.startStorageScan.mockResolvedValue(report({ running: true }));
+        deps.readStorageStatus
+            .mockResolvedValueOnce({ running: true, version: 1 })
+            .mockResolvedValueOnce({ running: true, version: 1 })
+            .mockResolvedValue({ running: false, version: 2 });
         await open();
+        deps.readStorageReport.mockResolvedValue(report({ version: 2 }));
         await click(language.storage.scan);
         expect(deps.startStorageScan).toHaveBeenCalledExactlyOnceWith();
         expect(target.textContent).toContain(language.storage.scanning);
         const enabledWhileRunning = [...target.querySelectorAll("button")]
             .filter((item) => !item.disabled)
             .map((item) => item.textContent?.trim());
-        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(2000);
         flushSync();
-        expect(deps.readStorageReport).toHaveBeenCalledTimes(2);
+        expect(deps.readStorageStatus).toHaveBeenCalledTimes(2);
+        expect(deps.readStorageReport).toHaveBeenCalledTimes(1);
         expect(target.textContent).toContain(language.storage.scanning);
         await vi.advanceTimersByTimeAsync(1000);
         flushSync();
-        expect(deps.readStorageReport).toHaveBeenCalledTimes(3);
+        expect(deps.readStorageReport).toHaveBeenCalledTimes(2);
         expect(target.textContent).not.toContain(language.storage.scanning);
         expect(button(language.storage.scan).disabled).toBe(false);
         expect(button(language.storage.deleteAssets).disabled).toBe(false);
         await vi.advanceTimersByTimeAsync(5000);
-        expect(deps.readStorageReport).toHaveBeenCalledTimes(3);
+        expect(deps.readStorageStatus).toHaveBeenCalledTimes(3);
+        expect(deps.readStorageReport).toHaveBeenCalledTimes(2);
         expect(enabledWhileRunning).toEqual([]);
+    });
+
+    it("reads the full report when a status poll changes version while the run is still running", async () => {
+        deps.readStorageReport
+            .mockResolvedValueOnce(report({ running: true, version: 1 }))
+            .mockResolvedValue(report({ running: true, version: 2 }));
+        deps.readStorageStatus.mockResolvedValue({ running: true, version: 2 });
+        await open();
+        expect(deps.readStorageReport).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1000);
+        flushSync();
+        expect(deps.readStorageStatus).toHaveBeenCalledExactlyOnceWith();
+        expect(deps.readStorageReport).toHaveBeenCalledTimes(2);
+        expect(target.textContent).toContain(language.storage.scanning);
     });
 
     it("blocks cleanup for incomplete scans, marks named unreadable snapshots, and still allows their deletion", async () => {
@@ -438,9 +457,12 @@ describe("StoragePanel", () => {
         notice.resolve();
         await settle();
         expect(reload).toHaveBeenCalledTimes(1);
+        deps.alertNormalWait.mockClear();
         deps.restoreBackup.mockRejectedValueOnce(new ResourceEpochMismatchError("new-epoch"));
         await click(language.storage.restore, snapshotRow("Live A"));
         expect(deps.restoreBackup).toHaveBeenLastCalledWith("snap-a");
+        expect(deps.alertNormalWait).toHaveBeenCalledExactlyOnceWith(language.storage.restoreConflict);
+        expect(deps.alertNormalWait).not.toHaveBeenCalledWith(language.storage.restored);
         expect(reload).toHaveBeenCalledTimes(2);
     });
 });

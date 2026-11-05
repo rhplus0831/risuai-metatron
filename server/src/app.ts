@@ -6,6 +6,7 @@ import {
     ASSET_GRACE_DEFAULT_DAYS,
     ASSET_GRACE_MIN_DAYS,
     ASSET_REPORT_PATH,
+    ASSET_STATUS_PATH,
     ASSET_SCAN_PATH,
     ASSET_SWEEP_PATH,
 } from "../../shared/assetLifecycle.ts";
@@ -728,6 +729,7 @@ export function createServerContext(options: {
             c.req.path.startsWith(`${DIAGNOSTICS_PATH}/`);
         const assetLifecycleRoute =
             fileImportRoute === ASSET_REPORT_PATH ||
+            fileImportRoute === ASSET_STATUS_PATH ||
             fileImportRoute === ASSET_SCAN_PATH ||
             fileImportRoute === ASSET_SWEEP_PATH;
         const tokenRoute = fileImportRoute === TOKEN_COUNT_PATH || fileImportRoute === TOKEN_ENCODE_PATH;

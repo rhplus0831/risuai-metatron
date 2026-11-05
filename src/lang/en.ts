@@ -3320,6 +3320,8 @@ export const languageEnglish = {
         restoreConfirm: (date: string) =>
             `Restore the resource snapshot from ${date}? This replaces the current resource data and reloads the app.`,
         restored: "Resource snapshot restored. The app will reload.",
+        restoreConflict:
+            "The resource snapshot was not restored because the server data was replaced elsewhere. The app will reload to show the current data.",
         unreadableSnapshot: "Unreadable snapshot — delete it, then scan again.",
     },
     requestHistoryLabels: {

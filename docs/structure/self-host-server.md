@@ -137,9 +137,8 @@ authenticated limiter, `no-store`, bodies capped after authentication (`PUT /api
 - `GET`/`HEAD /api/asset/*`: `assetHeaders`, `serveAssetFile`, `shared/assetMime.ts` (`assetMimeType`,
   `isActiveAssetExtension`), `assetVerification`; `?w=256|512` is the thumbnail variant (`createThumbnailService`). The
   cache headers, ETags, and the variant's `307` reasons (`x-risu-thumbnail`) are the comment above the route.
-- `POST /api/assets/write` and `/api/assets/read` (`shared/assetBatch.ts` framing); `POST /api/assets/missing`
-  (`ASSET_MISSING_PATH`).
-- `GET /api/assets/report`, `POST /api/assets/{scan,sweep}`: `server/src/routes/assetLifecycle.ts`,
+- `POST /api/assets/{write,read}` (`shared/assetBatch.ts` framing); `POST /api/assets/missing` (`ASSET_MISSING_PATH`).
+- `GET /api/assets/{report,status}`, `POST /api/assets/{scan,sweep}`: `server/src/routes/assetLifecycle.ts`,
   `shared/assetLifecycle.ts`.
 - The thumbnail sizes are admitted here (`widths`, `thumbnailSize`) and repeated in `ThumbnailRequest.size` and
   `ENTRY_NAME`: change them together. The browser and the service worker follow the variant's redirect to the original,

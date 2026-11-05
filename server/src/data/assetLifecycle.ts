@@ -72,6 +72,7 @@ const MEMORY_TABLES = [
     "memory_staged_runs",
 ];
 const CHECKPOINT_TABLES = ["chatCheckpoints", "checkpointPages", "checkpointPageRefs"];
+type AssetReportContent = Omit<AssetLifecycleReport, "version">;
 
 export type AssetReferenceSink = { tail(value: string): void; inlay(id: string): void };
 
@@ -360,7 +361,8 @@ export function createAssetLifecycle(
     const pruneRuns = ledger.prepare(
         "DELETE FROM runs WHERE rowid NOT IN (SELECT rowid FROM runs ORDER BY rowid DESC LIMIT 100)",
     );
-    let latest: AssetLifecycleReport = {
+    let reportVersion = 0;
+    let latest: AssetReportContent = {
         generatedAt: null,
         complete: false,
         reasons: [],
@@ -724,7 +726,7 @@ export function createAssetLifecycle(
         reasons: string[],
         usage: AssetLifecycleReport["usage"],
         disk: AssetLifecycleReport["disk"],
-    ): AssetLifecycleReport {
+    ): AssetReportContent {
         const liveTails = [...root.tails].sort();
         const allIds = new Set(root.ids);
         const indexed = new Map<string, string[]>();
@@ -957,7 +959,7 @@ export function createAssetLifecycle(
             }
             stats.snapshotIndexMs += monoNow() - start;
         }
-        function record(report: AssetLifecycleReport) {
+        function record(report: AssetReportContent) {
             insertRun.run(
                 startedAt,
                 report.complete ? 1 : 0,
@@ -1053,6 +1055,7 @@ export function createAssetLifecycle(
                         }
                     }
                     latest = classify(root, listed, inventory.files, held, wallNow(), reasons, usage, disk);
+                    reportVersion++;
                     stats.totalMs = monoNow() - start;
                     record(latest);
                 });
@@ -1062,6 +1065,7 @@ export function createAssetLifecycle(
         } catch (error) {
             reasons.push(signal.aborted ? "Scan aborted" : `Scan failed: ${String(error)}`);
             latest = { ...latest, generatedAt: wallNow(), complete: false, reasons, running: false, usage, disk };
+            reportVersion++;
             stats.totalMs = monoNow() - start;
             transaction(() => record(latest));
         }
@@ -1072,7 +1076,7 @@ export function createAssetLifecycle(
                 .filter(([name]) => name.startsWith("live."))
                 .reduce((sum, [, counts]) => sum + counts.selected, 0);
         }
-        return latest;
+        return { ...latest, version: reportVersion };
     }
 
     /** Recheck the writer connection with the same decoded recognizer as the asynchronous mark. */
@@ -1361,6 +1365,7 @@ export function createAssetLifecycle(
             })
             .finally(() => {
                 stats.totalMs = monoNow() - start;
+                reportVersion++;
                 sweepActive = null;
                 controller = null;
             });
@@ -1438,11 +1443,14 @@ export function createAssetLifecycle(
         get running() {
             return active !== null || sweepActive !== null;
         },
+        get version() {
+            return reportVersion;
+        },
         get closed() {
             return closed;
         },
         report(): AssetLifecycleReport {
-            return { ...latest, running: active !== null || sweepActive !== null };
+            return { ...latest, running: active !== null || sweepActive !== null, version: reportVersion };
         },
         scan,
         sweep,

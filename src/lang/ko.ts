@@ -3246,6 +3246,8 @@ export const languageKorean = {
         restoreConfirm: (date: string) =>
             `${date}에 생성된 리소스 스냅샷을 복원할까요? 현재 리소스 데이터를 교체하고 앱을 새로 고칩니다.`,
         restored: "리소스 스냅샷을 복원했습니다. 앱을 새로 고칩니다.",
+        restoreConflict:
+            "다른 곳에서 서버 데이터가 교체되어 리소스 스냅샷을 복원하지 않았습니다. 현재 데이터를 표시하기 위해 앱을 새로 고칩니다.",
         unreadableSnapshot: "읽을 수 없는 스냅샷입니다. 삭제한 뒤 다시 스캔하세요.",
     },
     requestHistoryLabels: {

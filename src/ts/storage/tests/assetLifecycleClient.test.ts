@@ -5,19 +5,25 @@ const { authFetch } = vi.hoisted(() => ({
 }));
 vi.mock("../serverAuth", async () => (await import("./serverAuthMock")).createServerAuthMock({ authFetch }));
 
-import { readStorageReport, startStorageScan, sweepAssets } from "../assetLifecycleClient";
+import { readStorageReport, readStorageStatus, startStorageScan, sweepAssets } from "../assetLifecycleClient";
 import { ResourceRequestError } from "../resourceClient";
 
 beforeEach(() => {
     authFetch.mockReset();
 });
 
-const operations = [readStorageReport, startStorageScan, () => sweepAssets({ keys: [], inlays: [] })];
+const operations = [
+    readStorageReport,
+    readStorageStatus,
+    startStorageScan,
+    () => sweepAssets({ keys: [], inlays: [] }),
+];
 
 describe("asset lifecycle client", () => {
     it("uses authenticated no-store routes and sends explicit asset and inlay selections with dryRun false", async () => {
         authFetch.mockImplementation(async () => Response.json({ running: false }));
         await readStorageReport();
+        await readStorageStatus();
         await startStorageScan();
         await sweepAssets({ keys: ["assets/chosen.png"], inlays: [] });
         await sweepAssets({ keys: [], inlays: ["chosen-inlay"] });
@@ -30,6 +36,7 @@ describe("asset lifecycle client", () => {
             })),
         ).toEqual([
             { path: "/api/assets/report", method: "GET", cache: "no-store", body: undefined },
+            { path: "/api/assets/status", method: "GET", cache: "no-store", body: undefined },
             { path: "/api/assets/scan", method: "POST", cache: "no-store", body: undefined },
             {
                 path: "/api/assets/sweep",
@@ -44,7 +51,7 @@ describe("asset lifecycle client", () => {
                 body: { dryRun: false, keys: [], inlays: ["chosen-inlay"] },
             },
         ]);
-        for (const [, init] of authFetch.mock.calls.slice(2)) {
+        for (const [, init] of authFetch.mock.calls.slice(3)) {
             expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
         }
     });
@@ -58,7 +65,7 @@ describe("asset lifecycle client", () => {
             expect(error).toBeInstanceOf(ResourceRequestError);
             expect(error).toMatchObject({ status: 409, message: "Scan is incomplete; deletion refused" });
         }
-        expect(authFetch).toHaveBeenCalledTimes(3);
+        expect(authFetch).toHaveBeenCalledTimes(4);
     });
 
     it("maps requests that do not reach the server to ResourceRequestError status zero", async () => {
@@ -68,6 +75,6 @@ describe("asset lifecycle client", () => {
             expect(error).toBeInstanceOf(ResourceRequestError);
             expect(error).toMatchObject({ status: 0, message: "Failed to fetch" });
         }
-        expect(authFetch).toHaveBeenCalledTimes(3);
+        expect(authFetch).toHaveBeenCalledTimes(4);
     });
 });
