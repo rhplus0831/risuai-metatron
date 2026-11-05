@@ -6,9 +6,8 @@
   drafts, checkpoints, and the client side of the restore floor.
 - Not here: save loop, conflicts → [resource sync](resource-sync.md); live updates → [live updates](live-updates.md);
   chat journal, recovery drafts → [draft recovery](draft-recovery.md); database model, records →
-  [persistence](persistence.md); server chat store, checkpoint service, floor checks →
-  [server resources](server-resources.md); the send → [chat pipeline](chat-pipeline.md); the checkpoint dialog →
-  [UI and theming](ui-theming.md).
+  [persistence](persistence.md); server chat store, checkpoint service → [server resources](server-resources.md); the
+  send → [chat pipeline](chat-pipeline.md); the checkpoint dialog → [UI and theming](ui-theming.md).
 - `Decision:` plan names resolve through [the archive](../archived-plan/README.md).
 
 ## Files
@@ -87,9 +86,8 @@ comment.
 
 ### By-id ops
 
-- By-id reads and writes use `positionOf`'s lazy per-chat message index, shared with translation and the transcript
-  (`heldMessageById`, `messagePositionOf`). A hit validates the row id, so a stale position is safe; a miss or mismatch
-  rebuilds once. Structural paths drop the map (`dropMessagePositions`).
+- By-id reads and writes share `positionOf`'s index with translation and the transcript (`heldMessageById`,
+  `messagePositionOf`); its comment owns stale lookups, `dropMessagePositions` invalidates it.
 - Which ops apply on a stale revision and which need the current one is the `ChatOp` contract in `shared/chats.ts`,
   enforced by the server ([chat writes](server-resources.md#chat-writes-and-checkpoints)) and the
   [restore floor](#restore-floor). A `remove` may carry `retract`,
@@ -118,9 +116,8 @@ comment.
 
 ### Selection
 
-- Per tab and per character (`selectedChatId`, `selectChat`, `loadSelectionPreference`): remembered in `localStorage`
-  for the next boot, never synchronized between tabs. The chat screen shows loading, then the error and a retry after a
-  failed load (`selectedChatLoad`, [UI](ui-theming.md)).
+- `selectChat` and `loadSelectionPreference` own selection persistence; `selectedChatLoad` drives loading/error/retry
+  ([UI](ui-theming.md)).
 
 ### Summaries and refresh
 
@@ -202,17 +199,20 @@ comment.
 
 ### Restore floor
 
-- A load's `replace` sets the chat's restore floor to its replacement revision; a group with a non-null base below it
-  conflicts without a `reason` (the check: [server](server-resources.md#chat-writes-and-checkpoints)). The client
-  handles it as any chat conflict: `recoverChatConflicts` reads back, `acceptRemoteChat` replaces the mirror and
-  discards queued edits with the notice, `flushResources` reports `chats/<chaId>/<chatId>`, and a chat this tab's job
-  streams into [defers](#deferral).
+- A load's `replace` sets the floor to its replacement revision. `server/src/data/chatStore.ts` `applyGroup` checks:
+  remembered `groupId` (replay), possibly expired retry (`reason: "expired"`), generation locks
+  (`reason: "generating"`), then for a non-null base: chat existence, token validity/epoch, incarnation `seq`, base
+  below the floor, and `needsCurrent` revision equality. Revision/floor conflicts have no `reason`. A null base requires
+  an absent chat and existing character.
+- `reason: "generating"` makes `recoverChatConflicts` retry work after `JOB_RETRY_MS` without reloading, except named
+  locked-message edits, dropped with the reload notice. A floor conflict reads back; `acceptRemoteChat` replaces the
+  mirror and discards queued edits with the notice, `flushResources` reports `chats/<chaId>/<chatId>`, and a chat this
+  tab's job streams into [defers](#deferral).
 - Old work is refused only while its base is below the floor, so nothing moves that base past it (`installRead` holds no
   revision for a busy chat; `acceptRemoteCollection` keeps a create's replay and the old base of later edits).
 - One by-id case takes two rounds: an `append` whose `after` anchor the load removed keeps epoch and incarnation
   (`replace` keeps `seq`), so `reanchorGoneAppends` rewrites it and resends alone with a new `groupId` on its old base.
-  The floor refuses it again; recovery finds no gone anchor and discards it with the notice. A group id the server
-  remembers still receives its recorded answer.
+  The floor refuses it again; recovery finds no gone anchor and discards it with the notice.
 
 ## State
 

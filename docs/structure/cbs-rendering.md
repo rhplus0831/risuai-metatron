@@ -270,11 +270,8 @@ and video have two modes:
     happen after an await.
   - `resetAssetsCache(charAssets, emoAssets, moduleAssets)` keeps its public signature and map shape; an explicit reset
     (including `[]` modules in the golden fixture) wins until live inputs change.
-- Parser fuzzy matching scans only the character's additional assets, in order. Trimmed exact names use the first entry;
-  other candidates must strictly improve the best and fit `floor(assetMaxDifference)`. Non-finite thresholds leave the
-  scan unbounded by settings, and the final `dist > threshold` comparison preserves existing acceptance (including NaN
-  and negative infinity). A distance-1 winner ends a normal scan. Cached hits remain globally closest; cached misses are
-  reused only at an equal or smaller cutoff. Keep `trimmer`'s `[_ -.]` range and UTF-16 code-unit semantics.
+- Parser fuzzy matching uses only character additional assets; `parser.svelte.ts` `getClosestMatch` owns tie, threshold
+  and cache rules. Keep `trimmer`'s `[_ -.]` range and UTF-16 code-unit semantics.
 - `ChatBody`'s image fallback scans character plus module assets with the existing prefix rule, first strict improvement
   below 1000, and empty-path/none behavior. Its per-name hit/miss memo belongs to the `imageAssets` value, so unchanged
   rows do not rescan; both fuzzy result memos clear at 10,000 names.
@@ -377,6 +374,9 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
 
 ### Limitations
 
+- `{{// ...}}` stays literal everywhere in rendered and prompt text: `shared/cbs/registry.ts` registers it `doc_only`,
+  so the evaluator leaves it. Only lore key matching strips it (`shared/lore/activation.ts`). Decision: client/server
+  and upstream parity (`server/src/tests/fixtures/cbs-parity.json`).
 - Write refusal checks every active context of a plugin instance (`hasReadOnlyContext`), while target selection uses the
   innermost (`currentContext`). A writable hook overlapping a transform on that instance is conservatively refused too;
   a handler that never settles keeps that restriction even after its transform times out. Exact call attribution needs

@@ -293,8 +293,8 @@ file's own handles as `overrides`. A partial mock over `importOriginal` needs no
 
 ### Network guard
 
-Unit tests run behind a network guard: `vitest.setup.ts` routes the global `fetch`, `WebSocket`, Node's undici global
-dispatcher, and happy-dom's loaders through `vitest.testNetwork.ts`. The comments in both files have the routing.
+Playwright's server `fetch` tripwire is `util/playwright/stack.mjs` `egressGuard`. Vitest guard routing is in
+`vitest.setup.ts` and `vitest.testNetwork.ts` comments.
 
 - The policy allows `data:` and `blob:` URLs and the exact loopback origins a test registered. Everything else is
   refused, relative URLs included: the call throws or rejects as a failed request would (an XHR fires `error`), and the

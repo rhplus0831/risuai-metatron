@@ -280,7 +280,7 @@ takeovers, viewer boot resume and creator warnings. Kept receipts and shutdown o
 - A streamed reply stays locked until the server releases its generation; the mirror batches text updates once per
   frame; hydration, rendering, and edit rules: [chat store](chat-store.md#locks-and-streaming).
 - `refreshChatAfterWrite` adopts an eligible server by-id write into the job scope; otherwise the server reloads the
-  chat. Its preconditions and immutable-copy contract are in [generation](live-update-feed.md#own-chat-changes).
+  chat. Its preconditions and immutable-copy contract are in [own chat changes](live-update-feed.md#own-chat-changes).
 
 ## Coupling
 
@@ -394,8 +394,7 @@ In `shared/lore/activation.ts`.
 ### Issues
 
 - A reroll's restore cannot see another tab's job that holds no lock yet and was not met at this tab's create: the
-  restored replies land while that job runs, like any other edit (see
-  [own chat changes](live-update-feed.md#own-chat-changes)).
+  restored replies land while that job runs, like any other edit.
 - Stop stays visible between a followed job's `done` and its socket close, when an abort does nothing.
 - A boot resume that discovers its chat but cannot load it shows Stop during the load retries, until the follow ends as
   lost.

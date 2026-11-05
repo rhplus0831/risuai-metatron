@@ -39,20 +39,20 @@
 - `src/ts/alertQueue.ts`: `createAlertQueue` (the store `src/ts/stores.svelte.ts` `alertStore` is one instance),
   `AlertQueue`, `AlertDialog`, `NEXT_DIALOG_GAP_MS`, and `createDialogKeyGate` (built in `src/ts/hotkey.ts`
   `initHotkey`). The comments state the status slot, the queue, the gap, the folding, and the stroke rule.
-- Dialog keys cross three files: `hotkey.ts` owns them and `src/lib/Others/AlertComp.svelte` has no key handler. An
-  Escape it handles answers the shown dialog with `""`; its Enter shortcut answers `ask`, `normal`, `error` (`"yes"`),
-  and an `input` dialog's value, and a new accepting type extends that branch. A focused button keeps its own
-  activation, and a key typed in another text field is not handled.
+- Dialog keys belong to `src/ts/hotkey.ts` `initHotkey`; `AlertComp.svelte` has no key handler. Its component contract
+  covers Escape, Enter, focused buttons and other text fields; a new accepting type extends the Enter branch.
 
 ### Alert helpers and `AlertComp`
 
 - `src/ts/alert.ts`, the helpers over the alert slot (module header): `alertData` (field comments name the dialog that
-  reads each), `openAlertDialog`, `alertError`, `alertJobError`, `alertConfirm`, `alertSelect`, `alertInput`,
-  `alertCardExport`, `alertRealmTerms`, `alertRequestLogs`, `showHypaV2Alert`, `alertWait`, `alertToast` (`onInstall`),
-  `alertClear`, `waitAlert`, `doingAlert`, and `alertStore`, a `set` wrapper over the real store.
+  reads each), `openAlertDialog`, `alertError`, `alertJobError`, `alertConfirm`, `alertConfirmWithCheckbox`,
+  `alertSelect`, `alertInput`, `alertCardExport`, `alertRealmTerms`, `alertRequestLogs`, `showHypaV2Alert`, `alertWait`,
+  `alertToast` (`onInstall`), `alertClear`, `waitAlert`, `doingAlert`, and `alertStore`, a `set` wrapper over the real
+  store.
 - `src/lib/Others/AlertComp.svelte` (component contract): renders the head of `alertStore` and answers with
-  `alertStore.answer(msg)`; it holds the HypaV2 editor and the stale-trace rule of `src/ts/sourcemap.ts`
-  `translateStackTrace`.
+  `alertStore.answer(msg)` or `alertStore.answerConfirm(confirmed, shown)` (`ask`/`pluginconfirm` buttons, Enter for
+  `ask`). The latter answers JSON `{ confirmed, checked }` when `confirmCheckbox` is present (`src/ts/alertQueue.ts`).
+  It holds the HypaV2 editor and `src/ts/sourcemap.ts` `translateStackTrace`'s stale-trace rule.
 - The error alert's "Open in request history" closes the error before opening the history. The request history popup
   (`src/lib/Others/RequestLogs/RequestLogsPopup.svelte`) passes its own close to
   `src/lib/Others/RequestLogs/ServerRequestHistory.svelte`, which closes it before its delete confirmation (and opens it

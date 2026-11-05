@@ -98,15 +98,46 @@ It must be placed at the very top of your plugin script.
 
   Unlike `//@name`, this can be changed freely without breaking installations.
 
-- **`//@arg`** - Define plugin arguments
+- **`//@risu-arg`** (alias **`//@arg`**) - Define plugin arguments
 
   ```javascript
-  //@arg setting_name string Description of the setting
+  //@risu-arg setting_name string Description of the setting
   //@arg max_items int Maximum number of items
+  //@risu-arg api_key string Your API key {{password}} {{placeholder::Paste key}}
   ```
 
-  Supported types: `string`, `int`
-  Syntax: `//@arg <name> <type> <description and optional metadata>`
+  Syntax: `//@risu-arg <name> <type> <description and optional metadata>` (the alias uses the same syntax).
+  Only `int` and `string` are accepted; their initial values are `0` and `""`, respectively. These are fixed defaults:
+  metadata does not set the initial value. Argument names are one token.
+
+  `importPlugin` recognizes these headers only at the start of a line. It trims the line and splits on literal spaces
+  (`split(" ")`), without collapsing repeated spaces or treating tabs as separators. Use one space between the header,
+  name and type. Fewer than three tokens stops import with
+  `plugin argument is incorrect, did you put space in argument name?`; any other type stops import with
+  `plugin argument type is "<type>", which is an unknown type.`
+
+  Tokens after the type are joined with spaces. The parser removes brace metadata matching
+  `/{{(.+?)(::?(.+?))?}}/g`: `{{key}}` stores `"1"`, and `{{key:value}}` or `{{key::value}}` stores the value as a string.
+  Later occurrences of a key replace earlier ones. The remaining trimmed text becomes `description`, overriding a
+  `{{description::...}}` value when that text is nonempty. Metadata is stored in `argMeta[name]`; without tokens after
+  the type, no metadata object is created.
+
+- **`//@allowed-ipc`** - Allow plugin channel communication with named plugins
+
+  ```javascript
+  //@allowed-ipc other_plugin another_plugin
+  ```
+
+  Values are internal `//@name` names. As with arguments, the header must start the line; the parser trims the line,
+  splits on literal spaces, and appends every token after the header to `allowedIPC`. Repeated headers accumulate;
+  repeated spaces produce empty entries, tabs do not split values, and commas are not separators. A header without
+  a value stops import with `plugin allowed IPC declaration is incorrect, did you put space after //@allowed-ipc?`.
+
+  `Risuai.postPluginChannelMessage(pluginName, channelName, message)` requires both sides to allow each other:
+  the receiver's `allowedIPC` must include the sender's internal name, and the sender's must include the receiver's.
+  Missing permission on either side logs a warning and returns without delivering the message; a missing receiver also
+  warns and returns. With both checks passed, a registered channel listener receives the message and
+  `{ sender, channel }`.
 
 - **`//@link`** - Add custom links
 

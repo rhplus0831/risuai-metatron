@@ -10,7 +10,7 @@ run.
 
 ## Agent Read Protocol
 
-1. Read **Repository-Wide Invariants** below.
+1. Read **Repository-Wide Invariants** below for add/change tasks.
 2. Choose one owner in **Choose By Task**; for a supplied path run `pnpm docs:owner <path>`. A folder row's `README.md`
    routes on to one of its guides.
 3. List that guide's headings with their sizes (`pnpm docs:read <guide>`), read `Scope`, then the relevant subsection
@@ -154,21 +154,21 @@ completed plans and retrieval commands.
 
 | Task                                                                                                  | Guide                                                            |
 | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Boot, screen selection, URL/history, stores, flags, hotkeys                                           | [app-shell](docs/structure/app-shell.md)                         |
+| Boot, safe boot, screen selection, URL/history, stores, flags, hotkeys                                | [app-shell](docs/structure/app-shell.md)                         |
 | Asset sources and thumbnails, the asset client and queues, the batch codec                            | [assets](docs/structure/assets.md)                               |
 | Network/proxy, aux fetch, the request log, tab job client/channel, Web Push                           | [network-jobs](docs/structure/network-jobs.md)                   |
 | The globalApi facade, save entry points, writers, chat fold, utils, alerts, notices, Iris             | [global-api](docs/structure/global-api.md)                       |
-| Request history, checked failures, diagnostics, reports, support shares                               | [diagnostics](docs/structure/diagnostics.md)                     |
+| Request history, checked failures, push diagnostics, reports, support shares                          | [diagnostics](docs/structure/diagnostics.md)                     |
 | Persisted fields, records, settings views, normalization, chat bindings                               | [persistence](docs/structure/persistence.md)                     |
 | Boot load and cache, save loop, batches, conflicts and merges, credential writes, transport           | [resource-sync](docs/structure/resource-sync.md)                 |
 | Live updates in the tab: feed connection, record and chat updates, feed locks, restore halt           | [live-updates](docs/structure/live-updates.md)                   |
 | Chat module, chat writes, job hydration, chat checkpoints, restore floor                              | [chat-store](docs/structure/chat-store.md)                       |
 | Draft journal, composer rows, boot recovery, recovery drafts                                          | [draft-recovery](docs/structure/draft-recovery.md)               |
 | Send/job client, stages, prompts, lore, commands, inlays, groups, reroll, message search              | [chat-pipeline](docs/structure/chat-pipeline.md)                 |
-| SupaMemory, HypaV2/V3, Hanurai, embeddings                                                            | [memory](docs/structure/memory.md)                               |
+| SupaMemory, HypaV2/V3, HypaV3 job modes, Hanurai, embeddings                                          | [memory](docs/structure/memory.md)                               |
 | Structured memory: records, the HypaV3 projection, writer, read path, lifecycle, rebuild, page tools  | [structured-memory/](docs/structure/structured-memory/README.md) |
 | Model catalogues/profiles/slots, credentials, adapters, streaming, token counts                       | [llm-requests](docs/structure/llm-requests.md)                   |
-| CBS, markdown/sanitization, chat variables, partial edit, highlighting                                | [cbs-rendering](docs/structure/cbs-rendering.md)                 |
+| CBS, markdown/sanitizing, chat vars, partial edit, highlighting, display transform client and retries | [cbs-rendering](docs/structure/cbs-rendering.md)                 |
 | Regex, triggers v2, Lua editors/shared engines                                                        | [scripts-triggers](docs/structure/scripts-triggers.md)           |
 | Plugin v3 sandbox, host API, hooks, providers, plugin storage, permissions, plugin reload             | [plugin-sandbox](docs/structure/plugin-sandbox.md)               |
 | MCP client registry, remote and internal clients, RisuAccess, tool dispatch                           | [mcp](docs/structure/mcp.md)                                     |
@@ -178,7 +178,7 @@ completed plans and retrieval commands.
 | TTS, image generation, media compression, the aux-model selector, playground tools                    | [media-aux](docs/structure/media-aux.md)                         |
 | Translation: providers, the LLM translator, presets, server and stored translation, bilingual display | [translation](docs/structure/translation.md)                     |
 | Backups/upstream compatibility, Realm hub/creator blocking, settings report                           | [backup-sync-hub](docs/structure/backup-sync-hub.md)             |
-| Hono process, routes/auth, static serving, asset storage, proxies, push, Docker                       | [self-host-server](docs/structure/self-host-server.md)           |
+| Hono process, routes/auth, static serving, asset store, proxy, push, Docker, thumbnail HTTP responses | [self-host-server](docs/structure/self-host-server.md)           |
 | Server resource store, chat tables, checkpoints, snapshots, backups, file imports                     | [server-resources](docs/structure/server-resources.md)           |
 | Generation jobs, job channel, transforms, LLM and token routes                                        | [server-generation](docs/structure/server-generation.md)         |
 | Live-update feed: socket, hello, frame admission, chat entries, publication budget                    | [live-update-feed](docs/structure/live-update-feed.md)           |
