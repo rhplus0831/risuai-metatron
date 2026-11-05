@@ -560,6 +560,44 @@ describe("assemblePrompt final token recheck", () => {
         });
     });
 
+    it.each([false, true])(
+        "runs editRequest once and keeps captured card bodies before the hook (prompt text capture: %s)",
+        async (capture) => {
+            const cardBody = "Prompt card before editRequest";
+            const { host, run } = assembly([{ chatId: "m", data: "hello" }], "");
+            Object.assign(host.db, {
+                botPresets: [{ name: "Test preset" }],
+                botPresetsId: 0,
+                promptInfoInsideChat: true,
+                promptTextInfoInsideChat: capture,
+                promptTemplate: [
+                    { type: "plain", type2: "normal", role: "system", text: cardBody },
+                    { type: "chat", rangeStart: 0, rangeEnd: "end" },
+                ],
+            });
+            let counter = "0";
+            host.runEditRequest = vi.fn(async (messages: OpenAIChat[]) => {
+                counter = String(Number(counter) + 1);
+                for (const message of messages) {
+                    message.content += " [edited]";
+                }
+                return messages;
+            });
+
+            const result = await run();
+            expect(result.type).toBe("prompt");
+            if (result.type !== "prompt") throw new Error(JSON.stringify(result));
+            expect(host.runEditRequest).toHaveBeenCalledTimes(1);
+            expect(counter).toBe("1");
+            expect(result.formated).toContainEqual(
+                expect.objectContaining({ role: "system", content: `${cardBody} [edited]` }),
+            );
+            if (capture) {
+                expect(result.promptInfo.promptText).toContainEqual({ role: "system", content: cardBody });
+            }
+        },
+    );
+
     it("removes the whole trimmed message including its images and reports the returned prompt's token count", async () => {
         for (const suffix of [" {{inlay::first}} {{inlay::second}}", ""]) {
             const depth = "d".repeat(650);

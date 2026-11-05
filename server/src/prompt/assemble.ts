@@ -2493,8 +2493,8 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     }
 
     if (promptText) {
-        promptBodyformatedForChatStore = await host.runEditRequest(promptBodyformatedForChatStore);
-        host.fence();
+        // Store the card bodies before editRequest: its hooks have persistent effects and must run
+        // once per request regardless of prompt capture.
         promptInfo.promptText = promptBodyformatedForChatStore;
     }
 
