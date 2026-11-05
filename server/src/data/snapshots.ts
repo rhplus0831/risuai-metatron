@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { BackupSnapshotInfo } from "../../../shared/resources.ts";
 import { mkdirDurableSync, syncDir, syncFile } from "./durableWrite.ts";
+import { ensureFreeSpace, InsufficientStorageError, liveDatabaseBytes, type DiskStatfs } from "../http/diskSpace.ts";
 import type { ResourceStore } from "./resourceStore.ts";
 
 const DEFAULT_INTERVAL_MS = 10 * 60 * 1000;
@@ -58,13 +59,17 @@ function parseStamp(value: string): string {
  * the maintenance callback runs; resource mutations then answer 503.
  * Defaults: a ten-minute timer and the newest 20 snapshots. A periodic tick writes only when the
  * committed store.writeCount changed since the previous periodic snapshot; starting the timer alone
- * takes no initial snapshot. Explicit safety snapshots are not conditional on that count.
+ * takes no initial snapshot. A disk preflight includes main + WAL; a shortage logs once and skips
+ * without advancing the write count. Restore retention holds keep their sources listed as asset roots.
+ * Explicit safety snapshots are not conditional on that count.
  */
 export function createSnapshotManager(options: {
     store: ResourceStore;
     dir: string;
     intervalMs?: number;
     keep?: number;
+    databaseFile?: string;
+    statfs?: DiskStatfs;
 }) {
     const { store, dir } = options;
     const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
@@ -83,6 +88,8 @@ export function createSnapshotManager(options: {
     const maintenanceListeners = new Set<() => Promise<(() => void) | void>>();
     /** `store.writeCount()` covered by the last periodic snapshot (none is taken before the first write). */
     let snapshotWrites = store.writeCount();
+    let shortDiskLogged = false;
+    const retained = new Map<string, number>();
 
     /** Runs `fn` after every earlier exclusive operation has settled. */
     function exclusive<T>(fn: () => Promise<T>): Promise<T> {
@@ -120,9 +127,14 @@ export function createSnapshotManager(options: {
      * Pins the listed snapshot `id` at `target` under the lock, so retention cannot take its file from
      * a restore that works outside the lock: a hard link, or a copy across devices or where links are
      * refused (EXDEV or EPERM only). False for any id that is not a listed snapshot; the restore
-     * route in `routes/backups.ts` maps that to 404. Never call it while holding the lock.
+     * route in `routes/backups.ts` maps that to 404. beforeCopy rechecks remaining disk allocations
+     * immediately before a fallback copy. Never call it while holding the lock.
      */
-    function pin(id: string, target: string): Promise<boolean> {
+    function pin(
+        id: string,
+        target: string,
+        options: { beforeCopy?: (bytes: number) => Promise<void> } = {},
+    ): Promise<boolean> {
         return exclusive(async () => {
             const file = resolve(id);
             if (file === null) {
@@ -135,6 +147,7 @@ export function createSnapshotManager(options: {
                 if (code !== "EXDEV" && code !== "EPERM") {
                     throw error;
                 }
+                await options.beforeCopy?.((await fs.stat(file)).size);
                 await fs.copyFile(file, target);
             }
             return true;
@@ -156,8 +169,10 @@ export function createSnapshotManager(options: {
             throw error;
         }
         for (const old of list().slice(keep)) {
+            if (retained.has(old.id)) continue;
             await fs.rm(path.join(dir, `${old.id}.sqlite`), { force: true });
         }
+        shortDiskLogged = false;
         const size = (await fs.stat(path.join(dir, name))).size;
         return { id: name.slice(0, -".sqlite".length), createdAt: now.toISOString(), size };
     }
@@ -172,6 +187,22 @@ export function createSnapshotManager(options: {
             const writes = store.writeCount();
             if (stopped || writes === snapshotWrites) {
                 return;
+            }
+            if (options.databaseFile) {
+                try {
+                    await ensureFreeSpace(dir, await liveDatabaseBytes(dir, options.databaseFile), {
+                        statfs: options.statfs,
+                    });
+                } catch (error) {
+                    if (!(error instanceof InsufficientStorageError)) throw error;
+                    if (!shortDiskLogged)
+                        console.error("[Server] Resource snapshot skipped: insufficient storage", {
+                            needed: error.needed,
+                            free: error.free,
+                        });
+                    shortDiskLogged = true;
+                    return;
+                }
             }
             await takeLocked();
             snapshotWrites = writes;
@@ -230,6 +261,21 @@ export function createSnapshotManager(options: {
         list,
         resolve,
         pin,
+        /**
+         * Keeps a source listed as an asset root through a restore's staging lifetime. Acquire before
+         * pin; release after staging cleanup. Rotation skips held ids; this does not take exclusive.
+         */
+        retain(id: string): () => void {
+            retained.set(id, (retained.get(id) ?? 0) + 1);
+            let released = false;
+            return () => {
+                if (released) return;
+                released = true;
+                const count = retained.get(id)! - 1;
+                if (count) retained.set(id, count);
+                else retained.delete(id);
+            };
+        },
         exclusive,
 
         /**

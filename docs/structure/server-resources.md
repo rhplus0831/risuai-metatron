@@ -172,15 +172,13 @@ leave absence as absence (upstream reads it as now).
 
 ### Snapshots and restore
 
-- The snapshot timer runs every ten minutes and writes only after committed resource changes; it retains the newest 20
-  snapshots (`createSnapshotManager`).
-- A restore checks the epoch and takes a turn of a FIFO queue (`createRestoreQueue` in `routes/backups.ts`) that spans
-  its validation and install, so one validation worker runs at a time; a stale waiter answers 412 with no work and no
-  safety snapshot.
-- The turn pins the snapshot into a staging folder (`snapshots.pin`), [validates](#validation) it in a worker outside
-  maintenance, verifies the staged file, then under maintenance (`withMaintenance`: the snapshot lock and the
-  maintenance listeners come first, and mutations stay open until the gate closes) checks the epoch, makes a safety
-  snapshot, and [installs](#install), advancing the epoch. A client that leaves does not cancel a restore.
+- `createSnapshotManager`'s comment has the timer, retention, and disk check.
+- A restore checks the epoch and takes a turn of `createRestoreQueue` (`routes/backups.ts`; its comment) through
+  validation and install.
+- The turn retains the snapshot (`snapshots.retain`), checks free disk (507), pins it into a staging folder
+  (`snapshots.pin`), [validates](#validation) it in a worker outside maintenance, verifies the staged file, then under
+  maintenance (`withMaintenance`) checks the epoch, makes a safety snapshot, and [installs](#install), advancing the
+  epoch. A client that leaves does not cancel a restore.
 - A write admitted before the gate closes commits without moving the epoch, so the restore's check still passes: the
   write is in the safety snapshot and is replaced by the install, and the tab's next write meets the new epoch (412).
 
@@ -235,7 +233,8 @@ commits its assets, and shares one import slot with module and CharX imports.
 ### Maintenance
 
 Maintenance closes new resource and storage mutations and waits for admitted writes. Restore and backup imports use the
-maintenance gate. Jobs, transforms, and memory tasks stop for it ([job state](server-generation.md#process-memory)).
+maintenance gate; the asset sweep uses only `exclusive`. Jobs, transforms, and memory tasks stop for it
+([job state](server-generation.md#process-memory)).
 
 ## State
 
@@ -396,8 +395,8 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 
 ### Limitations
 
-- Nothing deletes assets and every listed snapshot is an [asset mark](self-host-server.md#asset-mark) root, so
-  `save/assets/` grows. Decision: [Asset Lifecycle](../plan/asset-lifecycle.md) D3.
+- Every listed snapshot is an [asset mark](self-host-server.md#asset-mark) root, so its assets stay until it rotates
+  away. Decision: [Asset Lifecycle](../plan/asset-lifecycle.md) D3.
 - The SQLite resource store assumes one server process and a local filesystem
   ([Invariants](self-host-server.md#invariants)). Network filesystems are unsupported. Decision: Server Byte Budgets Q1,
   archive.

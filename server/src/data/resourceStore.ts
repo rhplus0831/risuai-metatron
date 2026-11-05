@@ -1886,6 +1886,56 @@ export function createResourceStore(options: {
             return writeCount;
         },
 
+        /**
+         * Synchronous retention recheck on the writer's connection. Fixed schema identifiers only;
+         * needles are bound parameters, including the JSON escape superset. The lifecycle supplies
+         * only generic recognition needles; it narrows selected text in JS before parsing, avoiding
+         * per-key SQL predicates over every row's full text. Reads every checkpoint
+         * page conservatively. Missing tables/columns, invalid text, or a throwing visitor abort the
+         * caller's batch; no transaction or await separates this read from its synchronous deletes.
+         */
+        readAssetReferenceText(
+            filter: { needles: readonly string[]; lowerNeedles: readonly string[] },
+            visit: (text: string, json: boolean) => void,
+        ): void {
+            assertOpen();
+            const columns: [string, string, boolean][] = [
+                ["resources", "data", true],
+                ["chats", "meta", true],
+                ["messages", "data", true],
+                ["chatCheckpoints", "name", false],
+                ["chatCheckpoints", "preview", true],
+                ["checkpointPages", "text", true],
+            ];
+            for (const table of [
+                "memory_pages",
+                "memory_events",
+                "memory_threads",
+                "memory_runs",
+                "memory_staged_pages",
+                "memory_staged_events",
+                "memory_staged_threads",
+                "memory_staged_runs",
+            ]) {
+                columns.push([table, "data", true]);
+                if (!table.endsWith("runs")) columns.push([table, "title", false]);
+            }
+            for (const [table, column, json] of columns) {
+                const needles = [...new Set([...filter.needles, ...(json ? ["\\u", "\\/"] : [])])];
+                const lower = [...new Set(filter.lowerNeedles)];
+                const predicate =
+                    [
+                        ...needles.map(() => `instr(${column}, ?) > 0`),
+                        ...lower.map(() => `instr(lower(${column}), ?) > 0`),
+                    ].join(" OR ") || "0";
+                const query = db.prepare(`SELECT ${column} AS text FROM ${table} WHERE ${predicate}`);
+                for (const row of query.iterate(...needles, ...lower)) {
+                    if (typeof row.text !== "string") throw new Error(`Invalid reference text in ${table}.${column}`);
+                    visit(row.text, json);
+                }
+            }
+        },
+
         /** Cold checkpoint data: writes count toward snapshots without publishing chat changes. */
         checkpoints: {
             readFloor(...args: Parameters<typeof checkpointTables.readFloor>) {

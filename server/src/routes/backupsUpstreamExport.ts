@@ -1,3 +1,4 @@
+import { ensureFreeSpace, liveDatabaseBytes, type DiskStatfs } from "../http/diskSpace.ts";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -280,6 +281,7 @@ export function registerUpstreamExportRoutes(
     app: Hono<AppEnv>,
     arg: {
         savePath: string;
+        statfs?: DiskStatfs;
         store: ResourceStore;
         snapshots: SnapshotManager;
         auth: AuthStore;
@@ -304,6 +306,8 @@ export function registerUpstreamExportRoutes(
         request: UpstreamExportRequest,
         signal: AbortSignal,
     ): Promise<{ staged: StagedUpstreamExport; report: UpstreamExportReport } | null> {
+        // Database copy and encoded save remain to be allocated; 507 precedes staging creation.
+        await ensureFreeSpace(savePath, 2 * (await liveDatabaseBytes(savePath)), { statfs: arg.statfs });
         const folder = await makeStaging(tmpPath, "export-upstream");
         let kept = false;
         let hold: ExportHold | undefined;

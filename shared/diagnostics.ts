@@ -455,6 +455,7 @@ export const ROUTE_TEMPLATES = [
     "/api/assets/missing",
     "/api/assets/report",
     "/api/assets/scan",
+    "/api/assets/sweep",
     "/api/asset/*",
     "/api/chats/search",
     "/api/chat-checkpoints",

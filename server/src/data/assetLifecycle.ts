@@ -1,15 +1,26 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import { statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setImmediate as yieldImmediate } from "node:timers/promises";
-import { ASSET_GRACE_DEFAULT_DAYS, ASSET_LIST_CAP } from "../../../shared/assetLifecycle.ts";
-import type { AssetLifecycleReport, AssetOwnerKind, AssetRunIdentity } from "../../../shared/assetLifecycle.ts";
+import { ASSET_GRACE_DEFAULT_DAYS, ASSET_LEASE_MS, ASSET_LIST_CAP } from "../../../shared/assetLifecycle.ts";
+import type {
+    AssetLifecycleReport,
+    AssetOwnerKind,
+    AssetRunIdentity,
+    AssetSweepRequest,
+    AssetSweepResult,
+} from "../../../shared/assetLifecycle.ts";
 import { CHECKPOINT_MEMORY_FIELD } from "../../../shared/chatCheckpoints.ts";
 import type { BackupSnapshotInfo } from "../../../shared/resources.ts";
 import { MEMORY_RECORD_KINDS } from "../../../shared/structuredMemory.ts";
 import { UPSTREAM_EXPORT_STAGED_TTL_MS } from "../../../shared/upstreamExportReport.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
+import { assetLeased, withAssetLocks } from "../http/assetLeases.ts";
+import { assetVerification } from "../http/assetVerification.ts";
+import { resolveStorageKey } from "../routes/storage.ts";
+import type { ResourceKind } from "./kinds.ts";
 import { freeBytes, type DiskStatfs } from "../http/diskSpace.ts";
 import { listAssetFiles } from "../routes/backups.ts";
 import { createExportHolds, type ExportHolds } from "../routes/backupsUpstreamExport.ts";
@@ -19,9 +30,9 @@ import type { SnapshotManager } from "./snapshots.ts";
 import { collectUpstreamAssetReferences } from "./upstream/assetReferences.ts";
 
 /**
- * Read-only retention graph: live resource text, chat metadata/messages, all memory records, pages
+ * Retention graph and user-started fail-closed sweep: live resource text, chat metadata/messages, all memory records, pages
  * named by checkpoints (including memory manifests/chunks), every retained snapshot, export holds,
- * and young files. Inlay records retain their assets even when no root's text names their ids.
+ * recent-use leases, and young files. Inlay records retain their assets even when no root's text names their ids.
  *
  * The recognizer walks decoded JSON strings and keys, or scalar text. It keeps bounded UTF-8 tails
  * after assets/, and after valid UTF-8 prefixes of either-case hex /api/asset/ and /sw/img/ URLs.
@@ -244,7 +255,18 @@ export type AssetScanMetrics = {
     longestChunkMs: number;
     totalMs: number;
 };
+export class AssetSweepConflict extends Error {}
+export type AssetSweepMetrics = {
+    longestSynchronousTurnMs: number;
+    remarks: { kind: "full" | "narrowed"; ms: number }[];
+    batches: number;
+    totalMs: number;
+};
 export type AssetLifecycleOptions = {
+    /** Full retained rechecks are the default; a lower row cutoff permits comparison with JS narrowing. */
+    fullRemarkMaxRows?: number;
+    /** May lower the production maximum of 50, never raise it. */
+    sweepBatchSize?: number;
     wallClock?: () => number;
     monoClock?: () => number;
     clockOffsetMs?: number;
@@ -266,6 +288,8 @@ export function createAssetLifecycle(
         store: ResourceStore;
         snapshots: SnapshotManager;
         exportHolds?: ExportHolds;
+        thumbnails?: { removeKey(key: string): Promise<unknown> };
+        inlaysKind?: ResourceKind;
     },
 ) {
     const { savePath, store, snapshots } = options;
@@ -275,6 +299,9 @@ export function createAssetLifecycle(
     const monoNow = () => (options.monoClock ?? (() => performance.now()))() + offset;
     const grace = options.graceMs ?? (options.graceDays ?? ASSET_GRACE_DEFAULT_DAYS) * DAY_MS;
     const chunkSize = options.chunkSize ?? 200;
+    const sweepBatchSize = options.sweepBatchSize ?? 50;
+    if (!Number.isSafeInteger(sweepBatchSize) || sweepBatchSize < 1 || sweepBatchSize > 50)
+        throw new Error("Invalid asset sweep batch size");
     if (!Number.isSafeInteger(chunkSize) || chunkSize < 1) {
         throw new Error("Invalid asset scan chunk size");
     }
@@ -336,6 +363,12 @@ export function createAssetLifecycle(
     let timer: ReturnType<typeof setTimeout> | null = null;
     let started = false;
     let metrics: AssetScanMetrics | null = null;
+    let sweepMetrics: AssetSweepMetrics | null = null;
+    let sweepActive: Promise<AssetSweepResult> | null = null;
+    let completedMono = 0;
+    let liveSelectedRows = 0;
+    let candidates = new Map<string, { key: string; bytes: number; since: number }>();
+    let orphanCandidates = new Map<string, { since: number; bytes: number }>();
 
     function transaction(body: () => void) {
         ledger.exec("BEGIN");
@@ -684,7 +717,12 @@ export function createAssetLifecycle(
         const unreferenced: typeof files = [];
         for (const file of files) {
             const name = file.key.slice(7);
-            const live = matches(liveTails, name) || held.has(file.key) || file.mtimeMs > now - grace;
+            const fullPath = resolveStorageKey(savePath, file.key);
+            const live =
+                matches(liveTails, name) ||
+                held.has(file.key) ||
+                (fullPath !== null && assetLeased(fullPath)) ||
+                file.mtimeMs > now - grace;
             const naming = snapshotReports.filter((snapshot) => matches(indexed.get(snapshot.id)!, name));
             if (live || naming.length) {
                 referenced.add(file.key);
@@ -718,7 +756,7 @@ export function createAssetLifecycle(
         }
         const since = new Map(selectUnreferencedSince.all().map((row) => [String(row.key), Number(row.since)]));
         const orphanSince = new Map(selectOrphanSince.all().map((row) => [String(row.id), Number(row.since)]));
-        const candidates = unreferenced
+        const classifiedCandidates = unreferenced
             .filter((file) => since.has(file.key) && since.get(file.key)! + grace <= now && file.mtimeMs <= now - grace)
             .map((file) => ({ key: file.key, bytes: file.bytes, since: since.get(file.key)! }));
         for (const [id, asset] of root.inlays) {
@@ -767,6 +805,14 @@ export function createAssetLifecycle(
             bytes: asset === null ? 0 : (sizes.get(asset) ?? 0),
             since: orphanSince.get(id) ?? null,
         }));
+        if (!reasons.length) {
+            candidates = new Map(classifiedCandidates.map((item) => [item.key, item]));
+            orphanCandidates = new Map(
+                orphanRecords
+                    .filter((item) => item.since !== null && item.since + grace <= now)
+                    .map((item) => [item.id, { since: item.since!, bytes: item.bytes }]),
+            );
+        }
         return {
             generatedAt: now,
             complete: reasons.length === 0,
@@ -778,9 +824,12 @@ export function createAssetLifecycle(
             unreferenced: {
                 count: unreferenced.length,
                 bytes: unreferenced.reduce((sum, file) => sum + file.bytes, 0),
-                pastGrace: { count: candidates.length, bytes: candidates.reduce((sum, file) => sum + file.bytes, 0) },
-                candidates: candidates.slice(0, ASSET_LIST_CAP),
-                total: candidates.length,
+                pastGrace: {
+                    count: classifiedCandidates.length,
+                    bytes: classifiedCandidates.reduce((sum, file) => sum + file.bytes, 0),
+                },
+                candidates: classifiedCandidates.slice(0, ASSET_LIST_CAP),
+                total: classifiedCandidates.length,
             },
             orphanInlays: {
                 count: orphan.length,
@@ -980,15 +1029,305 @@ export function createAssetLifecycle(
             transaction(() => record(latest));
         }
         stats.totalMs = monoNow() - start;
+        if (latest.complete) {
+            completedMono = monoNow();
+            liveSelectedRows = Object.entries(stats.tables)
+                .filter(([name]) => name.startsWith("live."))
+                .reduce((sum, [, counts]) => sum + counts.selected, 0);
+        }
         return latest;
+    }
+
+    /** Recheck the writer connection with the same decoded recognizer as the asynchronous mark. */
+    function remark(keys: string[], ids: string[], full: boolean): { tails: string[]; ids: Set<string> } {
+        const tails = new Set<string>();
+        const named = new Set<string>();
+        const sink: AssetReferenceSink = { tail: (tail) => tails.add(tail), inlay: (id) => named.add(id) };
+        const prefix = (value: string) => value.split(/["\\\u0000-\u001f]/, 1)[0];
+        const needles = [...new Set([...keys.map(prefix), ...ids.map((id) => "::" + prefix(id))])];
+        const lowerNeedles = keys.flatMap((key) => {
+            const hex = Buffer.from(key, "utf8").toString("hex");
+            return ["/api/asset/" + hex, "/sw/img/" + hex];
+        });
+        store.readAssetReferenceText({ needles: NEEDLES, lowerNeedles: [] }, (text, json) => {
+            // SQL selects the same small generic superset for full and narrowed rechecks. A
+            // batch filter only saves parsing selected rows; JSON unicode/slash escapes must
+            // pass it too, since their decoded spelling can hide every literal batch needle.
+            if (
+                !full &&
+                !(json && (text.includes("\\u") || text.includes("\\/"))) &&
+                !needles.some((needle) => text.includes(needle))
+            ) {
+                const lowerText = lowerNeedles.length ? text.toLowerCase() : "";
+                if (!lowerNeedles.some((needle) => lowerText.includes(needle))) return;
+            }
+            if (!json) return recognize(text, sink);
+            const value: unknown = JSON.parse(text);
+            walkJson(value, sink);
+            // Checkpoint memory chunks serialize each row once more. Other arrays can contain
+            // prose beginning with braces/brackets; walk it again only when it is valid nested JSON.
+            if (Array.isArray(value)) {
+                for (const child of value) {
+                    if (typeof child === "string") {
+                        let nested: unknown;
+                        try {
+                            nested = JSON.parse(child);
+                        } catch {
+                            continue; // walkJson already recognized this string as plain text.
+                        }
+                        walkJson(nested, sink);
+                    }
+                }
+            }
+        });
+        return { tails: [...tails].sort(), ids: named };
+    }
+
+    /**
+     * User-started deletion, never maintenance: each batch holds exclusive, refreshes snapshot/export
+     * roots, then takes sorted key locks. Re-mark, lease/mtime checks, and unlink/store.delete have no
+     * await between them. Full results certify later batches; a narrowed result never advances baseline.
+     */
+    function sweep(request: AssetSweepRequest & { signal?: AbortSignal }): Promise<AssetSweepResult> {
+        const refuse = (message: string): never => {
+            throw new AssetSweepConflict(message);
+        };
+        if (closed) refuse("The asset lifecycle is closed");
+        if (active || sweepActive) refuse("A scan or sweep is already running");
+        if (!identity) refuse("No scan from this process");
+        if (!latest.complete) refuse("Reference set incomplete");
+        const runIdentity = identity!;
+        if (store.epoch() !== runIdentity.epoch) refuse("Store replaced since scan");
+        if (monoNow() - completedMono > ASSET_LEASE_MS) refuse("Scan is older than one hour");
+        if (monoNow() < ASSET_LEASE_MS) refuse("Process has not been up for one hour");
+        const internal = (controller = new AbortController()).signal;
+        const signal = request.signal ? AbortSignal.any([internal, request.signal]) : internal;
+        const result: AssetSweepResult = {
+            deleted: [],
+            freedBytes: 0,
+            removedInlays: [],
+            skipped: [],
+            skippedInlays: [],
+        };
+        const stats: AssetSweepMetrics = { longestSynchronousTurnMs: 0, remarks: [], batches: 0, totalMs: 0 };
+        sweepMetrics = stats;
+        const start = monoNow();
+        let baseline = runIdentity.writeCount;
+        let fullRoots: ReturnType<typeof remark> | null = null;
+        let stopReason: string | null = null;
+        const deadline = monoNow() + (options.exportWaitMs ?? UPSTREAM_EXPORT_STAGED_TTL_MS);
+        const keys = [...new Set(request.keys ?? candidates.keys())];
+        const ids = [...new Set(request.inlays ?? [])];
+        const skip = (keys: string[], ids: string[], reason: string) => {
+            result.skipped.push(...keys.map((key) => ({ key, reason })));
+            result.skippedInlays.push(...ids.map((id) => ({ id, reason })));
+        };
+        async function batch(keys: string[], ids: string[]) {
+            signal.throwIfAborted();
+            stats.batches++;
+            await snapshots.exclusive(async () => {
+                signal.throwIfAborted();
+                if (store.epoch() !== runIdentity.epoch) stopReason = "store replaced";
+                if (stopReason) return skip(keys, ids, stopReason);
+                let snapshotTails: string[];
+                const snapshotIds = new Set<string>();
+                try {
+                    const tails = new Set<string>();
+                    for (const snapshot of snapshots.list()) {
+                        if (!selectSnapshotIndex.get(snapshot.id)) {
+                            const file = snapshots.resolve(snapshot.id);
+                            if (!file) throw new Error(`snapshot ${snapshot.id} unreadable`);
+                            const reasons: string[] = [];
+                            const scanStats: AssetScanMetrics = {
+                                tables: {},
+                                liveScanMs: 0,
+                                snapshotIndexMs: 0,
+                                longestChunkMs: 0,
+                                totalMs: 0,
+                            };
+                            const root = await readRoots(file, snapshot.id, signal, reasons, scanStats);
+                            if (reasons.length)
+                                throw new Error(`snapshot ${snapshot.id} unreadable: ${reasons.join("; ")}`);
+                            transaction(() => {
+                                for (const tail of root.tails) insertSnapshotReference.run(snapshot.id, tail);
+                                for (const id of root.ids) insertSnapshotInlay.run(snapshot.id, id);
+                                insertSnapshotIndex.run(snapshot.id, wallNow());
+                            });
+                        }
+                        for (const row of selectSnapshotReferences.all(snapshot.id)) tails.add(String(row.tail));
+                        for (const row of selectSnapshotInlays.all(snapshot.id)) snapshotIds.add(String(row.id));
+                    }
+                    snapshotTails = [...tails].sort();
+                } catch (error) {
+                    signal.throwIfAborted();
+                    return skip(keys, ids, `snapshot recheck failed: ${String(error)}`);
+                }
+                if (!(await holds.keySetsSettled(Math.max(0, deadline - monoNow()), signal))) {
+                    stopReason = "export key set pending";
+                    return skip(keys, ids, stopReason);
+                }
+                const deleted: { key: string; fullPath: string; bytes: number }[] = [];
+                const removed: string[] = [];
+                await withAssetLocks(
+                    keys.flatMap((key) => {
+                        const file = resolveStorageKey(savePath, key);
+                        return file ? [file] : [];
+                    }),
+                    () => {
+                        const turnStart = monoNow();
+                        try {
+                            signal.throwIfAborted();
+                            if (store.epoch() !== runIdentity.epoch) {
+                                stopReason = "store replaced";
+                                return skip(keys, ids, stopReason);
+                            }
+                            if (holds.hasPending()) return skip(keys, ids, "export key set pending");
+                            let live = fullRoots;
+                            if (store.writeCount() !== baseline) {
+                                const full = liveSelectedRows <= (options.fullRemarkMaxRows ?? Infinity);
+                                const remarkStart = monoNow();
+                                try {
+                                    live = remark(keys, ids, full);
+                                    if (full) {
+                                        fullRoots = live;
+                                        baseline = store.writeCount();
+                                    }
+                                } catch (error) {
+                                    return skip(keys, ids, `re-mark failed: ${String(error)}`);
+                                } finally {
+                                    stats.remarks.push({
+                                        kind: full ? "full" : "narrowed",
+                                        ms: monoNow() - remarkStart,
+                                    });
+                                }
+                            }
+                            const held = new Set([...holds.heldAssetKeys()].map(normalizedKey));
+                            for (const key of keys) {
+                                let reason: string | undefined;
+                                const file = resolveStorageKey(savePath, key);
+                                if (!candidates.has(key) || !file) reason = "not a candidate";
+                                else if (matches(snapshotTails, key.slice(7))) reason = "named by snapshot";
+                                else if (live && matches(live.tails, key.slice(7))) reason = "referenced";
+                                else if (held.has(key)) reason = "held by export";
+                                else if (assetLeased(file)) reason = "leased";
+                                else {
+                                    try {
+                                        const stat = statSync(file);
+                                        if (!stat.isFile()) reason = "not a regular file";
+                                        else if (stat.mtimeMs > wallNow() - grace) reason = "young";
+                                        else {
+                                            if (!request.dryRun) unlinkSync(file);
+                                            deleted.push({ key, fullPath: file, bytes: stat.size });
+                                        }
+                                    } catch (error) {
+                                        reason =
+                                            (error as NodeJS.ErrnoException).code === "ENOENT" ? "gone" : String(error);
+                                    }
+                                }
+                                if (reason) result.skipped.push({ key, reason });
+                            }
+                            const eligible: string[] = [];
+                            for (const id of ids) {
+                                let reason: string | undefined;
+                                if (!orphanCandidates.has(id)) reason = "not an orphan past the grace";
+                                else if (snapshotIds.has(id)) reason = "named by snapshot";
+                                else if (live?.ids.has(id)) reason = "referenced";
+                                else if (!options.inlaysKind) reason = "inlay kind unavailable";
+                                if (reason) result.skippedInlays.push({ id, reason });
+                                else eligible.push(id);
+                            }
+                            // Defer feed publication until every inlay decision is applied. Subscriber writes
+                            // then advance writeCount normally; they must never be hidden by a new baseline.
+                            if (eligible.length) {
+                                const committed: string[] = [];
+                                try {
+                                    store.transaction(() => {
+                                        for (const id of eligible) {
+                                            const record = store.get(options.inlaysKind!, id);
+                                            if (!record) result.skippedInlays.push({ id, reason: "gone" });
+                                            else {
+                                                if (!request.dryRun)
+                                                    store.delete(options.inlaysKind!, id, record.revision);
+                                                committed.push(id);
+                                            }
+                                        }
+                                    });
+                                    removed.push(...committed);
+                                } catch (error) {
+                                    skip([], eligible, String(error));
+                                }
+                            }
+                        } finally {
+                            stats.longestSynchronousTurnMs = Math.max(
+                                stats.longestSynchronousTurnMs,
+                                monoNow() - turnStart,
+                            );
+                        }
+                    },
+                    signal,
+                );
+                result.deleted.push(...deleted.map((item) => item.key));
+                result.freedBytes += deleted.reduce((sum, item) => sum + item.bytes, 0);
+                result.removedInlays.push(...removed);
+                if (request.dryRun) return;
+                // Only completed deletions reach cleanup. Cleanup failures cannot recast an unlink as a skip.
+                for (const { key, fullPath } of deleted) {
+                    assetVerification.forgetVerification(fullPath);
+                    const candidate = candidates.get(key)!;
+                    deleteUnreferenced.run(key);
+                    candidates.delete(key);
+                    latest.usage.assetsOnDisk = Math.max(0, latest.usage.assetsOnDisk - candidate.bytes);
+                    latest.unreferenced.count--;
+                    latest.unreferenced.bytes -= candidate.bytes;
+                    latest.unreferenced.pastGrace.count--;
+                    latest.unreferenced.pastGrace.bytes -= candidate.bytes;
+                    latest.unreferenced.total--;
+                    latest.unreferenced.candidates = [...candidates.values()].slice(0, ASSET_LIST_CAP);
+                    try {
+                        await options.thumbnails?.removeKey(key);
+                    } catch (error) {
+                        console.error("[Server] Asset thumbnail cleanup failed:", error);
+                    }
+                }
+                for (const id of removed) {
+                    deleteOrphanInlay.run(id);
+                    const bytes = orphanCandidates.get(id)!.bytes;
+                    orphanCandidates.delete(id);
+                    latest.orphanInlays.count--;
+                    latest.orphanInlays.total--;
+                    latest.orphanInlays.bytes -= bytes;
+                    latest.orphanInlays.records = latest.orphanInlays.records.filter((item) => item.id !== id);
+                }
+            });
+        }
+        sweepActive = Promise.resolve()
+            .then(async () => {
+                // Resolved promises alone do not yield to socket I/O. Even skip-only/dry batches
+                // must let queued record writes run before the next recheck, outside every lock.
+                for (let i = 0; i < keys.length; i += sweepBatchSize) {
+                    if (stats.batches) await yieldImmediate(undefined, { signal });
+                    await batch(keys.slice(i, i + sweepBatchSize), []);
+                }
+                for (let i = 0; i < ids.length; i += sweepBatchSize) {
+                    if (stats.batches) await yieldImmediate(undefined, { signal });
+                    await batch([], ids.slice(i, i + sweepBatchSize));
+                }
+                return result;
+            })
+            .finally(() => {
+                stats.totalMs = monoNow() - start;
+                sweepActive = null;
+                controller = null;
+            });
+        return sweepActive;
     }
 
     function scan(): Promise<AssetLifecycleReport> {
         if (closed) {
             return Promise.reject(new Error("The asset lifecycle is closed"));
         }
-        if (active) {
-            return Promise.reject(new Error("A scan is already running"));
+        if (active || sweepActive) {
+            return Promise.reject(new Error("A scan or sweep is already running"));
         }
         const signal = (controller = new AbortController()).signal;
         identity = { runId: ++runId, epoch: store.epoch(), writeCount: store.writeCount() };
@@ -1003,7 +1342,7 @@ export function createAssetLifecycle(
         return active;
     }
     async function tick() {
-        if (closed || active || snapshots.gate.active) {
+        if (closed || active || sweepActive || snapshots.gate.active) {
             return;
         }
         try {
@@ -1048,16 +1387,20 @@ export function createAssetLifecycle(
         get metrics() {
             return metrics;
         },
+        get sweepMetrics() {
+            return sweepMetrics;
+        },
         get running() {
-            return active !== null;
+            return active !== null || sweepActive !== null;
         },
         get closed() {
             return closed;
         },
         report(): AssetLifecycleReport {
-            return { ...latest, running: active !== null };
+            return { ...latest, running: active !== null || sweepActive !== null };
         },
         scan,
+        sweep,
         start() {
             if (!started && !closed) {
                 started = true;
@@ -1069,7 +1412,7 @@ export function createAssetLifecycle(
             beginShutdown();
             closing ??= (async () => {
                 try {
-                    await active;
+                    await Promise.allSettled([active, sweepActive]);
                 } finally {
                     ledger.close();
                 }

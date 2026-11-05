@@ -7,6 +7,7 @@ import {
     ASSET_GRACE_MIN_DAYS,
     ASSET_REPORT_PATH,
     ASSET_SCAN_PATH,
+    ASSET_SWEEP_PATH,
 } from "../../shared/assetLifecycle.ts";
 import { resolveCredential } from "./llm/credentials.ts";
 import { readFileSync } from "node:fs";
@@ -331,6 +332,8 @@ export function createServerContext(options: {
             })) ?? [],
     });
     const snapshots = createSnapshotManager({
+        databaseFile: path.join(savePath, "data", "resources.sqlite"),
+        statfs: options.assetLifecycle?.statfs,
         store: resources,
         dir: path.join(savePath, "backups"),
         intervalMs: options.snapshotIntervalMs,
@@ -426,6 +429,8 @@ export function createServerContext(options: {
         store: resources,
         snapshots,
         exportHolds: upstreamExportStaging,
+        thumbnails,
+        inlaysKind: resourceKinds.get(RESOURCE_KIND.inlays),
         graceDays,
         clockOffsetMs,
     });
@@ -715,7 +720,10 @@ export function createServerContext(options: {
             c.req.path.startsWith(`${REQUEST_HISTORY_PATH}/`) ||
             c.req.path.replace(/\/+$/, "") === DIAGNOSTICS_PATH ||
             c.req.path.startsWith(`${DIAGNOSTICS_PATH}/`);
-        const assetLifecycleRoute = fileImportRoute === ASSET_REPORT_PATH || fileImportRoute === ASSET_SCAN_PATH;
+        const assetLifecycleRoute =
+            fileImportRoute === ASSET_REPORT_PATH ||
+            fileImportRoute === ASSET_SCAN_PATH ||
+            fileImportRoute === ASSET_SWEEP_PATH;
         const tokenRoute = fileImportRoute === TOKEN_COUNT_PATH || fileImportRoute === TOKEN_ENCODE_PATH;
         // The login, the password set, and the subscription writes end in a durable write that dispose
         // must wait for, so they are refused and tracked like resource handlers.
@@ -992,6 +1000,7 @@ export function createServerContext(options: {
     );
     registerAssetLifecycleRoutes(app, { auth, limiter: storageRouteLimiter.middleware, lifecycle: assetLifecycle });
     registerBackupRoutes(app, {
+        statfs: options.assetLifecycle?.statfs,
         exportHolds: upstreamExportStaging,
         savePath,
         store: resources,
@@ -1013,6 +1022,7 @@ export function createServerContext(options: {
         DEFAULT_MAX_UPSTREAM_DB_BYTES,
     );
     registerUpstreamImportRoutes(app, {
+        statfs: options.assetLifecycle?.statfs,
         savePath,
         store: resources,
         snapshots,
@@ -1032,6 +1042,7 @@ export function createServerContext(options: {
     });
     // Reads one copy of the store and writes nothing live, so it takes no import slot.
     registerUpstreamExportRoutes(app, {
+        statfs: options.assetLifecycle?.statfs,
         savePath,
         store: resources,
         snapshots,

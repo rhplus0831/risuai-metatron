@@ -22,6 +22,7 @@ import type { RestoreRunner } from "../data/restore/validateRunner.ts";
 import { MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 import { assetVerification, contentNameHash, hashAssetFile, holdsVerifiedAsset } from "../http/assetVerification.ts";
+import { ensureFreeSpace, InsufficientStorageError, liveDatabaseBytes, type DiskStatfs } from "../http/diskSpace.ts";
 import { readJsonBody } from "../http/body.ts";
 import { createImportSlot, type ImportSlot } from "../http/fileImport.ts";
 import { fileRecord, iteratorStream } from "../http/recordStream.ts";
@@ -85,6 +86,7 @@ export function registerBackupRoutes(
     app: Hono<AppEnv>,
     arg: {
         savePath: string;
+        statfs?: DiskStatfs;
         store: ResourceStore;
         snapshots: SnapshotManager;
         auth: AuthStore;
@@ -130,7 +132,9 @@ export function registerBackupRoutes(
      * POST with x-resource-epoch; the request body is never read. Validates the pinned snapshot in
      * a worker before maintenance, then takes a safety snapshot and replaces all resources → { epoch }.
      * 404 unknown id, 400 refused snapshot, 412 stale epoch, 503 with Retry-After: 5 on shutdown.
-     * Client disconnect does not cancel this operation; restoreSignal does until installation starts.
+     * 507 when remaining allocations (including a fallback source copy) exceed available disk space.
+     * The source stays retained through staging cleanup. Client disconnect does not cancel this operation;
+     * restoreSignal does until installation starts.
      */
     app.post("/api/backups/:id/restore", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
@@ -158,11 +162,33 @@ export function registerBackupRoutes(
         // Again at the turn: a restore queued behind another one is stale, and nothing of it (a worker,
         // a safety snapshot) should run.
         store.assertEpoch(expectedEpoch);
-        const staging = await makeStaging(tmpPath, "restore");
+        const release = snapshots.retain(id);
+        let staging: string | null = null;
         try {
+            const info = snapshots.list().find((item) => item.id === id);
+            if (info) {
+                const estimate = 2 * info.size + (await liveDatabaseBytes(savePath));
+                await ensureFreeSpace(savePath, estimate, { statfs: arg.statfs });
+            }
+            // Unknown ids still queue at pin behind maintenance, preserving restore admission order.
+            staging = await makeStaging(tmpPath, "restore");
             const source = path.join(staging, "source.sqlite");
-            if (!(await snapshots.pin(id, source))) {
+            if (
+                !(await snapshots.pin(id, source, {
+                    beforeCopy: async (bytes) =>
+                        ensureFreeSpace(savePath, 3 * bytes + (await liveDatabaseBytes(savePath)), {
+                            statfs: arg.statfs,
+                        }),
+                }))
+            ) {
                 return null;
+            }
+            if (!info) {
+                await ensureFreeSpace(
+                    savePath,
+                    2 * (await fs.stat(source)).size + (await liveDatabaseBytes(savePath)),
+                    { statfs: arg.statfs },
+                );
             }
             const stagedFile = path.join(staging, STAGED_STORE_FILE);
             const stagedReport = await restoreRunner(
@@ -189,7 +215,8 @@ export function registerBackupRoutes(
                 return epoch;
             });
         } finally {
-            await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+            if (staging) await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+            release();
         }
     }
 
@@ -398,6 +425,7 @@ export function registerBackupRoutes(
      * Adds missing assets and repairs content-named files by restoreValidated's verified-byte rule.
      * Returns { epoch, assetsWritten, assetsSkipped }; 400 refused archive/store or missing body,
      * 409 another import, 412 stale epoch, 413 cap exceeded, 503 shutdown before admission.
+     * Disk preflights before spooling and extraction answer 507 with needed/free bytes.
      */
     app.post(BACKUP_IMPORT_PATH, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
@@ -439,6 +467,14 @@ export function registerBackupRoutes(
         let staging: string | null = null;
         let handle: FileHandle | null = null;
         try {
+            const declaredLength = c.req.header("content-length");
+            if (
+                declaredLength !== undefined &&
+                Number.isFinite(Number(declaredLength)) &&
+                Number(declaredLength) >= 0
+            ) {
+                await ensureFreeSpace(savePath, Number(declaredLength), { statfs: arg.statfs });
+            }
             staging = await makeStaging(tmpPath, "import");
             const archiveFile = path.join(staging, "archive.bin");
             if (!(await spool(body, archiveFile, maxImportBytes))) {
@@ -446,6 +482,14 @@ export function registerBackupRoutes(
             }
             handle = await fs.open(archiveFile, "r");
             const plan = await planImport(handle, savePath, maxArchiveRecords);
+            // Supplied assets may need repair even when their paths exist; include every staged record.
+            await ensureFreeSpace(
+                savePath,
+                3 * plan.database.length +
+                    (await liveDatabaseBytes(savePath)) +
+                    plan.assets.reduce((sum, item) => sum + item.record.length, 0),
+                { statfs: arg.statfs },
+            );
             const databaseFile = path.join(staging, "resources.sqlite");
             await copyRecordToFile(handle, plan.database, databaseFile);
             const stagedFile = path.join(staging, STAGED_STORE_FILE);
@@ -724,8 +768,11 @@ async function planImport(handle: FileHandle, savePath: string, maxRecords?: num
     return { database, assets };
 }
 
-/** The answer to a backup route's error: maintenance 503, epoch 412, a refused archive or snapshot 400; anything else is thrown. */
+/** The answer to a backup route's error: space shortage 507, maintenance 503, epoch 412, a refused archive or snapshot 400; anything else is thrown. */
 export function backupErrorResponse(c: Context<AppEnv>, error: unknown): Response {
+    if (error instanceof InsufficientStorageError) {
+        return c.json({ error: "Insufficient Storage", needed: error.needed, free: error.free }, 507);
+    }
     if (error instanceof MaintenanceError) {
         c.header("Retry-After", "5");
         return c.json({ error: error.message }, 503);

@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { diskNeeded, diskWithFree, liveBytes, matureSweep, seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 import { DatabaseSync } from "node:sqlite";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import sharp from "sharp";
@@ -1912,16 +1913,11 @@ it("retains version-2 export assets from the database copy through the end of it
     const now = Date.UTC(2030, 0, 20);
     const s = await defaultServer({ assetLifecycle: { wallClock: () => now, monoClock: () => 0, exportWaitMs: 4321 } });
     const revision = await s.create("characters", "a", character("a", { image: "assets/export-only" }));
-    expect(
-        (
-            await s.request("/api/write", {
-                method: "POST",
-                headers: { "file-path": hex("assets/export-only") },
-                body: "export bytes",
-            })
-        ).status,
-    ).toBe(200);
-    await fs.utimes(resolveStorageKey(s.savePath, "assets/export-only")!, 0, 0);
+    // Placed on disk, not uploaded: an upload's one-hour lease would keep the key past the export.
+    const file = resolveStorageKey(s.savePath, "assets/export-only")!;
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, "export bytes");
+    await fs.utimes(file, 0, 0);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const copied = defer();
     const resume = defer();
@@ -1966,6 +1962,177 @@ it("retains version-2 export assets from the database copy through the end of it
     } finally {
         resume.resolve();
         response ??= await request;
+        if (!response.bodyUsed) await response.body?.cancel();
+    }
+});
+
+it.each(["initial", "fallback copy"])(
+    "preflights restore %s including the live safety snapshot before allocating",
+    async (step) => {
+        let free = Number.MAX_SAFE_INTEGER;
+        const s = await defaultServer({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+        const snapshot = await s.context.snapshots.snapshotNow();
+        await s.create("characters", "large-live", { chaId: "large-live", desc: "x".repeat(1024 * 1024) });
+        const live = liveBytes(s.savePath);
+        expect(live).toBeGreaterThan(snapshot.size);
+        free = step === "initial" ? diskNeeded(2 * snapshot.size) : diskNeeded(2 * snapshot.size + live);
+        const allocations: string[] = [];
+        const mkdir = fs.mkdir;
+        vi.spyOn(fs, "mkdir").mockImplementation(async (...args) => {
+            allocations.push(String(args[0]));
+            return mkdir(...args);
+        });
+        const copy = vi.spyOn(fs, "copyFile");
+        const link = vi.spyOn(fs, "link");
+        if (step === "fallback copy")
+            link.mockRejectedValue(Object.assign(new Error("cross-device"), { code: "EXDEV" }));
+        const response = await restore(s, snapshot.id);
+        expect(response.status).toBe(507);
+        expect(await response.json()).toEqual({
+            error: "Insufficient Storage",
+            needed: diskNeeded((step === "initial" ? 2 : 3) * snapshot.size + live),
+            free,
+        });
+        expect(copy).not.toHaveBeenCalled();
+        if (step === "initial") {
+            expect(link).not.toHaveBeenCalled();
+            expect(allocations).toEqual([]);
+        }
+        expect(readdirSync(tmpDir(s))).toEqual([]);
+        expect((await listBackups(s)).map((x) => x.id)).toEqual([snapshot.id]);
+        expect((await s.get("characters", "large-live")).status).toBe(200);
+    },
+);
+
+it.each(["declared upload", "database extraction"])("preflights version-2 import before %s writes", async (step) => {
+    let free = Number.MAX_SAFE_INTEGER;
+    const s = await defaultServer({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+    const database = await databaseBytes(s);
+    const bytes = archiveOf(database, { "assets/new": "asset" });
+    const live = liveBytes(s.savePath);
+    // The second shortage covers staging + install + safety + assets, but not source extraction.
+    free =
+        step === "declared upload" ? diskNeeded(bytes.byteLength) - 1 : diskNeeded(2 * database.byteLength + live + 5);
+    const outputs: string[] = [];
+    const open = fs.open;
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+        if (String(args[1]).includes("w")) outputs.push(String(args[0]));
+        return open(...args);
+    });
+    const response = await s.request("/api/backups/import", {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream", "content-length": String(bytes.byteLength) },
+        body: bytes as RequestInit["body"],
+    });
+    expect(response.status).toBe(507);
+    expect(await response.json()).toEqual({
+        error: "Insufficient Storage",
+        needed: diskNeeded(step === "declared upload" ? bytes.byteLength : 3 * database.byteLength + live + 5),
+        free,
+    });
+    expect(outputs.map((x) => path.basename(x))).toEqual(step === "declared upload" ? [] : ["archive.bin"]);
+    expect(readdirSync(tmpDir(s))).toEqual([]);
+    expect(assetFiles(s)).toEqual([]);
+});
+
+it("retains the restore source as a listed root through rotation and staging cleanup", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2030-01-01"));
+    const held = defer();
+    const resume = defer();
+    const runner = testRestoreRunner();
+    const s = await defaultServer({
+        restore: {
+            runner: async (input, options) => {
+                held.resolve();
+                await resume.promise;
+                return runner(input, options);
+            },
+        },
+    });
+    const source = await s.context.snapshots.snapshotNow();
+    const restoring = restore(s, source.id);
+    try {
+        await held.promise;
+        for (let i = 1; i <= 21; i++) {
+            vi.setSystemTime(Date.UTC(2030, 0, 1, 0, 0, i));
+            await s.context.snapshots.snapshotNow();
+        }
+        expect((await listBackups(s)).map((x) => x.id)).toContain(source.id);
+        const rm = fs.rm;
+        let cleanupSawRoot = false;
+        vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+            if (String(args[0]).includes("/restore-") && args[1]?.recursive)
+                cleanupSawRoot = s.context.snapshots.list().some((x) => x.id === source.id);
+            return rm(...args);
+        });
+        resume.resolve();
+        expect((await restoring).status).toBe(200);
+        expect(cleanupSawRoot).toBe(true);
+        vi.setSystemTime(new Date("2030-01-02"));
+        await s.context.snapshots.snapshotNow();
+        expect(s.context.snapshots.list().map((x) => x.id)).not.toContain(source.id);
+    } finally {
+        resume.resolve();
+        await restoring;
+    }
+});
+
+it("holds a version-2 export candidate from its copied database until stream finalization", async () => {
+    const clock = sweepClock();
+    const s = await defaultServer({ assetLifecycle: { ...clock.options, exportWaitMs: 4321 } });
+    const key = "assets/version-two-held";
+    seedSweepAsset(s, key, "version two bytes");
+    await matureSweep(s, clock);
+    const revision = await s.create("characters", "held", character("held", { image: key }));
+    const entered = defer(),
+        resume = defer(),
+        waiting = defer();
+    const stat = fs.stat;
+    vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+        if (String(args[0]).includes("/export-") && String(args[0]).endsWith("resources.sqlite")) {
+            entered.resolve();
+            await resume.promise;
+        }
+        return stat(...args);
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const timeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: (...args: unknown[]) => void,
+        delay?: number,
+        ...args: unknown[]
+    ) => {
+        const handle = timeout(callback, delay, ...args);
+        if (delay === 4321) waiting.resolve();
+        return handle;
+    }) as typeof setTimeout);
+    const exporting = s.json("/api/backups/export", { partial: true });
+    let response: Response | undefined;
+    let sweeping: ReturnType<typeof s.context.assetLifecycle.sweep> | undefined;
+    try {
+        await entered.promise;
+        expect((await s.put("characters", "held", { baseRevision: revision, data: character("held") })).status).toBe(
+            200,
+        );
+        sweeping = s.context.assetLifecycle.sweep({ dryRun: false });
+        expect(await Promise.race([waiting.promise.then(() => "waiting"), sweeping.then(() => "deleted early")])).toBe(
+            "waiting",
+        );
+        resume.resolve();
+        response = await exporting;
+        expect(await sweeping).toMatchObject({ deleted: [], skipped: [{ key, reason: "held by export" }] });
+        expect((await s.context.assetLifecycle.sweep({ dryRun: false })).deleted).toEqual([]);
+        expect(
+            parseArchive(new Uint8Array(await response.arrayBuffer()))
+                .find((r) => r.name === key)
+                ?.data.toString(),
+        ).toBe("version two bytes");
+        expect((await s.context.assetLifecycle.sweep({ dryRun: false })).deleted).toEqual([key]);
+    } finally {
+        resume.resolve();
+        await sweeping;
+        response ??= await exporting;
         if (!response.bodyUsed) await response.body?.cancel();
     }
 });

@@ -27,6 +27,10 @@ export const languageEnglish = {
         unknownModel: "Error: Unknown model selected",
         httpError: "Error: error in request:",
         noData: "The file is invalid, or it's data is corrupted.",
+        cardAssetsUnavailable:
+            "The card's assets could not be verified or restored. Import the card again; no character was added.",
+        assetReloadChanged: "An asset changed while it was being imported. Please import it again.",
+        assetClaimsExpired: "The final asset check took too long. Please import again before saving the record.",
         importTargetGone: "The character was deleted before the chat could be imported.",
         onlyOneChat: "There must be least one chat",
         alreadyCharInGroup: "There is already a character with the same name in the group.",

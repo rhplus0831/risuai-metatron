@@ -18,14 +18,14 @@ import {
     readKinds,
 } from "../../storage/resourceClient";
 import { authFetch } from "../../storage/serverAuth";
-import { readAsset, writeAsset } from "../../storage/assetClient";
+import { missingAssets, readAsset, writeAsset } from "../../storage/assetClient";
 
 /**
  * Inlays (media and signatures referenced from chat text as `{{inlay::id}}`, `{{inlayed::id}}`, or
  * `{{inlayeddata::id}}`) live on the server: metadata in the `inlays` resource (id = inlay id), media
  * bytes in the `assets` namespace under a content-hash name, so writing the same bytes twice (Lua
- * `getCharacterImageMain` on every call) stores one file. Committed blobs are never deleted here:
- * retained server snapshots may still reference them.
+ * `getCharacterImageMain` on every call) stores one file. Blobs are deleted by the server sweep only
+ * once unreferenced past the grace period, never here. A cache hit must claim server presence again.
  */
 
 export type InlayAsset = {
@@ -321,7 +321,16 @@ async function storeMedia(
 ): Promise<string> {
     const key = await mediaKey(bytes, ext);
     check?.();
-    if (!blobCache.has(key)) {
+    let upload = !blobCache.has(key);
+    if (!upload) {
+        try {
+            upload = (await missingAssets([key])).has(key);
+        } catch {
+            upload = true;
+        }
+        check?.();
+    }
+    if (upload) {
         await writeAsset(key, bytes);
         cacheBlob(key, new Blob([asBuffer(bytes)], { type: mimeOf({ ...meta, asset: key }) }));
     }
@@ -629,7 +638,7 @@ async function storeInlayAsset(id: string, img: InlayAsset) {
     await writeMedia(id, bytes, meta);
 }
 
-/** Deletes an inlay's metadata. Its media file stays (snapshots may reference it). */
+/** Deletes metadata only. The server sweep deletes blobs once unreferenced past the grace period, never here. */
 export function removeInlayAsset(id: string) {
     return serialize(id, async () => {
         for (let attempt = 0; attempt < 2; attempt += 1) {

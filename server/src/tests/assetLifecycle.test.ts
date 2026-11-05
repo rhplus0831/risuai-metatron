@@ -1,6 +1,10 @@
 // @vitest-environment node
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
+import syncFs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { createResourceTestClient } from "./testSupport.ts";
+import { matureSweep, seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -28,6 +32,7 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
     vi.restoreAllMocks();
+    syncBuiltinESMExports();
     vi.useRealTimers();
 });
 
@@ -45,6 +50,7 @@ function fixture(options: AssetLifecycleOptions = {}) {
             store,
             snapshots,
             exportHolds: holds,
+            inlaysKind: kinds.get("inlays"),
             wallClock: () => now,
             monoClock: () => now,
             statfs: async () => ({ bavail: 3, bsize: 1024, blocks: 8 }),
@@ -520,4 +526,273 @@ it("reports available and total statfs bytes and returns null when statfs fails"
             },
         }),
     ).toBeNull();
+});
+
+async function mature(f: ReturnType<typeof fixture>) {
+    expect((await f.lifecycle.scan()).complete).toBe(true);
+    f.setNow(NOW + 7 * DAY);
+    expect((await f.lifecycle.scan()).complete).toBe(true);
+}
+
+it.each(["narrowed", "full"] as const)(
+    "keeps the 51st candidate named after the mark across %s batch rechecks",
+    async (mode) => {
+        const f = fixture({ fullRemarkMaxRows: mode === "narrowed" ? -1 : Infinity });
+        const keys = Array.from({ length: 51 }, (_, i) => `assets/batch-${String(i).padStart(2, "0")}`);
+        for (const key of keys) f.asset(key);
+        f.chat();
+        await mature(f);
+        f.store.applyChanges({
+            chats: [
+                {
+                    characterId: "alice",
+                    chatId: "chat",
+                    baseRevision: f.store.chatRevision("alice", "chat"),
+                    ops: [{ op: "meta", set: { note: keys[50] } }],
+                },
+            ],
+        });
+        const result = await f.lifecycle.sweep({ dryRun: false });
+        expect(result.deleted).toEqual(keys.slice(0, 50));
+        expect(result.skipped).toEqual([{ key: keys[50], reason: "referenced" }]);
+        expect(readFileSync(resolveStorageKey(f.dir, keys[50])!, "utf8")).toBe("A");
+        expect(f.lifecycle.sweepMetrics).toMatchObject({
+            batches: 2,
+            remarks: mode === "full" ? [{ kind: "full" }] : [{ kind: "narrowed" }, { kind: "narrowed" }],
+        });
+    },
+);
+
+it.each([
+    ["longer tail", "assets/tail", "assets/tail.png?revision=2"],
+    ["API hex", "assets/api", `/api/asset/${Buffer.from("assets/api").toString("hex")}abcd`],
+    ["service worker hex", "assets/sw", `/sw/img/${Buffer.from("assets/sw").toString("hex")}`],
+    ["uppercase hex", "assets/upper", `/api/asset/${Buffer.from("assets/upper").toString("hex").toUpperCase()}`],
+    ["quote", 'assets/a"b', 'assets/a"b'],
+    ["backslash", "assets/a\\b", "assets/a\\b"],
+    ["newline", "assets/a\nb", "assets/a\nb"],
+])("keeps a post-mark reference spelled only as %s in a narrowed recheck", async (_name, key, text) => {
+    const f = fixture({ fullRemarkMaxRows: -1 });
+    const file = f.asset(key);
+    await mature(f);
+    f.put("pluginStorage", "main", { text });
+    expect(await f.lifecycle.sweep({ dryRun: false })).toMatchObject({
+        deleted: [],
+        skipped: [{ key, reason: "referenced" }],
+    });
+    expect(readFileSync(file, "utf8")).toBe("A");
+});
+
+it("indexes a snapshot created after the mark inside the batch", async () => {
+    const f = fixture();
+    const key = "assets/snapshot-only";
+    const file = f.asset(key);
+    await mature(f);
+    f.put("pluginStorage", "main", { key });
+    await f.snapshots.snapshotNow();
+    f.put("pluginStorage", "main", {});
+    expect(await f.lifecycle.sweep({ dryRun: false })).toMatchObject({
+        deleted: [],
+        skipped: [{ key, reason: "named by snapshot" }],
+    });
+    expect(readFileSync(file, "utf8")).toBe("A");
+});
+
+it("admits a chat write queued by the synchronous delete turn and protects its next-batch key", async () => {
+    const clock = sweepClock();
+    const s = await createResourceTestClient({ assetLifecycle: { ...clock.options, sweepBatchSize: 1 } });
+    cleanups.push(() => s.close());
+    const keys = ["assets/first", "assets/later"];
+    for (const key of keys) seedSweepAsset(s, key);
+    await s.create("characters", "alice", { chaId: "alice" });
+    const initial = await s.json("/api/resources/batch", {
+        chats: [
+            {
+                characterId: "alice",
+                chatId: "chat",
+                baseRevision: null,
+                ops: [{ op: "create", chat: { message: [] } }],
+            },
+        ],
+    });
+    expect(initial.status).toBe(200);
+    const revisions = (await (await s.request("/api/resources/revisions")).json()) as { chats: { revision: string }[] };
+    await matureSweep(s, clock);
+    const queued = defer();
+    const written = defer();
+    let response: Response | undefined;
+    const unlink = syncFs.unlinkSync;
+    const rm = fs.rm;
+    vi.spyOn(syncFs, "unlinkSync").mockImplementation((file) => {
+        if (String(file) === resolveStorageKey(s.savePath, keys[0])) {
+            queueMicrotask(() => {
+                queued.resolve();
+                void s
+                    .json("/api/resources/batch", {
+                        chats: [
+                            {
+                                characterId: "alice",
+                                chatId: "chat",
+                                baseRevision: revisions.chats[0].revision,
+                                ops: [{ op: "meta", set: { note: keys[1] } }],
+                            },
+                        ],
+                    })
+                    .then((r) => {
+                        response = r;
+                        written.resolve();
+                    });
+            });
+        }
+        unlink(file);
+    });
+    // Thumbnail cleanup is outside the synchronous turn and holds the next batch until the HTTP write lands.
+    vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+        if (String(args[0]).includes("thumbnails")) {
+            await queued.promise;
+            await written.promise;
+        }
+        return rm(...args);
+    });
+    syncBuiltinESMExports();
+    const result = await s.context.assetLifecycle.sweep({ dryRun: false, keys });
+    await written.promise;
+    expect(response!.status).toBe(200);
+    expect(result.deleted).toEqual([keys[0]]);
+    expect(result.skipped).toEqual([{ key: keys[1], reason: "referenced" }]);
+});
+
+it("previews the same narrowed deletion and inlay decisions without changing files or records", async () => {
+    const f = fixture();
+    const free = f.asset("assets/free", 3);
+    f.asset("assets/unselected", 4);
+    for (const id of ["orphan", "revived"]) {
+        f.asset(`assets/${id}`, 5);
+        f.put("inlays", id, { asset: `assets/${id}`, type: "image", name: id, ext: "png" });
+    }
+    await mature(f);
+    f.chat({ note: "{{inlay::revived}}" });
+    const request = { keys: ["assets/free"], inlays: ["orphan", "revived"] };
+    const before = f.ledger();
+    const preview = await f.lifecycle.sweep({ ...request, dryRun: true });
+    expect(preview).toEqual({
+        deleted: ["assets/free"],
+        freedBytes: 3,
+        removedInlays: ["orphan"],
+        skipped: [],
+        skippedInlays: [{ id: "revived", reason: "referenced" }],
+    });
+    expect(f.ledger()).toEqual(before);
+    expect(readFileSync(free)).toHaveLength(3);
+    expect(f.store.get(kinds.get("inlays")!, "orphan")).not.toBeNull();
+    expect(await f.lifecycle.sweep({ ...request, dryRun: false })).toEqual(preview);
+    expect(f.store.get(kinds.get("inlays")!, "orphan")).toBeNull();
+    expect(f.store.get(kinds.get("inlays")!, "revived")).not.toBeNull();
+    expect(syncFs.existsSync(free)).toBe(false);
+    expect(readFileSync(resolveStorageKey(f.dir, "assets/unselected")!)).toHaveLength(4);
+    expect(readFileSync(resolveStorageKey(f.dir, "assets/orphan")!)).toHaveLength(5);
+    const next = await f.lifecycle.scan();
+    expect(next.unreferenced.candidates.map((x) => x.key)).toEqual(["assets/unselected"]);
+    expect(f.ledger().assets).toContainEqual({ key: "assets/orphan", since: NOW + 7 * DAY, bytes: 5 });
+});
+
+it("skips a republished file and a filesystem error while deleting the other candidate", async () => {
+    const f = fixture();
+    const keys = ["assets/young", "assets/denied", "assets/deleted"];
+    const files = keys.map((key) => f.asset(key, 2));
+    await mature(f);
+    utimesSync(files[0], (NOW + 7 * DAY) / 1000, (NOW + 7 * DAY) / 1000);
+    const unlink = syncFs.unlinkSync;
+    vi.spyOn(syncFs, "unlinkSync").mockImplementation((file) => {
+        if (String(file) === files[1]) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        unlink(file);
+    });
+    syncBuiltinESMExports();
+    const result = await f.lifecycle.sweep({ dryRun: false, keys });
+    expect(result.deleted).toEqual([keys[2]]);
+    expect(result.freedBytes).toBe(2);
+    expect(result.skipped).toEqual([
+        { key: keys[0], reason: "young" },
+        { key: keys[1], reason: expect.stringContaining("permission denied") },
+    ]);
+    expect(files.map((file) => syncFs.existsSync(file))).toEqual([true, true, false]);
+    expect(f.ledger().assets.map((r) => r.key)).toEqual([keys[1], keys[0]]);
+});
+
+it.each(["uptime", "other process", "epoch", "incomplete", "stale"])(
+    "refuses sweep with 409 for %s even when files are candidates",
+    async (failure) => {
+        const clock = sweepClock();
+        if (failure === "uptime") clock.setMono(3_599_999);
+        const s = await createResourceTestClient({ assetLifecycle: clock.options });
+        cleanups.push(() => s.close());
+        const file = seedSweepAsset(s, "assets/keep");
+        await matureSweep(s, clock);
+        if (failure === "stale") clock.setMono(7_200_001);
+        if (failure === "incomplete") {
+            const snapshot = await s.context.snapshots.snapshotNow();
+            writeFileSync(path.join(s.savePath, "backups", snapshot.id + ".sqlite"), "broken");
+            expect((await s.context.assetLifecycle.scan()).complete).toBe(false);
+        }
+        if (failure === "epoch") {
+            const snapshot = await s.context.snapshots.snapshotNow();
+            expect((await s.request(`/api/backups/${snapshot.id}/restore`, { method: "POST" })).status).toBe(200);
+            await s.readEpoch();
+        }
+        if (failure === "other process") {
+            await s.context.dispose();
+            const fresh = await createResourceTestClient({ rootDir: s.rootDir, assetLifecycle: clock.options });
+            cleanups.push(() => fresh.close());
+            expect(fresh.context.assetLifecycle.runIdentity).toBeNull();
+            expect((await fresh.json("/api/assets/sweep", { dryRun: false })).status).toBe(409);
+            // Fresh store connections restart their counters: equality cannot authenticate a persisted mark.
+            const comparison = fixture();
+            await mature(comparison);
+            const reopened = createResourceStore({
+                file: path.join(comparison.dir, "data", "resources.sqlite"),
+                kinds,
+            });
+            const markCount = comparison.lifecycle.runIdentity!.writeCount;
+            const kind = kinds.get("pluginStorage")!;
+            for (let i = 0; i < markCount; i++)
+                reopened.put(kind, "main", { nonce: i }, reopened.get(kind, "main")?.revision ?? null);
+            const other = createAssetLifecycle({
+                savePath: comparison.dir,
+                store: reopened,
+                snapshots: comparison.snapshots,
+                ...clock.options,
+            });
+            try {
+                expect(reopened.writeCount()).toBe(comparison.lifecycle.runIdentity!.writeCount);
+                expect(() => other.sweep({ dryRun: false })).toThrow("No scan from this process");
+            } finally {
+                await other.close();
+                reopened.close();
+            }
+        } else {
+            const response = await s.json("/api/assets/sweep", { dryRun: false });
+            expect(response.status).toBe(409);
+        }
+        expect(readFileSync(file, "utf8")).toBe("old bytes");
+        if (failure === "uptime") {
+            clock.setMono(3_600_000);
+            const allowed = await s.json("/api/assets/sweep", { dryRun: false });
+            expect(allowed.status).toBe(200);
+            expect(await allowed.json()).toMatchObject({ deleted: ["assets/keep"] });
+        }
+    },
+);
+
+it("fails closed when a post-mark live row cannot be decoded", async () => {
+    const f = fixture();
+    const file = f.asset("assets/keep-on-error");
+    await mature(f);
+    f.put("pluginStorage", "main", { text: "assets/keep-on-error" });
+    f.db.prepare("UPDATE resources SET data = ? WHERE kind = 'pluginStorage'").run('{"text":"assets/broken"');
+    const result = await f.lifecycle.sweep({ dryRun: false });
+    expect(result.deleted).toEqual([]);
+    expect(result.skipped).toEqual([
+        { key: "assets/keep-on-error", reason: expect.stringContaining("re-mark failed") },
+    ]);
+    expect(readFileSync(file, "utf8")).toBe("A");
 });

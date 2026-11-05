@@ -1,6 +1,7 @@
-/** Read-only asset retention reports; byte counts describe regular files observed during the latest run. */
+/** Asset retention reports and user-started deletion; byte counts describe regular files observed during the latest run. */
 export const ASSET_REPORT_PATH = "/api/assets/report";
 export const ASSET_SCAN_PATH = "/api/assets/scan";
+export const ASSET_SWEEP_PATH = "/api/assets/sweep";
 export const ASSET_LEASE_MS = 60 * 60 * 1000;
 export const ASSET_GRACE_DEFAULT_DAYS = 7;
 export const ASSET_GRACE_MIN_DAYS = 3;
@@ -40,4 +41,14 @@ export type AssetLifecycleReport = {
     };
     owners: AssetOwner[];
     snapshots: { id: string; createdAt: string; size: number; pinned: false; label: null; heldBytes: number }[];
+};
+
+/** Absent keys selects all past-grace candidates; absent inlays selects no records. */
+export type AssetSweepRequest = { dryRun: boolean; keys?: string[]; inlays?: string[] };
+export type AssetSweepResult = {
+    deleted: string[];
+    freedBytes: number;
+    removedInlays: string[];
+    skipped: { key: string; reason: string }[];
+    skippedInlays: { id: string; reason: string }[];
 };

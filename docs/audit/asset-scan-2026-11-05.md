@@ -57,9 +57,31 @@ final turn that reads the export holds, classifies every file, and commits the l
 it was; a request that arrives during the scan waits at most that long. The peak RSS includes the seeding, which holds
 the whole fixture; the high end came from the one attempt that ran while the machine was busiest.
 
+## The sweep's synchronous turn
+
+Observed the same day on `plan-asset-lifecycle-2` (the sweep added), same machine, the same seed rebuilt by another
+throwaway script (not downscaled; checkpoint-page deduplication differs slightly with different seed text). Each trial
+scans, writes one resource record (the `ui` background) naming the last key of the third batch, then sweeps 150 past-grace candidates: three
+batches of 50, 149 deleted, the named key kept as `referenced`. The write moves `store.writeCount()`, so the first batch
+re-marks the live store inside its synchronous turn (`sweep` in `server/src/data/assetLifecycle.ts`).
+
+| Re-mark (one-minute load)                                | One re-mark    | Longest turn   | Three-batch sweep |
+| -------------------------------------------------------- | -------------- | -------------- | ----------------- |
+| Full, the default; its result kept for later batches (6) | 1.68 to 1.73 s | 1.68 to 1.74 s | not recorded      |
+| Full, the default (27 to 34)                             | 2.82 to 3.14 s | 2.82 to 3.14 s | 2.89 to 3.21 s    |
+| Narrowed in JavaScript, every batch re-marks (28 to 32)  | 1.75 to 3.12 s | 1.95 to 3.13 s | 5.58 to 8.87 s    |
+| Narrowed by per-key SQL needles, discarded (6 to 33)     | 5.11 to 8.81 s | 5.76 to 8.81 s | 16.1 to 25.3 s    |
+
+Both kept forms select rows with the mark's generic needles in SQL; the narrowed one then skips, before parsing, rows
+whose text holds none of the batch's needles. Per-key needles in SQL (about 150 `instr` terms over every row's text)
+were slower than either and were dropped. Full is the default because one full re-mark certifies every later batch,
+while a narrowed one must repeat for each batch that follows a write. Every request waits for the turn: about 1.7 s on
+this seed when the machine is quiet, about 3 s under load. A sweep with no write since its scan does no re-mark, and its
+turns are the 50 `statSync` and `unlinkSync` calls of a batch.
+
 ## Not measured
 
 - A spinning disk or an SD card: the reads here came from tmpfs and the page cache.
 - A store far larger than this one, or a snapshot count near the retention limit of 20 (each new snapshot costs about
   0.8 to 1.05 s on its first scan here).
-- The sweep's synchronous delete turn, which does not exist yet.
+- The sweep's turn on a store larger than this seed: it reads every row's text once, so it grows with the store.

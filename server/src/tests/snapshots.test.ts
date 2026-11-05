@@ -4,6 +4,7 @@ import { existsSync, copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSyn
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { diskNeeded, diskWithFree, liveBytes } from "./assetSweepFixtures.ts";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat } from "../../../shared/database.ts";
@@ -678,6 +679,51 @@ it("restores its pinned source after retention prunes the original during valida
     } finally {
         release.resolve();
         await s.close();
+        vi.useRealTimers();
+    }
+});
+
+it("skips short-disk snapshot ticks, logs once, and resumes when capacity returns", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { dir, store, backups } = setup();
+    let free = 0;
+    const manager = createSnapshotManager({
+        store,
+        dir: backups,
+        intervalMs: 1000,
+        databaseFile: path.join(dir, "data", "resources.sqlite"),
+        statfs: async () => diskWithFree(free),
+    });
+    managers.push(manager);
+    try {
+        manager.start();
+        store.put(docs, "pending", { value: "must survive" }, null);
+        const tick = async () => {
+            await vi.advanceTimersByTimeAsync(1000);
+            await manager.exclusive(async () => {});
+        };
+        await tick();
+        await tick();
+        expect(manager.list()).toEqual([]);
+        expect(errors.mock.calls.filter(([message]) => String(message).includes("insufficient storage"))).toHaveLength(
+            1,
+        );
+        free = diskNeeded(liveBytes(dir));
+        await tick();
+        expect(manager.list()).toHaveLength(1);
+        expect(store.readSnapshot(manager.resolve(manager.list()[0].id)!).rows).toContainEqual(
+            expect.objectContaining({ id: "pending", text: JSON.stringify({ value: "must survive" }) }),
+        );
+        free = 0;
+        store.put(docs, "another", 2, null);
+        await tick();
+        expect(errors.mock.calls.filter(([message]) => String(message).includes("insufficient storage"))).toHaveLength(
+            2,
+        );
+    } finally {
+        await manager.stop();
+        vi.restoreAllMocks();
         vi.useRealTimers();
     }
 });

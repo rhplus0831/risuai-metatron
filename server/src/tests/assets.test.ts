@@ -1,10 +1,16 @@
 // @vitest-environment node
+import syncFs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { withAssetLocks } from "../http/assetLeases.ts";
+import { createHash } from "node:crypto";
+import { writeContentAsset, publishStagedContentAsset } from "../http/contentAsset.ts";
 import { serve } from "@hono/node-server";
 import { once } from "node:events";
 import http from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
+import { matureSweep, seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     allowListenerOrigin,
@@ -24,6 +30,8 @@ beforeEach(async () => {
 afterEach(async () => {
     await s?.close();
     vi.restoreAllMocks();
+    syncBuiltinESMExports();
+    vi.useRealTimers();
 });
 
 const file = (name: string) => path.join(s.savePath, "assets", name);
@@ -547,3 +555,140 @@ describe("batch asset routes", () => {
         );
     });
 });
+
+it.each(["single", "batch", "content bytes", "staged content", "missing check"])(
+    "claims reused keys through %s for the sweep and the next scan",
+    async (route) => {
+        await s.close();
+        vi.useFakeTimers({ toFake: ["performance"] });
+        const clock = sweepClock();
+        s = await createResourceTestClient({ assetLifecycle: clock.options });
+        const bytes = Buffer.from("lease bytes");
+        const hash = createHash("sha256").update(bytes).digest("hex");
+        const key = `assets/${hash}.png`;
+        const target = seedSweepAsset(s, key, bytes.toString());
+        await matureSweep(s, clock);
+        if (route === "single") expect((await write(key, bytes.toString())).status).toBe(200);
+        if (route === "batch") expect((await writeBatch(buildArchive([[key, bytes]]))).status).toBe(200);
+        if (route === "content bytes")
+            expect(await writeContentAsset(s.savePath, s.context.snapshots, bytes, new AbortController().signal)).toBe(
+                key,
+            );
+        if (route === "staged content") {
+            const staged = path.join(s.savePath, ".tmp", "content.png");
+            await fs.writeFile(staged, bytes);
+            expect(
+                await publishStagedContentAsset(
+                    s.savePath,
+                    s.context.snapshots,
+                    staged,
+                    hash,
+                    new AbortController().signal,
+                ),
+            ).toBe(key);
+        }
+        if (route === "missing check")
+            expect(await (await s.json("/api/assets/missing", { names: [key] })).json()).toEqual({ missing: [] });
+        // Remove youth as an alternative explanation: only the claim protects these bytes.
+        await fs.utimes(target, 1, 1);
+        expect(await s.context.assetLifecycle.sweep({ dryRun: false })).toMatchObject({
+            deleted: [],
+            skipped: [{ key, reason: "leased" }],
+        });
+        expect((await s.context.assetLifecycle.scan()).unreferenced.count).toBe(0);
+        await vi.advanceTimersByTimeAsync(3_600_000);
+        expect((await s.context.assetLifecycle.scan()).unreferenced.count).toBe(1);
+        expect(await fs.readFile(target)).toEqual(bytes);
+    },
+);
+
+it.each(["single", "batch", "content bytes", "staged content"])(
+    "publishes %s after a sweep holding the key lock deletes the old file",
+    async (route) => {
+        await s.close();
+        const clock = sweepClock();
+        s = await createResourceTestClient({ assetLifecycle: clock.options });
+        const bytes = Buffer.from("republished bytes");
+        const hash = createHash("sha256").update(bytes).digest("hex");
+        const key = `assets/${hash}.png`;
+        const target = seedSweepAsset(s, key, bytes.toString());
+        await matureSweep(s, clock);
+        const staged = path.join(s.savePath, ".tmp", "reimport.png");
+        await fs.writeFile(staged, bytes);
+        let publish: Promise<unknown> | undefined;
+        const deleted = deferred();
+        const unlink = syncFs.unlinkSync;
+        vi.spyOn(syncFs, "unlinkSync").mockImplementation((file) => {
+            if (String(file) === target) {
+                // The synchronous turn owns this key. Start the claim before unlink, without yielding.
+                publish =
+                    route === "single"
+                        ? write(key, bytes.toString())
+                        : route === "batch"
+                          ? writeBatch(buildArchive([[key, bytes]]))
+                          : route === "content bytes"
+                            ? writeContentAsset(s.savePath, s.context.snapshots, bytes, new AbortController().signal)
+                            : publishStagedContentAsset(
+                                  s.savePath,
+                                  s.context.snapshots,
+                                  staged,
+                                  hash,
+                                  new AbortController().signal,
+                              );
+                unlink(file);
+                expect(syncFs.existsSync(target)).toBe(false);
+                deleted.resolve();
+            } else unlink(file);
+        });
+        syncBuiltinESMExports();
+        const result = await s.context.assetLifecycle.sweep({ dryRun: false });
+        expect(result.deleted).toEqual([key]);
+        await deleted.promise;
+        const answer = await publish;
+        if (answer instanceof Response) expect(answer.status).toBe(200);
+        else expect(answer).toBe(key);
+        expect(await fs.readFile(target)).toEqual(bytes);
+    },
+);
+
+it.each(["content bytes", "staged content"])(
+    "defers %s reuse until a deletion releases the shared key lock",
+    async (route) => {
+        const bytes = Buffer.from("locked import");
+        const hash = createHash("sha256").update(bytes).digest("hex");
+        const key = `assets/${hash}.png`;
+        const target = seedSweepAsset(s, key, bytes.toString());
+        const staged = path.join(s.savePath, ".tmp", "locked.png");
+        await fs.writeFile(staged, bytes);
+        const entered = deferred(),
+            release = deferred();
+        const holding = withAssetLocks([target], async () => {
+            entered.resolve();
+            await release.promise;
+        });
+        await entered.promise;
+        const open = vi.spyOn(fs, "open");
+        const publish =
+            route === "content bytes"
+                ? writeContentAsset(s.savePath, s.context.snapshots, bytes, new AbortController().signal)
+                : publishStagedContentAsset(
+                      s.savePath,
+                      s.context.snapshots,
+                      staged,
+                      hash,
+                      new AbortController().signal,
+                  );
+        try {
+            // Both APIs enter claim synchronously; verification must not start outside the occupied lock.
+            expect(open.mock.calls.filter(([file]) => String(file) === target)).toEqual([]);
+            syncFs.unlinkSync(target);
+            release.resolve();
+            expect(await publish).toBe(key);
+            expect(await fs.readFile(target)).toEqual(bytes);
+        } finally {
+            release.resolve();
+            await holding;
+            await publish;
+        }
+    },
+);

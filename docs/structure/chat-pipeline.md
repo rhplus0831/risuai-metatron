@@ -326,8 +326,8 @@ page is away does not count. Kept terminal receipts and shutdown outcomes are ow
   response budget, with its last two chats protected.
 - A new `PromptItem` type needs the `Recipes` entry's places, plus import conversion.
 - Inlays are not stored in chat text. Removing an inlay (`removeInlayAsset`, the Inlay Explorer) breaks the
-  `{{inlay::id}}` tags that name it; it removes metadata only, since retained snapshots may reference the blob. Deleting
-  messages never removes inlays.
+  `{{inlay::id}}` tags that name it; it removes metadata only; the asset sweep reclaims the blob. Deleting messages
+  never removes inlays.
 - Images become `MultiModal` input only when the model has `LLMFlags.hasImageInput`. Otherwise the job captions them
   (`captionImage`, `memory.md`).
 - Built-in Jinja templates enforce roles: Gemma has no system role, and Mistral requires alternating roles.
