@@ -2,7 +2,7 @@
 
 Status: drafted 2026-11-03, revised 2026-11-04 after the
 [design audit](../audit/plan-design-audit-2026-11-04.md); Slice 5 split into 5a and 5b on 2026-11-05;
-slices landed: 5a (`b86d2ff1f`), 3 (`5e3ad8a80`). Decisions D1–D9 are recommendations
+slices landed: 5a (`b86d2ff1f`), 3 (`5e3ad8a80`), 4 (`88f523847`). Decisions D1–D9 are recommendations
 for the owner; the **Open questions** Q1–Q4 were answered by the owner on 2026-11-03 (the recommended option
 each time; Q3's answer narrowed on 2026-11-04). Code anchors re-checked at `215cbce1d`; verify them again before
 editing (STRUCTURE.md protocol step 5).
