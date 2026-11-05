@@ -377,16 +377,17 @@ In `shared/lore/activation.ts`.
   Memory jobs: [memory](memory.md).
 - `slow`: `pnpm --silent test:agent --tags-filter=slow server/src/tests/{promptRunner,lore}.test.ts`
   ([test-harness](test-harness.md) `Slow-test table`).
-- `e2e`: `e2e/perChatSends.spec.ts`, `e2e/chatLoreOverrides.spec.ts`, `e2e/chatBinding.spec.ts`.
+- `e2e`: `e2e/perChatSends.spec.ts`, `e2e/rerollCandidates.spec.ts`, `e2e/chatLoreOverrides.spec.ts`,
+  `e2e/chatBinding.spec.ts`.
 - `promptRunner.test.ts` runs the send with real Lua/regex workers, a plugin hook, and a fake provider.
 - `DefaultChatScreen.drafts.test.ts`: real stores; `mountComposer` controls the clock, job creation, and resource I/O
   (`FakeResourceServer`), with fake IndexedDB and Web Locks and stubbed children.
 - Browser checks: `util/playwright/checkServerSend.mjs`, `checkServerJobMatrix.mjs`, `checkSidebarChatStatus.mjs`, and
   `checkStreamingModes.mjs`. `checkJobProtocol.mjs` drives the job client with a real plugin provider
   ([test-harness](test-harness.md)).
-- Not tested: in-tab Jinja rendering; mounted screen wiring for per-chat reroll, the paste write, input translation
-  invalidation, and auto mode closing the chat; IME behavior on real devices (Android Korean, desktop Japanese); Stop on
-  a resumed job beside another chat's send.
+- Not tested: in-tab Jinja rendering; mounted screen wiring for the paste write, input translation invalidation, and
+  auto mode closing the chat; IME behavior on real devices (Android Korean, desktop Japanese); Stop on a resumed job
+  beside another chat's send.
 - Not tested: the DevTool preview and autopilot beyond `src/lib/SideBars/DevTool.test.ts`; check by hand.
 
 ## Known Hazards
@@ -395,7 +396,7 @@ In `shared/lore/activation.ts`.
 
 - A reroll's restore cannot see another tab's job that holds no lock yet and was not met at this tab's create: the
   restored replies land while that job runs, like any other edit (see
-  [server generation's own chat changes](live-update-feed.md#own-chat-changes)).
+  [own chat changes](live-update-feed.md#own-chat-changes)).
 - Stop stays visible between a followed job's `done` and its socket close, when an abort does nothing.
 - A boot resume that discovers its chat but cannot load it shows Stop during the load retries, until the follow ends as
   lost.
