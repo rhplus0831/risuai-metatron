@@ -61,10 +61,8 @@ stored (`memory-unreadable`) and never stops the export. `pinned` or a grade at 
 `server/src/routes/resources.ts` opts its GET and POST whole reads into `memoryProjection`; `overlaysMemoryProjection`
 allows it only while the algorithm is selected. `sealedMemoryProjection` projects chats with events and no stored
 summaries; real summaries retain HypaV3 ownership. A failed overlay returns the stored chat and warns once. The
-non-cryptographic seal identifies an unchanged projection and authorizes nothing.
-
-`readChatSource`, plain `readRefs`, a job's scope, a memory task, the HypaV3 baseline, `chatBaseline`, and checkpoint
-capture's `meta` must read stored data, never a tab's overlay.
+non-cryptographic seal identifies an unchanged projection and authorizes nothing. Other reads take stored data
+([Invariants](#invariants)).
 
 ### The tab's mirror
 
@@ -92,8 +90,9 @@ plugin read pays no refresh cost.
    fence, token ordering, and null-answer handling.
 
 `refreshChatProjections` defines eligibility, joined checks and the recheck window; `rotatingWindow` shares turns across
-caps. `MEMORY_REFRESH_DEADLINE_MS` bounds the refresh (`readWithDeadline`, `src/ts/storage/readDeadline.ts`) because a
-hook's read holds a send. Failure, refusal, or deadline lets the read return the held value.
+caps. `MEMORY_REFRESH_DEADLINE_MS` bounds it (`readWithDeadline`) because a hook's read holds a send. Failure, refusal,
+or deadline returns the held value. An unloaded chat's cached body keeps its projection apart and checks revisions at
+every reuse, with no window (`cachedDetachedChatsForRead`); a failed check reads the chat whole.
 
 ### The upstream export
 

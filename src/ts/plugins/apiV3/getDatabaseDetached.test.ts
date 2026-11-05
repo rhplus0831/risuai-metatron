@@ -3,7 +3,11 @@ import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import type { Chat, character } from "../../../../shared/database.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
-import { isSealedHypaV3Data } from "../../../../shared/structuredMemory.ts";
+import {
+    isSealedHypaV3Data,
+    sealedHypaV3DataRevision,
+    STRUCTURED_MEMORY_PATH,
+} from "../../../../shared/structuredMemory.ts";
 import { warmMutationGraph } from "src/ts/storage/tests/mutationStoresHarness";
 import { StoreBackedServer } from "src/ts/storage/tests/storeBackedServer";
 
@@ -52,6 +56,8 @@ const ref = (chaId: string, chatId: string) => ({ chaId, chatId });
 const held = ref("c", "held");
 const other = ref("c", "other");
 const readPath = "/api/resources/read";
+const revisionPath = `${STRUCTURED_MEMORY_PATH}/revisions`;
+const projectionPath = `${STRUCTURED_MEMORY_PATH}/c/projected/projection`;
 const servers: StoreBackedServer[] = [];
 const cleanups: (() => void)[] = [];
 const chatData = (id: string, time = 100): Chat => ({
@@ -59,6 +65,7 @@ const chatData = (id: string, time = 100): Chat => ({
     name: id,
     note: "",
     localLore: [],
+    fmIndex: -1,
     message: [{ chatId: "message", role: "char", data: `Saved ${id}`, time }],
 });
 function deferred() {
@@ -165,19 +172,7 @@ async function boot(fake: StoreBackedServer, initial?: Snapshot) {
 
 /** Seed real cold memory records; resource reads must project this event into hypaV3Data. */
 function remember(fake: StoreBackedServer, characterId: string, id: string, summary = "A remembered promise") {
-    const memory = (
-        fake.store as unknown as {
-            memory: {
-                readContents(chaId: string, chatId: string): { revision: string };
-                write(
-                    chaId: string,
-                    chatId: string,
-                    options: { epoch: string; baseRevision: string },
-                    changes: unknown,
-                ): string;
-            };
-        }
-    ).memory;
+    const memory = fake.store.memory;
     const message = fake.chat(characterId, id)!.data.message[0];
     memory.write(
         characterId,
@@ -214,6 +209,13 @@ function remember(fake: StoreBackedServer, characterId: string, id: string, summ
             ],
         },
     );
+}
+
+async function structuredFixture(chats: Chat[]) {
+    const fake = await fixture({ c: chats });
+    fake.structuredMemoryReads = true;
+    fake.set("ui", "main", { ...fake.record("ui", "main")!.data, memoryAlgorithmType: "structuredMemory" });
+    return fake;
 }
 
 beforeAll(() => warmMutationGraph(() => import("./v3.svelte")), 60_000);
@@ -1004,4 +1006,283 @@ it("re-reads cached summaries when the memory algorithm changes in either direct
         expect(await b.api.getDatabase(["characters"])).toEqual(first);
         expect(resourceReads(fake)).toEqual([]);
     }
+});
+
+it("reuses a 1 MiB structured chat and a no-memory chat, refreshing only a changed projection on the next read", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const projected = chatData("projected");
+    projected.message[0].data = "x".repeat(1024 * 1024);
+    const empty = chatData("empty");
+    const fake = await structuredFixture([projected, empty]);
+    remember(fake, "c", "projected");
+    const b = await boot(fake);
+    const first = structuredClone(await b.api.getDatabase(["characters"]));
+    const firstChats = returnedCharacter(first, "c").chats;
+    expect(firstChats[0]).toMatchObject(projected);
+    expect(firstChats[0].hypaV3Data?.summaries).toEqual([
+        { text: "A remembered promise", chatMemos: ["message"], isImportant: false },
+    ]);
+    expect(isSealedHypaV3Data(firstChats[0].hypaV3Data)).toBe(true);
+    expect(firstChats[1]).toEqual(empty);
+    expect(requestedChats(fake)).toEqual([
+        { characterId: "c", id: "projected" },
+        { characterId: "c", id: "empty" },
+    ]);
+    fake.requests.length = 0;
+
+    expect(await b.api.getDatabase(["characters"])).toEqual(first);
+    expect(fake.requests).toEqual([
+        {
+            method: "POST",
+            path: revisionPath,
+            body: {
+                chats: [
+                    { characterId: "c", chatId: "projected" },
+                    { characterId: "c", chatId: "empty" },
+                ],
+            },
+        },
+    ]);
+
+    const chatRevision = fake.chat("c", "projected")!.revision;
+    const memoryRevision = sealedHypaV3DataRevision(firstChats[0].hypaV3Data);
+    remember(fake, "c", "projected", "The promise was fulfilled");
+    expect(fake.chat("c", "projected")!.revision).toBe(chatRevision);
+    expect(fake.store.memory.readContents("c", "projected").revision).not.toBe(memoryRevision);
+    fake.requests.length = 0;
+
+    // No clock advance: the very next detached read must see this independent memory change.
+    const changed = returnedCharacter(await b.api.getDatabase(["characters"]), "c").chats;
+    expect(changed[0]).toMatchObject(projected);
+    expect(changed[0].hypaV3Data?.summaries).toEqual([
+        { text: "The promise was fulfilled", chatMemos: ["message"], isImportant: false },
+    ]);
+    expect(isSealedHypaV3Data(changed[0].hypaV3Data)).toBe(true);
+    expect(changed[1]).toEqual(empty);
+    expect(fake.requests.map(({ path }) => path)).toEqual([revisionPath, projectionPath]);
+    expect(firstChats[0].hypaV3Data?.summaries[0].text).toBe("A remembered promise");
+    for (const id of ["projected", "empty"]) expect(b.chat.findChat(ref("c", id))).toBeUndefined();
+    expect(b.chat.chatsLoaded("c")).toBe(false);
+});
+
+it.each([
+    { route: "revisions", outcome: "fails", path: revisionPath, status: 0 },
+    { route: "revisions", outcome: "is refused", path: revisionPath, status: 404 },
+    { route: "projection", outcome: "fails", path: projectionPath, status: 0 },
+    { route: "projection", outcome: "is refused", path: projectionPath, status: 413 },
+])("reads the whole chat when its memory $route check $outcome", async ({ path, status }) => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const stored = chatData("projected");
+    const fake = await structuredFixture([stored]);
+    remember(fake, "c", "projected");
+    const b = await boot(fake);
+    const first = await b.api.getDatabase(["characters"]);
+    expect(returnedCharacter(first, "c").chats[0].hypaV3Data?.summaries[0].text).toBe("A remembered promise");
+    const revision = fake.chat("c", "projected")!.revision;
+    remember(fake, "c", "projected", "Checked by the whole read");
+    expect(fake.chat("c", "projected")!.revision).toBe(revision);
+    fake.requests.length = 0;
+    fake.failNext = {
+        status,
+        times: 1,
+        match: (asked) => asked === path,
+        body: { reason: status === 413 ? "tooLarge" : "chatGone", error: "Memory check refused" },
+    };
+
+    const got = returnedCharacter(await b.api.getDatabase(["characters"]), "c").chats[0];
+    expect(got).toMatchObject(stored);
+    expect(got.hypaV3Data?.summaries).toEqual([
+        { text: "Checked by the whole read", chatMemos: ["message"], isImportant: false },
+    ]);
+    expect(isSealedHypaV3Data(got.hypaV3Data)).toBe(true);
+    expect(fake.requests.map(({ path }) => path)).toEqual(
+        path === revisionPath ? [revisionPath, readPath] : [revisionPath, projectionPath, readPath],
+    );
+    expect(requestedChats(fake)).toEqual([{ characterId: "c", id: "projected" }]);
+    expect(b.chat.findChat(ref("c", "projected"))).toBeUndefined();
+});
+
+it("reads the whole chat when a sealed projection disappears to recover the unknown stored value", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const stored = { ...chatData("projected"), hypaV3Data: { summaries: [] } };
+    const fake = await structuredFixture([stored]);
+    remember(fake, "c", "projected");
+    const b = await boot(fake);
+    const first = await b.api.getDatabase(["characters"]);
+    expect(isSealedHypaV3Data(returnedCharacter(first, "c").chats[0].hypaV3Data)).toBe(true);
+    const chatRevision = fake.chat("c", "projected")!.revision;
+    fake.store.memory.write(
+        "c",
+        "projected",
+        {
+            epoch: fake.store.epoch(),
+            baseRevision: fake.store.memory.readContents("c", "projected").revision,
+        },
+        { remove: { events: ["promise"] } },
+    );
+    expect(fake.chat("c", "projected")!.revision).toBe(chatRevision);
+    expect(fake.store.memory.readProjectionRevisions([{ characterId: "c", chatId: "projected" }])).toEqual([null]);
+    fake.requests.length = 0;
+
+    expect(returnedCharacter(await b.api.getDatabase(["characters"]), "c").chats).toEqual([stored]);
+    expect(fake.requests.map(({ path }) => path)).toEqual([revisionPath, readPath]);
+    expect(requestedChats(fake)).toEqual([{ characterId: "c", id: "projected" }]);
+    expect(b.chat.findChat(ref("c", "projected"))).toBeUndefined();
+});
+
+it("shares three cold chat refs between overlapping detached database reads", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const b = await boot(await fixture());
+    const entered = deferred();
+    const release = deferred();
+    boundary.fetch = async (path, init) => {
+        const response = await b.fake.fetch(path, init);
+        if (path === readPath) {
+            entered.resolve();
+            await release.promise;
+        }
+        return response;
+    };
+    let completed = 0;
+    const read = () =>
+        b.api.getDatabase(["characters"]).then((value: { characters: ReturnedCharacter[] }) => {
+            completed++;
+            return value;
+        });
+    const readings = [read()];
+    try {
+        await entered.promise;
+        readings.push(read());
+        await vi.advanceTimersByTimeAsync(0);
+        expect(completed).toBe(0);
+        expect(requestedChats(b.fake)).toEqual([
+            { characterId: "c", id: "held" },
+            { characterId: "c", id: "other" },
+            { characterId: "d", id: "d" },
+        ]);
+    } finally {
+        release.resolve();
+        await Promise.all(readings);
+    }
+    const [first, second] = await Promise.all(readings);
+    expect(second).toEqual(first);
+    for (const got of [first, second]) {
+        expect(returnedCharacter(got, "c").chats).toEqual([chatData("held"), chatData("other")]);
+        expect(returnedCharacter(got, "d").chats).toEqual([chatData("d")]);
+    }
+    expect(requestedChats(b.fake)).toHaveLength(3);
+    for (const target of [held, other, ref("d", "d")]) expect(b.chat.findChat(target)).toBeUndefined();
+});
+
+it("retries detached refs after a shared read and its loaded fallback reject", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const b = await boot(await fixture());
+    const entered = deferred();
+    const release = deferred();
+    b.fake.failNext = { status: 503, times: Infinity, match: (path) => path === readPath };
+    boundary.fetch = async (path, init) => {
+        const response = await b.fake.fetch(path, init);
+        if (path === readPath) {
+            entered.resolve();
+            await release.promise;
+        }
+        return response;
+    };
+    const readings = [Promise.allSettled([b.api.getDatabase(["characters"])])];
+    try {
+        await entered.promise;
+        readings.push(Promise.allSettled([b.api.getDatabase(["characters"])]));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(requestedChats(b.fake)).toHaveLength(3);
+    } finally {
+        release.resolve();
+        await Promise.all(readings);
+    }
+    expect((await Promise.all(readings)).flat().map(({ status }) => status)).toEqual(["rejected", "rejected"]);
+    b.fake.failNext = null;
+    boundary.fetch = b.fake.fetch;
+    b.fake.requests.length = 0;
+
+    const retried = await b.api.getDatabase(["characters"]);
+    expect(returnedCharacter(retried, "c").chats).toEqual([chatData("held"), chatData("other")]);
+    expect(returnedCharacter(retried, "d").chats).toEqual([chatData("d")]);
+    expect(resourceReads(b.fake)).toHaveLength(1);
+    expect(requestedChats(b.fake)).toEqual([
+        { characterId: "c", id: "held" },
+        { characterId: "c", id: "other" },
+        { characterId: "d", id: "d" },
+    ]);
+    // A stale rejected promise would instead send this call through the loaded fallback again.
+    for (const target of [held, other, ref("d", "d")]) expect(b.chat.findChat(target)).toBeUndefined();
+});
+
+it("does not refill the detached cache with a read that was pending at pagehide", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const b = await boot(await fixture({ c: [chatData("other")] }));
+    const entered = deferred();
+    const release = deferred();
+    boundary.fetch = async (path, init) => {
+        const response = await b.fake.fetch(path, init);
+        if (path === readPath) {
+            entered.resolve();
+            await release.promise;
+        }
+        return response;
+    };
+    const pending = b.api.getDatabase(["characters"]);
+    try {
+        await entered.promise;
+        window.dispatchEvent(new Event("pagehide"));
+    } finally {
+        release.resolve();
+    }
+    expect(returnedCharacter(await pending, "c").chats).toEqual([chatData("other")]);
+    b.fake.requests.length = 0;
+
+    expect(returnedCharacter(await b.api.getDatabase(["characters"]), "c").chats).toEqual([chatData("other")]);
+    expect(requestedChats(b.fake)).toEqual([{ characterId: "c", id: "other" }]);
+    b.fake.requests.length = 0;
+    expect(returnedCharacter(await b.api.getDatabase(["characters"]), "c").chats).toEqual([chatData("other")]);
+    expect(requestedChats(b.fake)).toEqual([]);
+    expect(b.chat.findChat(other)).toBeUndefined();
+});
+
+it.each([
+    { title: "serves a loaded page without flushing generation-blocked work", limit: 1 },
+    { title: "loads only missing page members when generation blocks the flush", limit: 2 },
+])("$title", async ({ limit }) => {
+    const chats = ["held", "other", "off-page-a", "off-page-b", "off-page-c"].map((id) => chatData(id));
+    chats[0].message.push({ chatId: "editable", role: "user", data: "Before generation" });
+    const b = await boot(await fixture({ c: chats }));
+    await b.chat.ensureChatLoaded(held);
+    b.fake.lock!.addToken("token");
+    b.fake.lock!.acquire(
+        { characterId: "c", chatId: "held", messageId: "message" },
+        { jobId: "job", generationId: "generation", token: "token" },
+    );
+    b.chat.setMessageText(held, "message", "Local edit of the generating message");
+    b.chat.setMessageText(held, "editable", "Local edit during generation");
+    b.fake.requests.length = 0;
+
+    const page = await b.api.getChats("c", { offset: 0, limit });
+    expect(page).toEqual({
+        total: 5,
+        chats: [
+            {
+                ...chats[0],
+                message: [
+                    { ...chats[0].message[0], data: "Local edit of the generating message" },
+                    { ...chats[0].message[1], data: "Local edit during generation" },
+                ],
+            },
+            ...chats.slice(1, limit),
+        ],
+    });
+    expect(requestedChats(b.fake)).toEqual(limit === 1 ? [] : [{ characterId: "c", id: "other" }]);
+    for (const { body } of resourceReads(b.fake)) expect(body.chatCollections ?? []).toEqual([]);
+    expect(b.chat.chatsLoaded("c")).toBe(false);
+    for (const { id } of chats.slice(limit)) expect(b.chat.findChat(ref("c", id!))).toBeUndefined();
+    if (limit === 1) expect(b.fake.requests).toEqual([]);
+    await expect(b.sync.flushResources()).rejects.toBeInstanceOf(b.sync.GenerationBlockedError);
+    expect(b.fake.texts("c", "held")).toEqual(["Saved held", "Before generation"]);
 });

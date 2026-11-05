@@ -15,6 +15,9 @@ import { SandboxHost } from "./factory";
 import { databaseAccessRecorderScript } from "./developMode";
 import {
     cachedDetachedChat,
+    cachedDetachedChatsForRead,
+    detachedChatReadHitCurrent,
+    type DetachedChatReadHit,
     detachedChatCacheGeneration,
     detachedChatCacheHitCurrent,
     forgetDetachedChat,
@@ -91,6 +94,7 @@ import {
     type ChatRef,
 } from "src/ts/storage/chatStore.svelte";
 import { readChatRefsDetached, type DetachedChatRead } from "src/ts/storage/chatEdits";
+import { getResourceEpoch } from "src/ts/storage/resourceClient";
 import { readWithDeadline } from "src/ts/storage/readDeadline";
 import { SafeLocalPluginStorage, SafeLocalStorage, tagWhitelist } from "../pluginSafeClass";
 import DOMPurify from "dompurify";
@@ -1201,13 +1205,154 @@ function detachedPluginChat(chat: Chat): Chat {
     return chat;
 }
 
+/** Small page fallbacks use individual loads; larger ones use the character loader's batched read. */
+const PAGE_SINGLE_LOAD_MAX = 32;
+const PAGE_LOAD_CONCURRENCY = 4;
+const PAGE_ASSEMBLY_ATTEMPTS = 3;
+
+const sameChatMembers = (before: readonly { id: string }[], after: readonly { id: string }[]) =>
+    before.length === after.length && before.every(({ id }, index) => id === after[index].id);
+
 /**
- * Reads unloaded members together after saving queued work, keeping server copies outside the chat
- * store. Loaded members stay pinned and are copied in `run`'s synchronous pass. Characters whose
- * copies cannot represent the held state use the ordinary load path; changing membership gets a
- * few assembly attempts before the whole call uses that path. An optional member selector limits
- * detached reads and projection refreshes to a page; if its ids move during preparation, retry
- * before returning so every loaded member of the returned page has been pinned and refreshed.
+ * Copies a page synchronously while its selected chats are pinned. The fast path requires every
+ * member held and current, so it never flushes global resource work. Fallback mode accepts held
+ * state (including behind/protected chats) and loads only missing page members, at most four at
+ * once. More than 32 missing members use the existing batched character loader. Owner and page
+ * order are rechecked after loading and projection refresh, with three attempts for moving pages.
+ * A fast-path miss returns undefined; fallback exhaustion refuses the read.
+ */
+async function withHeldChatPage<T>(
+    chaId: string,
+    run: () => T,
+    members: ChatMemberSelector,
+    load: boolean,
+): Promise<{ value: T } | undefined> {
+    const owner = chatOwnerToken(chaId);
+    const checkOwner = () => {
+        if (chatOwnerToken(chaId) !== owner && characterList().some((entry) => entry?.chaId === chaId)) {
+            throw new PluginTargetGoneError("character");
+        }
+    };
+    for (let attempt = 0; attempt < PAGE_ASSEMBLY_ATTEMPTS; attempt++) {
+        checkOwner();
+        const selected = members(chaId);
+        const refs = selected.map(({ id }) => ({ chaId, chatId: id }));
+        if (!load && refs.some((ref) => !findChat(ref) || isChatBehind(ref))) return undefined;
+        const releases = refs.map(pinChat);
+        try {
+            const missing = refs.filter((ref) => !findChat(ref));
+            if (missing.length > PAGE_SINGLE_LOAD_MAX) {
+                await withChatsLoaded([chaId], () => {});
+            } else {
+                for (let start = 0; start < missing.length; start += PAGE_LOAD_CONCURRENCY) {
+                    // Settle the group before releasing any pins, including when one load rejects.
+                    const results = await Promise.allSettled(
+                        missing.slice(start, start + PAGE_LOAD_CONCURRENCY).map(ensureChatLoaded),
+                    );
+                    checkOwner();
+                    const failure = results.find((result) => result.status === "rejected");
+                    if (failure?.status === "rejected") throw failure.reason;
+                    if (!sameChatMembers(selected, members(chaId))) break;
+                }
+            }
+            checkOwner();
+            if (!sameChatMembers(selected, members(chaId)) || refs.some((ref) => !findChat(ref))) continue;
+            await refreshChatProjections(chatsOfRead([chaId], undefined, () => selected));
+            checkOwner();
+            if (!sameChatMembers(selected, members(chaId)) || refs.some((ref) => !findChat(ref))) continue;
+            if (!load && refs.some(isChatBehind)) return undefined;
+            return { value: run() };
+        } finally {
+            for (const release of releases) release();
+        }
+    }
+    if (load) throw new Error("The chats could not be loaded");
+    return undefined;
+}
+
+type SharedDetachedRead = { read: DetachedChatRead; needsSnapshot: boolean };
+const detachedReadsInFlight = new Map<string, Promise<SharedDetachedRead>>();
+
+/**
+ * Claim every cold ref before dispatching one batch. Identical overlapping callers join per-ref
+ * promises; epoch, owner, held revision, algorithm and cache generation separate incompatible reads.
+ * Snapshot scanning and cache sizing happen once per answer. Callers retain their own assembly and
+ * held-work checks; rejection clears only the pending entries belonging to this batch.
+ */
+async function readSharedDetachedChats(refs: readonly ChatRef[]): Promise<Map<ChatRef, SharedDetachedRead>> {
+    const generation = detachedChatCacheGeneration();
+    const epoch = getResourceEpoch();
+    const structured = settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+    const claimed: {
+        ref: ChatRef;
+        key: string;
+        owner: string;
+        promise: Promise<SharedDetachedRead>;
+        resolve: (value: SharedDetachedRead) => void;
+        reject: (reason: unknown) => void;
+    }[] = [];
+    const pending = refs.map((ref) => {
+        const owner = chatOwnerToken(ref.chaId);
+        const key = JSON.stringify([
+            epoch,
+            owner,
+            ref.chaId,
+            ref.chatId,
+            heldChatRevision(ref),
+            structured,
+            generation,
+        ]);
+        let promise = detachedReadsInFlight.get(key);
+        if (!promise) {
+            let resolve!: (value: SharedDetachedRead) => void;
+            let reject!: (reason: unknown) => void;
+            promise = new Promise<SharedDetachedRead>((done, fail) => {
+                resolve = done;
+                reject = fail;
+            });
+            claimed.push({ ref, key, owner, promise, resolve, reject });
+            detachedReadsInFlight.set(key, promise);
+        }
+        return promise.then((value) => [ref, value] as const);
+    });
+    if (claimed.length > 0) {
+        void (async () => {
+            try {
+                const reads = await readChatRefsDetached(claimed.map(({ ref }) => ref));
+                for (const { ref, owner, resolve } of claimed) {
+                    const read = reads.get(ref.chaId)?.get(ref.chatId) ?? "absent";
+                    const needsSnapshot = typeof read !== "string" && needsChatSnapshot(read.data);
+                    if (
+                        typeof read !== "string" &&
+                        !needsSnapshot &&
+                        epoch === getResourceEpoch() &&
+                        owner === chatOwnerToken(ref.chaId)
+                    ) {
+                        rememberDetachedChat(ref, read, structured, generation);
+                    }
+                    resolve({ read, needsSnapshot });
+                }
+            } catch (error) {
+                for (const { reject } of claimed) reject(error);
+            } finally {
+                for (const { key, promise } of claimed) {
+                    if (detachedReadsInFlight.get(key) === promise) detachedReadsInFlight.delete(key);
+                }
+            }
+        })();
+    }
+    return new Map(await Promise.all(pending));
+}
+
+/**
+ * Fully held current pages copy without flushing; other reads save queued work before using any
+ * unloaded server copies. Cold reads are shared across callers, keeping
+ * server copies outside the chat store. Cached bodies check their separate projection on every
+ * structured-memory reuse. Loaded members stay pinned and are copied in `run`'s synchronous pass.
+ * Unsafe copies use held-state loading; a page loads only its members within the single-load budget.
+ * Each caller rechecks owners, local work, cache hits and membership after awaits, with a few assembly
+ * attempts before held-state fallback. The optional selector names one character's page and limits
+ * its reads and refreshes to those members.
  */
 async function withDetachedDatabaseChats<T>(
     chaIds: readonly (string | undefined)[],
@@ -1241,8 +1386,21 @@ async function withDetachedDatabaseChats<T>(
         }
     };
     const refreshed = () => chatsOfRead(ids, undefined, members);
-    const loaded = () =>
-        withChatsLoaded(
+    const loaded = async () => {
+        checkOwners();
+        if (selectMembers) {
+            const result = await withHeldChatPage(
+                ids[0],
+                () => {
+                    checkOwners();
+                    return run();
+                },
+                members,
+                true,
+            );
+            return result!.value;
+        }
+        return withChatsLoaded(
             ids,
             () => {
                 checkOwners();
@@ -1250,7 +1408,21 @@ async function withDetachedDatabaseChats<T>(
             },
             refreshed,
         );
+    };
     try {
+        if (selectMembers) {
+            const held = await withHeldChatPage(
+                ids[0],
+                () => {
+                    checkOwners();
+                    return run();
+                },
+                members,
+                false,
+            );
+            checkOwners();
+            if (held) return held.value;
+        }
         let flushed: Awaited<ReturnType<typeof flushResources>>;
         try {
             flushed = await flushResources();
@@ -1266,11 +1438,11 @@ async function withDetachedDatabaseChats<T>(
             ),
         );
         const reads = new Map<string, Map<string, DetachedChatRead>>();
-        const cacheHits = new Map<string, { ref: ChatRef; hit: DetachedChatCacheHit }>();
+        const cacheHits = new Map<string, { ref: ChatRef; hit: DetachedChatReadHit }>();
         const discardInvalidHits = () => {
             let discarded = false;
             for (const [key, { ref, hit }] of cacheHits) {
-                if (detachedChatCacheHitCurrent(ref, hit)) continue;
+                if (detachedChatReadHitCurrent(ref, hit)) continue;
                 reads.get(ref.chaId)?.delete(ref.chatId);
                 forgetDetachedChat(ref, hit.entry);
                 cacheHits.delete(key);
@@ -1296,46 +1468,36 @@ async function withDetachedDatabaseChats<T>(
             for (const chaId of ids) {
                 if (!fallback.has(chaId) && needsLoaded(chaId)) fallback.add(chaId);
             }
-            const missing = ids.flatMap((chaId) =>
+            if (selectMembers && fallback.size > 0) return await loaded();
+            const wanted = ids.flatMap((chaId) =>
                 fallback.has(chaId)
                     ? []
-                    : members(chaId).flatMap(({ id }) => {
-                          const ref = { chaId, chatId: id };
-                          if (findChat(ref) || reads.get(chaId)?.has(id)) return [];
-                          const hit = cachedDetachedChat(ref);
-                          if (!hit) return [ref];
-                          let held = reads.get(chaId);
-                          if (!held) {
-                              held = new Map();
-                              reads.set(chaId, held);
-                          }
-                          held.set(id, hit.entry);
-                          cacheHits.set(`${chaId}\u0000${id}`, { ref, hit });
-                          return [];
-                      }),
+                    : members(chaId).flatMap(({ id }) =>
+                          findChat({ chaId, chatId: id }) || reads.get(chaId)?.has(id) ? [] : [{ chaId, chatId: id }],
+                      ),
             );
+            const hits = await cachedDetachedChatsForRead(wanted, MEMORY_REFRESH_DEADLINE_MS);
+            const missing: ChatRef[] = [];
+            for (const ref of wanted) {
+                const hit = hits.get(ref);
+                if (!hit || !detachedChatReadHitCurrent(ref, hit)) {
+                    missing.push(ref);
+                    continue;
+                }
+                let held = reads.get(ref.chaId);
+                if (!held) reads.set(ref.chaId, (held = new Map()));
+                held.set(ref.chatId, { revision: hit.entry.revision, data: hit.data });
+                cacheHits.set(`${ref.chaId}\u0000${ref.chatId}`, { ref, hit });
+            }
             if (missing.length > 0) {
                 try {
-                    const generation = detachedChatCacheGeneration();
-                    const structured = settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
-                    const read = await readChatRefsDetached(missing);
-                    for (const [chaId, chats] of read) {
-                        let held = reads.get(chaId);
-                        if (!held) {
-                            held = new Map();
-                            reads.set(chaId, held);
-                        }
-                        for (const [id, chat] of chats) {
-                            held.set(id, chat);
-                            // The normal snapshot drops these keys; returning the raw JSON would differ.
-                            if (typeof chat !== "string") {
-                                if (needsChatSnapshot(chat.data)) {
-                                    fallback.add(chaId);
-                                } else {
-                                    rememberDetachedChat({ chaId, chatId: id }, chat, structured, generation);
-                                }
-                            }
-                        }
+                    const read = await readSharedDetachedChats(missing);
+                    for (const [ref, { read: chat, needsSnapshot }] of read) {
+                        let held = reads.get(ref.chaId);
+                        if (!held) reads.set(ref.chaId, (held = new Map()));
+                        held.set(ref.chatId, chat);
+                        // The normal snapshot drops own __proto__ keys; raw JSON would differ.
+                        if (needsSnapshot) fallback.add(ref.chaId);
                     }
                 } catch {
                     return await loaded();
@@ -1345,6 +1507,7 @@ async function withDetachedDatabaseChats<T>(
             for (const chaId of ids) {
                 if (!fallback.has(chaId) && needsLoaded(chaId)) fallback.add(chaId);
             }
+            if (selectMembers && fallback.size > 0) return await loaded();
             pinLoadedMembers();
             const assembled = await withChatsLoaded(
                 [...fallback],
@@ -1355,10 +1518,7 @@ async function withDetachedDatabaseChats<T>(
                     for (const chaId of ids) {
                         const selected = members(chaId);
                         const before = prepared?.get(chaId);
-                        if (
-                            before &&
-                            (before.length !== selected.length || before.some(({ id }, i) => id !== selected[i].id))
-                        ) {
+                        if (before && !sameChatMembers(before, selected)) {
                             retry = true;
                             continue;
                         }

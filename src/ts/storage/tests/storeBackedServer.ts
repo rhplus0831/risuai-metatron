@@ -23,6 +23,7 @@ import {
 } from "../../../../shared/moduleImport.ts";
 import type { RisuModule } from "../../../../shared/modules.ts";
 import { decodeRPack } from "../../../../shared/rpack.ts";
+import { STRUCTURED_MEMORY_PATH, type SealedHypaV3Data } from "../../../../shared/structuredMemory.ts";
 import {
     type ChangeSet,
     RESOURCE_EPOCH_HEADER,
@@ -53,6 +54,20 @@ import {
 
 /** The subset of the server store the tests call (`server/src/data/resourceStore.ts`). */
 export type ServerStore = {
+    memory: {
+        readContents(characterId: string, chatId: string): { revision: string };
+        write(
+            characterId: string,
+            chatId: string,
+            options: { epoch: string; baseRevision: string },
+            changes: unknown,
+        ): string;
+        readProjectionRevisions(refs: readonly { characterId: string; chatId: string }[]): (string | null)[];
+        readProjection(
+            characterId: string,
+            chatId: string,
+        ): { revision: string | null; data: SealedHypaV3Data | null } | null;
+    };
     epoch(): string;
     close(): void;
     get(kind: unknown, id: string): { revision: string; data: any } | null;
@@ -208,6 +223,8 @@ export class StoreBackedServer {
     >;
     /** Opt-in stored-byte budget for HTTP reads that request continuation. */
     readResponseBytes?: number;
+    /** Opt in to the real memory store's read routes; false models a server without those routes. */
+    structuredMemoryReads = false;
     requests: { method: string; path: string; body: any }[] = [];
     /** Resolves a held batch; set while `holdNextBatch` is pending. */
     releaseBatch: (() => void) | null = null;
@@ -521,6 +538,25 @@ export class StoreBackedServer {
             return Response.json(failure.body ?? { error: `failed ${failure.status}` }, { status: failure.status });
         }
         const headers = new Headers(init.headers);
+
+        if (this.structuredMemoryReads && url.pathname.startsWith(`${STRUCTURED_MEMORY_PATH}/`)) {
+            if (headers.get(RESOURCE_EPOCH_HEADER) !== this.store.epoch()) {
+                return Response.json({ error: "EpochMismatch", epoch: this.store.epoch() }, { status: 412 });
+            }
+            if (url.pathname === `${STRUCTURED_MEMORY_PATH}/revisions` && method === "POST") {
+                return Response.json({ revisions: this.store.memory.readProjectionRevisions(body.chats) });
+            }
+            const projection = url.pathname.match(/^\/api\/memory\/structured\/([^/]+)\/([^/]+)\/projection$/);
+            if (projection && method === "GET") {
+                const read = this.store.memory.readProjection(
+                    decodeURIComponent(projection[1]),
+                    decodeURIComponent(projection[2]),
+                );
+                return read
+                    ? Response.json({ revision: read.revision, hypaV3Data: read.data })
+                    : Response.json({ reason: "chatGone", error: "Chat not found" }, { status: 404 });
+            }
+        }
 
         if (url.pathname === MODULE_IMPORT_PATH && method === "POST") {
             return this.importModuleRoute(init.body);
