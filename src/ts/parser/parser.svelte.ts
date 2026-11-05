@@ -32,6 +32,7 @@ import {
     getGlobalChatVarOf,
 } from "./chatVar.svelte";
 import { type CapturedTransform, captureTransform, serverProcessScript } from "./transformClient";
+import { readRenderIO } from "./renderErrors";
 import { get } from "svelte/store";
 import { selectedIndex } from "../storage/selection.svelte";
 import css, { type CssAtRuleAST } from "@adobe/css-tools";
@@ -70,7 +71,7 @@ import cssSelectorParser from "postcss-selector-parser";
  *   last-created scopes kept, in creation order: a hit does not renew one). Each evaluator has its own budget.
  * - A parse that reaches its budget throws `CbsLimitError` to its caller. `risuChatParserForDisplay` turns it into
  *   the limit message; style restoration (`decodeStyleContent`) turns it, like any failure of a style's CBS or CSS
- *   parse, into its CSS error fallback.
+ *   parse, into its CSS error fallback. Successful CSS scoping is cached by the exact text after CBS evaluation.
  * - `ParseMarkdown` renders a message body; `trimMarkdown` (and `trimMarkdownSharingStyles` for a chat row whose
  *   styles are shared, `chatStyles.ts`) sanitizes it. A bare lowercase `<style>...</style>` with a body (no
  *   attributes: `styleRegex`) travels hex-encoded as `<risu-style>` through Markdown and the sanitizer, and only
@@ -475,12 +476,13 @@ function getEmoSrc(emoArr: readonly (readonly string[])[], emoPaths: AssetPaths)
 
 const fileSrcCache = new Map<string, string>();
 
-async function getFileSrcCached(path: string) {
+async function getFileSrcCached(path: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     let cached = fileSrcCache.get(path);
     if (cached) {
         return cached;
     }
-    const src = await getFileSrc(path);
+    const src = await readRenderIO(() => getFileSrc(path), signal);
     fileSrcCache.set(path, src);
     return src;
 }
@@ -636,7 +638,9 @@ async function parseAdditionalAssets(
     mode: "normal" | "back",
     /** Source icons resolved before the render's first await, shared by both asset passes. */
     arg: { ch: number; charIcon?: string; userIcon?: string },
+    signal?: AbortSignal,
 ) {
+    signal?.throwIfAborted();
     const assetWidthString =
         (settings.ui.assetWidth && settings.ui.assetWidth !== -1) || settings.ui.assetWidth === 0
             ? `max-width:${settings.ui.assetWidth}rem;`
@@ -658,6 +662,7 @@ async function parseAdditionalAssets(
     let cx: number | null = null;
 
     data = await replaceAsync(data, assetRegex, async (full: string, type: string, name: string) => {
+        signal?.throwIfAborted();
         name = name.toLocaleLowerCase();
 
         // Skip image-related assets when hideAllImages is enabled
@@ -668,7 +673,8 @@ async function parseAdditionalAssets(
 
         if (type === "emotion") {
             const srcPath = emoPaths?.[name]?.srcPaths?.[0];
-            const path = srcPath ? await getFileSrcCached(srcPath) : null;
+            const path = srcPath ? await getFileSrcCached(srcPath, signal) : null;
+            signal?.throwIfAborted();
             if (!path) {
                 return "";
             }
@@ -712,7 +718,8 @@ async function parseAdditionalAssets(
             pSrc = match.srcPaths[selIndex];
         }
 
-        const p = await getFileSrcCached(pSrc);
+        const p = await getFileSrcCached(pSrc, signal);
+        signal?.throwIfAborted();
         const mime = assetMimeType(assetExtension(pSrc));
         const sourceType = mime === "application/octet-stream" ? "" : ` type="${mime}"`;
         switch (type) {
@@ -746,10 +753,17 @@ async function parseAdditionalAssets(
         return "";
     });
 
+    signal?.throwIfAborted();
     if (needsSourceAccess) {
-        data = data.replace(/\uE9b4CHAR\uE9b4/g, arg.charIcon ? await getFileSrc(arg.charIcon) : "");
+        data = data.replace(
+            /\uE9b4CHAR\uE9b4/g,
+            arg.charIcon ? await readRenderIO(() => getFileSrc(arg.charIcon), signal) : "",
+        );
 
-        data = data.replace(/\uE9b4USER\uE9b4/g, arg.userIcon ? await getFileSrc(arg.userIcon) : "");
+        data = data.replace(
+            /\uE9b4USER\uE9b4/g,
+            arg.userIcon ? await readRenderIO(() => getFileSrc(arg.userIcon), signal) : "",
+        );
     }
 
     return data;
@@ -902,7 +916,8 @@ function trimmer(str: string) {
  * gets none, so the browser sniffs the bytes. Both URLs are never revoked, so cached renders keep working ones;
  * a page that loses its controlling worker renders later inlays through the fallback.
  */
-async function parseInlayAssets(data: string) {
+async function parseInlayAssets(data: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const inlayMatch = data.match(/{{(inlay|inlayed|inlayeddata)::(.+?)}}/g);
     if (inlayMatch) {
         for (const inlay of inlayMatch) {
@@ -914,12 +929,12 @@ async function parseInlayAssets(data: string) {
             // Images use getFileSrc; audio and video use direct asset URLs with a capable controlling
             // worker, otherwise typed object URLs per asset key. These URLs are never revoked, so
             // cached renders and translations never hold dead ones.
-            const media = await getInlayMedia(id);
+            const media = await readRenderIO(() => getInlayMedia(id), signal);
             const url = !media
                 ? ""
                 : media.type === "image"
-                  ? await getFileSrc(media.asset)
-                  : (getDirectAssetSrc(media.asset) ?? (await getInlayObjectUrl(id)) ?? "");
+                  ? await readRenderIO(() => getFileSrc(media.asset), signal)
+                  : (getDirectAssetSrc(media.asset) ?? (await readRenderIO(() => getInlayObjectUrl(id), signal)) ?? "");
             if (!url) {
                 continue;
             }
@@ -1002,6 +1017,9 @@ function parseThoughtsAndTools(data: string) {
  * omitted. `{{source::char}}` is the image of the owner of the render's chat (the capture's, else the selected
  * chat; a group owner included), else of the selected character; `{{source::user}}` is that chat's persona icon.
  * Both are read untracked before the first await and shared by both asset passes.
+ * The signal is checked before each awaited stage (both asset passes, the script stage, inlays and Markdown)
+ * and after the last; `serverProcessScript` also checks it on entry. Rejected asset and inlay reads are marked
+ * transient for the row.
  */
 export async function ParseMarkdown(
     data: string,
@@ -1011,7 +1029,9 @@ export async function ParseMarkdown(
     cbsConditions: CbsConditions = {},
     /** A render that captured its transform context earlier (`ChatBody`); null: no context (the script stage is skipped). */
     capturedTransform?: CapturedTransform | null,
+    signal?: AbortSignal,
 ) {
+    signal?.throwIfAborted();
     let firstParsed = "";
     const additionalAssetMode = mode === "back" ? "back" : "normal";
     let char = typeof charArg === "string" ? findCharacterbyId(charArg) : charArg;
@@ -1032,15 +1052,23 @@ export async function ParseMarkdown(
     });
 
     if (char && char.type !== "group") {
-        data = await parseAdditionalAssets(data, char, additionalAssetMode, {
-            ch: chatID,
-            ...sourceIcons,
-        });
+        signal?.throwIfAborted();
+        data = await parseAdditionalAssets(
+            data,
+            char,
+            additionalAssetMode,
+            {
+                ch: chatID,
+                ...sourceIcons,
+            },
+            signal,
+        );
         firstParsed = data;
     }
 
     // Without a context the script stage is skipped: the text stays as it is.
     if (char && transform) {
+        signal?.throwIfAborted();
         data = (
             await serverProcessScript(
                 char,
@@ -1050,24 +1078,36 @@ export async function ParseMarkdown(
                 cbsConditions,
                 transform,
                 mode === "back" ? "background" : "message",
+                signal,
             )
         ).data;
     }
 
     if (firstParsed !== data && char && char.type !== "group") {
-        data = await parseAdditionalAssets(data, char, additionalAssetMode, {
-            ch: chatID,
-            ...sourceIcons,
-        });
+        signal?.throwIfAborted();
+        data = await parseAdditionalAssets(
+            data,
+            char,
+            additionalAssetMode,
+            {
+                ch: chatID,
+                ...sourceIcons,
+            },
+            signal,
+        );
     }
 
-    data = await parseInlayAssets(data ?? "");
+    signal?.throwIfAborted();
+    data = await parseInlayAssets(data ?? "", signal);
+    signal?.throwIfAborted();
 
     data = parseThoughtsAndTools(data);
 
     data = encodeStyle(data);
     if (mode === "normal" || mode === "notrim") {
+        signal?.throwIfAborted();
         data = await renderHighlightableMarkdown(data);
+        signal?.throwIfAborted();
 
         if (mode === "notrim") {
             return data;
@@ -1116,6 +1156,7 @@ const trimPurifyConfig = {
  * raw value starts with `data:` emptied (a quoted or `url(...)` data import is kept). A style whose CBS or CSS
  * parse fails (a `CbsLimitError` included) becomes text: `CSS ERROR: ...` with `returnCSSError`, else nothing.
  * The CSS is set as the element's text, not fed back to the HTML parser during restoration.
+ * Successful scoping reuses a bounded cache keyed by the exact CSS after CBS evaluation.
  */
 export function trimMarkdown(data: string) {
     if (!data) {
@@ -1352,30 +1393,56 @@ function decodeStyleRule(rule: CssAtRuleAST) {
     return rule;
 }
 
+const SCOPED_CSS_MAX_ENTRIES = 256;
+const SCOPED_CSS_MAX_BYTES = 4 * 1024 * 1024;
+const scopedCssCache = new Map<string, string>();
+let scopedCssCacheBytes = 0;
+
+/** Scopes post-CBS CSS; successful strings use an LRU bounded by entries and UTF-16 key/value bytes. */
+function scopeCss(text: string): string {
+    // Anything decodeStyleRule or the stringify reads must join this exact post-CBS key.
+    const cached = scopedCssCache.get(text);
+    if (cached !== undefined) {
+        scopedCssCache.delete(text);
+        scopedCssCache.set(text, cached);
+        return cached;
+    }
+
+    const ast = css.parse(text);
+    const rules = ast?.stylesheet?.rules;
+    if (rules) {
+        for (let i = 0; i < rules.length; i++) {
+            rules[i] = decodeStyleRule(rules[i]);
+        }
+        ast.stylesheet.rules = rules;
+    }
+    const scoped = css.stringify(ast, {
+        indent: "",
+        compress: true,
+    });
+    const size = (text.length + scoped.length) * 2;
+    if (size > SCOPED_CSS_MAX_BYTES) return scoped;
+
+    while (scopedCssCache.size >= SCOPED_CSS_MAX_ENTRIES || scopedCssCacheBytes + size > SCOPED_CSS_MAX_BYTES) {
+        const oldest = scopedCssCache.keys().next().value!;
+        scopedCssCacheBytes -= (oldest.length + scopedCssCache.get(oldest)!.length) * 2;
+        scopedCssCache.delete(oldest);
+    }
+    scopedCssCache.set(text, scoped);
+    scopedCssCacheBytes += size;
+    return scoped;
+}
+
 /**
- * Decodes one <risu-style> body into scoped CSS. Returns the CSS on its own so
- * the caller can put it into a real <style> element instead of a markup string.
- * On a CSS parse error the style is dropped and `fallback` holds the text that
- * takes its place.
+ * Decodes one <risu-style> body, evaluates CBS for the selected chat, then reuses scoped CSS by that result.
+ * Returns the CSS on its own so the caller can put it into a real <style> element instead of a markup string.
+ * On a CBS or CSS error the style is dropped and `fallback` holds the text that takes its place.
  */
 function decodeStyleContent(hexText: string): { css?: string; fallback?: string } {
     try {
         let text = Buffer.from(hexText, "hex").toString("utf-8");
         text = risuChatParser(text);
-        const ast = css.parse(text);
-        const rules = ast?.stylesheet?.rules;
-        if (rules) {
-            for (let i = 0; i < rules.length; i++) {
-                rules[i] = decodeStyleRule(rules[i]);
-            }
-            ast.stylesheet.rules = rules;
-        }
-        return {
-            css: css.stringify(ast, {
-                indent: "",
-                compress: true,
-            }),
-        };
+        return { css: scopeCss(text) };
     } catch (error) {
         if (settings.ui.returnCSSError) {
             return { fallback: `CSS ERROR: ${error}` };

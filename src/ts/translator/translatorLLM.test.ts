@@ -39,7 +39,11 @@ vi.mock("localforage", () => ({
         }),
     },
 }));
-vi.mock("src/ts/process/request/request", () => ({ requestChatData: request.requestChatData }));
+vi.mock("src/ts/process/request/request", async () =>
+    (await import("src/ts/process/request/tests/requestMock")).createRequestMock({
+        requestChatData: request.requestChatData,
+    }),
+);
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: alerts.alertError,
@@ -85,6 +89,7 @@ import {
     getCurrentTranslatorPreset,
     getLLMCache,
     llmTranslationCacheKey,
+    LLMCacheStorage,
     runTranslator,
     searchLLMCache,
     translate,
@@ -221,6 +226,127 @@ describe("llmTranslationCacheKey", () => {
         changed("select another preset", () => (settings.translatorPresets.selectedId = "one"));
         changed("target language", () => (settings.memoryTranslateMedia.translator = "ja"));
         changed("source language", () => (settings.memoryTranslateMedia.translatorInputLanguage = "auto"));
+    });
+});
+
+describe("rendered LLM request sharing", () => {
+    type Answer = { type: "success"; result: string };
+    const pending: { signal: AbortSignal | undefined; resolve: (answer: Answer) => void }[] = [];
+    const observed: Promise<unknown>[] = [];
+
+    function render(source: string, regenerate = false, signal?: AbortSignal) {
+        const view: { value?: string; error?: unknown } = {};
+        observed.push(
+            translateHTML(source, false, "", -1, regenerate, null, signal).then(
+                (value) => {
+                    view.value = value;
+                },
+                (error) => {
+                    view.error = error;
+                },
+            ),
+        );
+        return view;
+    }
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        settings.translatorPresets.selectedId = "one";
+        pending.length = 0;
+        observed.length = 0;
+        request.requestChatData.mockReset().mockImplementation(
+            (_arg, _mode, signal?: AbortSignal) =>
+                new Promise<Answer>((resolve, reject) => {
+                    pending.push({ signal, resolve });
+                    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+                }),
+        );
+    });
+
+    afterEach(async () => {
+        pending.forEach(({ resolve }) => resolve({ type: "success", result: "cleanup" }));
+        await vi.advanceTimersByTimeAsync(0);
+        await Promise.all(observed);
+        vi.restoreAllMocks();
+        vi.useRealTimers();
+    });
+
+    it("shares one request and cache write while an aborted caller leaves the other subscribed", async () => {
+        const write = vi.spyOn(LLMCacheStorage, "setItem");
+        const controllers = [new AbortController(), new AbortController()];
+        const first = render("Shared translation", false, controllers[0].signal);
+        const second = render("Shared translation", false, controllers[1].signal);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        controllers[0].abort();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(first).toEqual({ error: controllers[0].signal.reason });
+        expect(second).toEqual({});
+        expect(pending[0].signal!.aborted).toBe(false);
+        expect(write).not.toHaveBeenCalled();
+
+        pending[0].resolve({ type: "success", result: "Shared answer" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(second).toEqual({ value: "Shared answer" });
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        expect(write).toHaveBeenCalledExactlyOnceWith(llmTranslationCacheKey("Shared translation"), "Shared answer");
+        expect(await LLMCacheStorage.getItem(llmTranslationCacheKey("Shared translation"))).toBe("Shared answer");
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+
+    it("aborts the shared LLM request when both subscribers leave", async () => {
+        const write = vi.spyOn(LLMCacheStorage, "setItem");
+        const controllers = [new AbortController(), new AbortController()];
+        const callers = controllers.map((controller) => render("Abandoned translation", false, controller.signal));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        controllers[0].abort();
+        expect(pending[0].signal!.aborted).toBe(false);
+        controllers[1].abort();
+        expect(pending[0].signal!.aborted).toBe(true);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(callers).toEqual(controllers.map((controller) => ({ error: controller.signal.reason })));
+        expect(write).not.toHaveBeenCalled();
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+
+    it("regenerates independently and keeps the new cached text when an older ordinary request finishes last", async () => {
+        const write = vi.spyOn(LLMCacheStorage, "setItem");
+        const ordinary = render("Retranslate this");
+        await vi.advanceTimersByTimeAsync(0);
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        const regenerated = render("Retranslate this", true);
+        const joiningOrdinary = render("Retranslate this");
+        await vi.advanceTimersByTimeAsync(0);
+        expect(request.requestChatData).toHaveBeenCalledTimes(2);
+        pending[1].resolve({ type: "success", result: "New translation" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(regenerated).toEqual({ value: "New translation" });
+        expect([ordinary, joiningOrdinary]).toEqual([{}, {}]);
+        const key = llmTranslationCacheKey("Retranslate this");
+        expect(await LLMCacheStorage.getItem(key)).toBe("New translation");
+
+        pending[0].resolve({ type: "success", result: "Older translation" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect([ordinary, joiningOrdinary]).toEqual([{ value: "Older translation" }, { value: "Older translation" }]);
+        expect(request.requestChatData).toHaveBeenCalledTimes(2);
+        expect(write).toHaveBeenCalledExactlyOnceWith(key, "New translation");
+        expect(await LLMCacheStorage.getItem(key)).toBe("New translation");
+    });
+
+    it("starts its own ordinary request during a regeneration instead of joining it", async () => {
+        const regenerated = render("Regeneration already running", true);
+        await vi.advanceTimersByTimeAsync(0);
+        const ordinary = render("Regeneration already running");
+        await vi.advanceTimersByTimeAsync(0);
+        expect(request.requestChatData).toHaveBeenCalledTimes(2);
+        pending[0].resolve({ type: "success", result: "Regenerated answer" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(regenerated).toEqual({ value: "Regenerated answer" });
+        expect(ordinary).toEqual({});
+        pending[1].resolve({ type: "success", result: "Ordinary answer" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(ordinary).toEqual({ value: "Ordinary answer" });
     });
 });
 

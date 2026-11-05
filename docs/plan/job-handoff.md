@@ -2,7 +2,7 @@
 
 Status: drafted 2026-11-03, revised 2026-11-04 after the design audit
 ([plan design audit](../audit/plan-design-audit-2026-11-04.md), items JH1–JH5, X2, X4, X5) and again after its
-adversarial challenge, no slice landed. Decisions D1–D8 are recommendations for the owner; the **Open
+adversarial challenge. Landed: 1 (d60741baf), 2 (5ea1222a4), 3 (c9344075d), 4 (0a9c56d20). Decisions D1–D8 are recommendations for the owner; the **Open
 questions** Q1–Q3 were answered by the owner on 2026-11-03 (the recommended option each time; Q3's answer is
 superseded by D2's notice groups) and Q4 on 2026-11-04. Code anchors re-checked at `1550ebdd3`; verify them
 again before editing (STRUCTURE.md protocol step 5).
@@ -55,8 +55,8 @@ Relation to the other active plans, which share files with this one (the slices'
   `src/lib/ChatScreens/DefaultChatScreen.svelte`. Its three job toasts (`rerollCandidateDropped`,
   `rerollCandidateTooLarge`, `scriptstateCheckpointSkipped`) are `alertToast` notices, so under D2 they reach
   the job's owner only: a phone with `preferHandoff` on never sees them. Recorded here; neither plan changes it.
-- [Render Work Budget](render-work-budget.md) Slice 4 edits `src/lib/ChatScreens/DefaultChatScreen.svelte`, which
-  this plan's Slice 3 also edits.
+- [Render Work Budget](../archived-plan/README.md) (archived) Slice 4 edited `src/lib/ChatScreens/DefaultChatScreen.svelte`,
+  which this plan's Slice 3 also edits; both landed.
 - `src/lang/en.ts` and `ko.ts` are shared by several slices of every plan; their keys are append-only.
 
 ## Goal
@@ -88,8 +88,10 @@ in that time is in flight there too. It settles by the owner-absent policy: a re
 `editoutput` and `replacerafterRequest` keep the text; an undelivered `chatOutput` is recorded as skipped and
 runs late, and a delivered one is recorded as missed. The creator's terminal says so: the job's error for a
 request-side kind, `serverJob.hooksSkipped` for a skipped hook, and a new `serverJob.handoff.missedCallback`
-toast for a missed one (D5). "Prefer a worker" at creation is the way to avoid it on a device that sleeps: the
-worker takes the job before its first callback.
+toast for a missed one (D5). "Prefer a worker" at creation is the way to make it rare on a device that sleeps:
+the worker usually takes the job before its first callback, but nothing guarantees it, since the creator attaches
+as owner at admission and a callback dispatched before the worker's ticket attach is delivered to the creator
+(decided by the owner on 2026-11-05: no first-dispatch gate; the takeover then waits as a pending takeover).
 
 Not goals: hooks without any tab (the server plugin runtime plan, retired unbuilt), a job's callbacks split
 across two tabs at once, running a delivered callback again on another tab, for any kind (Q4), reclaiming a job
@@ -359,7 +361,10 @@ The baseline is `1550ebdd3` on `dev` (2026-11-04); no server, shared, or tab cod
     and the barrier before the first undelivered request expires. A request dispatched in the 45 s before the
     removal counts as delivered to the silent socket (`sendText`) and is the Goal's missed case. Slice 1 tests
     this with the real 60 s default on the fake clock, not the 300 s fixtures of
-    `server/src/tests/jobChannel.test.ts`.
+    `server/src/tests/jobChannel.test.ts`. The 50 s bound holds for a job's own first undelivered request; a
+    queued root that the absence cascade settles `disconnected` behind another job's expired root of the same
+    lane can end sooner after the offer opens (a recorded limitation, owner decision of 2026-11-05; the
+    cascade policy is unchanged, and the server-generation guide states it in Slice 4's guide pass).
   - The route exists because a browser cannot read the HTTP status of a refused WebSocket upgrade: the tab sees
     close 1006, reads the status as a non-participant, and runs the follow's gone path. The hooks refresh of
     **Later** can reuse it.
@@ -501,8 +506,8 @@ record of why. Q3's answer was superseded on 2026-11-04 after the design audit (
   An edit or replacer hook runs in a writable context whose changes, plugin-storage writes included, are
   flushed even after a cancel, `mcpList` can prompt, and a delivered `chatOutput`'s listeners may have run, so
   (b) could do a hook's work twice; (c) needs a per-effect deduplication and a callback execution identity the
-  plugin API does not have (**Later**). "Prefer a worker" at creation avoids the limitation on a device that
-  sleeps.
+  plugin API does not have (**Later**). "Prefer a worker" at creation makes the limitation rare on a device that
+  sleeps, without guaranteeing it (see the Goal).
 
 ## Slices
 
@@ -675,13 +680,15 @@ guide, the chat-pipeline guide.
 Files: new `util/playwright/checkJobHandoff.mjs` (registered in the test-harness guide's driver list beside
 `checkJobProtocol.mjs`), `util/playwright/stack.mjs` and `util/playwright/checkJobProtocol.mjs` (the plugin
 install, inline in `checkJobProtocol.mjs` today, which exports nothing, extracted to `stack.mjs` first and used
-by both drivers), the plugins guide's Tests, a final pass over every guide this plan touched.
+by both drivers), the plugins guide's Tests, a final pass over every guide this plan touched (the
+server-generation guide's Limitations gains D3's cascade case).
 
 - Driver cases, one dev stack, two browser contexts (two `clientId`s) and a test plugin with a `chatOutput`
   listener that writes a marker into the message: page A sends and is closed right after `accepted`, page B
   has `acceptHandoffs` on and another chat open; the reply completes, the marker is in the chat, and A
   reopened shows no `hooksSkipped` toast; the same with A kept open shows A the stream, the display notices,
-  and the `takenBy` toast; a `preferHandoff` send from A hands off before the first callback; a manual handoff
+  and the `takenBy` toast; a `preferHandoff` send from A hands off, and B runs every callback dispatched after
+  its takeover (the first one may still run on A, the Goal's no-guarantee note); a manual handoff
   from A to B by name; B hidden for the whole job (Q2) still completes it, with the measured hook delay
   recorded in the guide; B closed mid-job reopens an `absent` offer that A, still open, takes back.
 - A delivered, unanswered callback at takeover (the pending takeover): A's test plugin holds an `editoutput`

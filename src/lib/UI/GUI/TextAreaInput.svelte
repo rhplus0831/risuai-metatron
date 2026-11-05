@@ -76,7 +76,8 @@
     let selectingAutoComplete = $state(0);
     // TODO: Review if highlight prop can change dynamically - if so, this needs to be reactive
     // svelte-ignore state_referenced_locally
-    let highlightId = highlight ? getNewHighlightId() : 0;
+    let highlightId = highlight ? getNewHighlightId() : null;
+    let destroyed = false;
     let inpa = $state(0);
     let highlightDom: HTMLDivElement = $state();
     let optiValue = $state(value);
@@ -138,7 +139,7 @@
             onInput();
             const currentTarget = inputDom ?? textareaDom;
             if (currentTarget) onchange({ currentTarget });
-            if (inputDom) void highlightChange(value, highlightId);
+            if (inputDom && highlightId !== null) void highlightChange(value, highlightId);
         } finally {
             if (activePopupEditorSessionId === sessionId) activePopupEditorSessionId = null;
         }
@@ -253,20 +254,22 @@
     };
 
     onMount(() => {
-        highlighter(highlightDom, highlightId);
+        if (highlightId !== null) highlighter(highlightDom, highlightId);
     });
 
     onDestroy(() => {
+        destroyed = true;
         popupEditorRun += 1;
         if (activePopupEditorSessionId !== null) {
             closePopupEditorSession(activePopupEditorSessionId);
             activePopupEditorSessionId = null;
         }
-        removeHighlight(highlightId);
+        if (highlightId !== null) removeHighlight(highlightId);
     });
 
     const highlightChange = async (value: string, highlightId: number) => {
         await sleep(1);
+        if (destroyed) return;
         highlighter(highlightDom, highlightId);
     };
 
@@ -331,7 +334,7 @@
         optiValue = value;
     });
     $effect.pre(() => {
-        highlightChange(value, highlightId);
+        if (highlightId !== null) highlightChange(value, highlightId);
     });
 </script>
 

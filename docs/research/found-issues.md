@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, and the seventh (the Guides To Source run) on 2026-11-05; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run) and the eighth (the Render Work Budget run) on 2026-11-05; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -8,13 +8,13 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (7)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (8)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (8)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (11)
 - [Server routes and resource store](#server-routes-and-resource-store) (3)
 - [Request history and diagnostics](#request-history-and-diagnostics) (1)
-- [Display transform](#display-transform) (1)
-- [Chat screen and input](#chat-screen-and-input) (4)
-- [Client and plugins](#client-and-plugins) (23)
+- [Display transform](#display-transform) (2)
+- [Chat screen and input](#chat-screen-and-input) (7)
+- [Client and plugins](#client-and-plugins) (24)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (11)
 - [Guides](#guides) (4)
 - [Test timing](#test-timing) (1)
@@ -82,6 +82,13 @@ Identifiers re-checked 2026-11-03 (`setCharacterChatView`, `installRead`, `adopt
 
 **Suggested handling:** confirm with two tabs on `pnpm dev:agent`, then decide whether the remote apply should call the display update functions.
 
+### A retaken handoff job drops its live stream
+
+Found 2026-11-05 in Job Handoff Slice 2. A tab whose takeover was lost (its ticket attach never reached `owner: "self"`) ends that follow through `releaseGenerationJob` (`src/ts/network/generationJobs.ts`), which calls `endServerJob` (`src/ts/storage/chatStore.svelte.ts`). `endServerJob` adds the job's generation ids to `retiredGenerations`, and `applyServerGeneration` / `applyServerGenerationChunk` then drop every later `accepted`/`chunk` for those ids for the rest of the page's life. If that tab later takes the reopened offer for the same job, it shows no live stream for the reply in progress. Chat patches, the final copy, and callbacks still arrive. Slice 2 accepted this as a limitation.
+
+**Why it matters:** today it only affects what the worker displays. It becomes a real problem once anything relies on the worker's stream view.
+**Suggested handling:** add a chat-store "detach without retiring" release that drops the job's entries but leaves its generation ids unretired, and use it for a lost takeover.
+
 ## Server jobs and prompt assembly
 
 ### Tool schemas are outside the assembly token budget
@@ -145,6 +152,27 @@ These client exports have no caller in `src/`, `shared/` or `server/`, while a s
 
 **Suggested handling:** write a nested-loop trigger test first; if it fails, match the break's indent the way the loop jump does.
 
+### A job's current owner can take its own handoff offer
+
+Found 2026-11-05 in Job Handoff Slice 3. `takeover()` in `server/src/jobs/generationJobs.ts` gives a ticket to any client that asks against an open offer, and that includes the job's current `ownerClientId`. Slice 3 only made `handoff()` refuse a request that targets the owner (409 `alreadyOwner`). On the tab side, `takeOffer` in `src/ts/network/handoff.ts` lets a worker take any untargeted offer for a job it did not create. That covers a job it already owns, for example an `absent` offer raised after its own socket went silent. The ticket attach then replaces the owner's own socket. If a callback delivered to the old socket is still outstanding, the attach becomes a pending takeover on a viewer socket, which cannot answer that callback. The callback then runs out as `disconnected` instead of being replayed when the owner reattaches normally.
+
+**Why it matters:** an owner that would have recovered its outstanding callback by reattaching can lose it, and losing a request-side callback ends the job.
+**Suggested handling:** make `takeover()` refuse the current owner, so the tab drops the offer and its running follow reattaches as owner. Check the fix against the creator's own `absent` take-back path.
+
+### The handoff role event never carries the new owner's name
+
+Found 2026-11-05 by the Job Handoff Slice 4 driver (`util/playwright/checkJobHandoff.mjs`, case creator-keeps-watching). `shared/jobs.ts` declares the role event as `{ type: "handoff"; owner; clientName?; pending? }`. `src/ts/process/serverCommands.ts` shows `serverJob.handoff.takenBy` with the name when `clientName` is set. Nothing in `server/src/jobs/generationJobs.ts` or the `server/src/app.ts` wiring ever fills `clientName`, because the registry cannot look up the `register` names kept by `server/src/routes/events.ts`. Plan D2/D5 said the event carries the owner's name "when the server knows one".
+
+**Why it matters:** the creator always sees the generic `takenByOther` text instead of the worker's name.
+**Suggested handling:** give the registry a `clientName(clientId)` dependency, fed from the events route's registrations in `app.ts`, and use it when building every role event. Then tighten the driver's case so it requires the name.
+
+### A cancelled hook can overlap the worker's next callback
+
+Found 2026-11-05 in Job Handoff Slice 1. The owner switch (`switchOwner`, `hasDeliveredRequests` in `server/src/jobs/generationJobs.ts`) waits until no request delivered to the old owner is outstanding, and a server-side cancel or expiry counts as settled. A cancelled callback's hook may still be running on the old tab, and `runCallback` (`src/ts/network/jobChannel.ts`) flushes its resource changes even after a cancel. The old lane's drain hold (`holdDraining`, `server/src/jobs/channel.ts`) keeps only that lane busy, so the worker's lane can start the next callback while the old hook is still running. An old owner's late answer also arrives on a viewer socket and is ignored, so its drain hold ends only through `POST /drained` or the 60 s bound.
+
+**Why it matters:** the plan's guarantee that no callback runs on two tabs holds for a single callback, but a cancelled hook can still write alongside the worker's next one. The plugins guide (Job owner presence) states only the single-callback form.
+**Suggested handling:** ask the owner whether the switch should also wait for the old lane's drain holds, or state the overlap as a limitation in the server-generation guide.
+
 ## Server routes and resource store
 
 ### Routes still measure a body the limiter already counted
@@ -197,6 +225,13 @@ Identifiers re-checked 2026-11-03 (`trimPartial`, `APP_PATH`, `FRAME`, `copyText
 **Why it matters:** users with display plugins and long chats may still see a round of raw rows before the retry, and a scope whose own charge is over the limit stays raw.
 **Suggested handling:** re-measure on a realistic large chat with handlers (`util/playwright/measureTransformLua.mjs` has the shape); if a scope alone still passes the limit on realistic chats, raise the limit or charge the transcript once per scope.
 
+### More than one transform chunk is in flight at a chat switch
+
+The Render Work Budget comparison run ([audit](../audit/render-work-budget-2026-11-05.md#acceptance-after-slices-14), 2026-11-05) met "no transform target sent after a switch" but not "in-flight ones at most one chunk": switching away 100 ms after all rows mounted left 1 / 2 / 4 `/api/transform` requests (1 / 45 / 171 targets) in flight at 30 / 150 / 600 rows. Every one had been sent before the switch and all but one ended `net::ERR_ABORTED` when the last subscriber left (`src/ts/parser/transformClient.ts`); at 600 rows unmounting the rows held the main thread for about 370 ms, so one 42-target request answered first and ran to completion. How many targets cross depends on where the switch falls in the send burst (the first after run: 0 / 49 / 78).
+
+**Why it matters:** the server still evaluates several chunks nobody will show after a switch on long chats; the cancellation arrives only after the unmount work.
+**Suggested handling:** owner decision whether the plan's one-chunk bound matters; if it does, cap the chunks in flight per chat, or abort a chat's transform subscriptions when the screen leaves the chat, before the rows unmount.
+
 ## Chat screen and input
 
 ### Latest-message start scroll untested in DefaultChatScreen
@@ -228,6 +263,27 @@ The hand-written help text of the `"?"` case in `src/ts/process/command.ts` `pro
 **Why it matters:** users cannot discover those commands from `/?`.
 
 **Suggested handling:** add their entries to the help text.
+
+### The screenshot peak grows with the row count
+
+After the paged export (`src/lib/ChatScreens/screenshotExport.ts`), the Render Work Budget comparison run ([audit](../audit/render-work-budget-2026-11-05.md#acceptance-after-slices-14), 2026-11-05) writes 2 / 7 / 25 valid PNG pages for 30 / 150 / 600 rows, but the renderer's `VmHWM` still rises by 607 / 1,478 / 3,987 MiB while one page's RGBA (816 × 16,308) is 50.8 MiB, so the acceptance "peak under one page plus the largest row" is not met. Most of the peak is not the page canvas; what holds it (the per-row captures, `src/ts/screenshotCaptureCache.ts`, or the DOM-to-canvas renderer's clones) was not investigated.
+
+**Why it matters:** a 600-row export still costs about 4 GiB of renderer memory, enough to crash a tab on phones.
+**Suggested handling:** take a heap snapshot and `VmHWM` per page during a 150-row export to find what scales with rows, then release it per page.
+
+### The screenshot page fill is black
+
+`composeScreenshot` in `src/lib/ChatScreens/screenshotExport.ts` (~131, carried over from the old merge in `DefaultChatScreen.svelte`) sets `ctx.fillStyle = "var(--risu-theme-bgcolor)"`. Canvas `fillStyle` does not resolve `var(...)`, so the assignment is ignored and the fill stays `#000000`: a row narrower than its page leaves a black strip on its right, whatever the theme. Found in the Render Work Budget run (2026-11-05).
+
+**Why it matters:** visible in exports with mixed row widths on light themes.
+**Suggested handling:** resolve the color in the caller (`getComputedStyle(document.documentElement).getPropertyValue("--risu-theme-bgcolor")`) and pass it to `composeScreenshot`.
+
+### A render run pending at raw streaming is not aborted
+
+`src/lib/ChatScreens/ChatBody.svelte` aborts the previous run's `parseController` inside the `markParsingResult` `$derived.by` (~545). While `shouldRenderRawStreaming` is true neither the template nor the `$effect` reads `markParsingResult`, so the lazy derived does not re-run and the run pending when the row entered raw streaming keeps a live signal and runs to completion, hidden. Rows kept mounted across a reroll (`Chat.svelte`, `Chats.svelte`) reach it. Aborting there without a new `parseRun` would let the aborted run's `finally` write `lastParsed` (its guard is `run === parseRun`). Found in the Render Work Budget run (2026-11-05).
+
+**Why it matters:** bounded obsolete work, one run per streaming row.
+**Suggested handling:** on the transition into raw streaming, abort `parseController` and bump `parseRun` together.
 
 ## Client and plugins
 
@@ -424,6 +480,13 @@ The type `SelectInput`'s `onchange` in `src/lib/UI/PromptDataItem.svelte` (~268)
 **Why it matters:** the textarea may show `undefined`, or the prompt builder may read a missing string.
 
 **Suggested handling:** check what the editor and `src/ts/process/prompt.ts` do with a missing `text`, then initialize it in the `onchange` if needed.
+
+### getFileSrc never rejects, so asset reads are never retried
+
+`getFileSrc` in `src/ts/globalApi.svelte.ts` (~141) returns `getFileSource(loc).src`, whose loader's outer `catch` (~396) logs and resolves `""`. The render's transient classification (`src/ts/parser/renderErrors.ts`, the asset and inlay passes in `src/ts/parser/parser.svelte.ts`) marks `getFileSrc`/`getFileSrcCached` rejections transient, but a real read failure never rejects: the asset renders with an empty `src` and is not retried. `getFileSrcCached` does not cache `""` (falsy check), so the next render reads again. Found in the Render Work Budget run (2026-11-05).
+
+**Why it matters:** the plan's retry for a failed asset read (its D2) rarely fires; a transient storage failure leaves a broken image until the row re-renders for another reason.
+**Suggested handling:** an opt-in failure channel in `globalApi.svelte.ts` for the render path, rather than making the shared loader reject for every caller.
 
 ## Build, drivers, and e2e
 

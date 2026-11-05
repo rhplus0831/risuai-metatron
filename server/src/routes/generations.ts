@@ -150,6 +150,9 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
     ) {
         return "requestId must be a generation id";
     }
+    if (body.handoff !== undefined && body.handoff !== "prefer") {
+        return 'handoff must be "prefer" when present';
+    }
     const context = body.context;
     if (!isPlainObject(context)) {
         return "context must be an object";
@@ -231,6 +234,7 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
         context: parsed,
         hooks,
         clientId: body.clientId,
+        ...(body.handoff === "prefer" ? { handoff: "prefer" as const } : {}),
         ...(body.requestId !== undefined ? { requestId: body.requestId as string } : {}),
     };
     return command !== undefined
@@ -242,10 +246,10 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
  * `/api/generations`: JWT authentication, the authenticated limiter, and `no-store` on responses
  * these registrations produce. The earlier global body limiter in `server/src/app.ts`
  * (`server/src/routes/limitedBody.ts`) rejects a declared Content-Length above its cap with 413 before
- * these registrations run, without Cache-Control. Job-id routes are owner-scoped by client-id
- * equality; current, stop and request-id cancel are available to any authenticated tab.
- * The socket `/api/generations/:id/ws` is handled outside
- * these registrations by `server/src/jobs/generationJobs.ts` handleUpgrade.
+ * these registrations run, without Cache-Control. Job-id reads and controls are participant-scoped
+ * by client-id; current, stop and request-id cancel are available to any authenticated tab.
+ * The socket `/api/generations/:id/ws` is handled outside these registrations by
+ * `server/src/jobs/generationJobs.ts` handleUpgrade.
  */
 export function registerGenerationRoutes(
     app: Hono<AppEnv>,
@@ -373,9 +377,58 @@ export function registerGenerationRoutes(
     });
 
     /**
-     * GET ?clientId=: the owner's GenerationStatus, 404 for an unknown or another client's job.
-     * After the 60 s ended-job grace and collection, a kept outcome still answers state: "ended",
-     * kept: true and a trimmed terminal, but the collected job can no longer be attached.
+     * POST GenerationHandoffBody { clientId, target? } with x-resource-epoch: { offered: true }.
+     * 400 invalid ids; 404 unknown job or non-participant; 412 another epoch;
+     * 409 ended, unavailable, target already owns the job, or a takeover already reserved. Opens a requested offer.
+     */
+    app.post("/api/generations/:id/handoff", limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) return denied;
+        const read = await readJsonBody(c);
+        if (!read.ok) return read.response;
+        const body = read.body;
+        if (
+            !isPlainObject(body) ||
+            !isValidResourceId(body.clientId) ||
+            (body.target !== undefined && !isValidResourceId(body.target))
+        ) {
+            return c.json({ error: "clientId and optional target must be valid ids" }, 400);
+        }
+        const result = jobs.handoff(
+            c.req.param("id"),
+            { clientId: body.clientId, ...(body.target !== undefined ? { target: body.target as string } : {}) },
+            c.req.header(RESOURCE_EPOCH_HEADER),
+        );
+        return result.ok ? c.json(result.body) : c.json(result.body, result.status);
+    });
+
+    /**
+     * POST GenerationTakeoverBody { clientId } with x-resource-epoch: 200 { ticket }, valid for
+     * one socket attach. 400 invalid clientId; 404 unknown job; 412 another epoch;
+     * 409 no open offer, another target, a reserved takeover, an ended job, or shutdown/maintenance.
+     */
+    app.post("/api/generations/:id/takeover", limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) return denied;
+        const read = await readJsonBody(c);
+        if (!read.ok) return read.response;
+        const body = read.body;
+        if (!isPlainObject(body) || !isValidResourceId(body.clientId)) {
+            return c.json({ error: "clientId must be a valid id" }, 400);
+        }
+        const result = jobs.takeover(
+            c.req.param("id"),
+            { clientId: body.clientId },
+            c.req.header(RESOURCE_EPOCH_HEADER),
+        );
+        return result.ok ? c.json(result.body) : c.json(result.body, result.status);
+    });
+
+    /**
+     * GET ?clientId=: GenerationStatus for a participant, valid ticket holder, or pending takeover
+     * holder; 404 for an unknown job or a client without access. After the 60 s ended-job grace and
+     * collection, a kept outcome still answers state: "ended", kept: true and a trimmed terminal,
+     * but the collected job can no longer be attached.
      */
     app.get("/api/generations/:id", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
@@ -386,7 +439,7 @@ export function registerGenerationRoutes(
         return status ? c.json(status) : c.json({ error: "Generation not found" }, 404);
     });
 
-    /** DELETE ?clientId= aborts the owner's job: { aborted }; 404 for an unknown or another client's job. */
+    /** DELETE ?clientId= aborts a participant's job: { aborted }; 404 for an unknown or another client's job. */
     app.delete("/api/generations/:id", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -397,7 +450,7 @@ export function registerGenerationRoutes(
     });
 
     /**
-     * POST ?clientId= { runId }, with x-resource-epoch, stops the owner's initial memory
+     * POST ?clientId= { runId }, with x-resource-epoch, stops a participant's initial memory
      * summarization run after its summary in progress; the job continues. { stopped: true };
      * 400 invalid runId; 404 unknown/another client's job; 409 jobEnded, noMemoryRun or otherMemoryRun;
      * 412 another epoch.
@@ -425,10 +478,11 @@ export function registerGenerationRoutes(
     });
 
     /**
-     * POST ?clientId= ChannelDrainedBody { callbackId }: the owner reports a server-cancelled
-     * callback no longer running in the tab, freeing its channel lane. { drained } (false when it
-     * held none), also for an ended job still in grace; 400 invalid callbackId, 404 unknown/another
-     * client's job. A collected kept outcome has no channel to drain.
+     * POST ?clientId= ChannelDrainedBody { callbackId }: the dispatched client reports that a
+     * server-cancelled callback no longer runs in the tab, freeing its channel lane. { drained }
+     * (false when it held none), also for an ended job still in grace; 400 invalid callbackId,
+     * 404 unknown/another client's callback. Former owners may drain holds in their own lane;
+     * another participant cannot release them. A collected kept outcome has no channel to drain.
      */
     app.post("/api/generations/:id/drained", limiter, async (c) => {
         const denied = await auth.checkAuth(c);

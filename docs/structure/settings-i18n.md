@@ -71,7 +71,7 @@ Each module's rules are in its header or on its exports, and each component's in
   items below the Model and Prompt pages' handwritten controls); `src/ts/setting/botSettingsParamsData.ts`
   (`allBasicParameterItems`, `modelParameterItems`); `src/ts/setting/languageSettingsData.svelte.ts` (`langState`, the
   `translang` export).
-- Each item sits in one leaf array and is placed by id ([Invariants](#invariants), [Recipes](#recipes)).
+- Items sit in one leaf array and are placed by id ([Recipes](#recipes)).
 
 ### Renderers and credential links
 
@@ -97,7 +97,9 @@ Each module's rules are in its header or on its exports, and each component's in
 
 ### Pages
 
-These live in `src/lib/Setting/Pages/`.
+These live in `src/lib/Setting/Pages/`. `Display/HandoffToggles.svelte` edits device stores in
+`src/ts/network/handoff.ts`, using `serverJob.handoff` strings; its custom registry item belongs to the notification
+section.
 
 - Declarative: `AccessibilitySettings`, `InteractionSettings`, `AdvancedSettings`, and `TranslationSettings` (the header
   array, then `SettingsSections`), `DisplaySettings` (sectioned per tab), `ChatFormatSettings`, and `LanguageSettings`
@@ -174,7 +176,7 @@ These live in `src/lib/Setting/Pages/`.
 
 ## Invariants
 
-- A new setting needs: a `Database` field, its place and default (`persistence.md`, "Add a persisted setting"), a
+- A synced setting needs a `Database` field, ownership and default (`persistence.md`, "Add a persisted setting"), a
   `SettingItem` in the right data array (or handwritten UI), and an `en.ts` key.
 - Keep `item.id` values unique and stable. An item keeps its id when it moves to another section or page; section ids
   are separate and unique across pages.

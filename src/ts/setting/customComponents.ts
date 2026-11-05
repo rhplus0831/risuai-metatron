@@ -26,6 +26,7 @@ import CustomColorSchemeEditor from "src/lib/Setting/Pages/Display/CustomColorSc
 import CustomTextThemeEditor from "src/lib/Setting/Pages/Display/CustomTextThemeEditor.svelte";
 import CustomBackgroundToggle from "src/lib/Setting/Pages/Display/CustomBackgroundToggle.svelte";
 import NullableTextColorToggle from "src/lib/Setting/Pages/Display/NullableTextColorToggle.svelte";
+import HandoffToggles from "src/lib/Setting/Pages/Display/HandoffToggles.svelte";
 import NotificationToggle from "src/lib/Setting/Pages/Display/NotificationToggle.svelte";
 
 /**
@@ -45,6 +46,7 @@ export const customComponents: Record<string, Component<any>> = {
     CustomBackgroundToggle: CustomBackgroundToggle,
     NullableTextColorToggle: NullableTextColorToggle,
     NotificationToggle: NotificationToggle,
+    HandoffToggles,
     // Add more as we migrate complex settings
 } as const;
 

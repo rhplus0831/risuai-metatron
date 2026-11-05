@@ -5,10 +5,26 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { WebSocket as WsClient } from "ws";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
-import { type CallbackResult, type GenerationEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import {
+    type CallbackResult,
+    type GenerationEvent,
+    type GenerationStatus,
+    NO_GENERATION_HOOKS,
+} from "../../../shared/jobs.ts";
 import type { ResourceReadKindsResult, ResourceReadRefsResult } from "../../../shared/resources.ts";
 import type { MemoryControl, RunningJob } from "../jobs/generationJobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
+
+/** A promise with its settle functions (`Promise.withResolvers` is newer than the server's `lib`). */
+function withResolvers<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+        resolve = done;
+        reject = fail;
+    });
+    return { promise, resolve, reject };
+}
 
 // The generation job routes and the owner socket (`server/src/routes/generations.ts`,
 // `generationJobs.handleUpgrade`) on a real listening server, with a fake runner driven by the test,
@@ -198,12 +214,13 @@ describe("generation jobs over HTTP and WebSocket", () => {
      */
     async function follow(
         jobId: string,
-        options: { clientId?: string; token?: string; attach?: number; keepOpen?: boolean } = {},
+        options: { clientId?: string; token?: string; attach?: number; keepOpen?: boolean; ticket?: string } = {},
     ): Promise<Followed> {
         const token = options.token ?? (await signer.jwt());
         const query =
             `?risu-auth=${encodeURIComponent(token)}&clientId=${encodeURIComponent(options.clientId ?? "tab")}` +
-            (options.attach === undefined ? "" : `&attach=${options.attach}`);
+            (options.attach === undefined ? "" : `&attach=${options.attach}`) +
+            (options.ticket ? `&ticket=${options.ticket}` : "");
         const ws = new WsClient(`${base.replace("http", "ws")}/api/generations/${jobId}/ws${query}`);
         const events: GenerationEvent[] = [];
         const opened = new Promise<void>((resolve) => ws.once("open", () => resolve()));
@@ -250,6 +267,197 @@ describe("generation jobs over HTTP and WebSocket", () => {
             (event as { messages?: { after: string | null; message: { chatId: string; data: string } }[] }).messages ??
             []
         ).map((row) => [row.message.chatId, row.after, row.message.data]);
+
+    describe("handoff HTTP controls", () => {
+        const controlledClock = () =>
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const capture = () => {
+            const entered = withResolvers<RunningJob>();
+            step((job) => entered.resolve(job));
+            return entered.promise;
+        };
+        const post = (id: string, action: string, body: unknown, at?: string | null) =>
+            request(`/api/generations/${id}/${action}`, json(body), { epoch: at });
+        async function transfer(id: string) {
+            expect((await post(id, "handoff", { clientId: "tab", target: "worker" })).status).toBe(200);
+            const issued = await post(id, "takeover", { clientId: "worker" });
+            expect(issued.status).toBe(200);
+            const { ticket } = (await issued.json()) as { ticket: string };
+            const worker = await follow(id, { clientId: "worker", ticket, keepOpen: true });
+            await worker.fence();
+            expect(worker.events[0]).toMatchObject({ type: "handoff", owner: "self" });
+            return worker;
+        }
+
+        it("refuses handoff to the current owner without opening an offer or displacing its callback socket", async () => {
+            controlledClock();
+            await listen();
+            const entered = capture();
+            const created = await create({
+                kind: "send",
+                clientId: "tab",
+                context: await context(),
+                hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+            });
+            expect(created.status).toBe(200);
+            const id = created.body.jobId as string;
+            const job = await entered;
+            const creator = await follow(id, { keepOpen: true });
+            await creator.fence();
+            for (const [ownerId, socket] of [
+                ["tab", creator],
+                ["worker", null],
+            ] as const) {
+                const owner = socket ?? (await transfer(id));
+                const pending = job.channel.callback("editoutput", { text: "still owned here" });
+                await owner.fence();
+                const callback = owner.events.findLast((event) => event.type === "callback")!;
+                expect(callback).toMatchObject({ type: "callback", name: "editoutput" });
+                expect((await post(id, "handoff", { clientId: "tab", target: ownerId })).status).toBe(409);
+                expect((await post(id, "takeover", { clientId: ownerId })).status).toBe(409);
+                owner.ws.send(
+                    JSON.stringify({
+                        type: "answer",
+                        id: callback.id,
+                        outcome: "answered",
+                        value: `answer:${ownerId}`,
+                    }),
+                );
+                expect(await pending).toMatchObject({ value: `answer:${ownerId}` });
+                await owner.fence();
+                expect(owner.ws.readyState).toBe(WsClient.OPEN);
+            }
+        });
+
+        it("authorizes participant controls while current stays readable by every authenticated client", async () => {
+            controlledClock();
+            await listen();
+            const entered = capture();
+            const id = await createOk();
+            const job = await entered;
+            const current = (clientId: string) =>
+                request(`/api/generations/current?characterId=c&chatId=k&clientId=${clientId}`);
+            expect(await (await current("tab")).json()).toEqual({ jobId: id, kind: "send", owned: true });
+            expect((await post(id, "takeover", { clientId: "worker" })).status).toBe(409);
+            expect((await post("unknown", "takeover", { clientId: "worker" })).status).toBe(404);
+            expect((await post(id, "handoff", { clientId: "third" })).status).toBe(404);
+            expect((await post(id, "handoff", { clientId: "tab" }, "stale")).status).toBe(412);
+            expect((await post(id, "handoff", { clientId: "tab", target: "worker" })).status).toBe(200);
+            expect((await post(id, "takeover", { clientId: "third" })).status).toBe(409);
+            const issued = await post(id, "takeover", { clientId: "worker" });
+            expect(issued.status).toBe(200);
+            const { ticket } = (await issued.json()) as { ticket: string };
+            expect((await post(id, "takeover", { clientId: "worker" })).status).toBe(409);
+            const worker = await follow(id, { clientId: "worker", ticket, keepOpen: true });
+            await worker.fence();
+            const creator = await follow(id, { keepOpen: true });
+            await creator.fence();
+            expect(creator.events[0]).toMatchObject({ type: "handoff", owner: "other" });
+            for (const clientId of ["tab", "worker", "third"]) {
+                expect(await (await current(clientId)).json()).toEqual({
+                    jobId: id,
+                    kind: "send",
+                    owned: clientId === "tab",
+                    handedOff: true,
+                });
+                const status = await request(`/api/generations/${id}?clientId=${clientId}`);
+                expect(status.status).toBe(clientId === "third" ? 404 : 200);
+                if (clientId !== "third") expect(await status.json()).toMatchObject({ handedOff: true });
+            }
+            expect((await request(`/api/generations/${id}?clientId=third`, { method: "DELETE" })).status).toBe(404);
+            const memory = job.registerMemoryControl!("memory-run");
+            expect((await post(id, "memory-stop?clientId=third", { runId: "memory-run" })).status).toBe(404);
+            for (const clientId of ["worker", "tab"]) {
+                expect((await post(id, `memory-stop?clientId=${clientId}`, { runId: "memory-run" })).status).toBe(200);
+                expect(memory.stopRequested()).toBe(true);
+            }
+            expect((await post(id, "handoff", { clientId: "worker" })).status).toBe(200);
+        });
+
+        it("allows status through valid tickets and pending takeovers while keeping stop controls participant-only", async () => {
+            controlledClock();
+            await listen();
+            const entered = capture();
+            const created = await create({
+                kind: "send",
+                clientId: "tab",
+                context: await context(),
+                hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+            });
+            expect(created.status).toBe(200);
+            const id = created.body.jobId as string;
+            const job = await entered;
+            const creator = await follow(id, { keepOpen: true });
+            const pending = job.channel.callback("editoutput", { text: "creator is still answering" });
+            await creator.fence();
+            expect(creator.events[0]).toMatchObject({ type: "handoff", owner: "self" });
+            const callback = creator.events.find((event) => event.type === "callback")!;
+            const status = (clientId: string) => request(`/api/generations/${id}?clientId=${clientId}`);
+            expect((await post(id, "handoff", { clientId: "tab" })).status).toBe(200);
+            const unused = await post(id, "takeover", { clientId: "worker" });
+            expect(unused.status).toBe(200);
+            expect((await status("worker")).status).toBe(200);
+            expect((await status("third")).status).toBe(404);
+            await vi.advanceTimersByTimeAsync(9_999);
+            expect((await status("worker")).status).toBe(200);
+            await vi.advanceTimersByTimeAsync(1);
+            expect((await status("worker")).status).toBe(404);
+
+            // Expiry reopens the offer. A fresh ticket may attach while the creator's callback runs.
+            const issued = await post(id, "takeover", { clientId: "worker" });
+            expect(issued.status).toBe(200);
+            const { ticket } = (await issued.json()) as { ticket: string };
+            expect((await status("worker")).status).toBe(200);
+            const worker = await follow(id, { clientId: "worker", ticket, keepOpen: true });
+            await worker.fence();
+            expect(worker.events[0]).toMatchObject({ type: "handoff", owner: "other", pending: true });
+            expect((await status("worker")).status).toBe(200);
+            await vi.advanceTimersByTimeAsync(10_001);
+            expect((await status("worker")).status).toBe(200);
+            expect((await status("third")).status).toBe(404);
+            expect((await request(`/api/generations/${id}?clientId=worker`, { method: "DELETE" })).status).toBe(404);
+            job.registerMemoryControl!("memory-run");
+            expect((await post(id, "memory-stop?clientId=worker", { runId: "memory-run" })).status).toBe(404);
+            creator.ws.send(
+                JSON.stringify({ type: "answer", id: callback.id, outcome: "answered", value: "creator answer" }),
+            );
+            expect(await pending).toMatchObject({ value: "creator answer" });
+            await vi.advanceTimersByTimeAsync(1);
+            await worker.fence();
+            expect(worker.events.filter((event) => event.type === "handoff").at(-1)).toMatchObject({ owner: "self" });
+            expect((await status("worker")).status).toBe(200);
+        });
+
+        it.each(["tab", "worker"])(
+            "attributes a DELETE by %s only in the other participant's terminal",
+            async (stopper) => {
+                controlledClock();
+                await listen();
+                const id = await createOk();
+                const creator = await follow(id, { keepOpen: true });
+                const worker = await transfer(id);
+                const stopped = await request(`/api/generations/${id}?clientId=${stopper}`, { method: "DELETE" });
+                expect(stopped.status).toBe(200);
+                await Promise.all(runners);
+                await creator.fence();
+                await worker.fence();
+                for (const [clientId, socket] of [
+                    ["tab", creator],
+                    ["worker", worker],
+                ] as const) {
+                    const terminal = socket.events.find((event) => event.type === "error");
+                    expect(terminal).toMatchObject({ type: "error", reason: "aborted" });
+                    if (clientId === stopper) expect(terminal).not.toHaveProperty("abortedBy");
+                    else expect(terminal).toHaveProperty("abortedBy", "other");
+                    const status = (await (
+                        await request(`/api/generations/${id}?clientId=${clientId}`)
+                    ).json()) as GenerationStatus;
+                    expect(status.terminal).toEqual(terminal);
+                }
+                expect((await post(id, "takeover", { clientId: "third" })).status).toBe(409);
+            },
+        );
+    });
 
     describe("named chat job stops", () => {
         const lookup = (clientId = "other") =>
@@ -476,7 +684,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
             job.emit({ type: "preset", presetId: "p1" });
             job.emit({ type: "progress", payload: { stage: "x" } });
         });
-        await until(owner, 7);
+        await until(owner, 8);
         const status = await (await request(`/api/generations/${jobId}?clientId=tab`)).json();
         expect(status).toEqual({
             jobId,
@@ -499,10 +707,11 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         const code = await owner.closed;
         expect(code).not.toBe(4001);
-        // The attach snapshot, then the hydration that precedes every `accepted`, then the stream,
-        // then the terminal hydration and the result. The job chat's events are `chatPatch`es: the
-        // change since the copy a socket last took.
+        // The owner's role, then the attach snapshot, then the hydration that precedes every
+        // `accepted`, then the stream, then the terminal hydration and the result. The job chat's
+        // events are `chatPatch`es: the change since the copy a socket last took.
         expect(types(owner.events)).toEqual([
+            "handoff",
             "chatPatch",
             "chatPatch",
             "accepted",
@@ -514,7 +723,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             "done",
         ]);
         expect(owner.events.every((event) => "epoch" in event && event.epoch === epoch)).toBe(true);
-        const [snapshot, hydration, accepted, first, second, , , finalChat, done] = owner.events as any[];
+        const [role, snapshot, hydration, accepted, first, second, , , finalChat, done] = owner.events as any[];
+        expect(role).toEqual({ type: "handoff", epoch, owner: "self" });
         // The attach snapshot: from the admission copy (the revision the owner named) to itself.
         expect(snapshot).toMatchObject({
             type: "chatPatch",
@@ -599,8 +809,9 @@ describe("generation jobs over HTTP and WebSocket", () => {
             job.emit({ type: "stage", stage: "memory" });
             job.emit({ type: "progress", payload: 2 });
         });
-        await until(a, 4);
-        expect(types(a.events)).toEqual(["chatPatch", "stage", "stage", "progress"]);
+        await until(a, 5);
+        expect(types(a.events)).toEqual(["handoff", "chatPatch", "stage", "stage", "progress"]);
+        expect(a.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
         // A newer stamp supersedes: `a` is closed with 4001 and `c` gets the fresh snapshot.
         const c = await follow(jobId, { attach: 6 });
         expect(await a.closed).toBe(4001);
@@ -609,9 +820,10 @@ describe("generation jobs over HTTP and WebSocket", () => {
         step((job) => {
             job.emit({ type: "progress", payload: 3 });
         });
-        await until(c, 3);
-        expect(types(c.events)).toEqual(["chatPatch", "stage", "progress"]);
-        expect(a.events).toHaveLength(4);
+        await until(c, 4);
+        expect(types(c.events)).toEqual(["handoff", "chatPatch", "stage", "progress"]);
+        expect(c.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        expect(a.events).toHaveLength(5);
         c.ws.close();
         await c.closed;
         // The runner reaches the owner's messages through `onClientMessage`.
@@ -642,7 +854,10 @@ describe("generation jobs over HTTP and WebSocket", () => {
             await f.fence();
             f.ws.close();
             await f.closed;
-            return f.events as any[];
+            // Every attach opens with the owner's role; the rest is the snapshot checked below.
+            const [role, ...rest] = f.events as any[];
+            expect(role).toEqual({ type: "handoff", epoch, owner: "self" });
+            return rest;
         };
         // A chunk ahead of the stored text, then a checkpoint claiming it.
         step((job) => {
@@ -997,17 +1212,18 @@ describe("generation jobs over HTTP and WebSocket", () => {
             return "end" as never;
         });
         await owner.closed;
-        expect(types(owner.events)).toEqual(["chatPatch", "chatPatch", "accepted", "chatPatch", "done"]);
+        expect(types(owner.events)).toEqual(["handoff", "chatPatch", "chatPatch", "accepted", "chatPatch", "done"]);
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
         // A job that writes nothing transfers no message: each patch is the count alone.
-        for (const index of [0, 1, 3]) {
+        for (const index of [1, 2, 4]) {
             expect(owner.events[index]).toMatchObject({ count: 2, streaming: [] });
             expect(owner.events[index]).not.toHaveProperty("messages");
             expect(owner.events[index]).not.toHaveProperty("meta");
             expect(owner.events[index]).not.toHaveProperty("removed");
         }
-        expect(owner.events[2]).not.toHaveProperty("messageId");
-        expect(owner.events[2]).toMatchObject({ seq: 0 });
-        expect(owner.events[4]).not.toHaveProperty("messageId");
+        expect(owner.events[3]).not.toHaveProperty("messageId");
+        expect(owner.events[3]).toMatchObject({ seq: 0 });
+        expect(owner.events[5]).not.toHaveProperty("messageId");
     });
 
     it("validates form commands and preserves an own __proto__ field as runner data", async () => {
@@ -1072,15 +1288,16 @@ describe("generation jobs over HTTP and WebSocket", () => {
         const jobId = await createOk();
         const admitted = (await revision()).revision;
         let owner = await follow(jobId);
-        await until(owner, 1);
-        expect(owner.events[0]).toMatchObject({
+        await until(owner, 2);
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        expect(owner.events[1]).toMatchObject({
             type: "chatPatch",
             baseRevision: admitted,
             revision: admitted,
             count: 2,
             streaming: [],
         });
-        expect(owner.events[0]).not.toHaveProperty("messages");
+        expect(owner.events[1]).not.toHaveProperty("messages");
         // A write the runner publishes: the new message and the reply the job began, each after its
         // predecessor in stored order; the meta did not change. The receipt names the patch's revision.
         const receipts: unknown[] = [];
@@ -1095,8 +1312,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             }));
             receipts.push(...job.emitRecords({ chats: [chatRef] }));
         });
-        await until(owner, 2);
-        const first = owner.events[1] as any;
+        await until(owner, 3);
+        const first = owner.events[2] as any;
         expect(first).toMatchObject({
             type: "chatPatch",
             characterId: "c",
@@ -1117,8 +1334,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             job.write(() => ({ chats: [group(job.context.chatRevision, [{ op: "meta", set: { note: "noted" } }])] }));
             job.emitRecords({ chats: [chatRef] });
         });
-        await until(owner, 3);
-        const second = owner.events[2] as any;
+        await until(owner, 4);
+        const second = owner.events[3] as any;
         expect(second).toMatchObject({
             type: "chatPatch",
             baseRevision: first.revision,
@@ -1132,8 +1349,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             job.write(() => ({ chats: [group(job.context.chatRevision, [{ op: "remove", ids: ["u2"] }])] }));
             job.emitRecords({ chats: [chatRef] });
         });
-        await until(owner, 4);
-        const third = owner.events[3] as any;
+        await until(owner, 5);
+        const third = owner.events[4] as any;
         expect(third).toMatchObject({ type: "chatPatch", baseRevision: second.revision, removed: ["u2"], count: 2 });
         expect(rows(third)).toEqual([["r", "u", ""]]);
         expect(third).not.toHaveProperty("meta");
@@ -1149,8 +1366,9 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         await sleep(50);
         owner = await follow(jobId);
-        await until(owner, 1);
-        const reattached = owner.events[0] as any;
+        await until(owner, 2);
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        const reattached = owner.events[1] as any;
         expect(reattached).toMatchObject({
             type: "chatPatch",
             baseRevision: third.revision,
@@ -1160,8 +1378,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
         expect(rows(reattached)).toEqual([["r", "u", "one"]]);
         // `resync` from the current socket: the chat whole, and the next patch is based on that copy.
         owner.ws.send(JSON.stringify({ type: "resync" }));
-        await until(owner, 2);
-        const whole = owner.events[1] as any;
+        await until(owner, 3);
+        const whole = owner.events[2] as any;
         expect(whole).toMatchObject({
             type: "resource",
             kind: "chats",
@@ -1181,9 +1399,9 @@ describe("generation jobs over HTTP and WebSocket", () => {
             });
             job.emitRecords({ chats: [chatRef] });
         });
-        await until(owner, 3);
-        expect(owner.events[2]).toMatchObject({ type: "chatPatch", baseRevision: whole.revision, count: 2 });
-        expect(rows(owner.events[2])).toEqual([["r", "u", "one two"]]);
+        await until(owner, 4);
+        expect(owner.events[3]).toMatchObject({ type: "chatPatch", baseRevision: whole.revision, count: 2 });
+        expect(rows(owner.events[3])).toEqual([["r", "u", "one two"]]);
         // A reorder of the surviving messages (a trigger's `replace`): the chat goes whole.
         step(async (job) => {
             const current = await revision();
@@ -1191,8 +1409,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             job.write(() => ({ chats: [group(current.revision, [{ op: "replace", chat: reordered as never }])] }));
             job.emitRecords({ chats: [chatRef] });
         });
-        await until(owner, 4);
-        const reorder = owner.events[3] as any;
+        await until(owner, 5);
+        const reorder = owner.events[4] as any;
         expect(reorder).toMatchObject({ type: "resource", kind: "chats", characterId: "c", id: "k" });
         expect(reorder.data.message.map((x: any) => x.chatId)).toEqual(["r", "u"]);
         // The end: the terminal patch from that whole copy, then the result. An attach after the end
@@ -1202,8 +1420,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             return "end" as never;
         });
         await owner.closed;
-        expect(types(owner.events.slice(4))).toEqual(["chatPatch", "done"]);
-        expect(owner.events[4]).toMatchObject({
+        expect(types(owner.events.slice(5))).toEqual(["chatPatch", "done"]);
+        expect(owner.events[5]).toMatchObject({
             type: "chatPatch",
             baseRevision: reorder.revision,
             revision: reorder.revision,
@@ -1212,8 +1430,9 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         const after = await follow(jobId);
         await after.closed;
-        expect(types(after.events)).toEqual(["resource", "done"]);
-        expect(after.events[0]).toMatchObject({ type: "resource", kind: "chats", characterId: "c", id: "k" });
+        expect(types(after.events)).toEqual(["handoff", "resource", "done"]);
+        expect(after.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        expect(after.events[1]).toMatchObject({ type: "resource", kind: "chats", characterId: "c", id: "k" });
     });
 
     it("answers `resync` with the chat whole and then the current reply while its generation still owns the message (a command job's `accepted` too), and with the chat alone once the reply is final", async () => {
@@ -1234,35 +1453,36 @@ describe("generation jobs over HTTP and WebSocket", () => {
             });
             job.emit({ type: "chunk", messageId: "r", generationId: "g1", text: "so far", seq: 2 });
         });
-        await until(owner, 4);
-        expect(types(owner.events)).toEqual(["chatPatch", "chatPatch", "accepted", "chunk"]);
+        await until(owner, 5);
+        expect(types(owner.events)).toEqual(["handoff", "chatPatch", "chatPatch", "accepted", "chunk"]);
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
         owner.ws.send(JSON.stringify({ type: "resync" }));
-        await until(owner, 6);
-        expect(types(owner.events.slice(4))).toEqual(["resource", "accepted"]);
-        expect(owner.events[4]).toMatchObject({
+        await until(owner, 7);
+        expect(types(owner.events.slice(5))).toEqual(["resource", "accepted"]);
+        expect(owner.events[5]).toMatchObject({
             kind: "chats",
             streaming: [{ messageId: "r", generationId: "g1", seq: 0 }],
         });
         // The newest chunk's text and sequence, as an attach replays it.
-        expect(owner.events[5]).toMatchObject({ messageId: "r", generationId: "g1", text: "so far", seq: 2 });
+        expect(owner.events[6]).toMatchObject({ messageId: "r", generationId: "g1", text: "so far", seq: 2 });
         // The reply's final write releases it: a resync brings the chat alone.
         step((job) => {
             job.write(() => ({ chats: [group(job.context.chatRevision, [checkpoint(3, "final", true)])] }));
         });
         await sleep(50);
         owner.ws.send(JSON.stringify({ type: "resync" }));
-        await until(owner, 7);
+        await until(owner, 8);
         await owner.fence();
-        expect(types(owner.events.slice(6))).toEqual(["resource"]);
-        expect((owner.events[6] as any).streaming).toEqual([]);
-        expect((owner.events[6] as any).data.message[1].data).toBe("final");
+        expect(types(owner.events.slice(7))).toEqual(["resource"]);
+        expect((owner.events[7] as any).streaming).toEqual([]);
+        expect((owner.events[7] as any).data.message[1].data).toBe("final");
         // A resync of another client's socket, or after the end, is ignored.
         step((job) => {
             job.emit({ type: "done", revision: null, messageId: "r" });
             return "end" as never;
         });
         await owner.closed;
-        expect(types(owner.events.slice(7))).toEqual(["chatPatch", "done"]);
+        expect(types(owner.events.slice(8))).toEqual(["chatPatch", "done"]);
 
         // A command job: its `accepted` has no message, and comes back after the whole chat.
         const command = await createOk("command");
@@ -1270,11 +1490,19 @@ describe("generation jobs over HTTP and WebSocket", () => {
         step((job) => {
             job.emit({ type: "accepted", jobId: job.id, revision: job.context.chatRevision, text: "" });
         });
-        await until(commander, 3);
+        await until(commander, 4);
         commander.ws.send(JSON.stringify({ type: "resync" }));
-        await until(commander, 5);
-        expect(types(commander.events)).toEqual(["chatPatch", "chatPatch", "accepted", "resource", "accepted"]);
-        expect(commander.events[4]).not.toHaveProperty("messageId");
+        await until(commander, 6);
+        expect(types(commander.events)).toEqual([
+            "handoff",
+            "chatPatch",
+            "chatPatch",
+            "accepted",
+            "resource",
+            "accepted",
+        ]);
+        expect(commander.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        expect(commander.events[5]).not.toHaveProperty("messageId");
         step((job) => {
             job.emit({ type: "done", revision: null });
             return "end" as never;
@@ -1419,11 +1647,14 @@ describe("generation jobs over HTTP and WebSocket", () => {
             epoch,
             streaming: [],
             memoryTasks: [],
+            handoffs: [],
+            clients: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
         });
         const generation = await createOk();
         const owner = await follow(generation);
-        await until(owner, 1);
+        await until(owner, 2);
+        expect(types(owner.events)).toEqual(["handoff", "chatPatch"]);
         // A job's write (the runner's in-process `applyChanges` with its token) is a commit: the
         // feed socket sees the chat change with the revision the write returned.
         let written = "";

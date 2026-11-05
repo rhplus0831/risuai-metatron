@@ -2,6 +2,8 @@
 export class FakeSocket {
     static instances: FakeSocket[] = [];
     readonly url: string;
+    readyState = 0;
+    readonly sent: string[] = [];
     closed = false;
     /** A socket whose `close()` fires no `close` event (a dead link: the event comes late, or never). */
     silent = false;
@@ -14,13 +16,18 @@ export class FakeSocket {
         this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
     }
     open() {
+        this.readyState = 1;
         this.emit("open", {});
+    }
+    send(text: string) {
+        this.sent.push(text);
     }
     close() {
         if (this.closed) {
             return;
         }
         this.closed = true;
+        this.readyState = 3;
         if (!this.silent) {
             this.emit("close", {});
         }

@@ -324,6 +324,7 @@ export function createServerContext(options: {
         authorize: auth.isAuthorizedToken,
         // The services are built below; a socket connects only once the context exists.
         streaming: () => generationJobs.streamingSnapshot(),
+        handoffs: () => generationJobs.handoffSnapshot(),
         memoryTasks: () =>
             memoryTasks?.snapshot().map(({ chatRef, status }) => ({
                 characterId: chatRef.chaId,
@@ -389,6 +390,7 @@ export function createServerContext(options: {
         onChatJobDone: (characterId, chatId) => checkpoints.autoSave(characterId, chatId),
         diagnostics,
         receipts: generationReceipts,
+        publishHandoff: (event) => changeFeed.publish(event),
         abortGraceMs: options.generationAbortGraceMs,
         ownerAbsentMs: options.generationOwnerAbsentMs,
         ownerSilentMs: options.generationOwnerSilentMs,

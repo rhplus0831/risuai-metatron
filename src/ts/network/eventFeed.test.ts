@@ -1,3 +1,4 @@
+import { get } from "svelte/store";
 import { revisionDigest, type ResourceRevisionListing } from "../../../shared/resources.ts";
 import { ResourceEpochMismatchError } from "../storage/resourceClient";
 import { FakeSocket } from "./tests/eventSocket";
@@ -91,6 +92,84 @@ async function started() {
 }
 
 describe("the live-update socket client", () => {
+    it("registers after every same-epoch hello and preference change and replaces the connected-client snapshot", async () => {
+        const { acceptHandoffs, clientName, connectedClients } = await import("./handoff");
+        const { generationClientId } = await import("./generationJobs");
+        acceptHandoffs.set(false);
+        clientName.set("Kitchen");
+        const ws = await started();
+        ws.open();
+        clientName.set("Desk");
+        expect(ws.sent).toEqual([]);
+        const worker = { clientId: "worker", name: "Workstation", worker: true };
+        ws.frame({ type: "hello", epoch: "E1", clients: [worker] });
+        expect(get(connectedClients)).toEqual([worker]);
+        const registration = { type: "register", clientId: generationClientId(), name: "Desk", worker: false };
+        expect(ws.sent.map((text) => JSON.parse(text))).toEqual([registration]);
+        ws.frame({ type: "hello", epoch: "E1", clients: [] });
+        expect(get(connectedClients)).toEqual([]);
+        expect(ws.sent.map((text) => JSON.parse(text))).toEqual([registration, registration]);
+        clientName.set("Office");
+        acceptHandoffs.set(true);
+        expect(ws.sent.slice(2).map((text) => JSON.parse(text))).toEqual([
+            { ...registration, name: "Office" },
+            { ...registration, name: "Office", worker: true },
+        ]);
+        ws.frame({ type: "clients", clients: [worker] });
+        expect(get(connectedClients)).toEqual([worker]);
+        ws.frame({ type: "clients", clients: [] });
+        expect(get(connectedClients)).toEqual([]);
+        ws.close();
+        clientName.set("Reconnected");
+        expect(ws.sent).toHaveLength(4);
+        await vi.advanceTimersByTimeAsync(1_000);
+        const next = FakeSocket.instances.at(-1)!;
+        expect(next).not.toBe(ws);
+        next.open();
+        expect(next.sent).toEqual([]);
+        next.frame({ type: "hello", epoch: "E1", clients: [worker] });
+        expect(next.sent.map((text) => JSON.parse(text))).toEqual([
+            { ...registration, name: "Reconnected", worker: true },
+        ]);
+        next.frame({ type: "hello", epoch: "restored", clients: [] });
+        expect(next.sent).toHaveLength(1);
+        expect(mocks.epochMismatch).toHaveBeenCalledWith("restored");
+        feed.stopEventFeed();
+        acceptHandoffs.set(false);
+    });
+
+    it("replaces handoff offers from hello, updates open and closed offers, and ignores unknown frames", async () => {
+        const { acceptHandoffs, handoffOffers } = await import("./handoff");
+        acceptHandoffs.set(false);
+        const offer = {
+            epoch: "E1",
+            jobId: "job-a",
+            characterId: "c",
+            chatId: "k",
+            state: "open",
+            reason: "preferred",
+        } as const;
+        const ws = await started();
+        ws.frame({ type: "hello", epoch: "E1", handoffs: [offer] });
+        await vi.advanceTimersByTimeAsync(0);
+        expect([...get(handoffOffers).keys()]).toEqual(["job-a"]);
+        ws.frame({ type: "handoff", ...offer, jobId: "job-b" });
+        expect([...get(handoffOffers).keys()]).toEqual(["job-a", "job-b"]);
+        ws.frame({ type: "handoff", ...offer, state: "closed" });
+        expect([...get(handoffOffers).keys()]).toEqual(["job-b"]);
+        const before = get(handoffOffers);
+        ws.frame({ ...offer, type: "future-frame", changes: change, handoffs: [], state: "closed", epoch: "E2" });
+        expect(get(handoffOffers)).toEqual(before);
+        expect(mocks.noteRemoteChanges).not.toHaveBeenCalled();
+        expect(mocks.epochMismatch).not.toHaveBeenCalled();
+        expect(ws.closed).toBe(false);
+        ws.frame({ type: "hello", epoch: "E1", handoffs: [offer] });
+        expect([...get(handoffOffers).keys()]).toEqual(["job-a"]);
+        ws.frame({ type: "hello", epoch: "E1" });
+        expect(get(handoffOffers).size).toBe(0);
+        await vi.dynamicImportSettled();
+    });
+
     it("connects once to the feed path with a signed JWT, reconciles on `hello`, and passes changes of the loaded epoch", async () => {
         const ws = await started();
         feed.startEventFeed();
