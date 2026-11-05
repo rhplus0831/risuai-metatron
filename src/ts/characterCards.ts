@@ -24,7 +24,7 @@ import {
     appVer,
 } from "./storage/database.svelte";
 import { importPreset } from "./storage/presets.svelte";
-import { checkNullish, decryptBuffer, isKnownUri, selectFileByDom, sleep } from "./util";
+import { blobToUint8Array, checkNullish, decryptBuffer, isKnownUri, selectFileByDom, sleep } from "./util";
 import { language } from "src/lang";
 import { v4 as uuidv4, v4 } from "uuid";
 import { changeChar } from "./characters";
@@ -191,6 +191,36 @@ export async function importDroppedFile(file: File) {
     }
 }
 
+// Keep the loader's closure separate from the importer and its decoded chunk strings.
+function createPngBlobAssetLoader(blob: Blob, start: number, end: number): AssetSaveItem["load"] {
+    return async () => {
+        const slice = blob.slice(start, end);
+        const bytes =
+            typeof slice.arrayBuffer === "function"
+                ? new Uint8Array(await slice.arrayBuffer())
+                : await blobToUint8Array(slice);
+        return Buffer.from(new TextDecoder().decode(bytes), "base64");
+    };
+}
+
+function createPngTextAssetLoader(value: string): AssetSaveItem["load"] {
+    return () => Buffer.from(value, "base64");
+}
+
+// Finish the counting frame before uploads so its last chunk cannot stay in the suspended importer.
+async function countPngAssetChunks(input: Blob | Uint8Array): Promise<number> {
+    let count = 0;
+    for await (const chunk of PngChunk.readGenerator(input)) {
+        if (chunk instanceof AppendableBuffer) {
+            break;
+        }
+        if (chunk.key.startsWith("chara-ext-asset_")) {
+            count++;
+        }
+    }
+    return count;
+}
+
 /**
  * Imports one card file, dispatched by its name (`.json`, `.charx`/`.jpg`/`.jpeg`, `.png`). A CharX
  * (or a `charxJpeg`) given as a `File` or `Blob` is uploaded as it is to the server's CharX import
@@ -214,6 +244,9 @@ export async function importDroppedFile(file: File) {
  * a cap, so the kept text can be longer (`PngChunk` caps no chunk). The `chara-ext-asset_<id>` chunks feed
  * `saveAssets` as they are read, written in batches (`POST /api/assets/write`), the reader held back once a batch's
  * worth is waiting; they are stored before the card's text is read, so before its questions (`importPngCard`).
+ * For a `File` or `Blob`, asset loaders retain only the Blob and the value's byte range, re-reading and decoding
+ * that slice on each load, including the queue's final missing-asset repair. Streams, byte arrays, and readers
+ * without ranges keep the chunk text in their loaders until the queue finishes.
  */
 export async function importCharacterProcess<T extends boolean = false>(f: {
     name: string;
@@ -314,21 +347,16 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
     let readedPngChunks = 0;
 
     // A stream is read once, so its asset progress is a running count (`pngChunks` stays 0). Bytes or a
-    // `Blob` (streamed again by `PngChunk.readGenerator`, never read into bytes) can be read twice: a first
+    // `Blob` (streamed again by `PngChunk.readGenerator` when `stream()` exists) can be read twice: a first
     // pass counts the asset chunks for the percentage.
     if (!(f.data instanceof ReadableStream)) {
-        for await (const chunk of PngChunk.readGenerator(f.data, {})) {
-            if (chunk instanceof AppendableBuffer) {
-                break;
-            }
-            if (chunk.key.startsWith("chara-ext-asset_")) {
-                pngChunks++;
-            }
-        }
+        pngChunks = await countPngAssetChunks(f.data);
     }
 
+    const blob = f.data instanceof Uint8Array || f.data instanceof ReadableStream ? null : f.data;
     const readGenerator = PngChunk.readGenerator(f.data, {
         returnTrimed: true,
+        ranges: true,
     });
     const assets: { [key: string]: string } = {};
     // The asset chunks feed the save queue as they are read: the queue pulls the next chunk only when
@@ -369,12 +397,15 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
             }
             if (chunk.key.startsWith("chara-ext-asset_")) {
                 const assetIndex = chunk.key.replace("chara-ext-asset_:", "").replace("chara-ext-asset_", "");
-                const value = chunk.value;
                 if (assetIndices.length === 0) {
                     showAssetProgress();
                 }
                 assetIndices.push(assetIndex);
-                yield { load: () => Buffer.from(value, "base64") };
+                if (blob && chunk.start !== undefined && chunk.end !== undefined) {
+                    yield { load: createPngBlobAssetLoader(blob, chunk.start, chunk.end) };
+                } else {
+                    yield { load: createPngTextAssetLoader(chunk.value) };
+                }
             }
         }
     }

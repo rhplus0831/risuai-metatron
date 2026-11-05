@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { cardV3, pngWithText } from "./storage/tests/importFixtures";
 import { bootMutations, plain, warmMutationGraph } from "./storage/tests/mutationStoresHarness";
 
@@ -211,6 +212,8 @@ describe("PNG streaming entry points", () => {
             arrayBuffer: vi.fn(async () => {
                 throw new Error("a streamable PNG must not be read whole");
             }),
+            // Each asset is read back from its own byte range.
+            slice: vi.fn((start: number, end: number) => new Blob([bytes.slice(start, end)])),
         };
         const before = b.ids();
         const id = await b.cards.importCharacterProcess({
@@ -220,6 +223,7 @@ describe("PNG streaming entry points", () => {
         if (kind === "Blob-like") {
             expect(blob.stream).toHaveBeenCalledTimes(2);
             expect(blob.arrayBuffer).not.toHaveBeenCalled();
+            expect(blob.slice).toHaveBeenCalledTimes(values.length);
         }
         expect(b.ids()).toEqual([...before, id]);
         expect(plain(b.character(id!).additionalAssets)).toEqual(
@@ -233,6 +237,50 @@ describe("PNG streaming entry points", () => {
             })),
         );
         expect(alerts.wait).not.toHaveBeenCalled();
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("rereads a Blob asset's byte range after uploads settle to re-upload a missing canonical key", async () => {
+        const b = await boot();
+        vi.spyOn(performance, "now").mockReturnValue(0);
+        const { bytes, values } = fixture(3);
+        const blob = await new Response(new Uint8Array(bytes)).blob();
+        const slice = vi.spyOn(blob, "slice");
+        const keyFor = (data: Uint8Array) => `assets/${createHash("sha256").update(data).digest("hex")}.png`;
+        const expected = values.map((value) => {
+            const data = Buffer.from(JSON.stringify(value));
+            return { key: keyFor(data), base64: data.toString("base64") };
+        });
+        b.assetKey.mockImplementation(async (data) => keyFor(data));
+        const assetClient = await import("./storage/assetClient");
+        let readsAtCheck: Parameters<Blob["slice"]>[] = [];
+        let progressAtCheck: string | undefined;
+        const missing = vi
+            .spyOn(assetClient, "missingAssets")
+            .mockResolvedValue(new Set())
+            .mockImplementationOnce(async () => {
+                progressAtCheck = assetProgress().at(-1)?.submsg;
+                readsAtCheck = slice.mock.calls.slice();
+                // Only subsequent Blob reads can satisfy the replay assertion.
+                slice.mockClear();
+                return new Set([expected[0].key]);
+            });
+
+        const id = await b.cards.importCharacterProcess({ name: "replay.png", data: blob });
+
+        expect(id).toBeTruthy();
+        expect(missing.mock.calls[0][0]).toEqual(expected.map(({ key }) => key));
+        expect(progressAtCheck).toBe("100.00");
+        expect(readsAtCheck).toHaveLength(values.length);
+        expect(slice.mock.calls).toEqual([readsAtCheck[0]]);
+        expect(
+            b.saveAssetBatch.mock.calls.map(([items]) =>
+                items.map(({ key, bytes }) => ({ key, base64: Buffer.from(bytes).toString("base64") })),
+            ),
+        ).toEqual([expected, [expected[0]]]);
+        expect(plain(b.character(id!).additionalAssets)).toEqual(
+            expected.map(({ key }, i) => [`Asset ${i}`, key, "png"]),
+        );
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
@@ -262,6 +310,39 @@ describe("PNG streaming entry points", () => {
             }
             expect(blobStream).toHaveBeenCalledTimes(1);
             expect(wholeRead).not.toHaveBeenCalled();
+        }
+    });
+
+    it("readGenerator exposes absolute value ranges only for a NUL in the first 70 data bytes for bytes, Blobs, and streams", async () => {
+        const { PngChunk, api } = await boot();
+        const texts = {
+            ccv3: cardV3("Ranges"),
+            "chara-ext-asset_0": { asset: "payload" },
+            ["k".repeat(69)]: "last accepted NUL",
+            ["k".repeat(70)]: "NUL outside the key window",
+        };
+        const bytes = pngWithText(texts);
+        const expected = Object.entries(texts).map(([key, value]) =>
+            key.length < 70
+                ? {
+                      key,
+                      value: Buffer.from(JSON.stringify(value)).toString("base64"),
+                      start: expect.any(Number),
+                      end: expect.any(Number),
+                  }
+                : { key: "", value: "" },
+        );
+        const blob = await new Response(new Uint8Array(bytes)).blob();
+        for (const input of [bytes, blob, streamed(bytes, 7).stream]) {
+            const actual = [];
+            for await (const chunk of PngChunk.readGenerator(input, { ranges: true })) {
+                if (chunk instanceof api.AppendableBuffer) throw new Error("Unexpected stripped image");
+                actual.push(chunk);
+                if (chunk.key) {
+                    expect(new TextDecoder().decode(bytes.slice(chunk.start, chunk.end))).toBe(chunk.value);
+                }
+            }
+            expect(actual).toEqual(expected);
         }
     });
 

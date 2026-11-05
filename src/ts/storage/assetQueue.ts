@@ -73,7 +73,7 @@ export type AssetSaveItem = {
     /**
      * Produces the bytes under admission. saveAssets may call it again to repair a missing file at
      * completion; replay must produce the same content. The callback is retained until completion,
-     * including anything it closes over. Prefer re-readable sources to captured decoded payloads.
+     * including anything it closes over. Prefer re-readable sources to captured encoded or decoded payloads.
      */
     load: () => Promise<Uint8Array> | Uint8Array;
     /** Gives the stored key its extension (`saveAsset`'s `fileName`; default `png`). */

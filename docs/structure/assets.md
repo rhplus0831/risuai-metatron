@@ -64,7 +64,7 @@ it runs on both sides.
 Asset sources use direct URLs only while boot recorded a ready worker (`setUsingSw`) and the controlling worker reports
 `directAssets: true` on `/sw/init` (`setDirectAssets`); otherwise each call takes the fallback, a worker cache URL or an
 object URL ([Asset sources](#asset-sources)). A `controllerchange` clears the capability until the new controller's
-probe answers, and URLs already handed out stay as they are ([Issues](#issues)). The probe and the worker's signing:
+probe answers ([Issues](#issues)). The probe and the worker's signing:
 [build/test](build-test-platforms.md#direct-assets); the asset route, thumbnails, and HTTP cache:
 [server](self-host-server.md#storage-routes).
 
@@ -74,9 +74,8 @@ probe answers, and URLs already handed out stay as they are ([Issues](#issues)).
 
 ## Coupling
 
-- Assets go `globalApi` (`readImage`, `saveAsset`, `loadAsset`, and `getFileSrc` in the fallback without a worker cache
-  hit; direct URLs load through the worker) or `inlays.ts` → `assetClient.ts` → `/api/read|write`; its batch calls go to
-  `/api/assets/write|read`.
+- Assets go `globalApi` ([Asset client](#asset-client)) or `inlays.ts` → `assetClient.ts` → `/api/read|write`; its batch
+  calls go to `/api/assets/write|read`.
 - Bulk import writes go `saveAssets` → `saveAssetBatch` → `writeAssets`; card and module export reads go
   `loadAssetsInBatches` → `loadAssets` → `readAssets` ([Asset client](#asset-client)).
 
@@ -101,9 +100,7 @@ probe answers, and URLs already handed out stay as they are ([Issues](#issues)).
   `answer.current`.
 - Browser specs: `pnpm --silent test:agent --e2e e2e/storedFileSrc.spec.ts` ([test-harness](test-harness.md)). Probes:
   `util/playwright/measureFileSources.mjs` and `probeDirectAssets.mjs`.
-- Slow: no client tests; the server asset batch cap in `server/src/tests/assets.test.ts` is `slow`
-  ([test-harness](test-harness.md)).
-- Not tested: none; the browser spec and the probes cover the worker paths.
+- Slow: the server asset batch cap in `server/src/tests/assets.test.ts` is `slow` ([test-harness](test-harness.md)).
 
 ## Known Hazards
 
@@ -111,3 +108,8 @@ probe answers, and URLs already handed out stay as they are ([Issues](#issues)).
 
 - Direct URLs already handed out are not re-rendered when the page loses its controller or capability. Without a signing
   worker they load from the browser HTTP cache or fail with 401; only new source calls use the fallback.
+
+### Limitations
+
+- A PNG card read from a one-shot stream (a Chub download) keeps each asset's base64 text in its `saveAssets` item for
+  the final presence pass; a `File` or `Blob` rereads its byte range. Decision: Implementation Audit Fixes Q1.
