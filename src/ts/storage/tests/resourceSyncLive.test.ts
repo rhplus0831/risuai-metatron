@@ -1,6 +1,7 @@
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { createFakeLockManager } from "./fakeLockManager";
 import { tick } from "svelte";
+import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { secretPathKey } from "../../../../shared/llmSecrets.ts";
 import {
@@ -257,6 +258,147 @@ const noNotice = () => {
     expect(alerts.normal).not.toHaveBeenCalled();
     expect(alerts.error).not.toHaveBeenCalled();
 };
+
+describe("display settings synchronized between tabs", () => {
+    const scheme = (type: "dark" | "light", bgcolor: string) => ({
+        type,
+        bgcolor,
+        darkbg: "#000001",
+        borderc: "#000002",
+        selected: "#000003",
+        draculared: "#000004",
+        textcolor: "#000005",
+        textcolor2: "#000006",
+        darkBorderc: "#000007",
+        darkbutton: "#000008",
+    });
+    const textTheme = (standard: string) => ({
+        FontColorStandard: standard,
+        FontColorItalic: "#100001",
+        FontColorBold: "#100002",
+        FontColorItalicBold: "#100003",
+        FontColorQuote1: "#100004",
+        FontColorQuote2: "#100005",
+    });
+    const displaySettings = {
+        colorSchemeName: "custom",
+        colorScheme: scheme("light", "#eeeeee"),
+        textTheme: "custom",
+        customTextTheme: textTheme("#123456"),
+        font: "custom",
+        customFont: "Remote Font",
+        customCSS: ".chattext { letter-spacing: 2px; }",
+        animationSpeed: 0.7,
+        textAreaSize: 2,
+        sideBarSize: 3,
+        textAreaTextSize: 1,
+    };
+    const css = (name: string) => document.documentElement.style.getPropertyValue(name);
+
+    async function bootWithDisplay() {
+        document.documentElement.removeAttribute("style");
+        const booted = await boot();
+        const bootstrap: Bootstrap = await import("../../bootstrap");
+        const colors = await import("../../gui/colorscheme");
+        const sizes = await import("../../gui/guisize");
+        const { updateAnimationSpeed } = await import("../../gui/animation");
+        const { CustomCSSStore } = await import("../../stores.svelte");
+        bootstrap.watchRemoteRecords();
+        const applyDisplay = () => {
+            colors.updateColorScheme();
+            colors.updateTextThemeAndCSS();
+            updateAnimationSpeed();
+            sizes.updateGuisize();
+        };
+        // The initial page paint, as at boot; remote delivery must update this page on its own.
+        applyDisplay();
+        return { ...booted, colors, sizes, CustomCSSStore, applyDisplay };
+    }
+
+    function expectDisplay({ colors, sizes, CustomCSSStore }: Awaited<ReturnType<typeof bootWithDisplay>>) {
+        for (const [name, value] of Object.entries(displaySettings.colorScheme)) {
+            if (name !== "type") {
+                const property = `--risu-theme-${name.toLowerCase()}`;
+                expect(css(property), property).toBe(value);
+            }
+        }
+        expect(document.documentElement.style.colorScheme).toBe("light");
+        expect(get(colors.ColorSchemeTypeStore)).toBe("light");
+        for (const [name, value] of Object.entries(displaySettings.customTextTheme)) {
+            expect(css(`--${name}`), name).toBe(value);
+        }
+        expect(css("--risu-font-family")).toBe("Remote Font");
+        expect(get(CustomCSSStore)).toBe(".chattext { letter-spacing: 2px; }");
+        expect(css("--risu-animation-speed")).toBe("0.7s");
+        expect(css("--sidebar-size")).toBe("36rem");
+        expect(get(sizes.textAreaSize)).toBe(2);
+        expect(get(sizes.sideBarSize)).toBe(3);
+        expect(get(sizes.textAreaTextSize)).toBe(1);
+    }
+
+    afterEach(() => document.documentElement.removeAttribute("style"));
+
+    it("repaints the page when another writer replaces the ui record", async () => {
+        const page = await bootWithDisplay();
+        const { fake, settings } = page;
+        expect(document.documentElement.style.colorScheme).toBe("dark");
+        expect(css("--risu-theme-bgcolor")).not.toBe(displaySettings.colorScheme.bgcolor);
+        const current = fake.record("ui", "main")!;
+        fake.store.applyChanges({
+            ops: [
+                {
+                    kind: fake.kind("ui"),
+                    id: "main",
+                    baseRevision: current.revision,
+                    data: { ...current.data, ...displaySettings },
+                },
+            ],
+        });
+        await settle(fake);
+
+        expect(settings.ui).toMatchObject(displaySettings);
+        expectDisplay(page);
+        expect(fake.batchCount()).toBe(0);
+        expect(location.reload).not.toHaveBeenCalled();
+    });
+
+    it("does not repaint the page when its own ui save is echoed back", async () => {
+        const page = await bootWithDisplay();
+        const { fake, sync, client, settings, live, flushFeed } = page;
+        live.paused = true;
+        Object.assign(settings.ui, displaySettings);
+        page.applyDisplay();
+        expectDisplay(page);
+        // Observe only writes after the local settings action has painted the page.
+        const writes = vi.spyOn(document.documentElement.style, "setProperty");
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(1);
+        expect(fake.record("ui", "main")!.data).toMatchObject(displaySettings);
+        expect(live.queue).toEqual([
+            expect.objectContaining({
+                type: "change",
+                epoch: client.getResourceEpoch(),
+                changes: expect.objectContaining({
+                    resources: [
+                        expect.objectContaining({
+                            kind: "ui",
+                            id: "main",
+                            revision: fake.record("ui", "main")!.revision,
+                        }),
+                    ],
+                }),
+            }),
+        ]);
+        // Deliver the actual server echo after acknowledgement and drain the adapter's timers.
+        live.paused = false;
+        flushFeed();
+        expect(live.queue).toEqual([]);
+        await settle(fake);
+
+        expect(writes).not.toHaveBeenCalled();
+        expectDisplay(page);
+    });
+});
 
 describe("records another writer committed", () => {
     it("applies an idle record's change without a write, a notice, or a discard entry", async () => {

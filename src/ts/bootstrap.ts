@@ -297,13 +297,20 @@ function refreshPermissionsWithRetry(revision: string | null, attempt = 0) {
 /**
  * Records another tab wrote may reference inlays this tab has not seen: a remote reload drops the
  * inlay caches. A remote `characterOrder` may lack a character this tab created: it is appended
- * (`queueRemoteCharOrderRepair`). Exported for tests.
+ * (`queueRemoteCharOrderRepair`). A remote `ui` record re-applies the display settings to the page.
+ * Exported for tests.
  */
 export function watchRemoteRecords() {
     onRemoteRecordApplied((kind) => {
         invalidateInlayCaches();
         if (kind === RESOURCE_KIND.characterOrder) {
             queueRemoteCharOrderRepair((chaId) => heldRecordRevision(RESOURCE_KIND.characters, chaId));
+        }
+        if (kind === SECTION_KIND.ui) {
+            updateColorScheme();
+            updateTextThemeAndCSS();
+            updateAnimationSpeed();
+            updateGuisize();
         }
     });
     setRemoteChatListener(() => invalidateInlayCaches());

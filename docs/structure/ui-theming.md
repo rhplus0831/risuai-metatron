@@ -177,8 +177,7 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 - `src/styles.css`: the Tailwind v4 `@theme` tokens map `--color-<name>` to `var(--risu-theme-<name>)`; its comments
   hold the `risu-select`, `.chat-message-container.far`, and `:root` `color-scheme` rules.
-- `src/ts/gui/colorscheme.ts`: `updateColorScheme`, which boot, the display settings, and plugins call to apply the
-  stored scheme.
+- `src/ts/gui/colorscheme.ts`: `updateColorScheme` applies the stored scheme ([Flows](#flows)).
 
 ## Flows
 
@@ -188,8 +187,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   (`greetingIndex`, `greetingText`, `nextGreetingIndex`, `previousGreetingIndex`). Not converted yet:
   `src/ts/characters.ts`, `src/ts/gui/branches.ts` and `src/lib/Others/HypaV3Modal/utils.ts` index `alternateGreetings`
   directly.
-- Theme: at boot `bootstrap.ts` calls `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, and
-  `updateGuisize`. The display settings call the same functions. Plugins can call them via `apiV3`.
+- Theme: boot (`bootstrap.ts`), the display settings, plugins (`apiV3`), and a remote `ui` record (`watchRemoteRecords`)
+  call `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, and `updateGuisize`.
 
 ## State
 
