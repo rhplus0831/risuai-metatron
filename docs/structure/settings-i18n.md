@@ -258,7 +258,7 @@ section.
 ## Tests
 
 - Focused:
-  `pnpm --silent test:agent src/ts/setting src/lib/Setting src/ts/storage/tests/settingsViews.test.ts src/ts/storage/tests/settingWrappers.test.ts src/lib/UI/GUI/guiRendering.test.ts`.
+  `pnpm --silent test:agent src/ts/setting src/lib/Setting src/ts/storage/tests/settingsViews.test.ts src/ts/storage/tests/settingWrappers.test.ts src/lib/UI/GUI/guiRendering.test.ts src/lang`.
 - `slow`: none in this area.
 - `e2e`: `e2e/settingsPages.spec.ts` (page mounting, subsequent no-write traversal, and control writes),
   `e2e/presetSelection.spec.ts` (an edit in the real settings UI followed by a hotkey switch; the selection per client
@@ -272,6 +272,8 @@ section.
   and Display pages real (the jump's consumers) and the other pages mocked.
 - `src/ts/setting/settingsPageSections.test.ts` `PAGES`: the sectioned-page inventory that the placement check runs
   over.
+- `src/lang/triggerDescPlaceholders.test.ts`: every locale's `triggerDesc` names the same `{{field}}` placeholders as
+  English, since `TriggerV2List` fills them from the effect's fields by name.
 - No focused test covers the manual `changeLanguage` branch or prompt-template editing past a type switch.
 
 ## Known Hazards
