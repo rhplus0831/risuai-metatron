@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
+import { ASSET_LIST_CAP } from "../../../shared/assetLifecycle.ts";
 import { createAssetLifecycle, type AssetLifecycleOptions } from "../data/assetLifecycle.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
@@ -586,6 +587,104 @@ async function mature(f: ReturnType<typeof fixture>) {
     expect((await f.lifecycle.scan()).complete).toBe(true);
 }
 
+it("bounds candidate-map visits by batch while preserving the remaining report order", async () => {
+    const sweepBatchSize = 8;
+    const f = fixture({ sweepBatchSize });
+    const keys = Array.from({ length: 96 }, (_, i) => `assets/prefix-${String(i).padStart(3, "0")}`);
+    const remaining = keys.filter((_, i) => i % 6 === 0);
+    const selected = keys.filter((_, i) => i % 6 !== 0);
+    for (const key of keys) f.asset(key);
+    await mature(f);
+
+    let visits = 0;
+    const values = Map.prototype.values;
+    const spy = vi.spyOn(Map.prototype, "values").mockImplementation(function (this: Map<unknown, unknown>) {
+        const iterator = values.call(this);
+        // A surviving candidate identifies this fixture's map without counting unrelated maps.
+        const survivor = this.get(remaining[0]) as { key?: string } | undefined;
+        if (survivor?.key === remaining[0]) {
+            const next = iterator.next;
+            iterator.next = () => {
+                const step = next.call(iterator);
+                if (!step.done) visits++;
+                return step;
+            };
+        }
+        return iterator;
+    });
+    let result;
+    try {
+        result = await f.lifecycle.sweep({ dryRun: false, keys: selected });
+    } finally {
+        spy.mockRestore();
+    }
+
+    const batches = Math.ceil(selected.length / sweepBatchSize);
+    const visitBudget = Array.from({ length: batches }, (_, i) =>
+        Math.min(ASSET_LIST_CAP, keys.length - Math.min(selected.length, (i + 1) * sweepBatchSize)),
+    ).reduce((sum, count) => sum + count, 0);
+    expect(result).toMatchObject({ deleted: selected, skipped: [] });
+    expect(f.lifecycle.sweepMetrics?.batches).toBe(batches);
+    expect(visits).toBeGreaterThanOrEqual(remaining.length);
+    expect(visits).toBeLessThanOrEqual(visitBudget);
+    expect(f.lifecycle.report().unreferenced.candidates).toEqual(
+        remaining.slice(0, ASSET_LIST_CAP).map((key) => ({ key, bytes: 1, since: NOW })),
+    );
+});
+
+it("reads each retained snapshot's tails and inlay ids once per sweep across multiple batches", async () => {
+    const queries = { tails: [] as string[], inlays: [] as string[] };
+    let measuring = false;
+    let ledgerFile: string;
+    const prepare = DatabaseSync.prototype.prepare;
+    vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql) {
+        const statement = prepare.call(this, sql);
+        const target =
+            sql === "SELECT tail FROM snapshotRefs WHERE snapshotId = ?"
+                ? queries.tails
+                : sql === "SELECT id FROM snapshotInlays WHERE snapshotId = ?"
+                  ? queries.inlays
+                  : null;
+        if (target) {
+            const file = this.location();
+            const all = statement.all;
+            statement.all = function (...args) {
+                if (measuring && file === ledgerFile) target.push(String(args[0]));
+                return Reflect.apply(all, this, args);
+            };
+        }
+        return statement;
+    });
+    const sweepBatchSize = 2;
+    const f = fixture({ sweepBatchSize });
+    ledgerFile = path.join(f.dir, "data", "asset-lifecycle.sqlite");
+    const snapshotIds: string[] = [];
+    for (let i = 0; i < 5; i++) {
+        f.put("pluginStorage", "main", { key: `assets/retained-${i}`, text: `{{inlay::retained-${i}}}` });
+        snapshotIds.push((await f.snapshots.snapshotNow()).id);
+    }
+    f.put("pluginStorage", "main", {});
+    const keys = Array.from({ length: 12 }, (_, i) => `assets/unchanged-${String(i).padStart(2, "0")}`);
+    for (const key of keys) f.asset(key);
+    await mature(f);
+
+    for (const dryRun of [true, false]) {
+        queries.tails.length = 0;
+        queries.inlays.length = 0;
+        measuring = true;
+        let result;
+        try {
+            result = await f.lifecycle.sweep({ dryRun });
+        } finally {
+            measuring = false;
+        }
+        expect(result).toMatchObject({ deleted: keys, skipped: [] });
+        expect(f.lifecycle.sweepMetrics?.batches).toBe(Math.ceil(keys.length / sweepBatchSize));
+        expect(queries.tails.sort()).toEqual([...snapshotIds].sort());
+        expect(queries.inlays.sort()).toEqual([...snapshotIds].sort());
+    }
+});
+
 it.each(["narrowed", "full"] as const)(
     "keeps the 51st candidate named after the mark across %s batch rechecks",
     async (mode) => {
@@ -648,6 +747,49 @@ it("indexes a snapshot created after the mark inside the batch", async () => {
         skipped: [{ key, reason: "named by snapshot" }],
     });
     expect(readFileSync(file, "utf8")).toBe("A");
+});
+
+it("protects asset keys and inlay ids named by a snapshot created between sweep batches", async () => {
+    const keys = ["assets/between-first", "assets/between-later"];
+    const id = "between-inlay";
+    let created: Promise<unknown> | undefined;
+    let cleared: Promise<void> | undefined;
+    const f = fixture({
+        sweepBatchSize: 1,
+        thumbnails: {
+            async removeKey(key) {
+                if (key !== keys[0]) return;
+                f.put("pluginStorage", "main", { key: keys[1], text: `{{inlay::${id}}}` });
+                // Queue behind this batch's exclusive lock; awaiting here would keep the lock held.
+                created = f.snapshots.snapshotNow();
+                cleared = f.snapshots.exclusive(async () => {
+                    f.put("pluginStorage", "main", {});
+                });
+            },
+        },
+    });
+    await f.snapshots.snapshotNow();
+    for (const key of keys) f.asset(key);
+    f.asset(`assets/${id}`);
+    const inlay = { asset: `assets/${id}`, type: "image", name: id, ext: "png" };
+    f.put("inlays", id, inlay);
+    await mature(f);
+
+    const result = await f.lifecycle.sweep({ dryRun: false, keys, inlays: [id] });
+    expect(created).toBeDefined();
+    await created;
+    await cleared;
+    expect(result).toMatchObject({
+        deleted: [keys[0]],
+        skipped: [{ key: keys[1], reason: "named by snapshot" }],
+        removedInlays: [],
+        skippedInlays: [{ id, reason: "named by snapshot" }],
+    });
+    expect(f.lifecycle.sweepMetrics?.batches).toBe(3);
+    expect(syncFs.existsSync(resolveStorageKey(f.dir, keys[0])!)).toBe(false);
+    expect(readFileSync(resolveStorageKey(f.dir, keys[1])!, "utf8")).toBe("A");
+    expect(f.store.get(kinds.get("inlays")!, id)?.data).toEqual(inlay);
+    expect(f.store.get(kinds.get("pluginStorage")!, "main")?.data).toEqual({});
 });
 
 it("admits a chat write queued by the synchronous delete turn and protects its next-batch key", async () => {

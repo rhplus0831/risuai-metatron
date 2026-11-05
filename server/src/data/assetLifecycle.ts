@@ -1130,6 +1130,9 @@ export function createAssetLifecycle(
      * and unlink/store.delete have no await between them. Replaced inlays lose their candidate and ledger
      * stamp so the next complete scan restarts maturity; dry runs leave these untouched.
      * Full results certify later batches; a narrowed result never advances baseline.
+     * The merged snapshot index lives for the sweep and is rebuilt only when the listed snapshot ids change;
+     * new snapshots are indexed under exclusive each batch. The visible candidate prefix refreshes once per
+     * batch that deletes a file.
      */
     function sweep(request: AssetSweepRequest & { signal?: AbortSignal }): Promise<AssetSweepResult> {
         const refuse = (message: string): never => {
@@ -1157,6 +1160,11 @@ export function createAssetLifecycle(
         const start = monoNow();
         let baseline = runIdentity.writeCount;
         let fullRoots: ReturnType<typeof remark> | null = null;
+        let snapshotIndex = {
+            listedIds: new Set<string>(),
+            tails: [] as string[],
+            ids: new Set<string>(),
+        };
         let stopReason: string | null = null;
         const deadline = monoNow() + (options.exportWaitMs ?? UPSTREAM_EXPORT_STAGED_TTL_MS);
         const keys = [...new Set(request.keys ?? candidates.keys())];
@@ -1172,11 +1180,9 @@ export function createAssetLifecycle(
                 signal.throwIfAborted();
                 if (store.epoch() !== runIdentity.epoch) stopReason = "store replaced";
                 if (stopReason) return skip(keys, ids, stopReason);
-                let snapshotTails: string[];
-                const snapshotIds = new Set<string>();
                 try {
-                    const tails = new Set<string>();
-                    for (const snapshot of snapshots.list()) {
+                    const listed = snapshots.list();
+                    for (const snapshot of listed) {
                         if (!selectSnapshotIndex.get(snapshot.id)) {
                             const file = snapshots.resolve(snapshot.id);
                             if (!file) throw new Error(`snapshot ${snapshot.id} unreadable`);
@@ -1197,14 +1203,35 @@ export function createAssetLifecycle(
                                 insertSnapshotIndex.run(snapshot.id, wallNow());
                             });
                         }
-                        for (const row of selectSnapshotReferences.all(snapshot.id)) tails.add(String(row.tail));
-                        for (const row of selectSnapshotInlays.all(snapshot.id)) snapshotIds.add(String(row.id));
                     }
-                    snapshotTails = [...tails].sort();
+                    const listedIds = new Set(listed.map((snapshot) => snapshot.id));
+                    if (
+                        listedIds.size !== snapshotIndex.listedIds.size ||
+                        listed.some((snapshot) => !snapshotIndex.listedIds.has(snapshot.id))
+                    ) {
+                        const turnStart = monoNow();
+                        try {
+                            const tails = new Set<string>();
+                            const snapshotIds = new Set<string>();
+                            for (const snapshot of listed) {
+                                for (const row of selectSnapshotReferences.all(snapshot.id))
+                                    tails.add(String(row.tail));
+                                for (const row of selectSnapshotInlays.all(snapshot.id))
+                                    snapshotIds.add(String(row.id));
+                            }
+                            snapshotIndex = { listedIds, tails: [...tails].sort(), ids: snapshotIds };
+                        } finally {
+                            stats.longestSynchronousTurnMs = Math.max(
+                                stats.longestSynchronousTurnMs,
+                                monoNow() - turnStart,
+                            );
+                        }
+                    }
                 } catch (error) {
                     signal.throwIfAborted();
                     return skip(keys, ids, `snapshot recheck failed: ${String(error)}`);
                 }
+                const { tails: snapshotTails, ids: snapshotIds } = snapshotIndex;
                 if (!(await holds.keySetsSettled(Math.max(0, deadline - monoNow()), signal))) {
                     stopReason = "export key set pending";
                     return skip(keys, ids, stopReason);
@@ -1331,12 +1358,21 @@ export function createAssetLifecycle(
                     latest.unreferenced.pastGrace.count--;
                     latest.unreferenced.pastGrace.bytes -= candidate.bytes;
                     latest.unreferenced.total--;
-                    latest.unreferenced.candidates = [...candidates.values()].slice(0, ASSET_LIST_CAP);
                     try {
                         await options.thumbnails?.removeKey(key);
                     } catch (error) {
                         console.error("[Server] Asset thumbnail cleanup failed:", error);
                     }
+                }
+                if (deleted.length > 0) {
+                    const prefixStart = monoNow();
+                    const visibleCandidates: typeof latest.unreferenced.candidates = [];
+                    for (const candidate of candidates.values()) {
+                        visibleCandidates.push(candidate);
+                        if (visibleCandidates.length === ASSET_LIST_CAP) break;
+                    }
+                    latest.unreferenced.candidates = visibleCandidates;
+                    stats.longestSynchronousTurnMs = Math.max(stats.longestSynchronousTurnMs, monoNow() - prefixStart);
                 }
                 for (const id of [...removed, ...replaced]) {
                     deleteOrphanInlay.run(id);
