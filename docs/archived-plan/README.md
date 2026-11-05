@@ -58,6 +58,7 @@ git show 786dfc3d3:docs/plan/guides-to-source.md
 git show c34f69365:docs/plan/job-handoff.md
 git show 72830e9f6:docs/plan/asset-lifecycle.md
 git show c249c3a21:docs/plan/incremental-chat-transport.md
+git show b37776a72:docs/plan/found-issues-sweep.md
 git show a72c5f736:docs/plan/render-work-budget.md
 git show f521f3d63:docs/plan/plugin-storage.md
 git show 7a4e8d113:docs/plan/reroll-candidates.md
@@ -125,6 +126,7 @@ it is not a current architecture guide.
 | Render Work Budget                       | `a72c5f736`: `docs/plan/render-work-budget.md`                            | [CBS and rendering](../structure/cbs-rendering.md), [UI and theming](../structure/ui-theming.md), [translation](../structure/translation.md), [test harness](../structure/test-harness.md) (`measureRenderWork.mjs`)                                                                                                                                                                                                                                                                        |
 | Plugin Storage and Data API              | `f521f3d63`: `docs/plan/plugin-storage.md`                                | [plugins](../structure/plugin-sandbox.md) (State, Gotchas, Tests), [resource sync](../structure/resource-sync.md) (Record patches), [server resources](../structure/server-resources.md) (kinds, resource routes), [chat store](../structure/chat-store.md) (detached reads, `chatSummaryList`), [backup sync hub](../structure/backup-sync-hub.md) (Upstream database export), [test harness](../structure/test-harness.md) (`measurePluginData.mjs`), `plugins.md`                        |
 | Reroll Candidates                        | `7a4e8d113`: `docs/plan/reroll-candidates.md`                             | [chat pipeline](../structure/chat-pipeline.md) (Reroll), [chat store](../structure/chat-store.md) (`selectCandidate`), [server generation](../structure/server-generation.md) (in-place reroll job), [memory](../structure/memory.md) (commit boundary), [backup sync hub](../structure/backup-sync-hub.md) (candidates on export and import)                                                                                                                                               |
+| Found Issues Sweep                       | `b37776a72`: `docs/plan/found-issues-sweep.md`                            | The owning guides' Known Hazards; the deferred groups and accepted notes stay in [found-issues](../research/found-issues.md)                                                                                                                                                                                                                                                                                                                                                                |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1177,6 +1179,22 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     export, and pruning older messages' candidates at the commit boundary.
   - Found by the run: 2 entries in `docs/research/found-issues.md` (the dead dynamic reroll icon variant, the
     Structured Memory decision pointers that still say "plan").
+- Found Issues Sweep:
+  - All 26 slices landed on 2026-11-05 (plan-runner, on `dev`); the archived Status line lists each slice's
+    commit, from A1 (`5d20f1e28`) to K2 (`144e0ddbe`). The eleven open questions were answered as recommended;
+    G1 took option A (an owner taking its own open offer reattaches), and I1's `castSlice` item moved to the
+    Deferred list (named-page matching).
+  - Still open: the C4 lorebook-filter check in a browser (press + on a host and inside a filter-expanded folder,
+    then open an entry there and change the query: the entries stay visible and open).
+  - Not planned: the plan's Deferred groups (feed patch forms, editor drafts as refresh holds, the handoff
+    detach, plugin lifecycle, the render failure channel, screenshot memory, token counting, the trim question
+    design, transform key and measurements, snapshot storage sizing, named-page matching, `proto` diagnostics,
+    a mounted DefaultChatScreen harness, the `/sw/img` reproduction, the Structured Memory follow-up); their
+    entries stay in `docs/research/found-issues.md`.
+  - Found by the run: 10 entries in `docs/research/found-issues.md` (the trim question counting blank history,
+    a combined translation paragraph written as HTML, `/multisend` keeping its quotes, scheme and local ui
+    writers skipping the display apply, `#import_preset` after a refusal, a stray `}}` ending CBS highlighting,
+    two hard-coded inlay explorer strings, `docs:contracts` on EPIPE, chat-pipeline's non-fencing refusal list).
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.

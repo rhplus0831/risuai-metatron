@@ -15,7 +15,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
 - [Client and plugins](#client-and-plugins) (10)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (10)
@@ -279,13 +279,6 @@ The Found Issues Sweep's D2 re-applies the display only for remote `ui` records 
 
 **Why it matters:** with auto suggestions on, the first return to a chat after new suggestions downloads and re-runs what the tab already holds.
 **Suggested handling:** decide whether a non-render chat field such as `suggestMessages` should move the transform key at all; the chat revision is also the key's fence against mixed-revision results, so this needs its own design.
-
-### Delegate profile test policy names the old guide
-
-`.claude/delegate-implementation.local.md:11` (untracked, main checkout) points the `<test policy>` slot at `docs/structure/build-test-platforms.md`. Guide Budgets slice 4 moved `### Test rules` to `docs/structure/test-harness.md`.
-
-**Why it matters:** the slot is pasted into test-writer prompts, so a writer is sent to a guide that no longer holds the rules.
-**Suggested handling:** change the slot to `docs/structure/test-harness.md`.
 
 ### check:docs does not measure blockquoted items
 
