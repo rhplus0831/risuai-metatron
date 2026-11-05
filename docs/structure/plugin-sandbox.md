@@ -253,7 +253,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - `databaseAccessRecorder.test.ts`: the developer `getDatabase` recorder in the real srcdoc guest, fake timers.
 - `pluginDeferredReload.test.ts`, `pluginSafeBoot.test.ts`: a mocked v3 loader, the idle predicate and safe-boot flag
   controlled. `pluginWorkIdle.test.ts`: a controllable sandbox idle flag, the job channel real.
-- `storeBackedServer.ts`: the real save adapter over the real server store, for saved writes. `FakeResourceServer`:
+- `storeBackedServer.ts`: the real save adapter over the real server store, for saved writes.
+  `getDatabaseDetached.test.ts`: the detached `getDatabase` equals the load path. `FakeResourceServer`:
   `permissionStore.test.ts`.
 - `util/playwright/checkJobProtocol.mjs` (a browser check, not in the gate): a real v3 plugin provider answers job
   callbacks from the sandbox ([test-harness](test-harness.md)).
@@ -315,20 +316,18 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 ### Gotchas
 
-- The character records hold no chats: the plugin getters build the legacy shape at the boundary (`withChatsCopy`). The
-  getters pin the chats, await `loadChats`, and copy from the chat module, so `getDatabase` with `characters` loads
-  every chat that is not loaded, and idle chats can be evicted afterwards. It reads through the store, not detached:
-  unsaved local changes are in the copy.
+- The character records hold no chats: the plugin getters build the legacy shape (`withChatsCopy`) over pinned, loaded
+  chats. `getDatabase` outside a hook (`withDetachedDatabaseChats`) flushes and reads unloaded chats by ref
+  (`readChatRefsDetached`) without installing them; a character whose copy could differ is loaded.
 - `getChatFromIndex`, `setChatToIndex`, `parseRisuChat`, and `sendChat` capture their chat by id first and await
   `ensureChatLoaded`. The character setters capture their targets, pin and load the chats, then apply synchronously.
 - Plugins hand back whole objects, but [chats are saved as changes](chat-store.md#whole-chat-writers).
   `applyPluginCharacter`/`applyPluginCharacters` pass a character's `chats` to `reconcileCharacterChats`: a chat with a
-  known id is diffed against the chat as it is at the call and applied (`applyChatResult`), a chat without an id or with
-  a new one is created, a chat left out is deleted (never the last one), the list order becomes the chat order, and a
-  supplied `chatPage` selects that chat in this tab. New setters go through the same functions; never assign `chats` or
-  `chatPage`.
+  known id is diffed against the chat at the call and applied (`applyChatResult`), any other is created, a chat left out
+  is deleted (never the last one), the list order becomes the chat order, and a supplied `chatPage` selects that chat in
+  this tab. New setters go through the same functions; never assign `chats` or `chatPage`.
 - When a whole-chat diff would change or remove a message being generated (`assertUnlocked`), that chat's update is
-  skipped with a console warning; a reorder of unchanged messages while it generates drops only the order change.
+  skipped with a warning; a reorder of unchanged messages while it generates drops only the order change.
 - A character that is generating is neither replaced (another `chaId` at its index) nor removed (left out of a
   `characters` list), a `characters` list with duplicate `chaId` values is refused as a whole, and `removeChar` refuses
   a permanent delete of it.

@@ -1,4 +1,5 @@
 import type { Chat } from "../../../shared/database.ts";
+import { language } from "src/lang";
 import {
     applyChatResult,
     captureChatBaseline,
@@ -74,10 +75,50 @@ export function setCurrentChatMeta(set: Partial<Chat>, unset: readonly string[] 
     }
 }
 
-/** The most characters one detached read names (the read route's cap is far above it). */
+/** The most characters or chat refs one detached read names (below the read route's cap). */
 const DETACHED_READ_CHUNK = 500;
 /** The bound of one chunk's read (`readWithDeadline`): whole chat lists can be large on a slow link. */
 const DETACHED_READ_DEADLINE_MS = 60_000;
+
+export type DetachedChatRead = { revision: string; data: Chat } | "gone" | "absent";
+
+/**
+ * Reads named chats across characters as plain server copies, without installing or pinning them.
+ * The caller settles queued saves first. Each chunk has its own deadline, including continuations;
+ * a missing answer is distinct from a chat the server says is gone. No store state is written.
+ */
+export async function readChatRefsDetached(
+    refs: readonly ChatRef[],
+): Promise<Map<string, Map<string, DetachedChatRead>>> {
+    const result = new Map<string, Map<string, DetachedChatRead>>();
+    const wanted: { characterId: string; id: string }[] = [];
+    for (const { chaId, chatId } of refs) {
+        let chats = result.get(chaId);
+        if (!chats) {
+            chats = new Map();
+            result.set(chaId, chats);
+        }
+        if (!chats.has(chatId)) {
+            chats.set(chatId, "absent");
+            wanted.push({ characterId: chaId, id: chatId });
+        }
+    }
+    for (let start = 0; start < wanted.length; start += DETACHED_READ_CHUNK) {
+        const read = await readWithDeadline(DETACHED_READ_DEADLINE_MS, language.chatLoadTimedOut, (signal) =>
+            readRefs([], { chats: wanted.slice(start, start + DETACHED_READ_CHUNK), signal }),
+        );
+        for (const chat of read.chats ?? []) {
+            const chats = result.get(chat.characterId);
+            if (chats?.has(chat.id)) {
+                chats.set(
+                    chat.id,
+                    chat.revision === null || !chat.data ? "gone" : { revision: chat.revision, data: chat.data },
+                );
+            }
+        }
+    }
+    return result;
+}
 
 /**
  * Every chat of the characters `chaIds`, as plain copies in their server order, read from the server

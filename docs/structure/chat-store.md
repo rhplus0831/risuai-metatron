@@ -38,7 +38,7 @@ below are the identifiers to look up.
   `applyServerGenerationChunk`, `heldStreamText`, `endServerJob`, `hydrateChat`, `hydrateChatPatch`,
   `chatHydrationHold`, `prepareChatHydrationRefresh`, `deferredReloads`, `finishDeferredReload`.
 - `src/ts/storage/chatEdits.ts`: `editChat` (may await), `editChatSync`, `editCurrentChat`, `setCurrentChatMeta`, over a
-  whole chat copy; `readChatsDetached` for exports.
+  whole chat copy; `readChatsDetached` (exports), `readChatRefsDetached` (plugins).
 - `src/ts/storage/chatFieldDraft.svelte.ts` (`createChatFieldDraft`, `loreWriteFenced`),
   `src/ts/storage/{localLoreDraft.svelte,loreOverridesDraft.svelte}.ts`: the editing copies of a selected chat's array
   fields and their send fence.

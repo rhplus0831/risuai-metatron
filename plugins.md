@@ -788,7 +788,7 @@ await Risuai.setDatabaseLite(db);
 
 `getDatabase()` returns `null` if the user has not granted database access consent.
 
-`getDatabase()` builds a fresh copy each time you call it. When you ask for `characters` (or ask for every key), it first loads every chat of every character from the server and copies them all, so it can take a while and use a lot of memory with many or long chats. Ask only for the keys you need, and prefer `getCharacter()` for the current character. `getCharacter()` and `getChar()` copy one character with all its chats, loading them first. A copy is a snapshot: changing it changes nothing until you hand it back with a setter.
+`getDatabase()` builds a fresh copy each time you call it. When you ask for `characters` (or ask for every key), the copy holds every chat of every character: the chats this tab has loaded as it holds them, and the others as the server holds them after this tab's queued changes were saved (inside a hook, every chat as this tab holds it, loading the missing ones first). It reads the chats this tab has not loaded in a few large requests without keeping them, but it still copies them all, so it can take a while and use a lot of memory with many or long chats. Ask only for the keys you need, and prefer `getCharacter()` for the current character. `getCharacter()` and `getChar()` copy one character with all its chats, loading them first. A copy is a snapshot: changing it changes nothing until you hand it back with a setter.
 
 In a [read-only transform continuation](#read-only-transform-continuations), both setters warn and return `undefined` without applying any keys, including custom keys. Use `pluginStorage` for plugin-private state.
 

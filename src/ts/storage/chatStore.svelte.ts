@@ -1244,25 +1244,64 @@ export function selectedChat(): DeepReadonly<Chat> | null {
 /**
  * A detached legacy copy of a character for the plugin and hook boundaries: `copy` (a chat-free
  * plain copy) with the character's chats as plain copies in order and `chatPage`, the index of
- * `chatId` when it is listed, else of the selected chat. Every chat must be loaded (the caller pins
- * and awaits `loadChats` first); throws otherwise, so a copy is never missing a chat.
+ * `chatId` when it is listed, else of the selected chat. Every member must be loaded or supplied in
+ * `detached` (plain server copies, used without copying again); throws otherwise. Loaded chats are
+ * preferred and copied from the held store. The caller pins them across any preceding awaits.
  * Its `lastInteraction` is filled with the derived last-chatted time when positive, for plugins.
  */
 export function withChatsCopy<T extends { chaId: string; lastInteraction?: unknown }>(
     copy: T,
     chatId?: string,
+    detached?: ReadonlyMap<string, Chat>,
 ): T & { chats: Chat[]; chatPage: number } {
-    if (!chatsLoaded(copy.chaId)) {
+    if (!detached && !chatsLoaded(copy.chaId)) {
         throw new Error(`The chats of ${copy.chaId} are not loaded`);
     }
-    const chats = clone<Chat[]>($state.snapshot(chatsOf(copy.chaId)) as Chat[]);
+    const holding = holdingAt(copy.chaId);
+    const chats = detached
+        ? (holding?.ids ?? []).map((id) => {
+              const held = holding!.chats[slot(id)];
+              if (held) {
+                  return clone<Chat>($state.snapshot(held));
+              }
+              const chat = detached.get(id);
+              if (!chat) {
+                  throw new Error(`The chats of ${copy.chaId} are not loaded`);
+              }
+              return chat;
+          })
+        : clone<Chat[]>($state.snapshot(chatsOf(copy.chaId)) as Chat[]);
     const listed = chatId === undefined ? -1 : chats.findIndex((chat) => chat.id === chatId);
-    const lastChatted = characterLastChattedAt(copy.chaId, copy.lastInteraction);
+    let lastChatted: number;
+    if (detached) {
+        let newest: number | undefined;
+        for (const chat of chats) {
+            const time = lastMessageTime(chat);
+            if (time !== undefined) {
+                newest = newest === undefined ? time : Math.max(newest, time);
+            }
+        }
+        lastChatted =
+            newest ??
+            (typeof copy.lastInteraction === "number" && Number.isFinite(copy.lastInteraction)
+                ? copy.lastInteraction
+                : 0);
+    } else {
+        lastChatted = characterLastChattedAt(copy.chaId, copy.lastInteraction);
+    }
     return {
         ...copy,
         ...(lastChatted > 0 ? { lastInteraction: lastChatted } : {}),
         chats,
-        chatPage: listed !== -1 ? listed : selectedChatIndex(copy.chaId),
+        chatPage:
+            listed !== -1
+                ? listed
+                : detached
+                  ? Math.max(
+                        0,
+                        chats.findIndex((chat) => chat.id === selectedChatId(copy.chaId)),
+                    )
+                  : selectedChatIndex(copy.chaId),
     };
 }
 
