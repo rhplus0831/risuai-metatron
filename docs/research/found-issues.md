@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (16)
+- [Client and plugins](#client-and-plugins) (15)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
@@ -329,13 +329,6 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 
 **Why it matters:** the capture gap lets a plugin act behind a blocking notice; the pinned URLs grow with assets rendered; the flakes return whenever suites run in parallel.
 **Suggested handling:** mention when working nearby and check the code first; treat the flakes as known unless one fails alone.
-
-### Lorebook filter accepted limits
-
-Search plan slice 2c (2026-10-20, `src/lib/SideBars/LoreBook/LoreBookList.svelte`; the contract is `characters-modules.md` "Lorebook filter") left: an entry added while the query is non-empty (host "+" or a forced folder's "+") has empty fields and is hidden at once; the module list's query does not reset if a remote replacement retargets the module wrapper while ModuleMenu stays mounted (the owner key is a constant for `externalLoreBooks`; normal module navigation remounts); a folder opened only by the filter (`filterOpens` → `forceOpen`, :164 and :629) collapses when a later query stops showing it, dropping details opened inside it meanwhile; drag recovery after clearing (`onEnd` guard, :277) is untested; no browser check was run. Re-checked by identifier 2026-11-03; kept in memory until then.
-
-**Why it matters:** an entry added under a filter seems to vanish, and an opened detail can close under the user.
-**Suggested handling:** clear the query on add, or show the new entry regardless; keep a filter-opened folder open while it has an open detail.
 
 ### util and globalApi helper gaps
 
