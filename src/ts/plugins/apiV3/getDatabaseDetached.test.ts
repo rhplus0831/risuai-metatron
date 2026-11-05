@@ -68,7 +68,12 @@ function deferred() {
 }
 const resourceReads = (fake: StoreBackedServer) => fake.requests.filter(({ path }) => path === readPath);
 const requestedChats = (fake: StoreBackedServer) => resourceReads(fake).flatMap(({ body }) => body.chats ?? []);
-const returnedCharacter = (value: { characters: character[] }, chaId: string) =>
+/** A character as a plugin receives it: its own mutable copy. */
+type ReturnedCharacter = Omit<character, "chats" | "chatPage"> & { chats: Chat[]; chatPage: number };
+type SummaryCharacter = Omit<ReturnedCharacter, "chats" | "chatPage"> & {
+    chatSummaries: { id: string; name: string; lastMessageAt?: number }[];
+};
+const returnedCharacter = (value: { characters: ReturnedCharacter[] }, chaId: string) =>
     value.characters.find((entry) => entry.chaId === chaId)!;
 
 async function fixture(
@@ -231,6 +236,260 @@ afterEach(() => {
     for (const fake of servers.splice(0)) fake.close();
 });
 
+it.each(["outside a hook", "inside a hook"])(
+    "returns held chat summaries without reading, flushing, pinning or loading chats %s",
+    async (where) => {
+        const unknown = chatData("unknown");
+        delete unknown.message[0].time;
+        const b = await boot(
+            await fixture({ c: [chatData("other", 400), chatData("held"), unknown], d: [chatData("untimed")] }),
+        );
+        await b.chat.ensureChatLoaded(held);
+        await b.chat.ensureChatLoaded(ref("d", "untimed"));
+        b.chat.setChatMeta(held, { name: "Local name" });
+        b.chat.replaceMessage(held, { chatId: "message", role: "char", data: "Unsaved", time: 900 });
+        b.chat.replaceMessage(ref("d", "untimed"), { chatId: "message", role: "char", data: "No time" });
+        // The tab has not heard this remote rename: its unloaded summary must remain the one it holds.
+        b.fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "other",
+                baseRevision: b.fake.chat("c", "other")!.revision,
+                ops: [{ op: "meta", set: { name: "Remote name" } }],
+            },
+        ]);
+        const stored = b.fake.chat("c", "held");
+        const keys = ["characters", "memoryAlgorithmType", "username", "selectedPersona", "temperature"];
+        b.fake.requests.length = 0;
+        let got!: { characters: SummaryCharacter[] };
+        const read = async () => {
+            got = await b.api.getDatabase(keys, { chats: "summaries" });
+            for (const chaId of ["c", "d"]) expect(b.chat.isChatPinned(chaId)).toBe(false);
+        };
+        if (where === "inside a hook") await b.runHook(read);
+        else await read();
+
+        expect(b.fake.requests).toEqual([]);
+        expect(b.fake.chat("c", "held")).toEqual(stored);
+        expect(got.characters.map(({ chatSummaries }) => chatSummaries)).toStrictEqual([
+            [
+                { id: "other", name: "other", lastMessageAt: 400 },
+                { id: "held", name: "Local name", lastMessageAt: 900 },
+                { id: "unknown", name: "unknown" },
+            ],
+            [{ id: "untimed", name: "untimed" }],
+        ]);
+        for (const char of got.characters) {
+            expect(char).not.toHaveProperty("chats");
+            expect(char).not.toHaveProperty("chatPage");
+        }
+        expect(b.chat.chatsLoaded("c")).toBe(false);
+        expect(b.chat.findChat(other)).toBeUndefined();
+        expect(b.chat.findChat(ref("c", "unknown"))).toBeUndefined();
+        expect(b.chat.findChat(held)?.message[0].data).toBe("Unsaved");
+
+        const full = await b.api.getDatabase(keys);
+        expect({
+            ...got,
+            characters: got.characters.map(({ chatSummaries: _summaries, ...fields }) => fields),
+        }).toEqual({
+            ...full,
+            characters: full.characters.map(
+                ({ chats: _chats, chatPage: _page, ...fields }: ReturnedCharacter) => fields,
+            ),
+        });
+        expect(await b.api.getDatabase(["username"], { chats: "summaries" })).toEqual(
+            await b.api.getDatabase(["username"]),
+        );
+    },
+);
+
+it("rejects invalid database options and chat modes", async () => {
+    const b = await boot(await fixture());
+    for (const options of [
+        null,
+        false,
+        1,
+        "summaries",
+        { chats: null },
+        { chats: false },
+        { chats: [] },
+        { chats: "brief" },
+    ]) {
+        await expect(b.api.getDatabase(["characters"], options), JSON.stringify(options)).rejects.toThrow();
+    }
+    expect(requestedChats(b.fake)).toEqual([]);
+});
+
+it.each(["setDatabase", "setDatabaseLite"] as const)(
+    "%s applies summary character edits without reading or changing any chat or persisting summaries",
+    async (setter) => {
+        const b = await boot(await fixture());
+        await b.chat.ensureChatLoaded(held);
+        b.chat.selectChat("c", "other");
+        const before = b.fake.store.readKinds([b.fake.kind("characters")], { chats: true });
+        const incoming: { characters: SummaryCharacter[] } = structuredClone(
+            await b.api.getDatabase(["characters"], { chats: "summaries" }),
+        );
+        incoming.characters[0].name = "Renamed from summaries";
+        b.fake.requests.length = 0;
+
+        await b.api[setter](incoming);
+        await b.sync.flushResources();
+
+        const after = b.fake.store.readKinds([b.fake.kind("characters")], { chats: true });
+        expect(after.chats).toEqual(before.chats);
+        expect(after.chatOrders).toEqual(before.chatOrders);
+        expect(b.chat.selectedChatId("c")).toBe("other");
+        expect(requestedChats(b.fake)).toEqual([]);
+        expect(b.chat.findChat(held)).toBeDefined();
+        for (const target of [other, ref("d", "d")]) expect(b.chat.findChat(target)).toBeUndefined();
+        for (const chaId of ["c", "d"]) {
+            expect(b.chat.chatsLoaded(chaId)).toBe(false);
+            expect(b.fake.record("characters", chaId)!.data).not.toHaveProperty("chatSummaries");
+        }
+        expect(b.fake.record("characters", "c")!.data.name).toBe("Renamed from summaries");
+    },
+);
+
+it.each(["setDatabase", "setDatabaseLite"] as const)(
+    "%s still refuses a supplied non-array chats value",
+    async (setter) => {
+        const b = await boot(await fixture());
+        const before = b.fake.store.readKinds([b.fake.kind("characters")], { chats: true });
+        const incoming = await b.api.getDatabase(["characters"], { chats: "summaries" });
+        const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+        for (const chats of [null, {}]) {
+            warning.mockClear();
+            await b.api[setter]({
+                characters: incoming.characters.map((char: SummaryCharacter) => ({ ...char, name: "Refused", chats })),
+            });
+            await b.sync.flushResources();
+            expect(b.fake.store.readKinds([b.fake.kind("characters")], { chats: true })).toEqual(before);
+            expect(warning).toHaveBeenCalled();
+        }
+    },
+);
+
+it.each([
+    {
+        title: "reads only a chat page's unloaded refs outside a hook and matches the ordered full database page",
+        inHook: false,
+    },
+    {
+        title: "loads the character's chats inside a hook and matches the ordered full database page",
+        inHook: true,
+    },
+])("$title", async ({ inHook }) => {
+    const b = await boot(
+        await fixture({
+            c: [
+                chatData("z-before"),
+                chatData("held"),
+                chatData("a-middle"),
+                chatData("z-middle"),
+                chatData("a-after"),
+            ],
+            d: [chatData("d")],
+        }),
+    );
+    await b.chat.ensureChatLoaded(held);
+    b.chat.setMessageText(held, "message", "Local page edit");
+    b.fake.requests.length = 0;
+    let page!: { chats: Chat[]; total: number };
+    const read = async () => {
+        page = await b.api.getChats("c", { offset: 1, limit: 3 });
+    };
+    if (inHook) await b.runHook(read);
+    else await read();
+
+    expect(page.total).toBe(5);
+    expect(page.chats.map(({ id }) => id)).toEqual(["held", "a-middle", "z-middle"]);
+    expect(page.chats[0].message[0].data).toBe("Local page edit");
+    if (inHook) {
+        expect(b.chat.chatsLoaded("c")).toBe(true);
+    } else {
+        expect(requestedChats(b.fake)).toEqual([
+            { characterId: "c", id: "a-middle" },
+            { characterId: "c", id: "z-middle" },
+        ]);
+        for (const { body } of resourceReads(b.fake)) {
+            expect(body.refs ?? []).toEqual([]);
+            expect(body.chatCollections ?? []).toEqual([]);
+        }
+        for (const target of [ref("c", "z-before"), ref("c", "a-after"), ref("d", "d")]) {
+            expect(b.chat.findChat(target)).toBeUndefined();
+        }
+    }
+    const full = await b.api.getDatabase(["characters"]);
+    expect(page.chats).toEqual(returnedCharacter(full, "c").chats.slice(1, 4));
+});
+
+it("defaults chat paging to the remaining chats and returns empty bounds or unknown characters without reads", async () => {
+    const b = await boot(await fixture());
+    const emptyPages = async () => {
+        for (const options of [{ offset: 2 }, { offset: 20 }, { limit: 0 }, { offset: 1, limit: 0 }]) {
+            expect(await b.api.getChats("c", options)).toEqual({ chats: [], total: 2 });
+        }
+        expect(await b.api.getChats("missing")).toBeNull();
+    };
+    await emptyPages();
+    await b.runHook(emptyPages);
+    expect(requestedChats(b.fake)).toEqual([]);
+    expect(resourceReads(b.fake)).toEqual([]);
+
+    const tail = await b.api.getChats("c", { offset: 1 });
+    expect(tail.total).toBe(2);
+    expect(tail.chats.map(({ id }: Chat) => id)).toEqual(["other"]);
+    expect(requestedChats(b.fake)).toEqual([{ characterId: "c", id: "other" }]);
+    const first = await b.api.getChats("c", { limit: 1 });
+    expect(first.total).toBe(2);
+    expect(first.chats.map(({ id }: Chat) => id)).toEqual(["held"]);
+    const all = await b.api.getChats("c");
+    expect(all).toEqual({ chats: [...first.chats, ...tail.chats], total: 2 });
+    expect(await b.api.getChats("c", { offset: 1, limit: 20 })).toEqual(tail);
+    expect(all.chats).toEqual(returnedCharacter(await b.api.getDatabase(["characters"]), "c").chats);
+});
+
+it("rejects chat offsets and limits that are not non-negative safe integers before reading chats", async () => {
+    const b = await boot(await fixture());
+    for (const field of ["offset", "limit"]) {
+        for (const value of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, "1", null]) {
+            await expect(b.api.getChats("c", { [field]: value }), `${field}: ${String(value)}`).rejects.toThrow();
+        }
+    }
+    expect(resourceReads(b.fake)).toEqual([]);
+});
+
+it("hints once per plugin instance only for full unscoped reads above 200 chats with developer mode on", async () => {
+    const b = await boot(
+        await fixture({ c: Array.from({ length: 200 }, (_, i) => ({ ...chatData(`chat-${i}`), message: [] })) }),
+    );
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    b.settings.ui.enableDevTools = true;
+    expect(returnedCharacter(await b.api.getDatabase(), "c").chats).toHaveLength(200);
+    expect(info).not.toHaveBeenCalled();
+
+    b.chat.createChat("c", { ...chatData("chat-200"), message: [] });
+    b.settings.ui.enableDevTools = false;
+    expect(returnedCharacter(await b.api.getDatabase(), "c").chats).toHaveLength(201);
+    expect(info).not.toHaveBeenCalled();
+    b.settings.ui.enableDevTools = true;
+    await b.api.getDatabase(undefined, { chats: "summaries" });
+    await b.api.getDatabase(["characters"]);
+    expect(info).not.toHaveBeenCalled();
+
+    await b.api.getDatabase();
+    await b.api.getDatabase();
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info.mock.calls[0].join(" ")).toContain("getDatabase");
+    await (await import("./v3.svelte")).loadV3Plugins([{ name: "detached-reader", script: "", version: "3.0" } as any]);
+    await boundary.api!.getDatabase();
+    await boundary.api!.getDatabase();
+    expect(info).toHaveBeenCalledTimes(2);
+});
+
 it("matches a hook's loaded snapshot with local edits, structured memory and a chat gone on the server", async () => {
     const fake = await fixture({
         c: [chatData("held", 200), chatData("other", 900)],
@@ -378,7 +637,7 @@ it("uses the loaded path inside a hook without flushing queued work", async () =
         if (path === readPath) expect(b.chat.isChatPinned("c")).toBe(true);
         return b.fake.fetch(path, init);
     };
-    let got!: { characters: character[] };
+    let got!: { characters: ReturnedCharacter[] };
     await b.runHook(async () => {
         got = await b.api.getDatabase(["characters"]);
     });

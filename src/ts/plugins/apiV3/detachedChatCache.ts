@@ -12,7 +12,7 @@ import { assertSaveAdmission, utf8ByteLength } from "src/ts/storage/resourceSync
 import { settings } from "src/ts/storage/settingsViews.svelte";
 
 /**
- * Plain unloaded chat copies retained by the plugin `getDatabase` path, never installed in the chat
+ * Plain unloaded chat copies retained by plugin full-chat reads, never installed in the chat
  * store or mutated. Reuse requires the exact held revision and a current live feed; under structured
  * memory only a HypaV3-owned value is stable, since projections can change without a chat revision.
  * The caller excludes values needing a held-store snapshot and rechecks hits after every await.
@@ -72,7 +72,7 @@ function admitted(): boolean {
     }
 }
 
-/** Called at entry and completion of every `getDatabase` that includes characters, hooks included. */
+/** Called at entry and completion of full-chat `getDatabase` reads and `getChats`, hooks included. */
 export function touchDetachedChatCache() {
     checkEpoch();
     clearTimeout(idleTimer);

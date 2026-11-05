@@ -768,31 +768,36 @@ Use `safeLocalStorage` for data that must stay on one device.
 
 ### Database Access
 
-Access Risuai's database for characters, personas, and more:
+Request only the data you need. Prefer summaries for character/chat lists, `getChats()` for a page of full chats, and `getCharacter()` for the current character:
 
 ```javascript
-// Get database (remember: async!)
-const db = await Risuai.getDatabase();
+const db = await Risuai.getDatabase(["characters", "personas"], { chats: "summaries" });
+if (db?.characters.length) {
+  const character = db.characters[0];
+  console.log(character.chatSummaries); // [{ id, name, lastMessageAt? }, ...]
+  const page = await Risuai.getChats(character.chaId, { offset: 0, limit: 10 });
+  console.log(page?.chats, page?.total);
 
-// Request only specific keys for better performance
-const db = await Risuai.getDatabase(["characters", "personas"]);
+  character.name = "Updated name";
+  await Risuai.setDatabaseLite(db); // Keeps these characters' chats without loading them
+}
 
-// Access allowed properties
-console.log(db.characters);
-console.log(db.personas);
-console.log(db.modules);
+const currentCharacter = await Risuai.getCharacter();
 
-// Update database
-db.characters.push(newCharacter);
-await Risuai.setDatabase(db); // Full save
-
-// Or use lite version (faster)
-await Risuai.setDatabaseLite(db);
+// Full chats remain available when needed
+const full = await Risuai.getDatabase(["characters"]);
+// Risuai.getDatabase() requests all allowed keys and every full chat
 ```
 
-`getDatabase()` returns `null` if the user has not granted database access consent.
+`getDatabase(includeOnly = "all", options?)` and `getChats(chaId, options?)` require the same database access consent and return `null` when it is not granted.
 
-`getDatabase()` builds a fresh copy each time you call it. When you ask for `characters` (or ask for every key), the copy holds every chat of every character: the chats this tab has loaded as it holds them, and the others as the server holds them after this tab's queued changes were saved (inside a hook, every chat as this tab holds it, loading the missing ones first). It reads the chats this tab has not loaded in a few large requests, and keeps a copy of them (up to 64 MiB, until five minutes pass without such a call) so a later call reads again only the chats that changed since, as far as this tab's live updates tell it. It still copies every chat into your result, so it can take a while and use a lot of memory with many or long chats. Ask only for the keys you need, and prefer `getCharacter()` for the current character. `getCharacter()` and `getChar()` copy one character with all its chats, loading them first. A copy is a snapshot: changing it changes nothing until you hand it back with a setter.
+With `{ chats: "summaries" }`, each returned character has `chatSummaries` instead of `chats` and `chatPage`. There is one `{ id, name, lastMessageAt? }` entry per chat in the character's chat order. Loaded chats supply their current name and final-message time; unloaded chats supply the summary already held by this tab. `lastMessageAt` is absent when no finite time is known. There is no message count. This mode reads, flushes, pins, and loads no chats, inside or outside a hook. All other fields keep their usual behavior, including derived `lastInteraction`, the hook's captured preset settings, and refusal when a required preset is gone. `options` must be an object when supplied; `options.chats` may be `undefined`, `"full"` (the default), or `"summaries"`. Invalid values reject with an `Error` naming the value.
+
+`getChats(chaId, { offset, limit })` returns `{ chats, total }`, with chats in character order and `total` equal to the character's chat count. `offset` defaults to `0` and `limit` to all remaining chats. Both must be non-negative safe integers when supplied; invalid values reject with an `Error`. A zero limit or an offset at/past the end returns an empty page without reading chats. An unknown character, including one deleted during the call, returns `null`. Each chat has the same contents as in a full `getDatabase(["characters"])` result: loaded chats as this tab holds them and unloaded chats as detached server copies through the shared reuse cache. Normally only the page's unloaded chats are read. Inside a hook, or if a detached read cannot safely represent the held state, the character's chats are loaded first.
+
+Without the option (or with `{ chats: "full" }`), `getDatabase()` keeps its existing behavior. It builds a fresh copy each time. When you ask for `characters` (or every key), the copy holds every chat of every character: loaded chats as this tab holds them, and the others as the server holds them after this tab's queued changes were saved. Inside a hook, missing chats are loaded first. Detached reads use a few large requests and share a cache with `getChats()` (up to 64 MiB, cleared after five minutes without a full-chat read). Unchanged copies can be reused according to this tab's live updates. Returning every chat can take a while and use a lot of memory. With Enable Dev Tools on, a full all-keys call returning more than 200 chats logs a hint once per loaded plugin instance recommending scoped reads.
+
+`getCharacter()` and `getChar()` copy one character with all its chats, loading them first. Every result is a snapshot: changing it changes nothing until you hand it back with a setter. Existing characters whose `chats` is absent or `undefined` keep their chats without loading them through `setDatabase`/`setDatabaseLite`; their other fields and any numeric `chatPage` still apply. `chatSummaries` is read-only metadata: character setters ignore it and never save it in a character record. `chats: null` or another non-array value is still invalid.
 
 In a [read-only transform continuation](#read-only-transform-continuations), both setters warn and return `undefined` without applying any keys, including custom keys. Use `pluginStorage` for plugin-private state.
 

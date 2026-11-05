@@ -1351,6 +1351,26 @@ export function characterLastChattedAt(chaId: string, fallback?: unknown): numbe
     return newest ?? (typeof fallback === "number" && Number.isFinite(fallback) ? fallback : 0);
 }
 
+/**
+ * Fresh summaries in member order, read only from this tab: loaded chats supply their name and
+ * final message time, unloaded chats their held summary. Unknown times are omitted. Synchronous
+ * and read-only: never loads, pins, flushes, or changes a chat; returns no message counts.
+ */
+export function chatSummaryList(chaId: string): { id: string; name: string; lastMessageAt?: number }[] {
+    const holding = holdingAt(chaId);
+    return (holding?.ids ?? []).map((id) => {
+        const chat = holding!.chats[slot(id)];
+        const summary = holding!.summaries[slot(id)];
+        const name = (chat ?? summary)?.name;
+        const time = chat ? lastMessageTime(chat) : summary?.lastMessageAt;
+        return {
+            id,
+            name: typeof name === "string" ? name : "",
+            ...(typeof time === "number" && Number.isFinite(time) ? { lastMessageAt: time } : {}),
+        };
+    });
+}
+
 /** One entry of a character's chat list (`chatList`): what a chat list shows, never a whole chat. */
 export type ChatListEntry = { id: string } & Omit<ChatEntryMeta, "lastMessageAt">;
 

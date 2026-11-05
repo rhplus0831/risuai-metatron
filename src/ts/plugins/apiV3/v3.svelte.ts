@@ -137,6 +137,7 @@ import { getModelInfoForMode } from "src/ts/model/modellist";
 import type { ModelModeExtended } from "src/ts/process/request/shared";
 import type { RegexScriptMode as ScriptMode } from "../../../../shared/scripts/regex.ts";
 import { supaMemoryOnCount } from "../../../../shared/characters.ts";
+import { plainClone } from "../../../../shared/presets.ts";
 import { mergeOwnerLore } from "../../../../shared/lore/overrides.ts";
 import {
     isSealedHypaV3Data,
@@ -995,14 +996,21 @@ function rotatingWindow<T>(list: readonly T[], size: number, cursor: { at: numbe
     return [first, ...[...rest, ...rest].slice(start, cursor.at)];
 }
 
+type ChatMemberSelector = (chaId: string) => readonly { id: string }[];
+
 /**
- * The chats a read of `chaIds` returns, the chat it is about first: the hook's, else the selected one.
+ * The selected members a read of `chaIds` returns (all by default), the chat it is about first:
+ * the hook's, else the selected one.
  * That order is what `refreshChatProjections` keeps when it has to cut the list.
  */
-function chatsOfRead(chaIds: readonly (string | undefined)[], context: PluginCallContext | undefined): ChatRef[] {
+function chatsOfRead(
+    chaIds: readonly (string | undefined)[],
+    context: PluginCallContext | undefined,
+    members: ChatMemberSelector = chatList,
+): ChatRef[] {
     const about = context?.chatRef ?? currentChatRef();
     const refs = chaIds.flatMap((chaId) =>
-        chaId === undefined ? [] : chatList(chaId).map(({ id }) => ({ chaId, chatId: id })),
+        chaId === undefined ? [] : members(chaId).map(({ id }) => ({ chaId, chatId: id })),
     );
     const first = refs.findIndex(({ chaId, chatId }) => chaId === about?.chaId && chatId === about.chatId);
     return first > 0 ? [refs[first], ...refs.slice(0, first), ...refs.slice(first + 1)] : refs;
@@ -1178,20 +1186,33 @@ function detachedPluginChat(chat: Chat): Chat {
  * Reads unloaded members together after saving queued work, keeping server copies outside the chat
  * store. Loaded members stay pinned and are copied in `run`'s synchronous pass. Characters whose
  * copies cannot represent the held state use the ordinary load path; changing membership gets a
- * few assembly attempts before the whole call uses that path.
+ * few assembly attempts before the whole call uses that path. An optional member selector limits
+ * detached reads and projection refreshes to a page; if its ids move during preparation, retry
+ * before returning so every loaded member of the returned page has been pinned and refreshed.
  */
 async function withDetachedDatabaseChats<T>(
     chaIds: readonly (string | undefined)[],
     run: (detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>) => T,
+    selectMembers?: ChatMemberSelector,
 ): Promise<T> {
     const ids = [...new Set(chaIds.filter((chaId): chaId is string => typeof chaId === "string"))];
     const owners = new Map(ids.map((chaId) => [chaId, chatOwnerToken(chaId)]));
-    const releases = ids.flatMap((chaId) =>
-        chatList(chaId).flatMap(({ id }) => {
-            const ref = { chaId, chatId: id };
-            return findChat(ref) ? [pinChat(ref)] : [];
-        }),
-    );
+    const members = selectMembers ?? chatList;
+    const releases: (() => void)[] = [];
+    const pinned = new Set<string>();
+    const pinLoadedMembers = () => {
+        for (const chaId of ids) {
+            for (const { id } of members(chaId)) {
+                const ref = { chaId, chatId: id };
+                const key = `${chaId}\u0000${id}`;
+                if (!pinned.has(key) && findChat(ref)) {
+                    releases.push(pinChat(ref));
+                    pinned.add(key);
+                }
+            }
+        }
+    };
+    pinLoadedMembers();
     const checkOwners = () => {
         for (const character of characterList()) {
             const owner = owners.get(character.chaId);
@@ -1200,7 +1221,7 @@ async function withDetachedDatabaseChats<T>(
             }
         }
     };
-    const refreshed = () => chatsOfRead(ids, undefined);
+    const refreshed = () => chatsOfRead(ids, undefined, members);
     const loaded = () =>
         withChatsLoaded(
             ids,
@@ -1234,12 +1255,12 @@ async function withDetachedDatabaseChats<T>(
                 reads.get(ref.chaId)?.delete(ref.chatId);
                 forgetDetachedChat(ref, hit.entry);
                 cacheHits.delete(key);
-                discarded = true;
+                if (members(ref.chaId).some(({ id }) => id === ref.chatId)) discarded = true;
             }
             return discarded;
         };
         const needsLoaded = (chaId: string) =>
-            chatList(chaId).some(({ id }) => {
+            members(chaId).some(({ id }) => {
                 const ref = { chaId, chatId: id };
                 if (isChatBehind(ref)) return true;
                 if (findChat(ref)) return false;
@@ -1250,6 +1271,8 @@ async function withDetachedDatabaseChats<T>(
                 return read !== undefined && held !== null && (compareRevision(read.revision, held) ?? -1) < 0;
             });
         for (let round = 0; round < 3; round++) {
+            const prepared = selectMembers ? new Map(ids.map((chaId) => [chaId, members(chaId)])) : undefined;
+            pinLoadedMembers();
             discardInvalidHits();
             for (const chaId of ids) {
                 if (!fallback.has(chaId) && needsLoaded(chaId)) fallback.add(chaId);
@@ -1257,7 +1280,7 @@ async function withDetachedDatabaseChats<T>(
             const missing = ids.flatMap((chaId) =>
                 fallback.has(chaId)
                     ? []
-                    : chatList(chaId).flatMap(({ id }) => {
+                    : members(chaId).flatMap(({ id }) => {
                           const ref = { chaId, chatId: id };
                           if (findChat(ref) || reads.get(chaId)?.has(id)) return [];
                           const hit = cachedDetachedChat(ref);
@@ -1303,6 +1326,7 @@ async function withDetachedDatabaseChats<T>(
             for (const chaId of ids) {
                 if (!fallback.has(chaId) && needsLoaded(chaId)) fallback.add(chaId);
             }
+            pinLoadedMembers();
             const assembled = await withChatsLoaded(
                 [...fallback],
                 () => {
@@ -1310,6 +1334,15 @@ async function withDetachedDatabaseChats<T>(
                     const detached = new Map<string, Map<string, Chat>>();
                     let retry = discardInvalidHits();
                     for (const chaId of ids) {
+                        const selected = members(chaId);
+                        const before = prepared?.get(chaId);
+                        if (
+                            before &&
+                            (before.length !== selected.length || before.some(({ id }, i) => id !== selected[i].id))
+                        ) {
+                            retry = true;
+                            continue;
+                        }
                         if (fallback.has(chaId)) continue;
                         // This check is after every read, fallback load, and projection refresh await.
                         if (needsLoaded(chaId)) {
@@ -1319,7 +1352,7 @@ async function withDetachedDatabaseChats<T>(
                         }
                         const copies = new Map<string, Chat>();
                         detached.set(chaId, copies);
-                        for (const { id } of chatList(chaId)) {
+                        for (const { id } of selected) {
                             if (findChat({ chaId, chatId: id })) continue;
                             const read = reads.get(chaId)?.get(id);
                             if (read === undefined || typeof read === "string") {
@@ -1337,7 +1370,7 @@ async function withDetachedDatabaseChats<T>(
                     }
                     return { value: run(detached) };
                 },
-                refreshed,
+                prepared ? () => chatsOfRead(ids, undefined, (chaId) => prepared.get(chaId) ?? []) : refreshed,
             );
             if (assembled) return assembled.value;
         }
@@ -1420,7 +1453,8 @@ function warnRefused(what: string, write: () => void) {
  * character at `index`: its own fields replace the character's (`replaceCharacterFields`), and its
  * chats are reconciled by id through the chat module (changed chats diffed, new ones created,
  * missing ones deleted, the order and a given `chatPage` followed). Database setters can mark
- * chats unchanged after checking the whole list: only a numeric `chatPage` is then applied.
+ * chats unchanged after checking the whole list or when chats are omitted: only a numeric
+ * `chatPage` is then applied. Read-only `chatSummaries` never enter a character record.
  * Another `chaId` (or none):
  * the character replaces the one at the index (`replaceCharacterAt`), unless that one is generating
  * a reply or the `chaId` is already another character's. A refusal is warned about.
@@ -1442,13 +1476,15 @@ function applyPluginCharacter(index: number, char: any, unchangedChats: Readonly
                 console.warn("[Plugin] Skipped a character whose chaId another character already has");
                 return;
             }
-            replaceCharacterAt(index, char);
+            checkCharacterInput(char);
+            const { chatSummaries: _summaries, ...fields } = char;
+            replaceCharacterAt(index, fields);
             return;
         }
         // Turning memory on counts, as the sidebar toggle's (`supaMemoryOnCount`): it voids every
         // chat's "don't ask again" answer to the no-memory trim question. The stored count is kept
         // otherwise: the plugin's copy (stale, missing, or changed) never replaces it.
-        const { supaMemoryOnCount: _theirs, lastInteraction: _derived, ...fields } = char;
+        const { supaMemoryOnCount: _theirs, lastInteraction: _derived, chatSummaries: _summaries, ...fields } = char;
         // Snapshots expose derived chat activity. A same-character round trip keeps the frozen
         // legacy value exactly as stored, including its absence.
         if (Object.hasOwn(current, "lastInteraction")) {
@@ -1507,11 +1543,11 @@ function applyPluginCharacters(
     // Every new character is prepared (checked, normalized, its creation steps done) before the list
     // changes, so an entry refused there leaves the whole list unapplied.
     const prepared = new Map(
-        entries.flatMap((char, i) =>
-            typeof char.chaId === "string" && existing.includes(char.chaId)
-                ? []
-                : [[char, prepareNewCharacter(char, `characters[${i}]`)] as const],
-        ),
+        entries.flatMap((char, i) => {
+            if (typeof char.chaId === "string" && existing.includes(char.chaId)) return [];
+            const { chatSummaries: _summaries, ...fields } = char;
+            return [[char, prepareNewCharacter(fields, `characters[${i}]`)] as const];
+        }),
     );
     for (const char of entries) {
         const ready = prepared.get(char);
@@ -1763,16 +1799,23 @@ function pluginChatsMatch(
 }
 
 /**
- * Both database setters skip loading and reconciling exact chat round trips. Loaded matches stay
+ * Both database setters skip loading and reconciling omitted chats and exact chat round trips. Loaded matches stay
  * pinned while other characters load; all matches and original owners are checked synchronously
- * before applying. A changed match falls back once to loading every target before any key applies.
+ * before applying. A changed match falls back once to loading targets that supply chats before any key applies.
  */
 async function applyPluginDatabaseWithChats(newDb: Record<string, unknown>, context: PluginCallContext | undefined) {
     const targets = charactersReconciled(newDb);
     const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
     const matches = new Map<string, { chats: unknown; hits: Map<string, DetachedChatCacheHit> }>();
+    const omitted = new Set<string>();
     for (const char of Array.isArray(newDb?.characters) ? newDb.characters : []) {
         if (!char || !owners.has(char.chaId)) continue;
+        if (char.chats === undefined) {
+            omitted.add(char.chaId);
+            matches.delete(char.chaId);
+            continue;
+        }
+        omitted.delete(char.chaId);
         const hits = new Map<string, DetachedChatCacheHit>();
         if (pluginChatsMatch(char.chaId, char.chats, hits)) {
             matches.set(char.chaId, { chats: char.chats, hits });
@@ -1780,7 +1823,8 @@ async function applyPluginDatabaseWithChats(newDb: Record<string, unknown>, cont
             matches.delete(char.chaId);
         }
     }
-    const loading = targets.filter((chaId) => !matches.has(chaId));
+    const chatTargets = targets.filter((chaId) => !omitted.has(chaId));
+    const loading = chatTargets.filter((chaId) => !matches.has(chaId));
     const releases = [...matches.keys()].flatMap((chaId) =>
         chatList(chaId).flatMap(({ id }) => {
             const ref = { chaId, chatId: id };
@@ -1801,13 +1845,13 @@ async function applyPluginDatabaseWithChats(newDb: Record<string, unknown>, cont
             for (const [chaId, { chats, hits }] of matches) {
                 if (!vanished.has(chaId) && !pluginChatsMatch(chaId, chats, hits, true)) return false;
             }
-            applyPluginDatabase(newDb, context, vanished, new Set(matches.keys()));
+            applyPluginDatabase(newDb, context, vanished, new Set([...omitted, ...matches.keys()]));
             return true;
         });
         if (!applied) {
-            await withChatsLoaded(targets, () => {
+            await withChatsLoaded(chatTargets, () => {
                 checkOwners();
-                applyPluginDatabase(newDb, context, vanishedOf(targets));
+                applyPluginDatabase(newDb, context, vanishedOf(targets), omitted);
             });
         }
     } finally {
@@ -1817,7 +1861,7 @@ async function applyPluginDatabaseWithChats(newDb: Record<string, unknown>, cont
 
 /**
  * Plugin installation needs the full setter's consent flow, so this setter drops `plugins`.
- * Exact chat round trips skip loading and reconciliation; other targets load before applying.
+ * Omitted chats and exact chat round trips skip loading and reconciliation; other targets load before applying.
  * Character fields and a numeric `chatPage` still apply for unchanged chats.
  */
 const setPluginDatabaseLite = async (newDb: any, context: PluginCallContext | undefined) => {
@@ -1830,7 +1874,7 @@ const setPluginDatabaseLite = async (newDb: any, context: PluginCallContext | un
 
 /**
  * Preflights every supplied plugin and awaits all installation prompts before assigning any key,
- * then loads chats except for exact round trips and applies keys synchronously. Unchanged chats
+ * then loads supplied chats except for exact round trips and applies keys synchronously. Unchanged chats
  * skip reconciliation while character fields and a numeric `chatPage` still apply. Preset fields target
  * the hook's captured ids; without context they resolve through the settings views after all waits
  * (`src/ts/storage/collectionStore.svelte.ts:updateSettings`), including any selection repair then.
@@ -1876,6 +1920,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
     // Keyed by the original callback so removal finds its registered wrapper.
     const hookWrappers = new WeakMap<Function, Function>();
     const contextOwner = {};
+    let hintedFullDatabase = false;
     // Check synchronously at host entry, before validation, permission prompts or chat loading.
     // Refusal must not throw: a failed transform would show raw text and schedule recovery retries.
     const refuseTransformWrite = (api: string): boolean => {
@@ -2124,9 +2169,15 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             if (refuseTransformWrite("saveAsset")) return "";
             return saveAsset(data);
         },
-        //Same functionality, but new implementation
-        getDatabase: async (includeOnly: string[] | "all" = "all") => {
+        /** Full chat snapshots by default; summaries read only this tab's held metadata, even inside hooks. */
+        getDatabase: async (includeOnly: string[] | "all" = "all", options?: { chats?: "full" | "summaries" }) => {
             const context = currentContext(contextOwner);
+            if (options !== undefined && (options === null || typeof options !== "object")) {
+                throw new Error(`Invalid getDatabase options: ${String(options)}`);
+            }
+            if (options?.chats !== undefined && options.chats !== "full" && options.chats !== "summaries") {
+                throw new Error(`Invalid getDatabase chats option: ${String(options.chats)}`);
+            }
             const conf = await getPluginPermission(identity, "db", "periodically");
             if (!conf) {
                 return null;
@@ -2143,8 +2194,25 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 if (missing !== undefined) {
                     throw new PluginTargetGoneError(missing);
                 }
-                return buildDatabaseSubset(keys, context ?? null, detached);
+                const result = buildDatabaseSubset(keys, context ?? null, detached, options?.chats);
+                if (
+                    !hintedFullDatabase &&
+                    settings.ui.enableDevTools &&
+                    includeOnly === "all" &&
+                    options?.chats !== "summaries"
+                ) {
+                    const characters = result.characters as { chats: Chat[] }[];
+                    const count = characters.reduce((total, character) => total + character.chats.length, 0);
+                    if (count > 200) {
+                        hintedFullDatabase = true;
+                        console.info(
+                            `[RisuAI Plugin: ${identity.name}] getDatabase() returned ${count} chats. Prefer getDatabase(keys, { chats: "summaries" }), getChats(chaId, { offset, limit }), or getCharacter() to read only what you need.`,
+                        );
+                    }
+                }
+                return result;
             };
+            if (options?.chats === "summaries") return read();
             if (included("characters")) {
                 touchDetachedChatCache();
                 try {
@@ -2156,6 +2224,45 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 }
             }
             return withChatsLoaded(characterIds, read, () => chatsOfRead(characterIds, context));
+        },
+
+        /** A page in current member order, with the same copies and cache as full database reads. */
+        getChats: async (chaId: string, { offset = 0, limit }: { offset?: number; limit?: number } = {}) => {
+            const context = currentContext(contextOwner);
+            if (!Number.isSafeInteger(offset) || offset < 0) {
+                throw new Error(`Invalid getChats offset: ${String(offset)}; expected a non-negative safe integer`);
+            }
+            if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) {
+                throw new Error(`Invalid getChats limit: ${String(limit)}; expected a non-negative safe integer`);
+            }
+            const conf = await getPluginPermission(identity, "db", "periodically");
+            if (!conf) return null;
+            const page = (members: readonly { id: string }[]) =>
+                members.slice(offset, limit === undefined ? undefined : offset + limit);
+            const members: ChatMemberSelector = (id) => page(chatList(id));
+            const read = (detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>) => {
+                // Owner checks deliberately ignore deletions, so resolve the character again here.
+                if (!characterList().some((character) => character.chaId === chaId)) return null;
+                const listed = chatList(chaId);
+                const chats = page(listed).map(({ id }) => {
+                    const held = findChat({ chaId, chatId: id });
+                    if (held) return plainClone($state.snapshot(held)) as Chat;
+                    const copy = detached?.get(chaId)?.get(id);
+                    if (!copy) throw new Error(`The chat ${id} of ${chaId} is not loaded`);
+                    return copy;
+                });
+                return { chats, total: listed.length };
+            };
+            touchDetachedChatCache();
+            try {
+                if (!characterList().some((character) => character.chaId === chaId)) return null;
+                if (members(chaId).length === 0) return read();
+                return await (context
+                    ? withChatsLoaded([chaId], read, () => chatsOfRead([chaId], context, members))
+                    : withDetachedDatabaseChats([chaId], read, members));
+            } finally {
+                touchDetachedChatCache();
+            }
         },
 
         installPlugin: handlePluginInstallViaPlugin,

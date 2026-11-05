@@ -14,7 +14,7 @@ export function databaseAccessRecorderScript(pluginName: string): string {
     let callNumber = 0;
     const wrappers = new WeakMap();
 
-    function record(result, includeOnly, number) {
+    function record(result, includeOnly, number, chats) {
         const keys = new Set();
         const characters = new Set();
         const wrappedCharacters = new WeakSet();
@@ -25,6 +25,7 @@ export function databaseAccessRecorderScript(pluginName: string): string {
             timer = setTimeout(() => {
                 console.log('[RisuAI Plugin: ' + pluginName + '] getDatabase #' + number +
                     (logged ? ' update' : '') + ': includeOnly=' + JSON.stringify(includeOnly) +
+                    (typeof chats === 'string' ? '; chats=' + JSON.stringify(chats) : '') +
                     '; keys=' + JSON.stringify([...keys]) +
                     '; characters[i].chats touched=' + (characters.size > 0) +
                     '; characters=' + characters.size);
@@ -82,7 +83,7 @@ export function databaseAccessRecorderScript(pluginName: string): string {
                         if (!number) return answer;
                         const includeOnly = args[0] === undefined ? 'all' :
                             Array.isArray(args[0]) ? args[0].filter(key => typeof key === 'string') : 'invalid';
-                        return Promise.resolve(answer).then(result => record(result, includeOnly, number));
+                        return Promise.resolve(answer).then(result => record(result, includeOnly, number, args[1]?.chats));
                     };
                 }
                 // Alias objects contain bridge functions; constants pass through unchanged.
