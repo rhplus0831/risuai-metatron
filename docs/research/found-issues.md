@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (17)
+- [Client and plugins](#client-and-plugins) (16)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
@@ -356,14 +356,6 @@ Three helpers misbehave on inputs no current caller is known to pass. Probed by 
 **Why it matters:** an image rendered from such a URL is broken until a reload.
 
 **Suggested handling:** reproduce with a lost controller and a cached entry, then check `navigator.serviceWorker.controller` before returning a `/sw/img` URL.
-
-### Combined-paragraph translation sends protected text
-
-`src/ts/translator/translator.ts` `translateHTML`, non-LLM path with `combineTranslation` on (~524): an eligible `<p>` is flattened by `getNodetextToSentence` (`src/ts/util.ts`) after a blacklist check of its immediate children only, so `<p>public <span translate="no">PRIVATE</span></p>` sends `public PRIVATE`, and a nested script's text can be sent. Reproduced by a probe in the Guides To Source run (2026-11-05); `docs/structure/translation.md` Invariants (~253) now state the real behavior, but it is not in its Known Hazards. Owner: translation.
-
-**Why it matters:** text marked `translate=no`, or script contents, reaches an online translator.
-
-**Suggested handling:** check descendants in the combined path, or record it in translation.md Known Hazards > Issues.
 
 ### blockPlugins misses the legacy plugin format
 
