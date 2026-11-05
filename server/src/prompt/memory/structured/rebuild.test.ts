@@ -1,10 +1,15 @@
 // @vitest-environment node
 import { expect, it } from "vitest";
 import type { Message } from "../../../../../shared/database.ts";
-import { ADOPTED_WRITER_RUN, type MemoryEvent, type MemoryPage } from "../../../../../shared/structuredMemory.ts";
+import {
+    ADOPTED_WRITER_RUN,
+    memoryCostTokens,
+    type MemoryEvent,
+    type MemoryPage,
+} from "../../../../../shared/structuredMemory.ts";
 import { messageSourceHash } from "../../../data/memoryStore.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
-import { rebuildChanges, rebuildPlan, rebuildSeed, rebuildWindow } from "./rebuild.ts";
+import { memoryWorkCost, rebuildChanges, rebuildPlan, rebuildSeed, rebuildWindow } from "./rebuild.ts";
 
 const messages: Message[] = ["u1", "a1", "u2", "a2", "u3", "a3", "u4"].map((id) => ({
     chatId: id,
@@ -18,7 +23,102 @@ const event = (id: string, ids: string[], extra: Partial<MemoryEvent> = {}): Mem
     ...extra,
 });
 
-const NO_SCREENING = { refusal: [], format: [] };
+const NO_SCREENING: { refusal: string[]; format: string[] } = { refusal: [], format: [] };
+
+function costStore(message: Message[], events: MemoryEvent[] = [], screening: typeof NO_SCREENING = NO_SCREENING) {
+    return {
+        readChatSource: () => ({ data: { message } }),
+        memory: {
+            readWriterSettings: () => ({ screening }),
+            readContents: () => ({ events }),
+            readRecord: (_chaId: string, _chatId: string, _kind: string, id: string) => ({
+                data: events.find((record) => record.id === id),
+            }),
+        },
+    } as unknown as Parameters<typeof memoryWorkCost>[0];
+}
+
+it("estimates rebuild and backfill calls, messages, and UTF-8 bytes from eligible planned turns", async () => {
+    const current: Message[] = [
+        { chatId: "old-user", role: "user", data: "Before the reset" },
+        { chatId: "old-reply", role: "char", data: "Also before the reset" },
+        { chatId: "reset", role: "user", data: "Reset marker", disabled: "allBefore" },
+        { chatId: "u1", role: "user", data: "한" },
+        { chatId: "a1", role: "char", data: "A REFUSAL" },
+        { chatId: "u2", role: "user", data: "é" },
+        { chatId: "a2", role: "char", data: "BAD FORMAT" },
+        { chatId: "u3", role: "user", data: "x" },
+        { chatId: "disabled", role: "char", data: "Disabled reply", disabled: true },
+        { chatId: "a3", role: "char", data: "😀" },
+        { chatId: "u4", role: "user", data: "Retracted user" },
+        { chatId: "a4", role: "char", data: "Retracted reply" },
+        { chatId: "u5", role: "user", data: "Q" },
+        { chatId: "a5", role: "char", data: "答" },
+        { chatId: "u6", role: "user", data: "éé" },
+        { chatId: "a6", role: "char", data: "ok" },
+        { chatId: "u7", role: "user", data: "끝" },
+        { chatId: "a7", role: "char", data: "hello" },
+        { chatId: "pending", role: "user", data: "No reply yet" },
+    ];
+    const store = costStore(
+        current,
+        [
+            event("retracted", ["u4", "a4"], { status: "retracted" }),
+            event("recorded-turn", ["u5", "a5"]),
+            event("recorded-reply", ["a6"]),
+        ],
+        { refusal: ["refusal"], format: ["bad format"] },
+    );
+
+    // Screening folds u1, u2, u3, a3 into one turn: 3 + 2 + 1 + 4 = 10 UTF-8 bytes.
+    // Rebuild also takes [u5, a5] (4 bytes), [u6, a6] (6), and [u7, a7] (8): 10 messages, 28 bytes.
+    // Backfill drops the recorded turn and a6, leaving the first turn, [u6] (4), [u7, a7] (8): 7 messages, 22 bytes.
+    const estimates = [
+        { mode: "rebuild", turns: 1, calls: 4, messages: 10, bytes: 28 },
+        { mode: "rebuild", turns: 2, calls: 2, messages: 10, bytes: 28 },
+        { mode: "backfill", turns: 1, calls: 3, messages: 7, bytes: 22 },
+        { mode: "backfill", turns: 2, calls: 2, messages: 7, bytes: 22 },
+    ] as const;
+    for (const { mode, turns, calls, messages, bytes } of estimates) {
+        expect(
+            await memoryWorkCost(store, { chaId: "character", chatId: "chat" }, { mode, turns }),
+            `${mode}, ${turns} turns`,
+        ).toEqual({
+            calls,
+            messages,
+            estimatedTokens: memoryCostTokens(bytes, calls),
+        });
+    }
+});
+
+it("bounds rebuild and backfill eligibility reads by transcript size across 2,000 turns", async () => {
+    let reads = 0;
+    const pairs = 2_000;
+    const current: Message[] = Array.from({ length: pairs }, (_, index) =>
+        (["user", "char"] as const).map((role) => ({
+            chatId: `${role}-${index}`,
+            role,
+            data: "x",
+            get disabled() {
+                reads++;
+                return false as const;
+            },
+        })),
+    ).flat();
+    const store = costStore(current);
+    for (const mode of ["rebuild", "backfill"] as const) {
+        for (const turns of [1, 2] as const) {
+            reads = 0;
+            const calls = pairs / turns;
+            expect(await memoryWorkCost(store, { chaId: "character", chatId: "chat" }, { mode, turns })).toEqual({
+                calls,
+                messages: pairs * 2,
+                estimatedTokens: memoryCostTokens(pairs * 2, calls),
+            });
+            expect(reads, `${mode}, ${turns} turns`).toBeLessThanOrEqual(current.length * 2);
+        }
+    }
+});
 
 it("rebuilds retired replacements but excludes personal retractions and backfills uncited users of covered turns", () => {
     const events = [

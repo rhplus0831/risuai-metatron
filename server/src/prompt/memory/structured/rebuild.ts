@@ -24,6 +24,7 @@ import { MEMORY_TASK_LIMITS } from "../memoryTasks.ts";
 import { admitRecord, RECORD_REFUSALS } from "./recordJob.ts";
 import {
     anchoredMessages,
+    type ConfirmedMessage,
     confirmedWindows,
     readRecordedMessages,
     readRerecordEvents,
@@ -46,7 +47,8 @@ import type { WriterMemory } from "./writer.ts";
  * reproduce; `backfill` takes only the turns no event cites and adds to the records.
  *
  * - The plan: the windows are worked out once, at the start, as message ids (`rebuildPlan`), so a step
- *   parses no event to find what is next. A window then reads the chat as stored (`rebuildWindow`).
+ *   parses no event to find what is next. Planning and rebuild/backfill cost previews read the transcript
+ *   once and hash nothing. A run's window then reads the chat as stored (`rebuildWindow`).
  * - What a rebuild keeps: a person's work is seeded at the start (`rebuildSeed`), so the writer sees those
  *   pages and a lock binds it. No event is seeded: carrying is decided at the swap (`rebuildChanges`), so a
  *   retraction that lands during the run counts, and the writer reads only what the run wrote.
@@ -98,7 +100,7 @@ function retractedMessages(events: readonly MemoryEvent[]): Set<string> {
  * messages `mode` does not exclude, and one with any left counts, which is what takes the user messages an
  * adopted chat's summaries left uncovered. A reply `screening` keeps out of the writer's windows is dropped
  * before the turns are made, so the user message before it folds into the next turn. Empty when there is
- * nothing to do.
+ * nothing to do. Reads the transcript once and hashes nothing; the cost preview uses the same entries.
  */
 export function rebuildPlan({
     messages,
@@ -113,15 +115,24 @@ export function rebuildPlan({
     turns: 1 | 2;
     screening: WriterCadence["screening"];
 }): string[][] {
-    const anchored = anchoredMessages(messages);
+    return rebuildEntryPlan(anchoredMessages(messages), { events, mode, turns, screening }).map((entries) =>
+        entries.map(({ id }) => id),
+    );
+}
+
+/** The plan's entries, retained so a preview can count messages and bytes without rereading the transcript. */
+function rebuildEntryPlan(
+    anchored: readonly ConfirmedMessage[],
+    { events, mode, turns, screening }: Omit<Parameters<typeof rebuildPlan>[0], "messages">,
+): ConfirmedMessage[][] {
     const confirmed = anchored
         .slice(0, anchored.findLastIndex(({ message }) => message.role === "char") + 1)
         .filter(({ message }) => memoryScreenReason(message, screening) === null);
     const excluded = mode === "rebuild" ? retractedMessages(events) : recordedMessages(events);
     const open = turnsOf(confirmed)
-        .map((turn) => turn.flatMap(({ id }) => (excluded.has(id) ? [] : [id])))
-        .filter((ids) => ids.length > 0);
-    const plan: string[][] = [];
+        .map((turn) => turn.filter(({ id }) => !excluded.has(id)))
+        .filter((entries) => entries.length > 0);
+    const plan: ConfirmedMessage[][] = [];
     for (let start = 0; start < open.length; start += turns) {
         plan.push(open.slice(start, start + turns).flat());
     }
@@ -359,9 +370,10 @@ function windowsCost(windows: readonly (readonly Pick<Message, "data">[])[]): St
 
 /**
  * What a press would cost, from the chat as stored and its live records; null for a missing chat. Reads only.
- * `turns` is what the tab would ask of a rebuild or a backfill. Record now's windows are the writer's own,
- * in windows of `turns` turns, because a route has no job scope to read the cadence from, up to
- * `maxWriterWindows`, marked events first.
+ * `turns` is what the tab would ask of a rebuild or a backfill. Those previews read the transcript once,
+ * counting the plan's messages and UTF-8 bytes without hashing messages or building writer windows.
+ * Record now's windows are the writer's own, in windows of `turns` turns, because a route has no job scope
+ * to read the cadence from, up to `maxWriterWindows`, marked events first.
  */
 export async function memoryWorkCost(
     store: Pick<ResourceStore, "memory" | "readChatSource">,
@@ -377,11 +389,16 @@ export async function memoryWorkCost(
     if (mode !== "record") {
         const listed = store.memory.readContents(chaId, chatId)?.events ?? [];
         const events = listed.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []);
-        return windowsCost(
-            rebuildPlan({ messages: chat.message, events, mode, turns, screening }).map(
-                (ids) => rebuildWindow(chat.message, ids, screening)?.window.messages ?? [],
-            ),
-        );
+        const plan = rebuildEntryPlan(anchoredMessages(chat.message), { events, mode, turns, screening });
+        let messages = 0;
+        let bytes = 0;
+        for (const entries of plan) {
+            messages += entries.length;
+            for (const { message } of entries) {
+                bytes += Buffer.byteLength(message.data, "utf8");
+            }
+        }
+        return { calls: plan.length, messages, estimatedTokens: memoryCostTokens(bytes, plan.length) };
     }
     const confirmedBefore = through ?? writerCeiling(chat.message);
     const windows =

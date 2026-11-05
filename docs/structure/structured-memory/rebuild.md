@@ -204,7 +204,7 @@ beside the rebuild buttons. The comparison starts no work; a person must press. 
 
 ## Tests
 
-- `structured/rebuild.test.ts` drives the plan, the window, the seed, and `rebuildChanges` with plain records.
+- `structured/rebuild.test.ts` drives the plan, window, cost, seed, and `rebuildChanges` on plain records.
 - `memoryStore.test.ts` drives the staged tables, the swap, a reopened file, and a snapshot taken mid-run on a real
   file.
 - `memoryTasks.test.ts` drives a run on `createMemoryTasks` over a real store with the scripted provider, and a service
