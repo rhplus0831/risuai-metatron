@@ -9,9 +9,9 @@ git show cc1fc4008218b94beb7ed857f37af0fabbe071c4^:docs/plan/reroll-candidates.m
 ```
 
 The implementation commits are `30bec41a4`, `4976a15f0`, `080ea1184`, and `807b980de`; the
-[archive](../archived-plan/README.md) records their integration. This audit covers the current implementation,
+[archive](../../archived-plan/README.md) records their integration. This audit covers the current implementation,
 including its interactions with incremental chat transport, rather than re-reporting defects in the earlier
-[plan design](plan-design-audit-2026-11-04/reroll-candidates.md).
+[plan design](../plan-design-audit-2026-11-04/reroll-candidates.md).
 
 Two Luna exploration agents and four focused audit agents checked generation/script views, storage and
 transactions, client synchronization and controls, and interchange/memory. Findings were consolidated against
@@ -47,10 +47,10 @@ illustrative, not production latency estimates or test thresholds.
 
 ### RC1 — Lua reads and writes address different messages during a reroll
 
-**Evidence:** [jobScope.ts](../../server/src/jobs/jobScope.ts), lines 455–459;
-[bindings.ts](../../server/src/lua/bindings.ts), lines 375–379, 418–430, 1285–1307, 1330–1356;
-[scripts.ts](../../server/src/prompt/scripts.ts), lines 86–100;
-[runner.ts](../../server/src/prompt/runner.ts), lines 1744–1756.
+**Evidence:** [jobScope.ts](../../../server/src/jobs/jobScope.ts), lines 455–459;
+[bindings.ts](../../../server/src/lua/bindings.ts), lines 375–379, 418–430, 1285–1307, 1330–1356;
+[scripts.ts](../../../server/src/prompt/scripts.ts), lines 86–100;
+[runner.ts](../../../server/src/prompt/runner.ts), lines 1744–1756.
 
 During assembly, `scopeHistoryChat` hides the carrier. Lua getters use this view through `engineChat`, but setters
 outside a trigger working copy resolve indexes through `writeChat` against the unfiltered stored chat. The
@@ -74,8 +74,8 @@ Add an integration case with two trailing comments and an `editRequest` read fol
 
 ### RC2 — Append acknowledgements omit implicit checkpoint cleanup from the writing tab
 
-**Evidence:** [server chatStore.ts](../../server/src/data/chatStore.ts), lines 2257–2273;
-[client chatStore.svelte.ts](../../src/ts/storage/chatStore.svelte.ts), lines 3556–3559, 5691–5704,
+**Evidence:** [server chatStore.ts](../../../server/src/data/chatStore.ts), lines 2257–2273;
+[client chatStore.svelte.ts](../../../src/ts/storage/chatStore.svelte.ts), lines 3556–3559, 5691–5704,
 5764–5771, 5791–5803, and 6866–6867.
 
 The server now removes older checkpoints and candidate snapshots when a non-comment message is appended, bumping
@@ -103,7 +103,7 @@ Cover acknowledgement-before-feed ordering, not just remote observer updates.
 
 ### RC3 — An abandoned generation's snapshots survive later appends
 
-**Evidence:** [chatStore.ts](../../server/src/data/chatStore.ts), lines 1407–1410 and 2257–2273.
+**Evidence:** [chatStore.ts](../../../server/src/data/chatStore.ts), lines 1407–1410 and 2257–2273.
 
 `selectCheckpointRows` excludes rows with a persisted open generation fence, before the later live-lock check can
 inspect them. A process loss or abort-grace expiry can leave `generationFinal = 0` after the job's live lock has
@@ -133,7 +133,7 @@ the same transaction. Test cleanup after ownership ends without finalization.
 
 ### RC4 — The import report misses unavailable inlays in retained candidates
 
-**Evidence:** [importCharacters.ts](../../server/src/data/upstream/importCharacters.ts), lines 523–525 and 684–698.
+**Evidence:** [importCharacters.ts](../../../server/src/data/upstream/importCharacters.ts), lines 523–525 and 684–698.
 
 The new swipe converter preserves alternate text, but the missing-inlay report still scans only `message.data`.
 Passing this assistant message through `convertUpstreamDatabase` preserves both candidates while producing no
@@ -159,7 +159,7 @@ count. Export may continue scanning only selected text because its candidate fie
 
 ### RC5 — Tail checks and append cleanup parse retained history on every operation
 
-**Evidence:** [chatStore.ts](../../server/src/data/chatStore.ts), lines 1348–1351, 1407–1410, 2259, and 2410–2415.
+**Evidence:** [chatStore.ts](../../../server/src/data/chatStore.ts), lines 1348–1351, 1407–1410, 2259, and 2410–2415.
 
 The carrier predicate needs the last two non-comment messages, but `selectCarrierMessages.all` extracts role and
 comment fields from every message JSON. Append cleanup similarly scans the chat and traverses each historical
@@ -180,13 +180,13 @@ These synchronous operations occupy the server thread; returning few rows does n
 **Improvement:** query backward and stop after two eligible rows for carrier validation. Maintain/index a small
 checkpoint-presence projection for cleanup, with transactionally correct updates on message writes, import, and
 restore. Do not solve this by silently pruning the candidate history Q1 explicitly preserves. The shared in-memory
-predicates at [rerollCandidates.ts](../../shared/rerollCandidates.ts), lines 288–300, can likewise use a reverse
+predicates at [rerollCandidates.ts](../../../shared/rerollCandidates.ts), lines 288–300, can likewise use a reverse
 early-exit scan instead of allocating filtered copies of the entire history.
 
 ### RC6 — Repeated Lua getters rebuild the reroll history, making a linear loop quadratic
 
-**Evidence:** [jobScope.ts](../../server/src/jobs/jobScope.ts), lines 455–459;
-[bindings.ts](../../server/src/lua/bindings.ts), lines 375–379, 640, 1285–1287, and 1404–1405.
+**Evidence:** [jobScope.ts](../../../server/src/jobs/jobScope.ts), lines 455–459;
+[bindings.ts](../../../server/src/lua/bindings.ts), lines 375–379, 640, 1285–1287, and 1404–1405.
 
 Every call to `scopeHistoryChat` filters and allocates the entire message array while a carrier is hidden. Lua
 `getChatLength`, `getChatData`, `getChatRole`, and `getChatMain` reach it independently outside a working copy.
@@ -202,8 +202,8 @@ Keep the view current after a start-trigger append, as D7 requires. Address RC1'
 
 ### RC7 — Importing many foreign swipes repeatedly shifts almost the entire array
 
-**Evidence:** [importCharacters.ts](../../server/src/data/upstream/importCharacters.ts), lines 642–645 and 684–698;
-[rerollCandidates.ts](../../shared/rerollCandidates.ts), lines 245–255.
+**Evidence:** [importCharacters.ts](../../../server/src/data/upstream/importCharacters.ts), lines 642–645 and 684–698;
+[rerollCandidates.ts](../../../shared/rerollCandidates.ts), lines 245–255.
 
 The importer builds a candidate and UUID for every foreign swipe, then passes the unbounded array to a trimmer
 designed around the small live ring. Each removal of an oldest unselected candidate uses `splice`, shifting all
@@ -224,8 +224,8 @@ remapping, per-swipe checkpoint correspondence, byte limits, and import reportin
 
 ### RC8 — Unchanged candidate fields on a whole-row edit force a full-chat read
 
-**Evidence:** [chatStore.svelte.ts](../../src/ts/storage/chatStore.svelte.ts), lines 5698–5700 and 5791–5803;
-[resourceSync.svelte.ts](../../src/ts/storage/resourceSync.svelte.ts), `readIdleChats` starting at line 4578.
+**Evidence:** [chatStore.svelte.ts](../../../src/ts/storage/chatStore.svelte.ts), lines 5698–5700 and 5791–5803;
+[resourceSync.svelte.ts](../../../src/ts/storage/resourceSync.svelte.ts), `readIdleChats` starting at line 4578.
 
 `writesCandidateFields` treats every `setMessage` containing candidates as requiring a refresh, even when only an
 unrelated field changes and the server does not change the candidate counter. A real-store probe changed only
@@ -242,7 +242,7 @@ stale base means other changes are unknown.
 
 ### RC9 — Provenance bookkeeping traverses variables even when there is no attempt
 
-**Evidence:** [chatStore.ts](../../server/src/data/chatStore.ts), lines 1308–1315 and 2180–2186.
+**Evidence:** [chatStore.ts](../../../server/src/data/chatStore.ts), lines 1308–1315 and 2180–2186.
 
 `recordVariable` immediately returns without an active attempt, but its caller `recordMap` first builds the union
 of every variable key and serializes both values. All metadata operations invoke it, including an unrelated note
@@ -261,9 +261,9 @@ resource transaction at lines 2691–2693; that additional cost was not benchmar
 
 ### U1 — Enabling stored prompt text runs mutable editRequest handlers twice
 
-**Evidence:** [assemble.ts](../../server/src/prompt/assemble.ts), lines 2451 and 2481–2484;
-[scripts.ts](../../server/src/prompt/scripts.ts), lines 86–100;
-[runtime.ts](../../server/src/lua/runtime.ts), lines 649–655.
+**Evidence:** [assemble.ts](../../../server/src/prompt/assemble.ts), lines 2451 and 2481–2484;
+[scripts.ts](../../../server/src/prompt/scripts.ts), lines 86–100;
+[runtime.ts](../../../server/src/lua/runtime.ts), lines 649–655.
 
 Assembly calls `runEditRequest` for the real request and calls it again for the stored prompt-text copy when
 `promptTextInfoInsideChat` is enabled. These Lua hooks have safe mutable host access and no frozen/working-only
@@ -279,8 +279,8 @@ setting that records a prompt must not change how many times a script's persiste
 
 ### U2 — Changing only isComment does not update a mounted chat row
 
-**Evidence:** [Chats.svelte](../../src/lib/ChatScreens/Chats.svelte), lines 681–689, 693–724, and 740;
-[Chat.svelte](../../src/lib/ChatScreens/Chat.svelte), lines 1356 and 1450–1457.
+**Evidence:** [Chats.svelte](../../../src/lib/ChatScreens/Chats.svelte), lines 681–689, 693–724, and 740;
+[Chat.svelte](../../../src/lib/ChatScreens/Chat.svelte), lines 1356 and 1450–1457.
 
 The row's remount key omits `isComment`; the incremental `RowUpdate` also omits it. The prop is supplied only at
 initial mount. Consequently, a script/plugin/feed write that changes just this flag leaves the mounted row using
@@ -295,8 +295,8 @@ directions with unchanged text and role on an already-mounted row.
 
 ### U3 — A trigger stage with no triggers deep-copies the entire chat twice
 
-**Evidence:** [runSetup.ts](../../server/src/jobs/runSetup.ts), lines 374–384;
-[triggers.ts](../../server/src/prompt/triggers.ts), lines 430–447.
+**Evidence:** [runSetup.ts](../../../server/src/jobs/runSetup.ts), lines 374–384;
+[triggers.ts](../../../server/src/prompt/triggers.ts), lines 430–447.
 
 `runOnCopy` deep-clones the chat to form a baseline; the trigger runtime deep-clones that baseline before checking
 whether the trigger list is empty. Input/start/output stages can therefore copy all historical candidate payloads
@@ -314,7 +314,7 @@ working-copy isolation. The no-trigger fast path alone removes demonstrated usel
 ## Additional narrow import edge case
 
 A malformed native `candidates: []` field suppresses conversion of otherwise valid foreign `swipes`.
-[importCharacters.ts](../../server/src/data/upstream/importCharacters.ts), line 626, captures `hadCandidates` before
+[importCharacters.ts](../../../server/src/data/upstream/importCharacters.ts), line 626, captures `hadCandidates` before
 normalization removes the malformed field; line 640 then refuses swipe conversion, and lines 679–681 delete the
 foreign fields. Adding `candidates: []` to RC4's input reproduced loss of all alternate texts, while preserving the
 selected text. This mixed-format malformed input is uncommon, so it is lower priority than the ordinary-path

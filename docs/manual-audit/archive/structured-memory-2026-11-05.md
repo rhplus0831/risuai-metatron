@@ -12,7 +12,7 @@ git show 78dbb078f78a9e5018360857a37944752208721f^:docs/plan/structured-memory.m
 The audit covers the writer and its task scheduling, retrieval and prompt budgets, evidence reconciliation,
 adoption/import/copy/checkpoint behavior, rebuilds, page tools, projection compatibility, and the inspection UI.
 It includes later changes on the audited branch, particularly the fixes for short-chat matching, character-section
-growth, and nested `(was: …)` text. The [current guides](../structure/structured-memory/README.md) supplied the
+growth, and nested `(was: …)` text. The [current guides](../../structure/structured-memory/README.md) supplied the
 ownership map; source code and executed reproductions supplied the findings.
 
 During verification, `dev` advanced to `1e3c65fe5` (`docs(manual-audit): archive audits`) in concurrent work.
@@ -70,11 +70,11 @@ a future fix.
 earlier reply and allow the next task to re-record the affected event.
 
 **Cause.** The normal task loop passes the old window to the writer without its historical safeguards
-([memoryTasks.ts, lines 1076–1084](../../server/src/prompt/memory/memoryTasks.ts#L1076)). The manual job path does the
-same ([recordJob.ts, lines 229–237](../../server/src/prompt/memory/structured/recordJob.ts#L229)). The writer strips
+([memoryTasks.ts, lines 1076–1084](../../../server/src/prompt/memory/memoryTasks.ts#L1076)). The manual job path does the
+same ([recordJob.ts, lines 229–237](../../../server/src/prompt/memory/structured/recordJob.ts#L229)). The writer strips
 historical scene/thread effects only when `arg.historical` is present
-([writer.ts, line 789](../../server/src/prompt/memory/structured/writer.ts#L789)); otherwise `commitPages` rewrites
-the scene normally ([patches.ts, lines 391–392](../../server/src/prompt/memory/structured/patches.ts#L391)).
+([writer.ts, line 789](../../../server/src/prompt/memory/structured/writer.ts#L789)); otherwise `commitPages` rewrites
+the scene normally ([patches.ts, lines 391–392](../../../server/src/prompt/memory/structured/patches.ts#L391)).
 
 **Observed.** A reproduction using the real task service, writer, source-change reconciliation, and SQLite store
 changed the current scene from **`Castle` to `Red old farm`** after repairing the old event. An assertion retaining
@@ -93,10 +93,10 @@ manual repair of an old event after a newer scene has committed. This concerns t
 places a large such character before an editable page in the patch targets.
 
 **Cause.** `showTargets` includes full locked bodies and charges them against the same 12,000-character budget used
-for writable sections ([patches.ts, lines 119–148](../../server/src/prompt/memory/structured/patches.ts#L119)). A
-nonempty list of shown target rows causes a patch call ([writer.ts, lines 812–815](../../server/src/prompt/memory/structured/writer.ts#L812)),
+for writable sections ([patches.ts, lines 119–148](../../../server/src/prompt/memory/structured/patches.ts#L119)). A
+nonempty list of shown target rows causes a patch call ([writer.ts, lines 812–815](../../../server/src/prompt/memory/structured/writer.ts#L812)),
 although patch admission rejects every change to a locked section
-([patches.ts, lines 243–245](../../server/src/prompt/memory/structured/patches.ts#L243)).
+([patches.ts, lines 243–245](../../../server/src/prompt/memory/structured/patches.ts#L243)).
 
 **Observed.** With every character slot locked, the real writer made **two model requests**, analysis plus an
 unusable patch request, and left the target unchanged. In a second probe, seven locked 4,000-character sections
@@ -117,9 +117,9 @@ the normal confirmed retraction option, or retract that event in Timeline.
 
 **Cause.** Source reconciliation retracts events and flags unsupported page sections, but does not update threads
 that name those events in `openedBy` or `closedBy`
-([reconcile.ts, lines 154–172](../../server/src/prompt/memory/structured/reconcile.ts#L154)). The thread lane checks
+([reconcile.ts, lines 154–172](../../../server/src/prompt/memory/structured/reconcile.ts#L154)). The thread lane checks
 stored state and participant relevance, without checking that provenance
-([retrieve.ts, lines 474–481](../../server/src/prompt/memory/structured/retrieve.ts#L474)).
+([retrieve.ts, lines 474–481](../../../server/src/prompt/memory/structured/retrieve.ts#L474)).
 
 **Observed.** A real-store deletion through `{ op: "remove", ids: ["a2"], retract: true }` retracted event `e2` but
 left its thread at `{ state: "done", openedBy: "e1", closedBy: "e2" }`. It therefore remains omitted from retrieval.
@@ -137,12 +137,12 @@ event status. The current event/page checks do not cover this D4 lifecycle gap.
 `setChatToIndex`. The message text is unchanged.
 
 **Cause.** The evidence hash includes only role and text
-([memoryStore.ts, lines 1197–1201](../../server/src/data/memoryStore.ts#L1197)). Server source-change detection also
-omits `saying` ([chatStore.ts, lines 2338–2345](../../server/src/data/chatStore.ts#L2338)), although the writer uses it
-for group-speaker attribution ([writer.ts, lines 240–248](../../server/src/prompt/memory/structured/writer.ts#L240)).
+([memoryStore.ts, lines 1197–1201](../../../server/src/data/memoryStore.ts#L1197)). Server source-change detection also
+omits `saying` ([chatStore.ts, lines 2338–2345](../../../server/src/data/chatStore.ts#L2338)), although the writer uses it
+for group-speaker attribution ([writer.ts, lines 240–248](../../../server/src/prompt/memory/structured/writer.ts#L240)).
 This is reachable: the plugin API forwards the chat to `applyChatResult`
-([v3.svelte.ts, lines 2508–2522](../../src/ts/plugins/apiV3/v3.svelte.ts#L2508)), whose message-field diff accepts
-the correction ([chatStore.svelte.ts, lines 4379–4437](../../src/ts/storage/chatStore.svelte.ts#L4379)).
+([v3.svelte.ts, lines 2508–2522](../../../src/ts/plugins/apiV3/v3.svelte.ts#L2508)), whose message-field diff accepts
+the correction ([chatStore.svelte.ts, lines 4379–4437](../../../src/ts/storage/chatStore.svelte.ts#L4379)).
 
 **Observed.** With production reconciliation subscribed to a real SQLite store, patching only `saying` produced:
 
@@ -164,9 +164,9 @@ design, not a reason to hash all message metadata. Add a speaker-only plugin-sav
 that message's raw text, while the evidence lane has room for a short excerpt.
 
 **Cause.** The fallback's lexical pool comes exclusively from `window.dropped`
-([retrieve.ts, lines 445–448](../../server/src/prompt/memory/structured/retrieve.ts#L445)), which contains history
+([retrieve.ts, lines 445–448](../../../server/src/prompt/memory/structured/retrieve.ts#L445)), which contains history
 already covered by active events. Uncovered raw history is trimmed later, after evidence selection
-([step.ts, line 284](../../server/src/prompt/memory/structured/step.ts#L284)). The fallback never considers those
+([step.ts, line 284](../../../server/src/prompt/memory/structured/step.ts#L284)). The fallback never considers those
 additional messages leaving the prompt.
 
 **Observed.** Production `selectMemory` was given an old message saying “The bronze key code is 4712,” a latest
@@ -187,10 +187,10 @@ older-message evidence fallback.
 Alice. Rebuild successfully recreates that character under a new ID.
 
 **Cause.** The original unmarked page is omitted from the rebuild seed, while the thread is retained verbatim
-([rebuild.ts, lines 144–179](../../server/src/prompt/memory/structured/rebuild.ts#L144)). The swap removes the old
+([rebuild.ts, lines 144–179](../../../server/src/prompt/memory/structured/rebuild.ts#L144)). The swap removes the old
 page without remapping the retained thread's `who`
-([rebuild.ts, lines 310–314](../../server/src/prompt/memory/structured/rebuild.ts#L310)). Participant relevance then
-rejects the thread ([retrieve.ts, lines 479–481](../../server/src/prompt/memory/structured/retrieve.ts#L479)).
+([rebuild.ts, lines 310–314](../../../server/src/prompt/memory/structured/rebuild.ts#L310)). Participant relevance then
+rejects the thread ([retrieve.ts, lines 479–481](../../../server/src/prompt/memory/structured/retrieve.ts#L479)).
 
 **Observed.** A probe passed the data through `parseRestoredRecords`, `rebuildSeed`, `rebuildChanges`, and
 `retrieveLanes`. Import succeeded. Before rebuilding the thread was an `onStage` candidate; afterward it was
@@ -208,7 +208,7 @@ tolerance for dangling references on carried events does not explain this loss o
 newer request to return healthy facts. The older request then returns its stale facts.
 
 **Cause.** `readHealth` accepts every answer without a request generation check
-([chatStatus.svelte.ts, lines 220–230](../../src/ts/process/chatStatus.svelte.ts#L220)).
+([chatStatus.svelte.ts, lines 220–230](../../../src/ts/process/chatStatus.svelte.ts#L220)).
 
 **Observed.** A focused test using the existing UI fixture followed that ordering. The badge became healthy after
 the second request, then incorrectly returned to `staleEvents`; the assertion retaining healthy status failed on
@@ -224,10 +224,10 @@ from the plan's intentional decision to show a periodically refreshed, advisory 
 ### E1 — P2: foreground embedding work is not bounded by retrieval candidate caps
 
 **Cause.** The events path embeds every eligible summary and key line before limiting event candidates
-([retrieve.ts, line 332](../../server/src/prompt/memory/structured/retrieve.ts#L332)). The pages path similarly
+([retrieve.ts, line 332](../../../server/src/prompt/memory/structured/retrieve.ts#L332)). The pages path similarly
 embeds every shown section of every automatic page before its cap
-([retrieve.ts, lines 734–761](../../server/src/prompt/memory/structured/retrieve.ts#L734)). Document batches contain
-50 texts and are awaited sequentially ([embeddings.ts, lines 498–509](../../server/src/prompt/embeddings.ts#L498)).
+([retrieve.ts, lines 734–761](../../../server/src/prompt/memory/structured/retrieve.ts#L734)). Document batches contain
+50 texts and are awaited sequentially ([embeddings.ts, lines 498–509](../../../server/src/prompt/embeddings.ts#L498)).
 
 **Measured.** With 1,000 events, each holding one unique summary and five unique key lines, a cold real SQLite vector
 cache, and a scripted embedding provider, production retrieval offered **48 event candidates** after making
@@ -237,7 +237,7 @@ selection. No network latency or provider price was assumed.
 
 **Impact.** An import, adoption, changed embedding configuration, lost cache, or unsuccessful warm-up can move bulk
 index construction into the next send. Overall memory-budget calculation and required-page refusal also happen
-after retrieval ([step.ts, lines 247–258](../../server/src/prompt/memory/structured/step.ts#L247)), so a send with no
+after retrieval ([step.ts, lines 247–258](../../../server/src/prompt/memory/structured/step.ts#L247)), so a send with no
 usable memory capacity can do unnecessary embedding work before returning empty or refusing.
 
 **Recommendation.** Preflight overall capacity and required pages; bound foreground cache misses and warm remaining
@@ -248,9 +248,9 @@ independent semantic matches. Add deterministic assertions on calls/texts for co
 ### E2 — P2: cost preview performs quadratic transcript work before confirmation
 
 **Cause.** Rebuild/backfill cost estimation maps every planned window through `rebuildWindow(chat.message, …)`
-([rebuild.ts, lines 377–383](../../server/src/prompt/memory/structured/rebuild.ts#L377)). Each call constructs and
+([rebuild.ts, lines 377–383](../../../server/src/prompt/memory/structured/rebuild.ts#L377)). Each call constructs and
 filters anchored entries for the entire transcript before selecting that window
-([rebuild.ts, lines 196–200](../../server/src/prompt/memory/structured/rebuild.ts#L196)). This is synchronous work
+([rebuild.ts, lines 196–200](../../../server/src/prompt/memory/structured/rebuild.ts#L196)). This is synchronous work
 on the server event loop, even though it only estimates call counts and text bytes.
 
 **Measured.** Instrumenting message eligibility reads in production `memoryWorkCost`, with empty records and
@@ -273,8 +273,8 @@ an operation-count test rather than a timing assertion.
 
 **Cause.** `reactToMessageChanges` reads the complete contents list and then calls `readRecord` for every
 nonretracted event merely to discover which source IDs it cites
-([reconcile.ts, lines 150–168](../../server/src/prompt/memory/structured/reconcile.ts#L150)). During rebuild it repeats
-the reaction against staged records ([reconcile.ts, lines 190–192](../../server/src/prompt/memory/structured/reconcile.ts#L190)).
+([reconcile.ts, lines 150–168](../../../server/src/prompt/memory/structured/reconcile.ts#L150)). During rebuild it repeats
+the reaction against staged records ([reconcile.ts, lines 190–192](../../../server/src/prompt/memory/structured/reconcile.ts#L190)).
 
 **Measured.** Real-store probes seeded distinct events citing distinct messages, then edited only the final message:
 
@@ -295,9 +295,9 @@ compact source metadata would be a smaller intermediate improvement. Test lookup
 
 **Cause.** The detached chat cache accepts a Structured Memory entry only if it holds real, unsealed HypaV3 summaries;
 ordinary projected chats always miss
-([detachedChatCache.ts, lines 122–137](../../src/ts/plugins/apiV3/detachedChatCache.ts#L122)). Plugin database reads
+([detachedChatCache.ts, lines 122–137](../../../src/ts/plugins/apiV3/detachedChatCache.ts#L122)). Plugin database reads
 therefore request each missing whole chat again
-([v3.svelte.ts, lines 1280–1302](../../src/ts/plugins/apiV3/v3.svelte.ts#L1280)), then serialize and cache it again at
+([v3.svelte.ts, lines 1280–1302](../../../src/ts/plugins/apiV3/v3.svelte.ts#L1280)), then serialize and cache it again at
 line 1316 despite the next read being unable to reuse it.
 
 **Measured.** With a current change feed and an unchanged unloaded structured chat containing **1 MiB of raw message
@@ -313,12 +313,12 @@ unchanged read case and a projection-only change case; the current behavior is c
 ### E5 — P3: pagination repeatedly enumerates and sorts the whole memory store
 
 **Cause.** Every package/coverage/log/threads round calls `readContents` before selecting its page
-([structuredMemory.ts, lines 532–541](../../server/src/routes/structuredMemory.ts#L532)). That reads all four record
-listings ([memoryStore.ts, lines 493–515](../../server/src/data/memoryStore.ts#L493)); the log handler reverses the
+([structuredMemory.ts, lines 532–541](../../../server/src/routes/structuredMemory.ts#L532)). That reads all four record
+listings ([memoryStore.ts, lines 493–515](../../../server/src/data/memoryStore.ts#L493)); the log handler reverses the
 entire run list before applying its 50-row cap
-([structuredMemory.ts, lines 602–605](../../server/src/routes/structuredMemory.ts#L602)). The underlying query orders
+([structuredMemory.ts, lines 602–605](../../../server/src/routes/structuredMemory.ts#L602)). The underlying query orders
 by `seq` while the available uniqueness index starts with `(chatSeq, id)`
-([memoryStore.ts, lines 224–229](../../server/src/data/memoryStore.ts#L224)).
+([memoryStore.ts, lines 224–229](../../../server/src/data/memoryStore.ts#L224)).
 
 **Measured.** A real Hono route and SQLite store with 1,000 events and 1,000 runs needed 20 log requests to return
 the 1,000 runs. Across those requests it materialized **40,000 metadata rows**: the same 2,000 rows for every page.
@@ -332,9 +332,9 @@ every other kind merely to serve the next 50 log rows. Test metadata rows visite
 ### E6 — P3: child tabs duplicate the panel's contents read
 
 **Cause.** A panel refresh independently fetches contents
-([StructuredMemoryPanel.svelte, line 184](../../src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte#L184)),
-as do Pages ([PagesTab.svelte, line 245](../../src/lib/Others/StructuredMemory/PagesTab.svelte#L245)) and Threads
-([ThreadsTab.svelte, line 107](../../src/lib/Others/StructuredMemory/ThreadsTab.svelte#L107)). The client wrapper does
+([StructuredMemoryPanel.svelte, line 184](../../../src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte#L184)),
+as do Pages ([PagesTab.svelte, line 245](../../../src/lib/Others/StructuredMemory/PagesTab.svelte#L245)) and Threads
+([ThreadsTab.svelte, line 107](../../../src/lib/Others/StructuredMemory/ThreadsTab.svelte#L107)). The client wrapper does
 not share the in-flight request.
 
 **Measured.** Mounting the real panel with its existing I/O fixtures, selecting Pages, and refreshing once caused
@@ -356,10 +356,10 @@ They were retained because the audited feature exercises them heavily.
 but a different embedding space.
 
 **Cause.** `HypaProcesser.addText` keys vectors by text, model discriminator, and optional custom model name, omitting
-the endpoint ([embeddings.ts, lines 560–568](../../server/src/prompt/embeddings.ts#L560)). Requests use the configured
-URL ([embeddings.ts, lines 495 and 530–532](../../server/src/prompt/embeddings.ts#L495)). Production cache sync clears
+the endpoint ([embeddings.ts, lines 560–568](../../../server/src/prompt/embeddings.ts#L560)). Requests use the configured
+URL ([embeddings.ts, lines 495 and 530–532](../../../server/src/prompt/embeddings.ts#L495)). Production cache sync clears
 on resource-epoch changes, not endpoint-setting changes
-([vectorCache.ts, lines 329–345](../../server/src/data/vectorCache.ts#L329)). The settings fingerprint fences tasks;
+([vectorCache.ts, lines 329–345](../../../server/src/data/vectorCache.ts#L329)). The settings fingerprint fences tasks;
 it does not give cached vectors a new identity.
 
 **Observed.** With production retrieval and a real SQLite cache, endpoint A supplied document vectors `[1, 0]` and
@@ -374,7 +374,7 @@ embedding space, without storing credential values in the key. Test a provider s
 ### U2 — P2: cache hits still trigger quadratic vector deduplication
 
 **Cause.** After loading cached vectors, `addText` filters every input text by scanning the vector array from its
-beginning ([embeddings.ts, lines 567–582](../../server/src/prompt/embeddings.ts#L567)). Structured Memory sends all
+beginning ([embeddings.ts, lines 567–582](../../../server/src/prompt/embeddings.ts#L567)). Structured Memory sends all
 eligible summaries/key lines/sections through that method on a read, making this shared inefficiency particularly
 visible on long chats.
 

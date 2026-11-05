@@ -47,7 +47,7 @@ not estimates of typical production latency or traffic.
 
 ### JH1 — A stale targeted offer blocks automatic absent-owner rescue
 
-**Evidence:** [server generation registry](../../server/src/jobs/generationJobs.ts),
+**Evidence:** [server generation registry](../../../server/src/jobs/generationJobs.ts),
 `armOffer`, lines 1023–1029; `reopenOffer`/`expireTicket`, lines 1004–1019; and `takeover`,
 lines 2709–2716.
 
@@ -77,8 +77,8 @@ than invalidating them accidentally. Add the attached-owner → requested target
 
 ### JH2 — One transient HTTP failure suppresses further attempts at an open offer
 
-**Evidence:** [handoff policy](../../src/ts/network/handoff.ts), `evaluateOffers`, lines
-208–220, and `takeOffer`, lines 225–259; [client generation transport](../../src/ts/network/generationJobs.ts),
+**Evidence:** [handoff policy](../../../src/ts/network/handoff.ts), `evaluateOffers`, lines
+208–220, and `takeOffer`, lines 225–259; [client generation transport](../../../src/ts/network/generationJobs.ts),
 `readChatGeneration`, lines 673–701, and `takeoverGenerationJob`, lines 769–790.
 
 An offer is marked evaluated before its asynchronous ownership lookup and claim. An exception
@@ -105,15 +105,15 @@ WebSocket reconnect or preference toggle in `src/ts/network/handoff.test.ts`.
 
 ### JH3 — Retaking a lost takeover can repeatedly download the whole chat
 
-**Evidence:** [follow lifecycle](../../src/ts/process/serverCommands.ts), lines 418–420;
-[client generation transport](../../src/ts/network/generationJobs.ts), lines 1371–1377 and
-1316–1317; [chat store](../../src/ts/storage/chatStore.svelte.ts), lines 1969–1970,
+**Evidence:** [follow lifecycle](../../../src/ts/process/serverCommands.ts), lines 418–420;
+[client generation transport](../../../src/ts/network/generationJobs.ts), lines 1371–1377 and
+1316–1317; [chat store](../../../src/ts/storage/chatStore.svelte.ts), lines 1969–1970,
 2033–2034, 2071–2075, and 2675–2685.
 
 Losing a pending takeover calls `releaseGenerationJob`, which calls `endServerJob` and adds
 the hydrated generation IDs to `retiredGenerations`. Retaking the same still-running job
 cannot rebuild its stream buffer: `accepted` is refused and subsequent chunks are silently
-dropped. The [existing inbox entry](../research/found-issues.md#a-retaken-handoff-job-drops-its-live-stream)
+dropped. The [existing inbox entry](../../research/found-issues.md#a-retaken-handoff-job-drops-its-live-stream)
 records this as a worker display limitation.
 
 Current Incremental Chat Transport makes the impact larger. A compact `streamed` checkpoint
@@ -129,7 +129,7 @@ then reattach to the same generation with a whole chat and `accepted`. Apply thr
 
 **Condition:** the retaking worker is the only attached socket, as when the creator phone and
 the old owner have closed. The server disables compact rows while any viewer remains
-([registry](../../server/src/jobs/generationJobs.ts), lines 1255–1260), so this particular
+([registry](../../../server/src/jobs/generationJobs.ts), lines 1255–1260), so this particular
 resync loop does not occur with a stable attached viewer. At the normal checkpoint cadence,
 the lone worker can repeatedly download the complete history instead of only reply updates.
 
@@ -140,8 +140,8 @@ subsequent compact checkpoints after a lost pending takeover.
 
 ### JH4 — A former worker reports a running job as ended after reconnecting
 
-**Evidence:** [follow lifecycle](../../src/ts/process/serverCommands.ts), lines 188–190,
-442–466, 605–607, and 863–866; [registry participant/status checks](../../server/src/jobs/generationJobs.ts),
+**Evidence:** [follow lifecycle](../../../src/ts/process/serverCommands.ts), lines 188–190,
+442–466, 605–607, and 863–866; [registry participant/status checks](../../../server/src/jobs/generationJobs.ts),
 lines 2205–2207 and 2807–2813.
 
 Worker B takes creator A's job; A then takes it back. B's existing socket becomes a viewer,
@@ -167,7 +167,7 @@ owner → viewer → reconnect transition to `src/ts/process/serverCommands.test
 
 ### JH5 — A slow creator-viewer has no outbound queue bound
 
-**Evidence:** [server generation registry](../../server/src/jobs/generationJobs.ts),
+**Evidence:** [server generation registry](../../../server/src/jobs/generationJobs.ts),
 `sendSocket`, lines 926–930; `switchOwner`, lines 1089–1093; and `expireSilentOwners`,
 lines 851–859.
 
@@ -186,7 +186,7 @@ fresh at 44 seconds: the viewer remains open with the same queue.
 The send helper's lack of backpressure predates this use, but handoff introduces viewers that
 are exempt from the owner's silence cleanup and can remain for the rest of the job. Multiple
 slow viewers compound the retained data. The live-update feed already bounds queued data at
-4 MiB ([events route](../../server/src/routes/events.ts), lines 87–98).
+4 MiB ([events route](../../../server/src/routes/events.ts), lines 87–98).
 
 **Suggested correction:** add per-socket queued-byte admission to generation sockets and
 terminate a lagging viewer independently of owner absence. Existing reconnect/hydration can
@@ -195,9 +195,9 @@ callback authority intact. This bounds memory; it does not require viewers to af
 
 ### JH6 — Keeping the creator as a viewer disables compact checkpoints for the worker
 
-**Evidence:** [server generation registry](../../server/src/jobs/generationJobs.ts),
+**Evidence:** [server generation registry](../../../server/src/jobs/generationJobs.ts),
 `chatPatchEvent`, lines 1254–1261, and `deliverJobChat`, lines 1323–1329;
-[existing test](../../server/src/tests/generationJobs.test.ts), lines 1990–2020.
+[existing test](../../../server/src/tests/generationJobs.test.ts), lines 1990–2020.
 
 Every socket receives one shared wire event. As soon as any viewer exists, the server sends
 complete changed message rows to the worker as well, even when the worker negotiated
@@ -230,7 +230,7 @@ baseline. Compare serialized bytes in a deterministic regression fixture.
 
 ### JH7 — Early-notice audience partitioning is quadratic
 
-**Evidence:** [channel hub](../../server/src/jobs/channel.ts), `takeEarly`, lines 746–752;
+**Evidence:** [channel hub](../../../server/src/jobs/channel.ts), `takeEarly`, lines 746–752;
 the audience partition was introduced by `d60741baf`.
 
 The function first builds `taken`, then filters every original entry with
@@ -241,7 +241,7 @@ The 1 MiB early-notice cap bounds bytes, but permits many short legitimate notic
 `alertNormal` notices carrying `{ message: "x" }`. The retained serialized payload was
 760,000 bytes, below the cap. On three runs, partitioning alone took **25–27 ms**.
 These are valid emitted notice types, and the trigger effect ceiling is 100,000
-([trigger runner](../../server/src/prompt/triggers.ts), line 103). This is a large-backlog
+([trigger runner](../../../server/src/prompt/triggers.ts), line 103). This is a large-backlog
 optimization, not a claim that ordinary handoffs incur that cost.
 
 **Suggested correction:** partition into taken/remaining arrays and accumulate their byte
@@ -254,7 +254,7 @@ counts in one pass. This is separate from the much larger pre-existing queue-dra
 **Priority:** P2. **Relationship:** pre-existing callback-channel inefficiency; handoff uses
 the same attach path but did not introduce the repeated-sort loop.
 
-**Evidence:** [channel hub](../../server/src/jobs/channel.ts), `handleAttach`, lines
+**Evidence:** [channel hub](../../../server/src/jobs/channel.ts), `handleAttach`, lines
 930–932. Each iteration sorts all remaining sends, removes one with `shift()`, then repeats.
 Even an already ordered notice backlog therefore performs quadratic aggregate work on the
 Node serving thread.
@@ -277,10 +277,10 @@ Combine this with JH7's linear audience partition.
 **Priority:** P2 optimization. **Relationship:** pre-existing plugin-provider callback protocol;
 handoff changes which tab runs it, not its cumulative-text wire format.
 
-**Evidence:** [client channel](../../src/ts/network/jobChannel.ts), lines 1030–1042 and
-1058–1094; [shared callback contract](../../shared/jobs.ts), lines 685–691;
-[server channel](../../server/src/jobs/channel.ts), lines 857–872;
-[provider stream adapter](../../server/src/llm/requests.ts), lines 835–888.
+**Evidence:** [client channel](../../../src/ts/network/jobChannel.ts), lines 1030–1042 and
+1058–1094; [shared callback contract](../../../shared/jobs.ts), lines 685–691;
+[server channel](../../../server/src/jobs/channel.ts), lines 857–872;
+[provider stream adapter](../../../server/src/llm/requests.ts), lines 835–888.
 
 The tab appends provider bytes to `fullText` and sends the entire accumulated string. Regular
 updates are throttled to 50 ms; the initial snapshot and final flush are immediate. The server
@@ -338,6 +338,6 @@ does not gate the first callback; an already delivered callback is never rerun o
 device; cancellation cannot prevent all writes by an already running plugin hook; the old
 lane's drain hold does not serialize that hook against the new owner's lane; and the
 absence cascade can end a queued root before the advertised first-undelivered-callback
-budget. The plan and current [server-generation limitations](../structure/server-generation.md#limitations)
+budget. The plan and current [server-generation limitations](../../structure/server-generation.md#limitations)
 already record these decisions. The audit did not reproduce a new lane-transfer,
 participant-authorization, or skipped/missed-list projection defect.

@@ -49,8 +49,8 @@ reported again.
 
 ### RW1 — A failed translation attempt keeps taking jobs while its retry runs
 
-**Code:** [translator.ts](../../src/ts/translator/translator.ts), lines 675–695;
-[ChatBody.svelte](../../src/lib/ChatScreens/ChatBody.svelte), lines 411–429.
+**Code:** [translator.ts](../../../src/ts/translator/translator.ts), lines 675–695;
+[ChatBody.svelte](../../../src/lib/ChatScreens/ChatBody.svelte), lines 411–429.
 
 `Promise.all` rejects when one non-LLM worker fails, but the remaining workers inspect only the
 render's signal. A provider failure does not abort that signal. The row's transient-error handler
@@ -84,7 +84,7 @@ retry policy, and resource sharing but did not close this failure path.
 
 ### RW2 — Cache hits unnecessarily wait for provider permits
 
-**Code:** [translator.ts](../../src/ts/translator/translator.ts), lines 126–159, 198–205,
+**Code:** [translator.ts](../../../src/ts/translator/translator.ts), lines 126–159, 198–205,
 and 675–685.
 
 Workers acquire a global translation slot before entering `translate`, where the completed-result
@@ -104,9 +104,9 @@ finishes. This ordering regression comes from `19df4fc6f`'s global semaphore.
 
 ### RW3 — A departed forced refresh can leave its replacement using the old server cache
 
-**Code:** [transformClient.ts](../../src/ts/parser/transformClient.ts), lines 306–338,
+**Code:** [transformClient.ts](../../../src/ts/parser/transformClient.ts), lines 306–338,
 694–697, 752–761, and 826–828;
-[server transform service](../../server/src/prompt/transform.ts), lines 804–835.
+[server transform service](../../../server/src/prompt/transform.ts), lines 804–835.
 
 Re-render's bypass is consumed when its operation is created. Withdrawal before dispatch and
 cancellation of an entire chunk restore it. Withdrawal of one dispatched operation does not
@@ -136,7 +136,7 @@ is about the current D3 boundary, not a claim that D3 introduced it.
 
 ### RW4 — A single oversized screenshot row bypasses the page memory budget
 
-**Code:** [screenshotExport.ts](../../src/lib/ChatScreens/screenshotExport.ts), lines 38–64,
+**Code:** [screenshotExport.ts](../../../src/lib/ChatScreens/screenshotExport.ts), lines 38–64,
 75–96, and 127–153.
 
 The planner puts a row over `MAX_EXPORT_PIXELS` on its own page without reducing its area.
@@ -166,8 +166,8 @@ area and narrow oversized rows, not an individual row over the area budget.
 
 ### RW5 — Highlight cleanup adds quadratic work to bulk editor teardown
 
-**Code:** [highlight.ts](../../src/ts/gui/highlight.ts), lines 124–160;
-[TextAreaInput.svelte](../../src/lib/UI/GUI/TextAreaInput.svelte), lines 260–267.
+**Code:** [highlight.ts](../../../src/ts/gui/highlight.ts), lines 124–160;
+[TextAreaInput.svelte](../../../src/lib/UI/GUI/TextAreaInput.svelte), lines 260–267.
 
 Each `removeHighlight(id)` now calls `runHighlight()`, which traverses all remaining editors'
 ranges and recreates the category `Highlight` objects. Removing N highlighted editors in one turn
@@ -178,9 +178,9 @@ synthetic editors, 11,175 for 150, and 179,700 for 600. The registry correctly e
 operation counts, not UI timing measurements. The current correctness test with two editors
 does not detect this scaling.
 
-There is a real multi-editor caller: [PromptSettings.svelte](../../src/lib/Setting/Pages/PromptSettings.svelte),
+There is a real multi-editor caller: [PromptSettings.svelte](../../../src/lib/Setting/Pages/PromptSettings.svelte),
 lines 194–205, mounts the template under `{#key sorted}`;
-[PromptDataItem.svelte](../../src/lib/UI/PromptDataItem.svelte), lines 262, 314, 324, and 399,
+[PromptDataItem.svelte](../../../src/lib/UI/PromptDataItem.svelte), lines 262, 314, 324, and 399,
 mounts highlighted fields in expanded rows. Leaving that settings page or recreating the keyed
 template tears down those fields together.
 
@@ -190,9 +190,9 @@ categories disappear. The repeated teardown rebuild was introduced by D8's clean
 
 ### RW6 — Cancellation stops after highlighting, rather than inside its asynchronous work
 
-**Code:** [parser.svelte.ts](../../src/ts/parser/parser.svelte.ts), lines 250–448,
+**Code:** [parser.svelte.ts](../../../src/ts/parser/parser.svelte.ts), lines 250–448,
 1108–1110, and 1319–1330;
-[ChatBody.svelte](../../src/lib/ChatScreens/ChatBody.svelte), lines 383–387.
+[ChatBody.svelte](../../../src/lib/ChatScreens/ChatBody.svelte), lines 383–387.
 
 `ParseMarkdown` checks its signal before and after `renderHighlightableMarkdown`, but that helper
 does not receive a signal. If the row is superseded while a language module is loading, the
@@ -214,7 +214,7 @@ explicitly deferred incremental streaming-renderer project.
 
 ### RW7 — Concurrent identical non-LLM translations still duplicate requests
 
-**Code:** [translator.ts](../../src/ts/translator/translator.ts), lines 198–212 and 675–695.
+**Code:** [translator.ts](../../../src/ts/translator/translator.ts), lines 198–212 and 675–695.
 
 The pair cache stores only completed translations. Several workers that read the same missing
 text each start `runTranslator`; the new shared-request map covers the LLM path only. A deferred
@@ -231,7 +231,7 @@ LLM-only deduplication requirement, not a failure to implement that requirement.
 
 ### RW8 — One live target retains obsolete plugin hooks and continuation text for the whole chunk
 
-**Code:** [transformClient.ts](../../src/ts/parser/transformClient.ts), lines 313–327
+**Code:** [transformClient.ts](../../../src/ts/parser/transformClient.ts), lines 313–327
 and 595–603.
 
 Whole-chunk cancellation correctly preserves a request while any target still has a subscriber.
@@ -252,7 +252,7 @@ This is an opportunity beyond the plan's deliberate whole-chunk policy.
 
 ### U1 — A resolved Google HTTP error can poison the successful translation cache
 
-**Code:** [translator.ts](../../src/ts/translator/translator.ts), lines 430–447 and 208–212.
+**Code:** [translator.ts](../../../src/ts/translator/translator.ts), lines 430–447 and 208–212.
 
 The direct Google adapter parses JSON without checking `Response.ok`. An error object lacks
 `res[0]`, so the adapter returns the source text. No failure is recorded, and `translate` stores
@@ -272,9 +272,9 @@ error response. This behavior predates the plan.
 
 ### U2 — Unbounded concurrent chunks can evict their own plugin snapshots
 
-**Code:** [transformClient.ts](../../src/ts/parser/transformClient.ts), lines 513–540;
-[server transform service](../../server/src/prompt/transform.ts), lines 51 and 887–890;
-[transformService.test.ts](../../server/src/tests/transformService.test.ts), lines 401–418.
+**Code:** [transformClient.ts](../../../src/ts/parser/transformClient.ts), lines 513–540;
+[server transform service](../../../server/src/prompt/transform.ts), lines 51 and 887–890;
+[transformService.test.ts](../../../server/src/tests/transformService.test.ts), lines 401–418.
 
 The client dispatches all chunks concurrently. The server retains only four pending plugin
 snapshots per client, evicting the oldest when a fifth is created. These limits cover different
@@ -294,8 +294,8 @@ pre-existing client/server admission mismatch sits outside the plan's server-adm
 
 ### U3 — The cached-only probe ignores a settled row's changed source
 
-**Code:** [ChatBody.svelte](../../src/lib/ChatScreens/ChatBody.svelte), lines 301–328
-and 365–394; [translator.ts](../../src/ts/translator/translator.ts), lines 553–556 and 971–978.
+**Code:** [ChatBody.svelte](../../../src/lib/ChatScreens/ChatBody.svelte), lines 301–328
+and 365–394; [translator.ts](../../../src/ts/translator/translator.ts), lines 553–556 and 971–978.
 
 The probe remembers character, chat index, and the auto-translate flag, but not its source/cache
 key. Once the first probe has completed with a cache hit and `translated` is true, an in-place
@@ -318,8 +318,8 @@ Do not turn an automatic cached-only decision into permission for a new cache-mi
 
 ### U4 — Per-row screenshot capture repeats font preparation and mutates live stylesheets
 
-**Code:** [DefaultChatScreen.svelte](../../src/lib/ChatScreens/DefaultChatScreen.svelte),
-lines 1005–1013; [screenshotCapture.ts](../../src/lib/ChatScreens/screenshotCapture.ts), line 4.
+**Code:** [DefaultChatScreen.svelte](../../../src/lib/ChatScreens/DefaultChatScreen.svelte),
+lines 1005–1013; [screenshotCapture.ts](../../../src/lib/ChatScreens/screenshotCapture.ts), line 4.
 The installed `html-to-image@1.11.13` implementation is
 `node_modules/html-to-image/es/embed-webfonts.js`, lines 76–140 and 174–192.
 
@@ -327,7 +327,7 @@ Every row calls `toCanvas` with only `includeQueryParams`; no `fontEmbedCSS` is 
 therefore scans document stylesheets for each capture. With a surviving `@import`, it expands
 the import again, fetches its fonts, and inserts duplicate rules into the live stylesheet without
 removing or marking the import. This input is possible because ordinary imports survive
-[parser.svelte.ts](../../src/ts/parser/parser.svelte.ts), lines 1388–1391; only data imports are
+[parser.svelte.ts](../../../src/ts/parser/parser.svelte.ts), lines 1388–1391; only data imports are
 neutralized there.
 
 A deterministic probe of the installed dependency with stubbed I/O/CSSOM and one imported font
@@ -345,7 +345,7 @@ the plan's page-composition changes.
 
 ## Checks, counterchecks, and limits
 
-The [original measurement report](../audit/render-work-budget-2026-11-05.md) already records two
+The [original measurement report](../../audit/render-work-budget-2026-11-05.md) already records two
 unmet acceptance criteria: multiple transform chunks crossing a switch and screenshot peak
 memory growing with row count. Its 600-row after-run reported a 3,987 MiB renderer peak increase
 with pages of about 50.8 MiB RGBA each. Those are historical measurements at the commit named in

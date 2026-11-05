@@ -49,9 +49,9 @@ deterministic work measurements, not browser latency benchmarks.
 
 ### PS1 — An older consent write can restore a remotely revoked permission
 
-**Code.** [permissionStore.ts](../../src/ts/plugins/apiV3/permissionStore.ts),
+**Code.** [permissionStore.ts](../../../src/ts/plugins/apiV3/permissionStore.ts),
 `recordPermissionGrants`, lines 99–132;
-[v3.svelte.ts](../../src/ts/plugins/apiV3/v3.svelte.ts), removal listener at
+[v3.svelte.ts](../../../src/ts/plugins/apiV3/v3.svelte.ts), removal listener at
 786–789 and consent completion at 903–916. D3 introduced revocation, but the
 existing grant conflict loop still treats every conflict as an additive merge.
 
@@ -76,7 +76,7 @@ answers; it does not advance the `permissionResetGenerations` used to invalidate
 pending consent. Reset therefore cannot reliably revoke an in-flight permission
 operation in another tab. The author contract also explicitly says a prompt
 open during reset answers `false`
-([plugins.md](../../plugins.md#permissions), lines 1343–1345).
+([plugins.md](../../../plugins.md#permissions), lines 1343–1345).
 
 **Suggested fix and regression.** Give consent operations a revocation/reset
 generation that is checked across tabs and at persistence. A conflict retry must
@@ -87,10 +87,10 @@ merging of unrelated grants.
 
 ### PS2 — Switching to Structured Memory during a detached read omits its projection
 
-**Code.** [v3.svelte.ts](../../src/ts/plugins/apiV3/v3.svelte.ts), fresh detached
+**Code.** [v3.svelte.ts](../../../src/ts/plugins/apiV3/v3.svelte.ts), fresh detached
 reads at 1301–1316, final assembly at 1361–1368, and
 `refreshChatProjections` at 1034–1038;
-[detachedChatCache.ts](../../src/ts/plugins/apiV3/detachedChatCache.ts), cache-hit
+[detachedChatCache.ts](../../../src/ts/plugins/apiV3/detachedChatCache.ts), cache-hit
 algorithm checks at 129–137.
 
 **Reproduction.** A temporary `StoreBackedServer` probe used real stored memory
@@ -126,11 +126,11 @@ between server preparation and client assembly.
 
 ### PS3 — Small writes still cause whole-record downloads in observing tabs
 
-**Code.** [resourceStore.ts](../../server/src/data/resourceStore.ts),
+**Code.** [resourceStore.ts](../../../server/src/data/resourceStore.ts),
 `feedPatch`, lines 3418–3434;
-[recordPatch.ts](../../shared/recordPatch.ts), `diffFields`, lines 312–326;
-[recordPatchText.ts](../../server/src/data/recordPatchText.ts), lines 155–158;
-[resourceSync.svelte.ts](../../src/ts/storage/resourceSync.svelte.ts),
+[recordPatch.ts](../../../shared/recordPatch.ts), `diffFields`, lines 312–326;
+[recordPatchText.ts](../../../server/src/data/recordPatchText.ts), lines 155–158;
+[resourceSync.svelte.ts](../../../src/ts/storage/resourceSync.svelte.ts),
 `noteRemoteChanges` at 4841–4861 and full reads at 5271–5274.
 
 The write protocol understands reserved-dictionary entry patches and plugin
@@ -163,10 +163,10 @@ outgoing-write acceptance check.
 
 ### PS4 — A tiny nested storage patch still traverses megabytes of unchanged JSON
 
-**Code.** [resourceStore.ts](../../server/src/data/resourceStore.ts),
+**Code.** [resourceStore.ts](../../../server/src/data/resourceStore.ts),
 `patchParts` at 3270–3279, `canonicalPart` at 3373–3375, `storedParts` at
 3385–3389, and `feedPatch` at 3422–3434;
-[recordPatch.ts](../../shared/recordPatch.ts), line 319.
+[recordPatch.ts](../../../shared/recordPatch.ts), line 319.
 
 Although the request contains one nested key, `patchParts` treats its reserved
 dictionary as a changed top-level part. It serializes and parses that whole
@@ -195,7 +195,7 @@ stored dictionary fallbacks.
 
 ### PS5 — Structured Memory chats occupy a cache that will not reuse them
 
-**Code.** [detachedChatCache.ts](../../src/ts/plugins/apiV3/detachedChatCache.ts),
+**Code.** [detachedChatCache.ts](../../../src/ts/plugins/apiV3/detachedChatCache.ts),
 admission at 106–118 and eligibility at 129–137.
 
 Under Structured Memory, a cache hit requires an unsealed, HypaV3-owned summary
@@ -208,7 +208,7 @@ unchanged chats containing 16 KiB notes, two immediate full reads return equal
 data. The second still requests all 20 bodies and transfers over 327,680 bytes
 of response JSON. This used `StoreBackedServer`; the fixture is ASCII, so its
 response-text length equals its UTF-8 byte count. The existing projected-chat
-case in [getDatabaseDetached.test.ts](../../src/ts/plugins/apiV3/getDatabaseDetached.test.ts)
+case in [getDatabaseDetached.test.ts](../../../src/ts/plugins/apiV3/getDatabaseDetached.test.ts)
 also deliberately expects a full reread.
 
 **Suggested improvement.** Cache the revision-stable chat body separately from
@@ -221,7 +221,7 @@ separately.
 
 ### PS6 — Concurrent cold reads download the same chats independently
 
-**Code.** [v3.svelte.ts](../../src/ts/plugins/apiV3/v3.svelte.ts), per-call
+**Code.** [v3.svelte.ts](../../../src/ts/plugins/apiV3/v3.svelte.ts), per-call
 `reads`/`cacheHits` at 1249–1250 and missing-chat preparation/read at 1280–1302.
 
 The shared cache contains completed reads only. Two plugins, or two overlapping
@@ -241,9 +241,9 @@ Test overlapping requests, invalidation while pending, and rejection cleanup.
 
 ### PS7 — A one-chat page repeatedly constructs the entire chat list
 
-**Code.** [v3.svelte.ts](../../src/ts/plugins/apiV3/v3.svelte.ts), page selector
+**Code.** [v3.svelte.ts](../../../src/ts/plugins/apiV3/v3.svelte.ts), page selector
 at 2240–2246 and its repeated use in `withDetachedDatabaseChats`;
-[chatStore.svelte.ts](../../src/ts/storage/chatStore.svelte.ts), `chatList`,
+[chatStore.svelte.ts](../../../src/ts/storage/chatStore.svelte.ts), `chatList`,
 lines 1446–1451.
 
 `page(chatList(id))` slices only after `chatList` constructs a metadata object
@@ -268,7 +268,7 @@ page-change-during-await protection. Verify work counts on cold and warm pages.
 
 ### PS8 — A blocked flush makes a loaded one-chat page fetch every other chat
 
-**Code.** [v3.svelte.ts](../../src/ts/plugins/apiV3/v3.svelte.ts), full-character
+**Code.** [v3.svelte.ts](../../../src/ts/plugins/apiV3/v3.svelte.ts), full-character
 fallback at 1225–1239 and `getChats` dispatch at 2259–2262.
 
 Even when the requested page is fully loaded, the detached helper first flushes
@@ -291,9 +291,9 @@ traffic/memory cost rather than a wrong returned value.
 
 ### PS9 — Indexed storage enumeration repeatedly scans every plugin's keys
 
-**Code.** [pluginStorageStore.svelte.ts](../../src/ts/storage/pluginStorageStore.svelte.ts),
+**Code.** [pluginStorageStore.svelte.ts](../../../src/ts/storage/pluginStorageStore.svelte.ts),
 `ownedPluginStorageKeys`, lines 179–186;
-[v3.svelte.ts](../../src/ts/plugins/apiV3/v3.svelte.ts), indexed key and length
+[v3.svelte.ts](../../../src/ts/plugins/apiV3/v3.svelte.ts), indexed key and length
 calls at 2920–2927.
 
 Both `length()` and `key(index)` build the full visible key list. Each build
@@ -325,7 +325,7 @@ ordering, shadowing, claim-on-write, clear markers, and arbitrary string keys.
 
 ### U1 — The sandbox drops an own `__proto__` field from returned JSON
 
-**Code and attribution.** [factory.ts](../../src/ts/plugins/apiV3/factory.ts),
+**Code and attribution.** [factory.ts](../../../src/ts/plugins/apiV3/factory.ts),
 host `replaceStreamsWithPorts` at 823–826, with the same assignment pattern in
 the guest and reconstruction helpers. It already exists at the plan baseline
 `7f0024197`; it is not introduced by owned storage or detached reads.
@@ -362,7 +362,7 @@ round trip.
 
 ### U2 — Character reconciliation repeatedly scans the full character list
 
-**Code and attribution.** [v3.svelte.ts](../../src/ts/plugins/apiV3/v3.svelte.ts),
+**Code and attribution.** [v3.svelte.ts](../../../src/ts/plugins/apiV3/v3.svelte.ts),
 `applyPluginCharacters`, lines 1542–1558. Both `existing.includes(char.chaId)`
 inside the preparation loop and `characterList().findIndex(...)` inside the
 application loop already appear at `7f0024197`.
@@ -394,7 +394,7 @@ without changing the plugin API.
 
 Additional residual cost: held chat reads still use
 `clone($state.snapshot(...))` in
-[chatStore.svelte.ts](../../src/ts/storage/chatStore.svelte.ts), lines 1329 and
+[chatStore.svelte.ts](../../../src/ts/storage/chatStore.svelte.ts), lines 1329 and
 1337; `getChats` similarly calls `plainClone($state.snapshot(held))` at
 `v3.svelte.ts:2249`. The D7 implementation retained two copies to preserve
 snapshot/JSON behavior, including own `__proto__` handling. A single compatible

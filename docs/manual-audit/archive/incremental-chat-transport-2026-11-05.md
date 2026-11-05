@@ -28,7 +28,7 @@ P2 means a material, reproducible correctness, traffic, or performance issue wor
 
 ### ICT-01 — A one-row read still scans the chat inside SQLite
 
-**Evidence:** [server/src/data/chatStore.ts](../../server/src/data/chatStore.ts), `selectPatchMessages` at lines 1413–1416, `touchedRows` at 1673–1676, and `readRows` at 2718–2729.
+**Evidence:** [server/src/data/chatStore.ts](../../../server/src/data/chatStore.ts), `selectPatchMessages` at lines 1413–1416, `touchedRows` at 1673–1676, and `readRows` at 2718–2729.
 
 The query filters requested IDs but orders by `m.position`. On Node v24.21.0's SQLite, the production schema and query produce:
 
@@ -53,7 +53,7 @@ There is a second residual history-length cost nearby: `countMessages` at line 1
 
 ### ICT-02 — Completed replies are resent during later replies in the same job
 
-**Evidence:** [server/src/jobs/generationJobs.ts](../../server/src/jobs/generationJobs.ts), `job.generated.add` at 1691–1695, forced inclusion in `diffChat` at 715–718, and the active-generation requirement in `chatPatchEvent` at 1263–1284. The multi-speaker loop is in [server/src/prompt/runner.ts](../../server/src/prompt/runner.ts), around line 582.
+**Evidence:** [server/src/jobs/generationJobs.ts](../../../server/src/jobs/generationJobs.ts), `job.generated.add` at 1691–1695, forced inclusion in `diffChat` at 715–718, and the active-generation requirement in `chatPatchEvent` at 1263–1284. The multi-speaker loop is in [server/src/prompt/runner.ts](../../../server/src/prompt/runner.ts), around line 582.
 
 Every row on which the job began a generation stays in `job.generated`. `diffChat` includes those rows even when their stored JSON has not changed. The streamed encoding requires an active generation lock; after a reply finishes, its row therefore travels whole in every subsequent checkpoint of another reply within that job.
 
@@ -68,7 +68,7 @@ Further checkpoints repeat the completed text. The plan's single-reply probe doe
 
 ### ICT-03 — Interrupted replay advances the cursor beyond the map's coverage
 
-**Evidence:** [src/ts/network/eventFeed.ts](../../src/ts/network/eventFeed.ts), `reconcile` at 304–345, `retire` at 234–238, and live-frame handling at 413–417.
+**Evidence:** [src/ts/network/eventFeed.ts](../../../src/ts/network/eventFeed.ts), `reconcile` at 304–345, `retire` at 234–238, and live-frame handling at 413–417.
 
 While replay is pending, a live frame immediately advances `heldCursor` and changes the advertised map. If that connection retires before replay installation, the frozen snapshot is abandoned but the advanced cursor survives. That cursor no longer denotes a map complete through that point.
 
@@ -98,7 +98,7 @@ The two listings are initial seeding and the avoidable fallback. The log still c
 
 ### ICT-04 — Pruning scans 20,000 log rows for a one-row commit
 
-**Evidence:** [server/src/data/resourceStore.ts](../../server/src/data/resourceStore.ts), `pruneChanges` at 1071–1073 and its unconditional call for logged commits at 1162–1165.
+**Evidence:** [server/src/data/resourceStore.ts](../../../server/src/data/resourceStore.ts), `pruneChanges` at 1071–1073 and its unconditional call for logged commits at 1162–1165.
 
 ```sql
 DELETE FROM changes WHERE cursor <= (
@@ -112,11 +112,11 @@ Finding the cutoff with `OFFSET 20000` walks the retained window for every logge
 
 **Correction:** Maintain the retention boundary incrementally, or use a cursor-range cutoff after establishing the necessary cursor-allocation invariant. Preserve transactional pruning, restore behavior, and replay expiration semantics. Verify query work at a full retention window rather than only the final row count.
 
-This is distinct from the already-recorded [change-log byte-size limitation](../research/found-issues.md#the-change-logs-bound-is-a-row-count-not-4-mb): 20,000 rows is not a 4-MB byte cap, and snapshots contain the log.
+This is distinct from the already-recorded [change-log byte-size limitation](../../research/found-issues.md#the-change-logs-bound-is-a-row-count-not-4-mb): 20,000 rows is not a 4-MB byte cap, and snapshots contain the log.
 
 ### ICT-05 — Small incremental payloads still clone complete messages
 
-**Evidence:** [src/ts/storage/chatStore.svelte.ts](../../src/ts/storage/chatStore.svelte.ts), JSON-based `clone` at 970–972, `stagedRowDiffs` at 2827, `resolveJobChatPatch` at 2689, and the additional clone in `patchedMessages` around 3067.
+**Evidence:** [src/ts/storage/chatStore.svelte.ts](../../../src/ts/storage/chatStore.svelte.ts), JSON-based `clone` at 970–972, `stagedRowDiffs` at 2827, `resolveJobChatPatch` at 2689, and the additional clone in `patchedMessages` around 3067.
 
 A feed diff clones the whole held message before changing its few fields. Even a metadata-only `generationInfo` update serializes and parses unchanged text and retained candidates. Owner stream references similarly clone the old row before replacing `data`, and patch installation clones the reconstructed row again.
 
@@ -126,7 +126,7 @@ A feed diff clones the whole held message before changing its few fields. Even a
 
 ### ICT-06 — Known-absent IDs repeatedly rebuild the full index
 
-**Evidence:** [src/ts/storage/chatStore.svelte.ts](../../src/ts/storage/chatStore.svelte.ts), `positionOf` at 1054–1070 and `applyChatResult` collision checks at 4369–4373.
+**Evidence:** [src/ts/storage/chatStore.svelte.ts](../../../src/ts/storage/chatStore.svelte.ts), `positionOf` at 1054–1070 and `applyChatResult` collision checks at 4369–4373.
 
 The index validates hits, but every miss rebuilds it even when a previous lookup just proved the same ID absent and the array has not changed. With 10,000 messages, executing the production lookup 200 times produces **one build for the existing tail ID and 200 builds for the same missing ID**.
 
@@ -138,7 +138,7 @@ This follows D1's specified correctness fallback; normal updates to an existing 
 
 ### ICT-07 — Owner checkpoints still rebuild full-history baselines
 
-**Evidence:** [server/src/jobs/generationJobs.ts](../../server/src/jobs/generationJobs.ts), `advanceChatBaseline` at 651–665, `diffChat` at 699–718, and checkpoint callers at 1225 and 1685–1689.
+**Evidence:** [server/src/jobs/generationJobs.ts](../../../server/src/jobs/generationJobs.ts), `advanceChatBaseline` at 651–665, `diffChat` at 699–718, and checkpoint callers at 1225 and 1685–1689.
 
 For one changed row, baseline advancement rebuilds message order and copies the complete text Map. `diffChat` then builds sets and several arrays and compares every ID before producing a small patch. Streamed encoding reduces the resulting payload but happens after this work.
 
@@ -157,7 +157,7 @@ Both calls returned one changed row. This is existing server architecture, not a
 
 ### OTHER-01 — Large-transcript deletion can throw before queuing the edit (P2)
 
-**Evidence:** [src/ts/storage/chatStore.svelte.ts](../../src/ts/storage/chatStore.svelte.ts), `applyRemoval` at 3873–3882.
+**Evidence:** [src/ts/storage/chatStore.svelte.ts](../../../src/ts/storage/chatStore.svelte.ts), `applyRemoval` at 3873–3882.
 
 ```ts
 chat.message.splice(0, chat.message.length, ...kept);
@@ -171,7 +171,7 @@ The operation predates the transport index change (`f033d69ce^`). No message-cou
 
 ### OTHER-02 — Reroll bookkeeping parses history on ordinary appends and swipes (P2)
 
-**Evidence:** [server/src/data/chatStore.ts](../../server/src/data/chatStore.ts), `selectCheckpointRows` at 1407–1410 and its non-comment append caller at 2257–2259; `selectCarrierMessages` at 1348–1350 and candidate selection at 2410–2419. [shared/rerollCandidates.ts](../../shared/rerollCandidates.ts), `isRerollCarrier` at 288–296.
+**Evidence:** [server/src/data/chatStore.ts](../../../server/src/data/chatStore.ts), `selectCheckpointRows` at 1407–1410 and its non-comment append caller at 2257–2259; `selectCarrierMessages` at 1348–1350 and candidate selection at 2410–2419. [shared/rerollCandidates.ts](../../../shared/rerollCandidates.ts), `isRerollCarrier` at 288–296.
 
 Every non-comment append checks JSON candidate/checkpoint fields throughout eligible history, including chats which have never retained a candidate. Candidate selection separately reads every row's role/comment projection into JavaScript, although carrier eligibility depends on the final two non-comment messages.
 

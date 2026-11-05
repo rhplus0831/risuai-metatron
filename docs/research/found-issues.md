@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) on 2026-11-06; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -8,17 +8,17 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (9)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (10)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
-- [Server routes and resource store](#server-routes-and-resource-store) (2)
+- [Server routes and resource store](#server-routes-and-resource-store) (5)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
-- [Display transform](#display-transform) (7)
+- [Display transform](#display-transform) (8)
 - [Chat screen and input](#chat-screen-and-input) (5)
-- [Client and plugins](#client-and-plugins) (12)
+- [Client and plugins](#client-and-plugins) (15)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (13)
+- [Structured Memory](#structured-memory) (15)
 
 ## Chat store, sync, and change feeds
 
@@ -94,6 +94,13 @@ The server's append checkpoint cleanup (`server/src/data/chatStore.ts`, `case "a
 **Why it matters:** a stale Stop button that answers "idle" when pressed; confusing but harmless.
 **Suggested handling:** if `chatStatus` is touched, reconcile marks for lockless jobs with a bounded `/current` check while the chat is visible, clearing by the expected job id.
 
+### An insertion before the reroll carrier drops its variable snapshots
+
+Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it follows the Reroll Candidates plan's recorded D6 rule, and a position-aware commit boundary is a design change for an uncommon insertion. The append checkpoint cleanup in `server/src/data/chatStore.ts` (`case "append"`, the `selectCheckpointRows` loop ~2404) clears other messages' snapshots on any non-comment append, insertions included. Inserting a user message at `anchor: { start: true }` leaves the latest reply eligible as the reroll carrier but removes its checkpoint and every candidate's `scriptstateAfter`; selecting another candidate then shows its text while the variables stay at the first candidate's values. Source: [OTHER-03](../manual-audit/archive/incremental-chat-transport-2026-11-05.md#other-03--earlier-insertion-discards-a-still-selectable-carriers-variable-snapshots-existing-limitation). Related: "Append checkpoint cleanup depends on coalescing and group order".
+
+**Why it matters:** after an insertion at the chat start, switching candidates on the last reply restores text but not variables.
+**Suggested handling:** decide whether candidate-variable restoration should survive an insertion before the carrier; if so, make the commit boundary consider position, otherwise state the text-only selection in the chat-pipeline guide.
+
 ## Server jobs and prompt assembly
 
 ### Tool schemas are outside the assembly token budget
@@ -161,6 +168,31 @@ The `changes` table in `resources.sqlite` (Incremental Chat Transport D5, `serve
 
 **Why it matters:** a guide invariant with one known exception; a later sweep change could make it a real race.
 **Suggested handling:** if `isImageInlay` is touched again, use `claimAssetKey(savePath, meta.asset, { verify })` and keep the post-await fence.
+
+### The inlay recognizer is quadratic on unterminated openings
+
+Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it needs a string with thousands of `{{inlay::` openings and no terminator, and ordinary text has one or a few. `recognize` in `server/src/data/assetLifecycle.ts` (~124) searches for a closing `}}` separately from each opening, so `"{{inlay::".repeat(n)` costs about n² (the audit measured 0.9 s at 144,000 bytes). The SQL prefilter admits such a value, and both the chunked scan and the deletion recheck run it in one synchronous turn. Source: [AL5](../manual-audit/archive/asset-lifecycle-code-audit-2026-11-05.md#al5--malformed-inlay-text-makes-the-server-scanner-quadratic).
+
+**Why it matters:** one stored string of incomplete markers can block the server's event loop during a scan or a sweep.
+**Suggested handling:** a linear recognizer is a small change if `recognize` is touched: match the three prefixes and their terminators in one pass, and stop when the remaining suffix has no terminator, without truncating real references.
+
+### A custom-key asset can change during a version-2 export
+
+Excluded by the Implementation Audit Fixes plan (2026-11-05) as an unverified lead; the audit asked for a coordinated export-and-replace reproduction first. A version-2 export (`server/src/routes/backups.ts`) records asset paths and opens them later while streaming; the export hold protects them from lifecycle deletion but not from a custom-key write in `server/src/routes/storage.ts` (the staged `rename`, ~265) replacing the file, so the archive could pair its database copy with later bytes. Verified content-hash keys cannot change this way. Source: [the additional lead](../manual-audit/archive/asset-lifecycle-code-audit-2026-11-05.md#additional-lead--mutable-custom-keys-can-change-during-export).
+
+**Why it matters:** an export taken while a plugin or script rewrites a custom-key asset may not be a consistent snapshot.
+**Suggested handling:** pause an export before it opens such an asset, replace the asset through the normal write path, and inspect the archive; then decide what consistency custom keys promise.
+
+### Upstream swipe import edge cases
+
+Excluded as edge cases by the Implementation Audit Fixes plan (2026-11-05). All three are in the swipe conversion of `server/src/data/upstream/importCharacters.ts` (~617–698):
+
+- The missing-inlay report (`inlays-not-in-backup`, ~524) scans only `message.data`, so an alternate swipe referencing an image the backup lacks is kept but not reported. Needs an upstream backup whose non-selected swipes reference missing images; the selected text is reported. Source: [RC4](../manual-audit/archive/reroll-candidates-2026-11-05.md#rc4--the-import-report-misses-unavailable-inlays-in-retained-candidates).
+- Every foreign swipe becomes a candidate before `trimCandidates` (~696) removes the oldest one at a time with `splice` (`shared/rerollCandidates.ts` ~241–253): quadratic over 1,000 swipes on one message, where the live ring holds 17. Source: [RC7](../manual-audit/archive/reroll-candidates-2026-11-05.md#rc7--importing-many-foreign-swipes-repeatedly-shifts-almost-the-entire-array).
+- A malformed native `candidates: []` beside valid foreign `swipes` sets `hadCandidates` (~626), so swipe conversion is refused and the alternate texts are dropped; the audit's own "narrow import edge case". Source: [the import edge case](../manual-audit/archive/reroll-candidates-2026-11-05.md#additional-narrow-import-edge-case).
+
+**Why it matters:** an undisclosed missing image behind a later swipe, a slow import of a message with thousands of swipes, and lost alternates from a malformed file.
+**Suggested handling:** if the importer's report or conversion is touched: scan `candidates[].data` once per chat for the report, keep the selected entry plus a bounded newest window before building candidates, and test the normalized `candidates` field before refusing swipe conversion.
 
 ## Request history and diagnostics
 
@@ -240,6 +272,13 @@ The Render Work Budget comparison run ([audit](../audit/render-work-budget-2026-
 **Why it matters:** needs a settings change during one in-flight request, an edge class the run excluded.
 **Suggested handling:** if `runTranslator` is reworked, capture the provider settings once per producer and use them for the key and every chunk.
 
+### A withdrawn forced refresh can leave its replacement on the old cache
+
+Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it needs a Re-render whose target is withdrawn while a sibling keeps the chunk alive, and a same-input replacement created before the result lands. In `src/ts/parser/transformClient.ts` the bypass (`noCacheNext`, ~178) is consumed when the operation is created and restored only on withdrawal before dispatch or a whole-chunk cancel (~325); a dispatched target withdrawn from a surviving chunk loses it, so the replacement sends `noCache: false`, cannot join the forced operation, and can read the server's old cache entry (`server/src/prompt/transform.ts` invalidates when processing reaches the forced target, not at admission). Source: [RW3](../manual-audit/archive/render-work-budget-2026-11-05.md#rw3--a-departed-forced-refresh-can-leave-its-replacement-using-the-old-server-cache).
+
+**Why it matters:** a requested Re-render can show the previous cached result after paying for a fresh one.
+**Suggested handling:** keep the forced intent until a live consumer receives its result, or let a same-generation replacement join the forced operation, without reviving the bypass for a superseded generation.
+
 ## Chat screen and input
 
 ### Latest-message start scroll untested in DefaultChatScreen
@@ -260,8 +299,10 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 
 After the paged export (`src/lib/ChatScreens/screenshotExport.ts`), the Render Work Budget comparison run ([audit](../audit/render-work-budget-2026-11-05.md#acceptance-after-slices-14), 2026-11-05) writes 2 / 7 / 25 valid PNG pages for 30 / 150 / 600 rows, but the renderer's `VmHWM` still rises by 607 / 1,478 / 3,987 MiB while one page's RGBA (816 × 16,308) is 50.8 MiB, so the acceptance "peak under one page plus the largest row" is not met. Most of the peak is not the page canvas; what holds it (the per-row captures, `src/ts/screenshotCaptureCache.ts`, or the DOM-to-canvas renderer's clones) was not investigated.
 
+A single row is outside the page budget too: the planner (`src/lib/ChatScreens/screenshotExport.ts` ~79–87) puts a row over `MAX_EXPORT_PIXELS` (64 M pixels) on its own page without reducing its area, as the module header allows, so a row about 2,400 CSS pixels wide and 8,192 tall at DPR 2 allocates a 300 MiB source and a 300 MiB page. The Implementation Audit Fixes plan (2026-11-05) excluded that as an edge case, to be taken with this investigation. Source: [RW4](../manual-audit/archive/render-work-budget-2026-11-05.md#rw4--a-single-oversized-screenshot-row-bypasses-the-page-memory-budget).
+
 **Why it matters:** a 600-row export still costs about 4 GiB of renderer memory, enough to crash a tab on phones.
-**Suggested handling:** take a heap snapshot and `VmHWM` per page during a 150-row export to find what scales with rows, then release it per page.
+**Suggested handling:** take a heap snapshot and `VmHWM` per page during a 150-row export to find what scales with rows, then release it per page; for the single row, enforce area before capture with the same scale in planning and capture, or tile it.
 
 ### /multisend keeps its quotes
 
@@ -369,6 +410,27 @@ The Found Issues Sweep's D2 re-applies the display only for remote `ui` records 
 **Why it matters:** bulk character imports through the plugin API, and per-index chat accessors on characters with many chats.
 **Suggested handling:** take it when the character add path or those two accessors are next touched.
 
+### A memory algorithm switch during a detached read omits its projection
+
+Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it needs a memory-algorithm settings change between the server's response and the client's assembly of one plugin read; one incorrect read, nothing stored. The detached `getDatabase` read in `src/ts/plugins/apiV3/v3.svelte.ts` checks cache hits against the current algorithm (`detachedChatCache.ts`), but a fresh response keeps the algorithm captured before its await; final assembly can remove a sealed projection when leaving Structured Memory but cannot add one when entering it, and `refreshChatProjections` (~1063) serves loaded chats only. Source: [PS2](../manual-audit/archive/plugin-storage-data-api-2026-11-05.md#ps2--switching-to-structured-memory-during-a-detached-read-omits-its-projection).
+
+**Why it matters:** a plugin reading across the switch gets no `hypaV3Data` for an unloaded chat while a loaded chat has it.
+**Suggested handling:** fence fresh detached responses by the captured algorithm as cache hits are, and retry or refresh when it changed; test both switch directions.
+
+### The sandbox bridge drops an own `__proto__` key
+
+Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it needs a plugin to store an object with a key spelled `__proto__`. The bridge copy helpers in `src/ts/plugins/apiV3/factory.ts` (`replaceStreamsWithPorts` and the guest and reconstruction helpers, ~232, ~281, ~825, ~907) rebuild plain objects with `const out = {}` and `out[k] = …`, so an own `__proto__` key sets the copy's prototype and is lost in the structured clone. The storage layer keeps such keys, so direct API tests do not see it. Source: [U1](../manual-audit/archive/plugin-storage-data-api-2026-11-05.md#u1--the-sandbox-drops-an-own-__proto__-field-from-returned-json).
+
+**Why it matters:** a `pluginStorage.getItem` value can come back without a field it was stored with; not prototype pollution.
+**Suggested handling:** define own properties (`Object.defineProperty` or a null-prototype object) in every bridge copy helper, and test a round trip through the guest bridge.
+
+### Fallback media object URLs outlive the blob cache
+
+Deferred by the Implementation Audit Fixes plan (2026-11-05): the fix needs a lifetime design on a fallback path. Without a capable controlling service worker, `getInlayObjectUrl` in `src/ts/process/files/inlays.ts` keeps every audio and video object URL in `mediaObjectUrls` (~544) for the page's life, so a blob the 64 MiB `blobCache` evicted stays retained (the audit's probe: nine 8 MiB items, 72 MiB held). The existing comment explains why revoking on blob-cache eviction breaks cached renders. This is the `mediaObjectUrls` part of the pinned-URL item in "Stop B leftovers". Source: [U1](../manual-audit/archive/asset-lifecycle-code-audit-2026-11-05.md#u1--fallback-audiovideo-object-urls-bypass-the-blob-caches-memory-bound).
+
+**Why it matters:** on a page no worker controls, media memory grows with every distinct item played, past the cache's budget.
+**Suggested handling:** a design of its own: track URL ownership by rendered media and cached HTML, and release unowned URLs under a byte budget.
+
 ## Build, drivers, and e2e
 
 ### checkJobProtocol's first run after a source change fails its SIGKILL case
@@ -441,7 +503,7 @@ Untagged gate tests that depend on real wall-clock or scheduler time (invariant 
 
 ## Structured Memory
 
-Moved from the Structured Memory plan run on 2026-11-03. Each entry was re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here. The last three entries came from the Implementation Audit Fixes run (2026-11-05/06).
+Moved from the Structured Memory plan run on 2026-11-03. Each entry was re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here. The last five entries came from the Implementation Audit Fixes run (2026-11-05/06); the last two are its excluded audit findings.
 
 ### Record now in a job is seen by one tab
 
@@ -545,3 +607,17 @@ Two gaps beside thread reconciliation on retraction (`withReconciledThreads` in 
 
 **Why it matters:** a test run on an older chat previews a different window than the writer recorded, until the next run.
 **Suggested handling:** compare `messageSourceHash(message, source.hash) === source.hash`.
+
+### Rebuild drops retained imported threads' participants
+
+Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it needs imported or manual thread data with a `who` list, and no screen creates threads. A rebuild (`server/src/prompt/memory/structured/rebuild.ts`) omits an unmarked page from its seed but keeps an imported thread verbatim, and the swap removes the old page without remapping the thread's `who`; retrieval (`retrieve.ts`) then rejects the thread as `not-relevant`, since it names the old page id. The existing preservation test uses `who: []`. Source: [C6](../manual-audit/archive/structured-memory-2026-11-05.md#c6--p3-retained-imported-threads-lose-their-participant-identities-during-rebuild).
+
+**Why it matters:** an imported personal thread stops reaching the prompt after a rebuild, and the panel cannot repair its `who`.
+**Suggested handling:** keep the identities retained threads need, or remap their references at the swap; test with a non-empty `who`.
+
+### A delayed health answer overwrites a newer badge
+
+Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): a reordered advisory read after a repair. `readHealth` in `src/ts/process/chatStatus.svelte.ts` (~220) accepts every answer, so a delayed boot or chat-open read that returns after a post-repair read puts the badge back to `staleEvents` until the next eligible refresh. Source: [C7](../manual-audit/archive/structured-memory-2026-11-05.md#c7--p3-a-delayed-health-response-can-undo-a-newer-post-repair-badge).
+
+**Why it matters:** the badge can claim stale memory right after a successful repair.
+**Suggested handling:** a request generation per chat in `readHealth` is cheap when that function is next touched; add a reordered-response test.

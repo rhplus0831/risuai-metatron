@@ -62,6 +62,7 @@ git show b37776a72:docs/plan/found-issues-sweep.md
 git show a72c5f736:docs/plan/render-work-budget.md
 git show f521f3d63:docs/plan/plugin-storage.md
 git show 7a4e8d113:docs/plan/reroll-candidates.md
+git show 607a33d74:docs/plan/implementation-audit-fixes.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -127,6 +128,7 @@ it is not a current architecture guide.
 | Plugin Storage and Data API              | `f521f3d63`: `docs/plan/plugin-storage.md`                                | [plugins](../structure/plugin-sandbox.md) (State, Gotchas, Tests), [resource sync](../structure/resource-sync.md) (Record patches), [server resources](../structure/server-resources.md) (kinds, resource routes), [chat store](../structure/chat-store.md) (detached reads, `chatSummaryList`), [backup sync hub](../structure/backup-sync-hub.md) (Upstream database export), [test harness](../structure/test-harness.md) (`measurePluginData.mjs`), `plugins.md`                        |
 | Reroll Candidates                        | `7a4e8d113`: `docs/plan/reroll-candidates.md`                             | [chat pipeline](../structure/chat-pipeline.md) (Reroll), [chat store](../structure/chat-store.md) (`selectCandidate`), [server generation](../structure/server-generation.md) (in-place reroll job), [memory](../structure/memory.md) (commit boundary), [backup sync hub](../structure/backup-sync-hub.md) (candidates on export and import)                                                                                                                                               |
 | Found Issues Sweep                       | `b37776a72`: `docs/plan/found-issues-sweep.md`                            | The owning guides' Known Hazards; the deferred groups and accepted notes stay in [found-issues](../research/found-issues.md)                                                                                                                                                                                                                                                                                                                                                                |
+| Implementation Audit Fixes               | `607a33d74`: `docs/plan/implementation-audit-fixes.md`                    | [server resources](../structure/server-resources.md), [server](../structure/self-host-server.md), [server generation](../structure/server-generation.md), [chat store](../structure/chat-store.md), [plugins](../structure/plugin-sandbox.md), [translation](../structure/translation.md), [CBS and rendering](../structure/cbs-rendering.md), [assets](../structure/assets.md) (Q1), the [structured memory](../structure/structured-memory/README.md) pages                               |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1195,6 +1197,27 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     a combined translation paragraph written as HTML, `/multisend` keeping its quotes, scheme and local ui
     writers skipping the display apply, `#import_preset` after a refusal, a stray `}}` ending CBS highlighting,
     two hard-coded inlay explorer strings, `docs:contracts` on EPIPE, chat-pipeline's non-fencing refusal list).
+- Implementation Audit Fixes:
+  - The 81 findings of the seven implementation audits of 2026-11-05 (asset lifecycle, incremental chat transport,
+    job handoff, plugin storage, render work budget, reroll candidates, structured memory) each got a disposition:
+    45 file-cluster slices fixed 68 of them (PS5 merged with E4, OTHER-02 with RC5), 12 were excluded as edge
+    cases, and 1 was deferred. All 45 slices landed on `dev` on 2026-11-05/06; the archived Status line lists each
+    slice's commit, from T1 (`4ddbedc0b`) to C7 (`07520cf65`). The owner decided Q1–Q3 as recommended on
+    2026-11-05: range-backed PNG replay for a File or Blob, with streams keeping their retention (an assets
+    Limitation); an owner and a viewer projection of a handoff baseline; an old window's repair protecting the
+    later scene state.
+  - Owner-visible behavior: with prompt text stored in the chat, the stored prompt copy no longer shows
+    `editRequest` hook edits, since the hooks run once per request (C5, `7f50a554a`).
+  - Still open: R6's screenshot font check (`d94380fa5`): in a real browser, export a chat whose theme uses an
+    `@import` webfont and confirm the font is fetched once and the image uses it; the 150-row driver fixture has no
+    `@import` webfont, so it was not measured.
+  - Not planned: the 12 excluded findings and the deferred media URL lifetimes (AL U1) moved to
+    `docs/research/found-issues.md` at retirement; the seven reports are in `docs/manual-audit/archive/`.
+  - Found by the run: 18 entries in `docs/research/found-issues.md` (append cleanup order, the feed text diff
+    prefix, lockless foreign Stop marks, untargeted handoff offers, slash commands during a reroll, trigger
+    copies, HypaV3 chunk scans, Lua image asset claims, transform snapshot aborts, the translator's status,
+    eviction and provider switch, screenshot `@import` growth, embedded card base64 retention, bulk plugin
+    character adds, the recheck trim's evidence, thread provenance, legacy window hashes).
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.

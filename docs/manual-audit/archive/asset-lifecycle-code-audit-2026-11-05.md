@@ -11,7 +11,7 @@ git show 6da6d5c59830f3bad1a3b17dfd1952b51f510d87^:docs/plan/asset-lifecycle.md
 All five implementation commits are present: `b7095d591` (mark/report), `dd35ebc52` (sweep, claims, preflight),
 `0c3e7d2d0` (snapshot controls), `967cc5be1` (Storage settings), and `7d6ff9970` (browser check/documentation).
 The audit followed their current implementations, including reference discovery, leases, orphan inlays, snapshot and
-export roots, backup disk estimates, import queues, and the Storage UI. The [archive](../archived-plan/README.md)
+export roots, backup disk estimates, import queues, and the Storage UI. The [archive](../../archived-plan/README.md)
 records the plan's retirement.
 
 **Eight findings concern this plan: three correctness bugs, four CPU/memory improvements, and one traffic improvement.**
@@ -39,9 +39,9 @@ priority optimization. Measurements below are local observations on Node `v24.21
 
 ### AL1 — Reusing an orphan inlay does not revoke its deletion eligibility
 
-**Evidence:** [assetLifecycle.ts](../../server/src/data/assetLifecycle.ts), lines 806–817 and 1235–1256;
-[Lua bindings](../../server/src/lua/bindings.ts), lines 771–782 and 1675–1696;
-[inlays.ts](../../src/ts/process/files/inlays.ts), lines 340–353 and 400–405. Plan decisions D7 and D14.
+**Evidence:** [assetLifecycle.ts](../../../server/src/data/assetLifecycle.ts), lines 806–817 and 1235–1256;
+[Lua bindings](../../../server/src/lua/bindings.ts), lines 771–782 and 1675–1696;
+[inlays.ts](../../../src/ts/process/files/inlays.ts), lines 340–353 and 400–405. Plan decisions D7 and D14.
 
 The orphan candidate map records the ID, age, and byte count, but no scanned record revision. During deletion, the
 sweep checks whether text now names the ID, reads the **current** inlay record, and deletes that current revision.
@@ -78,9 +78,9 @@ sweep attempts to remove both a rewritten ID and an existing ID that has just be
 
 ### AL2 — An epoch-conflicted restore is reported as successful
 
-**Evidence:** [StoragePanel.svelte](../../src/lib/Setting/Pages/Advanced/StoragePanel.svelte), lines 223–239;
-[resourceClient.ts](../../src/ts/storage/resourceClient.ts), lines 154–155 and 555–561;
-[backups.ts](../../server/src/routes/backups.ts), lines 198–202. Plan D8/D9, UI slice.
+**Evidence:** [StoragePanel.svelte](../../../src/lib/Setting/Pages/Advanced/StoragePanel.svelte), lines 223–239;
+[resourceClient.ts](../../../src/ts/storage/resourceClient.ts), lines 154–155 and 555–561;
+[backups.ts](../../../server/src/routes/backups.ts), lines 198–202. Plan D8/D9, UI slice.
 
 The panel catches `ResourceEpochMismatchError`, suppresses it, displays `language.storage.restored`, and reloads.
 The transport raises this error when the server returns HTTP 412 `EpochMismatch`: the requested restore was refused.
@@ -90,7 +90,7 @@ this tab still holds the previous epoch or has a restore queued.
 **Reproduction:** Execute the current `restoreBackup` transport and the exact component `restore` function with the
 network boundary returning HTTP 412. The function issued one request, displayed `["Snapshot restored"]`, and reloaded
 once. This was an isolated client-function probe, not a browser mount. The current
-[panel test](../../src/lib/Setting/Pages/Advanced/StoragePanel.test.ts), lines 441–444, expects the reload on this path
+[panel test](../../../src/lib/Setting/Pages/Advanced/StoragePanel.test.ts), lines 441–444, expects the reload on this path
 but does not reject the incorrect success notice.
 
 **Direction:** Keep reloading when necessary to recover from stale state, but show a conflict/refusal notice. Display
@@ -98,7 +98,7 @@ restore success only after a successful restore response. Test the notice as wel
 
 ### AL3 — Backup import demands space for already-present verified assets
 
-**Evidence:** [backups.ts](../../server/src/routes/backups.ts), lines 538–545 and 624–636. Plan D12.
+**Evidence:** [backups.ts](../../../server/src/routes/backups.ts), lines 538–545 and 624–636. Plan D12.
 
 After spooling the archive, the second preflight adds the length of **every** asset record to its remaining-allocation
 estimate. Later, `restoreValidated` verifies existing content-named files and skips them without invoking
@@ -129,8 +129,8 @@ check outside the lock does not introduce a deletion race.
 
 ### AL4 — Retained replay callbacks undo bounded-memory PNG import
 
-**Evidence:** [assetQueue.ts](../../src/ts/storage/assetQueue.ts), lines 283, 375–387, and 469–488;
-[characterCards.ts](../../src/ts/characterCards.ts), lines 316–377. Plan D7.
+**Evidence:** [assetQueue.ts](../../../src/ts/storage/assetQueue.ts), lines 283, 375–387, and 469–488;
+[characterCards.ts](../../../src/ts/characterCards.ts), lines 316–377. Plan D7.
 
 The final claim pass retains each canonical asset's `AssetSaveItem` in `replay` until all uploads finish. Keeping a
 loader is cheap only when the loader does not own the payload. The PNG import generator yields
@@ -153,7 +153,7 @@ import is still running, not merely assert that upload batches stay small.
 
 ### AL5 — Malformed inlay text makes the server scanner quadratic
 
-**Evidence:** [assetLifecycle.ts](../../server/src/data/assetLifecycle.ts), lines 120–148, particularly line 146;
+**Evidence:** [assetLifecycle.ts](../../../server/src/data/assetLifecycle.ts), lines 120–148, particularly line 146;
 the same recognizer is used by the chunked scan and synchronous deletion recheck. Plan D1/D2/D13.
 
 The inlay regex searches for a closing `}}` separately from each possible opening marker. A string containing many
@@ -181,7 +181,7 @@ Do not solve the CPU problem by truncating legitimate references and making dele
 
 ### AL6 — Cleanup repeatedly materializes every remaining candidate
 
-**Evidence:** [assetLifecycle.ts](../../server/src/data/assetLifecycle.ts), lines 1280–1291. Plan D6/D9.
+**Evidence:** [assetLifecycle.ts](../../../server/src/data/assetLifecycle.ts), lines 1280–1291. Plan D6/D9.
 
 After each successful unlink, cleanup rebuilds the report with
 `[...candidates.values()].slice(0, ASSET_LIST_CAP)`. The 2,000-entry display cap applies after the whole map has been
@@ -198,7 +198,7 @@ reduce overhead, but it is independent of the demonstrated full-map copies.
 
 ### AL7 — Snapshot reference reconstruction repeats for every cleanup batch
 
-**Evidence:** [assetLifecycle.ts](../../server/src/data/assetLifecycle.ts), lines 1140–1166 and 1183. Plan D3/D6/D13.
+**Evidence:** [assetLifecycle.ts](../../../server/src/data/assetLifecycle.ts), lines 1140–1166 and 1183. Plan D3/D6/D13.
 
 Each batch of at most 50 selected assets or inlays reloads all retained snapshots' `snapshotRefs` and `snapshotInlays`,
 rebuilds the merged sets, and sorts the tails. Persistent indexing avoids rescanning the snapshot databases, but it
@@ -222,9 +222,9 @@ blocking-time measurement; do not remove the new-snapshot safety check to improv
 
 ### AL8 — Polling transfers unchanged candidate lists while a scan runs
 
-**Evidence:** [StoragePanel.svelte](../../src/lib/Setting/Pages/Advanced/StoragePanel.svelte), lines 108–127;
-[assetLifecycle routes](../../server/src/routes/assetLifecycle.ts), lines 19–35;
-[assetLifecycle.ts](../../server/src/data/assetLifecycle.ts), lines 1405–1406. Plan D9.
+**Evidence:** [StoragePanel.svelte](../../../src/lib/Setting/Pages/Advanced/StoragePanel.svelte), lines 108–127;
+[assetLifecycle routes](../../../server/src/routes/assetLifecycle.ts), lines 19–35;
+[assetLifecycle.ts](../../../server/src/data/assetLifecycle.ts), lines 1405–1406. Plan D9.
 
 The panel polls approximately once per second after each response. Each poll serializes and downloads the entire
 latest report with `no-store`. During a scan, the report remains the previous result with `running: true`; the large
@@ -245,9 +245,9 @@ the plan. Preserve authentication and the complete report on initial load and co
 
 ### U1 — Fallback audio/video object URLs bypass the blob cache's memory bound
 
-**Evidence:** [inlays.ts](../../src/ts/process/files/inlays.ts), lines 214–230 and 541–573;
-[parser.svelte.ts](../../src/ts/parser/parser.svelte.ts), lines 932–937;
-[globalApi.svelte.ts](../../src/ts/globalApi.svelte.ts), lines 190–195. This URL-cache implementation predates the plan
+**Evidence:** [inlays.ts](../../../src/ts/process/files/inlays.ts), lines 214–230 and 541–573;
+[parser.svelte.ts](../../../src/ts/parser/parser.svelte.ts), lines 932–937;
+[globalApi.svelte.ts](../../../src/ts/globalApi.svelte.ts), lines 190–195. This URL-cache implementation predates the plan
 (`b51d48f6f`, 2026-10-15).
 
 Without a capable controlling service worker, audio and video rendering uses `getInlayObjectUrl`. Its
@@ -265,7 +265,7 @@ the improvement needs coordinated lifetimes rather than that shortcut.
 
 ### U2 — Version-2 export synchronously vacuums the staged database
 
-**Evidence:** [backups.ts](../../server/src/routes/backups.ts), lines 324–345. This is pre-existing export preparation,
+**Evidence:** [backups.ts](../../../server/src/routes/backups.ts), lines 324–345. This is pre-existing export preparation,
 not the new upstream-export preflight or an Asset Lifecycle regression.
 
 The version-2 export opens its staged database using `DatabaseSync`, removes credentials, and calls synchronous
@@ -285,9 +285,9 @@ guard for upstream export; its absence here is not an unfulfilled plan promise.
 ### Additional lead — Mutable custom keys can change during export
 
 This is **unverified and excluded from the finding counts**. Version-2 export records asset file paths and opens them
-later while streaming ([backups.ts](../../server/src/routes/backups.ts), lines 328–391 and 440–448). The export hold
+later while streaming ([backups.ts](../../../server/src/routes/backups.ts), lines 328–391 and 440–448). The export hold
 protects those keys from lifecycle deletion, but does not block a custom-key write from replacing a file by rename
-([storage.ts](../../server/src/routes/storage.ts), lines 202–267). Unlike a verified content-hash key, a custom key can
+([storage.ts](../../../server/src/routes/storage.ts), lines 202–267). Unlike a verified content-hash key, a custom key can
 therefore name different bytes between the database copy and asset streaming.
 
 The possible result is an archive pairing its database snapshot with later custom-asset content. No coordinated
@@ -309,7 +309,7 @@ snapshot/export retention. This audit did not establish another asset-file delet
 the separate inlay metadata lifetime.
 
 The full synchronous live re-mark remains a known scaling limit. The prior
-[seeded measurement](../audit/asset-scan-2026-11-05.md) records roughly 1.7–3.1 seconds of request blocking. That is
+[seeded measurement](../../audit/asset-scan-2026-11-05.md) records roughly 1.7–3.1 seconds of request blocking. That is
 existing measured behavior, not a new measurement from this audit. AL5–AL7 identify additional avoidable work; changing
 the re-mark itself must preserve the no-write-between-final-check-and-unlink ordering.
 
