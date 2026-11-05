@@ -12,6 +12,7 @@ import {
     type ReplacerFunction,
 } from "../pluginHooks";
 import { SandboxHost } from "./factory";
+import { databaseAccessRecorderScript } from "./developMode";
 import {
     addPreparedCharacter,
     checkCharacterInput,
@@ -2694,7 +2695,12 @@ export async function executePluginV3(plugin: RisuPlugin) {
         name: plugin.name,
         host,
     });
-    host.run(iframe, plugin.script);
+    // Developer diagnostics are selected at load time; changing the setting applies on the next load.
+    host.run(
+        iframe,
+        plugin.script,
+        settings.ui.enableDevTools ? { guestPrelude: databaseAccessRecorderScript(plugin.name) } : undefined,
+    );
     console.log(`[RisuAI Plugin: ${plugin.name}] Loaded API V3 plugin.`);
 }
 

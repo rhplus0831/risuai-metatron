@@ -44,14 +44,16 @@ entrypoints.
   `src/ts/plugins/pluginSafeClass.ts`: `isJsonValue`, `SafeLocalStorage`, `SafeLocalPluginStorage`.
 - `src/ts/plugins/apiV3/permissionStore.ts`: the `pluginPermissions` grants (module header; [State](#state)).
 - `src/lib/Others/PluginDefinedIcon.svelte`: plugin icons (component contract). `src/ts/plugins/apiV3/developMode.ts`:
-  `hotReloadPluginFiles`. `src/ts/plugins/apiV3/transpiler.ts`: `pluginCodeTranspiler`.
+  `hotReloadPluginFiles`, `databaseAccessRecorderScript` (developer database access diagnostics).
+  `src/ts/plugins/apiV3/transpiler.ts`: `pluginCodeTranspiler`.
 
 ### Sandbox host
 
 - `src/ts/plugins/apiV3/factory.ts`: `SandboxHost` (module header: the iframe sandbox and CSP, `GUEST_BRIDGE_SCRIPT`,
-  the message-source checks, the RPC relay). Lookup: `startup` (`GuestStartup`; safe boot), `isIdle` and
-  `onActivityChanged` (the [deferred reload](#deferred-reload)), `terminate`, `UNREAD_PLUGIN_STREAM_TIMEOUT_MS` (an
-  unread bridged stream expires at 60 s), `deserializeArgs` and `reconstructStreamsFromPorts` (callback rollback).
+  the message-source checks, the RPC relay). `run` accepts an optional `guestPrelude` before user code. Lookup:
+  `startup` (`GuestStartup`; safe boot), `isIdle` and `onActivityChanged` (the [deferred reload](#deferred-reload)),
+  `terminate`, `UNREAD_PLUGIN_STREAM_TIMEOUT_MS` (an unread bridged stream expires at 60 s), `deserializeArgs` and
+  `reconstructStreamsFromPorts` (callback rollback).
 
 ### Host API
 
@@ -245,6 +247,7 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - `SandboxHost` stub (`vi.mock` of `./factory`, most of `apiV3/`): the real API object is driven directly.
 - `guestBridge.test.ts`: the srcdoc's guest half over a fake window; it still logs its property initialization.
 - `sandboxActivity.test.ts`: a real `SandboxHost`, the guest simulated by window messages.
+- `databaseAccessRecorder.test.ts`: the developer `getDatabase` recorder in the real srcdoc guest, fake timers.
 - `pluginDeferredReload.test.ts`, `pluginSafeBoot.test.ts`: a mocked v3 loader, the idle predicate and safe-boot flag
   controlled. `pluginWorkIdle.test.ts`: a controllable sandbox idle flag, the job channel real.
 - `storeBackedServer.ts`: the real save adapter over the real server store, for saved writes. `FakeResourceServer`:

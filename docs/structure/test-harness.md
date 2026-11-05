@@ -87,6 +87,8 @@ None is in the gate.
   `util/playwright/checkDurableDrafts.mjs`, `util/playwright/checkSidebarChatStatus.mjs`,
   `util/playwright/checkBootCache.mjs`, and `util/playwright/checkJobProtocol.mjs` (a real v3 plugin provider; run it
   under `offline.sh`).
+- `util/playwright/measurePluginData.mjs`: plugin database reads, storage writes, and plugin toggles against the dev
+  stack, followed by a developer access recorder check.
 - Against a running production server, normally the Docker image on a fresh volume (`--base`, `--password`,
   `--provider-host`): `util/playwright/checkRecordsSmoke.mjs`, `util/playwright/checkLazyChatsSmoke.mjs`,
   `util/playwright/checkTwoClientSmoke.mjs`, `util/playwright/checkServerSend.mjs`,
