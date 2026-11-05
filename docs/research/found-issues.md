@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (8)
-- [Client and plugins](#client-and-plugins) (27)
+- [Client and plugins](#client-and-plugins) (23)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
@@ -383,33 +383,6 @@ Search plan slice 2c (2026-10-20, `src/lib/SideBars/LoreBook/LoreBookList.svelte
 **Why it matters:** an entry added under a filter seems to vanish, and an opened detail can close under the user.
 **Suggested handling:** clear the query on add, or show the new entry regardless; keep a filter-opened folder open while it has an open detail.
 
-### A dropped .risupreset goes to the card import
-
-The drop handler in `src/App.svelte` (~135) checks `.risup`, then `.risum`, and sends anything else to `importCharacterProcess`, so a dropped `.risupreset` preset is alerted `noData`, while `characterURLImport` in `src/ts/characterCards.ts` (~782) accepts both extensions. Found in the Guides To Source run (2026-11-05). Owners: app-shell, with characters-modules for drops and deep links.
-
-**Why it matters:** dragging a valid preset file in fails.
-
-**Suggested handling:** route `.risupreset` with `.risup`, and update the handler's comment.
-
-### importPreset crashes on an unknown preset version
-
-`src/ts/storage/presets.svelte.ts` `importPreset` sets `pre` for a `.risup`/`.risupreset` only when the decoded `presetVersion` is 0 or 2 and `type === "preset"` (~201). Otherwise `pre` stays undefined, the `pre?.promptTemplate` check passes, and the NovelAI test `pre.presetVersion` (~214) throws a TypeError. Found in the Guides To Source run (2026-11-04). Owner: persistence.
-
-**Why it matters:** a newer or malformed upstream preset gives an unexplained crash instead of a refusal; nothing is imported.
-
-**Suggested handling:** refuse the file with an `src/lang/en.ts` message when `pre` is unset.
-
-### CharX import error paths
-
-Two error paths of a CharX import report the wrong thing. Found in the Guides To Source run (2026-11-05); owner characters-modules.
-
-- `src/ts/characterCards.ts` `importCharxCard` (~377) reads `md.trigger` right after `readModule(moduleData)`, which returns undefined (after alerting `noData`) when it refuses the embedded `module.risum`, so a TypeError follows: the module dialog catches it as a second `noData`, `importCharacter` shows the TypeError text, and the drop handler in `src/App.svelte` leaves the rejection unhandled.
-- The module dialog's `.charx` branch (`importModule` in `src/ts/process/modules.ts`, ~579) alerts `noData` for `false`, which `importCharxCard` returns when the user declines the card's `lowLevelAccess` question; the comment above it records the behavior.
-
-**Why it matters:** a bad embedded module gives a double or raw error, and a deliberate decline is reported as an invalid file.
-
-**Suggested handling:** return early when `readModule` gives undefined, and treat `false` as a silent cancel in the module dialog.
-
 ### The card export dialog's backdrop calls window.close
 
 The `cardexport` branch of `src/lib/Others/AlertComp.svelte` (~942) has a backdrop `onclick={close}` with no local `close`, so the handler is the global `window.close`, which Svelte's delegated click calls with the element as receiver: Chromium throws `TypeError: Illegal invocation` and the dialog stays until its X button or Escape. Other dialogs' backdrops answer through `alertStore.answer(...)`; a cancel (`{ type: "cancel", type2 }`) was likely meant. Probed by a reviewer in the Guides To Source run (2026-11-05). Owner: global-api.
@@ -524,14 +497,6 @@ The type `SelectInput`'s `onchange` in `src/lib/UI/PromptDataItem.svelte` (~268)
 
 **Why it matters:** the plan's retry for a failed asset read (its D2) rarely fires; a transient storage failure leaves a broken image until the row re-renders for another reason.
 **Suggested handling:** an opt-in failure channel in `globalApi.svelte.ts` for the render path, rather than making the shared loader reject for every caller.
-
-### Declined lowLevelAccess on a JSON card falls through to the off-spec import
-
-In `src/ts/characterCards.ts` `importCharacterProcess`, the JSON branch calls `importCharacterCardSpec(da)` (around 196), which returns `false` both for a card that is not V2/V3 and when the user declines `confirmCardLowLevelAccess`. The caller then tries the off-spec path (`da.char_name || da.name`, around 201, then `convertOffSpecCards`), so a V2/V3 card that also carries the V1 top-level fields (common for compatibility) is imported as an off-spec card after the user said no. Found in the Asset Lifecycle run (2026-11-05, slice 2), which kept the fall-through for every refusal but its own asset handoff failure.
-
-**Why it matters:** the decline is meant to stop the import (asked before anything is saved, so a declined card leaves no assets behind); importing a reduced copy anyway is likely unintended, though it is pre-existing behavior.
-
-**Suggested handling:** ask the owner; if the decline should end the import, make `importCharacterCardSpec` tell a decline apart from "not a V2/V3 card" and return before the off-spec path.
 
 ### Reset permissions leaves a running plugin's capabilities
 
