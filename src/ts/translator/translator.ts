@@ -483,9 +483,9 @@ export function isExpTranslator() {
  * Rendered-path entrypoint for `src/lib/ChatScreens/ChatBody.svelte`; captures the transform and
  * LLM context before awaiting, sharing the latter between the active-send cache probe and the run.
  * The non-LLM traversal skips script/style elements and `translate=no` subtrees it visits. With
- * combineTranslation, eligible paragraphs are flattened by `getNodetextToSentence` in `src/ts/util.ts`
- * before descendant checks: the immediate-child blacklist can miss protected descendants, whose text
- * is then sent for translation, and inline markup can be replaced. The LLM path has no DOM skip traversal.
+ * combineTranslation, paragraphs with a blacklisted or `translate=no` descendant at any depth take
+ * the per-node path. Other eligible paragraphs are flattened by `getNodetextToSentence` in
+ * `src/ts/util.ts`, and their inline markup can be replaced. The LLM path has no DOM skip traversal.
  * During a local send, DeepL/DeepLX return the input unchanged. LLM needs a cache hit to proceed,
  * but `regenerate` still issues a request after a hit; a miss returns the input.
  * DOM jobs must all be collected before dispatch, so traversal cannot await an unflushed batch.
@@ -596,10 +596,9 @@ export async function translateHTML(
                 node.nodeName.toLowerCase() === "p" &&
                 node instanceof HTMLElement
             ) {
-                const children = Array.from(node.childNodes);
                 const blacklist = ["img", "iframe", "script", "style", "div", "button", "audio", "video"];
-                const hasBlacklistChild = children.some((child) => blacklist.includes(child.nodeName.toLowerCase()));
-                if (!hasBlacklistChild && (node as Element)?.getAttribute("translate") !== "no") {
+                const hasProtectedDescendant = node.querySelector(`${blacklist.join(", ")}, [translate="no"]`) !== null;
+                if (!hasProtectedDescendant && (node as Element)?.getAttribute("translate") !== "no") {
                     const text = getNodetextToSentence(node);
                     const sentences = text.split("\n");
                     if (sentences.length > 1) {

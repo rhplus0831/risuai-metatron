@@ -261,6 +261,30 @@ describe("translateHTML media regressions", () => {
         },
     );
 
+    it.each([
+        ["translate=no", '<span translate="no">PRIVATE</span>', '[translate="no"]'],
+        ["script", "<script>PRIVATE</script>", "script"],
+    ])("preserves nested %s text when combining ordinary paragraphs", async (kind, protectedHTML, selector) => {
+        media.translatorType = "google";
+        media.combineTranslation = true;
+        const publicText = `public-${kind}`;
+        const rendered = body(
+            await translateHTML(
+                `<p><span>${publicText} ${protectedHTML}</span></p><p>ordinary-${kind} <span>paragraph</span></p>`,
+                false,
+                "",
+                0,
+            ),
+        );
+
+        const sent = deps.fetch.mock.calls.map(([url]) => new URL(url).searchParams.get("q"));
+        expect(sent.sort()).toEqual([publicText, `ordinary-${kind} paragraph`].sort());
+        const paragraphs = rendered.querySelectorAll("p");
+        expect(paragraphs[0].textContent).toContain(`KO:${publicText}`);
+        expect(paragraphs[0].querySelector(selector)?.textContent).toBe("PRIVATE");
+        expect(paragraphs[1].textContent).toBe(`KO:ordinary-${kind} paragraph`);
+    });
+
     // The LLM translator never enters the DOM traversal (it translates the whole HTML in one call).
     it.each(["deeplX", "deepl", "google"] as const)(
         "applies display scripts and Markdown to combined paragraphs with %s",
