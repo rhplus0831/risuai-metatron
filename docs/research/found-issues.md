@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run) and the eighth (the Render Work Budget run) on 2026-11-05; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run) and the ninth (the Incremental Chat Transport run) on 2026-11-05; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -10,12 +10,12 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (8)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (11)
-- [Server routes and resource store](#server-routes-and-resource-store) (3)
-- [Request history and diagnostics](#request-history-and-diagnostics) (1)
+- [Server routes and resource store](#server-routes-and-resource-store) (4)
+- [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (7)
 - [Client and plugins](#client-and-plugins) (25)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (11)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
 - [Guides](#guides) (5)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (19)
@@ -197,6 +197,14 @@ The comment above `registerLlmRoutes` in `server/src/routes/llm.ts` (~236) says 
 
 **Suggested handling:** at the next llm-requests edit, extend the comment and let server-generation's entry point there.
 
+### The change log's bound is a row count, not 4 MB
+
+The `changes` table in `resources.sqlite` (Incremental Chat Transport D5, `server/src/data/resourceStore.ts`, pruned by `pruneChanges` ~1020) keeps the newest 20,000 rows. The plan's Q1 and D5 text ("a row is under 200 bytes: 4 MB at most", "40 snapshots hold up to about 160 MB of logs", cross-plan X8) understates the worst case: ids may be 512 UTF-16 units (the id validator in `resourceStore.ts`, chat ids in `server/src/data/chatStore.ts`), a 20,000-row probe with such ids made an 82 MB database (2026-11-05, Slice 3), and DELETE-based pruning never shrinks the file. Whole-file snapshots (`backupTo`) and version-2 downloadable backups (`server/src/routes/backups.ts`, which strips `llmSecrets` and vacuums) carry it. Found by Slice 3's challenge.
+
+**Why it matters:** with typical UUID ids the log is a few MB, but the Asset Lifecycle snapshot budget counts 40 copies of it at a byte size the code does not bound.
+
+**Suggested handling:** size snapshot storage as rows × id length; add a VACUUM or a byte bound if a real store comes near it.
+
 ## Request history and diagnostics
 
 ### Request history accepted trade-offs
@@ -215,6 +223,14 @@ Identifiers re-checked 2026-11-03 (`trimPartial`, `APP_PATH`, `FRAME`, `copyText
 
 **Why it matters:** a security review of the history folder or the diagnostics report should know which gaps were chosen.
 **Suggested handling:** read before such a review; delete items as they settle, and move confirmed ones to `diagnostics.md` or `llm-requests.md` Known Hazards.
+
+### Socket protocol numbers are not in Diagnostics
+
+Both sockets send `proto=1` (Incremental Chat Transport D4, Slice 2). The server records it per socket (`protocols` in `server/src/routes/events.ts` ~72, `socketFlags` in `server/src/jobs/generationJobs.ts` ~811) and logs one `console.info` line per socket (`[Live-update socket] proto=…`, `[Generation socket] proto=…`). D4 says a later plan sets a floor and measures "which clients are below it from the diagnostics", but the Diagnostics schema (`shared/diagnostics.ts`) and `logEvent`'s fields (`server/src/diagnostics/log.ts`) carry no protocol number and neither socket has a recorder. Found by Slice 2 (2026-11-05).
+
+**Why it matters:** a floor decision would have to scrape server console logs; an exported diagnostics report shows nothing.
+
+**Suggested handling:** before any `proto` floor work, add a diagnostics event field and a recorder on both sockets.
 
 ## Display transform
 
@@ -583,6 +599,22 @@ Found in the Guides To Source run (2026-11-04/05); owner build-test-platforms.
 **Why it matters:** dead code a reader can mistake for live.
 
 **Suggested handling:** delete it at the next worker edit.
+
+### measureChats.mjs trips safe boot and fakes its scrolled-up input
+
+`util/playwright/measureChats.mjs` as committed cannot finish: its boot loop waits `page.waitForTimeout(2000)` between three fresh boots (~317), below `SAFE_BOOT_SETTLE_MS` (10 s, `src/ts/safeBoot.ts`), so automatic safe boot opens its alert and the `Go Back` click in `chatRow` times out. Its `streamReply({ scrolledUp: true })` only sets `scrollTop`, while `Chats` releases its anchor on wheel, touch, pointer or key input, so "Long: scrolled-up streaming keeps the loaded window" fails (600 → 150 rows) as harness input, not a product change. Already described in `docs/research/rendering-performance-investigation.md`; seen again by Incremental Chat Transport Slice 0 (2026-11-05), which measured with a scratch copy.
+
+**Why it matters:** every measureChats-based slice needs a temporary settled copy until the driver is fixed.
+
+**Suggested handling:** wait 11 s after the seed check and between boots (or clear the safe-boot attempts as `util/playwright/stack.mjs` offers), and drive the scrolled-up case with real wheel input.
+
+### checkServerSend once hit an alert after its mid-stream reload
+
+On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the first `node util/playwright/checkServerSend.mjs` passed 11 checks, then `openCharacterChat` after the "reload in the middle of a slow stream" step (~340) timed out because a `[data-alert-dialog]` overlay covered the sidebar. The run overlapped a `docker build`; four reruns passed 19/19, two of them logging no alert after the reload, and the base `9bf28c429` passed 19/19. The alert text was not captured. Candidates: the automatic safe-boot notice (the driver does not clear safe-boot attempts) or an error alert from the owner's resync after the reload.
+
+**Why it matters:** if it recurs it may be a real owner-reload problem, not harness noise.
+
+**Suggested handling:** if it shows again, print the dialog text before `openCharacterChat` to tell the two apart; consider clearing safe-boot attempts in the driver.
 
 ## Guides
 
