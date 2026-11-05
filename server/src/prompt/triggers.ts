@@ -852,10 +852,15 @@ export function createTriggerRuntime(host: TriggerHost) {
                         break;
                     }
                     case "v2BreakLoop": {
+                        // Track outdents so a later sibling loop is skipped.
+                        let indent = effect.indent;
                         for (; index < trigger.effect.length; index++) {
                             const ef = trigger.effect[index] as triggerEffectV2;
-                            if (ef.type === "v2EndIndent" && ef.endOfLoop) {
-                                break;
+                            if (ef.type === "v2EndIndent" && ef.indent <= indent) {
+                                if (ef.endOfLoop) {
+                                    break;
+                                }
+                                indent = ef.indent - 1;
                             }
                         }
                         break;

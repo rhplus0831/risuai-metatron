@@ -6,8 +6,8 @@
  * first effect is the `v2Header` sentinel. Blocks use `indent`, `v2Else`, and editor-generated
  * `v2EndIndent` entries. The runtime in `server/src/prompt/triggers.ts` uses an `endOfLoop`
  * `v2EndIndent` at indent n to jump back to the `v2Loop`/`v2LoopNTimes` at indent n - 1;
- * counted loops exit when their count is exhausted. `v2BreakLoop` jumps forward to the next
- * `endOfLoop` closing entry at any indent. That runtime and the editor in
+ * counted loops exit when their count is exhausted. `v2BreakLoop` jumps forward to the closing
+ * `endOfLoop` entry of its innermost enclosing loop. That runtime and the editor in
  * `src/lib/SideBars/Scripts/TriggerV2List.svelte` both read the display and request allowlists.
  */
 

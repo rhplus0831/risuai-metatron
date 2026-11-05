@@ -563,6 +563,54 @@ describe("control flow", () => {
         expect(texts(result?.chat).slice(2)).toEqual(["char:after loops", "char:second trigger"]);
     });
 
+    it("breaks out of the enclosing loop before a nested loop in its body", async () => {
+        const h = harness({
+            triggers: [
+                trig([
+                    ef("v2LoopNTimes", v("3")),
+                    setVar("outer", "+=", "1", 1),
+                    ef("v2BreakLoop", {}, 1),
+                    ef("v2LoopNTimes", v("2"), 1),
+                    setVar("inner", "+=", "1", 2),
+                    ef("v2EndIndent", { endOfLoop: true }, 2),
+                    setVar("tail", "+=", "1", 1),
+                    ef("v2EndIndent", { endOfLoop: true }, 1),
+                    say("char", "after outer {{getvar::outer}}"),
+                ]),
+            ],
+        });
+
+        const result = await h.run();
+
+        expect(result?.chat.scriptstate).toEqual({ $outer: "1" });
+        expect(texts(result?.chat).slice(2)).toEqual(["char:after outer 1"]);
+    });
+
+    it("breaks out of the enclosing loop from an if before a sibling loop", async () => {
+        const h = harness({
+            triggers: [
+                trig([
+                    ef("v2LoopNTimes", v("3")),
+                    setVar("outer", "+=", "1", 1),
+                    ef("v2If", { condition: "=", source: "outer", target: "1", targetType: "value" }, 1),
+                    ef("v2BreakLoop", {}, 2),
+                    ef("v2EndIndent", {}, 2),
+                    ef("v2LoopNTimes", v("2"), 1),
+                    setVar("inner", "+=", "1", 2),
+                    ef("v2EndIndent", { endOfLoop: true }, 2),
+                    setVar("tail", "+=", "1", 1),
+                    ef("v2EndIndent", { endOfLoop: true }, 1),
+                    say("char", "after outer {{getvar::outer}}"),
+                ]),
+            ],
+        });
+
+        const result = await h.run();
+
+        expect(result?.chat.scriptstate).toEqual({ $outer: "1" });
+        expect(texts(result?.chat).slice(2)).toEqual(["char:after outer 1"]);
+    });
+
     it("yields to the event loop every 100 loop iterations without losing count", async () => {
         const h = harness({
             triggers: [

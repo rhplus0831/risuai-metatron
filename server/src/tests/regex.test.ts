@@ -362,6 +362,16 @@ describe("the cache helpers", () => {
         );
     });
 
+    it("keeps a disabled <cbs> pattern raw in the key without calling parse", () => {
+        const scripts = [script({ in: "{{setvar::x::1}}", out: "x", ableFlag: false, flag: "g<cbs>" })];
+        const parse = vi.fn((text: string) => text.replaceAll("{{setvar::x::1}}", ""));
+
+        const key = regexScriptCacheKey(scripts, "text", "editoutput", 0, "c/chat", parse);
+
+        expect(parse).not.toHaveBeenCalled();
+        expect(key).toBe("text|||editoutput|||c/chat|||{{setvar::x::1}}|||x0|||g<cbs>|||0");
+    });
+
     it("keeps the most recent entries up to its limit and resets", () => {
         const cache = createScriptCache(2);
         cache.set("a", "1");

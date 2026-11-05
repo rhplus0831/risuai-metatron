@@ -267,7 +267,7 @@ export function runRegexScripts(
 
 /**
  * The cache key of a run: the text, the mode, the chat (`chatKey`), and every script of the mode
- * (a `<cbs>` input expanded through `parse`, for the same chat the scripts then run for).
+ * (an enabled `<cbs>` input expanded through `parse`, for the same chat the scripts then run for).
  */
 export function regexScriptCacheKey(
     scripts: customscript[],
@@ -282,7 +282,7 @@ export function regexScriptCacheKey(
         if (script.type !== mode) {
             continue;
         }
-        hash += `${script.flag?.includes("<cbs>") ? parse(script.in) : script.in}|||${script.out}${chatID}|||${script.flag ?? ""}|||${script.ableFlag ? 1 : 0}`;
+        hash += `${script.ableFlag && script.flag?.includes("<cbs>") ? parse(script.in) : script.in}|||${script.out}${chatID}|||${script.flag ?? ""}|||${script.ableFlag ? 1 : 0}`;
     }
     return hash;
 }

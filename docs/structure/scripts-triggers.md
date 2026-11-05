@@ -103,10 +103,9 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 
 - Never rename the serialized discriminators: `customscript.type`, `triggerscript.type`, effect `type`, v2 `indent`, the
   header at index 0.
-- Regex order matters. `<order n>` applies only when `ableFlag` is true. Native flags are sanitized to `dgimsuvy`,
-  deduplicated, and default to `u`.
-- The cache stores final output, not compiled `RegExp` objects. An empty-string result is falsy and therefore never
-  cache-hits.
+- Regex order matters. `<order n>` and `<cbs>` (cache key too) apply only when `ableFlag` is true. Native flags are
+  sanitized to `dgimsuvy`, deduplicated, and default to `u`.
+- The cache stores final output, not compiled `RegExp` objects. An empty-string result is falsy, so never cache-hits.
 - Display and request modes silently skip effects missing from `displayAllowList`/`requestAllowList`. The editor's
   `checkSupported` reads the same lists (`shared/triggers.ts`).
 - Low-level effects are gated twice: filtered in the UI and checked at runtime via `trigger.lowLevelAccess`. Lua edit
@@ -178,7 +177,7 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 
 - The deprecated `v2ModifyLorebook`, `v2SetLorebookActivation`, and their reads address lore entries as arrays
   (`entry[0]`, `entry[2]`), but entries are objects: the first never matches, the second adds a junk `"2"` key
-  (pre-existing; a separate task).
+  (pre-existing).
 - Trigger and command runs are not atomic: each trigger effect and each mutating command is its own job write (a command
   pipeline rereads the chat before each command), so a later refused effect leaves the earlier writes committed, and a
   command's wait can expose an intermediate revision; only the final `applyTriggerChat` diff is one write.
