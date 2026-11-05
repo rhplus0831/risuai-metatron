@@ -16,6 +16,7 @@
         streamingEntry,
     } from "src/ts/storage/chatStore.svelte";
     import { chatFoldedStateMessageIndex } from "src/ts/globalApi.svelte";
+    import { isRerollCarrier } from "../../../shared/rerollCandidates.ts";
     import { CHAT_ROW_CAP, getAdditionalChatLoadPages } from "src/ts/chatLoadPages";
 
     /**
@@ -71,9 +72,17 @@
         holding?: boolean;
     } = $props();
 
+    const rerollRowId = $derived(messages.findLast((message) => !message.isComment)?.chatId);
+    const carrierId = $derived(rerollRowId && isRerollCarrier({ message: messages }, rerollRowId) ? rerollRowId : null);
+
     let chatBody: HTMLDivElement = $state();
     type RowUpdate = {
         message: string;
+        messageGenerationInfo: Message["generationInfo"] | null;
+        candidateCount: number;
+        candidateIndex: number;
+        candidateCarrier: boolean;
+        rerollIcon: boolean;
         idx: number;
         isOptimizedStreamingMessage: boolean;
         streamingOptimizationMode: StreamingDisplayOptimizationMode;
@@ -683,6 +692,11 @@
                 const nextImageThumb = avatarThumb;
                 const next: RowUpdate = {
                     message: data,
+                    messageGenerationInfo: message.generationInfo ?? null,
+                    candidateCount: message.candidates?.length ?? 1,
+                    candidateIndex: message.selected ?? 0,
+                    candidateCarrier: message.chatId === carrierId,
+                    rerollIcon: message.chatId === rerollRowId,
                     idx,
                     isOptimizedStreamingMessage: optimized,
                     streamingOptimizationMode: mode,
@@ -720,10 +734,8 @@
                                 chatRef: ref,
                                 onReroll,
                                 unReroll,
-                                rerollIcon: "dynamic",
                                 character: createSimpleCharacter(ctx.character),
                                 largePortrait: portrait,
-                                messageGenerationInfo: message.generationInfo,
                                 role: message.role,
                                 isComment: message.isComment ?? false,
                                 disabled: message.disabled ?? false,

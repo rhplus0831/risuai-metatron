@@ -213,6 +213,9 @@
         chatRef?: ChatRef | null;
         messageGenerationInfo?: MessageGenerationInfo | null;
         rerollIcon?: boolean | "dynamic";
+        candidateCount?: number;
+        candidateIndex?: number;
+        candidateCarrier?: boolean;
         role?: string;
         onReroll?: () => void;
         unReroll?: () => void;
@@ -242,6 +245,9 @@
         messageId = undefined,
         chatRef = untrack(currentChatRef),
         rerollIcon = false,
+        candidateCount = 1,
+        candidateIndex = 0,
+        candidateCarrier = false,
         messageGenerationInfo = null,
         role = null,
         onReroll = () => {},
@@ -389,6 +395,11 @@
      */
     export function updateRow(update: {
         message?: string;
+        messageGenerationInfo?: MessageGenerationInfo | null;
+        candidateCount?: number;
+        candidateIndex?: number;
+        candidateCarrier?: boolean;
+        rerollIcon?: boolean | "dynamic";
         idx?: number;
         isOptimizedStreamingMessage?: boolean;
         streamingOptimizationMode?: StreamingDisplayOptimizationMode;
@@ -397,6 +408,11 @@
         img?: string | Promise<string>;
     }) {
         if ("message" in update) message = update.message;
+        if ("messageGenerationInfo" in update) messageGenerationInfo = update.messageGenerationInfo;
+        if ("candidateCount" in update) candidateCount = update.candidateCount;
+        if ("candidateIndex" in update) candidateIndex = update.candidateIndex;
+        if ("candidateCarrier" in update) candidateCarrier = update.candidateCarrier;
+        if ("rerollIcon" in update) rerollIcon = update.rerollIcon;
         if ("idx" in update) idx = update.idx;
         if ("isOptimizedStreamingMessage" in update) isOptimizedStreamingMessage = update.isOptimizedStreamingMessage;
         if ("streamingOptimizationMode" in update) streamingOptimizationMode = update.streamingOptimizationMode;
@@ -1834,9 +1850,20 @@
     {/if}
 {/snippet}
 
+{#snippet candidateCounter()}
+    <span
+        class="flex items-center text-xs text-textcolor2"
+        aria-label={language.rerollCandidateCounter
+            .replace("{index}", String(candidateIndex + 1))
+            .replace("{count}", String(candidateCount))}>{candidateIndex + 1}/{candidateCount}</span
+    >
+{/snippet}
+
 {#snippet rerolls()}
-    {#if rerollIcon || altGreeting}
-        {#if settings.ui.swipe || altGreeting}
+    {#if candidateCount >= 2 && !candidateCarrier && !rerollIcon}
+        {@render candidateCounter()}
+    {:else if rerollIcon || altGreeting || candidateCarrier}
+        {#if settings.ui.swipe || altGreeting || (candidateCarrier && candidateCount >= 2)}
             <button
                 class="flex items-center hover:text-blue-500 transition-colors button-icon-unreroll"
                 class:dyna-icon={rerollIcon === "dynamic"}
@@ -1846,7 +1873,9 @@
             >
                 <ArrowLeft size={22} />
             </button>
-            {#if firstMessage && settings.ui.swipe && settings.ui.showFirstMessagePages}
+            {#if candidateCarrier && candidateCount >= 2}
+                {@render candidateCounter()}
+            {:else if firstMessage && settings.ui.swipe && settings.ui.showFirstMessagePages}
                 <span class="flex items-center text-xs text-textcolor2">{currentPage}/{totalPages}</span>
             {/if}
             <button

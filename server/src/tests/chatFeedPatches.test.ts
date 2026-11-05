@@ -15,6 +15,7 @@ import {
     type ResourceStore,
     type WrittenChanges,
 } from "../data/resourceStore.ts";
+import { createGenerationLock } from "../jobs/generationLock.ts";
 import { createResourceTestClient } from "./testSupport.ts";
 
 // Public store/feed contract: expected rows come from the operations below, not the patch builder.
@@ -32,10 +33,11 @@ const initial = {
     localLore: [],
     message: [m("a", "A"), m("b", "B"), m("c", "C")],
 } as Chat;
-function setup() {
+function setup(chat: Chat = initial) {
     const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
     const feed = createChangeFeed();
-    const store = createResourceStore({ file: ":memory:", kinds, feed });
+    const lock = createGenerationLock();
+    const store = createResourceStore({ file: ":memory:", kinds, feed, guard: lock });
     stores.push(store);
     const events: Extract<ChangeFeedEvent, { type: "change" }>[] = [];
     feed.subscribe((event) => {
@@ -44,7 +46,7 @@ function setup() {
     store.put(kinds.get("characters")!, "c", { chaId: "c", name: "C" }, null);
     const write = (ops: ChatOp[], baseRevision = store.chatRevision("c", "k")) =>
         store.applyChanges({ chats: [{ characterId: "c", chatId: "k", baseRevision, ops }] });
-    write([{ op: "create", chat: initial }]);
+    write([{ op: "create", chat }]);
     const read = () => {
         const record = store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0];
         if (!record?.data) throw new Error("The fixture chat must exist");
@@ -54,10 +56,178 @@ function setup() {
         expect(events.at(-1)?.changes.chats).toHaveLength(1);
         return events.at(-1)!.changes.chats[0];
     };
-    return { store, events, write, read, notice };
+    return { store, lock, events, write, read, notice };
+}
+
+/** The oversized field is only one byte over the cap; both row encodings must carry it. */
+function rerollRows() {
+    const candidates = [
+        { id: "previous", data: "", scriptstateAfter: { $x: "1" } },
+        { id: "other", data: "Other", scriptstateAfter: { $x: "2" } },
+    ];
+    const text = "x".repeat(MAX_FEED_PATCH_BYTES + 1 - new TextEncoder().encode(JSON.stringify(candidates)).length);
+    candidates[0].data = text;
+    const original: Message = {
+        role: "char",
+        chatId: "c",
+        data: text,
+        candidates,
+        selected: 0,
+        candidatesRevision: 1,
+        scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "1" } },
+    };
+    const begun: Message = {
+        ...original,
+        data: "",
+        candidates: [...candidates, { id: "attempt", data: "" }],
+        selected: 2,
+        candidatesRevision: 2,
+        scriptstateCheckpoint: { before: { $x: "0" } },
+    };
+    const begin: ChatOp[] = [
+        {
+            op: "patchMessage",
+            id: "c",
+            set: {
+                data: "",
+                candidates: begun.candidates,
+                selected: 2,
+                scriptstateCheckpoint: begun.scriptstateCheckpoint,
+            },
+            unset: [],
+        },
+        { op: "setTranslation", id: "c", translation: null },
+        { op: "meta", merge: { scriptstate: { $x: "0" } }, mergeUnset: { scriptstate: [] } },
+        { op: "begin", id: "c", generationId: "g" },
+    ];
+    const restored = { ...original, candidatesRevision: 3 };
+    const rollback: ChatOp[] = [
+        { op: "setMessage", message: original, generation: { id: "g", seq: 1, final: true } },
+        { op: "setTranslation", id: "c", translation: null },
+    ];
+    const selected: Message = {
+        ...original,
+        data: "Other",
+        selected: 1,
+        candidatesRevision: 2,
+        scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "2" } },
+    };
+    const select: ChatOp[] = [
+        { op: "selectCandidate", messageId: "c", candidateId: "other", expect: { candidatesRevision: 1 } },
+    ];
+    return { original, begun, restored, selected, begin, rollback, select };
 }
 
 describe("by-id chat feed patches", () => {
+    it.each(["begin", "write-back", "switch"] as const)(
+        "publishes the carrier and restored variables in an oversized reroll %s manifest",
+        (step) => {
+            const rows = rerollRows();
+            // A switch refreshes the leaving slot from the carrier's current text.
+            const original =
+                step === "switch"
+                    ? {
+                          ...rows.original,
+                          candidates: [
+                              { ...rows.original.candidates![0], data: "Before manual edit" },
+                              rows.original.candidates![1],
+                          ],
+                      }
+                    : rows.original;
+            const b = setup({
+                ...initial,
+                message: [m("a", "A"), { ...m("b", "B"), role: "user" }, original],
+                scriptstate: { $x: "1" },
+            });
+            b.lock.addToken("job");
+            const attempt = { characterId: "c", chatId: "k", messageId: "c", generationId: "g" };
+            const write = (ops: ChatOp[], action?: "begin" | "rollback") =>
+                b.store.applyChanges(
+                    { chats: [group(b.read().revision, ops)] },
+                    action ? { jobToken: "job", rerollAttempt: { ...attempt, action } } : undefined,
+                );
+            if (step !== "switch") b.lock.acquire(attempt, { jobId: "J", generationId: "g", token: "job" });
+            if (step === "write-back") write(rows.begin, "begin");
+            const baseRevision = b.read().revision;
+            const expected = step === "begin" ? rows.begun : step === "write-back" ? rows.restored : rows.selected;
+            const variables = { $x: step === "begin" ? "0" : step === "write-back" ? "1" : "2" };
+            write(
+                step === "begin" ? rows.begin : step === "write-back" ? rows.rollback : rows.select,
+                step === "switch" ? undefined : step === "begin" ? "begin" : "rollback",
+            );
+            const revision = b.read().revision;
+            expect(b.notice()).toEqual({
+                characterId: "c",
+                id: "k",
+                revision,
+                summaryBase: baseRevision,
+                rows: { baseRevision, changed: ["c"], removed: [], count: 3, meta: ["scriptstate"] },
+            });
+            const fetched = b.store.readRefs([], {
+                chatRows: [{ characterId: "c", id: "k", revision, messageIds: ["c"], meta: ["scriptstate"] }],
+            }).chatRows![0];
+            expect(fetched).toMatchObject({
+                rows: [{ id: "c", after: "b", message: expected }],
+                metaFields: { set: { scriptstate: variables }, remove: [] },
+            });
+            expect(b.read().data.message[2]).toEqual(expected);
+            expect(b.read().data.scriptstate).toEqual(variables);
+        },
+    );
+
+    it("diffs a candidate switch from the carrier before refreshing the leaving slot", () => {
+        const data = "x".repeat(SMALL_FEED_PATCH_BYTES);
+        const candidates = [
+            { id: "previous", data: "Before manual edit", scriptstateAfter: { $x: "1" } },
+            { id: "next", data: data + "!", scriptstateAfter: { $x: "2" } },
+        ];
+        const carrier: Message = {
+            ...m("c", data),
+            candidates,
+            selected: 0,
+            candidatesRevision: 1,
+            scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "1" } },
+        };
+        const b = setup({
+            ...initial,
+            message: [{ ...m("b", "Question"), role: "user" }, carrier],
+            scriptstate: { $x: "1" },
+        });
+        const baseRevision = b.read().revision;
+        b.write([{ op: "selectCandidate", messageId: "c", candidateId: "next", expect: { candidatesRevision: 1 } }]);
+        const refreshed = [{ ...candidates[0], data }, candidates[1]];
+        const checkpoint = { before: { $x: "0" }, after: { $x: "2" } };
+        expect(b.notice().rowDelta).toEqual({
+            baseRevision,
+            count: 2,
+            metaFields: { set: {}, remove: [], merge: { scriptstate: { $x: "2" } } },
+            rowDiffs: [
+                {
+                    id: "c",
+                    text: { keep: data.length, text: "!" },
+                    fields: {
+                        set: {
+                            candidates: refreshed,
+                            selected: 1,
+                            candidatesRevision: 2,
+                            scriptstateCheckpoint: checkpoint,
+                        },
+                        unset: [],
+                    },
+                },
+            ],
+        });
+        expect(b.read().data.message[1]).toEqual({
+            ...carrier,
+            data: data + "!",
+            candidates: refreshed,
+            selected: 1,
+            candidatesRevision: 2,
+            scriptstateCheckpoint: checkpoint,
+        });
+        expect(b.read().data.scriptstate).toEqual({ $x: "2" });
+    });
+
     it("publishes an over-cap row manifest with removals and no body", () => {
         const b = setup();
         const baseRevision = b.read().revision;

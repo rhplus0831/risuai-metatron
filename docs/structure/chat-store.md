@@ -23,10 +23,10 @@ rules, each export's comment its own rule; the lists below are identifiers to lo
   `MAX_LOADED_CHATS`, `CHAT_READ_DEADLINE_MS`. Boundaries: `withChatsCopy`, `withCompatChats`, `seedChats`,
   `assembleChats`, `initializeChats`, `startChatDriftCheck` (dev only).
 - Writers: `createChat`, `ensureChat`, `deleteChat`, `reorderChats`, `selectChat`, `appendMessage`, `replaceMessage`,
-  `patchMessage`, `setMessageText`, `setMessageTranslation`, `removeMessages`, `removeMessagesUnasked`,
-  `restoreUnsentRemoval`, `setChatMeta`, `mergeChatMeta`, `replaceChat`, `captureChatBaseline`, `applyChatResult`,
-  `reconcileCharacterChats`, `installChatProjection`. Versions: `chatSaveVersion`, `chatInstallVersion`,
-  `chatHasUnackedWork`.
+  `patchMessage`, `setMessageText`, `setMessageTranslation`, `selectCandidate`, `removeMessages`,
+  `removeMessagesUnasked`, `restoreUnsentRemoval`, `setChatMeta`, `mergeChatMeta`, `replaceChat`, `captureChatBaseline`,
+  `applyChatResult`, `reconcileCharacterChats`, `installChatProjection`. Versions: `chatSaveVersion`,
+  `chatInstallVersion`, `chatHasUnackedWork`.
 - Save-loop side: `takeChatWork`, `ackChatWork` (the acknowledged floor: `ackedRevisions`, `belowAckedRevision`),
   `requeueChatWork`, `recoverChatConflicts` (`reanchorGoneAppends`, `dropLockedEdits`), `acceptRemoteChat`,
   `acceptRemoteCollection`, `quarantineChat`, `unloadPendingChatWork`, `hasUnsavedChatWork`, `hasRefusedChatWork`,
@@ -41,10 +41,9 @@ rules, each export's comment its own rule; the lists below are identifiers to lo
 - `src/ts/storage/chatFieldDraft.svelte.ts` (`createChatFieldDraft`, `loreWriteFenced`),
   `src/ts/storage/{localLoreDraft.svelte,loreOverridesDraft.svelte}.ts`: the editing copies of a selected chat's array
   fields and their send fence.
-- `src/ts/checkpoints/chatCheckpoints.svelte.ts`: the checkpoint client; its module header holds the request,
-  preparation, and answer rules. `chatCheckpointsDialog` is opened from `SideChatList.svelte`; while
-  `checkpointLoadBusy`, the dialog disables its controls and `hotkey.ts` swallows shortcuts behind it and keeps Escape
-  from closing it.
+- `src/ts/checkpoints/chatCheckpoints.svelte.ts`: the checkpoint client (request, preparation, and answer rules: its
+  module header). `chatCheckpointsDialog` is opened from `SideChatList.svelte`; while `checkpointLoadBusy`, the dialog
+  disables its controls and `hotkey.ts` swallows shortcuts behind it and keeps Escape from closing it.
 - `src/ts/network/jobChannel.ts`: `rememberHydration`, `rememberJobStreaming`, `endJobChannel`, and the callback barrier
   (its module header); chat installation stays in `chatStore.svelte.ts`.
 
@@ -75,8 +74,8 @@ rules, each export's comment its own rule; the lists below are identifiers to lo
 
 ## Flows
 
-Only the sequences that cross a module, a process, or a tab are here; a sequence inside `chatStore.svelte.ts` is its
-entrypoint's comment.
+Only sequences crossing a module, process, or tab are here; one inside `chatStore.svelte.ts` is its entrypoint's
+comment.
 
 ### Chat writes
 
@@ -98,6 +97,8 @@ entrypoint's comment.
   message another writer removed answers `missing` and is kept as a recovery draft through the conflict listener
   ([resource sync](resource-sync.md#conflicts)); an `append` whose anchor is gone is re-anchored and resent alone
   (`reanchorGoneAppends`), and everything else takes the ordinary [recovery](resource-sync.md#chat-and-order-conflicts).
+- A refused `selectCandidate` (stale `candidatesRevision`, gone candidate, not the newest reply) reads `refused` in
+  `selections` and marks the chat stale.
 - An idle re-base can refresh a send still building its prompt without a lock: its baseline protects changes made
   meanwhile ([chat pipeline](chat-pipeline.md)).
 

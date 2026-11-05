@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp, ChatRecord } from "../../../shared/chats.ts";
-import type { MessageTranslation } from "../../../shared/database.ts";
+import type { Message, MessageTranslation } from "../../../shared/database.ts";
 import type { BatchConflict } from "../../../shared/resources.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
@@ -3075,6 +3075,201 @@ describe("persisted reply candidates", () => {
     const row = (store: ResourceStore) => chat(store, "k")!.data.message.find((entry) => entry.chatId === "r")!;
     const write = (store: ResourceStore, ops: ChatOp[]) =>
         store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), ops)] });
+
+    const select = (candidateId: string, candidatesRevision: number, messageId = "r"): ChatOp => ({
+        op: "selectCandidate",
+        messageId,
+        candidateId,
+        expect: { candidatesRevision },
+    });
+
+    it("switches stored fields and unchanged variables by candidate id, preserving edits and the turn baseline", () => {
+        const store = memoryStore();
+        init(store);
+        const translation = (data: string, text: string): MessageTranslation => ({
+            text,
+            sourceHash: translationSourceHash(data),
+            targetLanguage: "ko",
+            translatedAt: 1,
+        });
+        const before = { $x: "0", $foreign: "0" };
+        const leaving = { $x: "2", $foreign: "2", $removed: "2" };
+        const target = { $x: "1", $foreign: "1", $added: "1" };
+        write(store, [
+            {
+                op: "patchMessage",
+                id: "r",
+                set: {
+                    data: "Edited second",
+                    generationInfo: { model: "edited" },
+                    promptInfo: { promptName: "edited" },
+                    candidates: [
+                        {
+                            id: "first",
+                            data: "First",
+                            generationInfo: { model: "first" },
+                            promptInfo: { promptName: "first" },
+                            translation: translation("First", "첫째"),
+                            scriptstateAfter: target,
+                        },
+                        { id: "second", data: "Second", scriptstateAfter: leaving },
+                        { id: "text", data: "Text only", translation: translation("old text", "stale") },
+                    ],
+                    selected: 1,
+                    scriptstateCheckpoint: { before, after: leaving },
+                },
+            },
+            { op: "setTranslation", id: "r", translation: translation("Edited second", "편집") },
+            { op: "meta", set: { scriptstate: leaving } },
+            {
+                op: "append",
+                anchor: { end: true },
+                messages: [{ ...m("comment", "annotation", "char"), isComment: true }],
+            },
+        ]);
+        const readByTab = chat(store, "k")!;
+        const revision = row(store).candidatesRevision!;
+        write(store, [{ op: "meta", merge: { scriptstate: { $foreign: "9" } } }]);
+        const switched = store.applyChanges({ chats: [group("k", readByTab.revision, [select("first", revision)])] });
+        expect(switched.chats[0].selections).toEqual(["applied"]);
+        expect(row(store)).toMatchObject({
+            data: "First",
+            generationInfo: { model: "first" },
+            promptInfo: { promptName: "first" },
+            translation: translation("First", "첫째"),
+            selected: 0,
+            candidatesRevision: revision + 1,
+            scriptstateCheckpoint: { before, after: target },
+        });
+        expect(row(store).candidates![1]).toEqual({
+            id: "second",
+            data: "Edited second",
+            generationInfo: { model: "edited" },
+            promptInfo: { promptName: "edited" },
+            translation: translation("Edited second", "편집"),
+            scriptstateAfter: leaving,
+        });
+        expect(chat(store, "k")!.data.scriptstate).toEqual({ $x: "1", $foreign: "9", $added: "1" });
+        write(store, [select("text", revision + 1)]);
+        expect(row(store).scriptstateCheckpoint).toEqual({ before });
+        expect(row(store).data).toBe("Text only");
+        for (const field of ["generationInfo", "promptInfo", "translation"] as const)
+            expect(row(store)[field]).toBeUndefined();
+        expect(chat(store, "k")!.data.scriptstate).toEqual({ $x: "1", $foreign: "9", $added: "1" });
+        write(store, [select("second", revision + 2)]);
+        expect(row(store)).toMatchObject({
+            data: "Edited second",
+            selected: 1,
+            candidatesRevision: revision + 3,
+            generationInfo: { model: "edited" },
+            promptInfo: { promptName: "edited" },
+            translation: translation("Edited second", "편집"),
+            scriptstateCheckpoint: { before, after: leaving },
+        });
+        expect(chat(store, "k")!.data.scriptstate).toEqual({ $x: "1", $foreign: "9", $added: "1" });
+    });
+
+    it.each(["two become three", "full ring rotates"])(
+        "refuses stale candidate revisions when %s and remembers every selection outcome on resend",
+        (scenario) => {
+            const store = memoryStore();
+            init(store);
+            const count = scenario === "full ring rotates" ? 16 : 2;
+            const list = Array.from({ length: count }, (_, i) => ({ id: `C${i}`, data: `Reply ${i}` }));
+            write(store, [
+                {
+                    op: "patchMessage",
+                    id: "r",
+                    set: { candidates: list, selected: count - 1, data: list.at(-1)!.data },
+                },
+            ]);
+            const stale = chat(store, "k")!;
+            const staleRevision = row(store).candidatesRevision!;
+            const newer = [...(count === 16 ? list.slice(1) : list), { id: `C${count}`, data: "New reply" }];
+            write(store, [
+                {
+                    op: "patchMessage",
+                    id: "r",
+                    set: { candidates: newer, selected: newer.length - 1, data: "New reply" },
+                },
+            ]);
+            const stored = row(store);
+            const ops: ChatOp[] = [
+                select(`C${count - 2}`, staleRevision),
+                select(count === 16 ? "C0" : "unknown", stored.candidatesRevision!),
+                { op: "meta", set: { note: "independent edit" } },
+            ];
+            const request = { ...group("k", stale.revision, ops), groupId: `stale-${count}` };
+            const answer = store.applyChanges({ chats: [request] });
+            expect(answer.chats[0].selections).toEqual(["refused", "refused"]);
+            expect(row(store)).toEqual(stored);
+            expect(chat(store, "k")!.data.note).toBe("independent edit");
+            write(store, [{ op: "meta", set: { note: "later edit" } }]);
+            const resend = store.applyChanges({ chats: [{ ...request, retry: true }] });
+            expect(resend.chats[0].selections).toEqual(["refused", "refused"]);
+            expect(row(store)).toEqual(stored);
+            expect(chat(store, "k")!.data.note).toBe("later edit");
+        },
+    );
+
+    it.each(["older reply", "two-reply tail", "user tail"])(
+        "refuses a candidate switch on a %s without changing the chat",
+        (tail) => {
+            const store = memoryStore();
+            init(store);
+            const messages: Message[] =
+                tail === "older reply"
+                    ? [m("u2", "next"), m("r2", "new reply", "char")]
+                    : [m("tail", "tail", tail === "user tail" ? "user" : "char")];
+            write(store, [{ op: "append", anchor: { end: true }, messages }]);
+            const before = chat(store, "k")!;
+            const answer = write(store, [select("first", row(store).candidatesRevision!)]);
+            expect(answer.chats[0].selections).toEqual(["refused"]);
+            expect(chat(store, "k")).toEqual(before);
+            if (tail === "two-reply tail") {
+                write(store, [{ op: "patchMessage", id: "tail", set: { candidates, selected: 1 } }]);
+                const current = chat(store, "k")!;
+                const newest = current.data.message.at(-1)!;
+                const result = write(store, [select("first", newest.candidatesRevision!, "tail")]);
+                expect(result.chats[0].selections).toEqual(["refused"]);
+                expect(chat(store, "k")).toEqual(current);
+            }
+        },
+    );
+
+    it("refuses a locked candidate carrier with the generating conflict", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        init(store);
+        lock.addToken("owner");
+        lock.acquire(
+            { characterId: "c", chatId: "k", messageId: "r" },
+            { jobId: "J", generationId: "G", token: "owner" },
+        );
+        const before = chat(store, "k")!;
+        expect(conflictsOf(() => write(store, [select("first", row(store).candidatesRevision!)]))).toEqual([
+            {
+                kind: "chat",
+                characterId: "c",
+                id: "k",
+                revision: before.revision,
+                reason: "generating",
+                messageIds: ["r"],
+            },
+        ]);
+        expect(chat(store, "k")).toEqual(before);
+    });
+
+    it("refuses an oversized refreshed candidate list without trimming or applying any part of the switch", () => {
+        const store = memoryStore();
+        init(store);
+        write(store, [{ op: "patchMessage", id: "r", set: { data: "x".repeat(192 * 1024) } }]);
+        const before = chat(store, "k")!;
+        const result = write(store, [select("first", row(store).candidatesRevision!)]);
+        expect(result.chats[0].selections).toEqual(["refused"]);
+        expect(chat(store, "k")).toEqual(before);
+    });
 
     it("refuses malformed and oversized candidate writes atomically and owns revisions across old whole-row writes and list removal", () => {
         const store = memoryStore();

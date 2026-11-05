@@ -58,7 +58,6 @@
         findChat,
         retrySelectedChatLoad,
         setChatMeta,
-        setMessageText,
         selectedChat,
         selectedChatLoad,
     } from "../../ts/storage/chatStore.svelte";
@@ -98,7 +97,8 @@
         withFileSrcFetch,
     } from "src/ts/globalApi.svelte";
     import { v4 } from "uuid";
-    import { PreUnreroll, Prereroll } from "src/ts/process/prereroll";
+    import { neighborCandidateId, rerollCarrier, switchCandidate } from "src/ts/process/rerollCandidates";
+    import { serverRerollsInPlace } from "src/ts/network/eventFeed";
     import { createRerollHistory } from "src/ts/process/rerollHistory";
     import { composerSendText, createSendDrafts, type SendDraft } from "src/ts/process/sendDraft";
     import { createComposer } from "src/ts/process/composerDrafts.svelte";
@@ -637,11 +637,9 @@
     }
 
     /**
-     * Refused while the selected chat is busy. A swipe candidate (`Prereroll`,
-     * `src/ts/process/prereroll.ts`) is tried first, then the chat's bundle history (`rerollHistory`),
-     * which `sendMain` clears. A new reroll refuses orphaned lore overrides with the send's alert before
-     * it removes the captured tail; otherwise it removes it, sends in the captured chat, and hands the
-     * end to `restoreRerolledReplies` (through `rerollHistory.restore`).
+     * Refused while the selected chat is busy. Tries the carrier's next candidate, then bundle history.
+     * A new reroll checks lore overrides and regenerates a single reply in place when the connection
+     * supports it. Other tails use removal, a send, and the bundle history's guarded restoration.
      */
     async function reroll() {
         const ref = currentChatRef();
@@ -655,16 +653,17 @@
             alertError(language.chatGenerating);
             return;
         }
-        const lastMessage = currentChat.message.at(-1);
-        const genId = lastMessage?.generationInfo?.generationId;
-        if (genId) {
-            const r = Prereroll(genId);
-            if (r !== null) {
-                const follow = followsSwap();
-                setMessageText(ref, lastMessage.chatId, r);
+        const carrier = rerollCarrier(currentChat);
+        const next = neighborCandidateId(carrier, 1);
+        if (next) {
+            const follow = followsSwap();
+            try {
+                await switchCandidate(ref, carrier.chatId, next);
                 void showSwappedReply(ref, follow);
-                return;
+            } catch (error) {
+                alertError(error);
             }
+            return;
         }
         if (rerollHistory.canForward(ref)) {
             const follow = followsSwap();
@@ -673,6 +672,14 @@
             return;
         }
         if (refuseOrphanedOverrides(ref)) {
+            return;
+        }
+        if (carrier && serverRerollsInPlace()) {
+            openMenu = false;
+            await sendChatMain(false, ref, null, {
+                rerollMessageId: carrier.chatId,
+                ...(carrier.saying ? { speakerChaId: carrier.saying } : {}),
+            });
             return;
         }
         let cha = safeStructuredClone(currentChat.message) as Message[];
@@ -712,7 +719,7 @@
         }
     }
 
-    /** `reroll` backwards: refused while busy, the previous swipe candidate (`PreUnreroll`) first, then the history. */
+    /** Refused while busy; switches to the previous stored candidate, then falls back to bundle history. */
     async function unReroll() {
         const ref = currentChatRef();
         // Nothing while the selected chat loads.
@@ -725,16 +732,17 @@
             alertError(language.chatGenerating);
             return;
         }
-        const lastMessage = currentChat.message.at(-1);
-        const genId = lastMessage?.generationInfo?.generationId;
-        if (genId) {
-            const r = PreUnreroll(genId);
-            if (r !== null) {
-                const follow = followsSwap();
-                setMessageText(ref, lastMessage.chatId, r);
+        const carrier = rerollCarrier(currentChat);
+        const previous = neighborCandidateId(carrier, -1);
+        if (previous) {
+            const follow = followsSwap();
+            try {
+                await switchCandidate(ref, carrier.chatId, previous);
                 void showSwappedReply(ref, follow);
-                return;
+            } catch (error) {
+                alertError(error);
             }
+            return;
         }
         const follow = followsSwap();
         if (rerollHistory.back(ref)) void showSwappedReply(ref, follow);
@@ -761,6 +769,7 @@
     /**
      * Sends in `target` (default: the selected chat now), captured by the caller before its awaits.
      * `serverInput`: the input a server job appends (its user message is not part of the reroll).
+     * `rerollTarget`: regenerates the named carrier in place, without recording a removed bundle.
      * `ran`: false for a refusal or an ambiguous create (the job may exist); it does not prove no job ran.
      * `ok`: whether it ran to a reply (`sendChat`'s result: false for a failed, lost, or stopped job too).
      * `settled`: nothing of the send writes to the chat any more (`sendChat`'s `onEnd`; false when it threw).
@@ -775,6 +784,7 @@
         continued: boolean = false,
         target: ChatRef | null = currentChatRef(),
         serverInput: SendDraft | null = null,
+        rerollTarget?: { rerollMessageId: string; speakerChaId?: string },
     ): Promise<{ ran: boolean; ok: boolean; settled: boolean; blockedChats: readonly ChatRef[] }> {
         if (!target) {
             return { ran: false, ok: false, settled: true, blockedChats: [] };
@@ -806,6 +816,7 @@
                 signal,
                 continue: continued,
                 ...serverInput,
+                ...rerollTarget,
                 onServerRefused: () => {
                     ran = false;
                 },
@@ -818,7 +829,7 @@
             }
             const messages = findChat(target)?.message ?? [];
             const anchorIndex = anchor === null ? -1 : messages.findIndex((message) => message.chatId === anchor);
-            if ((anchor === null || anchorIndex !== -1) && anchorIndex + 1 < messages.length) {
+            if (!rerollTarget && (anchor === null || anchorIndex !== -1) && anchorIndex + 1 < messages.length) {
                 rerollHistory.record(target, anchor, messages.slice(anchorIndex + 1));
             }
         } catch (error) {

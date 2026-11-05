@@ -186,11 +186,19 @@ function isFrame(value: unknown): value is EventFeedFrame {
     return typeof value === "object" && value !== null && typeof (value as { type?: unknown }).type === "string";
 }
 
+let rerollInPlace = false;
+
+/** Whether this connection's same-epoch hello advertised in-place rerolls. False until hello and after retirement. */
+export function serverRerollsInPlace(): boolean {
+    return rerollInPlace;
+}
+
 /**
  * Ends the current connection's attempt without closing anything: its late results do nothing,
  * except that an epoch-mismatch error of its read still resets the memory tasks and advertised map.
  */
 function retire() {
+    rerollInPlace = false;
     generation += 1;
     listingOverlay = null;
     liveness?.stop();
@@ -358,6 +366,7 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
                 epochMismatch(frame.epoch);
                 return;
             }
+            rerollInPlace = frame.rerollInPlace === true;
             replaceFeedLocks(Array.isArray(frame.streaming) ? frame.streaming : []);
             replaceHandoffOffers(frame.handoffs ?? []);
             replaceConnectedClients(frame.clients ?? []);

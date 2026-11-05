@@ -1,5 +1,6 @@
 import { parseContextReport } from "./contextReport.ts";
 import type { Chat, Message, MessageCandidate, ScriptstateSnapshot } from "./database.ts";
+import { translationSourceHash } from "./translation/hash.ts";
 import { isMessageTranslation } from "./translation/messageTranslation.ts";
 
 /** Pure candidate copies, size bounds, optional-field validation, and per-key variable restoration. */
@@ -158,6 +159,47 @@ export function withCandidate(message: Message): Message {
     return { ...message, candidates };
 }
 
+/** Switches by stable id, refreshing the leaving slot and restoring only variables still owned by it. */
+export function selectCandidateChange(
+    message: Message,
+    candidateId: string,
+    scriptstate: Chat["scriptstate"],
+): { message: Message; merge: Record<string, string | number | boolean>; mergeUnset: string[] } | null {
+    try {
+        const selected = message.selected ?? 0;
+        if (!Array.isArray(message.candidates)) return null;
+        const index = message.candidates.findIndex((candidate) => candidate.id === candidateId);
+        if (index < 0 || !message.candidates[selected]) return null;
+        const leavingAfter = message.scriptstateCheckpoint?.after;
+        const target = message.candidates[index];
+        const copy = withCandidate(structuredClone(message));
+        copy.data = target.data;
+        for (const field of ["generationInfo", "promptInfo", "translation"] as const) delete copy[field];
+        if (target.generationInfo !== undefined) copy.generationInfo = structuredClone(target.generationInfo);
+        if (target.promptInfo !== undefined) copy.promptInfo = structuredClone(target.promptInfo);
+        if (target.translation?.sourceHash === translationSourceHash(target.data))
+            copy.translation = structuredClone(target.translation);
+        copy.selected = index;
+        if (copy.scriptstateCheckpoint) {
+            delete copy.scriptstateCheckpoint.after;
+            if (target.scriptstateAfter !== undefined)
+                copy.scriptstateCheckpoint.after = structuredClone(target.scriptstateAfter);
+        }
+        normalizeCandidateFields(copy, (field) => {
+            throw new Error(`Invalid candidate field: ${field}`);
+        });
+        // Even a no-op checks the refreshed row's bounds, but never rewrites the selected reply.
+        if (selected === index) return { message: structuredClone(message), merge: {}, mergeUnset: [] };
+        const patch =
+            leavingAfter !== undefined && target.scriptstateAfter !== undefined
+                ? scriptstateRestorePatch(target.scriptstateAfter, leavingAfter, scriptstate)
+                : { merge: {}, mergeUnset: [] };
+        return { message: copy, ...patch };
+    } catch {
+        return null;
+    }
+}
+
 /** Removes variable copies while retaining candidate texts and metadata. */
 export function withoutCandidateCheckpoints(message: Message): Message {
     const { scriptstateCheckpoint: _checkpoint, ...copy } = message;
@@ -243,7 +285,10 @@ export function scriptstateRestorePatch(
 }
 
 /** The last non-comment message must be the only reply since the last user message. */
-export function isRerollCarrier(chat: Chat, id: string): boolean {
+export function isRerollCarrier(
+    chat: { readonly message: readonly Pick<Message, "chatId" | "role" | "isComment">[] },
+    id: string,
+): boolean {
     const messages = chat.message.filter((message) => !message.isComment);
     const last = messages.at(-1);
     if (last?.chatId !== id || last.role !== "char") return false;

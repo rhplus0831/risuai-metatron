@@ -2539,7 +2539,7 @@ describe("HypaV3 with the server's memory task service", () => {
         await patchSettings({ hypaV3: true });
     });
 
-    it("records only the selected candidate text when record now is pressed on the newest reply", async () => {
+    it("records only the selected candidate text when record now is pressed on the newest reply, and a later candidate switch marks the event for rerecording", async () => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
         const previousAlgorithm = (await single("ui")).data.memoryAlgorithmType;
         try {
@@ -2592,9 +2592,40 @@ describe("HypaV3 with the server's memory task service", () => {
             } finally {
                 store.close();
             }
-            const reply = (await readChat(chaId)).data.message.at(-1);
+            const read = await readChat(chaId);
+            const reply = read.data.message.at(-1);
             expect(reply.data).toBe(carrier.data);
             expect(reply.candidates[reply.selected].data).toBe(carrier.data);
+            // Switching the recorded reply to another candidate changes the text the event cites.
+            const switched = await batch({
+                chats: [
+                    {
+                        characterId: chaId,
+                        chatId: "k",
+                        baseRevision: read.revision,
+                        ops: [
+                            {
+                                op: "selectCandidate",
+                                messageId: "a2",
+                                candidateId: "discarded",
+                                expect: { candidatesRevision: reply.candidatesRevision },
+                            },
+                        ],
+                    },
+                ],
+            });
+            expect(switched.status, JSON.stringify(switched.body).slice(0, 300)).toBe(200);
+            expect(switched.body.chats[0].selections).toEqual(["applied"]);
+            const reread = createResourceStore({
+                file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+            });
+            try {
+                const [event] = reread.memory.readContents(chaId, "k")!.events;
+                expect(reread.memory.readRecord(chaId, "k", "events", event.id)!.data.rerecord).toBe(true);
+            } finally {
+                reread.close();
+            }
         } finally {
             await patchSettings({ memoryAlgorithmType: previousAlgorithm });
             vi.useRealTimers();

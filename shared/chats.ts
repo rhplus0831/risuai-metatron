@@ -93,10 +93,17 @@ export type ChatOp =
     /**
      * Sets or clears a message's stored translation. A translation lands only while its
      * `sourceHash` matches the message's current `data`, else the op is `ignored`
-     * (`ChatGroupResult.translations`); `null` always clears. The only op besides `replace` that
-     * changes a stored translation (`setMessage` keeps it).
+     * (`ChatGroupResult.translations`); `null` always clears. `replace` and `selectCandidate` also
+     * change a stored translation (`setMessage` keeps it).
      */
-    | { op: "setTranslation"; id: string; translation: MessageTranslation | null };
+    | { op: "setTranslation"; id: string; translation: MessageTranslation | null }
+    /**
+     * Switches the newest reply by stored candidate id, also on a stale chat revision. The stored
+     * candidatesRevision must match (absent counts as zero). A missing message, non-carrier,
+     * missing candidate, stale expectation, or invalid resulting row is refused without changing
+     * anything; the rest of the group still applies. Does not participate in `targets`.
+     */
+    | { op: "selectCandidate"; messageId: string; candidateId: string; expect: { candidatesRevision: number } };
 
 /**
  * Every change to one chat in one batch. `baseRevision` is null only for a group starting with `create`.
@@ -145,7 +152,7 @@ export type TargetOutcome = "applied" | "missing";
 /**
  * A group's answer. For a group whose `groupId` the chat already applied, the answer that group got:
  * `revision` as of that group (older than the chat's current one when others wrote since), its
- * `stale`, `messageIds`, `translations`, and `targets`, and every `checkpoints` entry `duplicate`.
+ * `stale`, `messageIds`, `translations`, `selections`, and `targets`, and every `checkpoints` entry `duplicate`.
  */
 export type ChatGroupResult = {
     characterId: string;
@@ -158,6 +165,8 @@ export type ChatGroupResult = {
     checkpoints?: CheckpointOutcome[];
     /** One entry per `setTranslation` op, in op order. */
     translations?: TranslationOutcome[];
+    /** One entry per `selectCandidate` op, in op order; present whenever the group has one. */
+    selections?: ("applied" | "refused")[];
     /**
      * One entry per `setText`, `setMessage`, `patchMessage`, and `setTranslation` op, in op order;
      * present only when one of them was `missing` (absent: every such op found its message).

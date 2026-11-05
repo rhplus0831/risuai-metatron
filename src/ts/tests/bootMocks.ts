@@ -238,6 +238,7 @@ export function createBootMock<K extends keyof BootModules>(
             LLMModels: [],
         },
         eventFeed: {
+            serverRerollsInPlace: vi.fn(() => false),
             startEventFeed: vi.fn<BootModules["eventFeed"]["startEventFeed"]>(),
             stopEventFeed: vi.fn<BootModules["eventFeed"]["stopEventFeed"]>(),
             RECONCILE_DEADLINE_MS: 30_000,

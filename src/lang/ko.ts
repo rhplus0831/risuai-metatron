@@ -4,6 +4,13 @@ const memoryCostText = (calls: number, tokens: number) =>
 
 /** Korean `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageKorean = {
+    rerollCandidateUnavailable:
+        "이 응답 후보를 사용할 수 없거나 저장 한도를 초과합니다. 채팅을 새로 불러와 현재 후보를 확인해 주세요.",
+    rerollCandidatePending:
+        "이전 응답 후보 전환이 아직 완료되지 않았습니다. 채팅 저장과 새로고침이 끝날 때까지 기다려 주세요.",
+    rerollCandidateRefreshFailed:
+        "응답 후보 전환을 확인하지 못했습니다. 채팅 저장과 새로고침이 끝난 뒤 다시 전환해 주세요.",
+    rerollCandidateCounter: "응답 후보 {count}개 중 {index}번째",
     rerollCandidateDropped: "메시지의 저장 한도를 지키기 위해 오래된 응답 후보를 삭제했습니다.",
     rerollCandidateTooLarge: "이 응답은 너무 커서 후보로 저장할 수 없습니다.",
     scriptstateCheckpointSkipped:

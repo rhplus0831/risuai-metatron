@@ -22,7 +22,7 @@ const sameIds = (left: DeepReadonly<Message[]>, right: DeepReadonly<Message[]>) 
 /**
  * A screen's swipe history, bounded by chat and valid only while its current bundle is still the tail.
  * The bundle at the cursor is refreshed from the chat before the slot is kept or the tail swapped, so an
- * edit of a reply (or a prereroll swap) made since it was recorded is what a later back or forward brings.
+ * edit of a reply (or a candidate switch) made since it was recorded is what a later back or forward brings.
  * It holds up to 16 chats, evicting the least recently used (every read of a chat's slot counts as use).
  * A back or forward swaps the tail inside `editChatSync` only while the chat still has the slot's anchor
  * and its tail's message ids are the current bundle's; otherwise the edit changes nothing and the chat's

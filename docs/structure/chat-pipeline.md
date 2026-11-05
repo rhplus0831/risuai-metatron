@@ -10,7 +10,7 @@
   - group membership (`group.ts`), reroll, slash commands, inlays,
   - the message-search request contract and client coordinator.
 - Paths:
-  - `src/ts/process/{index.svelte,serverGeneration,prompt,stringlize,group,prereroll,command,infunctions,inlayScreen}.ts`
+  - `src/ts/process/{index.svelte,serverGeneration,prompt,stringlize,group,rerollCandidates,command,infunctions,inlayScreen}.ts`
   - `src/ts/process/{lorebook.svelte.ts,templates/{chatTemplate,templateCheck,templates}.ts,files/{inlays,multisend}.ts}`
   - `shared/lore/{activation,overrides}.ts`, `shared/prompt/{chatTemplate,templateCheck}.ts`
   - `src/ts/messageSearch.svelte.ts`, `shared/messageSearch.ts`
@@ -22,7 +22,7 @@
   - `requestChatData` internals → `llm-requests.md`.
   - Token counting (`shared/tokenizerChoice.ts`, `shared/prompt/{chatTokens,imageTokens}.ts`, `src/ts/tokenizer.ts`,
     `src/ts/tokenCountField.ts`) → `llm-requests.md`.
-  - Message-search panel presentation → `ui-theming.md`; endpoint implementation details → `server-resources.md`.
+  - Message-search panel presentation → `ui-theming.md`; endpoint details → `server-resources.md`.
   - PDF conversion used by MCP filesystem tools → `mcp.md`.
   - Regex and trigger internals → `scripts-triggers.md`.
   - Rendering → `cbs-rendering.md`.
@@ -30,8 +30,8 @@
 
 ## Files
 
-Each entry is the path, its role, and the identifiers to look up; the rules are the doc comments on those identifiers
-and the module headers.
+Entries name the path, its role, and identifiers to look up; the rules are those identifiers' doc comments and the
+module headers.
 
 ### Send client and registries
 
@@ -96,8 +96,8 @@ and the module headers.
 
 ### Reroll modules
 
-- `src/ts/process/prereroll.ts`: in-memory swipe navigation (`Prereroll`, `PreUnreroll`), now unfilled: extra samples
-  are stored as `candidates` ([persistence](persistence.md#messages)).
+- `src/ts/process/rerollCandidates.ts`: `switchCandidate` (op `selectCandidate`, one at a time per chat), carrier
+  helpers.
 - `src/ts/process/rerollHistory.ts`: the screen's per-chat bundle history (`createRerollHistory`) and the restore after
   a reroll (`restoreRerolledReplies`, Flows `Reroll`).
 
@@ -142,8 +142,9 @@ In `DefaultChatScreen.svelte`: `send`/`sendContinue` → `sendMain` → `sendCha
 
 ### Reroll
 
-- `reroll`/`unReroll` (their comments) try the swipe candidates, then the per-chat bundle history; a new reroll removes
-  the captured tail and sends in the captured chat.
+- `reroll`/`unReroll` (their comments) switch the newest reply's `candidates`, then the bundle history; past the last, a
+  one-reply tail rerolls [in place](server-generation.md#reroll-in-place) while the current `hello` allows it
+  (`serverRerollsInPlace`), else the tail is removed and sent again.
 - A send that brought no reply puts the removed tail back (`restoreRerolledReplies`; its comment has the conditions). A
   refusal first withdraws the matching removal while it still owns the end of the save queue; after an ambiguous
   response that restoration is provisional ([store](chat-store.md#chat-writes)).
@@ -267,19 +268,18 @@ takeovers, viewer boot resume and creator warnings. Kept receipts and shutdown o
 - `anyLocalSend` is the tab-wide view for plugin reload deferral and translator cache-only mode; screen controls and
   suggestions follow the selected chat's own work.
 - `followedJobs` (`serverCommands.ts`): job id → chat key. `jobStages` entries leave with it at the follow's end.
-- `chatStore.svelte.ts` owns loaded chat records and all writes; every message write is addressed by chat and message
-  id. Autosave does not own chats. See [chat store](chat-store.md) for the mutation and read contract.
+- `chatStore.svelte.ts` owns loaded chats and every write ([chat store](chat-store.md)); autosave does not.
 - Chats load on demand. The chat screen renders nothing chat-dependent while the selected chat loads
   (`selectedChatLoad()`: a loading state, or the error with a retry).
-- Operations that await chat state pin and load their captured targets; an unavailable target runs nothing. The pin and
-  eviction rules, including send and follow lifetimes, are in [chat store](chat-store.md#pins-and-eviction).
+- Operations that await chat state pin and load their captured targets; an unavailable target runs nothing
+  ([pins and eviction](chat-store.md#pins-and-eviction), send and follow lifetimes included).
 - The synchronous chat readers (`chatVar`, `getModules(ref)`, the CBS host, `transformClient`'s context, the MCP tool
   records) read loaded chats only; their chat is the selected one, a pinned job or request target, or a plugin context
   that awaited its load, and an unloaded chat reads as gone, never as another chat.
 - The bound persona (`checkPersonaBinded`, `capturePluginContext`) is read from the chat's list entry, so it holds while
   the chat is not loaded.
 - A streamed reply stays locked until the server releases its generation; the mirror batches text updates once per
-  frame. See [chat store](chat-store.md#locks-and-streaming) for hydration, rendering, and edit rules.
+  frame; hydration, rendering, and edit rules: [chat store](chat-store.md#locks-and-streaming).
 - `refreshChatAfterWrite` adopts an eligible server by-id write into the job scope; otherwise the server reloads the
   chat. Its preconditions and immutable-copy contract are in [generation](live-update-feed.md#own-chat-changes).
 
@@ -396,13 +396,13 @@ In `shared/lore/activation.ts`.
 - A reroll's restore cannot see another tab's job that holds no lock yet and was not met at this tab's create: the
   restored replies land while that job runs, like any other edit (see
   [server generation's own chat changes](live-update-feed.md#own-chat-changes)).
-- Stop stays visible between a followed job's `done` and its socket close, when aborting the ended job does nothing.
+- Stop stays visible between a followed job's `done` and its socket close, when an abort does nothing.
 - A boot resume that discovers its chat but cannot load it shows Stop during the load retries, until the follow ends as
   lost.
-- `disable_ui_prompt` lore decorators are collected into `disabledUIPrompts`, but that array is never consumed.
+- `disable_ui_prompt` lore decorators fill `disabledUIPrompts`, which nothing consumes.
 - `renderChatTemplate` calls Jinja's `Template.render` synchronously with no work or time limit; a costly custom
   template occupies its caller's thread.
-- `prereroll.ts` history and the screen's per-chat reroll history are in memory only.
+- The screen's per-chat reroll history (multi-reply tails) is in memory only.
 - Composer recovery depends on the browser journal. The hide flush lands only while the page lives on after it: Chrome
   aborts IndexedDB writes begun in `pagehide` when the page unloads, so a reload, close, or navigation within 500 ms of
   the last edit loses that edit.

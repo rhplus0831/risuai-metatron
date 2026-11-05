@@ -1334,7 +1334,7 @@ export interface Message {
     isComment?: boolean;
     /**
      * A stored translation of `data`, shown only while fresh (`storedTranslation`,
-     * `shared/translation/messageTranslation.ts`). Written by the `setTranslation` chat op; a
+     * `shared/translation/messageTranslation.ts`). Written by `setTranslation`, `selectCandidate`, or whole-chat replacement; a
      * `setMessage` never changes it.
      */
     translation?: MessageTranslation;

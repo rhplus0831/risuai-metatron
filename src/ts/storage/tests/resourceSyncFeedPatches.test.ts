@@ -2,7 +2,7 @@ import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../../shared/chats.ts";
 import type { Message } from "../../../../shared/database.ts";
-import { MAX_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { MAX_FEED_PATCH_BYTES, SMALL_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
@@ -199,7 +199,184 @@ const quiet = (b: Booted) => {
     expect(alerts.error).not.toHaveBeenCalled();
 };
 
+/** The oversized field is only one byte over the cap; both row encodings must carry it. */
+function rerollRows() {
+    const candidates = [
+        { id: "previous", data: "", scriptstateAfter: { $x: "1" } },
+        { id: "other", data: "Other", scriptstateAfter: { $x: "2" } },
+    ];
+    const text = "x".repeat(MAX_FEED_PATCH_BYTES + 1 - new TextEncoder().encode(JSON.stringify(candidates)).length);
+    candidates[0].data = text;
+    const original: Message = {
+        role: "char",
+        chatId: "c",
+        data: text,
+        candidates,
+        selected: 0,
+        candidatesRevision: 1,
+        scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "1" } },
+    };
+    const begun: Message = {
+        ...original,
+        data: "",
+        candidates: [...candidates, { id: "attempt", data: "" }],
+        selected: 2,
+        candidatesRevision: 2,
+        scriptstateCheckpoint: { before: { $x: "0" } },
+    };
+    const begin: ChatOp[] = [
+        {
+            op: "patchMessage",
+            id: "c",
+            set: {
+                data: "",
+                candidates: begun.candidates,
+                selected: 2,
+                scriptstateCheckpoint: begun.scriptstateCheckpoint,
+            },
+            unset: [],
+        },
+        { op: "setTranslation", id: "c", translation: null },
+        { op: "meta", merge: { scriptstate: { $x: "0" } }, mergeUnset: { scriptstate: [] } },
+        { op: "begin", id: "c", generationId: "g" },
+    ];
+    const restored = { ...original, candidatesRevision: 3 };
+    const rollback: ChatOp[] = [
+        { op: "setMessage", message: original, generation: { id: "g", seq: 1, final: true } },
+        { op: "setTranslation", id: "c", translation: null },
+    ];
+    const selected: Message = {
+        ...original,
+        data: "Other",
+        selected: 1,
+        candidatesRevision: 2,
+        scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "2" } },
+    };
+    const select: ChatOp[] = [
+        { op: "selectCandidate", messageId: "c", candidateId: "other", expect: { candidatesRevision: 1 } },
+    ];
+    return { original, begun, restored, selected, begin, rollback, select };
+}
+
 describe("feed patches through the tab save adapter", () => {
+    it.each(["begin", "write-back", "switch"] as const)(
+        "reads an oversized reroll %s carrier and restored variables by id without a whole-chat read",
+        async (step) => {
+            const rows = rerollRows();
+            const original =
+                step === "switch"
+                    ? {
+                          ...rows.original,
+                          candidates: [
+                              { ...rows.original.candidates![0], data: "Before manual edit" },
+                              rows.original.candidates![1],
+                          ],
+                      }
+                    : rows.original;
+            const b = await boot({
+                messages: [m("a", "A"), m("b", "B"), original],
+                meta: { scriptstate: { $x: "1" } },
+            });
+            b.fake.lock!.addToken("job");
+            const attempt = { characterId: "c", chatId: "k", messageId: "c", generationId: "g" };
+            const write = (ops: ChatOp[], action?: "begin" | "rollback") => {
+                const options = { jobToken: "job", ...(action ? { rerollAttempt: { ...attempt, action } } : {}) };
+                b.fake.store.applyChanges(
+                    { chats: [{ characterId: "c", chatId: "k", baseRevision: b.fake.chat("c", "k")!.revision, ops }] },
+                    options,
+                );
+            };
+            if (step !== "switch") b.fake.lock!.acquire(attempt, { jobId: "J", generationId: "g", token: "job" });
+            if (step === "write-back") {
+                write(rows.begin, "begin");
+                expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+                b.fake.requests.length = 0;
+            }
+            const before = JSON.parse(JSON.stringify(mirror(b)));
+            const baseRevision = b.chat.heldChatRevision(refK);
+            const expected = step === "begin" ? rows.begun : step === "write-back" ? rows.restored : rows.selected;
+            const scriptstate = { $x: step === "begin" ? "0" : step === "write-back" ? "1" : "2" };
+            write(
+                step === "begin" ? rows.begin : step === "write-back" ? rows.rollback : rows.select,
+                step === "switch" ? undefined : step === "begin" ? "begin" : "rollback",
+            );
+            const event = b.fake.feedEvents.at(-1)!;
+            if (event.type !== "change") throw new Error("expected a committed change");
+            const revision = b.fake.chat("c", "k")!.revision;
+            expect(event.changes.chats[0]).toEqual({
+                characterId: "c",
+                id: "k",
+                revision,
+                summaryBase: baseRevision,
+                rows: { baseRevision, changed: ["c"], removed: [], count: 3, meta: ["scriptstate"] },
+            });
+            expect(mirror(b)).toEqual(before);
+            expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+            expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+            expect(reads(b)).toEqual([
+                {
+                    refs: [],
+                    chats: [],
+                    continue: true,
+                    chatRows: [{ characterId: "c", id: "k", revision, messageIds: ["c"], meta: ["scriptstate"] }],
+                },
+            ]);
+            expect(mirror(b)).toEqual({ ...before, scriptstate, message: [m("a", "A"), m("b", "B"), expected] });
+            expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+            expect(b.chat.heldChatRevision(refK)).toBe(revision);
+            await b.sync.flushResources();
+            expect(b.fake.batchCount()).toBe(0);
+            quiet(b);
+        },
+    );
+
+    it("diffs candidate checkpoint cleanup and a later edit from the row before the append group", async () => {
+        const data = "x".repeat(SMALL_FEED_PATCH_BYTES);
+        const candidates = [
+            { id: "old", data: "Old", scriptstateAfter: { $x: "1" } },
+            { id: "current", data, scriptstateAfter: { $x: "2" } },
+        ];
+        const carrier: Message = {
+            ...m("b", data, "char"),
+            candidates,
+            selected: 1,
+            candidatesRevision: 1,
+            scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "2" } },
+        };
+        const b = await boot({ messages: [m("a", "Question"), carrier] });
+        const baseRevision = b.chat.heldChatRevision(refK);
+        remote(b, [
+            { op: "append", anchor: { end: true }, messages: [m("next", "Next question")] },
+            { op: "setText", id: "b", text: data + "!" },
+        ]);
+        const cleaned = [
+            { id: "old", data: "Old" },
+            { id: "current", data },
+        ];
+        const event = b.fake.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("expected a committed change");
+        expect(event.changes.chats[0].rowDelta).toEqual({
+            baseRevision,
+            count: 3,
+            messages: [{ after: "b", message: m("next", "Next question") }],
+            rowDiffs: [
+                {
+                    id: "b",
+                    text: { keep: data.length, text: "!" },
+                    fields: { set: { candidates: cleaned, candidatesRevision: 2 }, unset: ["scriptstateCheckpoint"] },
+                },
+            ],
+        });
+        expect(mirror(b).message).toEqual([
+            m("a", "Question"),
+            { ...m("b", data + "!", "char"), candidates: cleaned, selected: 1, candidatesRevision: 2 },
+            m("next", "Next question"),
+        ]);
+        expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+        expect(reads(b)).toEqual([]);
+        quiet(b);
+    });
+
     it("reads an over-cap carrier once by id and applies inserted and removed rows", async () => {
         const b = await boot();
         const before = JSON.parse(JSON.stringify(mirror(b)));

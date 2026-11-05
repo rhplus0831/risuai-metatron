@@ -43,6 +43,7 @@ import {
     chatTranslationSummary,
     type ChatTranslationFields,
 } from "../../../shared/translation/chatSettings.ts";
+import { selectCandidateChange } from "../../../shared/rerollCandidates.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { language } from "src/lang";
@@ -1517,6 +1518,8 @@ function workSeq(key: string): number {
  * field, as defined by src/ts/storage/draftJournal.ts JournalBefore/JournalChatOp.
  */
 const beforeValues = new WeakMap<ChatOp, JournalBefore>();
+/** Whole replacements that implicitly unset candidate fields on a retained message. */
+const candidateFieldRemovals = new WeakSet<ChatOp>();
 
 function fieldsBefore(target: object, fields: Iterable<string>): JournalBefore {
     const values = target as Record<string, unknown>;
@@ -1570,6 +1573,7 @@ function coalescedBefore(last: ChatOp, next: ChatOp): JournalBefore | undefined 
 }
 
 function copyOpBefore<T extends ChatOp>(source: ChatOp, copy: T): T {
+    if (candidateFieldRemovals.has(source)) candidateFieldRemovals.add(copy);
     const before = beforeValues.get(source);
     if (before) beforeValues.set(copy, clone<JournalBefore>(before));
     return copy;
@@ -1589,6 +1593,7 @@ function enqueueLocalEdit(ref: ChatRef, op: ChatOp, before?: JournalBefore) {
     // Capture the touched-field union before coalesce changes the earlier op.
     const mergedBefore = last ? coalescedBefore(last, op) : undefined;
     if (last && coalesce(last, op)) {
+        if (candidateFieldRemovals.has(op)) candidateFieldRemovals.add(last);
         if (mergedBefore) beforeValues.set(last, mergedBefore);
     } else {
         entry.ops.push(op);
@@ -3138,6 +3143,7 @@ export function unloadPendingChatWork(limitBytes: number): { body: string; work:
                     op.op === "setMessage" ||
                     op.op === "patchMessage" ||
                     op.op === "setTranslation" ||
+                    op.op === "selectCandidate" ||
                     op.op === "meta" ||
                     (op.op === "remove" && op.ids.length === 1),
             )
@@ -3685,6 +3691,32 @@ export function setMessageTranslation(
     return true;
 }
 
+/** Optimistically switches a stored candidate; the server recomputes it against its row and variables. */
+export function selectCandidate(ref: ChatRef, messageId: string, candidateId: string): void {
+    const chat = requireChat(ref);
+    const index = indexOfMessage(ref, chat, messageId);
+    if (index === -1) throw new Error(language.rerollCandidateUnavailable);
+    assertUnlocked(ref, [messageId]);
+    const message = clone<Message>(chat.message[index]);
+    const revision = message.candidatesRevision ?? 0;
+    const change = selectCandidateChange(message, candidateId, clone(chat.scriptstate));
+    if (!change) throw new Error(language.rerollCandidateUnavailable);
+    if (JSON.stringify(change.message) !== JSON.stringify(message)) {
+        change.message.candidatesRevision = revision + 1;
+        chat.message[index] = change.message;
+        if (Object.keys(change.merge).length || change.mergeUnset.length) {
+            const map = { ...chat.scriptstate };
+            for (const key of change.mergeUnset) delete map[key];
+            for (const [key, value] of Object.entries(change.merge))
+                Object.defineProperty(map, key, { value, enumerable: true, writable: true, configurable: true });
+            if (chat.scriptstate !== undefined || Object.keys(change.merge).length) chat.scriptstate = map;
+        }
+        changed(keyOf(ref.chaId, ref.chatId));
+    }
+    // Keep the expectation attached to this single action, including on a lost-answer resend.
+    enqueueLocalEdit(ref, { op: "selectCandidate", messageId, candidateId, expect: { candidatesRevision: revision } });
+}
+
 /** The chat of `ref` and which of `ids` it holds; throws for a chat not held or a message locked. */
 function removalTarget(ref: ChatRef, ids: readonly string[]): { chat: Chat; present: string[] } {
     const chat = requireChat(ref);
@@ -4214,9 +4246,17 @@ export function replaceChat(ref: ChatRef, input: DeepReadonly<Chat>) {
     delete chat.activeStreamingDisplayOptimizationMode;
     settleHypaV3Data(keyOf(ref.chaId, ref.chatId), chat, heldChat(ref));
     dropMessagePositions(keyOf(ref.chaId, ref.chatId));
+    const retained = new Set(chat.message.map((message) => message.chatId));
+    const removesCandidates = heldChat(ref)!.message.some(
+        (message) =>
+            retained.has(message.chatId) &&
+            (Object.hasOwn(message, "candidates") || Object.hasOwn(message, "selected")),
+    );
     holdingOf(ref.chaId).chats[slot(ref.chatId)] = chat;
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueueLocalEdit(ref, { op: "replace", chat: sendChat(chat) });
+    const op: ChatOp = { op: "replace", chat: sendChat(chat) };
+    if (removesCandidates) candidateFieldRemovals.add(op);
+    enqueueLocalEdit(ref, op);
 }
 
 /**
@@ -5587,6 +5627,22 @@ function settleOrder(chaId: string, seq: number) {
     }
 }
 
+/** Other message writes leave the mirror's store-owned candidate counter to the next read. */
+function writesCandidateFields(op: ChatOp): boolean {
+    if (candidateFieldRemovals.has(op)) return true;
+    const namesFields = (value: unknown) =>
+        isPlainRecord(value) && (Object.hasOwn(value, "candidates") || Object.hasOwn(value, "selected"));
+    if (op.op === "patchMessage")
+        return namesFields(op.set) || (op.unset ?? []).some((field) => field === "candidates" || field === "selected");
+    if (op.op === "setMessage") {
+        const before = beforeValues.get(op);
+        return namesFields(op.message) || !!(before && "value" in before && namesFields(before.value));
+    }
+    if (op.op === "append") return op.messages.some(namesFields);
+    if (op.op === "create" || op.op === "replace") return op.chat.message.some(namesFields);
+    return false;
+}
+
 /**
  * Records the server's answer to chat work that was saved. Returns the characters whose chat list
  * on the server differs from this client's membership, or whose membership replay acknowledgement
@@ -5672,12 +5728,17 @@ export function ackChatWork(
                 ackedRevisions.set(group.key, result.revision);
             }
             if (
-                (group.recoveredAt !== undefined || result.stale || result.targets?.includes("missing")) &&
+                (group.recoveredAt !== undefined ||
+                    result.stale ||
+                    result.targets?.includes("missing") ||
+                    result.selections?.includes("refused") ||
+                    group.ops.some(writesCandidateFields)) &&
                 result.revision !== null
             ) {
                 // A `missing` target changed nothing and is kept as a draft, without a discard:
                 // the idle read removes its local message. Recovered ops were never applied to the
                 // boot mirror, so even a fresh or duplicate acknowledgement needs the whole read.
+                // Refused selections and candidate counters from other writes also need that read.
                 staleChats.add(group.key);
             }
             if (result.messageIds) {
@@ -5765,6 +5826,8 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
         }
         if (op.op === "setText" || op.op === "setTranslation" || op.op === "patchMessage") {
             op.id = rename(op.id);
+        } else if (op.op === "selectCandidate") {
+            op.messageId = rename(op.messageId);
         } else if (op.op === "setMessage") {
             op.message = { ...op.message, chatId: rename(op.message.chatId!) };
         } else if (op.op === "remove") {
@@ -6124,6 +6187,8 @@ function targetsLocked(op: ChatOp, locked: ReadonlySet<string>): boolean {
         case "setTranslation":
         case "begin":
             return locked.has(op.id);
+        case "selectCandidate":
+            return locked.has(op.messageId);
         case "setMessage":
             return locked.has(op.message.chatId!);
         case "remove":

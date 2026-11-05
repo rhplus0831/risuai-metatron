@@ -125,6 +125,24 @@ describe("sendChatOnServer", () => {
         expect(stubs.db.characters).toEqual(seededCharacters());
     });
 
+    it("posts an in-place reroll with its carrier and speaker, including for a group", async () => {
+        for (const chaId of ["c", "g"]) {
+            started(done({ messageId: "reply" }));
+            const result = await send({
+                target: { chaId, chatId: "k" },
+                rerollMessageId: "reply",
+                speakerChaId: "speaker",
+            });
+            expect(result.ok).toBe(true);
+            expect(lastRequest()).toEqual({
+                kind: "reroll",
+                label: "send",
+                context: { input: "", rerollMessageId: "reply", speakerChaId: "speaker" },
+            });
+        }
+        expect(stubs.run).toHaveBeenCalledTimes(2);
+    });
+
     it("picks the kind: continue with its explicit target, group for a group chat, and the previews without input", async () => {
         started(done());
         await send({ target: ref, continue: true, continueMessageId: "m9", input: "" });

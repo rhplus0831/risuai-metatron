@@ -7,6 +7,13 @@ const memoryCostText = (calls: number, tokens: number) =>
 
 /** Complete UI string catalog and source type; other `src/lang/` locales supply `DeepPartial` overrides. */
 export const languageEnglish = {
+    rerollCandidateUnavailable:
+        "This reply candidate is unavailable or exceeds the storage limit. Reload the chat to see the current candidates.",
+    rerollCandidatePending:
+        "The previous candidate switch has not settled yet. Wait for the chat to finish saving and refreshing.",
+    rerollCandidateRefreshFailed:
+        "The candidate switch could not be confirmed. Wait for the chat to finish saving and refreshing before switching again.",
+    rerollCandidateCounter: "Reply candidate {index} of {count}",
     rerollCandidateDropped: "Older reply candidates were dropped to keep this message within its limit.",
     rerollCandidateTooLarge: "This reply is too large to keep as a candidate.",
     scriptstateCheckpointSkipped: "The chat variables are too large to checkpoint; this reroll will not restore them.",

@@ -1,4 +1,9 @@
-import { normalizeCandidateFields, withoutCandidateCheckpoints } from "../../../shared/rerollCandidates.ts";
+import {
+    isRerollCarrier,
+    selectCandidateChange,
+    normalizeCandidateFields,
+    withoutCandidateCheckpoints,
+} from "../../../shared/rerollCandidates.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
     ChatConflict,
@@ -315,6 +320,7 @@ type RememberedResult = {
     /** How many `checkpoints` entries the answer had (a replay answers each `duplicate`). */
     checkpoints?: number;
     translations?: TranslationOutcome[];
+    selections?: ChatGroupResult["selections"];
     targets?: TargetOutcome[];
 };
 
@@ -344,7 +350,8 @@ type PreparedOp =
     | { op: "patchMessage"; id: string; set: Record<string, unknown>; unset: string[] }
     | { op: "remove"; ids: string[]; retract: boolean }
     | { op: "begin"; id: string; generationId: string }
-    | { op: "setTranslation"; id: string; translation: MessageTranslation | null };
+    | { op: "setTranslation"; id: string; translation: MessageTranslation | null }
+    | { op: "selectCandidate"; messageId: string; candidateId: string; expect: { candidatesRevision: number } };
 
 type PreparedMessage = { id: string; text: string };
 
@@ -929,6 +936,25 @@ function prepareOp(raw: unknown, chatId: string): PreparedOp {
                 throw new ResourceValidationError("begin must be { id, generationId }");
             }
             return { op: "begin", id: raw.id, generationId: raw.generationId };
+        case "selectCandidate":
+            if (
+                !isValidResourceId(raw.messageId) ||
+                typeof raw.candidateId !== "string" ||
+                raw.candidateId.length < 1 ||
+                raw.candidateId.length > 32 ||
+                !isPlainObject(raw.expect) ||
+                !isNonNegativeSafeInteger(raw.expect.candidatesRevision)
+            ) {
+                throw new ResourceValidationError(
+                    "selectCandidate must be { messageId, candidateId, expect: { candidatesRevision } }",
+                );
+            }
+            return {
+                op: "selectCandidate",
+                messageId: raw.messageId,
+                candidateId: raw.candidateId,
+                expect: { candidatesRevision: raw.expect.candidatesRevision },
+            };
         case "setTranslation": {
             // A non-null value is checked as its JSON copy (detached, what is stored), so an in-process
             // `toJSON` cannot turn a checked value into another one, or into a clear.
@@ -1131,6 +1157,9 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
             case "setTranslation":
                 messages.add(op.id);
                 break;
+            case "selectCandidate":
+                messages.add(op.messageId);
+                break;
             case "remove":
                 op.ids.forEach((id) => messages.add(id));
                 break;
@@ -1315,6 +1344,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const selectMessage = db.prepare(
         "SELECT position, data, generationId, generationSeq, generationFinal, generationHistory FROM messages " +
             "WHERE chatSeq = ? AND id = ?",
+    );
+    const selectCarrierMessages = db.prepare(
+        "SELECT id AS chatId, json_extract(data, '$.role') AS role, json_extract(data, '$.isComment') AS isComment " +
+            "FROM messages WHERE chatSeq = ? ORDER BY position",
     );
     const selectLastMessage = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position DESC LIMIT 1");
     /**
@@ -1860,6 +1893,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         if (remembered.translations) {
             result.translations = remembered.translations;
         }
+        if (remembered.selections) result.selections = remembered.selections;
         if (remembered.targets) {
             result.targets = remembered.targets;
         }
@@ -1903,6 +1937,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         if (result.translations) {
             remembered.translations = result.translations;
         }
+        if (result.selections) remembered.selections = result.selections;
         if (result.targets) {
             remembered.targets = result.targets;
         }
@@ -2041,6 +2076,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         let messageIdsRenamed = false;
         const checkpoints: CheckpointOutcome[] = [];
         const translations: TranslationOutcome[] = [];
+        const selections: NonNullable<ChatGroupResult["selections"]> = [];
         // Per message-editing op: whether its message was there (reported only when one was not).
         const targets: TargetOutcome[] = [];
         let deleted = false;
@@ -2225,6 +2261,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                                 if (guard && guard.holder(characterId, chatId, message.chatId!) !== null) continue;
                                 const cleaned = withoutCandidateCheckpoints(message);
                                 if (data === JSON.stringify(cleaned)) continue;
+                                if (patchBase !== null && !rowsBefore.has(message.chatId!)) {
+                                    rowsBefore.set(message.chatId!, data);
+                                }
                                 setMessageData.run(
                                     withCandidateRevision(serialize(cleaned).text, data),
                                     chatSeq,
@@ -2363,6 +2402,61 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     applied += 1;
                     break;
                 }
+                case "selectCandidate": {
+                    const existing = selectMessage.get(chatSeq, op.messageId) as MessageRow | undefined;
+                    const stored = existing ? (JSON.parse(existing.data) as Message) : undefined;
+                    const current = JSON.parse(row!.meta) as Chat;
+                    const carrierChat = {
+                        message: selectCarrierMessages.all(chatSeq).map((row) => ({
+                            chatId: row.chatId as string,
+                            role: row.role as Message["role"],
+                            isComment: !!row.isComment,
+                        })),
+                    };
+                    const change =
+                        stored &&
+                        isRerollCarrier(carrierChat, op.messageId) &&
+                        (stored.candidatesRevision ?? 0) === op.expect.candidatesRevision
+                            ? selectCandidateChange(stored, op.candidateId, current.scriptstate)
+                            : null;
+                    if (!change) {
+                        selections.push("refused");
+                        break;
+                    }
+                    selections.push("applied");
+                    if (stored!.candidates?.[stored!.selected ?? 0]?.id === op.candidateId) break;
+                    if (patchBase !== null && !rowsBefore.has(op.messageId)) {
+                        rowsBefore.set(op.messageId, existing!.data);
+                    }
+                    const text = withCandidateRevision(serialize(change.message).text, existing!.data);
+                    closeFence(chatSeq, op.messageId, existing!);
+                    setMessageData.run(text, chatSeq, op.messageId);
+                    touched.add(op.messageId);
+                    if (change.message.data !== stored!.data && jobToken === undefined) rewrittenIds.add(op.messageId);
+                    if (Object.keys(change.merge).length || change.mergeUnset.length) {
+                        if (patchBase && summaryBefore === undefined)
+                            summaryBefore = freshSummaryText(row!.seq, row!.revision, { meta: row!.meta });
+                        const map = Object.assign(Object.create(null), mapOf(current.scriptstate));
+                        for (const key of change.mergeUnset) {
+                            recordVariable(attempt, jobToken, key, entryOf(map, key), undefined);
+                            delete map[key];
+                        }
+                        for (const [key, value] of Object.entries(change.merge)) {
+                            recordVariable(attempt, jobToken, key, entryOf(map, key), value);
+                            map[key] = value;
+                        }
+                        // As with a meta merge, removals alone do not create an absent map.
+                        if (isPlainObject(current.scriptstate) || Object.keys(change.merge).length)
+                            current.scriptstate = { ...map };
+                        const { text: meta, stored: copy } = serialize(normalizeChatMeta(current, chatId));
+                        summaryAfter = summaryText(copy as Record<string, unknown>);
+                        writeChatMeta({ kind: "update", seq: chatSeq, revision: row!.revision, meta }, summaryAfter);
+                        row = { ...row!, meta };
+                        metaChanged = true;
+                    }
+                    applied += 1;
+                    break;
+                }
                 case "setTranslation": {
                     // Not a text write: the generation fence is left as it is.
                     const existing = selectMessage.get(chatSeq, op.id) as MessageRow | undefined;
@@ -2467,6 +2561,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         if (translations.length > 0) {
             result.translations = translations;
         }
+        if (selections.length) result.selections = selections;
         if (targets.includes("missing")) {
             result.targets = targets;
         }

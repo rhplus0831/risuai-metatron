@@ -11,6 +11,8 @@ export type ServerSendArg = {
     signal?: AbortSignal;
     continue?: boolean;
     continueMessageId?: string;
+    rerollMessageId?: string;
+    speakerChaId?: string;
     preview?: boolean;
     previewPrompt?: boolean;
     /** The chat input the job's input stage appends (from `sendMain`), with its message id. */
@@ -51,7 +53,7 @@ export type ServerSendResult = {
 
 /**
  * `sendChat` as a server job (the only send path): the tab counts the send (`statics.messages`),
- * then `runServerJob` flushes, creates the job (`preview`, `previewPrompt`, `continue`, `group` for
+ * then `runServerJob` flushes, creates the job (`preview`, `previewPrompt`, `reroll`, `continue`, `group` for
  * a group chat, else `send`) with the input and the message ids, and follows it to its end. The
  * last-chatted time comes from the chat's last message; an ordinary send leaves the character
  * record and its revision unchanged. A preview's `done.result` is returned (for
@@ -90,12 +92,14 @@ async function sendPinned(
         ? "preview"
         : arg.previewPrompt
           ? "previewPrompt"
-          : char.type === "group"
-            ? "group"
-            : arg.continue
-              ? "continue"
-              : "send";
-    const input = kind === "preview" || kind === "previewPrompt" ? "" : (arg.input ?? "");
+          : arg.rerollMessageId
+            ? "reroll"
+            : char.type === "group"
+              ? "group"
+              : arg.continue
+                ? "continue"
+                : "send";
+    const input = kind === "preview" || kind === "previewPrompt" || kind === "reroll" ? "" : (arg.input ?? "");
     const { outcome, terminal, blockedChats, requestUncertain, reconciled } = await runServerJob(
         char,
         ref,
@@ -106,6 +110,12 @@ async function sendPinned(
             requestUncertain: arg.requestUncertain,
             context: {
                 input,
+                ...(kind === "reroll"
+                    ? {
+                          rerollMessageId: arg.rerollMessageId,
+                          ...(arg.speakerChaId ? { speakerChaId: arg.speakerChaId } : {}),
+                      }
+                    : {}),
                 ...(input !== "" && arg.userMessageId ? { userMessageId: arg.userMessageId } : {}),
                 ...(kind === "continue" && arg.continueMessageId ? { continueMessageId: arg.continueMessageId } : {}),
             },

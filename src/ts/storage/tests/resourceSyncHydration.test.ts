@@ -1564,6 +1564,96 @@ describe("a job's chat patch", () => {
         expect(chat.heldChatRevision(refK)).toBe(revision);
     });
 
+    it("keeps an in-place reroll indexed while applying raw checkpoints and the whole final candidate row", async () => {
+        const { fake, sync, chat, apply, chunk, accepted, patchEvent, row, serverWrite, text } = await boot();
+        serverWrite([{ op: "patchMessage", id: "c", set: { role: "char" } }]);
+        chat.acceptRemoteChat(fake.chat("c", "k")!);
+        const candidates = [
+            { id: "old", data: "C" },
+            { id: "new", data: "" },
+        ];
+        const baseRevision = fake.chat("c", "k")!.revision;
+        const beginRevision = serverWrite([
+            {
+                op: "patchMessage",
+                id: "c",
+                set: { data: "", candidates, selected: 1, scriptstateCheckpoint: { before: { $x: "0" } } },
+            },
+            { op: "begin", id: "c", generationId: "g" },
+        ]);
+        expect(["a", "b", "c"].map((id) => chat.messagePositionOf(refK, id))).toEqual([0, 1, 2]);
+        const positions = chat.messagePositionStats();
+        const validate = () => {
+            expect(chat.messagePositionStats().lookups).toBeGreaterThan(positions.lookups);
+            expect(["a", "b", "c"].map((id) => chat.messagePositionOf(refK, id))).toEqual([0, 1, 2]);
+            expect(chat.messagePositionStats().builds).toBe(positions.builds);
+        };
+        apply(
+            "J",
+            patchEvent("J", [{ messageId: "c", generationId: "g", seq: 0 }], {
+                baseRevision,
+                revision: beginRevision,
+                count: 3,
+                messages: [{ after: "b", message: row("c") }],
+            }),
+        );
+        const beforeAccepted = chat.messagePositionStats();
+        apply("J", accepted("J", "g", "c"));
+        expect(chat.messagePositionStats()).toEqual({
+            builds: beforeAccepted.builds,
+            lookups: beforeAccepted.lookups + 1,
+        });
+        apply("J", chunk("g", 1, "New reply", "c"));
+        expect(text("c")).toBe("New reply");
+        validate();
+        const checkpointRevision = serverWrite([
+            { op: "setText", id: "c", text: "New reply", generation: { id: "g", seq: 1 } },
+        ]);
+        apply("J", {
+            type: "chatPatch",
+            epoch: fake.store.epoch(),
+            characterId: "c",
+            id: "k",
+            baseRevision: beginRevision,
+            revision: checkpointRevision,
+            count: 3,
+            streaming: [{ messageId: "c", generationId: "g", seq: 1 }],
+            messages: [{ after: "b", id: "c", streamed: { generationId: "g", seq: 1 } }],
+        });
+        expect(text("c")).toBe("New reply");
+        expect(chat.heldChatRevision(refK)).toBe(checkpointRevision);
+        validate();
+        const finalRow = {
+            ...row("c"),
+            candidates: [candidates[0], { id: "new", data: "New reply", scriptstateAfter: { $x: "2" } }],
+            scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "2" } },
+        };
+        const revision = serverWrite([
+            { op: "setMessage", message: finalRow, generation: { id: "g", seq: 2, final: true } },
+        ]);
+        apply(
+            "J",
+            patchEvent("J", [], {
+                baseRevision: checkpointRevision,
+                revision,
+                count: 3,
+                messages: [{ after: "b", message: { ...finalRow, candidatesRevision: 2 } }],
+            }),
+        );
+        validate();
+        expect(chat.findChat(refK)!.message[2]).toEqual({
+            ...m("c", "New reply", "char"),
+            candidates: finalRow.candidates,
+            selected: 1,
+            candidatesRevision: 2,
+            scriptstateCheckpoint: finalRow.scriptstateCheckpoint,
+        });
+        expect(chat.findChat(refK)).toEqual(fake.chat("c", "k")!.data);
+        expect(chat.isMessageLocked(refK, "c")).toBe(false);
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(0);
+    });
+
     it("installs the job's generated row under the streamed text at a new and at an equal revision, honours the claim as a watermark, and releases the reply at the terminal patch", async () => {
         // The stream's frames run by hand: a chunk after the first in a frame waits for it.
         const runFrames = handRunFrames();

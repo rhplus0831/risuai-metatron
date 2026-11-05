@@ -173,6 +173,35 @@ describe("the live-update socket client", () => {
         await vi.dynamicImportSettled();
     });
 
+    it("advertises in-place reroll only after the current connection's hello and clears it while reconnecting", async () => {
+        vi.spyOn(Math, "random").mockReturnValue(1 - Number.EPSILON);
+        expect(feed.serverRerollsInPlace()).toBe(false);
+        const first = await started();
+        expect(feed.serverRerollsInPlace()).toBe(false);
+        first.frame({ type: "hello", epoch: "E1", cursor: 10, rerollInPlace: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(feed.serverRerollsInPlace()).toBe(true);
+        first.close();
+        expect(feed.serverRerollsInPlace()).toBe(false);
+        await vi.advanceTimersByTimeAsync(1000);
+        const reconnect = FakeSocket.instances.at(-1)!;
+        expect(reconnect).not.toBe(first);
+        // The reconnect is open, but its hello is held back while the user can press reroll.
+        expect(feed.serverRerollsInPlace()).toBe(false);
+        first.frame({ type: "hello", epoch: "E1", rerollInPlace: true });
+        expect(feed.serverRerollsInPlace()).toBe(false);
+        reconnect.frame({ type: "hello", epoch: "E1", cursor: 11 });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(feed.serverRerollsInPlace()).toBe(false);
+        reconnect.close();
+        await vi.advanceTimersByTimeAsync(1000);
+        FakeSocket.instances.at(-1)!.frame({ type: "hello", epoch: "E1", cursor: 12, rerollInPlace: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(feed.serverRerollsInPlace()).toBe(true);
+        feed.stopEventFeed();
+        expect(feed.serverRerollsInPlace()).toBe(false);
+    });
+
     it("connects once to the feed path with a signed JWT, reconciles on `hello`, and passes changes of the loaded epoch", async () => {
         const ws = await started();
         feed.startEventFeed();

@@ -242,6 +242,16 @@ function validRecoveryOp(value: unknown, chatId: string): value is ChatOp {
             return recoveryId(value.id) && typeof value.text === "string";
         case "setMessage":
             return validMessage(value.message);
+        case "selectCandidate":
+            return (
+                recoveryId(value.messageId) &&
+                typeof value.candidateId === "string" &&
+                value.candidateId.length > 0 &&
+                value.candidateId.length <= 32 &&
+                isPlainObject(value.expect) &&
+                Number.isSafeInteger(value.expect.candidatesRevision) &&
+                (value.expect.candidatesRevision as number) >= 0
+            );
         case "setTranslation":
             return recoveryId(value.id) && (value.translation === null || isMessageTranslation(value.translation));
         case "remove":
@@ -298,7 +308,7 @@ function validRecoveryOp(value: unknown, chatId: string): value is ChatOp {
  * Checks before values in operation order and the final touched values, without changing the boot
  * mirror: matching befores permit replay; matching final values recognize landed work. Predicates
  * need the whole pinned chat. Combinations whose ordering or normalization the sidecars cannot
- * prove are drafted, including mixed append/remove membership edits and `setTranslation` operations.
+ * prove are drafted, including mixed append/remove membership edits, translations, and candidate selections.
  */
 export function decideChatOpsRecovery(
     ops: JournalChatOp[],
@@ -324,7 +334,12 @@ export function decideChatOpsRecovery(
     for (const item of ops) {
         const { op, before } = item;
         if (!validRecoveryOp(op, chat.id!) || !before || !isPlainObject(before)) return "draft";
-        if (op.op === "setTranslation" || op.op === "begin" || ("generation" in op && op.generation !== undefined))
+        if (
+            op.op === "selectCandidate" ||
+            op.op === "setTranslation" ||
+            op.op === "begin" ||
+            ("generation" in op && op.generation !== undefined)
+        )
             return "draft";
         if (op.op === "append") {
             // Mixed membership edits need an order history that the before sidecars do not carry.
@@ -503,6 +518,8 @@ export function decideChatRecovery(
         };
     }
     if (pending!.ops.length > MAX_BATCH_OPERATIONS) return draft;
+    // A selection is a click against the list seen then, never fresh intent against a recovered list.
+    if (pending!.ops.some(({ op }) => op.op === "selectCandidate")) return draft;
     if (pending!.createSnapshot) {
         return !server &&
             pending!.baseRevision === null &&
@@ -808,6 +825,10 @@ function applyChatOps(ref: ChatRef, ops: ChatOp[]): string[] {
     for (const op of ops) {
         const present = new Set(findChat(ref)!.message.map((message) => message.chatId));
         if (op.op === "begin") continue;
+        if (op.op === "selectCandidate") {
+            skipped.push(`${op.op}: ${op.messageId}`);
+            continue;
+        }
         if (op.op === "create" || op.op === "replace" || op.op === "delete") {
             skipped.push(op.op);
             continue;

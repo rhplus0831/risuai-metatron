@@ -109,6 +109,7 @@ export function createChatStoreMock(overrides: ModuleMockOverrides<ChatStoreModu
         patchMessage: vi.fn(),
         setMessageText: vi.fn(),
         setMessageTranslation: vi.fn(() => false),
+        selectCandidate: vi.fn(),
         removeMessages: vi.fn(),
         removeMessagesUnasked: vi.fn(),
         restoreUnsentRemoval: vi.fn(() => false),

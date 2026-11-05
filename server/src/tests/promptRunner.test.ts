@@ -6,11 +6,12 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { type GenerationEvent, type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import type { ChangeFeed, ChangeFeedEvent } from "../data/changeFeed.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
 import { completionNotificationTag } from "../../../shared/notifications.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import * as resourceStores from "../data/resourceStore.ts";
-import type { ChatOp } from "../../../shared/chats.ts";
+import type { ChatGroup, ChatOp } from "../../../shared/chats.ts";
 import * as localModels from "../prompt/transformers.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
@@ -133,6 +134,7 @@ const provider = http.createServer(async (req, res) => {
 });
 
 let runnerStore: resourceStores.ResourceStore;
+let runnerFeed: ChangeFeed;
 let rootDir = "";
 let server: ReturnType<typeof createTestServer>;
 let transformers: localModels.TransformersService;
@@ -515,6 +517,7 @@ beforeAll(async () => {
         });
         transformers = createdModels.mock.results[0].value;
         runnerStore = createdStore.mock.results[0].value;
+        runnerFeed = createdStore.mock.calls[0][0].feed!;
     } finally {
         createdModels.mockRestore();
         createdStore.mockRestore();
@@ -1966,7 +1969,12 @@ describe("in-place reply candidates", () => {
     };
     const storedCarrier = async (chaId: string) =>
         (await readChat(chaId)).data.message.find((entry: any) => entry.chatId === "r");
-    const observeWrites = () => {
+    const observeWrites = (expected?: { chaId: string; rollback: boolean }) => {
+        const feed: Extract<ChangeFeedEvent, { type: "change" }>[] = [];
+        const unsubscribe = runnerFeed.subscribe((event) => {
+            if (event.type === "change") feed.push(event);
+        });
+        onTestFinished(unsubscribe);
         // Observe the real SQLite store's public acknowledgements without replacing its behavior.
         const writes = vi.spyOn(runnerStore, "applyChanges");
         onTestFinished(() => writes.mockRestore());
@@ -1979,6 +1987,65 @@ describe("in-place reply candidates", () => {
                 outcomes.every((outcome) => outcome === "applied"),
                 JSON.stringify(outcomes),
             ).toBe(true);
+            if (expected) {
+                const calls = writes.mock.calls
+                    .map(([changes, options], index) => ({
+                        groups: (changes.chats ?? []) as ChatGroup[],
+                        options,
+                        result: writes.mock.results[index],
+                    }))
+                    .filter(({ groups }) => groups.some((group) => group.characterId === expected.chaId));
+                const begin = calls.find(({ groups }) =>
+                    groups.some((group) => group.ops.some((op) => op.op === "begin" && op.id === "r")),
+                )!;
+                const final = calls.findLast(({ groups }) =>
+                    groups.some((group) =>
+                        group.ops.some(
+                            (op) => op.op === "setMessage" && op.message.chatId === "r" && op.generation?.final,
+                        ),
+                    ),
+                )!;
+                const control = {
+                    characterId: expected.chaId,
+                    chatId: "k",
+                    messageId: "r",
+                    generationId: expect.any(String),
+                };
+                expect(begin.options).toMatchObject({
+                    jobToken: expect.any(String),
+                    changes: true,
+                    committed: expect.any(Function),
+                    rerollAttempt: { ...control, action: "begin" },
+                });
+                expect(final.options).toMatchObject({
+                    jobToken: begin.options!.jobToken,
+                    changes: true,
+                    committed: expect.any(Function),
+                    ...(expected.rollback ? { rerollAttempt: { ...control, action: "rollback" } } : {}),
+                });
+                for (const [call, revision, texts] of [
+                    [begin, 1, ["Previous reply.", ""]],
+                    [final, 2, expected.rollback ? undefined : ["Previous reply.", "New reply."]],
+                ] as const) {
+                    expect(call.result.type).toBe("return");
+                    const committedRevision = call.result.value.chats[0].revision;
+                    const entry = feed
+                        .flatMap((event) => event.changes.chats)
+                        .find(
+                            (chat) =>
+                                chat.id === "k" &&
+                                chat.characterId === expected.chaId &&
+                                chat.revision === committedRevision,
+                        )!;
+                    expect(entry).toBeDefined();
+                    const row = entry.patch?.messages?.find(
+                        ({ message }) => (message as { chatId: string }).chatId === "r",
+                    )?.message as { candidates?: { data: string }[]; candidatesRevision?: number } | undefined;
+                    expect(row).toBeDefined();
+                    expect(row!.candidatesRevision).toBe(revision);
+                    expect(row!.candidates?.map((candidate) => candidate.data)).toEqual(texts);
+                }
+            }
         };
     };
     let providers: Record<string, unknown>;
@@ -2007,6 +2074,110 @@ describe("in-place reply candidates", () => {
         vi.useRealTimers();
     });
 
+    it("sends raw in-place reroll checkpoints by stream reference and the completed candidates as a whole row", async () => {
+        const chaId = await seed();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        let controller!: ReadableStreamDefaultController<Record<string, string>>;
+        const stream = new ReadableStream<Record<string, string>>({
+            start(value) {
+                controller = value;
+            },
+        });
+        const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+            await socketOpen;
+            return { type: "streaming", result: stream };
+        });
+        const chunk = deferred<void>();
+        const checkpoint = deferred<Extract<GenerationEvent, { type: "chatPatch" }>>();
+        const pending = job(
+            "reroll",
+            chaId,
+            { rerollMessageId: "r" },
+            {
+                streamedRows: true,
+                onChunk: () => chunk.resolve(),
+                onEvent: (event) => {
+                    if (
+                        event.type === "chatPatch" &&
+                        event.streaming.some((entry) => entry.messageId === "r" && entry.seq === 1)
+                    )
+                        checkpoint.resolve(event);
+                },
+            },
+        );
+        const cleanup = cleanupOnce(() => {
+            upstream.mockRestore();
+            vi.useRealTimers();
+        });
+        try {
+            controller.enqueue({ "0": "New reply." });
+            await chunk.promise;
+            await vi.advanceTimersByTimeAsync(3000);
+            const raw = await checkpoint.promise;
+            const generationId = raw.streaming[0].generationId;
+            expect(raw.messages).toEqual([{ after: "u", id: "r", streamed: { generationId, seq: 1 } }]);
+            controller.close();
+            const result = await pending;
+            expect(result.terminal).toMatchObject({
+                type: "done",
+                epoch,
+                messageId: "r",
+                revision: (await readChat(chaId)).revision,
+            });
+            expect(result.terminal).not.toHaveProperty("alternatives");
+            const patches = result.events.filter((event) => event.type === "chatPatch");
+            const final = patches.at(-1);
+            expect(final.streaming).toEqual([]);
+            expect(final.messages).toHaveLength(1);
+            expect(final.messages[0]).not.toHaveProperty("streamed");
+            expect(final.messages[0]).toMatchObject({
+                after: "u",
+                message: {
+                    chatId: "r",
+                    data: "New reply.",
+                    selected: 1,
+                    candidatesRevision: 2,
+                    candidates: [
+                        { id: expect.any(String), data: "Previous reply." },
+                        { id: expect.any(String), data: "New reply." },
+                    ],
+                },
+            });
+            expect(final.messages[0].message).toEqual(await storedCarrier(chaId));
+            const beginIndex = patches.findIndex((event) =>
+                event.messages?.some(
+                    (entry: { message?: { chatId: string; candidatesRevision?: number } }) =>
+                        entry.message?.chatId === "r" && entry.message.candidatesRevision === 1,
+                ),
+            );
+            expect(beginIndex).toBeGreaterThanOrEqual(0);
+            expect(patches[beginIndex].messages).toEqual([
+                {
+                    after: "u",
+                    message: expect.objectContaining({
+                        chatId: "r",
+                        data: "",
+                        selected: 1,
+                        candidatesRevision: 1,
+                        candidates: [
+                            expect.objectContaining({ data: "Previous reply." }),
+                            { id: expect.any(String), data: "" },
+                        ],
+                    }),
+                },
+            ]);
+            expect(patches.indexOf(raw)).toBeGreaterThan(beginIndex);
+        } finally {
+            try {
+                controller.close();
+            } catch {
+                /* Already closed by the test. */
+            }
+            cleanup();
+            await pending;
+        }
+    });
+
     it("streams into the same reply, snapshots bounded metadata, restores unchanged variables before start, and refreshes the selected candidate on completion", async () => {
         const chaId = await seed({
             triggerscript: [trig("start", [setVar("seen", "{{getvar::x}}/{{getvar::edited}}"), setVar("x", "2")])],
@@ -2016,7 +2187,7 @@ describe("in-place reply candidates", () => {
         const first = deferred<void>();
         const cleanup = cleanupOnce(() => release.resolve());
         mode = { chunks: ["New ", "reply."], delayMs: 0, holdBeforeChunk: { index: 1, until: release.promise } };
-        const assertApplied = observeWrites();
+        const assertApplied = observeWrites({ chaId, rollback: false });
         const beforeRequests = bodies.length;
         const pending = job("reroll", chaId, { rerollMessageId: "r" }, { onChunk: () => first.resolve() });
         try {
@@ -2167,7 +2338,7 @@ describe("in-place reply candidates", () => {
                 expect(await clientSetText(chaId, "r", "foreign edit")).toBe(409);
                 await edit(chaId, [{ op: "meta", merge: { scriptstate: { $edited: "external" } } }]);
             };
-            const assertApplied = observeWrites();
+            const assertApplied = observeWrites({ chaId, rollback: true });
             try {
                 const result = await job(
                     "reroll",
@@ -2245,6 +2416,59 @@ describe("in-place reply candidates", () => {
             expect(reply.candidates[reply.selected].data).toBe(reply.data);
         }
     });
+
+    it.each(["an earlier checkpointed candidate", "a checkpointed candidate after text-only selection and reload"])(
+        "restores the turn baseline before rerolling %s",
+        async (scenario) => {
+            const textOnly = scenario.includes("text-only");
+            const chaId = await seed({
+                messages: [
+                    { role: "user", chatId: "u", data: "Question." },
+                    carrier({
+                        data: textOnly ? "A" : "B",
+                        selected: textOnly ? 0 : 1,
+                        candidates: [
+                            { id: "A", data: "A", scriptstateAfter: { $x: "1" } },
+                            { id: "B", data: "B", ...(textOnly ? {} : { scriptstateAfter: { $x: "2" } }) },
+                        ],
+                        scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: textOnly ? "1" : "2" } },
+                    }),
+                ],
+                chat: { scriptstate: { $x: textOnly ? "1" : "2" } },
+                triggerscript: [trig("start", [setVar("seen", "{{getvar::x}}")])],
+            });
+            if (textOnly) {
+                await edit(chaId, [
+                    {
+                        op: "selectCandidate",
+                        messageId: "r",
+                        candidateId: "B",
+                        expect: { candidatesRevision: (await storedCarrier(chaId)).candidatesRevision },
+                    },
+                ]);
+                // A fresh API read, as a reloaded tab obtains: no old in-memory baseline is reused.
+                const reloaded = await readChat(chaId);
+                expect(reloaded.data.message.at(-1).scriptstateCheckpoint).toEqual({ before: { $x: "0" } });
+                expect(reloaded.data.scriptstate).toEqual({ $x: "1" });
+            }
+            await edit(chaId, [
+                {
+                    op: "selectCandidate",
+                    messageId: "r",
+                    candidateId: "A",
+                    expect: { candidatesRevision: (await storedCarrier(chaId)).candidatesRevision },
+                },
+            ]);
+            expect((await storedCarrier(chaId)).scriptstateCheckpoint).toEqual({
+                before: { $x: "0" },
+                after: { $x: "1" },
+            });
+            const result = await job("reroll", chaId, { rerollMessageId: "r" });
+            expect(result.terminal, JSON.stringify(result.terminal)).toMatchObject({ type: "done", messageId: "r" });
+            expect((await readChat(chaId)).data.scriptstate).toEqual({ $x: "0", $seen: "0" });
+            expect((await storedCarrier(chaId)).scriptstateCheckpoint.before).toEqual({ $x: "0" });
+        },
+    );
 
     it("takes a missing baseline at reroll start, retains a text-only candidate baseline without restoring, and checkpoints a reply without generation metadata", async () => {
         for (const checkpoint of [undefined, { before: { $x: "baseline" } }]) {
@@ -2329,7 +2553,12 @@ describe("in-place reply candidates", () => {
             ],
         });
         const sampled = await job("send", chaId);
-        expect(sampled.terminal?.type).toBe("done");
+        expect(sampled.terminal).toMatchObject({
+            type: "done",
+            epoch,
+            revision: (await readChat(chaId)).revision,
+            messageId: expect.any(String),
+        });
         expect(sampled.terminal).not.toHaveProperty("alternatives");
         const reply = (await readChat(chaId)).data.message.at(-1);
         expect(reply.selected).toBe(0);
@@ -2344,11 +2573,24 @@ describe("in-place reply candidates", () => {
         ]);
         expect(new Set(reply.candidates.map((entry: any) => entry.id)).size).toBe(3);
         const sequence = await job("command", chaId, {}, { command: { type: "manual", name: "commands" } });
-        expect(sequence.terminal).toMatchObject({ type: "done", sequence: { total: 1, sent: 1 } });
+        expect(sequence.terminal).toMatchObject({
+            type: "done",
+            epoch,
+            revision: (await readChat(chaId)).revision,
+            sequence: { total: 1, sent: 1 },
+        });
         expect(sequence.terminal).not.toHaveProperty("alternatives");
         const part = sequence.events.filter((event) => event.type === "sequence");
         expect(part).toHaveLength(1);
         expect(part[0]).not.toHaveProperty("alternatives");
+        expect(part[0]).toMatchObject({
+            type: "sequence",
+            epoch,
+            index: 0,
+            total: 1,
+            sent: 1,
+            messageId: expect.any(String),
+        });
         const afterCommand = await readChat(chaId);
         expect(afterCommand.data.message.some((entry: any) => entry.data === "From command")).toBe(true);
         const older = afterCommand.data.message.find((entry: any) => entry.chatId === reply.chatId);
