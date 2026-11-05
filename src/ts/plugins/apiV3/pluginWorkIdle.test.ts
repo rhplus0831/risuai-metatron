@@ -54,11 +54,13 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
     risuUnescape: (text: string) => text,
 }));
-vi.mock("./permissionStore", () => ({
-    hasPermissionGrant: () => false,
-    getLastGrantTime: () => undefined,
-    recordPermissionGrants: vi.fn(async () => undefined),
-}));
+vi.mock("./permissionStore", async () =>
+    (await import("./tests/permissionStoreMock")).createPermissionStoreMock({
+        hasPermissionGrant: () => false,
+        getLastGrantTime: () => undefined,
+        recordPermissionGrants: vi.fn(async () => undefined),
+    }),
+);
 
 import { executePluginV3, loadV3Plugins, onPluginWorkChange, pluginWorkIdle } from "./v3.svelte";
 import { noteChannelCallbacks } from "src/ts/network/generationJobs";

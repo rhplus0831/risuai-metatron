@@ -1299,6 +1299,10 @@ if (granted) {
 
 **Available permissions:** `'fetchLogs'`, `'db'`, `'mainDom'`, `'replacer'`
 
+A grant is not permanent: the user can reset a plugin's permissions in Settings > Plugins, and removing a plugin
+revokes its grants. After a reset, `requestPluginPermission` and the APIs that need consent ask again; a prompt that
+was open during the reset answers `false`.
+
 ### Fetch Logs
 
 Access a log of recent LLM HTTP requests (requires `'fetchLogs'` permission):

@@ -133,6 +133,8 @@ export function createBootMock<K extends keyof BootModules>(
             getLastGrantTime: vi.fn<BootModules["permissionStore"]["getLastGrantTime"]>(),
             recordPermissionGrants: vi.fn<BootModules["permissionStore"]["recordPermissionGrants"]>(),
             refreshPluginPermissions: vi.fn<BootModules["permissionStore"]["refreshPluginPermissions"]>(),
+            revokePermissionGrants: vi.fn<BootModules["permissionStore"]["revokePermissionGrants"]>(),
+            onPermissionGrantsRemoved: vi.fn<BootModules["permissionStore"]["onPermissionGrantsRemoved"]>(),
         },
         router: {
             browserHistory: vi.fn<BootModules["router"]["browserHistory"]>(),

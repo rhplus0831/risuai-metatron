@@ -14,7 +14,7 @@
   - `shared/plugins.ts`
   - `plugins.md` (the plugin author guide, at the repository root)
   - `src/ts/storage/pluginStorageStore.svelte.ts`
-  - `src/lib/Setting/Pages/PluginSettings.svelte`
+  - `src/lib/Setting/Pages/PluginSettings.svelte`, `PluginDataSettings.svelte`
   - `src/lib/Others/PluginDefinedIcon.svelte`
   - `public/plugin_start.7z` (the starter template, binary)
 - Not here:
@@ -163,10 +163,13 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - v3 permission grants live in the server-owned `pluginPermissions` resource (`permissionStore.ts`), outside the
   settings records: `grants` keyed by `<sha256 of the script>_<permission>`, `lastGrantTime` by plugin name and
   permission.
-  - Only `getPluginPermission` (host consent) adds to it; no plugin API, `getDatabase` snapshot,
+  - Only host consent (`getPluginPermission`) and the legacy import add to it; no plugin API, `getDatabase` snapshot,
     `setDatabase`/`setDatabaseLite`, or `pluginCustomStorage` write can reach it.
   - The script hash is taken from the script the plugin was loaded with, and answers are cached per plugin and
     permission for the page load (cleared on unload).
+  - Only the settings page revokes (`resetPluginPermissions`, `removeOrphanPluginPermissionGrants`); a revoked grant
+    drops its cached answer in every tab.
+- `PluginDataSettings.svelte` (component contract): every namespace by size, deleted through the mutations above.
 
 ## Coupling
 

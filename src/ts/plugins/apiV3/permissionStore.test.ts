@@ -17,6 +17,7 @@ import {
     loadPluginPermissions,
     recordPermissionGrants,
     refreshPluginPermissions,
+    revokePermissionGrants,
     seedPluginPermissions,
 } from "./permissionStore";
 
@@ -180,6 +181,108 @@ describe("recordPermissionGrants", () => {
         await expect(recordPermissionGrants({ grants: ["x"] })).rejects.toMatchObject({ status: 500 });
         await recordPermissionGrants({ grants: ["x"] });
         expect(hasPermissionGrant("x")).toBe(true);
+    });
+});
+
+describe("revokePermissionGrants", () => {
+    const mine = (key: string) => key.startsWith("hash-foo_");
+    const myTime = (key: string) => key === "foo_db_lastGrantTime";
+    const writes = () => fake.requests.filter(({ method }) => method === "PUT");
+
+    it("reads unseen grants before matching and writes nothing when no keys match", async () => {
+        await revokePermissionGrants(mine, myTime);
+        expect(fake.get("pluginPermissions", "main")).toBeNull();
+        expect(writes()).toEqual([]);
+
+        fake.set("pluginPermissions", "main", {
+            grants: { "hash-foo_db": true, "hash-other_db": true },
+            lastGrantTime: { foo_db_lastGrantTime: 10, foo_bar_db_lastGrantTime: 20 },
+        });
+        expect(hasPermissionGrant("hash-foo_db")).toBe(false);
+        await revokePermissionGrants(mine, myTime);
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { "hash-other_db": true },
+            lastGrantTime: { foo_bar_db_lastGrantTime: 20 },
+        });
+        expect(writes()).toHaveLength(1);
+
+        await revokePermissionGrants(mine, myTime);
+        expect(writes()).toHaveLength(1);
+    });
+
+    it("reapplies selectors after four revision conflicts and preserves concurrent grants of another plugin", async () => {
+        const timeKeys = new Set([
+            "foo_db_lastGrantTime",
+            "foo_inlay_lastGrantTime",
+            "foo_provider_lastGrantTime",
+            "foo_sendChat_lastGrantTime",
+            "foo_mainDom_lastGrantTime",
+        ]);
+        fake.set("pluginPermissions", "main", {
+            grants: { "hash-foo_db": true, "hash-other_db": true },
+            lastGrantTime: { foo_db_lastGrantTime: 10, foo_bar_db_lastGrantTime: 20 },
+        });
+        await loadPluginPermissions();
+        const statuses: number[] = [];
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                if (init?.method !== "PUT") return fake.fetch(path, init);
+                if (statuses.length < 4) {
+                    const permission = ["inlay", "provider", "sendChat", "mainDom"][statuses.length];
+                    const current = fake.data("pluginPermissions", "main");
+                    fake.set("pluginPermissions", "main", {
+                        grants: {
+                            ...current.grants,
+                            [`hash-foo_${permission}`]: true,
+                            [`hash-other_${permission}`]: true,
+                        },
+                        lastGrantTime: {
+                            ...current.lastGrantTime,
+                            [`foo_${permission}_lastGrantTime`]: 30,
+                            [`foo_bar_${permission}_lastGrantTime`]: 40,
+                        },
+                    });
+                }
+                const response = await fake.fetch(path, init);
+                statuses.push(response.status);
+                return response;
+            },
+        };
+
+        await revokePermissionGrants(mine, (key) => timeKeys.has(key));
+
+        expect(statuses).toEqual([409, 409, 409, 409, 200]);
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: {
+                "hash-other_db": true,
+                "hash-other_inlay": true,
+                "hash-other_provider": true,
+                "hash-other_sendChat": true,
+                "hash-other_mainDom": true,
+            },
+            lastGrantTime: {
+                foo_bar_db_lastGrantTime: 20,
+                foo_bar_inlay_lastGrantTime: 40,
+                foo_bar_provider_lastGrantTime: 40,
+                foo_bar_sendChat_lastGrantTime: 40,
+                foo_bar_mainDom_lastGrantTime: 40,
+            },
+        });
+    });
+
+    it("stops after five conflicting writes without overwriting the server record", async () => {
+        const stored = { grants: { "hash-foo_db": true, "hash-other_db": true }, lastGrantTime: {} };
+        fake.set("pluginPermissions", "main", stored);
+        server.current = {
+            fetch: (path: string, init?: RequestInit) => {
+                if (init?.method === "PUT") fake.set("pluginPermissions", "main", stored);
+                return fake.fetch(path, init);
+            },
+        };
+
+        await expect(revokePermissionGrants(mine, myTime)).rejects.toThrow();
+        expect(writes()).toHaveLength(5);
+        expect(fake.data("pluginPermissions", "main")).toEqual(stored);
     });
 });
 

@@ -78,6 +78,41 @@ function readEntry(name: string, key: string): unknown {
     return values && Object.hasOwn(values, key) ? detach(values[key]) : null;
 }
 
+export type PluginStorageInventoryEntry = { key: string; bytes: number };
+
+/** A size snapshot of the three server namespaces; reading never creates or rewrites storage. */
+export function pluginStorageInventory(): {
+    custom: PluginStorageInventoryEntry[];
+    pluginStorage: PluginStorageInventoryEntry[];
+    safeLocalPluginStorage: PluginStorageInventoryEntry[];
+} {
+    const encoder = new TextEncoder();
+    const entries = (values: Dictionary) =>
+        Object.entries(values).map(([key, value]) => ({
+            key,
+            bytes: encoder.encode(JSON.stringify(value)).byteLength,
+        }));
+    const custom = Object.fromEntries(
+        Object.entries(settings.pluginStorage ?? {}).filter(
+            ([key, value]) =>
+                (key !== PLUGIN_STORAGE_KEY && key !== SAFE_LOCAL_PLUGIN_STORAGE_KEY) ||
+                typeof value !== "object" ||
+                value === null,
+        ),
+    );
+    return {
+        custom: entries(custom),
+        pluginStorage: entries(dictionary(PLUGIN_STORAGE_KEY, false) ?? {}),
+        safeLocalPluginStorage: entries(dictionary(SAFE_LOCAL_PLUGIN_STORAGE_KEY, false) ?? {}),
+    };
+}
+
+/** A top-level custom value (a detached copy), or `null`. */
+export function getPluginCustomValue(key: string): unknown {
+    const values = settings.pluginStorage;
+    return values && Object.hasOwn(values, key) ? detach(values[key]) : null;
+}
+
 /** A v3 `pluginStorage` value (a copy), or `null`. */
 export function getPluginStorageValue(key: string): unknown {
     return readEntry(PLUGIN_STORAGE_KEY, key);

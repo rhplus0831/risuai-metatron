@@ -99,7 +99,13 @@ import { registerMCPModule, registeredCustomPluginMCPs, unregisterMCPModule } fr
 import { getInlayAsset } from "src/ts/process/files/inlays";
 import { getLLMCache, searchLLMCache } from "src/ts/translator/translator";
 import { hasher, risuChatParser, risuChatParserScoped, type CbsConditions } from "src/ts/parser/parser.svelte";
-import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./permissionStore";
+import {
+    getLastGrantTime,
+    hasPermissionGrant,
+    onPermissionGrantsRemoved,
+    recordPermissionGrants,
+    revokePermissionGrants,
+} from "./permissionStore";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat } from "src/ts/process/index.svelte";
 import { isChatBusy } from "src/ts/process/chatStatus.svelte";
@@ -736,7 +742,8 @@ export function onPluginWorkChange(listener: () => void): () => void {
     };
 }
 
-type PluginPermission = "fetchLogs" | "db" | "mainDom" | "replacer" | "provider" | "sendChat" | "inlay";
+const pluginPermissions = ["fetchLogs", "db", "mainDom", "replacer", "provider", "sendChat", "inlay"] as const;
+type PluginPermission = (typeof pluginPermissions)[number];
 
 /** The plugin as it was loaded: the hash of this script, not of the database copy, keys its grants. */
 type PluginIdentity = { readonly name: string; readonly script: string };
@@ -749,9 +756,16 @@ type StorageDiscardedEvent = {
     customStorage: boolean;
 };
 
-/** Answers given this page load, per plugin and permission; cleared when the plugin unloads. */
-const permissionAnswers = new Map<string, boolean>();
+/** Answers given this page load, cleared on unload, reset, or removal of their persisted grant. */
+const permissionAnswers = new Map<string, { granted: boolean; grantKey: string }>();
+const permissionResetGenerations = new Map<string, number>();
 const permissionAnswerKey = (pluginName: string, permission: string) => `${pluginName}\u0000${permission}`;
+
+onPermissionGrantsRemoved((removed) => {
+    for (const [key, answer] of permissionAnswers) {
+        if (answer.granted && removed.has(answer.grantKey)) permissionAnswers.delete(key);
+    }
+});
 
 const forgetPluginPermissions = (pluginName: string) => {
     for (const key of [...permissionAnswers.keys()]) {
@@ -760,6 +774,43 @@ const forgetPluginPermissions = (pluginName: string) => {
         }
     }
 };
+
+const permissionTimeKeys = (name: string) =>
+    pluginPermissions.map((permission) => `${name}_${permission}_lastGrantTime`);
+const scriptHash = (script: string) => hasher(new TextEncoder().encode(script));
+
+/** Resets both the settings script and any still-loaded script, invalidating outstanding consent prompts. */
+export async function resetPluginPermissions(name: string, script: string): Promise<void> {
+    permissionResetGenerations.set(name, (permissionResetGenerations.get(name) ?? 0) + 1);
+    forgetPluginPermissions(name);
+    // Capture before the first await: a reload can unload the old script while hashing runs.
+    const scripts = new Set([script]);
+    for (const instance of v3PluginInstances) {
+        if (instance.name === name) scripts.add(instance.script);
+    }
+    const prefixes = (await Promise.all([...scripts].map(scriptHash))).map((hash) => `${hash}_`);
+    const timeKeys = new Set(permissionTimeKeys(name));
+    try {
+        await revokePermissionGrants(
+            (key) => prefixes.some((prefix) => key.startsWith(prefix)),
+            (key) => timeKeys.has(key),
+        );
+    } finally {
+        forgetPluginPermissions(name);
+    }
+}
+
+/** Keeps grants for installed scripts and scripts still running during a deferred reload. */
+export async function removeOrphanPluginPermissionGrants(): Promise<void> {
+    const identities = [...(settings.plugins ?? []), ...v3PluginInstances];
+    const scripts = new Set(identities.map(({ script }) => script));
+    const timeKeys = new Set(identities.flatMap(({ name }) => permissionTimeKeys(name)));
+    const hashes = new Set(await Promise.all([...scripts].map(scriptHash)));
+    await revokePermissionGrants(
+        (key) => !hashes.has(key.split("_", 1)[0]),
+        (key) => !timeKeys.has(key),
+    );
+}
 
 type PluginV3ProviderOptions = PluginProviderOptions & {
     model?: LLMModel;
@@ -778,10 +829,11 @@ const getPluginPermission = async (
     permissionDesc: PluginPermission,
     reconfirm: boolean | "periodically" = false,
 ) => {
+    const generation = permissionResetGenerations.get(plugin.name) ?? 0;
     const answerKey = permissionAnswerKey(plugin.name, permissionDesc);
     const answered = permissionAnswers.get(answerKey);
     if (answered !== undefined) {
-        return answered;
+        return answered.granted;
     }
 
     let requiresReconfirm = false;
@@ -798,10 +850,11 @@ const getPluginPermission = async (
         requiresReconfirm = true;
     }
 
-    const pluginHash = (await hasher(new TextEncoder().encode(plugin.script))) + `_${permissionDesc}`;
+    const pluginHash = (await scriptHash(plugin.script)) + `_${permissionDesc}`;
+    if (generation !== (permissionResetGenerations.get(plugin.name) ?? 0)) return false;
 
     if (!requiresReconfirm && hasPermissionGrant(pluginHash)) {
-        permissionAnswers.set(answerKey, true);
+        permissionAnswers.set(answerKey, { granted: true, grantKey: pluginHash });
         return true;
     }
 
@@ -826,8 +879,9 @@ const getPluginPermission = async (
         return false;
     }
     const conf = await alertConfirm(alertTitle);
+    if (generation !== (permissionResetGenerations.get(plugin.name) ?? 0)) return false;
     if (conf) {
-        permissionAnswers.set(answerKey, true);
+        permissionAnswers.set(answerKey, { granted: true, grantKey: pluginHash });
         try {
             await recordPermissionGrants({
                 grants: [pluginHash],
@@ -837,9 +891,9 @@ const getPluginPermission = async (
             // The grant still holds for this page load; it is asked again after a reload.
             console.error(`[RisuAI Plugin: ${pluginName}] Could not save the permission grant:`, error);
         }
-        return true;
+        return generation === (permissionResetGenerations.get(plugin.name) ?? 0);
     }
-    permissionAnswers.set(answerKey, false);
+    permissionAnswers.set(answerKey, { granted: false, grantKey: pluginHash });
     return false;
 };
 
@@ -1499,10 +1553,8 @@ const readAssetImage = (path: string) => {
  * Creates one instance's API and context owner. Wrapped hooks consume `invokeHook`'s handoff before
  * awaiting and keep it on this owner's stack until settlement; reloading creates a fresh owner.
  */
-const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
+const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity: PluginIdentity) => {
     const safeLocalStorage = new SafeLocalStorage();
-    // Captured now: a plugin with database access could rewrite its own script in the database.
-    const identity: PluginIdentity = { name: plugin.name, script: plugin.script };
     // Keyed by the original callback so removal finds its registered wrapper.
     const hookWrappers = new WeakMap<Function, Function>();
     const contextOwner = {};
@@ -2642,8 +2694,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
     };
 };
 
-type V3PluginInstance = {
-    name: string;
+type V3PluginInstance = PluginIdentity & {
     host: SandboxHost;
 };
 
@@ -2689,16 +2740,18 @@ export async function executePluginV3(plugin: RisuPlugin) {
     const iframe = document.createElement("iframe");
     iframe.style.display = "none";
     document.body.appendChild(iframe);
-    const host = new SandboxHost(makeRisuaiAPIV3(iframe, plugin));
+    // Both the API and instance retain the script actually loaded, even if settings change later.
+    const identity: PluginIdentity = { name: plugin.name, script: plugin.script };
+    const host = new SandboxHost(makeRisuaiAPIV3(iframe, plugin, identity));
     host.onActivityChanged?.(notifyPluginWork);
     v3PluginInstances.push({
-        name: plugin.name,
+        ...identity,
         host,
     });
     // Developer diagnostics are selected at load time; changing the setting applies on the next load.
     host.run(
         iframe,
-        plugin.script,
+        identity.script,
         settings.ui.enableDevTools ? { guestPrelude: databaseAccessRecorderScript(plugin.name) } : undefined,
     );
     console.log(`[RisuAI Plugin: ${plugin.name}] Loaded API V3 plugin.`);

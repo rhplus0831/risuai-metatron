@@ -272,6 +272,7 @@
     { "match": "src/ts/plugins/**", "guide": "plugin-sandbox" },
     { "match": "plugins.md", "guide": "plugin-sandbox" },
     { "match": "src/lib/Setting/Pages/PluginSettings.svelte", "guide": "plugin-sandbox" },
+    { "match": "src/lib/Setting/Pages/PluginDataSettings.svelte", "guide": "plugin-sandbox" },
     { "match": "src/lib/Others/Plugin*.svelte", "guide": "plugin-sandbox" },
     { "match": "public/plugin_start.7z", "guide": "plugin-sandbox" },
     { "match": "src/ts/process/mcp/**", "guide": "mcp" },

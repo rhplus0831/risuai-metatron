@@ -64,6 +64,66 @@ afterEach(() => {
     server.current?.close();
 });
 
+describe("plugin storage inventory", () => {
+    it("reads an absent inventory without creating the pluginStorage record", async () => {
+        vi.resetModules();
+        const ps = await import("../pluginStorageStore.svelte");
+        const { settings } = await import("../settingsViews.svelte");
+
+        expect(settings.pluginStorage).toBeUndefined();
+        expect(ps.pluginStorageInventory()).toEqual({ custom: [], pluginStorage: [], safeLocalPluginStorage: [] });
+        expect(ps.getPluginCustomValue("missing")).toBeNull();
+        expect(settings.pluginStorage).toBeUndefined();
+    });
+
+    it("lists JSON byte sizes and values, treating reserved objects and lists as namespaces and scalars as custom keys", async () => {
+        const { sync, pluginStorageStore: ps, record } = await boot();
+        const stored = {
+            custom: { text: "한🙂" },
+            _pluginStorage: ["é", null],
+            _safeLocalPluginStorage: { flag: false, quoted: '"\n' },
+        };
+        ps.replacePluginCustomStorage(stored);
+        await sync.flushResources();
+
+        // JSON punctuation counts too: {"text":"한🙂"} is 18 UTF-8 bytes; "é" is 4.
+        expect(ps.pluginStorageInventory()).toEqual({
+            custom: [{ key: "custom", bytes: 18 }],
+            pluginStorage: [
+                { key: "0", bytes: 4 },
+                { key: "1", bytes: 4 },
+            ],
+            safeLocalPluginStorage: [
+                { key: "flag", bytes: 5 },
+                { key: "quoted", bytes: 6 },
+            ],
+        });
+        expect(ps.getPluginCustomValue("custom")).toEqual({ text: "한🙂" });
+        expect(ps.getPluginStorageValue("0")).toBe("é");
+        expect(ps.getSafeLocalPluginValue("quoted")).toBe('"\n');
+        await sync.flushResources();
+        expect(record("pluginStorage")).toEqual(stored);
+
+        ps.replacePluginCustomStorage({ _pluginStorage: { count: 12 }, _safeLocalPluginStorage: ["🙂"] });
+        expect(ps.pluginStorageInventory()).toEqual({
+            custom: [],
+            pluginStorage: [{ key: "count", bytes: 2 }],
+            safeLocalPluginStorage: [{ key: "0", bytes: 6 }],
+        });
+
+        ps.replacePluginCustomStorage({ _pluginStorage: null, _safeLocalPluginStorage: "한" });
+        expect(ps.pluginStorageInventory()).toEqual({
+            custom: [
+                { key: "_pluginStorage", bytes: 4 },
+                { key: "_safeLocalPluginStorage", bytes: 5 },
+            ],
+            pluginStorage: [],
+            safeLocalPluginStorage: [],
+        });
+        expect(ps.getPluginCustomValue("_safeLocalPluginStorage")).toBe("한");
+    });
+});
+
 describe("the v3 pluginStorage dictionary", () => {
     it("sets, reads a detached copy, lists, removes, and clears, with every write saved", async () => {
         const { sync, pluginStorageStore: ps, record } = await boot();
