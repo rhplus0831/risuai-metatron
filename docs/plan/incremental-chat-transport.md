@@ -37,7 +37,7 @@ store](../structure/chat-store.md) (the message index, what a streamed row means
 [persistence](../structure/persistence.md) (the shared types in `shared/resources.ts` and `shared/events.ts`),
 [test harness](../structure/test-harness.md) (the drivers and probes the slices change and rerun).
 
-Relation to the other active plans: the [Render Work Budget plan](render-work-budget.md) drops its F1 memo after
+Relation to the other active plans: the [Render Work Budget plan](../archived-plan/README.md) (archived) dropped its F1 memo after
 the design audit (X3); this plan's Slice 0 owns the message position index (D1). The [Job Handoff
 plan](job-handoff.md) adds viewer sockets, `role`, `register` and `clients` to the same sockets (its D2, D3,
 D6): this plan adds no frame those need; under it every socket of a job shares the one `sentChat` baseline, and

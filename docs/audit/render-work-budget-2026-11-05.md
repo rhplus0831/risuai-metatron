@@ -1,6 +1,6 @@
 # Render Work Budget Measurements (2026-11-05)
 
-The numbers behind the [Render Work Budget plan](../plan/render-work-budget.md) (D9): how much render work the chat
+The numbers behind the [Render Work Budget plan](../archived-plan/README.md) (archived; `git show a72c5f736:docs/plan/render-work-budget.md`) (D9): how much render work the chat
 screen does for a styled, auto-translated chat, how much of it still runs after the chat is left, how many times one
 stylesheet is prepared, the mount profile at 30, 150 and 600 rows, and the screenshot export's peak memory. This
 document holds the **baseline**, measured before Slices 1–4 changed any code, and the **after** run with Slices 0–4

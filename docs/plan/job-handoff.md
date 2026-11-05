@@ -55,8 +55,8 @@ Relation to the other active plans, which share files with this one (the slices'
   `src/lib/ChatScreens/DefaultChatScreen.svelte`. Its three job toasts (`rerollCandidateDropped`,
   `rerollCandidateTooLarge`, `scriptstateCheckpointSkipped`) are `alertToast` notices, so under D2 they reach
   the job's owner only: a phone with `preferHandoff` on never sees them. Recorded here; neither plan changes it.
-- [Render Work Budget](render-work-budget.md) Slice 4 edits `src/lib/ChatScreens/DefaultChatScreen.svelte`, which
-  this plan's Slice 3 also edits.
+- [Render Work Budget](../archived-plan/README.md) (archived) Slice 4 edited `src/lib/ChatScreens/DefaultChatScreen.svelte`,
+  which this plan's Slice 3 also edits; both landed.
 - `src/lang/en.ts` and `ko.ts` are shared by several slices of every plan; their keys are append-only.
 
 ## Goal
