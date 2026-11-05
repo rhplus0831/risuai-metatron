@@ -126,6 +126,34 @@ describe("editor highlight registry", () => {
         expect(registry.size).toBe(0);
     });
 
+    it("copies at most the departing ranges when 150 editors are removed synchronously", () => {
+        let rangeCopies = 0;
+        vi.stubGlobal(
+            "Highlight",
+            class extends TestHighlight {
+                // Set's constructor also sends each supplied range through add.
+                add(range: Range) {
+                    rangeCopies++;
+                    return super.add(range);
+                }
+            },
+        );
+        const editorCount = 150;
+        const ids = Array.from({ length: editorCount }, () => {
+            const id = highlighting.getNewHighlightId();
+            highlighting.highlighter(editor("{{user}}"), id);
+            return id;
+        });
+        expect(registry.size).toBe(1);
+        expect(registeredRanges()).toHaveLength(editorCount);
+
+        rangeCopies = 0;
+        for (const id of ids) highlighting.removeHighlight(id);
+
+        expect(rangeCopies).toBeLessThanOrEqual(editorCount);
+        expect(registry.size).toBe(0);
+    });
+
     it("never touches the registry or another editor's highlights when TextAreaInput highlighting is off", async () => {
         const id = highlighting.getNewHighlightId();
         const liveEditor = editor("{{user}}");

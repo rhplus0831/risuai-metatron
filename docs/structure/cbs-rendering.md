@@ -136,8 +136,9 @@ and video have two modes:
 2. `src/lib/ChatScreens/ChatBody.svelte` `markParsing` captures the transform context and calls `ParseMarkdown` in
    `notrim` mode for the body (`pretranslate` for translation inputs); its steps are the `ParseMarkdown` comment. Only
    the `editdisplay` step leaves the browser: [Display transform](#display-transform). The run's abort signal goes on to
-   `ParseMarkdown`, `serverProcessScript`, and `translateHTML`; the reads a failed run retries are
-   `src/ts/parser/renderErrors.ts`, the retry policy the `ChatBody` contract ([ui-theming](ui-theming.md#message-row)).
+   `ParseMarkdown`, `serverProcessScript`, `translateHTML`, and `postTranslationParse`; the reads a failed run retries
+   are `src/ts/parser/renderErrors.ts`, the retry policy the `ChatBody` contract
+   ([ui-theming](ui-theming.md#message-row)).
 3. `ChatBody`'s `shownBody` sanitizes the result (`addMetadataToElement(pruneEmptyBilingualPairs(trimMarkdown(...)))`).
    Under the chat screen (`DefaultChatScreen` provides a `ChatStyleRegistry`), a body that holds a `<style>` or
    `<risu-style>` goes through `trimMarkdownSharingStyles` instead: [Shared styles](#shared-styles).
@@ -320,8 +321,7 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
   `transformReactive.svelte.ts` the lock source, and timers are fake.
 - `src/ts/parser/tests/parseMarkdownLifetime.test.ts` stubs `getFileSrc`, `getInlayMedia`, and `serverProcessScript` to
   abort or reject a render between its awaits.
-- `src/ts/gui/highlight.test.ts` stands in for `CSS.highlights` and `Highlight` (`TestHighlight`), which happy-dom
-  lacks.
+- `src/ts/gui/highlight.test.ts` stubs `CSS.highlights` and `Highlight`, which happy-dom lacks.
 - `e2e/serverTransform.spec.ts`, and `e2e/transformGolden.spec.ts`, which compares final browser HTML with
   `server/src/tests/fixtures/baseline/markdown.json` (read, never written).
 - `slow`: the fresh-process cases of `server/src/tests/cbsLimits.test.ts`.

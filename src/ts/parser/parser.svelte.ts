@@ -246,8 +246,9 @@ function renderMarkdown(md: MarkdownIt, data: string) {
 /**
  * `renderMarkdown` with fenced code highlighted by highlight.js, each language loaded on first use; an unknown
  * language is escaped plain code, `risuerror` an error box, and a block that fails to highlight stays a placeholder.
+ * Checks the render signal before each fence and after each language import; cancellation propagates to the caller.
  */
-async function renderHighlightableMarkdown(data: string) {
+async function renderHighlightableMarkdown(data: string, signal?: AbortSignal) {
     let rendered = renderMarkdown(mdHighlight, data);
     const highlightPlaceholders = rendered.match(/<pre-hljs-placeholder lang="(.+?)">(.+?)<\/pre-hljs-placeholder>/gms);
     if (!highlightPlaceholders) {
@@ -255,6 +256,7 @@ async function renderHighlightableMarkdown(data: string) {
     }
 
     for (const placeholder of highlightPlaceholders) {
+        signal?.throwIfAborted();
         try {
             let lang = placeholder.match(/lang="(.+?)"/)?.[1];
             const code = placeholder.match(/<pre-hljs-placeholder lang=".+?">(.+?)<\/pre-hljs-placeholder>/ms)?.[1];
@@ -424,6 +426,7 @@ async function renderHighlightableMarkdown(data: string) {
                     fileExt = "none";
                 }
             }
+            signal?.throwIfAborted();
             if (languageModule) {
                 hljs.registerLanguage(lang, languageModule.default);
             }
@@ -444,7 +447,9 @@ async function renderHighlightableMarkdown(data: string) {
                     `<pre class="hljs" x-hl-lang="${fileExt}"><code>${highlighted}</code></pre>`,
                 );
             }
-        } catch (error) {}
+        } catch (error) {
+            if (signal?.aborted) throw error;
+        }
     }
 
     return rendered;
@@ -1018,8 +1023,8 @@ function parseThoughtsAndTools(data: string) {
  * chat; a group owner included), else of the selected character; `{{source::user}}` is that chat's persona icon.
  * Both are read untracked before the first await and shared by both asset passes.
  * The signal is checked before each awaited stage (both asset passes, the script stage, inlays and Markdown)
- * and after the last; `serverProcessScript` also checks it on entry. Rejected asset and inlay reads are marked
- * transient for the row.
+ * and after the last; Markdown highlighting also checks before each fence and after each language import.
+ * `serverProcessScript` also checks it on entry. Rejected asset and inlay reads are marked transient for the row.
  */
 export async function ParseMarkdown(
     data: string,
@@ -1106,7 +1111,7 @@ export async function ParseMarkdown(
     data = encodeStyle(data);
     if (mode === "normal" || mode === "notrim") {
         signal?.throwIfAborted();
-        data = await renderHighlightableMarkdown(data);
+        data = await renderHighlightableMarkdown(data, signal);
         signal?.throwIfAborted();
 
         if (mode === "notrim") {
@@ -1316,7 +1321,11 @@ export function addMetadataToElement(data: string, modelShortName: string) {
     return d + encodedMetaCode;
 }
 
-export async function postTranslationParse(data: string) {
+/**
+ * Trims translated HTML lines and renders Markdown, checking the signal before each code fence and after each
+ * language import during highlighting.
+ */
+export async function postTranslationParse(data: string, signal?: AbortSignal) {
     let lines = data.split("\n");
 
     for (let i = 0; i < lines.length; i++) {
@@ -1326,7 +1335,7 @@ export async function postTranslationParse(data: string) {
         }
     }
 
-    data = await renderHighlightableMarkdown(lines.join("\n"));
+    data = await renderHighlightableMarkdown(lines.join("\n"), signal);
     return data;
 }
 

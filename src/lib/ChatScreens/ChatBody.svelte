@@ -383,7 +383,7 @@
                     const marked = await parse(data, "pretranslate");
                     const translatedText = await translate(marked);
                     signal?.throwIfAborted();
-                    const translated = await postTranslationParse(translatedText);
+                    const translated = await postTranslationParse(translatedText, signal);
                     signal?.throwIfAborted();
                     lastParsedQueue = translated;
                     lastCharArg = charArg;

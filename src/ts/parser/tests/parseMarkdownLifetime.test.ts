@@ -1,3 +1,4 @@
+import hljs from "highlight.js/lib/core";
 import { flushSync } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -40,6 +41,56 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("ParseMarkdown render lifetime", () => {
+    it("rejects an abort during the first language import without highlighting or importing the next language", async () => {
+        expect(hljs.getLanguage("python")).toBeUndefined();
+        expect(hljs.getLanguage("rust")).toBeUndefined();
+        let releaseImport!: () => void;
+        const heldImport = new Promise<void>((resolve) => (releaseImport = resolve));
+        let importStarted!: () => void;
+        const importEntered = new Promise<void>((resolve) => (importStarted = resolve));
+        const secondLanguageImport = vi.fn();
+        vi.doMock("highlight.js/lib/languages/python", async (importOriginal) => {
+            importStarted();
+            await heldImport;
+            return importOriginal<typeof import("highlight.js/lib/languages/python")>();
+        });
+        vi.doMock("highlight.js/lib/languages/rust", async (importOriginal) => {
+            secondLanguageImport();
+            return importOriginal<typeof import("highlight.js/lib/languages/rust")>();
+        });
+        const highlight = vi.spyOn(hljs, "highlight");
+        const markdown = '```python\nprint("hello")\n```\n\n```rust\nfn main() {}\n```';
+        const controller = new AbortController();
+        const abort = new DOMException("Render cancelled", "AbortError");
+
+        try {
+            const parsing = ParseMarkdown(markdown, "c", "normal", -1, {}, null, controller.signal);
+            await importEntered;
+            const rejection = expect(parsing).rejects.toBe(abort);
+            controller.abort(abort);
+            releaseImport();
+
+            await rejection;
+            expect(secondLanguageImport).not.toHaveBeenCalled();
+            expect(highlight).not.toHaveBeenCalled();
+
+            const html = await ParseMarkdown(markdown, "c", "normal", -1, {}, null);
+            const output = document.createElement("div");
+            output.innerHTML = html;
+            const blocks = [...output.querySelectorAll("pre.hljs code")];
+            expect(blocks.map((block) => block.textContent)).toEqual(['print("hello")\n', "fn main() {}\n"]);
+            expect(blocks.every((block) => block.querySelector("span[class^='hljs-']"))).toBe(true);
+            expect(secondLanguageImport).toHaveBeenCalledTimes(1);
+            expect(highlight).toHaveBeenCalledTimes(2);
+        } finally {
+            releaseImport();
+            vi.doUnmock("highlight.js/lib/languages/python");
+            vi.doUnmock("highlight.js/lib/languages/rust");
+            hljs.unregisterLanguage("python");
+            hljs.unregisterLanguage("rust");
+        }
+    });
+
     it("marks a rejected inlay record read as transient", async () => {
         const failure = new Error("Inlay record unavailable");
         vi.mocked(inlays.getInlayMedia).mockRejectedValueOnce(failure);

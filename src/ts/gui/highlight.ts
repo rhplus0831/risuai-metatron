@@ -27,7 +27,7 @@ type HighlightInt = [HighLightRange, HighlightType];
 type HighlightIntRanged = [Range, HighlightType];
 
 let highLights = new Map<number, HighlightIntRanged[]>();
-const ownedHighlights = new Set<string>();
+const ownedHighlights = new Map<string, Highlight>();
 
 /**
  * Highlights the text nodes under `highlightDom` as editor `id`'s ranges (matching case-insensitively) and
@@ -133,7 +133,7 @@ const runHighlight = () => {
         }
     }
 
-    for (const key of ownedHighlights) {
+    for (const key of ownedHighlights.keys()) {
         if (!formatedRanges[key]) {
             CSS.highlights.delete(key);
             ownedHighlights.delete(key);
@@ -143,7 +143,7 @@ const runHighlight = () => {
     for (const key in formatedRanges) {
         const highlight = new Highlight(...formatedRanges[key]);
         CSS.highlights.set(key, highlight);
-        ownedHighlights.add(key);
+        ownedHighlights.set(key, highlight);
     }
 };
 
@@ -153,11 +153,25 @@ export const getNewHighlightId = () => {
     return highlightIds++;
 };
 
-/** Removes editor `id`'s ranges and repaints the remaining editors, deleting empty types from `CSS.highlights`. */
+/**
+ * Synchronously deletes only editor `id`'s ranges from the shared highlights, preserving other editors' ranges
+ * and deleting empty types from `CSS.highlights`. Without `CSS.highlights`, only the editor's saved ranges are removed.
+ */
 export const removeHighlight = (id: number) => {
+    const ranges = highLights.get(id);
     highLights.delete(id);
-    if (typeof CSS !== "undefined" && CSS.highlights) {
-        runHighlight();
+    if (!ranges || typeof CSS === "undefined" || !CSS.highlights) {
+        return;
+    }
+    for (const [range, type] of ranges) {
+        const highlight = ownedHighlights.get(type);
+        if (highlight) {
+            highlight.delete(range);
+            if (highlight.size === 0) {
+                CSS.highlights.delete(type);
+                ownedHighlights.delete(type);
+            }
+        }
     }
 };
 
