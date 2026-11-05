@@ -13,6 +13,7 @@ const { boundary } = vi.hoisted(() => ({
     boundary: {
         api: null as Api | null,
         fetch: null as null | ((path: string, init?: RequestInit) => Promise<Response>),
+        liveFeedCurrent: vi.fn<() => boolean>(() => false),
     },
 }));
 vi.mock("src/ts/storage/serverAuth", async () =>
@@ -27,6 +28,11 @@ vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({ alertConfirm: vi.fn(async () => true) }),
 );
 vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
+vi.mock("src/ts/network/eventFeed", async () =>
+    (await import("src/ts/tests/bootMocks")).createBootMock("eventFeed", {
+        liveFeedCurrent: boundary.liveFeedCurrent,
+    }),
+);
 vi.mock("./factory", async (importOriginal) => ({
     ...(await importOriginal<typeof import("./factory")>()),
     SandboxHost: class {
@@ -61,6 +67,7 @@ function deferred() {
     return { promise, resolve };
 }
 const resourceReads = (fake: StoreBackedServer) => fake.requests.filter(({ path }) => path === readPath);
+const requestedChats = (fake: StoreBackedServer) => resourceReads(fake).flatMap(({ body }) => body.chats ?? []);
 const returnedCharacter = (value: { characters: character[] }, chaId: string) =>
     value.characters.find((entry) => entry.chaId === chaId)!;
 
@@ -152,7 +159,7 @@ async function boot(fake: StoreBackedServer, initial?: Snapshot) {
 }
 
 /** Seed real cold memory records; resource reads must project this event into hypaV3Data. */
-function remember(fake: StoreBackedServer, characterId: string, id: string) {
+function remember(fake: StoreBackedServer, characterId: string, id: string, summary = "A remembered promise") {
     const memory = (
         fake.store as unknown as {
             memory: {
@@ -179,7 +186,7 @@ function remember(fake: StoreBackedServer, characterId: string, id: string) {
                 {
                     id: "promise",
                     title: "Promise",
-                    summary: "A remembered promise",
+                    summary,
                     status: "active",
                     participants: [],
                     storyTime: { text: "Morning" },
@@ -206,6 +213,7 @@ function remember(fake: StoreBackedServer, characterId: string, id: string) {
 
 beforeAll(() => warmMutationGraph(() => import("./v3.svelte")), 60_000);
 beforeEach(() => {
+    boundary.liveFeedCurrent.mockReturnValue(false);
     localStorage.clear();
     sessionStorage.clear();
     vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
@@ -213,6 +221,7 @@ beforeEach(() => {
     vi.stubGlobal("location", { reload: vi.fn(), protocol: "http:", host: "test" });
 });
 afterEach(() => {
+    window.dispatchEvent(new Event("pagehide"));
     for (const cleanup of cleanups.splice(0)) cleanup();
     vi.clearAllTimers();
     vi.useRealTimers();
@@ -469,4 +478,166 @@ it("drops sealed projections from both loaded and detached chats after leaving s
     expect(projectedResponse).toBe(true);
     expect(returnedCharacter(got, "c").chats.map((chat) => chat.hypaV3Data)).toEqual([undefined, undefined]);
     expect(b.chat.findChat(other)).toBeUndefined();
+});
+
+it("reuses unchanged unloaded chats on a current feed and returns the same database", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const b = await boot(await fixture());
+    // Retain the answer as the iframe receives it, independent of any later cache work.
+    const first = structuredClone(await b.api.getDatabase(["characters"]));
+    expect(requestedChats(b.fake)).toEqual([
+        { characterId: "c", id: "held" },
+        { characterId: "c", id: "other" },
+        { characterId: "d", id: "d" },
+    ]);
+    b.fake.requests.length = 0;
+
+    expect(await b.api.getDatabase(["characters"])).toEqual(first);
+    expect(b.fake.requests).toEqual([]);
+    for (const target of [held, other, ref("d", "d")]) expect(b.chat.findChat(target)).toBeUndefined();
+});
+
+it.each(["revision move", "notice"] as const)("re-reads a cached chat after a %s", async (change) => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const b = await boot(await fixture({ c: [chatData("other")], d: [chatData("d")] }));
+    const first = structuredClone(await b.api.getDatabase(["characters"]));
+    expect(returnedCharacter(first, "c").chats[0].note).toBe("");
+    const before = b.chat.heldChatRevision(other)!;
+    b.fake.chatBatch([
+        {
+            characterId: "c",
+            chatId: "other",
+            baseRevision: before,
+            ops: [{ op: "meta", set: { note: "Changed on the server" }, unset: [] }],
+        },
+    ]);
+    const revision = b.fake.chat("c", "other")!.revision;
+    expect(revision).not.toBe(before);
+    b.chat.noteRemoteChat(other, revision, undefined, change === "revision move" ? { summaryBase: before } : undefined);
+    expect(b.chat.heldChatRevision(other)).toBe(change === "revision move" ? revision : before);
+    expect(b.chat.isChatBehind(other)).toBe(change === "notice");
+    expect(b.chat.findChat(other)).toBeUndefined();
+    b.fake.requests.length = 0;
+
+    const second = await b.api.getDatabase(["characters"]);
+    expect(requestedChats(b.fake)).toEqual([{ characterId: "c", id: "other" }]);
+    expect(returnedCharacter(second, "c").chats[0].note).toBe("Changed on the server");
+    expect(returnedCharacter(second, "d")).toEqual(returnedCharacter(first, "d"));
+});
+
+it("re-reads every unloaded chat while the feed is not current", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const b = await boot(await fixture());
+    const first = structuredClone(await b.api.getDatabase(["characters"]));
+    boundary.liveFeedCurrent.mockReturnValue(false);
+
+    for (let call = 0; call < 2; call++) {
+        b.fake.requests.length = 0;
+        expect(await b.api.getDatabase(["characters"])).toEqual(first);
+        expect(requestedChats(b.fake)).toEqual([
+            { characterId: "c", id: "held" },
+            { characterId: "c", id: "other" },
+            { characterId: "d", id: "d" },
+        ]);
+    }
+});
+
+it("drops cached chats after five minutes without a characters read", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const b = await boot(await fixture({ c: [chatData("other")] }));
+    const first = structuredClone(await b.api.getDatabase(["characters"]));
+    b.fake.requests.length = 0;
+
+    for (let call = 0; call < 2; call++) {
+        await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
+        expect(await b.api.getDatabase(["characters"])).toEqual(first);
+        expect(resourceReads(b.fake)).toEqual([]);
+    }
+
+    // A characters read starts a new idle interval; a settings-only read does not extend it.
+    await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
+    await b.api.getDatabase(["memoryAlgorithmType"]);
+    expect(resourceReads(b.fake)).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await b.api.getDatabase(["characters"])).toEqual(first);
+    expect(requestedChats(b.fake)).toEqual([{ characterId: "c", id: "other" }]);
+});
+
+it("evicts the oldest insertion above 64 MiB of JSON UTF-8 even if it was recently reused", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const ids = Array.from({ length: 65 }, (_, index) => String(index).padStart(2, "0"));
+    const b = await boot(await fixture({ c: ids.map((id) => chatData(id)) }));
+    const cache = await import("./detachedChatCache");
+    // All entries share one string; the server fixture stays small. Each JSON value is exactly
+    // 1 MiB in UTF-8 (less in code units), so 64 fit and the 65th evicts one. Equal-length ids
+    // keep the JSON overhead identical without mocking the byte count or a repository module.
+    const noteBytes = 1024 * 1024 - new TextEncoder().encode(JSON.stringify(chatData(ids[0]))).byteLength;
+    const note = "한".repeat(Math.floor(noteBytes / 3)) + "x".repeat(noteBytes % 3);
+    const insert = (id: string) => {
+        const target = ref("c", id);
+        const data = { ...chatData(id), note };
+        cache.rememberDetachedChat(
+            target,
+            { revision: b.chat.heldChatRevision(target)!, data },
+            false,
+            cache.detachedChatCacheGeneration(),
+        );
+    };
+    const retained = (id: string) => cache.cachedDetachedChat(ref("c", id)) !== undefined;
+    for (const id of ids.slice(0, 64)) insert(id);
+    expect(cache.detachedChatCacheSize()).toBe(64);
+    expect(retained(ids[63])).toBe(true);
+    expect(retained(ids[0])).toBe(true);
+    insert(ids[64]);
+    expect(cache.detachedChatCacheSize()).toBe(64);
+    expect(retained(ids[0])).toBe(false);
+    expect(retained(ids[1])).toBe(true);
+    expect(retained(ids[63])).toBe(true);
+    expect(retained(ids[64])).toBe(true);
+});
+
+it("under structured memory reuses only stored unsealed summaries and re-reads changing projections", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const owned = chatData("owned");
+    owned.hypaV3Data = { summaries: [{ text: "Stored HypaV3 summary", chatMemos: ["message"], isImportant: false }] };
+    const fake = await fixture({ c: [owned, chatData("projected")] });
+    fake.set("ui", "main", { ...fake.record("ui", "main")!.data, memoryAlgorithmType: "structuredMemory" });
+    remember(fake, "c", "projected");
+    const b = await boot(fake);
+    const first = structuredClone(await b.api.getDatabase(["characters"]));
+    expect(returnedCharacter(first, "c").chats[0].hypaV3Data).toEqual(owned.hypaV3Data);
+    expect(returnedCharacter(first, "c").chats[1].hypaV3Data?.summaries[0].text).toBe("A remembered promise");
+    expect(isSealedHypaV3Data(returnedCharacter(first, "c").chats[1].hypaV3Data)).toBe(true);
+    const revision = fake.chat("c", "projected")!.revision;
+    remember(fake, "c", "projected", "The promise was fulfilled");
+    expect(fake.chat("c", "projected")!.revision).toBe(revision);
+    fake.requests.length = 0;
+
+    const second = await b.api.getDatabase(["characters"]);
+    expect(requestedChats(fake)).toEqual([{ characterId: "c", id: "projected" }]);
+    expect(returnedCharacter(second, "c").chats[0]).toEqual(returnedCharacter(first, "c").chats[0]);
+    expect(returnedCharacter(second, "c").chats[1].hypaV3Data?.summaries).toEqual([
+        { text: "The promise was fulfilled", chatMemos: ["message"], isImportant: false },
+    ]);
+    expect(b.chat.chatsLoaded("c")).toBe(false);
+});
+
+it("re-reads cached summaries when the memory algorithm changes in either direction", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const owned = chatData("other");
+    owned.hypaV3Data = { summaries: [{ text: "Stored summary", chatMemos: ["message"], isImportant: false }] };
+    const fake = await fixture({ c: [owned] });
+    fake.set("ui", "main", { ...fake.record("ui", "main")!.data, memoryAlgorithmType: "hypaV3" });
+    const b = await boot(fake);
+    const first = structuredClone(await b.api.getDatabase(["characters"]));
+
+    for (const algorithm of ["structuredMemory", "hypaV3"]) {
+        b.settings.ui.memoryAlgorithmType = algorithm;
+        fake.requests.length = 0;
+        expect(await b.api.getDatabase(["characters"])).toEqual(first);
+        expect(requestedChats(fake)).toEqual([{ characterId: "c", id: "other" }]);
+        fake.requests.length = 0;
+        expect(await b.api.getDatabase(["characters"])).toEqual(first);
+        expect(resourceReads(fake)).toEqual([]);
+    }
 });

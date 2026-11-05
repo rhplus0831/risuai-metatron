@@ -14,6 +14,15 @@ import {
 import { SandboxHost } from "./factory";
 import { databaseAccessRecorderScript } from "./developMode";
 import {
+    cachedDetachedChat,
+    detachedChatCacheGeneration,
+    detachedChatCacheHitCurrent,
+    forgetDetachedChat,
+    rememberDetachedChat,
+    touchDetachedChatCache,
+    type DetachedChatCacheHit,
+} from "./detachedChatCache";
+import {
     addPreparedCharacter,
     checkCharacterInput,
     prepareNewCharacter,
@@ -1206,6 +1215,18 @@ async function withDetachedDatabaseChats<T>(
             ),
         );
         const reads = new Map<string, Map<string, DetachedChatRead>>();
+        const cacheHits = new Map<string, { ref: ChatRef; hit: DetachedChatCacheHit }>();
+        const discardInvalidHits = () => {
+            let discarded = false;
+            for (const [key, { ref, hit }] of cacheHits) {
+                if (detachedChatCacheHitCurrent(ref, hit)) continue;
+                reads.get(ref.chaId)?.delete(ref.chatId);
+                forgetDetachedChat(ref, hit.entry);
+                cacheHits.delete(key);
+                discarded = true;
+            }
+            return discarded;
+        };
         const needsLoaded = (chaId: string) =>
             chatList(chaId).some(({ id }) => {
                 const ref = { chaId, chatId: id };
@@ -1218,6 +1239,7 @@ async function withDetachedDatabaseChats<T>(
                 return read !== undefined && held !== null && (compareRevision(read.revision, held) ?? -1) < 0;
             });
         for (let round = 0; round < 3; round++) {
+            discardInvalidHits();
             for (const chaId of ids) {
                 if (!fallback.has(chaId) && needsLoaded(chaId)) fallback.add(chaId);
             }
@@ -1226,11 +1248,23 @@ async function withDetachedDatabaseChats<T>(
                     ? []
                     : chatList(chaId).flatMap(({ id }) => {
                           const ref = { chaId, chatId: id };
-                          return !findChat(ref) && !reads.get(chaId)?.has(id) ? [ref] : [];
+                          if (findChat(ref) || reads.get(chaId)?.has(id)) return [];
+                          const hit = cachedDetachedChat(ref);
+                          if (!hit) return [ref];
+                          let held = reads.get(chaId);
+                          if (!held) {
+                              held = new Map();
+                              reads.set(chaId, held);
+                          }
+                          held.set(id, hit.entry);
+                          cacheHits.set(`${chaId}\u0000${id}`, { ref, hit });
+                          return [];
                       }),
             );
             if (missing.length > 0) {
                 try {
+                    const generation = detachedChatCacheGeneration();
+                    const structured = settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
                     const read = await readChatRefsDetached(missing);
                     for (const [chaId, chats] of read) {
                         let held = reads.get(chaId);
@@ -1241,13 +1275,20 @@ async function withDetachedDatabaseChats<T>(
                         for (const [id, chat] of chats) {
                             held.set(id, chat);
                             // The normal snapshot drops these keys; returning the raw JSON would differ.
-                            if (typeof chat !== "string" && needsChatSnapshot(chat.data)) fallback.add(chaId);
+                            if (typeof chat !== "string") {
+                                if (needsChatSnapshot(chat.data)) {
+                                    fallback.add(chaId);
+                                } else {
+                                    rememberDetachedChat({ chaId, chatId: id }, chat, structured, generation);
+                                }
+                            }
                         }
                     }
                 } catch {
                     return await loaded();
                 }
             }
+            discardInvalidHits();
             for (const chaId of ids) {
                 if (!fallback.has(chaId) && needsLoaded(chaId)) fallback.add(chaId);
             }
@@ -1256,7 +1297,7 @@ async function withDetachedDatabaseChats<T>(
                 () => {
                     checkOwners();
                     const detached = new Map<string, Map<string, Chat>>();
-                    let retry = false;
+                    let retry = discardInvalidHits();
                     for (const chaId of ids) {
                         if (fallback.has(chaId)) continue;
                         // This check is after every read, fallback load, and projection refresh await.
@@ -1280,8 +1321,12 @@ async function withDetachedDatabaseChats<T>(
                     if (retry) return undefined;
                     if (settings.ui.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM) {
                         for (const copies of detached.values()) {
-                            for (const chat of copies.values()) {
-                                if (isSealedHypaV3Data(chat.hypaV3Data)) delete chat.hypaV3Data;
+                            for (const [id, chat] of copies) {
+                                if (isSealedHypaV3Data(chat.hypaV3Data)) {
+                                    const copy = { ...chat };
+                                    delete copy.hypaV3Data;
+                                    copies.set(id, copy);
+                                }
                             }
                         }
                     }
@@ -1990,8 +2035,15 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 }
                 return buildDatabaseSubset(keys, context ?? null, detached);
             };
-            if (!context && included("characters")) {
-                return withDetachedDatabaseChats(characterIds, read);
+            if (included("characters")) {
+                touchDetachedChatCache();
+                try {
+                    return await (context
+                        ? withChatsLoaded(characterIds, read, () => chatsOfRead(characterIds, context))
+                        : withDetachedDatabaseChats(characterIds, read));
+                } finally {
+                    touchDetachedChatCache();
+                }
             }
             return withChatsLoaded(characterIds, read, () => chatsOfRead(characterIds, context));
         },

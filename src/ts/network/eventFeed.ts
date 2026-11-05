@@ -5,7 +5,14 @@ import { getNodeServerProxyAuth } from "../storage/serverAuth";
 import { noteRemoteChanges, reconcileRemote } from "../storage/resourceSync.svelte";
 import { noteRemoteStreaming, replaceFeedLocks } from "../storage/chatStore.svelte";
 import { recordClientEvent } from "../diagnostics/collector";
-import { type SocketWatch, watchResume, watchSocket } from "./socketLiveness";
+import {
+    livenessClock,
+    resumePending,
+    STALE_AFTER_MS,
+    type SocketWatch,
+    watchResume,
+    watchSocket,
+} from "./socketLiveness";
 import {
     noteMemoryTaskFrame,
     noteMemoryTaskHello,
@@ -36,6 +43,7 @@ import {
  * hidden, a Page Lifecycle `resume`, `online`; triggers that come together are folded) the
  * connection is replaced after that fold, even during a retry's wait: a half-open socket after a
  * freeze would otherwise deliver nothing until TCP gives up.
+ * `liveFeedCurrent` reports a reconciled, recently heard socket on a visible page with no resume pending.
  *
  * HypaV3 memory task statuses go to `src/ts/process/memoryTasks.svelte.ts`: a `memoryTask` frame of
  * the loaded epoch as it comes, a `hello`'s snapshot as the whole status set, and the fetched or
@@ -61,7 +69,9 @@ let stopped = false;
  * still resets the memory tasks and advertised map (the data was replaced, whichever connection read it).
  */
 let generation = 0;
+let reconciledGeneration = -1;
 let socket: WebSocket | null = null;
+let lastFrame = 0;
 /** The current connection's liveness watch (`socketLiveness.ts`). */
 let liveness: SocketWatch | null = null;
 let stopResume: (() => void) | null = null;
@@ -69,6 +79,20 @@ let attempt = 0;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 /** The socket that got its `hello` (recorded `connected` once), and the attempt it was. */
 let connectedSocket: WebSocket | null = null;
+
+/** Whether the held revisions can be trusted as far as this tab's dispatched live-feed frames. */
+export function liveFeedCurrent(): boolean {
+    return (
+        started &&
+        !stopped &&
+        socket !== null &&
+        socket.readyState === WebSocket.OPEN &&
+        reconciledGeneration === generation &&
+        document.visibilityState === "visible" &&
+        !resumePending() &&
+        livenessClock.now() - lastFrame < STALE_AFTER_MS
+    );
+}
 
 type RevisionMap = {
     [K in keyof ChangeSet]: Map<string, ResourceRevisionListing[K][number] | null>;
@@ -248,6 +272,7 @@ async function reconcile(
             // overlay must not release a fence for a chat the server has since recreated.
             noteMemoryTaskListing(hello, listing);
             reconcileRemote(listing);
+            reconciledGeneration = gen;
             // Only a reconciled connection resets the backoff: a server that accepts the socket but fails the reconcile keeps backing off.
             attempt = 0;
         }
@@ -275,6 +300,7 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
     const loaded = getResourceEpoch();
     switch (frame.type) {
         case "hello":
+            reconciledGeneration = -1;
             if (frame.epoch !== loaded) {
                 clearAdvertised();
                 resetMemoryTasks();
@@ -379,6 +405,7 @@ async function connect() {
             return;
         }
         watch.frame();
+        lastFrame = livenessClock.now();
         let frame: unknown;
         try {
             frame = JSON.parse(String(event.data));

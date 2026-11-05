@@ -242,6 +242,7 @@ export function createBootMock<K extends keyof BootModules>(
         eventFeed: {
             startEventFeed: vi.fn<BootModules["eventFeed"]["startEventFeed"]>(),
             stopEventFeed: vi.fn<BootModules["eventFeed"]["stopEventFeed"]>(),
+            liveFeedCurrent: vi.fn<BootModules["eventFeed"]["liveFeedCurrent"]>(() => false),
             RECONCILE_DEADLINE_MS: 30_000,
         },
         pushNotifications: {

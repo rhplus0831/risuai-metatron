@@ -185,10 +185,9 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - v3 calls are async RPC. Nested classes and callbacks inside values are unsupported. Streams need MessagePort
   credit/cancel, and `terminate` must close them.
 - A host call's abort controllers live until every response stream finishes (done, error, guest cancel, unread expiry,
-  rollback, or termination). A guest callback's mirrored controllers likewise live until every returned stream finishes,
-  errors, is cancelled by the host, or is rolled back, so a host abort still reaches the plugin and requests using its
-  signal after the callback returns. Calls and callbacks that throw or return no streams release their controllers
-  immediately.
+  rollback, or termination). A guest callback's mirrored controllers likewise live until every returned stream ends
+  (finish, error, host cancel, rollback), so a host abort still reaches the plugin and requests using its signal after
+  the callback returns. Calls and callbacks that throw or return no streams release them at once.
 - The sandbox host never logs an RPC message or its answer: their arguments carry the plugin's `nativeFetch` headers
   (API keys) and bodies.
 - Main-document DOM access requires the v3 `getRootDocument` permission plus the Safe wrappers.
@@ -255,7 +254,7 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - `pluginDeferredReload.test.ts`, `pluginSafeBoot.test.ts`: a mocked v3 loader, the idle predicate and safe-boot flag
   controlled. `pluginWorkIdle.test.ts`: a controllable sandbox idle flag, the job channel real.
 - `storeBackedServer.ts`: the real save adapter over the real server store, for saved writes.
-  `getDatabaseDetached.test.ts`: the detached `getDatabase` equals the load path. `FakeResourceServer`:
+  `getDatabaseDetached.test.ts`: the detached `getDatabase` equals the load path, and its reuse. `FakeResourceServer`:
   `permissionStore.test.ts`.
 - `util/playwright/checkJobProtocol.mjs` (a browser check, not in the gate): a real v3 plugin provider answers job
   callbacks from the sandbox ([test-harness](test-harness.md)).
@@ -316,9 +315,10 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 ### Gotchas
 
-- The character records hold no chats: the plugin getters build the legacy shape (`withChatsCopy`) over pinned, loaded
-  chats. `getDatabase` outside a hook (`withDetachedDatabaseChats`) flushes and reads unloaded chats by ref
-  (`readChatRefsDetached`) without installing them; a character whose copy could differ is loaded.
+- Character records hold no chats: the plugin getters build the legacy shape (`withChatsCopy`) over pinned, loaded
+  chats. `getDatabase` outside a hook (`withDetachedDatabaseChats`) flushes, then reads unloaded chats by ref
+  (`readChatRefsDetached`) uninstalled or reuses an unchanged copy (`src/ts/plugins/apiV3/detachedChatCache.ts`); a
+  character whose copy could differ is loaded.
 - `getChatFromIndex`, `setChatToIndex`, `parseRisuChat`, and `sendChat` capture their chat by id first and await
   `ensureChatLoaded`. The character setters capture their targets, pin and load the chats, then apply synchronously.
 - Plugins hand back whole objects, but [chats are saved as changes](chat-store.md#whole-chat-writers).
