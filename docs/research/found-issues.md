@@ -9,7 +9,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (9)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (11)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (10)
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (19)
+- [Structured Memory](#structured-memory) (18)
 
 ## Chat store, sync, and change feeds
 
@@ -110,13 +110,6 @@ The no-memory trim question (aad461e63, 2026-10-11; `server/src/prompt/runner.ts
 
 **Why it matters:** a user can still see a silent trim or an English error from a feature meant to ask first.
 **Suggested handling:** raise when a silent trim or an English job error is reported; the cleanup gap needs a design, the other two are small.
-
-### Blank history entries and the meters
-
-a412bc2d8 (2026-10-27, `blankEntry` → `{ empty: true }` in `server/src/prompt/assemble.ts` ~2599) leaves a greeting or message that editprocess scripts blank out of the context report's history counts. Two meter edges were left: `contextTrim` (`assemble.ts` ~2930) returns no `trim` ledger when a blank greeting or message sits in the first eight queue entries (it is "absent from the final prompt"), so a no-memory chat with a blank greeting gets no displacement estimate (including it would count an invisible entry as a displaced message); HypaV3 `trimUncoveredHistory` (`server/src/prompt/memory/hypav3.ts` ~1522, `gapTokens`) counts a blank entry's tokens into the gap, so a trim that drops only blank history reports a coverage gap and an input job may ask the gap question. Identifiers re-checked 2026-11-03; kept in memory until then.
-
-**Why it matters:** a chat whose greeting a script blanks shows a missing estimate or a spurious gap.
-**Suggested handling:** teach both meters the `empty` source before counting.
 
 ### Unreferenced client copies of server prompt helpers
 
@@ -703,13 +696,6 @@ The memory task service has a `structuredMemory` kind since slice 2b, yet commen
 
 **Why it matters:** a stray button in one setting, and no receipt at all in two themes.
 **Suggested handling:** skip the model button when only `memory` is present; decide where the line goes in those themes.
-
-### Embedding refusal masks a later assembly error
-
-`server/src/prompt/runner.ts` (~1462, ~1466) shows `refusal?.message ?? assembled.error`. Structured Memory's retrieval catches an embedding failure and the send goes on, but the local-model refusal stays recorded, so a send that later fails on context size reports the embedding refusal. Found 2026-11-01.
-
-**Why it matters:** the user reads the wrong reason for a failed send.
-**Suggested handling:** clear or ignore a refusal the memory step already survived.
 
 ### Panel writer line and stale views
 
