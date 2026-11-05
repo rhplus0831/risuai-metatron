@@ -20,7 +20,7 @@ Candidates were then challenged again and revised a second time the same day. Pl
   become candidates; only the newest reply keeps the snapshots and a discarded candidate is never memory
   input; the tab takes the in-place path only when the server's `hello` advertises it; Slice 2 merges with or
   after Incremental Chat Transport Slice 4 (a traffic dependency, not a code one: separate branches are fine,
-  the merge runs the listed integration checks); D1–D14 recommended, Q1–Q4 answered, Slices 1 and 3 landed.
+  the merge runs the listed integration checks); D1–D14 recommended, Q1–Q4 answered, Slices 1, 2 and 3 landed.
 - [Plugin Storage and Data API](plugin-storage.md): plugin data becomes visible, owned, and cheap to move: a plugin
   data page lists and deletes what every storage namespace holds and permission grants become revocable (a reset per
   plugin, revoked on removal); a `pluginStorage` write sends the changed key as a nested patch one level down and a
