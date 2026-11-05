@@ -99,6 +99,11 @@ export const MAX_KEPT_MESSAGE_BYTES = 4096;
 export const JOB_MAX_DURATION_MS = 30 * 60_000;
 const JOB_GC_INTERVAL_MS = 30_000;
 const JOB_HEARTBEAT_MS = 15_000;
+/**
+ * Bounds each job socket's queued outbound bytes so a transport that stops reading cannot grow
+ * server memory without limit. An over-cap socket is terminated and recovers by reconnecting and hydrating.
+ */
+const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 /** Most records a job remembers for re-sending on attach. */
 const MAX_TRACKED_REFS = 256;
 
@@ -1002,20 +1007,32 @@ export function createGenerationJobs(options: {
         return sendText(job, JSON.stringify(event), audience);
     }
 
-    /** A failing socket never stops the others; the result says whether an eligible socket took it. */
+    /**
+     * Measures UTF-8 bytes once for the fan-out; each socket admits the frame within its buffer cap.
+     * A failing or over-cap socket never stops the others; the result says whether an eligible socket took it.
+     */
     function sendText(job: Job, text: string, audience: NoticeAudience = "all"): boolean {
         expireSilentOwners(job);
+        const bytes = Buffer.byteLength(text);
         let taken = false;
         for (const ws of audience === "owner" ? job.sockets : allSockets(job)) {
             if (audience === "creator" && socketClients.get(ws) !== job.clientId) continue;
-            taken = sendSocket(job, ws, text) || taken;
+            taken = sendSocket(job, ws, text, bytes) || taken;
         }
         return taken;
     }
 
-    function sendSocket(job: Job, ws: WebSocket, text: string): boolean {
+    /**
+     * Sends only when bufferedAmount plus the frame's UTF-8 bytes stays within MAX_BUFFERED_BYTES
+     * (equality is allowed); otherwise terminates the socket and returns false without queuing the frame.
+     */
+    function sendSocket(job: Job, ws: WebSocket, text: string, bytes = Buffer.byteLength(text)): boolean {
         try {
             if (ws.readyState === ws.OPEN) {
+                if (ws.bufferedAmount + bytes > MAX_BUFFERED_BYTES) {
+                    ws.terminate();
+                    return false;
+                }
                 ws.send(text);
                 return true;
             }

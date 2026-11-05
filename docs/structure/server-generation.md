@@ -153,16 +153,16 @@ client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the 
 `generationJobs.ts` holds the owner clock (`ownerAbsentDeadline`, `removeOwner`, `expireSilentOwners`, `attach`);
 `channel.ts` applies it (`absenceDeadline`, `effectiveDeadline`), and its module header holds the deadline checks.
 
-- The tab attaches `/api/generations/:id/ws` with `liveness=1` and answers each `{ type: "ping", ts }` with a `pong`
-  echoing `ts`, before checking the event epoch. A negotiated socket with no frame for `OWNER_SILENT_MS` (45 s from
-  attach, then its last frame) leaves the owner set before closing. MCP sees the same owner presence. Sockets without it
-  keep the [older-tab rule](#limitations).
+- The tab attaches `/api/generations/:id/ws` with `liveness=1` and echoes each `{ type: "ping", ts }`'s `ts` in a
+  `pong`, before checking the event epoch. A negotiated socket with no frame for `OWNER_SILENT_MS` (45 s from attach,
+  then its last frame) leaves the owner set before closing. MCP sees the same owner presence. Sockets without it keep
+  the [older-tab rule](#limitations).
 - `ownerAbsentSince` starts at admission and when the last effective socket leaves or at the silence deadline; attach
   clears it.
 - Each dispatched question or callback uses the minimum of its own deadline, the job's absence deadline
-  (`ownerAbsentSince + OWNER_ABSENT_MS`, 120 s), and its parent's effective deadline. Attach expires overdue requests
-  while still absent, then clears absence, sends its snapshot and replays the requests still open, in their original
-  request/notice order.
+  (`ownerAbsentSince + OWNER_ABSENT_MS`, 120 s), and its parent's effective deadline. Attach expires overdue requests,
+  clears absence, sends its snapshot and replays open requests in request/notice order.
+- `sendSocket` terminates a socket (owner or viewer) whose queue plus a frame passes 4 MiB, leaving as on a drop.
 - Owner absence bounds only questions and callbacks; no job-wide absence abort. Callback-free sequence parts and
   detached memory tasks keep running.
 - A streaming provider request with no callback outstanding, local-network streaming included
@@ -222,9 +222,8 @@ mode); like the request history, in no snapshot or archive.
 - A cancelled request uses the same table: `job_id = "cancel:" + requestId`, private `kind = "cancelled"`, empty
   character/chat ids, `admitted_at = ended_at` at cancellation, and null fingerprint/status/progress. It is never served
   by a job-status read and is pruned with compact rows.
-- Writes: the registry upserts a row synchronously at admission and at the job's end (every terminal path: done, error,
-  abort, timeout, shutdown, maintenance), and writes sequence progress before the first part (`sent: 0`) and at each
-  completed part boundary before its event.
+- Writes: the registry upserts a row synchronously at admission and at the job's end (every terminal path), and writes
+  sequence progress before the first part (`sent: 0`) and at each completed part boundary before its event.
 - Reads: a status answers from memory first (the live job, then its kept outcome); the disk answers only an id memory
   does not hold, only to the row's `client_id`, and only in the current epoch. Request lookup is shared across clients
   and returns the identity even when its status payload is gone (`readByRequest`).

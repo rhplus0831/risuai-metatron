@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WebSocket as WsClient } from "ws";
+import { WebSocket as WsClient, WebSocketServer } from "ws";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { loreBook } from "../../../shared/database.ts";
@@ -1705,6 +1705,33 @@ describe("generation ownership handoffs", () => {
         await socket.fence();
     };
 
+    /** Capture the real server transport so its queue can grow without allocating a large payload. */
+    const followWithBuffer = async (h: Awaited<ReturnType<typeof live>>) => {
+        const connected = withResolvers<WsClient>();
+        const handleUpgrade = WebSocketServer.prototype.handleUpgrade;
+        const upgrade = vi.spyOn(WebSocketServer.prototype, "handleUpgrade").mockImplementationOnce(function (
+            this: WebSocketServer,
+            req,
+            socket,
+            head,
+            callback,
+        ) {
+            handleUpgrade.call(this, req, socket, head, (ws, request) => {
+                connected.resolve(ws);
+                callback(ws, request);
+            });
+        });
+        try {
+            const socket = await h.follow(h.job.id, "tab", "&liveness=1&hydration=patch");
+            const serverSocket = await connected.promise;
+            const buffered = vi.spyOn(serverSocket, "bufferedAmount", "get").mockReturnValue(0);
+            cleanups.push(() => buffered.mockRestore());
+            return { ...socket, buffered };
+        } finally {
+            upgrade.mockRestore();
+        }
+    };
+
     it("publishes absence only after ten seconds without an owner and closes it on return", async () => {
         const h = await live();
         const first = await h.follow(h.job.id);
@@ -2227,6 +2254,68 @@ describe("generation ownership handoffs", () => {
         h.job.emit({ type: "done", revision: h.revision() });
         await viewer.fence();
         expect(viewer.events.at(-1)).toMatchObject({ type: "done" });
+    });
+
+    it("terminates an over-buffered creator viewer while the worker keeps receiving frames and answering callbacks", async () => {
+        const h = await live({ preferred: true });
+        const viewer = await followWithBuffer(h);
+        const worker = await h.take();
+        await worker.fence();
+        await viewer.fence();
+        expect(roles(viewer.events).at(-1)).toMatchObject({ owner: "other" });
+        expect(roles(worker.events).at(-1)).toMatchObject({ owner: "self" });
+
+        viewer.buffered.mockReturnValue(4 * 1024 * 1024 + 1);
+        const first = { type: "progress", epoch: h.store.epoch(), payload: { text: "first" } } as const;
+        const dropped = Promise.race([
+            viewer.closed.then(() => "closed"),
+            viewer.until((events) => events.some((event) => event.type === "progress")).then(() => "sent"),
+        ]);
+        h.job.emit(first);
+        expect(await dropped).toBe("closed");
+        expect(viewer.ws.readyState).toBe(WsClient.CLOSED);
+        expect(viewer.events.filter((event) => event.type === "progress")).toEqual([]);
+        await worker.fence();
+        expect(worker.events.filter((event) => event.type === "progress")).toEqual([first]);
+
+        const later = { ...first, payload: { text: "later" } };
+        h.job.emit(later);
+        const callback = h.job.channel.callback("editoutput", { text: "recovered" });
+        await worker.fence();
+        expect(worker.ws.readyState).toBe(WsClient.OPEN);
+        expect(worker.events.filter((event) => event.type === "progress")).toEqual([first, later]);
+        expect(callbacks(worker.events)).toHaveLength(1);
+        const request = callbacks(worker.events)[0];
+        expect(request).toMatchObject({ name: "editoutput", payload: { text: "recovered" } });
+        await answer(worker, request.id, "worker answer");
+        expect(await callback).toEqual({ outcome: "answered", value: "worker answer" });
+        expect(h.job.ownerAttached()).toBe(true);
+        expect(h.jobs.status(h.job.id, "tab")).toMatchObject({ state: "running", handedOff: true });
+    });
+
+    it("admits a frame at exactly 4 MiB and terminates the owner one UTF-8 byte over", async () => {
+        const h = await live();
+        const owner = await followWithBuffer(h);
+        await owner.fence();
+        const event = { type: "progress", epoch: h.store.epoch(), payload: { text: "한글🚀" } } as const;
+        const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
+        owner.buffered.mockReturnValue(4 * 1024 * 1024 - bytes);
+        h.job.emit(event);
+        await owner.fence();
+        expect(owner.ws.readyState).toBe(WsClient.OPEN);
+        expect(owner.events.filter((frame) => frame.type === "progress")).toEqual([event]);
+
+        owner.buffered.mockReturnValue(4 * 1024 * 1024 - bytes + 1);
+        const dropped = Promise.race([
+            owner.closed.then(() => "closed"),
+            owner
+                .until((events) => events.filter((frame) => frame.type === "progress").length === 2)
+                .then(() => "sent"),
+        ]);
+        h.job.emit(event);
+        expect(await dropped).toBe("closed");
+        expect(owner.ws.readyState).toBe(WsClient.CLOSED);
+        expect(owner.events.filter((frame) => frame.type === "progress")).toEqual([event]);
     });
 
     it("sends raw checkpoint rows by stream reference only while no viewer shares the job chat", async () => {
