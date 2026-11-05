@@ -179,9 +179,9 @@ client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the 
 
 ### Job chat and barriers
 
-- The job chat `chatPatch`, the same for every socket of the job, is the diff (`diffChat`) of two stored states:
-  `sentChat`, the last copy a socket took, and `workingChat`, the chat as the job's own writes left it (`writeAsJob`'s
-  `committed` hook); rules: the `Job` members' comments, `jobChatEvent`.
+- The job chat `chatPatch`, the same for every job socket, diffs (`diffChat`) two stored states: `sentChat`, the last
+  copy a socket took, and `workingChat`, the chat after the job's own writes (`writeAsJob`'s `committed` hook); rules:
+  the `Job` members' comments, `jobChatEvent`, `deliverJobChat`.
 - `rows=streamed`: with no viewer attached and every owner socket flagged, `chatPatchEvent` sends a generated row as
   `streamed: { generationId, seq }` if its watermark is the stream checkpoint's (the one `raw` cover) matching
   `streaming`, with that text and `sentChat`'s other fields.

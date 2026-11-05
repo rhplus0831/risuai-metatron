@@ -511,7 +511,7 @@ type Job = {
     /** Records the job sent (`kind\0id`, or `chats\0characterId\0id`), re-sent fresh on attach. */
     refs: Map<string, { kind: string; id: string; characterId?: string }>;
     /**
-     * The job chat as last handed to every attached socket (seeded at admission, then advanced when send
+     * The job chat as last delivered to a socket (seeded at admission, then advanced when send
      * succeeds, without a tab acknowledgement; a stored state at its `revision`: a read, or
      * `workingChat`): the base of the next `chatPatch`. Null once the job ended. It is not what the
      * owner holds: the owner applies a patch only at exactly its base or its revision, and asks for a
@@ -533,11 +533,15 @@ type Job = {
      * revision (another writer's change landed first), or a change that did not fit; the next chat
      * event then reads the chat. Behind the stored revision after another writer's change alone, which
      * that event finds the same way. Null once the job ended. No baseline is changed in place, so this
-     * one shares its unchanged message strings with the baseline it was advanced from.
+     * one shares its message order, position index and root strings across in-place row writes.
      */
     workingChat: ChatBaseline | null;
     pendingFlush?: (() => void) | null;
-    /** The job chat's messages this job began a generation on: every patch carries their stored rows. */
+    /**
+     * Messages this job began a generation on whose final state has not been delivered. Patches
+     * carry them even unchanged, since a client can hold streamed text. A delivered chat event
+     * retires the ids it no longer lists in `streaming`; a later `begin` adds the id again.
+     */
     generated: Set<string>;
     /** Every chat this job locked a message in (`chatKey`): the job's end publishes their locks again. */
     lockChats: Map<string, { characterId: string; chatId: string }>;
@@ -609,15 +613,23 @@ function isReplyResyncRequest(message: unknown): message is ReplyResyncRequest {
 
 /**
  * A stored chat as a patch base: its revision, its fields without `message` (as JSON), and its
- * message ids in order with each message's JSON. Never changed in place: a baseline advanced from
- * another shares its unchanged parts.
+ * message ids in order with each message's JSON. Never changed in place: in-place writes share
+ * the order, position index and root strings, replacing only the small overrides map. Compaction
+ * bounds the overrides; no parent baselines are retained. `baselineText` looks up a row across both maps.
  */
 export type ChatBaseline = {
     revision: string;
     meta: string;
     ids: readonly string[];
-    texts: ReadonlyMap<string, string>;
+    positions: ReadonlyMap<string, number> | null;
+    root: ReadonlyMap<string, string>;
+    overrides: ReadonlyMap<string, string>;
 };
+
+/** The current stored JSON of a row, whether untouched or overridden since the root was built. */
+export function baselineText(base: Pick<ChatBaseline, "root" | "overrides">, id: string): string | undefined {
+    return base.overrides.get(id) ?? base.root.get(id);
+}
 
 /** The fields of a stored chat without `message`. */
 function chatMeta(data: Chat): Record<string, unknown> {
@@ -627,17 +639,29 @@ function chatMeta(data: Chat): Record<string, unknown> {
 
 /**
  * The baseline of a chat read at `revision`. A message without an id is still listed in `ids`
- * (as `undefined`), so `diffChat` gives up on the copy.
+ * (as `undefined`), so `diffChat` gives up on the copy. Missing or repeated ids disable the index.
  */
 export function chatBaseline(revision: string, data: Chat): ChatBaseline {
-    const texts = new Map<string, string>();
+    const root = new Map<string, string>();
+    let positions: Map<string, number> | null = new Map();
     const ids: string[] = [];
     for (const message of data.message ?? []) {
         const id = message.chatId!;
+        if (typeof id !== "string" || positions?.has(id)) {
+            positions = null;
+        }
+        positions?.set(id, ids.length);
         ids.push(id);
-        texts.set(id, JSON.stringify(message));
+        root.set(id, JSON.stringify(message));
     }
-    return { revision, meta: JSON.stringify(chatMeta(data)), ids, texts };
+    return {
+        revision,
+        meta: JSON.stringify(chatMeta(data)),
+        ids,
+        positions,
+        root,
+        overrides: new Map(),
+    };
 }
 
 /**
@@ -646,24 +670,63 @@ export function chatBaseline(revision: string, data: Chat): ChatBaseline {
  * and each touched row is placed after its anchor (`messageOrderAfterChange`) with its stored JSON,
  * which is what a read's `JSON.stringify` of the parsed row gives (a row is stored as the JSON of a
  * parsed value). The other messages keep their strings. The metadata is the change's only when the
- * group changed it. Null when the change does not fit `base`.
+ * group changed it. In-place rewrites share the order and root, copying only the overrides until
+ * enough distinct rows have changed to amortize a new root. All other row changes use the general
+ * ordering validation and rebuild the index. Null when the change does not fit `base`.
  */
 export function advanceChatBaseline(base: ChatBaseline, change: ChatWriteChange): ChatBaseline | null {
-    let { ids, texts } = base;
+    let { ids, positions, root, overrides } = base;
     if (change.rows.length > 0 || change.removed.length > 0) {
-        const order = messageOrderAfterChange(ids, change);
-        if (!order) {
-            return null;
+        let previous = -1;
+        const inPlace =
+            positions !== null &&
+            change.removed.length === 0 &&
+            change.count === ids.length &&
+            change.rows.every((row) => {
+                const position = positions!.get(row.id);
+                if (
+                    position === undefined ||
+                    position <= previous ||
+                    row.after !== (position > 0 ? ids[position - 1] : null)
+                ) {
+                    return false;
+                }
+                previous = position;
+                return true;
+            });
+        if (inPlace) {
+            const updated = new Map(overrides);
+            for (const row of change.rows) updated.set(row.id, row.data);
+            if (updated.size > Math.max(64, root.size / 4)) {
+                const compacted = new Map(root);
+                for (const [id, text] of updated) compacted.set(id, text);
+                root = compacted;
+                overrides = new Map();
+            } else {
+                overrides = updated;
+            }
+        } else {
+            const order = messageOrderAfterChange(ids, change);
+            if (!order) {
+                return null;
+            }
+            ids = order.map((entry) => (typeof entry === "number" ? change.rows[entry].id : entry));
+            const flattened = new Map(root);
+            for (const [id, text] of overrides) flattened.set(id, text);
+            for (const id of change.removed) flattened.delete(id);
+            for (const row of change.rows) flattened.set(row.id, row.data);
+            root = flattened;
+            overrides = new Map();
+            let rebuilt: Map<string, number> | null = new Map();
+            for (const [index, id] of ids.entries()) {
+                if (typeof id !== "string" || rebuilt.has(id)) {
+                    rebuilt = null;
+                    break;
+                }
+                rebuilt.set(id, index);
+            }
+            positions = rebuilt;
         }
-        ids = order.map((entry) => (typeof entry === "number" ? change.rows[entry].id : entry));
-        const next = new Map(texts);
-        for (const id of change.removed) {
-            next.delete(id);
-        }
-        for (const row of change.rows) {
-            next.set(row.id, row.data);
-        }
-        texts = next;
     }
     if (ids.length !== change.count) {
         return null;
@@ -674,7 +737,9 @@ export function advanceChatBaseline(base: ChatBaseline, change: ChatWriteChange)
         // `toJSON` or `JSON.rawJSON` can store a `message` field or a number in another spelling).
         meta: change.meta === undefined ? base.meta : JSON.stringify(chatMeta(JSON.parse(change.meta) as Chat)),
         ids,
-        texts,
+        positions,
+        root,
+        overrides,
     };
 }
 
@@ -683,8 +748,9 @@ export function advanceChatBaseline(base: ChatBaseline, change: ChatWriteChange)
  * working baseline), as a `chatPatch` body, or null when a patch cannot express it and the chat goes
  * whole: another incarnation or epoch, an older revision, a message of `next` without an id or with a
  * repeated one, or surviving messages in another order (a `replace` that reordered them).
- * `generated` messages are always carried (see `GenerationChatPatchEvent`). Only the carried rows,
- * and the metadata when it changed, are parsed (from `next`).
+ * `generated` messages are carried until a delivered event releases them (see `GenerationChatPatchEvent`).
+ * A shared order and root limit comparisons to overridden and generated ids, emitted in stored
+ * position order. Only the carried rows, and the metadata when it changed, are parsed (from `next`).
  */
 export function diffChat(
     base: ChatBaseline,
@@ -697,6 +763,28 @@ export function diffChat(
         return null;
     }
     const ids = next.ids;
+    if (base.ids === ids && base.root === next.root && next.positions) {
+        const positions = next.positions;
+        const candidates = new Set([...base.overrides.keys(), ...next.overrides.keys()]);
+        for (const id of generated) {
+            if (positions.has(id)) candidates.add(id);
+        }
+        const changed = [...candidates]
+            .filter((id) => generated.has(id) || baselineText(base, id) !== baselineText(next, id))
+            .sort((left, right) => positions.get(left)! - positions.get(right)!)
+            .map((id) => {
+                const position = positions.get(id)!;
+                return {
+                    after: position > 0 ? ids[position - 1] : null,
+                    message: JSON.parse(baselineText(next, id)!),
+                };
+            });
+        return {
+            ...(next.meta !== base.meta ? { meta: JSON.parse(next.meta) as Record<string, unknown> } : {}),
+            ...(changed.length > 0 ? { messages: changed } : {}),
+            count: ids.length,
+        };
+    }
     const present = new Set<string>();
     for (const id of ids) {
         if (typeof id !== "string" || present.has(id)) {
@@ -707,14 +795,14 @@ export function diffChat(
     const removed = base.ids.filter((id) => !present.has(id));
     // The surviving messages in the same relative order: a patch never moves a message.
     const survivorsBefore = base.ids.filter((id) => present.has(id));
-    const survivorsAfter = ids.filter((id) => base.texts.has(id));
+    const survivorsAfter = ids.filter((id) => baselineText(base, id) !== undefined);
     if (survivorsBefore.some((id, index) => survivorsAfter[index] !== id)) {
         return null;
     }
     const changed: { after: string | null; message: unknown }[] = [];
     ids.forEach((id, index) => {
-        const text = next.texts.get(id)!;
-        if (generated.has(id) || base.texts.get(id) !== text) {
+        const text = baselineText(next, id)!;
+        if (generated.has(id) || baselineText(base, id) !== text) {
             changed.push({ after: index > 0 ? ids[index - 1] : null, message: JSON.parse(text) });
         }
     });
@@ -1266,7 +1354,7 @@ export function createGenerationJobs(options: {
                 const id = row.chatId!;
                 const mark = job.watermarks.get(id);
                 const active = live.get(id);
-                const before = base.texts.get(id);
+                const before = baselineText(base, id);
                 if (
                     !job.generated.has(id) ||
                     before === undefined ||
@@ -1327,6 +1415,14 @@ export function createGenerationJobs(options: {
         }
         if (send(job, built.event)) {
             job.sentChat = built.baseline;
+            // Delivery releases finished or removed rows; an undelivered event changes neither
+            // the sent baseline nor the forced rows. There is no client acknowledgement.
+            const streaming = new Set(
+                ("streaming" in built.event ? built.event.streaming : undefined)?.map((entry) => entry.messageId),
+            );
+            for (const id of job.generated) {
+                if (!streaming.has(id)) job.generated.delete(id);
+            }
         }
         return built.event;
     }
@@ -1690,7 +1786,8 @@ export function createGenerationJobs(options: {
                                         : null;
                                 for (const op of group.ops) {
                                     if (op.op === "begin") {
-                                        // The client's copy of it can hold streamed text: patches carry its row.
+                                        // A client can hold streamed text: force the row until its
+                                        // final state is delivered, including a new begin on a retired id.
                                         job.generated.add(op.id);
                                     }
                                 }

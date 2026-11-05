@@ -237,12 +237,15 @@ function setup(
         const { port } = listener.address() as { port: number };
         const ws = new WsClient(`ws://127.0.0.1:${port}/api/generations/${jobId}/ws?clientId=${clientId}${query}`);
         const events: GenerationEvent[] = [];
+        const frames: string[] = [];
         const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()));
         const waiters = new Set<() => void>();
         ws.on("message", (data) => {
-            const event = JSON.parse(String(data)) as GenerationEvent;
+            const frame = String(data);
+            const event = JSON.parse(frame) as GenerationEvent;
             if (event.type !== "ping") {
                 events.push(event);
+                frames.push(frame);
             }
             for (const notify of waiters) notify();
         });
@@ -278,6 +281,7 @@ function setup(
         };
         return {
             events,
+            frames,
             fence,
             ws,
             until,
@@ -308,6 +312,141 @@ function setup(
         follow,
     };
 }
+
+describe("job chat checkpoints", () => {
+    const query = "&hydration=patch&rows=streamed&proto=1";
+    const chatEvents = (events: GenerationEvent[]) =>
+        events.filter((event) => event.type === "chatPatch" || (event.type === "resource" && event.kind === "chats"));
+    async function live() {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const s = setup();
+        s.store.applyChanges({
+            chats: [
+                group(s.revision(), [{ op: "append", anchor: { end: true }, messages: [m("second", "", "char")] }]),
+            ],
+        });
+        const started = withResolvers<RunningJob>();
+        s.run(async (job) => {
+            started.resolve(job);
+            await aborted(job);
+        });
+        const created = s.jobs.create(
+            {
+                kind: "send",
+                context: s.context(),
+                clientId: "tab",
+                hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+            },
+            s.store.epoch(),
+        );
+        if (!created.ok) throw new Error(JSON.stringify(created));
+        const job = await started.promise;
+        const owner = await s.follow(job.id, "tab", query);
+        await owner.fence();
+        const write = (ops: ChatOp[]) => job.write(() => ({ chats: [group(s.revision(), ops)] }));
+        const deliver = async () => {
+            owner.events.length = owner.frames.length = 0;
+            job.emitRecords({ chats: [{ characterId: "c", id: "k" }] });
+            await owner.fence();
+            const events = chatEvents(owner.events);
+            expect(events).toHaveLength(1);
+            const event = events[0];
+            if (event.type !== "chatPatch") throw new Error("A checkpoint must be delivered as a chatPatch");
+            expect(event.revision).toBe(s.revision());
+            return event;
+        };
+        return { ...s, job, owner, write, deliver };
+    }
+
+    it("omits a delivered finished reply from later checkpoints, but carries its stored edits and a new begin", async () => {
+        const h = await live();
+        const text = "x".repeat(128 * 1024);
+        h.write([begin("r", "g1"), checkpoint("r", "g1", 1, text, true)]);
+        const final = await h.deliver();
+        expect(final.messages).toEqual([{ after: "u", message: m("r", text, "char") }]);
+        expect(final.streaming).toEqual([]);
+
+        h.write([begin("second", "g2")]);
+        h.job.emit({
+            type: "accepted",
+            jobId: h.job.id,
+            messageId: "second",
+            generationId: "g2",
+            text: "",
+            revision: h.revision(),
+        });
+        await h.owner.fence();
+        const streamSecond = async (seq: number) => {
+            const text = `second ${seq}`;
+            h.job.emit({ type: "chunk", messageId: "second", generationId: "g2", seq, text });
+            h.job.write(() => ({ chats: [group(h.revision(), [checkpoint("second", "g2", seq, text)])] }), {
+                covers: [{ messageId: "second", generationId: "g2", seq, raw: true }],
+            });
+            const event = await h.deliver();
+            const frame = h.owner.frames.find((frame) => JSON.parse(frame).type === "chatPatch")!;
+            // The complete wire frame stays a few hundred bytes despite the finished 128 KiB row.
+            expect(Buffer.byteLength(frame, "utf8")).toBeLessThan(1024);
+            expect(event.messages).toEqual([{ after: "r", id: "second", streamed: { generationId: "g2", seq } }]);
+            expect(event.streaming).toEqual([{ messageId: "second", generationId: "g2", seq }]);
+        };
+        await streamSecond(1);
+        await streamSecond(2);
+
+        h.write([{ op: "patchMessage", id: "r", set: { saying: "speaker-one" } }]);
+        const edited = await h.deliver();
+        expect(edited.messages).toEqual([
+            { after: "u", message: { ...m("r", text, "char"), saying: "speaker-one" } },
+            { after: "r", id: "second", streamed: { generationId: "g2", seq: 2 } },
+        ]);
+        await streamSecond(3);
+
+        h.write([begin("r", "g3")]);
+        const restarted = await h.deliver();
+        expect(restarted.messages).toEqual([
+            { after: "u", message: { ...m("r", text, "char"), saying: "speaker-one" } },
+            { after: "r", id: "second", streamed: { generationId: "g2", seq: 3 } },
+        ]);
+        expect(restarted.streaming).toContainEqual({ messageId: "r", generationId: "g3", seq: 0 });
+        h.write([checkpoint("r", "g3", 1, text, true)]);
+        const finishedAgain = await h.deliver();
+        expect(finishedAgain.messages).toEqual(restarted.messages);
+        expect(finishedAgain.streaming).toEqual([{ messageId: "second", generationId: "g2", seq: 3 }]);
+        await streamSecond(4);
+    });
+
+    it("keeps a finished unchanged row pending when its chat event had no open socket", async () => {
+        const h = await live();
+        h.write([begin("r", "g1"), checkpoint("r", "g1", 1, "first")]);
+        const active = await h.deliver();
+        expect(active.messages).toEqual([{ after: "u", message: m("r", "first", "char") }]);
+        expect(active.streaming).toEqual([{ messageId: "r", generationId: "g1", seq: 0 }]);
+        await h.owner.close();
+        h.write([checkpoint("r", "g1", 2, "first", true), begin("second", "g2")]);
+        // `accepted` attempts the chat delivery even without a socket; the stored first row is unchanged.
+        h.job.emit({
+            type: "accepted",
+            jobId: h.job.id,
+            messageId: "second",
+            generationId: "g2",
+            text: "",
+            revision: h.revision(),
+        });
+        const returned = await h.follow(h.job.id, "tab", query);
+        await returned.fence();
+        expect(chatEvents(returned.events)).toEqual([
+            expect.objectContaining({
+                type: "chatPatch",
+                baseRevision: active.revision,
+                revision: h.revision(),
+                messages: [
+                    { after: "u", message: m("r", "first", "char") },
+                    { after: "r", message: m("second", "", "char") },
+                ],
+                streaming: [{ messageId: "second", generationId: "g2", seq: 0 }],
+            }),
+        ]);
+    });
+});
 
 describe("the presentation stage", () => {
     it("sends a repeated stage once and sends each changed stage to the owner", async () => {

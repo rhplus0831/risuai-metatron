@@ -288,8 +288,10 @@ export type GenerationResourceEvent =
  * The job chat's change since the last copy the server handed the owner's socket (`baseRevision`),
  * up to `revision`: a diff of two stored states, applied by the client only when it holds exactly
  * one of the two revisions. `messages`, in stored order, holds every message that is new or changed
- * since `baseRevision`, plus every message the job has begun a generation on (changed or not: the
- * client's copy of those can hold streamed text), each with the id of the message right before it
+ * since `baseRevision`, plus messages the job began generating whose final state has not yet been
+ * delivered (changed or not: a client's copy can hold streamed text). A delivered event retires
+ * those no longer listed in `streaming`; later patches carry them only if their stored JSON changes
+ * or the job begins generating them again. Each row carries the id of the message right before it
  * (`after`, null at the start). `meta` (the chat's fields without `message`) is present only when
  * it changed. `count` is the message count at `revision`. `streaming` is as in the chat `resource`
  * event. A client that cannot apply it sends `ChatResyncRequest`.

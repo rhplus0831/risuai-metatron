@@ -2126,7 +2126,7 @@ describe("in-place reply candidates", () => {
             });
             expect(result.terminal).not.toHaveProperty("alternatives");
             const patches = result.events.filter((event) => event.type === "chatPatch");
-            const final = patches.at(-1);
+            const final = patches.findLast((event) => event.messages);
             expect(final.streaming).toEqual([]);
             expect(final.messages).toHaveLength(1);
             expect(final.messages[0]).not.toHaveProperty("streamed");
