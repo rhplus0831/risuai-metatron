@@ -98,7 +98,6 @@ import {
     noteForeignJob,
     clearForeignJob,
 } from "src/ts/process/chatStatus.svelte";
-import { installReplyAlternatives } from "./serverGeneration";
 import { incrementStatic } from "../storage/collectionStore.svelte";
 import { dropJobStage } from "./jobStages";
 import { chatLoreOverrideRefusalText } from "./loreOverrides";
@@ -638,9 +637,6 @@ async function followOnce(jobId: string, ref: ChatRef, read?: GenerationStatus):
             applyGenerationEvent(jobId, ref, event, follow);
             if (event.type === "sequence") {
                 incrementStatic("messages");
-                if (event.messageId && event.alternatives) {
-                    installReplyAlternatives(ref, event.messageId, event.alternatives);
-                }
             }
         });
         const closed = await follow.closed;

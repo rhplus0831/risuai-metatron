@@ -14,6 +14,8 @@ import { flushChatMetadata, type JobScope, refreshChat, refreshChatAfterWrite, s
 /** A message the job is generating: its id and the next checkpoint of its generation (`seq` advanced). */
 export type OwnedGeneration = {
     messageId: string;
+    /** Removing an in-place carrier ends the attempt without deleting its candidates. */
+    reroll?: boolean;
     next(): MessageGeneration;
     /**
      * The newest streamed chunk the message's stored text includes (a completed stream's last one):
@@ -49,14 +51,15 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  * changed since the baseline and no message of it is being generated; otherwise the order change is dropped
  * with a warning and the rest applies. Every op goes in one group on the stored revision, so the write is
  * atomic: a change to a message another generation owns fails it whole (the client throws before any write),
- * and the job ends with that error. A gone chat applies nothing.
+ * and the job ends with that error. A gone chat applies nothing. A reroll carrier's removal instead
+ * returns an explicit no-reply outcome. Inserts beside a hidden carrier anchor after that carrier.
  */
 export function applyTriggerChat(
     deps: { job: RunningJob; store: ResourceStore; scope: JobScope; lock: MessageGuard },
     baseline: ChatBaseline,
     result: Chat,
     options: { generation?: OwnedGeneration } = {},
-): void {
+): { noReply: true } | undefined {
     const { job, store, scope, lock } = deps;
     flushChatMetadata(job);
     if (!refreshChat(store, scope)) {
@@ -85,6 +88,8 @@ export function applyTriggerChat(
     const removed = baseline.chat.message
         .map((message) => message.chatId!)
         .filter((id) => !resultIds.has(id) && currentIds.has(id));
+    const noReply = !!options.generation?.reroll && removed.includes(options.generation.messageId);
+    if (noReply) removed.splice(removed.indexOf(options.generation!.messageId), 1);
     const changedMessages = next.message.filter((message) => {
         const before = baseMessages.get(message.chatId!);
         return before !== undefined && json(before) !== json(message);
@@ -169,8 +174,20 @@ export function applyTriggerChat(
     for (const message of next.message) {
         const id = message.chatId!;
         if (!baseMessages.has(id)) {
+            const carrierIndex = current.message.findIndex((entry) => entry.chatId === scope.rerollHistoryMessageId);
+            const carrierPredecessor =
+                carrierIndex >= 0
+                    ? (current.message.slice(0, carrierIndex).findLast((entry) => present.has(entry.chatId!))?.chatId ??
+                      null)
+                    : undefined;
             const anchor: MessageAnchor =
-                previous === null ? { start: true } : present.has(previous) ? { after: previous } : { end: true };
+                carrierIndex >= 0 && previous === carrierPredecessor
+                    ? { after: scope.rerollHistoryMessageId! }
+                    : previous === null
+                      ? { start: true }
+                      : present.has(previous)
+                        ? { after: previous }
+                        : { end: true };
             ops.push({ op: "append", messages: [message], anchor });
             present.add(id);
         }
@@ -247,4 +264,5 @@ export function applyTriggerChat(
         });
     }
     write(ops);
+    return noReply ? { noReply: true } : undefined;
 }

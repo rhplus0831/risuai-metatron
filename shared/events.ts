@@ -42,6 +42,7 @@ export type MemoryTaskEntry = { characterId: string; chatId: string; status: Mem
 export type EventFeedFrame =
     | {
           type: "hello";
+          rerollInPlace?: true;
           epoch: string;
           streaming: ChatStreamingSnapshot[];
           memoryTasks: MemoryTaskEntry[];

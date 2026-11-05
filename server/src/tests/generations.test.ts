@@ -732,7 +732,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         // After the end: the job chat whole (no patch base is kept for an ended job), the fresh
         // records, and the terminal event.
         step((job) => {
-            job.emit({ type: "done", revision: null, messageId: "r", alternatives: ["alt"] });
+            job.emit({ type: "done", revision: null, messageId: "r" });
             return "end" as never;
         });
         await sleep(50);
@@ -740,7 +740,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         expect(types(events)).toEqual(["resource", "resource", "done"]);
         expect(events[0]).toMatchObject({ kind: "chats", characterId: "c", id: "k", streaming: [] });
         expect(events[0].data.message[1].data).toBe("final text");
-        expect(events[2]).toMatchObject({ messageId: "r", alternatives: ["alt"], epoch });
+        expect(events[2]).toMatchObject({ messageId: "r", epoch });
     });
 
     it("DELETE aborts the owner's job: the runner persists the text so far, the owner gets error 499, and the lock is released", async () => {
@@ -1415,6 +1415,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         expect(feedOpened).toBe(true);
         expect(feedFrames[0]).toEqual({
             type: "hello",
+            rerollInPlace: true,
             epoch,
             streaming: [],
             memoryTasks: [],

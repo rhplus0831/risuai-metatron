@@ -7,6 +7,10 @@ const memoryCostText = (calls: number, tokens: number) =>
 
 /** Complete UI string catalog and source type; other `src/lang/` locales supply `DeepPartial` overrides. */
 export const languageEnglish = {
+    rerollCandidateDropped: "Older reply candidates were dropped to keep this message within its limit.",
+    rerollCandidateTooLarge: "This reply is too large to keep as a candidate.",
+    scriptstateCheckpointSkipped: "The chat variables are too large to checkpoint; this reroll will not restore them.",
+
     formating: {
         main: "Main Prompt",
         jailbreak: "Jailbreak Prompt",

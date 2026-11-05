@@ -37,8 +37,7 @@ and the module headers.
 
 - `src/ts/process/index.svelte.ts`: the send API (`sendChat`, `previewChat`, `previewChatReport`); `OpenAIChat` and
   `MultiModal` are declared in `shared/openai.ts`.
-- `src/ts/process/serverGeneration.ts`: the send as a server job (`sendChatOnServer`, `ServerSendResult`,
-  `installReplyAlternatives`).
+- `src/ts/process/serverGeneration.ts`: the send as a server job (`sendChatOnServer`, `ServerSendResult`).
 - `src/ts/process/localSends.ts`: this tab's sends, one per chat (`localSends`, `beginLocalSend`, `isLocalSend`,
   `anyLocalSend`).
 - `src/ts/process/jobStages.ts`: the latest presentation stage per followed job (`setJobStage`, `dropJobStage`,
@@ -97,8 +96,8 @@ and the module headers.
 
 ### Reroll modules
 
-- `src/ts/process/prereroll.ts`: the swipe candidates of a reply (module header; `Prereroll`, `PreUnreroll`,
-  `addRerolls`).
+- `src/ts/process/prereroll.ts`: in-memory swipe navigation (`Prereroll`, `PreUnreroll`), now unfilled: extra samples
+  are stored as `candidates` ([persistence](persistence.md#messages)).
 - `src/ts/process/rerollHistory.ts`: the screen's per-chat bundle history (`createRerollHistory`) and the restore after
   a reroll (`restoreRerolledReplies`, Flows `Reroll`).
 
@@ -216,9 +215,8 @@ stage.
 - The tab's barrier reads the job chat whole once when it still does not hold the receipt (no or an older remembered
   copy, an unapplied patch, or a copy refused by the acknowledged floor), admitting it with the job's held streaming
   metadata before running the hook ([store](chat-store.md#callback-hydration)).
-- A live `sequence` event counts one `messages` statistic and installs the part's alternatives
-  (`installReplyAlternatives`); it keeps the job followed and its channel open. A `done.sequence.stopped` shows
-  `serverJob.sequenceStopped`.
+- A live `sequence` event counts one `messages` statistic; it keeps the job followed and its channel open. A
+  `done.sequence.stopped` shows `serverJob.sequenceStopped`.
 - A failed terminal goes through `alertJobError` with checked debug fields ([diagnostics](diagnostics.md)); sequence
   errors prefix the shown message with the progress and leave those fields intact.
 - An abort with `abortedBy: "other"` shows `serverJob.stoppedElsewhere`; every other abort stays silent.
@@ -416,10 +414,8 @@ In `shared/lore/activation.ts`.
 
 ### Limitations
 
-- Sequence events are live-only: parts completed without an attached socket do not install alternatives or count
-  statistics in that tab, and a received part's alternatives are not installed if the tab's chat copy lacks its reply.
-  Server chat writes and receipt counts are authoritative. Decision: [generation](server-generation.md) command
-  sequences.
+- Sequence events are live-only: parts completed without an attached socket do not count statistics in that tab. Server
+  chat writes and receipt counts are authoritative. Decision: [generation](server-generation.md) command sequences.
 - Accepted limits of sends in different chats at once (each chat has one local send and one server job; different chats
   of a tab run together). Decision: Per-Chat Send D1 and D6, [archive](../archived-plan/README.md).
   - Ordinary send, continue, reroll, and group jobs leave the character revision unchanged: last-chatted activity is

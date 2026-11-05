@@ -722,7 +722,7 @@ describe("the streaming tail", () => {
                 expect(ttsAt).toBeLessThan(notificationAt);
                 // The timings are written onto the reply, and the lock is released by the final write.
                 expect(reply.generationInfo.stageTiming.stage3).toBeGreaterThanOrEqual(CHUNK_DELAY_MS);
-                expect(terminal).toMatchObject({ messageId: reply.chatId, alternatives: ["Hello there"] });
+                expect(terminal).toMatchObject({ messageId: reply.chatId });
                 expect(await clientSetText(chaId, reply.chatId, "edited by the tab")).toBe(200);
                 const removed = await api("/api/push/subscription", {
                     method: "DELETE",

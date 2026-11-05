@@ -298,6 +298,33 @@ describe("request identity over HTTP", () => {
         expect(runner).toHaveBeenCalledTimes(1);
     });
 
+    it("rejects reuse of a reroll request id for a different carrier and copies the admitted carrier into the runner context", async () => {
+        const s = requestFixture();
+        const seen: string[] = [];
+        const jobs = s.registry(s.receipts, async (job) => {
+            seen.push(job.context.rerollMessageId!);
+            await new Promise<void>((resolve) => {
+                if (job.signal.aborted) resolve();
+                else job.signal.addEventListener("abort", () => resolve(), { once: true });
+            });
+        });
+        const post = s.route(jobs);
+        const body = {
+            ...s.body,
+            kind: "reroll",
+            context: { ...s.body.context, input: "", rerollMessageId: "reply-one" },
+        };
+        const first = await post(body);
+        expect(first.status).toBe(200);
+        expect(seen).toEqual(["reply-one"]);
+        expect(await post(body)).toMatchObject({ status: 200, body: { jobId: first.body.jobId, replayed: true } });
+        expect(await post({ ...body, context: { ...body.context, rerollMessageId: "reply-two" } })).toEqual({
+            status: 409,
+            body: { error: "requestIdReused" },
+        });
+        expect(seen).toEqual(["reply-one"]);
+    });
+
     it("admits identical concurrent posts once while the runner is latched and rejects changed request identities", async () => {
         const s = requestFixture();
         const runner = vi.fn<GenerationRunner>(async (job) => {
@@ -594,17 +621,14 @@ describe("the registry's disk fallback", () => {
         const s = registryFixture();
         const epoch = s.store.epoch();
         const sequence = { total: 3, sent: 1, stopped: "notSent" };
-        const big = "é".repeat(32 * 1024); // Under 64 Ki characters, over 64 KiB once JSON encoded.
         const terminals: GenerationTerminalEvent[] = [
             {
                 type: "done",
                 epoch,
                 revision: "r",
                 result: { preview: "private" },
-                alternatives: ["alt"],
                 sequence,
             },
-            { type: "done", epoch, revision: "r", alternatives: [big], sequence },
             {
                 type: "error",
                 epoch,
@@ -615,7 +639,6 @@ describe("the registry's disk fallback", () => {
             },
         ];
         const expected: GenerationTerminalEvent[] = [
-            { type: "done", epoch, revision: "r", alternatives: ["alt"], sequence },
             { type: "done", epoch, revision: "r", sequence },
             {
                 type: "error",
@@ -807,7 +830,7 @@ it("measures receipt admission, terminal writes, and event-loop delay", { tags: 
                           type: "done",
                           epoch: "epoch",
                           revision: "r",
-                          alternatives: ["a".repeat(16 * 1024)],
+                          messageId: "a".repeat(36),
                           sequence: { total: 64, sent: 64 },
                       };
             const payload = outcome(id, "epoch", terminal);

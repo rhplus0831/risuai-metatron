@@ -62,9 +62,13 @@ import { GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
  *   job's own write of its chat, `refreshChatAfterWrite` lays the write's stored change onto the chat
  *   instead, and reads the chat whole only when that change cannot be adopted.
  *
+ * Prompt readers can derive a history view without a reroll's carrier; write readers always keep it.
  * Both stay on the main thread: neither the projection nor `request` is ever sent to Lua or a tab.
  */
 export type JobScope = {
+    /** While assembling an in-place reroll, prompt readers omit this stored carrier. */
+    rerollHistoryMessageId?: string;
+
     db: Database;
     characterId: string;
     chatId: string;
@@ -445,6 +449,14 @@ function setChats(owner: character | groupChat, chats: Chat[]): void {
 export function scopeChat(scope: JobScope): Chat | undefined {
     const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
     return owner?.chats.find((chat) => chat.id === scope.chatId) as Chat | undefined;
+}
+
+/** A fresh prompt-facing view; the stored scope remains intact for writes and incremental adoption. */
+export function scopeHistoryChat(scope: JobScope): Chat | undefined {
+    const chat = scopeChat(scope);
+    return chat && scope.rerollHistoryMessageId
+        ? { ...chat, message: chat.message.filter((message) => message.chatId !== scope.rerollHistoryMessageId) }
+        : chat;
 }
 
 type PendingChatMeta = { scriptstate?: Record<string, string>; note?: string };

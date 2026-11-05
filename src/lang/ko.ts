@@ -4,6 +4,11 @@ const memoryCostText = (calls: number, tokens: number) =>
 
 /** Korean `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageKorean = {
+    rerollCandidateDropped: "메시지의 저장 한도를 지키기 위해 오래된 응답 후보를 삭제했습니다.",
+    rerollCandidateTooLarge: "이 응답은 너무 커서 후보로 저장할 수 없습니다.",
+    scriptstateCheckpointSkipped:
+        "채팅 변수가 너무 커서 체크포인트를 저장할 수 없습니다. 이번 리롤에서는 변수를 복원하지 않습니다.",
+
     formating: {
         main: "메인 프롬프트",
         jailbreak: "탈옥 프롬프트",

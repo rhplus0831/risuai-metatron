@@ -9,6 +9,7 @@ import {
     prepareChatOrders,
 } from "../data/chatStore.ts";
 import { ResourceValidationError } from "../data/resourceStore.ts";
+import { convertUpstreamDatabase } from "../data/upstream/importDatabase.ts";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const message = (id: string, data = "", role = "user") => ({ role, data, chatId: id });
@@ -153,6 +154,57 @@ describe("assertPatchableMetaKeys", () => {
 });
 
 describe("normalizeMessage", () => {
+    it("imports replies while dropping invalid candidate fields independently and retaining valid single-reply baselines", () => {
+        const pair = [
+            { id: "a", data: "A" },
+            { id: "b", data: "B" },
+        ];
+        const cases = [
+            { fields: { candidates: "bad", selected: 0 }, kept: {} },
+            { fields: { candidates: [pair[0]], selected: 0 }, kept: {} },
+            { fields: { candidates: pair, selected: 2 }, kept: { candidates: pair } },
+            {
+                fields: { candidates: pair, selected: 0, scriptstateCheckpoint: { before: [] } },
+                kept: { candidates: pair, selected: 0 },
+            },
+            {
+                fields: { candidatesRevision: -1, scriptstateCheckpoint: { before: null } },
+                kept: { scriptstateCheckpoint: { before: null } },
+            },
+            {
+                fields: { scriptstateCheckpoint: { before: { $x: 0 }, after: { $x: 1 } } },
+                kept: { scriptstateCheckpoint: { before: { $x: 0 }, after: { $x: 1 } } },
+            },
+            {
+                fields: { candidates: pair, selected: 1, scriptstateCheckpoint: { before: { $x: 0 } } },
+                kept: { candidates: pair, selected: 1, scriptstateCheckpoint: { before: { $x: 0 } } },
+            },
+            {
+                fields: {
+                    candidates: [
+                        { id: "a", data: "A".repeat(100 * 1024) },
+                        { id: "b", data: "B".repeat(100 * 1024) },
+                    ],
+                    selected: 0,
+                },
+                kept: {},
+            },
+        ];
+        const messages = cases.map(({ fields }, index) => ({ ...message(`m${index}`, "kept", "char"), ...fields }));
+        const expected = cases.map(({ kept }, index) => ({ ...message(`m${index}`, "kept", "char"), ...kept }));
+        const before = JSON.stringify(messages);
+        expect(messages.map((entry) => normalizeMessage(entry))).toEqual(expected);
+        const imported = convertUpstreamDatabase(
+            { characters: [{ chaId: "c", type: "character", name: "C", chats: [{ id: "k", message: messages }] }] },
+            { now: 1 },
+        );
+        const created = imported.chats.flatMap((group) => group.ops).find((op) => op.op === "create");
+        expect(created?.op).toBe("create");
+        if (created?.op !== "create") throw new Error("import did not create a chat");
+        expect(created.chat.message).toEqual(expected);
+        expect(JSON.stringify(messages)).toBe(before);
+    });
+
     it("requires a user or char role, string data, and a valid chatId, and returns the input", () => {
         const input = message("m", "hi", "char");
         expect(normalizeMessage(input)).toBe(input);
