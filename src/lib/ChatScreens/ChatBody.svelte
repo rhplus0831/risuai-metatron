@@ -33,7 +33,12 @@
         type CbsConditions,
         type simpleCharacterArgument,
     } from "../../ts/parser/parser.svelte";
-    import { applyEdittransToStoredTranslation, getLLMCache, translateHTML } from "../../ts/translator/translator";
+    import {
+        applyEdittransToStoredTranslation,
+        getLLMCache,
+        llmTranslationCacheKey,
+        translateHTML,
+    } from "../../ts/translator/translator";
     import {
         bilingualInterleave,
         type BilingualInterleaveOptions,
@@ -56,9 +61,10 @@
      * Each render run owns an `AbortController` (`parseController`), aborted when the next run starts in
      * `markParsingResult`, when raw streaming starts, or on destroy. Its signal goes to `ParseMarkdown` and
      * `translateHTML`; `run === parseRun` and `destroyed` remain the correctness guards. Only the run that set
-     * `translating` clears it (`translatingRun`). The cached-only auto-translate probe remembers `lastCharArg`,
-     * `lastChatId`, `lastAutoTranslate` only on completion or in its 10 ms `translated` flip. An aborted flip writes
-     * nothing and settles `pendingAutoTranslate`, so the next run probes again.
+     * `translating` clears it (`translatingRun`). The cached-only auto-translate probe follows the effective
+     * translation key and rechecks changes; explicit choices stay separate, and an automatic decision never
+     * permits a cache miss. Probe state commits on completion or in its 10 ms `translated` flip; an aborted flip
+     * writes nothing and settles `pendingAutoTranslate`, so the next run probes again.
      *
      * Abort resolves quietly: no alert, retry or `lastParsed` write. Errors marked transient in
      * `src/ts/parser/renderErrors.ts` retry after 250 ms, then 1,000 ms, while the run is live. Other errors, or a
@@ -139,6 +145,10 @@
     let lastChatId = -10;
     /** The chat's `autoTranslate` the row last started from: a change starts it again. */
     let lastAutoTranslate: boolean | null = null;
+    let lastAutoDecision: boolean | undefined;
+    /** Explicit choices persist until the character, chat index or auto-translate flag changes. */
+    let userOwnsTranslation = false;
+    let lastCacheProbe: { key?: string; data: string; prefix: string; mode: string } | undefined;
     let lastRenderedRevision: number | null = null;
     /**
      * The newest render's run. Only that render writes `lastParsed` and `lastRenderedRevision`: an
@@ -300,65 +310,102 @@
             }
             // Read before any await, so a change of the chat's flag renders again (and restarts the row).
             const auto = autoTranslate;
-            if (!isEqual(lastCharArg, charArg) || chatID !== lastChatId || auto !== lastAutoTranslate) {
+            const restartAuto = !isEqual(lastCharArg, charArg) || chatID !== lastChatId || auto !== lastAutoTranslate;
+            if (restartAuto) userOwnsTranslation = false;
+            else if (lastAutoDecision !== undefined && translated !== lastAutoDecision) userOwnsTranslation = true;
+            if (retranslate) userOwnsTranslation = true;
+
+            const cachedOnly =
+                auto &&
+                settings.memoryTranslateMedia.autoTranslateCachedOnly &&
+                settings.memoryTranslateMedia.translatorType === "llm";
+            // Read synchronously so configuration changes invalidate this render, including after a miss.
+            const cachePrefix = cachedOnly && !userOwnsTranslation ? llmTranslationCacheKey("") : undefined;
+            const translateBeforeFormatting =
+                settings.memoryTranslateMedia.translatorType === "llm" &&
+                settings.memoryTranslateMedia.translateBeforeHTMLFormatting;
+            const legacyTranslation = settings.memoryTranslateMedia.legacyTranslation;
+            const translationMode = translateBeforeFormatting ? "raw" : legacyTranslation ? mode : "pretranslate";
+            let translationSource: string | undefined;
+            if (
+                restartAuto ||
+                (cachedOnly &&
+                    !userOwnsTranslation &&
+                    // A miss uses cheap triggers; a translated row already needs the effective source.
+                    (translated ||
+                        !lastCacheProbe ||
+                        data !== lastCacheProbe.data ||
+                        cachePrefix !== lastCacheProbe.prefix ||
+                        translationMode !== lastCacheProbe.mode))
+            ) {
                 lastParsedQueue = "";
+                let translateText = translated;
+                let probeKey: string | undefined;
                 const rememberProbe = () => {
+                    if (signal?.aborted || destroyed || run !== parseRun) return;
                     lastCharArg = charArg;
                     lastChatId = chatID;
                     lastAutoTranslate = auto;
+                    lastAutoDecision = userOwnsTranslation ? undefined : translateText;
+                    lastCacheProbe =
+                        cachedOnly && !userOwnsTranslation
+                            ? { key: probeKey, data, prefix: cachePrefix, mode: translationMode }
+                            : undefined;
                 };
-                let translateText = false;
                 try {
                     signal?.throwIfAborted();
-                    if (auto) {
-                        if (
-                            settings.memoryTranslateMedia.autoTranslateCachedOnly &&
-                            settings.memoryTranslateMedia.translatorType === "llm"
-                        ) {
-                            let source = data;
-                            if (!settings.memoryTranslateMedia.translateBeforeHTMLFormatting) {
-                                source = await parse(
-                                    data,
-                                    settings.memoryTranslateMedia.legacyTranslation ? mode : "pretranslate",
-                                );
-                                signal?.throwIfAborted();
+                    if (!userOwnsTranslation) {
+                        translateText = false;
+                        if (auto) {
+                            if (cachedOnly) {
+                                translationSource = translateBeforeFormatting
+                                    ? data
+                                    : await parse(data, legacyTranslation ? mode : "pretranslate");
+                                probeKey = llmTranslationCacheKey(translationSource);
+                                if (restartAuto || probeKey !== lastCacheProbe?.key) {
+                                    const cache = await getLLMCache(translationSource);
+                                    signal?.throwIfAborted();
+                                    translateText = cache !== null;
+                                } else {
+                                    translateText = lastAutoDecision ?? false;
+                                }
+                            } else {
+                                translateText = true;
                             }
-                            const cache = await getLLMCache(source);
-                            signal?.throwIfAborted();
-                            translateText = cache !== null;
-                        } else {
-                            translateText = true;
                         }
-                    }
-
-                    // State change of `translated` triggers markParsing again,
-                    // causing redundant translation attempts. The empty body is what this
-                    // render shows until then (the template's prune takes a string).
-                    if (translated !== translateText) {
-                        let resolveUpdate: () => void;
-                        const translationUpdate = new Promise<void>((resolve) => {
-                            resolveUpdate = resolve;
-                        });
-                        const finishUpdate = () => {
-                            clearTimeout(timer);
-                            signal?.removeEventListener("abort", finishUpdate);
-                            if (pendingAutoTranslate === translationUpdate) pendingAutoTranslate = undefined;
-                            resolveUpdate();
-                        };
-                        const timer = setTimeout(() => {
-                            if (!signal?.aborted) {
-                                rememberProbe();
-                                translated = translateText;
-                            }
-                            finishUpdate();
-                        }, 10);
-                        signal?.addEventListener("abort", finishUpdate, { once: true });
-                        pendingAutoTranslate = translationUpdate;
-                        return "";
                     }
                 } catch (error) {
                     if (signal?.aborted) throw error;
                     console.error(error);
+                    // An unsuccessful check cannot carry an earlier hit's permission forward.
+                    translateText = false;
+                    probeKey = undefined;
+                }
+
+                // State change of `translated` triggers markParsing again,
+                // causing redundant translation attempts. The empty body is what this
+                // render shows until then (the template's prune takes a string).
+                if (translated !== translateText) {
+                    let resolveUpdate: () => void;
+                    const translationUpdate = new Promise<void>((resolve) => {
+                        resolveUpdate = resolve;
+                    });
+                    const finishUpdate = () => {
+                        clearTimeout(timer);
+                        signal?.removeEventListener("abort", finishUpdate);
+                        if (pendingAutoTranslate === translationUpdate) pendingAutoTranslate = undefined;
+                        resolveUpdate();
+                    };
+                    const timer = setTimeout(() => {
+                        if (!signal?.aborted && !destroyed && run === parseRun) {
+                            rememberProbe();
+                            translated = translateText;
+                        }
+                        finishUpdate();
+                    }, 10);
+                    signal?.addEventListener("abort", finishUpdate, { once: true });
+                    pendingAutoTranslate = translationUpdate;
+                    return "";
                 }
                 rememberProbe();
             }
@@ -369,18 +416,15 @@
 
                 let transResult;
 
-                if (
-                    settings.memoryTranslateMedia.translatorType === "llm" &&
-                    settings.memoryTranslateMedia.translateBeforeHTMLFormatting
-                ) {
+                if (translateBeforeFormatting) {
                     await sleepAbortable(100, signal);
                     const translatedText = await translate(data);
                     const marked = await parse(translatedText);
                     lastParsedQueue = marked;
                     lastCharArg = charArg;
                     transResult = marked;
-                } else if (!settings.memoryTranslateMedia.legacyTranslation) {
-                    const marked = await parse(data, "pretranslate");
+                } else if (!legacyTranslation) {
+                    const marked = translationSource ?? (await parse(data, "pretranslate"));
                     const translatedText = await translate(marked);
                     signal?.throwIfAborted();
                     const translated = await postTranslationParse(translatedText, signal);
@@ -389,7 +433,7 @@
                     lastCharArg = charArg;
                     transResult = translated;
                 } else {
-                    const marked = await parse(data);
+                    const marked = translationSource ?? (await parse(data));
                     const translated = await translate(marked);
                     lastParsedQueue = translated;
                     lastCharArg = charArg;
