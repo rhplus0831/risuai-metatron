@@ -16,7 +16,7 @@ Module headers and export comments hold the contracts; these lists give lookup i
 
 - `src/ts/storage/chatStore.svelte.ts`: chat membership, loaded chats and summaries; boot reads summaries only. Readers:
   `chatList`, `chatEntry`, `selectedChat`, `currentChatRef`, `selectedChatLoad`, `findChat`, `chatCount`,
-  `countChatEntries`, `chatSummaryList` (read-only plugin summaries).
+  `countChatEntries`, `chatSummaryList`, `chatMemberPage`.
 - Loads and pins: `ensureChatLoaded`, `loadChat`, `loadChats`, `pinChat`, `pinChats`, `trimLoadedChats`,
   `MAX_LOADED_CHATS`, `CHAT_READ_DEADLINE_MS`. Boundaries: `withChatsCopy`, `withCompatChats`, `seedChats`,
   `assembleChats`, `initializeChats`, `startChatDriftCheck` (dev only).

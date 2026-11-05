@@ -33,7 +33,10 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleLorebooks: vi.fn(() => []),
     getModuleAssets: vi.fn(() => []),
 }));
-vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text), hasher: vi.fn() }));
+vi.mock("src/ts/parser/parser.svelte", () => ({
+    risuChatParser: vi.fn((text: string) => text),
+    hasher: vi.fn(async () => "host-setter-script"),
+}));
 vi.mock("src/ts/process/index.svelte", () => ({
     sendChat: vi.fn(),
 }));
@@ -46,6 +49,8 @@ import { activeMainProfile, activePreset, settings } from "src/ts/storage/settin
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets.ts";
 import { executePluginV3 } from "./v3.svelte";
+import { characterList } from "src/ts/storage/characterStore.svelte";
+import { seedPluginPermissions } from "./permissionStore";
 
 const preset = (id: string) => settings.presets.find((entry: { id: string }) => entry.id === id) as any;
 /** The main profile of the model preset `id`: `m-a` or `m-b`. */
@@ -85,6 +90,48 @@ beforeEach(async () => {
 });
 
 describe("the plugin setDatabase host setter", () => {
+    it("round-trips 1,000 existing characters with a linear number of list lookup visits", async () => {
+        const characters = Array.from({ length: 1_000 }, (_, i) => ({
+            chaId: `character-${i}`,
+            name: `Character ${i}`,
+            type: "character",
+        }));
+        installFlatDatabase({ characters });
+        seedPluginPermissions({
+            id: "main",
+            revision: "00000000-0000-4000-8000-000000000000:1:1",
+            data: {
+                grants: { "host-setter-script_db": true },
+                lastGrantTime: { "host-setter-test_db_lastGrantTime": Number.MAX_SAFE_INTEGER },
+            },
+        });
+        const snapshot = await captured.api!.getDatabase(["characters"], { chats: "summaries" });
+        const incoming = snapshot.characters
+            .reverse()
+            .map((entry: any) => ({ ...entry, name: `Updated ${entry.chaId}` }));
+        const list = characterList();
+        const findIndex = Array.prototype.findIndex;
+        let lookupVisits = 0;
+        const spy = vi.spyOn(Array.prototype, "findIndex").mockImplementation(function (predicate, thisArg) {
+            const counted = this === list;
+            return findIndex.call(this, (value, index, array) => {
+                if (counted) lookupVisits += 1;
+                return predicate.call(thisArg, value, index, array);
+            });
+        });
+        try {
+            await captured.api!.setDatabase({ characters: incoming });
+        } finally {
+            spy.mockRestore();
+        }
+
+        expect(characterList().map((entry) => [entry.chaId, entry.name])).toEqual(
+            characters.map((entry) => [entry.chaId, `Updated ${entry.chaId}`]),
+        );
+        // Allow several linear passes, while rejecting a list search for every incoming character.
+        expect(lookupVisits).toBeLessThanOrEqual(characters.length * 10);
+    });
+
     it("lands a forwarded key in the selected preset of its owner and leaves the others alone", async () => {
         // `temperature` is the prompt preset's, `maxContext` the model preset's main profile's.
         await captured.api!.setDatabase({ temperature: 91, maxContext: 9100 });

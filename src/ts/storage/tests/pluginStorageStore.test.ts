@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootMutations, plain, warmMutationGraph } from "./mutationStoresHarness";
+import { bootMutations, plain, SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
+import { StoreBackedServer } from "./storeBackedServer";
 
 // The `pluginStorage` mutations (`pluginStorageStore.svelte.ts`) against the real server store.
 // Every function is sent (there is no `pluginCustomStorage` watcher; `v3SavedWrites.test.ts` has
@@ -272,6 +273,108 @@ describe("the safe local dictionary and the custom keys", () => {
 });
 
 describe("owned storage administration", () => {
+    it("reuses one owned-dictionary traversal for count, indexed keys, and detached key lists", async () => {
+        const { pluginStorageStore: ps, settings } = await boot();
+        const owners = Array.from({ length: 10 }, (_, i) => `owner-${i}`);
+        const keys = Array.from({ length: 10 }, (_, i) => `key-${i}`);
+        ps.replacePluginCustomStorage({
+            _ownedPluginStorage: Object.fromEntries(
+                owners.flatMap((owner) => keys.map((key) => [`${owner}\u0000${key}`, 1])),
+            ),
+        });
+        const owned = settings.pluginStorage._ownedPluginStorage;
+        const objectKeys = Object.keys;
+        let visits = 0;
+        vi.spyOn(Object, "keys").mockImplementation((value) => {
+            const result = objectKeys(value);
+            if (value === owned) visits += result.length;
+            return result;
+        });
+
+        expect(ps.ownedPluginStorageKeyCount(owners[0])).toBe(keys.length);
+        expect(keys.map((_, i) => ps.ownedPluginStorageKeyAt(owners[0], i))).toEqual(keys);
+        ps.ownedPluginStorageKeys(owners[0]).splice(0, keys.length, "phantom");
+        expect(ps.ownedPluginStorageKeys(owners[0])).toEqual(keys);
+        expect(ps.ownedPluginStorageKeyAt(owners[0], keys.length)).toBeNull();
+        expect(visits).toBe(owners.length * keys.length);
+    });
+
+    it.each(["whole record", "feed entry patch"])(
+        "refreshes cached owner keys after another client's %s update",
+        async (delivery) => {
+            // Keep the existing boot fixture, enabling the real server's change feed for this round trip.
+            const createServer = StoreBackedServer.create;
+            vi.spyOn(StoreBackedServer, "create").mockImplementationOnce(() =>
+                createServer.call(StoreBackedServer, { feed: true }),
+            );
+            const { fake, sync, pluginStorageStore: ps } = await boot();
+            ps.replacePluginCustomStorage({
+                _ownedPluginStorage: { "plug\u0000old": 1 },
+                _pluginStorage: { legacy: 1 },
+            });
+            await sync.flushResources();
+            expect(ps.ownedPluginStorageKeys("plug")).toEqual(["old", "legacy"]);
+
+            vi.resetModules();
+            const writer = await import("../resourceClient");
+            const snapshot = await writer.readKinds(["pluginStorage"]);
+            writer.setResourceEpoch(snapshot.epoch);
+            const notices: unknown[] = [];
+            fake.onFeed = (event) => {
+                if (event.type !== "change") return;
+                notices.push(...event.changes.resources);
+                sync.noteRemoteChanges({
+                    ...event.changes,
+                    resources:
+                        delivery === "whole record"
+                            ? event.changes.resources.map(({ kind, id, revision }) => ({ kind, id, revision }))
+                            : event.changes.resources,
+                });
+            };
+            fake.requests.length = 0;
+            await writer.applyBatchText(
+                JSON.stringify({
+                    ops: [
+                        {
+                            kind: "pluginStorage",
+                            id: "main",
+                            baseRevision: snapshot.kinds.pluginStorage[0].revision,
+                            ...(delivery === "whole record"
+                                ? {
+                                      data: {
+                                          _ownedPluginStorage: { "plug\u0000new": 2 },
+                                          _pluginStorage: { tail: 3 },
+                                      },
+                                  }
+                                : {
+                                      patch: {
+                                          nested: {
+                                              _ownedPluginStorage: {
+                                                  set: { "plug\u0000new": 2 },
+                                                  remove: ["plug\u0000old"],
+                                              },
+                                              _pluginStorage: { set: { tail: 3 }, remove: ["legacy"] },
+                                          },
+                                      },
+                                  }),
+                        },
+                    ],
+                }),
+            );
+            await sync.flushResources();
+
+            await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+            expect(notices).toHaveLength(1);
+            if (delivery === "feed entry patch") {
+                expect(notices[0]).toHaveProperty("entryPatch");
+                expect(fake.requests.filter((request) => request.path === "/api/resources/read")).toEqual([]);
+            }
+            expect(ps.ownedPluginStorageKeyAt("plug", 0)).toBe("new");
+            expect(ps.ownedPluginStorageKeyCount("plug")).toBe(2);
+            expect(ps.ownedPluginStorageKeys("plug")).toEqual(["new", "tail"]);
+        },
+    );
+
     it("keeps owned entries and clear markers when a custom-storage replacement omits the dictionary", async () => {
         const { sync, pluginStorageStore: ps, record } = await boot();
         ps.replacePluginCustomStorage({

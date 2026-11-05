@@ -38,6 +38,8 @@ import { writeEntries } from "./mutationValidation";
  *   through a wrapper queue one.
  * - `batchRecordWrites(fn)` runs a bulk writer: the record writes inside it are queued once per
  *   kind when it ends.
+ * - `pluginStorageRevision` advances synchronously on every plugin storage wrapper write and
+ *   record installation, replacement, or reset, independently of batched save dispatch.
  *
  * Wrapper rules (first proven on the test prototype, `src/ts/storage/tests/projectionHarness.svelte.ts`):
  * - Identity: the root wrapper resolves its record by kind on every trap, so a retained wrapper
@@ -289,6 +291,18 @@ let stampCounter = 0;
 let moduleRevisionCounter = 0;
 let modulesRevision = $state(0);
 let assetsRevision = $state(0);
+let pluginStorageRevisionCounter = $state(0);
+
+/** Tracked plugin storage revision: every wrapper write, installation, server copy, replacement, and reset. */
+export function pluginStorageRevision(): number {
+    return pluginStorageRevisionCounter;
+}
+
+function bumpPluginStorage() {
+    untrack(() => {
+        pluginStorageRevisionCounter += 1;
+    });
+}
 
 /**
  * The modules' membership revision, tracked. It advances synchronously at the write, untracked and
@@ -589,9 +603,13 @@ function queueMembership() {
  * character it stamps the top-level field changed (`characterFieldStamp`): the one `node` descends
  * from, or `prop` written on the character element itself. Under modules it stamps the resolved
  * element's top-level field; root list writes change membership/order, not existing field texts.
+ * Under plugin storage every write advances the key index revision before save dispatch.
  */
 function queueNodeWrite(node: TrackedNode, prop?: string | symbol) {
     if (node.kind !== CHARACTERS) {
+        if (node.kind === "pluginStorage") {
+            bumpPluginStorage();
+        }
         if (node.kind === "modules") {
             // The bulk list helpers dispatch here after their write scope has ended.
             untrack(() => {
@@ -671,6 +689,9 @@ export function applyRaw(kind: RecordKind, data: unknown) {
         }
     }
     untrack(() => {
+        if (kind === "pluginStorage") {
+            bumpPluginStorage();
+        }
         if (kind === "modules") {
             bumpModuleMembership();
             bumpModuleAssets();
@@ -747,6 +768,7 @@ export function resetRecords() {
     writeListener = null;
     characterListener = null;
     untrack(() => {
+        bumpPluginStorage();
         bumpModuleMembership();
         bumpModuleAssets();
         for (const kind of Object.keys(records)) {
@@ -780,6 +802,9 @@ export function replaceRecord(kind: RecordKind, value: unknown) {
                 : unwrap(prepared.value, metaOf(kind));
         records[kind] = plain;
         refreshRoot(kind);
+        if (kind === "pluginStorage") {
+            bumpPluginStorage();
+        }
         if (kind === "modules") {
             bumpModuleMembership();
             bumpModuleAssets();
@@ -819,6 +844,9 @@ export function writeRecordField(kind: RecordKind, field: string, value: unknown
         const created: Record<string, unknown> = {};
         Object.defineProperty(created, field, { value: plain, enumerable: true, writable: true, configurable: true });
         records[kind] = created;
+        if (kind === "pluginStorage") {
+            bumpPluginStorage();
+        }
         if (kind === "modules") {
             bumpModuleMembership();
             bumpModuleAssets();
@@ -1286,7 +1314,8 @@ function adopt(node: TrackedNode, target: object, epoch: number) {
 /**
  * The `$state` object a node stands for now:
  * - the root resolves the record by kind on every access;
- * - an id step resolves the element by its id, wherever it is now; a missing id throws;
+ * - an id step resolves the element by its id, wherever it is now; a missing id throws. A character's
+ *   known position can be reused across same-id replacements because character ids are unique;
  * - a key step follows the same path after a raw replacement and after a local reassignment of an
  *   object field; for an array index whose element a local array operation moved, it follows the
  *   element by identity, and throws when the element was removed.
@@ -1308,6 +1337,11 @@ function resolve(node: TrackedNode): any {
     const step = node.step;
     if (step.type === "id") {
         if (node.target !== undefined && Object.is(parent[step.index], node.target)) {
+            return node.target;
+        }
+        // Character ids are unique and immutable; a same-id replacement can keep its known slot.
+        if (isCharacterElement(node) && parent[step.index]?.chaId === step.id) {
+            adopt(node, parent[step.index], epoch);
             return node.target;
         }
         const index = Array.isArray(parent)
@@ -2731,11 +2765,13 @@ function createNode(
                         queueNodeWrite(node, prop);
                         return done;
                     }
-                    return Reflect.set(
+                    const done = Reflect.set(
                         resolved,
                         prop,
                         node.meta.chaId === null ? value : unwrapInto(value, node.meta, null),
                     );
+                    if (node.kind === "pluginStorage") bumpPluginStorage();
+                    return done;
                 });
             }
             // Writes resolve untracked: an `$effect` that writes through a wrapper must not subscribe
@@ -3001,7 +3037,12 @@ export function characterData(): CharacterObject[] {
     return (untrack(() => records[CHARACTERS]) as CharacterObject[] | undefined) ?? [];
 }
 
-/** The index of the character with `chaId` in the list, tracked (a reactive read); -1 when absent. */
+let lastCharacterIndex = -1;
+
+/**
+ * The index of the character with `chaId`, tracked; -1 when absent. Reuses the last position only
+ * while its current id matches, so repeated membership checks avoid rescanning an unchanged list.
+ */
 export function characterIndex(chaId: string | null): number {
     if (chaId === null) {
         return -1;
@@ -3010,8 +3051,12 @@ export function characterIndex(chaId: string | null): number {
     if (!Array.isArray(list)) {
         return -1;
     }
+    if (list[lastCharacterIndex]?.chaId === chaId) {
+        return lastCharacterIndex;
+    }
     for (let index = 0; index < list.length; index += 1) {
         if (list[index]?.chaId === chaId) {
+            lastCharacterIndex = index;
             return index;
         }
     }
@@ -3035,7 +3080,11 @@ function requireNewId(list: readonly CharacterObject[], chaId: unknown, replacin
     if (typeof chaId !== "string" || chaId === "") {
         throw new TypeError("characters: a character needs a chaId");
     }
-    if (list.some((entry, index) => index !== replacing && entry?.chaId === chaId)) {
+    // Replacing the same id preserves the list's uniqueness; only a new id needs a duplicate check.
+    if (
+        list[replacing]?.chaId !== chaId &&
+        list.some((entry, index) => index !== replacing && entry?.chaId === chaId)
+    ) {
         throw new TypeError(`characters: a character with chaId ${chaId} already exists`);
     }
     return chaId;

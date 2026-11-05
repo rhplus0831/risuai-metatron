@@ -48,6 +48,8 @@ import {
     clearOwnedPluginStorage,
     getOwnedPluginStorageValue,
     hasOwnedPluginStorageItem,
+    ownedPluginStorageKeyAt,
+    ownedPluginStorageKeyCount,
     ownedPluginStorageKeys,
     removeOwnedPluginStorageItem,
     replacePluginCustomStorage,
@@ -74,6 +76,9 @@ import {
     chatHasUnackedWork,
     chatHydrationHold,
     chatList,
+    chatCount,
+    chatMemberPage,
+    chatMembershipVersion,
     chatOwnerToken,
     chatProjectionState,
     currentChatRef,
@@ -1019,6 +1024,7 @@ function rotatingWindow<T>(list: readonly T[], size: number, cursor: { at: numbe
     return [first, ...[...rest, ...rest].slice(start, cursor.at)];
 }
 
+/** Snapshot of selected ids; memoized selectors must reflect membership/order changes before returning. */
 type ChatMemberSelector = (chaId: string) => readonly { id: string }[];
 
 /**
@@ -1674,12 +1680,12 @@ function applyPluginCharacter(index: number, char: any, unchangedChats: Readonly
         } else if (current.supaMemoryOnCount !== undefined) {
             fields.supaMemoryOnCount = current.supaMemoryOnCount;
         }
-        replaceCharacterFields(fields);
+        replaceCharacterFields(fields, index);
         const { chats, chatPage } = char;
         if (Array.isArray(chats) && !unchangedChats.has(current.chaId)) {
             reconcileCharacterChats(current.chaId, chats, typeof chatPage === "number" ? chatPage : undefined);
         } else if (typeof chatPage === "number") {
-            selectChat(current.chaId, chatPage);
+            selectChat(current.chaId, chatPage, index);
         }
     });
 }
@@ -1691,7 +1697,8 @@ function applyPluginCharacter(index: number, char: any, unchangedChats: Readonly
  * `chaId` go through `applyPluginCharacter`, new ones are appended (prepared by `prepareNewCharacter`
  * before the list changes, their chats saved with them), and missing ones removed
  * (`removeCharacter`), except a character that is generating a reply: it stays (with a console
- * warning). The mirror keeps its order. Entries marked as having unchanged chats still pass all
+ * warning). Membership and positions are indexed once, with new positions recorded as characters
+ * append; the mirror keeps its order. Entries marked as having unchanged chats still pass all
  * validation and apply their character fields and numeric `chatPage`, without reconciling chats.
  */
 function applyPluginCharacters(
@@ -1707,23 +1714,27 @@ function applyPluginCharacters(
     const checkedIds = checked
         .map((char) => char.chaId)
         .filter((id): id is string => typeof id === "string" && id !== "");
-    if (new Set(checkedIds).size !== checkedIds.length || new Set(checked).size !== checked.length) {
+    const checkedIdSet = new Set(checkedIds);
+    if (checkedIdSet.size !== checkedIds.length || new Set(checked).size !== checked.length) {
         throw new MutationValidationError("characters", "duplicate chaId values (or one object listed twice)");
     }
     // The whole list is checked first; then an entry whose existing character was deleted while its
     // chats loaded (`vanished`, captured before the load) is skipped, never turned into a creation.
-    if ([...vanished].some((chaId) => checkedIds.includes(chaId))) {
+    if ([...vanished].some((chaId) => checkedIdSet.has(chaId))) {
         console.warn("[Plugin] Skipped characters that were deleted while their chats loaded");
     }
     const entries = checked.filter((char) => !(typeof char.chaId === "string" && vanished.has(char.chaId)));
     const ids = checkedIds.filter((chaId) => !vanished.has(chaId));
     const kept = new Set(ids);
-    const existing = characterList().map((character) => character?.chaId);
+    const characters = characterList();
+    const existing = characters.map((character) => character?.chaId);
+    const existingIds = new Set(existing);
+    const positions = new Map(existing.map((chaId, index) => [chaId, index]));
     // Every new character is prepared (checked, normalized, its creation steps done) before the list
     // changes, so an entry refused there leaves the whole list unapplied.
     const prepared = new Map(
         entries.flatMap((char, i) => {
-            if (typeof char.chaId === "string" && existing.includes(char.chaId)) return [];
+            if (typeof char.chaId === "string" && existingIds.has(char.chaId)) return [];
             const { chatSummaries: _summaries, ...fields } = char;
             return [[char, prepareNewCharacter(fields, `characters[${i}]`)] as const];
         }),
@@ -1731,13 +1742,11 @@ function applyPluginCharacters(
     for (const char of entries) {
         const ready = prepared.get(char);
         if (ready) {
-            addPreparedCharacter(ready);
+            const index = characters.length;
+            const chaId = addPreparedCharacter(ready);
+            positions.set(chaId, index);
         } else {
-            applyPluginCharacter(
-                characterList().findIndex((entry) => entry?.chaId === char.chaId),
-                char,
-                unchangedChats,
-            );
+            applyPluginCharacter(positions.get(char.chaId as string) ?? -1, char, unchangedChats);
         }
     }
     for (const chaId of existing) {
@@ -2405,7 +2414,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             return withChatsLoaded(characterIds, read, () => chatsOfRead(characterIds, context));
         },
 
-        /** A page in current member order, with the same copies and cache as full database reads. */
+        /**
+         * A page in current member order, with the same copies and cache as full database reads.
+         * Selects only its ids and reuses them until membership changes, including across awaits.
+         */
         getChats: async (chaId: string, { offset = 0, limit }: { offset?: number; limit?: number } = {}) => {
             const context = currentContext(contextOwner);
             if (!Number.isSafeInteger(offset) || offset < 0) {
@@ -2416,21 +2428,30 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             }
             const conf = await getPluginPermission(identity, "db", "periodically");
             if (!conf) return null;
-            const page = (members: readonly { id: string }[]) =>
-                members.slice(offset, limit === undefined ? undefined : offset + limit);
-            const members: ChatMemberSelector = (id) => page(chatList(id));
+            const pages = new Map<string, { version: number; entries: readonly { id: string }[] }>();
+            const members: ChatMemberSelector = (id) => {
+                const version = chatMembershipVersion(id);
+                let page = pages.get(id);
+                if (!page || page.version !== version) {
+                    page = {
+                        version,
+                        entries: chatMemberPage(id, offset, limit === undefined ? undefined : offset + limit),
+                    };
+                    pages.set(id, page);
+                }
+                return page.entries;
+            };
             const read = (detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>) => {
                 // Owner checks deliberately ignore deletions, so resolve the character again here.
                 if (!characterList().some((character) => character.chaId === chaId)) return null;
-                const listed = chatList(chaId);
-                const chats = page(listed).map(({ id }) => {
+                const chats = members(chaId).map(({ id }) => {
                     const held = findChat({ chaId, chatId: id });
                     if (held) return plainClone($state.snapshot(held)) as Chat;
                     const copy = detached?.get(chaId)?.get(id);
                     if (!copy) throw new Error(`The chat ${id} of ${chaId} is not loaded`);
                     return copy;
                 });
-                return { chats, total: listed.length };
+                return { chats, total: chatCount(chaId) };
             };
             touchDetachedChatCache();
             try {
@@ -3097,13 +3118,13 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             clearOwnedPluginStorage(identity.name);
         },
         _keyPluginStorage: async (index: number) => {
-            return ownedPluginStorageKeys(identity.name)[index] ?? null;
+            return ownedPluginStorageKeyAt(identity.name, index);
         },
         _keysPluginStorage: async () => {
             return ownedPluginStorageKeys(identity.name);
         },
         _lengthPluginStorage: async () => {
-            return ownedPluginStorageKeys(identity.name).length;
+            return ownedPluginStorageKeyCount(identity.name);
         },
         _getSafeLocalStorage: (key: string) => safeLocalStorage.getItem(key),
         _setSafeLocalStorage: (key: string, value: string) => safeLocalStorage.setItem(key, value),

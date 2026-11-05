@@ -274,9 +274,10 @@ export function updateCharacter(chaId: string, patch: Record<string, unknown>): 
 /**
  * Replaces every own field of the existing character with `char.chaId` by `char`'s (last writer
  * wins), keeping its render key (its chats and chat selection are the chat module's). `char` must name its
- * character. Returns `false`, changing nothing, when no character has that id.
+ * character. An optional index hint avoids a list search when that index still names `char.chaId`;
+ * otherwise the character is found by id. Returns `false`, changing nothing, when no character has that id.
  */
-export function replaceCharacterFields(char: unknown): boolean {
+export function replaceCharacterFields(char: unknown, indexHint?: number): boolean {
     checkCharacterInput(char);
     const chaId = char.chaId;
     if (typeof chaId !== "string" || chaId === "") {
@@ -287,7 +288,7 @@ export function replaceCharacterFields(char: unknown): boolean {
         detach(Object.fromEntries(Object.entries(char).filter(([field]) => !INPUT_EXCLUDED.has(field)))),
         "character",
     );
-    const index = indexOf(chaId);
+    const index = indexHint !== undefined && list()[indexHint]?.chaId === chaId ? indexHint : indexOf(chaId);
     if (index === -1) {
         return false;
     }

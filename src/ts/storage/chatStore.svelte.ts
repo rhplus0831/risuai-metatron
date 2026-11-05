@@ -71,8 +71,10 @@ import {
  * (`resourceSync.svelte.ts`) sends in its next batch. Boot reads summaries only (`assembleChats`); a
  * chat is loaded on demand (`ensureChatLoaded`, `loadChats`, the selected chat when it is selected),
  * kept loaded while it is pinned or busy, and evicted beyond `MAX_LOADED_CHATS` idle loaded chats
- * (least recently used first). Readers use `chatList`, `chatEntry`, `selectedChat`, `findChat`, and
- * the loading functions; a character wrapper's `chats`/`chatPage` is a view of the loaded chats
+ * (least recently used first). Readers use `chatList`, `chatEntry`, `chatMemberPage`, `chatCount`,
+ * `chatMembershipVersion`, `selectedChat`, `findChat`, and the loading functions. Member pages copy
+ * only the requested ids; their untracked version changes with membership, order, and holding lifetime.
+ * A character wrapper's `chats`/`chatPage` is a view of the loaded chats
  * built here (`setCharacterChatView`) for the shared CBS evaluator, which reads that legacy shape.
  *
  * - Addressing is by `ChatRef` (`chaId`, `chatId`) and message id, never by index.
@@ -556,6 +558,13 @@ const slot = (id: string) => `#${id}`;
  * a chat to a list, and a server copy never loads a chat (only a load does).
  */
 const held: Record<string, HeldChats> = $state({});
+/** Synchronous membership invalidation; versions are never reused after a holding is removed. */
+const membershipVersions = new Map<string, number>();
+let membershipVersionCounter = 0;
+
+function bumpChatMembership(chaId: string) {
+    membershipVersions.set(chaId, ++membershipVersionCounter);
+}
 
 type MessagePositionIndex = {
     positions: Map<string, number>;
@@ -1002,9 +1011,12 @@ function canonical(value: unknown): string {
     );
 }
 
-/** The character with `chaId` (its raw record, untracked; this module only checks it and reads its defaults). */
-function findCharacter(chaId: string): AnyCharacter | undefined {
-    return characterData().find((entry) => entry?.chaId === chaId) as unknown as AnyCharacter | undefined;
+/** The raw character, untracked; a matching index hint avoids searching for its id. */
+function findCharacter(chaId: string, indexHint?: number): AnyCharacter | undefined {
+    const characters = characterData();
+    const hinted = indexHint === undefined ? undefined : characters[indexHint];
+    const character = hinted?.chaId === chaId ? hinted : characters.find((entry) => entry?.chaId === chaId);
+    return character as unknown as AnyCharacter | undefined;
 }
 
 function requireCharacter(chaId: string): AnyCharacter {
@@ -1017,7 +1029,10 @@ function requireCharacter(chaId: string): AnyCharacter {
 
 /** The held chats of a character, created empty for a write. */
 function holdingOf(chaId: string): HeldChats {
-    held[slot(chaId)] ??= { ids: [], chats: {}, summaries: {} };
+    if (!held[slot(chaId)]) {
+        held[slot(chaId)] = { ids: [], chats: {}, summaries: {} };
+        bumpChatMembership(chaId);
+    }
     return held[slot(chaId)];
 }
 
@@ -1185,6 +1200,7 @@ function insertChat(chaId: string, index: number, chat: Chat): Chat {
     holding.chats[slot(chat.id!)] = chat;
     delete holding.summaries[slot(chat.id!)];
     holding.ids.splice(index, 0, chat.id!);
+    bumpChatMembership(chaId);
     dirtyOrderJournal(chaId, "latest");
     return holding.chats[slot(chat.id!)];
 }
@@ -1197,6 +1213,7 @@ function insertSummary(chaId: string, index: number, id: string, meta: ChatEntry
     holding.summaries[slot(id)] = meta;
     delete holding.chats[slot(id)];
     holding.ids.splice(index, 0, id);
+    bumpChatMembership(chaId);
     dirtyOrderJournal(chaId, "latest");
 }
 
@@ -1209,6 +1226,7 @@ function removeChat(chaId: string, chatId: string) {
     const index = holding.ids.indexOf(chatId);
     if (index !== -1) {
         holding.ids.splice(index, 1);
+        bumpChatMembership(chaId);
     }
     loadedKeys.delete(keyOf(chaId, chatId));
     dropMessagePositions(keyOf(chaId, chatId));
@@ -1225,6 +1243,7 @@ function dropHeld(chaId: string) {
         dropMessagePositions(keyOf(chaId, id));
     }
     delete held[slot(chaId)];
+    bumpChatMembership(chaId);
     dirtyOrderJournal(chaId, "latest");
     for (const [key, entry] of pending) {
         if (entry.characterId === chaId && entry.create) dirtyChatJournal(key, "pending");
@@ -1252,6 +1271,7 @@ function setChatList(chaId: string, entries: readonly ChatEntry[]) {
     holding.chats = chats;
     holding.summaries = summaries;
     holding.ids = entries.map((entry) => entry.id);
+    bumpChatMembership(chaId);
     dirtyOrderJournal(chaId, "latest");
     for (const entry of entries) {
         const key = keyOf(chaId, entry.id);
@@ -1421,6 +1441,16 @@ function compatChatPage(chaId: string): number {
 /** How many chats a character has (its list's length; reactive over the membership only). */
 export function chatCount(chaId: string): number {
     return holdingAt(chaId)?.ids.length ?? 0;
+}
+
+/** A detached page of member ids in current order, sliced before building the id-only entries. */
+export function chatMemberPage(chaId: string, offset: number, end?: number): { id: string }[] {
+    return untrack(() => (holdingAt(chaId)?.ids.slice(offset, end) ?? []).map((id) => ({ id })));
+}
+
+/** Untracked membership/order version, advanced synchronously on writes and holding creation/removal. */
+export function chatMembershipVersion(chaId: string): number {
+    return membershipVersions.get(chaId) ?? 0;
 }
 
 /**
@@ -3464,6 +3494,7 @@ export function reorderChats(chaId: string, ids: readonly string[]) {
         return;
     }
     holdingOf(chaId).ids = [...ids];
+    bumpChatMembership(chaId);
     mutationToken += 1;
     pendingOrders.set(chaId, nextSeq());
     notifyWork();
@@ -3502,10 +3533,11 @@ export function loadSelectionPreference() {
  * Selects a chat of a character by id or by its index in the list (nothing when it names none). The
  * selection is immediate, loaded or not: a selected chat that is not loaded yet is loaded now
  * (`selectedChat()` is null meanwhile and `selectedChatLoad` reports it), so a slow load never
- * selects anything and the latest selection is always the selection.
+ * selects anything and the latest selection is always the selection. An optional character index
+ * hint avoids a character-list search when the id at that index still matches; otherwise it is found by id.
  */
-export function selectChat(chaId: string, idOrIndex: string | number) {
-    if (!findCharacter(chaId)) {
+export function selectChat(chaId: string, idOrIndex: string | number, characterIndexHint?: number) {
+    if (!findCharacter(chaId, characterIndexHint)) {
         return;
     }
     const ids = memberIds(chaId);
@@ -4831,6 +4863,7 @@ export function assembleChats(
     const orderOf = new Map(orders.map((order) => [order.characterId, order.ids]));
     for (const key of Object.keys(held)) {
         delete held[key];
+        bumpChatMembership(key.slice(1));
     }
     for (const key of messagePositions.keys()) dropMessagePositions(key);
     loadedKeys.clear();

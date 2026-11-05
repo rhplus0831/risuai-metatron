@@ -24,6 +24,7 @@ const { captured, reads } = vi.hoisted(() => ({
     reads: {
         chats: new Map<string, { characterId: string; id: string; revision: string; data: unknown }>(),
         gate: null as Promise<void> | null,
+        onRead: null as (() => void) | null,
         count: 0,
     },
 }));
@@ -32,6 +33,7 @@ vi.mock("src/ts/storage/resourceClient", async () =>
     (await import("src/ts/storage/tests/resourceClientMock")).createResourceClientMock({
         readRefs: async (_refs: unknown, options: { chats?: readonly { characterId: string; id: string }[] } = {}) => {
             reads.count += 1;
+            reads.onRead?.();
             if (reads.gate) {
                 await reads.gate;
             }
@@ -120,6 +122,7 @@ function installDatabase(fields: Record<string, unknown>, unloaded: readonly str
     const characters = (Array.isArray(raw.characters) ? raw.characters : []) as { chaId: string; chats?: any[] }[];
     reads.chats.clear();
     reads.gate = null;
+    reads.onRead = null;
     reads.count = 0;
     const chats = characters.flatMap((char) =>
         (char.chats ?? []).map((entry) => {
@@ -167,9 +170,12 @@ function unloadD() {
 function holdReads() {
     let release!: () => void;
     reads.gate = new Promise<void>((resolve) => (release = resolve));
+    const started = new Promise<void>((resolve) => (reads.onRead = resolve));
     return {
+        started,
         release: () => {
             reads.gate = null;
+            reads.onRead = null;
             release();
         },
     };
@@ -192,6 +198,59 @@ afterEach(() => {
 });
 
 describe("the getters", () => {
+    it.each(["cold", "warm"])("getChats builds only the requested page entries with %s chats", async (state) => {
+        const chats = Array.from({ length: 1_000 }, (_, i) => chat(`page-${i}`, `Chat ${i}`));
+        installDatabase({ characters: [{ ...liveCharacters()[0], chats }] }, state === "cold" ? ["c"] : []);
+        selectCharacter(null);
+        const api = await makeApi();
+        let entriesBuilt = 0;
+        // Count entries at both selectors so falling back to the full chat list is visible too.
+        const list = chatStore.chatList;
+        const page = chatStore.chatMemberPage;
+        vi.spyOn(chatStore, "chatList").mockImplementation((...args) => {
+            const entries = list(...args);
+            entriesBuilt += entries.length;
+            return entries;
+        });
+        vi.spyOn(chatStore, "chatMemberPage").mockImplementation((...args) => {
+            const entries = page(...args);
+            entriesBuilt += entries.length;
+            return entries;
+        });
+
+        const got = await api.getChats("c", { offset: 500, limit: 1 });
+
+        expect(got).toMatchObject({ chats: [chats[500]], total: 1_000 });
+        expect(entriesBuilt).toBeLessThanOrEqual(1);
+        expect(reads.count).toBe(state === "cold" ? 1 : 0);
+    });
+
+    it.each([
+        { change: "reorder", expectedId: "k", total: 3 },
+        { change: "insert", expectedId: "k", total: 4 },
+        { change: "delete", expectedId: "last", total: 2 },
+    ])("getChats follows a member $change while its page is loading", async ({ change, expectedId, total }) => {
+        installDatabase(
+            { characters: [{ ...liveCharacters()[0], chats: [chat("k", "K"), chat("j", "J"), chat("last", "Last")] }] },
+            ["c"],
+        );
+        selectCharacter(null);
+        const api = await makeApi();
+        const { started, release } = holdReads();
+        const pending = api.getChats("c", { offset: 1, limit: 1 });
+        await started;
+        try {
+            if (change === "reorder") chatStore.reorderChats("c", ["last", "k", "j"]);
+            else if (change === "insert") chatStore.createChat("c", chat("new", "New"), { index: 0 });
+            else chatStore.deleteChat(refK);
+        } finally {
+            release();
+        }
+        const got = await pending;
+        expect(got.total).toBe(total);
+        expect(got.chats.map((entry: any) => entry.id)).toEqual([expectedId]);
+    });
+
     it("getChar and getCharacterFromIndex answer the legacy shape detached: the record with its chats and chatPage", async () => {
         const api = await makeApi();
         chatStore.selectChat("c", "j");

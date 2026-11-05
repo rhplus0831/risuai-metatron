@@ -16,7 +16,7 @@
   - `src/ts/storage/pluginStorageStore.svelte.ts`
   - `src/lib/Setting/Pages/PluginSettings.svelte`, `PluginDataSettings.svelte`
   - `src/lib/Others/PluginDefinedIcon.svelte`
-  - `public/plugin_start.7z` (the starter template, binary)
+  - `public/plugin_start.7z` (starter template)
 - Not here:
   - The MCP client registry, the remote and internal clients, RisuAccess, a plugin's MCP client, and tool dispatch →
     [mcp](mcp.md).
@@ -44,8 +44,7 @@ entrypoints.
   `src/ts/plugins/pluginSafeClass.ts`: `isJsonValue`, `SafeLocalStorage`, `SafeLocalPluginStorage`.
 - `src/ts/plugins/apiV3/permissionStore.ts`: the `pluginPermissions` grants (module header; [State](#state)).
 - `src/lib/Others/PluginDefinedIcon.svelte`: plugin icons (component contract). `src/ts/plugins/apiV3/developMode.ts`:
-  `hotReloadPluginFiles`, `databaseAccessRecorderScript` (developer database access diagnostics).
-  `src/ts/plugins/apiV3/transpiler.ts`: `pluginCodeTranspiler`.
+  `hotReloadPluginFiles`, `databaseAccessRecorderScript`. `src/ts/plugins/apiV3/transpiler.ts`: `pluginCodeTranspiler`.
 
 ### Sandbox host
 
@@ -152,8 +151,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
     legacy keys.
   - Shared `getLocalPluginStorage()` (`SafeLocalPluginStorage`) is saved under `_safeLocalPluginStorage`; boot imports
     legacy browser-local values. JSON validation: `pluginSafeClass.ts` `SafeLocalPluginStorage`, `isJsonValue`.
-  - String-key rules: `pluginStorageStore.svelte.ts` module header; the save adapter
-    [preserves `__proto__`](resource-sync.md#invariants).
+  - String-key rules and the owner key cache (`pluginStorageRevision`): `pluginStorageStore.svelte.ts` module header;
+    the save adapter [preserves `__proto__`](resource-sync.md#invariants).
   - `safeLocalStorage` (`SafeLocalStorage`) stays device-local (`localStorage` `safe_plugin_*`).
 - v3 permission grants live in the server-owned `pluginPermissions` resource (`permissionStore.ts`; its header names the
   only writers), outside the settings records: `grants` keyed by `<sha256 of the script>_<permission>`, `lastGrantTime`

@@ -64,6 +64,8 @@ export function createChatStoreMock(overrides: ModuleMockOverrides<ChatStoreModu
         chatCount: vi.fn(() => 0),
         characterLastChattedAt: vi.fn(() => 0),
         chatList: vi.fn(() => []),
+        chatMemberPage: vi.fn(() => []),
+        chatMembershipVersion: vi.fn(() => 0),
         chatSummaryList: vi.fn(() => []),
         chatEntry: vi.fn(() => undefined),
         countChatEntries: vi.fn(() => 0),

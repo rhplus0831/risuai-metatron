@@ -1,7 +1,8 @@
+import { untrack } from "svelte";
 import { PLUGIN_STORAGE_DICTIONARIES } from "../../../shared/pluginStorage.ts";
 import { settings } from "./settingsViews.svelte";
 import { detach, requireJsonData, requireObject, writeEntries } from "./mutationValidation";
-import { batchRecordWrites } from "./records.svelte";
+import { batchRecordWrites, pluginStorageRevision } from "./records.svelte";
 
 /**
  * The `pluginStorage` mutations. `pluginCustomStorage` holds shared `setDatabase` custom keys,
@@ -21,6 +22,9 @@ import { batchRecordWrites } from "./records.svelte";
  * detached copies and never create the record. Any string is a valid key: a key
  * that assigning would not store (`__proto__`, or an inherited name such as `constructor`) gets an
  * own property through a rebuilt dictionary (`writeEntries`).
+ * Owned key enumeration indexes all owners in one pass per record revision, then caches each
+ * owner's visible order: owned keys first, followed by unshadowed legacy keys unless hidden.
+ * Count and indexed reads reuse that list; key-list reads return a fresh, mutable copy.
  * Array-shaped namespaces: `dictionary`.
  */
 
@@ -160,6 +164,10 @@ export function clearPluginStorage() {
 function legacyHidden(owner: string): boolean {
     const values = dictionary(OWNED_PLUGIN_STORAGE_KEY, false);
     const marker = values && Object.hasOwn(values, owner) ? values[owner] : null;
+    return isLegacyHiddenMarker(marker);
+}
+
+function isLegacyHiddenMarker(marker: unknown): boolean {
     return typeof marker === "object" && marker !== null && "legacyHidden" in marker && marker.legacyHidden === true;
 }
 
@@ -176,14 +184,59 @@ export function getOwnedPluginStorageValue(owner: string, key: string): unknown 
     return legacyHidden(owner) ? null : getPluginStorageValue(key);
 }
 
-/** Owned keys first, then unshadowed visible legacy keys, each in insertion order. */
+let keyIndexRevision = -1;
+const ownedKeyIndex = new Map<string, string[]>();
+const visibleKeyIndex = new Map<string, readonly string[]>();
+const hiddenLegacyOwners = new Set<string>();
+let legacyKeyIndex: string[] = [];
+
+/** Reuses the owner's visible order until any write or installation changes the storage record. */
+function visibleOwnedPluginStorageKeys(owner: string): readonly string[] {
+    const revision = pluginStorageRevision();
+    return untrack(() => {
+        if (keyIndexRevision !== revision) {
+            ownedKeyIndex.clear();
+            visibleKeyIndex.clear();
+            hiddenLegacyOwners.clear();
+            const owned = dictionary(OWNED_PLUGIN_STORAGE_KEY, false);
+            for (const key of Object.keys(owned ?? {})) {
+                const separator = key.indexOf("\u0000");
+                if (separator === -1) {
+                    if (isLegacyHiddenMarker(owned![key])) hiddenLegacyOwners.add(key);
+                    continue;
+                }
+                const name = key.slice(0, separator);
+                let keys = ownedKeyIndex.get(name);
+                if (!keys) ownedKeyIndex.set(name, (keys = []));
+                keys.push(key.slice(separator + 1));
+            }
+            legacyKeyIndex = pluginStorageKeys();
+            keyIndexRevision = revision;
+        }
+        if (owner.includes("\u0000")) return legacyKeyIndex;
+        let keys = visibleKeyIndex.get(owner);
+        if (!keys) {
+            const owned = ownedKeyIndex.get(owner) ?? [];
+            keys = hiddenLegacyOwners.has(owner) ? owned : [...new Set([...owned, ...legacyKeyIndex])];
+            visibleKeyIndex.set(owner, keys);
+        }
+        return keys;
+    });
+}
+
+/** Fresh, mutable copy: owned keys first, then unshadowed visible legacy keys, each in insertion order. */
 export function ownedPluginStorageKeys(owner: string): string[] {
-    if (owner.includes("\u0000")) return pluginStorageKeys();
-    const prefix = `${owner}\u0000`;
-    const keys = Object.keys(dictionary(OWNED_PLUGIN_STORAGE_KEY, false) ?? {})
-        .filter((key) => key.startsWith(prefix))
-        .map((key) => key.slice(prefix.length));
-    return legacyHidden(owner) ? keys : [...new Set([...keys, ...pluginStorageKeys()])];
+    return [...visibleOwnedPluginStorageKeys(owner)];
+}
+
+/** Visible key count, reusing the owner's cached order without copying it. */
+export function ownedPluginStorageKeyCount(owner: string): number {
+    return visibleOwnedPluginStorageKeys(owner).length;
+}
+
+/** A visible key at `index`, or null, reusing the owner's cached order without copying it. */
+export function ownedPluginStorageKeyAt(owner: string, index: number): string | null {
+    return visibleOwnedPluginStorageKeys(owner)[index] ?? null;
 }
 
 export function setOwnedPluginStorageItem(owner: string, key: string, value: unknown) {
