@@ -152,7 +152,7 @@ keep their place in the inbox; "Deferred" entries are grouped under **Deferred**
 |                                    | Receipt on a message with no generation info                         | Deferred: structured memory follow-up         |
 |                                    | Embedding refusal masks a later assembly error                       | F2                                            |
 |                                    | Panel writer line and stale views                                    | Deferred: structured memory follow-up         |
-|                                    | Cast slice matches substrings                                        | I1                                            |
+|                                    | Cast slice matches substrings                                        | Deferred (owner decision 2026-11-05)          |
 |                                    | Lore search depth skips a short chat's first messages                | I1                                            |
 |                                    | Snapshot layout check is copied                                      | I3                                            |
 |                                    | Hand-written resourceSync mocks                                      | K2                                            |
@@ -467,21 +467,20 @@ Every slice is independent of the others' code unless listed here; the shared fi
 
 ### I. Structured Memory
 
-- **I1. Named pages, short chats, rebuild refusals** (_small_, `structured-memory/pages.md` and
-  `read.md` with `server-generation.md`). `server/src/prompt/memory/structured/pages.ts` `castSlice`: use
-  `searchMatch` (as `retrieve.ts` does) instead of a lower-cased substring test. `shared/lore/activation.ts`
+- **I1. Short chats, rebuild refusals** (_small_, `structured-memory/read.md` with
+  `server-generation.md`). The `castSlice` item moved to Deferred (owner decision 2026-11-05):
+  `searchMatch` with `retrieve.ts`'s options still matches alias `Al` in "also". `shared/lore/activation.ts`
   `searchMatch`: clamp the slice start at 0 so three messages and depth 5 include message 0 (check the
   owner with `pnpm docs:owner shared/lore/activation.ts`, compare upstream `kwaroran/main`'s copy first,
   and update `server/src/tests/fixtures/baseline/` if a pinned case moves). `server/src/jobs/generationJobs.ts`:
   give the rebuild-lock 409 a code, teach `registryRefusal` in `src/ts/network/generationJobs.ts` the code,
   and add its words to `src/lang/en.ts`.
-  _Done_: alias `Al` no longer lists a page for "also"; a key only in a short chat's first message
-  activates; a create retried during a rebuild shows the rebuild message, not the generic lost one.
-  _Test_: `server/src/prompt/memory/structured/pages.test.ts`, `server/src/tests/lore.test.ts`,
+  _Done_: a key only in a short chat's first message activates; a create retried during a rebuild shows
+  the rebuild message, not the generic lost one.
+  _Test_: `server/src/tests/lore.test.ts`,
   `server/src/tests/memoryJobs.test.ts` (the coded 409), `src/ts/network/generationJobs.test.ts` (the
   refusal matrix).
-  _Removes_: Cast slice matches substrings; Lore search depth skips a short chat's first messages; Rebuild
-  lock refusal has no code.
+  _Removes_: Lore search depth skips a short chat's first messages; Rebuild lock refusal has no code.
 
 - **I2. Memory tasks are named by kind** (_small_, `structured-memory/writer.md` with `memory.md` and
   `ui-theming.md`). `src/lib/ChatScreens/ContextMeter.svelte`'s task block and chip read
@@ -657,6 +656,10 @@ Each group is a later plan or a design question, with the entries it should take
   Budget-refused handler rows not re-measured.
 - **Snapshot storage sizing.** Size the Asset Lifecycle snapshot budget as rows × id length, or add a
   VACUUM or a byte bound to the change log. Entry: The change log's bound is a row count, not 4 MB.
+- **Named-page matching.** `castSlice` (writer) and `retrieve.ts` `foundPages` (read path) both match a
+  page title or alias as a substring, so alias `Al` matches "also"; `searchMatch`'s `fullWordMatching`
+  misses multi-word titles and punctuation. A word-boundary rule for both paths is a design change.
+  Entry: Cast slice matches substrings.
 - **Before any `proto` floor.** A diagnostics event field and a recorder on both sockets. Entry: Socket
   protocol numbers are not in Diagnostics.
 - **Mounted DefaultChatScreen harness.** The latest-message start scroll, the bookmark jump and the
