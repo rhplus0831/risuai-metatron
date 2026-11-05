@@ -644,7 +644,7 @@ export async function requestChatDataMain(
         });
     }
 
-    if (arg.blockPlugins && targ.modelInfo.id.startsWith("pluginmodel:::")) {
+    if (arg.blockPlugins && targ.modelInfo.format === LLMFormat.Plugin) {
         return {
             type: "fail",
             result: "Plugin calls are blocked by the caller.",

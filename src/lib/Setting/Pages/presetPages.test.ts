@@ -273,7 +273,7 @@ describe("the Connections tab", () => {
 });
 
 describe("custom model definitions", () => {
-    it("offers flags 25, 26, and 27 and stores their numbers on the custom model", () => {
+    it("offers flags 11, 25, 26, and 27 and stores their numbers on the custom model", () => {
         settings.customModels = [
             {
                 id: "xcustom:::claude",
@@ -296,6 +296,7 @@ describe("custom model definitions", () => {
             flushSync();
         }
         const flags = [
+            ["poolSupported", 11],
             ["noStructuredOutput", 25],
             ["geminiThinkingNoMinimal", 26],
             ["claudeThinkingOnByDefault", 27],

@@ -191,6 +191,7 @@
                         {@render CustomFlagButton(index, "hasStreaming", 8)}
                         {@render CustomFlagButton(index, "requiresAlternateRole", 9)}
                         {@render CustomFlagButton(index, "mustStartWithUserInput", 10)}
+                        {@render CustomFlagButton(index, "poolSupported", 11)}
                         {@render CustomFlagButton(index, "hasVideoInput", 12)}
                         {@render CustomFlagButton(index, "OAICompletionTokens", 13)}
                         {@render CustomFlagButton(index, "DeveloperRole", 14)}

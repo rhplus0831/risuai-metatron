@@ -2963,8 +2963,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
          * Pins the hook's chat and passes its context to parsing and provider hooks through
          * `src/ts/process/request/request.ts`. Model selection uses the captured prompt/model preset
          * ids and their current values; a gone preset returns a failed request. Without context the
-         * settings views supply the presets. Models whose ids start with `pluginmodel:::` need
-         * `allowPlugins: true`; the legacy `custom` plugin model is not covered by that check.
+         * settings views supply the presets. Any model whose resolved format is Plugin needs
+         * `allowPlugins: true`: `pluginmodel:::` models, the legacy `custom` model, and reverse-proxy
+         * profiles using that format.
          */
         runLLMModel: async (options: {
             mode: ModelModeExtended;

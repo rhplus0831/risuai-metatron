@@ -117,12 +117,13 @@ function deleteRecord(kind: "presets" | "modelPresets", id: string) {
 }
 
 const captured = () => ({ chatRef: null, presetId: "pp-1", modelPresetId: "mp-1", personaId: "p1" });
-const argOf = () =>
+const argOf = (extra: Record<string, unknown> = {}) =>
     ({
         formated: [{ role: "user", content: "hi" }],
         bias: {},
         useStreaming: false,
         pluginContext: captured(),
+        ...extra,
     }) as never;
 
 const provider1 = vi.fn(async () => ({ success: true, content: "from prov-1" }));
@@ -170,6 +171,23 @@ describe("a tab-run request's captured presets", () => {
         );
         expect(selection.presetId).toBe("pp-2");
         expect(selection.modelPresetId).toBe("mp-2");
+    });
+
+    it("blocks the legacy custom plugin model when blockPlugins is true and permits it otherwise", async () => {
+        expect(await requestChatDataMain(argOf({ blockPlugins: true }), "model")).toEqual({
+            type: "fail",
+            result: "Plugin calls are blocked by the caller.",
+        });
+        expect(provider1).not.toHaveBeenCalled();
+        expect(provider2).not.toHaveBeenCalled();
+        expect(stubs.requestServer).not.toHaveBeenCalled();
+
+        expect(await requestChatDataMain(argOf(), "model")).toEqual({
+            type: "success",
+            result: "from prov-1",
+            model: "custom",
+        });
+        expect(provider1).toHaveBeenCalledTimes(1);
     });
 
     it("is refused up front, before the tools and the provider, once its captured model preset or preset is gone", async () => {
@@ -301,6 +319,30 @@ describe("a chatless request's captured ids and named profile", () => {
 });
 
 describe("reverse proxy routing", () => {
+    it("blocks a Plugin-format reverse proxy profile when blockPlugins is true and permits it otherwise", async () => {
+        const profile = trackedRecord<ModelProfile[]>("modelProfiles")!.find((entry) => entry.id === "prof-1")!;
+        profile.modelId = "reverse_proxy";
+        profile.customAPIFormat = LLMFormat.Plugin;
+        profile.customProxyRequestModel = "plugin-proxy-model";
+        stubs.getModelInfo.mockImplementation((id) => ({
+            id,
+            format: LLMFormat.OpenAICompatible,
+            flags: [LLMFlags.hasFullSystemPrompt],
+            tokenizer: 0,
+        }));
+
+        expect(await requestChatData(argOf({ blockPlugins: true }), "model")).toEqual({
+            type: "fail",
+            result: "Plugin calls are blocked by the caller.",
+        });
+        expect(provider1).not.toHaveBeenCalled();
+        expect(provider2).not.toHaveBeenCalled();
+        expect(stubs.requestServer).not.toHaveBeenCalled();
+
+        expect(await requestChatData(argOf(), "model")).toMatchObject({ type: "success", result: "from prov-1" });
+        expect(provider1).toHaveBeenCalledTimes(1);
+    });
+
     it("runs WebLLM and Plugin profiles in the tab and sends every other custom format to the server with the overridden model", async () => {
         const profile = trackedRecord<ModelProfile[]>("modelProfiles")!.find((entry) => entry.id === "prof-1")!;
         profile.modelId = "reverse_proxy";

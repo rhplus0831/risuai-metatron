@@ -1658,12 +1658,8 @@ interface RisuaiPluginAPI {
     nativeFetch(url: string, options?: RequestInit): Promise<Response>;
 
     /**
-     * Saves a secret header for network requests, for protected Headers (like Authorization) that are stripped by Risuai for security.
-     * To use saved secret headers, use an object `{ secretHeader: 'Header-Name' }` in the `headers` field of `nativeFetch` options,
-     * Like `{ headers: {"Authorization":{ secretHeader: 'Authorization' }} }`
-     * @m This API is work in progress and may have breaking changes in the future.
-     * @param key - Header key (e.g., 'Authorization')
-     * @param value - Header value.
+     * Not implemented in this fork. The host only logs a warning and stores nothing.
+     * `nativeFetch` does not support `{ secretHeader }`, so the secret header is not sent.
      */
     saveSecretHeader(key: string, prefix: string, value: string|string[]): Promise<void>;
 
@@ -2247,13 +2243,10 @@ interface RisuaiPluginAPI {
      * @param options.messages - Array of chat messages to send to the model
      * @param options.staticModel - Optional static model name to use (e.g., 'gpt-4')
      * @param options.mode - Request mode
-     * @param options.allowPlugins - If true, allow the call to resolve to a
-     *   plugin-provided model (`pluginmodel:::*`). Default is false: plugin
-     *   models are blocked to guard against accidental IPC loops between
-     *   provider plugins. Opt in when the plugin legitimately needs to use
-     *   the user's plugin-supplied main or auxiliary model (e.g. a TTS
-     *   preprocessor rewriting text with the configured otherAx model).
-     *   Loop avoidance becomes the opting-in plugin's responsibility.
+     * @param options.allowPlugins - If true, allow any model with the Plugin format:
+     *   plugin-provided `pluginmodel:::` models, the legacy `custom` model, and
+     *   reverse-proxy profiles using that format. Default is false to guard against
+     *   accidental IPC loops; opting in makes loop avoidance the plugin's responsibility.
      * @returns The model's response, which may be a string or a stream depending on the mode
      */
     runLLMModel(options: {
