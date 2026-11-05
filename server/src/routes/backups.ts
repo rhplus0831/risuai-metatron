@@ -479,7 +479,8 @@ export function registerBackupRoutes(
      * Adds missing assets and repairs content-named files by restoreValidated's verified-byte rule.
      * Returns { epoch, assetsWritten, assetsSkipped }; 400 refused archive/store or missing body,
      * 409 another import, 412 stale epoch, 413 cap exceeded, 503 shutdown before admission.
-     * Disk preflights before spooling and extraction answer 507 with needed/free bytes.
+     * Disk preflights answer 507 with needed/free bytes; after spooling, only assets to add or repair
+     * are charged. A kept asset found missing or damaged under the lock is rechecked before staging.
      */
     app.post(BACKUP_IMPORT_PATH, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
@@ -536,12 +537,18 @@ export function registerBackupRoutes(
             }
             handle = await fs.open(archiveFile, "r");
             const plan = await planImport(handle, savePath, maxArchiveRecords);
-            // Supplied assets may need repair even when their paths exist; include every staged record.
+            // Charge only assets to add or repair; kept assets are rechecked if they need staging later.
+            const chargedAssets = new Set<number>();
+            let remainingChargedAssetBytes = 0;
+            for (const [index, asset] of plan.assets.entries()) {
+                if ((await assetCopyDecision(asset.target)).action !== "keep") {
+                    chargedAssets.add(index);
+                    remainingChargedAssetBytes += asset.record.length;
+                }
+            }
             await ensureFreeSpace(
                 savePath,
-                3 * plan.database.length +
-                    (await liveDatabaseBytes(savePath)) +
-                    plan.assets.reduce((sum, item) => sum + item.record.length, 0),
+                3 * plan.database.length + (await liveDatabaseBytes(savePath)) + remainingChargedAssetBytes,
                 { statfs: arg.statfs },
             );
             const databaseFile = path.join(staging, "resources.sqlite");
@@ -556,6 +563,7 @@ export function registerBackupRoutes(
             await verifyStagedFile(stagedFile, stagedReport);
             const importHandle = handle;
             const importStaging = staging;
+            const stagedChargedAssets = new Set<number>();
 
             const result = await snapshots.withMaintenance(async ({ snapshot }) => {
                 // Again once the lock is held, before the safety snapshot and any asset is written:
@@ -572,6 +580,20 @@ export function registerBackupRoutes(
                     assets: plan.assets.map((asset, index) => ({
                         target: asset.target,
                         stage: async () => {
+                            if (chargedAssets.has(index)) {
+                                if (!stagedChargedAssets.has(index)) {
+                                    stagedChargedAssets.add(index);
+                                    remainingChargedAssetBytes -= asset.record.length;
+                                }
+                            } else {
+                                // Extraction, staging and the safety snapshot already exist; reserve the
+                                // database install, this asset and charged assets not yet staged.
+                                await ensureFreeSpace(
+                                    savePath,
+                                    plan.database.length + asset.record.length + remainingChargedAssetBytes,
+                                    { statfs: arg.statfs },
+                                );
+                            }
                             const staged = path.join(importStaging, `asset-${index}`);
                             await copyRecordToFile(importHandle, asset.record, staged);
                             return staged;
@@ -592,6 +614,22 @@ export function registerBackupRoutes(
 
 /** One asset of an import: its file under `save/assets`, and how to get its staged copy (removed after placing). */
 export type RestoreAsset = { target: string; stage(): Promise<string> };
+
+/** Only a damaged content-named file is repaired; every other existing path, including a directory, is kept. */
+async function assetCopyDecision(target: string): Promise<{
+    action: "add" | "repair" | "keep";
+    expectedHex: string | null;
+}> {
+    const name = decodeFileName(path.basename(target));
+    const expectedHex = name === null ? null : contentNameHash(ASSET_PREFIX + name);
+    const existing = await fs.lstat(target).catch(() => null);
+    const repair =
+        existing !== null &&
+        expectedHex !== null &&
+        (existing.isFile() || existing.isSymbolicLink()) &&
+        !(await holdsVerifiedAsset(target, expectedHex));
+    return { action: existing === null ? "add" : repair ? "repair" : "keep", expectedHex };
+}
 
 /**
  * The steps every restore runs inside `withMaintenance` once its staged store is verified and the
@@ -619,30 +657,21 @@ export async function restoreValidated(arg: {
     let written = 0;
     let skipped = 0;
     for (const asset of arg.assets) {
-        const name = decodeFileName(path.basename(asset.target));
-        const expectedHex = name === null ? null : contentNameHash(ASSET_PREFIX + name);
-        const existing = await fs.lstat(asset.target).catch(() => null);
-        // Only a damaged content-named file is replaced: other names have no expected bytes, and a
-        // directory in the way is left alone.
-        const repair =
-            existing !== null &&
-            expectedHex !== null &&
-            (existing.isFile() || existing.isSymbolicLink()) &&
-            !(await holdsVerifiedAsset(asset.target, expectedHex));
-        if (existing && !repair) {
+        const { action, expectedHex } = await assetCopyDecision(asset.target);
+        if (action === "keep") {
             skipped += 1;
             continue;
         }
         const staged = await asset.stage();
         try {
             const verification = expectedHex === null ? null : await hashAssetFile(staged);
-            if (repair && verification?.hashHex !== expectedHex) {
+            if (action === "repair" && verification?.hashHex !== expectedHex) {
                 // The archive's copy is no better than the file in place.
                 skipped += 1;
                 continue;
             }
             await syncFile(staged);
-            if (repair) {
+            if (action === "repair") {
                 await fs.rename(staged, asset.target);
             } else {
                 // A hard link never replaces an existing file, unlike a rename.

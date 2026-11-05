@@ -2114,6 +2114,85 @@ it.each(["declared upload", "database extraction"])("preflights version-2 import
     expect(assetFiles(s)).toEqual([]);
 });
 
+it("imports a verified content-named 8 MiB asset with only the database disk allowance", async () => {
+    let free = Number.MAX_SAFE_INTEGER;
+    const s = await defaultServer({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+    const asset = "x".repeat(8 * 1024 * 1024);
+    const key = `assets/${createHash("sha256").update(asset).digest("hex")}.png`;
+    const file = seedSweepAsset(s, key, asset);
+    const inode = (await fs.stat(file)).ino;
+    const database = await databaseBytes(s);
+    const bytes = archiveOf(database, { [key]: asset });
+    free = diskNeeded(3 * database.byteLength + liveBytes(s.savePath));
+
+    const response = await importArchive(s, bytes);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ epoch: expect.any(String), assetsWritten: 0, assetsSkipped: 1 });
+    expect(await fs.readFile(file, "utf8")).toBe(asset);
+    expect((await fs.stat(file)).ino).toBe(inode);
+});
+
+it("charges an absent 8 MiB asset in the version-2 import disk preflight", async () => {
+    let free = Number.MAX_SAFE_INTEGER;
+    const s = await defaultServer({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+    const asset = "x".repeat(8 * 1024 * 1024);
+    const key = `assets/${createHash("sha256").update(asset).digest("hex")}.png`;
+    const database = await databaseBytes(s);
+    const bytes = archiveOf(database, { [key]: asset });
+    const databaseEstimate = 3 * database.byteLength + liveBytes(s.savePath);
+    free = diskNeeded(databaseEstimate);
+
+    const response = await importArchive(s, bytes);
+
+    expect(response.status).toBe(507);
+    expect(await response.json()).toEqual({
+        error: "Insufficient Storage",
+        needed: diskNeeded(databaseEstimate + Buffer.byteLength(asset)),
+        free,
+    });
+    expect(assetFiles(s)).toEqual([]);
+});
+
+it("rechecks disk space for an asset removed after preflight before replacing resources", async () => {
+    let free = Number.MAX_SAFE_INTEGER;
+    let file = "";
+    let removed = false;
+    const runner = testRestoreRunner();
+    const s = await defaultServer({
+        assetLifecycle: { statfs: async () => diskWithFree(free) },
+        restore: {
+            runner: async (input, options) => {
+                const report = await runner(input, options);
+                // Validation follows the disk preflight and finishes before maintenance admission.
+                await fs.unlink(file);
+                removed = true;
+                return report;
+            },
+        },
+    });
+    const asset = "x".repeat(8 * 1024 * 1024);
+    const key = `assets/${createHash("sha256").update(asset).digest("hex")}.png`;
+    file = seedSweepAsset(s, key, asset);
+    const revision = await s.create("pluginStorage", "main", { note: "archived" });
+    const database = await databaseBytes(s);
+    const bytes = archiveOf(database, { [key]: asset });
+    expect((await s.put("pluginStorage", "main", { baseRevision: revision, data: { note: "live" } })).status).toBe(200);
+    const before = await (await s.get("pluginStorage", "main")).json();
+    const epoch = s.epoch;
+    free = diskNeeded(3 * database.byteLength + liveBytes(s.savePath));
+    expect(free).toBeLessThan(diskNeeded(Buffer.byteLength(asset)));
+
+    const response = await importArchive(s, bytes);
+
+    expect(removed).toBe(true);
+    expect(response.status).toBe(507);
+    expect(await response.json()).toMatchObject({ error: "Insufficient Storage", free });
+    expect(await s.readEpoch()).toBe(epoch);
+    expect(await (await s.get("pluginStorage", "main")).json()).toEqual(before);
+    expect(assetFiles(s)).toEqual([]);
+});
+
 it("retains the restore source as a listed root through rotation and staging cleanup", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2030-01-01"));
