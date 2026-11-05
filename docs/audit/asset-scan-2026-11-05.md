@@ -79,6 +79,10 @@ while a narrowed one must repeat for each batch that follows a write. Every requ
 this seed when the machine is quiet, about 3 s under load. A sweep with no write since its scan does no re-mark, and its
 turns are the 50 `statSync` and `unlinkSync` calls of a batch.
 
+On the dev stack of `util/playwright/checkAssetLifecycle.mjs` (two characters, one inlay, no write since the scan), the
+panel's sweep request took about 10 ms for one orphan inlay record and 11 ms for two files (682 bytes) with their
+thumbnail directory.
+
 ## Not measured
 
 - A spinning disk or an SD card: the reads here came from tmpfs and the page cache.

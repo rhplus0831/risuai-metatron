@@ -66,10 +66,10 @@ codes; the entries name the role and the identifiers to look up.
   (one stack per run on `E2E_SERVER_PORT`/`E2E_VITE_PORT`).
 - `e2e/fixtures.ts`: the specs' `test` (clears safe boot's counter per page load), `expect`, and `settle` (waits for
   `resourceSyncIdle`).
-- `util/playwright/stack.mjs`: `startStack` (server in a temporary working directory plus Vite, `restartServer`;
-  `deniedEgress` lists what the server's `fetch` tripwire refused, and a `serverEnv.NODE_OPTIONS` of the check's own
-  replaces that tripwire), `isolateContext`, `unexpectedEgress`, `openApp`, `openCharacterChat`,
-  `clearSafeBootAttempts(contextOrPage)`, `pluginFixtureOp` (a v3 plugin installed by seed).
+- `util/playwright/stack.mjs`: `startStack` (server in a temporary working directory plus Vite, `restartServer` with an
+  optional server environment; `deniedEgress` lists what the server's `fetch` tripwire refused, and a
+  `serverEnv.NODE_OPTIONS` of the check's own replaces that tripwire), `isolateContext`, `unexpectedEgress`, `openApp`,
+  `openCharacterChat`, `clearSafeBootAttempts(contextOrPage)`, `pluginFixtureOp` (a v3 plugin installed by seed).
 - `util/playwright/offline.sh` (prefix a check's command): a check with loopback only (`unshare -rn`), the boundary that
   keeps the stack, the browser, and the mocks off public services.
 - `util/playwright/modelProfiles.mjs` and `util/playwright/modelProfiles.browser.mjs`: model and chat-binding fixtures
@@ -83,8 +83,9 @@ None is in the gate; all are in `util/playwright/`.
 
 - Against the dev stack: `checkLiveUpdates.mjs`, `checkCredentialTraffic.mjs`, `checkLlmTransport.mjs`,
   `checkStreamingModes.mjs`, `checkServerTransform.mjs`, `checkMcpFixes.mjs`, `checkDurableDrafts.mjs`,
-  `checkSidebarChatStatus.mjs`, `checkBootCache.mjs`, and, with real v3 plugins under `offline.sh`,
-  `checkJobProtocol.mjs` (a plugin provider) and `checkJobHandoff.mjs` (two tabs hand a job off).
+  `checkAssetLifecycle.mjs` (the asset sweep, through the development clock offset), `checkSidebarChatStatus.mjs`,
+  `checkBootCache.mjs`, and, with real v3 plugins under `offline.sh`, `checkJobProtocol.mjs` (a plugin provider) and
+  `checkJobHandoff.mjs` (two tabs hand a job off).
 - Against a running production server, normally the Docker image on a fresh volume (`--base`, `--password`,
   `--provider-host`): `checkRecordsSmoke.mjs`, `checkLazyChatsSmoke.mjs`, `checkTwoClientSmoke.mjs`,
   `checkServerSend.mjs`, `checkServerButton.mjs`, `checkServerTrigger.mjs`, `checkServerJobMatrix.mjs`; the last four
