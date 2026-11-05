@@ -10,7 +10,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (7)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (10)
-- [Server routes and resource store](#server-routes-and-resource-store) (4)
+- [Server routes and resource store](#server-routes-and-resource-store) (2)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (6)
@@ -158,20 +158,6 @@ Found 2026-11-05 in Job Handoff Slice 1. The owner switch (`switchOwner`, `hasDe
 **Suggested handling:** ask the owner whether the switch should also wait for the old lane's drain holds, or state the overlap as a limitation in the server-generation guide.
 
 ## Server routes and resource store
-
-### Routes still measure a body the limiter already counted
-
-Since `limitedBody` counts the bytes that arrive (Server Byte Budgets slice 1, `d8aac27d0`, 2026-10-31), the second size check after the read and its comment "The limiter trusts a declared length" are redundant and false in `server/src/routes/messageSearch.ts:213`, `tokens.ts:24`, `diagnostics.ts:56`, `requestHistory.ts:152` and `chatCheckpoints.ts:73`; the comments in `server/src/tests/resourcesBoot.test.ts` (~806, "the limiter trusts it, so the route measures what it read") and `diagnostics.test.ts` (~1679, "the body read is measured again") are stale the same way. The boot route's copy was removed in that slice; these files were outside it. Still present 2026-11-01.
-
-**Why it matters:** harmless at runtime (the same 413), but the comments state behavior that is gone and the `arrayBuffer()` then `text()` pair is dead logic.
-**Suggested handling:** when one of these routes is next touched, drop the check and the comment and let the limiter's 413 stand.
-
-### chatCheckpoints.ts keeps its own copy of the old body limiter
-
-`server/src/routes/chatCheckpoints.ts:2` imports `hono/body-limit` and builds its own `limitBody`/`limitedBody` (~37) instead of `routes/limitedBody.ts`; it is the only such import left after slice 1. It runs after authentication and caps at 16 KiB, so it is no pre-auth exposure, but a chunked body is still buffered first and a read failure past the preread takes the route's own path, not the shared post-`next()` rule. The server guide's registration-order item notes the exception.
-
-**Why it matters:** D1 of the plan says route caps go through the shared helper; two copies drift.
-**Suggested handling:** replace the copy with `limitedBody(MAX_CHECKPOINT_BODY_BYTES)` and remove the guide's note.
 
 ### The LLM answer route comment names one 404 and no cap
 
