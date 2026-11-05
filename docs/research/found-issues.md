@@ -16,9 +16,9 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Chat screen and input](#chat-screen-and-input) (3)
 - [Client and plugins](#client-and-plugins) (5)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
-- [Guides](#guides) (1)
+- [Guides](#guides) (0)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (12)
+- [Structured Memory](#structured-memory) (11)
 
 ## Chat store, sync, and change feeds
 
@@ -262,13 +262,6 @@ On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the firs
 
 ## Guides
 
-### Structured Memory decision pointers name the plan
-
-`rg -n "Decision: Structured Memory [^,]*, plan" docs/structure` gives 42 hits, for example `docs/structure/structured-memory/records.md:282` ("slice 6c, plan") and the Limitations of `structured-memory/writer.md`. The Structured Memory plan was retired into the archive on 2026-11-03, so ", plan" sends a reader to a file no longer under `docs/plan/`; the HypaV3 pointers in `memory.md` already say "archive". Found in Reroll Candidates Slice 3 (2026-11-05), re-checked on the merged target.
-
-**Why it matters:** a pointer to a moved plan is a dead end for an agent following the Agent Read Protocol.
-**Suggested handling:** rewrite them to ", archive" in a guide-maintenance pass (byte-neutral or smaller).
-
 ## Test timing
 
 ### Gate tests still racing real time
@@ -370,16 +363,3 @@ Measured by slice 8 on scripted fixtures (`docs/audit/structured-memory-2026-11-
 
 **Why it matters:** cost previews people pay by, and stalls on long chats.
 **Suggested handling:** take each as a proposal when Structured Memory is next touched, and re-run `node util/memoryEval.mjs` after a read-path change.
-
-### Writer and lifecycle page slips
-
-Found by lookup trials and challengers of the Guides To Source run (2026-11-05), each predating that day's rewrites; owners are the named pages.
-
-- `docs/structure/structured-memory/writer.md:72` links adopted sources counting as recorded to `lifecycle.md#the-adoption-choice` (the hold rules), but the fact (`recordedMessages` reads sources in any status) is under `#adopting-hypav3-summaries`.
-- `writer.md:186` (The gap run) says "an edit during the run can leave one send with a slightly stale prompt". A memory edit is refused 409 `fenced` for the whole gap run (`chatHeld` in `server/src/app.ts`), so it means a message edit; a trial read it as contradicting the fence.
-- `writer.md:9` lists `testRun` in its Scope `Paths`, while the test run's contract is read's (`read.md` "The test run") and `read.md:8`'s `Paths` omits `server/src/prompt/memory/structured/testRun.ts`; the folder README already routes `testRun` to read.
-- `lifecycle.md`'s Files entries for `server/src/data/checkpointStore.ts` (~37) and `src/ts/storage/chatStore.svelte.ts` (~53) carry no `Owner:` marker, though `pnpm docs:owner` gives them to server-resources and chat-store and the same page marks `memoryStore.ts` and `writer.ts`. A reader starting from `docs:owner` gets no hint of the lifecycle page either.
-
-**Why it matters:** each sends a reader to the wrong section or guide, or lets them take the page as the owner.
-
-**Suggested handling:** retarget the anchor, say "a message edit", move `testRun` from writer's Scope `Paths` to read's, and add the `Owner:` markers (or a shared-part rule) at the next edit of each page.
