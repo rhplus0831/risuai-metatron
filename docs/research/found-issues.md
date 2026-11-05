@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run) and the tenth (the Plugin Storage and Data API run) on 2026-11-05; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run) and the eleventh (the Reroll Candidates run) on 2026-11-05; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -13,10 +13,10 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
-- [Chat screen and input](#chat-screen-and-input) (7)
+- [Chat screen and input](#chat-screen-and-input) (8)
 - [Client and plugins](#client-and-plugins) (27)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
-- [Guides](#guides) (6)
+- [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (19)
 
@@ -314,6 +314,13 @@ After the paged export (`src/lib/ChatScreens/screenshotExport.ts`), the Render W
 
 **Why it matters:** bounded obsolete work, one run per streaming row.
 **Suggested handling:** on the transition into raw streaming, abort `parseController` and bump `parseRun` together.
+
+### The dynamic reroll icon variant is dead
+
+Since Reroll Candidates Slice 2 (2026-11-05) `Chats.svelte` passes `rerollIcon` as a boolean, true only on the last non-comment row, and nothing passes `"dynamic"` any more. `class:dyna-icon={rerollIcon === "dynamic"}` in `src/lib/ChatScreens/Chat.svelte` (the `rerolls` snippet, ~1869, ~1883, ~1893), the `"dynamic"` member of the `rerollIcon` prop type (~215, ~402), and the `.chat-message-container .dyna-icon` and `:first-of-type .dyna-icon` rules in `src/styles.css` (~564) have no producer. Re-checked on the merged Reroll Candidates target.
+
+**Why it matters:** the dead variant suggests CSS still decides which row shows the reroll arrows.
+**Suggested handling:** drop the `"dynamic"` variant and the two CSS rules, after checking that no theme or plugin CSS the guides document targets `.dyna-icon`.
 
 ## Client and plugins
 
@@ -698,6 +705,13 @@ Lookup trials of the Guides To Source run (2026-11-04/05) hesitated or guessed a
 
 **Why it matters:** a reader adding a confirm variant follows the guide and misses the checkbox path.
 **Suggested handling:** fix on the next global-api guide edit, paid for with a trim (the guide tree is at its byte ratchet).
+
+### Structured Memory decision pointers name the plan
+
+`rg -n "Decision: Structured Memory [^,]*, plan" docs/structure` gives 42 hits, for example `docs/structure/structured-memory/records.md:282` ("slice 6c, plan") and the Limitations of `structured-memory/writer.md`. The Structured Memory plan was retired into the archive on 2026-11-03, so ", plan" sends a reader to a file no longer under `docs/plan/`; the HypaV3 pointers in `memory.md` already say "archive". Found in Reroll Candidates Slice 3 (2026-11-05), re-checked on the merged target.
+
+**Why it matters:** a pointer to a moved plan is a dead end for an agent following the Agent Read Protocol.
+**Suggested handling:** rewrite them to ", archive" in a guide-maintenance pass (byte-neutral or smaller).
 
 ## Test timing
 
