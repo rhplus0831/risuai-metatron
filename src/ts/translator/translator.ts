@@ -35,8 +35,8 @@ import sendSound from "../../etc/send.mp3";
 /**
  * Tab translation adapters: composer input uses `translate`, which owns the non-LLM pair cache
  * (`src/lib/ChatScreens/DefaultChatScreen.svelte` wires it to input translation). TTS (`translateVox`)
- * and the playground call `runTranslator` directly, bypassing that pair cache. The LLM adapter owns
- * a separate context-keyed browser cache; stored message translations belong to
+ * and the playground call `runTranslator` directly, bypassing that pair cache and shared producers.
+ * The LLM adapter owns a separate context-keyed browser cache; stored message translations belong to
  * `src/ts/translator/storedTranslation.svelte.ts` and `server/src/translation/runner.ts`.
  * Rendered translation keeps its captured request/transform context across awaits; request
  * adaptation lives in `src/ts/process/request/request.ts`, prompt execution in
@@ -122,11 +122,12 @@ function releaseTranslationSlot(): void {
     else translationWorkers -= 1;
 }
 
-/** FIFO permits shared by all rendered DOM translations; abort removes only a waiting acquisition. */
-function acquireTranslationSlot(signal?: AbortSignal): Promise<() => void> {
+/** FIFO permits for rendered producers; admission is synchronous, and abort only withdraws a queued acquisition. */
+function acquireTranslationSlot(onGranted: () => void, signal?: AbortSignal): Promise<() => void> {
     signal?.throwIfAborted();
     if (translationWorkers < MAX_TRANSLATION_WORKERS) {
         translationWorkers += 1;
+        onGranted();
         return Promise.resolve(releaseTranslationSlot);
     }
     return new Promise((resolve, reject) => {
@@ -139,7 +140,10 @@ function acquireTranslationSlot(signal?: AbortSignal): Promise<() => void> {
             return true;
         };
         const grant = () => {
-            if (remove()) resolve(releaseTranslationSlot);
+            if (remove()) {
+                onGranted();
+                resolve(releaseTranslationSlot);
+            }
         };
         const onAbort = () => {
             if (remove()) reject(signal!.reason);
@@ -149,14 +153,9 @@ function acquireTranslationSlot(signal?: AbortSignal): Promise<() => void> {
     });
 }
 
-async function translateWithSlot(text: string, reverse: boolean, signal?: AbortSignal): Promise<string> {
-    const release = await acquireTranslationSlot(signal);
-    try {
-        signal?.throwIfAborted();
-        return await translate(text, reverse);
-    } finally {
-        release();
-    }
+/** Cache hits and joins take no permit; a new rendered producer holds one until it settles. */
+function translateWithSlot(text: string, reverse: boolean, signal?: AbortSignal): Promise<string> {
+    return translateShared(text, reverse, true, signal);
 }
 
 /**
@@ -190,12 +189,32 @@ function memoryTranslationContext() {
     return { from, target, key };
 }
 
-/**
- * The only writer of the non-LLM memory pair cache: both directions share one configuration, and
- * a result is cached only while that configuration still matches the one captured before the run.
- * Direct `runTranslator` callers never populate it; LLM calls use `translateLLM`'s cache instead.
- */
+type MemoryTranslationFlight = {
+    promise: Promise<string>;
+    controller: AbortController;
+    subscribers: number;
+    started: boolean;
+};
+const memoryInFlight = new Map<string, MemoryTranslationFlight>();
+
+/** Composer calls share the pair cache and producers with renders, but start new work without a permit. */
 export async function translate(text: string, reverse: boolean) {
+    return translateShared(text, reverse, false);
+}
+
+/**
+ * Owns the non-LLM pair cache and flights by configuration, direction and exact text. A queued
+ * flight leaves when its last caller aborts; admitted producers finish without caller signals.
+ * Only successful results under the original configuration populate the cache. Direct
+ * `runTranslator` calls bypass both maps; LLM calls retain their separate cache and flights.
+ */
+async function translateShared(
+    text: string,
+    reverse: boolean,
+    rendered: boolean,
+    signal?: AbortSignal,
+): Promise<string> {
+    signal?.throwIfAborted();
     const context = memoryTranslationContext();
     const memoryCache = usesMemoryCache();
     if (memoryCache) {
@@ -205,13 +224,82 @@ export async function translate(text: string, reverse: boolean) {
         }
     }
 
-    const failure = { failed: false };
-    const result = await runTranslator(text, reverse, context.from, context.target, { failure });
-    // A settings/chat switch can change providers between chunks. Never cache that mixed result.
-    if (memoryCache && !failure.failed && usesMemoryCache() && memoryTranslationContext().key === context.key) {
-        writeMemoryCache(context.key, reverse ? result : text, reverse ? text : result);
+    const key = JSON.stringify([context.key, reverse, text]);
+    let flight = memoryCache ? memoryInFlight.get(key) : undefined;
+    if (!flight) {
+        let resolve: (value: string) => void;
+        let reject: (error: unknown) => void;
+        const created: MemoryTranslationFlight = {
+            promise: new Promise<string>((res, rej) => {
+                resolve = res;
+                reject = rej;
+            }),
+            controller: new AbortController(),
+            subscribers: 0,
+            started: !rendered,
+        };
+        // Register before admission so callers can also join while all permits are occupied.
+        if (memoryCache) memoryInFlight.set(key, created);
+        const produce = async () => {
+            let release: (() => void) | undefined;
+            try {
+                if (rendered) {
+                    release = await acquireTranslationSlot(() => {
+                        created.started = true;
+                    }, created.controller.signal);
+                    const cached = memoryCache ? readMemoryCache(context.key, text, reverse) : undefined;
+                    if (cached !== undefined) return cached;
+                }
+                const failure = { failed: false };
+                const result = await runTranslator(text, reverse, context.from, context.target, { failure });
+                // A settings/chat switch can change providers between chunks. Never cache that mixed result.
+                if (
+                    memoryCache &&
+                    !failure.failed &&
+                    usesMemoryCache() &&
+                    memoryTranslationContext().key === context.key
+                ) {
+                    writeMemoryCache(context.key, reverse ? result : text, reverse ? text : result);
+                }
+                return result;
+            } finally {
+                if (memoryInFlight.get(key) === created) memoryInFlight.delete(key);
+                release?.();
+            }
+        };
+        void produce().then(resolve, reject);
+        flight = created;
     }
-    return result;
+    const shared = flight;
+    shared.subscribers += 1;
+    return new Promise((resolve, reject) => {
+        let subscribed = true;
+        const leave = () => {
+            if (!subscribed) return false;
+            subscribed = false;
+            signal?.removeEventListener("abort", onAbort);
+            shared.subscribers -= 1;
+            return true;
+        };
+        const onAbort = () => {
+            if (!leave()) return;
+            if (!shared.started && shared.subscribers === 0) {
+                if (memoryInFlight.get(key) === shared) memoryInFlight.delete(key);
+                shared.controller.abort();
+            }
+            reject(signal!.reason);
+        };
+        shared.promise.then(
+            (value) => {
+                if (leave()) resolve(value);
+            },
+            (error) => {
+                if (leave()) reject(error);
+            },
+        );
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
+    });
 }
 
 /**
@@ -437,22 +525,30 @@ async function translateMain(
         throw markTransient(error, arg.signal);
     }
 
-    const res = await f.json();
-
-    if (typeof res === "string") {
-        return res as unknown as string;
+    arg.signal?.throwIfAborted();
+    if (!f.ok) {
+        throw markTransient(new Error(`Google Translate returned HTTP ${f.status}`), arg.signal);
+    }
+    let res: unknown;
+    try {
+        res = await f.json();
+    } catch (error) {
+        throw markTransient(error, arg.signal);
+    }
+    arg.signal?.throwIfAborted();
+    const translations: string[] =
+        Array.isArray(res) && Array.isArray(res[0])
+            ? res[0].flatMap((segment: unknown) =>
+                  Array.isArray(segment) && typeof segment[0] === "string" ? [segment[0]] : [],
+              )
+            : [];
+    // Blank input never reaches this adapter: `translateProtectingLines` keeps it locally.
+    if (translations.length === 0) {
+        throw markTransient(new Error("Google Translate returned an unexpected response"), arg.signal);
     }
 
-    if (!res[0] || res[0].length === 0) {
-        return text;
-    }
-
-    const result = (
-        res[0]
-            .map((s) => s[0])
-            .filter(Boolean)
-            .join("") as string
-    )
+    const result = translations
+        .join("")
         .replace(/\* ([^*]+)\*/g, "*$1*")
         .replace(/\*([^*]+) \*/g, "*$1*");
     return result;
@@ -491,10 +587,12 @@ export function isExpTranslator() {
  * DOM jobs must all be collected before dispatch, so traversal cannot await an unflushed batch.
  * DeepLX keeps nodes intact in sequential `■` batches with a 5,000-character target (one oversized
  * node may exceed it), flushes the final partial batch, and retries jobs individually if the reply's
- * separator count disagrees. All DOM calls share `MAX_TRANSLATION_WORKERS` slots (10), including
- * each DeepLX batch and fallback call. Waiting for a slot is abortable; a granted worker checks the
- * signal before taking a job or chunk. An already requested `translate` runs to its answer, warms
- * the memory pair cache and holds its slot until it answers, even if another worker rejects first.
+ * separator count disagrees. Cache hits and joins take no permit. New chunk producers share
+ * `MAX_TRANSLATION_WORKERS` slots (10), including each DeepLX batch and fallback call. Flights are
+ * joinable by configuration, direction and exact text, even while queued; the last caller leaving
+ * withdraws a queued flight. Admitted producers keep their permit until settlement and warm the
+ * pair cache even after all callers abort. Each signal aborts only its caller's await; workers check
+ * it before taking a job and before each chunk.
  * Both DOM dispatch modes share result application: combined paragraph jobs may rerun editdisplay
  * through `src/ts/parser/transformClient.ts`, then Markdown, before the final edittrans pass. The
  * LLM path goes straight to edittrans. A missing transform skips the server display-script stage.
@@ -674,20 +772,14 @@ export async function translateHTML(
         let nextJob = 0;
         async function translateJobs() {
             while (nextJob < jobs.length) {
-                const release = await acquireTranslationSlot(signal);
-                try {
+                signal?.throwIfAborted();
+                const i = nextJob++;
+                const chunks: string[] = [];
+                for (const chunk of jobs[i].text.split(/\n\n+/g)) {
                     signal?.throwIfAborted();
-                    if (nextJob >= jobs.length) return;
-                    const i = nextJob++;
-                    const chunks: string[] = [];
-                    for (const chunk of jobs[i].text.split(/\n\n+/g)) {
-                        signal?.throwIfAborted();
-                        chunks.push(await translate(chunk, reverse));
-                    }
-                    results[i] = chunks.join("\n\n");
-                } finally {
-                    release();
+                    chunks.push(await translateWithSlot(chunk, reverse, signal));
                 }
+                results[i] = chunks.join("\n\n");
             }
         }
         await Promise.all(

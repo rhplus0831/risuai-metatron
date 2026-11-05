@@ -87,6 +87,59 @@ afterEach(async () => {
 });
 
 describe("rendered provider worker limit", () => {
+    it("renders a warm pair-cache hit while ten unrelated provider requests remain open", async () => {
+        const source = ["Warm cache bypass"];
+        const warming = render(source);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(provider).toHaveBeenCalledTimes(1);
+        for (const request of [...open]) request.answer();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(warming).toEqual({ value: translated(source) });
+
+        const blockers = render(paragraphs("Warm cache blockers", 10));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(provider).toHaveBeenCalledTimes(11);
+        expect(open.size).toBe(10);
+
+        const cached = render(source);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cached).toEqual({ value: translated(source) });
+        expect(provider).toHaveBeenCalledTimes(11);
+        expect(open.size).toBe(10);
+        expect(blockers).toEqual({});
+    });
+
+    it("translates ten identical paragraphs with one provider request and one permit", async () => {
+        const source = Array.from({ length: 10 }, () => "Identical paragraph producer");
+        const repeated = render(source);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(provider).toHaveBeenCalledTimes(1);
+        expect(open.size).toBe(1);
+        const [sharedRequest] = open;
+
+        // One producer leaves nine permits free; the tenth unrelated request must wait.
+        const otherSources = paragraphs("Identical paragraph blockers", 10);
+        const others = render(otherSources);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(provider).toHaveBeenCalledTimes(10);
+        expect(open.size).toBe(10);
+        expect(repeated).toEqual({});
+        expect(others).toEqual({});
+
+        sharedRequest.answer();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(repeated).toEqual({ value: translated(source) });
+        expect(provider).toHaveBeenCalledTimes(11);
+        expect(open.size).toBe(10);
+        expect(peak).toBe(10);
+
+        for (const request of [...open]) request.answer();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(others).toEqual({ value: translated(otherSources) });
+        expect(provider).toHaveBeenCalledTimes(11);
+        expect(open.size).toBe(0);
+    });
+
     it("shares ten provider slots across three concurrent translations of twenty paragraphs", async () => {
         const sources = ["First render", "Second render", "Third render"].map((prefix) => paragraphs(prefix));
         const callers = sources.map((source) => render(source));
@@ -119,10 +172,13 @@ describe("rendered provider worker limit", () => {
         await vi.advanceTimersByTimeAsync(0);
         const fourthSources = paragraphs("Fourth render", 2);
         const fourth = render(fourthSources);
+        // Join an abandoned producer after unrelated callers have queued for its occupied slot.
+        const joined = render([requested[0].text]);
         await vi.advanceTimersByTimeAsync(0);
         expect(provider).toHaveBeenCalledTimes(10);
         expect(open.size).toBe(10);
         expect(fourth).toEqual({});
+        expect(joined).toEqual({});
 
         requested[0].answer();
         await vi.advanceTimersByTimeAsync(0);
@@ -130,6 +186,7 @@ describe("rendered provider worker limit", () => {
         expect([...open].map((request) => request.text)).toContain("Fourth render 0");
         expect(open.size).toBe(10);
         expect(peak).toBe(10);
+        expect(joined).toEqual({ value: translated([requested[0].text]) });
         requested[1].answer();
         await vi.advanceTimersByTimeAsync(0);
         expect(provider).toHaveBeenCalledTimes(12);

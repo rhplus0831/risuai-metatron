@@ -82,6 +82,20 @@ describe("translateHTML render lifetime", () => {
         expect(requestChatData).toHaveBeenCalledTimes(0);
     });
 
+    it("rejects a direct Google HTTP 429 as transient and retries the same text without caching the error", async () => {
+        const source = "<p>Google quota retry</p>";
+        provider.mockResolvedValueOnce(
+            Response.json({ error: { code: 429, message: "Quota exceeded" } }, { status: 429 }),
+        );
+
+        await expect(translateHTML(source, false, "", -1, false, null)).rejects.toSatisfy(isTransient);
+        expect(provider).toHaveBeenCalledTimes(1);
+
+        await expect(translateHTML(source, false, "", -1, false, null)).resolves.toBe("<p>Translation</p>");
+        expect(provider).toHaveBeenCalledTimes(2);
+        expect(new URL(String(provider.mock.calls[1][0])).searchParams.get("q")).toBe("Google quota retry");
+    });
+
     it("marks a rejected LLM cache read as transient before any provider request", async () => {
         settings.memoryTranslateMedia.translatorType = "llm";
         const read = vi.spyOn(LLMCacheStorage, "getItem").mockRejectedValueOnce(new Error("Cache unavailable"));
