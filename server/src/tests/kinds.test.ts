@@ -178,6 +178,16 @@ describe("default normalizers", () => {
         rejects("characters", "c1", { chaId: "c1", chats: undefined }, "character must not hold chats");
     });
 
+    it("accepts numeric plugin reset counts and rejects nonnumeric counts", () => {
+        accepts("pluginPermissions", "main", { grants: {}, lastGrantTime: {}, resets: { foo: 1 } });
+        rejects(
+            "pluginPermissions",
+            "main",
+            { grants: {}, lastGrantTime: {}, resets: { foo: "1" } },
+            "pluginPermissions.resets values must be numbers",
+        );
+    });
+
     it("require the plugin permission maps to hold true and numbers", () => {
         rejects("pluginPermissions", "main", { grants: {} }, "pluginPermissions.lastGrantTime must be an object");
         rejects("pluginPermissions", "main", { lastGrantTime: {} }, "pluginPermissions.grants must be an object");

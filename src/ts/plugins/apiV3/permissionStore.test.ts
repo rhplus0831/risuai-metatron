@@ -23,6 +23,31 @@ import {
 
 let fake: FakeResourceServer;
 
+function holdNextPermissionWrite() {
+    let markEntered!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => (markEntered = resolve));
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const statuses: number[] = [];
+    let held = false;
+    server.current = {
+        fetch: async (path: string, init?: RequestInit) => {
+            if (path !== "/api/resources/pluginPermissions/main" || init?.method !== "PUT") {
+                return fake.fetch(path, init);
+            }
+            if (!held) {
+                held = true;
+                markEntered();
+                await released;
+            }
+            const response = await fake.fetch(path, init);
+            statuses.push(response.status);
+            return response;
+        },
+    };
+    return { entered, release, statuses };
+}
+
 beforeEach(async () => {
     fake = new FakeResourceServer();
     server.current = fake;
@@ -114,6 +139,62 @@ describe("seedPluginPermissions", () => {
 });
 
 describe("recordPermissionGrants", () => {
+    it("drops revoked renewals after a conflict while merging unrelated new grants", async () => {
+        await recordPermissionGrants({ grants: ["hash-foo_db"], lastGrantTime: { foo_db_lastGrantTime: 10 } });
+        const held = holdNextPermissionWrite();
+        const renewing = recordPermissionGrants({
+            grants: ["hash-foo_db", "hash-other_inlay"],
+            lastGrantTime: { foo_db_lastGrantTime: 20, other_inlay_lastGrantTime: 30 },
+        });
+        await held.entered;
+        fake.set("pluginPermissions", "main", { grants: {}, lastGrantTime: {}, resets: { foo: 1 } });
+        held.release();
+        await renewing;
+
+        expect(held.statuses).toEqual([409, 200]);
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { "hash-other_inlay": true },
+            lastGrantTime: { other_inlay_lastGrantTime: 30 },
+            resets: { foo: 1 },
+        });
+        expect(hasPermissionGrant("hash-foo_db")).toBe(false);
+        expect(getLastGrantTime("foo_db_lastGrantTime")).toBeUndefined();
+    });
+
+    it("skips consent invalidated while queued behind a reset and allows a fresh grant afterward", async () => {
+        await recordPermissionGrants({ grants: ["hash-foo_db"], lastGrantTime: { foo_db_lastGrantTime: 10 } });
+        const held = holdNextPermissionWrite();
+        const resetting = revokePermissionGrants(
+            (key) => key.startsWith("hash-foo_"),
+            (key) => key === "foo_db_lastGrantTime",
+            "foo",
+        );
+        await held.entered;
+        let isCurrent = true;
+        const staleConsent = recordPermissionGrants(
+            { grants: ["hash-foo_inlay"], lastGrantTime: { foo_inlay_lastGrantTime: 20 } },
+            () => isCurrent,
+        );
+        isCurrent = false;
+        held.release();
+        await Promise.all([resetting, staleConsent]);
+
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: {},
+            lastGrantTime: {},
+            resets: { foo: 1 },
+        });
+        await recordPermissionGrants(
+            { grants: ["hash-foo_db"], lastGrantTime: { foo_db_lastGrantTime: 30 } },
+            () => true,
+        );
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { "hash-foo_db": true },
+            lastGrantTime: { foo_db_lastGrantTime: 30 },
+            resets: { foo: 1 },
+        });
+    });
+
     it("creates the record with the first grant and appends later ones", async () => {
         await recordPermissionGrants({ grants: ["hash_db"], lastGrantTime: { p_db_lastGrantTime: 10 } });
         expect(fake.data("pluginPermissions", "main")).toEqual({

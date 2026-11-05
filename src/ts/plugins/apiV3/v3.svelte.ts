@@ -659,9 +659,11 @@ const removePluginChatPanels = (pluginName: string) => {
  * Hook registrations remove their replacers/script handlers; `registerMCP` unregisters only the
  * client it installed, preserving a replacement at the same identifier. Async cleanup gets up to
  * one second; registrations can still arrive before termination, so reload clears providers again.
+ * Invalidates pending consent so a replacement script cannot inherit the unloaded instance's answer.
  */
 const unloadV3Plugin = async (pluginName: string) => {
     forgetPluginPermissions(pluginName);
+    permissionResetGenerations.set(pluginName, (permissionResetGenerations.get(pluginName) ?? 0) + 1);
     const callbacks = pluginUnloadCallbacks.get(pluginName);
     const instance = v3PluginInstances.find((p) => p.name === pluginName);
     if (instance) {
@@ -783,7 +785,11 @@ const permissionAnswers = new Map<string, { granted: boolean; grantKey: string }
 const permissionResetGenerations = new Map<string, number>();
 const permissionAnswerKey = (pluginName: string, permission: string) => `${pluginName}\u0000${permission}`;
 
-onPermissionGrantsRemoved((removed) => {
+onPermissionGrantsRemoved((removed, resetPlugins) => {
+    for (const name of resetPlugins) {
+        permissionResetGenerations.set(name, (permissionResetGenerations.get(name) ?? 0) + 1);
+        forgetPluginPermissions(name);
+    }
     for (const [key, answer] of permissionAnswers) {
         if (answer.granted && removed.has(answer.grantKey)) permissionAnswers.delete(key);
     }
@@ -801,7 +807,10 @@ const permissionTimeKeys = (name: string) =>
     pluginPermissions.map((permission) => `${name}_${permission}_lastGrantTime`);
 const scriptHash = (script: string) => hasher(new TextEncoder().encode(script));
 
-/** Resets both the settings script and any still-loaded script, invalidating outstanding consent prompts. */
+/**
+ * Resets both settings and still-loaded scripts, invalidating local consent immediately and persisting
+ * a reset count to invalidate other tabs' pending consent even when no grants or times existed.
+ */
 export async function resetPluginPermissions(name: string, script: string): Promise<void> {
     permissionResetGenerations.set(name, (permissionResetGenerations.get(name) ?? 0) + 1);
     forgetPluginPermissions(name);
@@ -816,6 +825,7 @@ export async function resetPluginPermissions(name: string, script: string): Prom
         await revokePermissionGrants(
             (key) => prefixes.some((prefix) => key.startsWith(prefix)),
             (key) => timeKeys.has(key),
+            name,
         );
     } finally {
         forgetPluginPermissions(name);
@@ -844,7 +854,9 @@ export const customV3ProviderMetaStore: LLMModel[] = [];
 /**
  * Asks the user for a permission unless it was granted before (a grant is kept in the server-owned
  * `pluginPermissions` record, which no plugin API can read or write). `"periodically"` asks again
- * three days after the last grant.
+ * three days after the last grant. A reset learned locally, through a live update, or on a write
+ * conflict invalidates pending consent; unload does too. Invalidated answers neither persist nor
+ * remain cached, including while the consent write waits in the permission store's queue.
  */
 const getPluginPermission = async (
     plugin: PluginIdentity,
@@ -852,6 +864,7 @@ const getPluginPermission = async (
     reconfirm: boolean | "periodically" = false,
 ) => {
     const generation = permissionResetGenerations.get(plugin.name) ?? 0;
+    const isCurrent = () => generation === (permissionResetGenerations.get(plugin.name) ?? 0);
     const answerKey = permissionAnswerKey(plugin.name, permissionDesc);
     const answered = permissionAnswers.get(answerKey);
     if (answered !== undefined) {
@@ -873,7 +886,7 @@ const getPluginPermission = async (
     }
 
     const pluginHash = (await scriptHash(plugin.script)) + `_${permissionDesc}`;
-    if (generation !== (permissionResetGenerations.get(plugin.name) ?? 0)) return false;
+    if (!isCurrent()) return false;
 
     if (!requiresReconfirm && hasPermissionGrant(pluginHash)) {
         permissionAnswers.set(answerKey, { granted: true, grantKey: pluginHash });
@@ -901,19 +914,25 @@ const getPluginPermission = async (
         return false;
     }
     const conf = await alertConfirm(alertTitle);
-    if (generation !== (permissionResetGenerations.get(plugin.name) ?? 0)) return false;
+    if (!isCurrent()) return false;
     if (conf) {
-        permissionAnswers.set(answerKey, { granted: true, grantKey: pluginHash });
+        const answer = { granted: true, grantKey: pluginHash };
+        permissionAnswers.set(answerKey, answer);
         try {
-            await recordPermissionGrants({
-                grants: [pluginHash],
-                lastGrantTime: reconfirm === "periodically" ? { [lastGrantTimeKey]: Date.now() } : undefined,
-            });
+            await recordPermissionGrants(
+                {
+                    grants: [pluginHash],
+                    lastGrantTime: reconfirm === "periodically" ? { [lastGrantTimeKey]: Date.now() } : undefined,
+                },
+                isCurrent,
+            );
         } catch (error) {
-            // The grant still holds for this page load; it is asked again after a reload.
+            // Unless reset or unloaded, the grant holds for this page load and is asked again after reload.
             console.error(`[RisuAI Plugin: ${pluginName}] Could not save the permission grant:`, error);
         }
-        return generation === (permissionResetGenerations.get(plugin.name) ?? 0);
+        const stillCurrent = isCurrent();
+        if (!stillCurrent && permissionAnswers.get(answerKey) === answer) permissionAnswers.delete(answerKey);
+        return stillCurrent;
     }
     permissionAnswers.set(answerKey, { granted: false, grantKey: pluginHash });
     return false;

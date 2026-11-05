@@ -99,13 +99,19 @@ describe("grants", () => {
         expect(confirm).not.toHaveBeenCalled();
         expect(await api.readInlay("x")).toEqual({ name: "inlay" });
         expect(confirm).toHaveBeenCalledTimes(1);
-        expect(recorded).toHaveBeenCalledWith({ grants: ["h(script-a)_inlay"], lastGrantTime: expect.any(Object) });
+        expect(recorded).toHaveBeenCalledWith(
+            { grants: ["h(script-a)_inlay"], lastGrantTime: expect.any(Object) },
+            expect.any(Function),
+        );
     });
 
     it("records a consent under the (script hash, permission) key and caches the answer", async () => {
         const { api } = await makeApi("script-b");
         expect(await api.requestPluginPermission("fetchLogs")).toBe(true);
-        expect(recorded).toHaveBeenCalledWith({ grants: ["h(script-b)_fetchLogs"], lastGrantTime: undefined });
+        expect(recorded).toHaveBeenCalledWith(
+            { grants: ["h(script-b)_fetchLogs"], lastGrantTime: undefined },
+            expect.any(Function),
+        );
         expect(await api.getFetchLogs()).toHaveLength(1);
         expect(confirm).toHaveBeenCalledTimes(1);
     });
@@ -342,9 +348,12 @@ describe("periodic permissions", () => {
         times.set(`${plugin.name}_db_lastGrantTime`, Date.now() - 4 * 24 * 60 * 60 * 1000);
         expect(await later.getDatabase()).not.toBeNull();
         expect(confirm).toHaveBeenCalledTimes(1);
-        expect(recorded).toHaveBeenCalledWith({
-            grants: ["h(script-f)_db"],
-            lastGrantTime: { [`${plugin.name}_db_lastGrantTime`]: Date.now() },
-        });
+        expect(recorded).toHaveBeenCalledWith(
+            {
+                grants: ["h(script-f)_db"],
+                lastGrantTime: { [`${plugin.name}_db_lastGrantTime`]: Date.now() },
+            },
+            expect.any(Function),
+        );
     });
 });

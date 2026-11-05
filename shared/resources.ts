@@ -85,6 +85,8 @@ export type PluginPermissionGrants = {
     grants: Record<string, true>;
     /** `<plugin name>_<permission>_lastGrantTime` → epoch milliseconds of the last periodic grant */
     lastGrantTime: Record<string, number>;
+    /** `<plugin name>` → reset count, invalidating consent begun before a reset even if no grant existed */
+    resets?: Record<string, number>;
 };
 
 /** Request header naming the database epoch a mutation was based on. */

@@ -155,15 +155,14 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   - String-key rules: `pluginStorageStore.svelte.ts` module header; the save adapter
     [preserves `__proto__`](resource-sync.md#invariants).
   - `safeLocalStorage` (`SafeLocalStorage`) stays device-local (`localStorage` `safe_plugin_*`).
-- v3 permission grants live in the server-owned `pluginPermissions` resource (`permissionStore.ts`), outside the
-  settings records: `grants` keyed by `<sha256 of the script>_<permission>`, `lastGrantTime` by plugin name and
-  permission.
-  - Only host consent (`getPluginPermission`) and the legacy import add to it; no plugin API, `getDatabase` snapshot,
-    `setDatabase`/`setDatabaseLite`, or `pluginCustomStorage` write can reach it.
+- v3 permission grants live in the server-owned `pluginPermissions` resource (`permissionStore.ts`; its header names the
+  only writers), outside the settings records: `grants` keyed by `<sha256 of the script>_<permission>`, `lastGrantTime`
+  by plugin name and permission, `resets` by plugin name.
   - The script hash is taken from the script the plugin was loaded with, and answers are cached per plugin and
     permission for the page load (cleared on unload).
   - Only the settings page revokes (`resetPluginPermissions`, `removeOrphanPluginPermissionGrants`); a revoked grant
-    drops its cached answer in every tab.
+    drops its cached answer in every tab. A reset always bumps `resets`: every tab drops the plugin's answers, and a
+    prompt open across it (or an unload) answers `false`.
 - `PluginDataSettings.svelte` (component contract): namespace sizes, owned keys by owner; legacy keys assigned or
   deleted through the mutations above.
 

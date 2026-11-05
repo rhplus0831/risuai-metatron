@@ -174,6 +174,12 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
             if (!Object.values(lastGrantTime).every((value) => typeof value === "number")) {
                 throw new ResourceValidationError("pluginPermissions.lastGrantTime values must be numbers");
             }
+            if (record.resets !== undefined) {
+                const resets = requireObject(record.resets, "pluginPermissions.resets");
+                if (!Object.values(resets).every((value) => typeof value === "number")) {
+                    throw new ResourceValidationError("pluginPermissions.resets values must be numbers");
+                }
+            }
             return record;
         },
     },
