@@ -2,7 +2,7 @@
 
 Status: drafted 2026-11-03, revised 2026-11-04 after the design audit
 ([plan design audit](../audit/plan-design-audit-2026-11-04.md), items JH1–JH5, X2, X4, X5) and again after its
-adversarial challenge. Landed: 1 (d60741baf). Decisions D1–D8 are recommendations for the owner; the **Open
+adversarial challenge. Landed: 1 (d60741baf), 2 (5ea1222a4). Decisions D1–D8 are recommendations for the owner; the **Open
 questions** Q1–Q3 were answered by the owner on 2026-11-03 (the recommended option each time; Q3's answer is
 superseded by D2's notice groups) and Q4 on 2026-11-04. Code anchors re-checked at `1550ebdd3`; verify them
 again before editing (STRUCTURE.md protocol step 5).
