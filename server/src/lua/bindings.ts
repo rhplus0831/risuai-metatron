@@ -30,6 +30,7 @@ import type { ResourceStore } from "../data/resourceStore.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
 import { createJobCbsHost, jobModuleLorebooks, serverCbsLimits, type ServerCbsTimeLimits } from "../jobs/cbsHost.ts";
 import type { JobChannel } from "../jobs/channel.ts";
+import { historyInsertionAnchor } from "../jobs/chatResult.ts";
 import { failureOf, JobWriteConflictError, markFailure, type RunningJob } from "../jobs/generationJobs.ts";
 import {
     chatMetadataFor,
@@ -40,6 +41,7 @@ import {
     refreshChatAfterWrite,
     scopeChat,
     scopeHistoryChat,
+    scopeHistoryMessages,
 } from "../jobs/jobScope.ts";
 import { requestChatDataOuter } from "../llm/outer.ts";
 import type { requestDataResponse } from "../llm/request.ts";
@@ -1303,7 +1305,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             writeChat((chat) => {
-                const message = chat.message.at(index as number);
+                const message = scopeHistoryMessages(scope, chat).at(index as number);
                 return message?.chatId ? [{ op: "setText", id: message.chatId, text: (value as string) ?? "" }] : null;
             }, ctx);
             return undefined;
@@ -1320,7 +1322,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             writeChat((chat) => {
-                const message = chat.message.at(index as number);
+                const message = scopeHistoryMessages(scope, chat).at(index as number);
                 return message?.chatId
                     ? [{ op: "setMessage", message: { ...structuredClone(message), role: roleOf(value) } }]
                     : null;
@@ -1336,8 +1338,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             writeChat((chat) => {
-                const kept = new Set(chat.message.slice(start as number, end as number));
-                const removed = chat.message.filter((message) => !kept.has(message)).map((message) => message.chatId!);
+                const view = scopeHistoryMessages(scope, chat);
+                const kept = new Set(view.slice(start as number, end as number).map((message) => message.chatId!));
+                const removed = view.filter((message) => !kept.has(message.chatId!)).map((message) => message.chatId!);
                 return removed.length > 0 ? [{ op: "remove", ids: removed }] : null;
             }, ctx);
             return undefined;
@@ -1351,7 +1354,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             writeChat((chat) => {
-                const message = chat.message.at(index as number);
+                const message = scopeHistoryMessages(scope, chat).at(index as number);
                 return message?.chatId ? [{ op: "remove", ids: [message.chatId] }] : null;
             }, ctx);
             return undefined;
@@ -1386,10 +1389,16 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             writeChat((chat) => {
                 // Where `splice(index, 0, ...)` would insert.
-                const all = chat.message;
-                const at = index as number;
+                const all = scopeHistoryMessages(scope, chat);
+                const at = Math.trunc(index as number) || 0;
                 const position = at < 0 ? Math.max(all.length + at, 0) : Math.min(at, all.length);
-                const anchor = position === 0 ? { start: true as const } : { after: all[position - 1].chatId! };
+                const previous = position === 0 ? null : all[position - 1].chatId!;
+                const anchor = historyInsertionAnchor(
+                    chat,
+                    scope.rerollHistoryMessageId,
+                    previous,
+                    new Set(all.map((message) => message.chatId!)),
+                );
                 return [
                     {
                         op: "append",

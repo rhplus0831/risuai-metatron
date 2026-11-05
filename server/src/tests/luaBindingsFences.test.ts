@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Chat } from "../../../shared/database.ts";
 import { type GenerationQuestion, NO_GENERATION_HOOKS, type QuestionResult } from "../../../shared/jobs.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
@@ -10,10 +10,11 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
 import { createGenerationLock, type MessageGuard } from "../jobs/generationLock.ts";
-import { loadJobScope } from "../jobs/jobScope.ts";
+import { loadJobScope, scopeChat } from "../jobs/jobScope.ts";
 import { createLuaBindings, LuaJobFatalError, type OptionalQuestionResult } from "../lua/bindings.ts";
-import type { HostContext } from "../scripts/workerPool.ts";
+import { createScriptWorkerPool, type HostContext } from "../scripts/workerPool.ts";
 import { waitFor } from "./testSupport.ts";
+import { UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // The bindings' cancellation fences on their asynchronous continuations, with the production
 // bindings over a real store and a fake job, and a suspendable token counter and file check: lore
@@ -21,7 +22,8 @@ import { waitFor } from "./testSupport.ts";
 // aborted, and an image getter aborted during its media check asks the tab nothing; an optional
 // question (`askOptional`) returns a timeout and a disconnect as outcomes while an abort of the host
 // call or the job, or a latched failure, still wins over whatever the channel settled. The whole
-// path through the worker is in `luaBindings.test.ts`.
+// path through the worker is in `luaBindings.test.ts`. Reroll history cases below also run real Lua
+// editRequest handlers, with the carrier locked and no trigger working copy.
 
 const stat = vi.hoisted(() => ({ impl: null as null | ((savePath: string, key: string) => Promise<boolean>) }));
 vi.mock("../routes/storage.ts", async (importOriginal) => {
@@ -62,7 +64,14 @@ afterEach(() => {
 });
 
 function setup(
-    options: { lore?: Record<string, unknown>[]; image?: string; inlay?: boolean; lock?: MessageGuard } = {},
+    options: {
+        lore?: Record<string, unknown>[];
+        image?: string;
+        inlay?: boolean;
+        lock?: MessageGuard;
+        messages?: Chat["message"];
+        rerollHistoryMessageId?: string;
+    } = {},
 ) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-lua-fences-"));
     const store: ResourceStore = createResourceStore({ file: path.join(dir, "data", "resources.sqlite"), kinds });
@@ -118,7 +127,7 @@ function setup(
                             modelPresetId: "m",
                             promptPresetId: "p",
                             bindedPersona: "u",
-                            message: [{ role: "user", data: "hi", chatId: "m1" }],
+                            message: options.messages ?? [{ role: "user", data: "hi", chatId: "m1" }],
                         },
                     },
                 ],
@@ -136,6 +145,7 @@ function setup(
         chatRevision: store.chatRevision("c", "k")!,
     };
     const scope = loadJobScope(store, kinds, context);
+    scope.rerollHistoryMessageId = options.rerollHistoryMessageId;
     const callbacks: string[] = [];
     /** Every question the job's channel was asked, with the options it got. */
     const asks: { question: GenerationQuestion; options: { timeoutMs?: number; signal?: AbortSignal } }[] = [];
@@ -166,7 +176,8 @@ function setup(
         signal: jobController.signal,
         emit() {},
         emitRecords: () => [],
-        write: (build) => store.applyChanges(build() as never, { epoch: store.epoch() }),
+        // Return stored changes so Lua writes adopt their new message list as production jobs do.
+        write: (build) => store.applyChanges(build() as never, { epoch: store.epoch(), changes: true }),
         onClientMessage: () => () => {},
     };
     const tokens = gate<number>();
@@ -191,8 +202,196 @@ function setup(
         regex: async () => ({ value: false }),
     };
     const chat = () => store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data as Chat;
-    return { store, bindings, ctx, host, jobController, tokens, callbacks, asks, channel, chat };
+    return { store, scope, bindings, ctx, host, jobController, tokens, callbacks, asks, channel, chat };
 }
+
+describe("Lua history during a reroll", () => {
+    const messages: Chat["message"] = [
+        { chatId: "u", role: "user", data: "Question." },
+        { chatId: "r", role: "char", data: "Previous reply." },
+        { chatId: "c1", role: "char", data: "First comment.", isComment: true },
+        { chatId: "c2", role: "char", data: "Second comment.", isComment: true },
+    ];
+    const pool = createScriptWorkerPool({
+        rootDir: path.resolve(import.meta.dirname, "../../.."),
+        size: 1,
+        maxSize: 1,
+        ...UNHURRIED_SCRIPT_WORKERS,
+    });
+    beforeAll(() => pool.warm());
+    afterAll(() => pool.dispose());
+
+    function history(reroll = true, stored = messages) {
+        const lock = createGenerationLock();
+        if (reroll) {
+            lock.addToken("owner");
+            lock.acquire(
+                { characterId: "c", chatId: "k", messageId: "r" },
+                { jobId: "generation", generationId: "g", token: "owner" },
+            );
+        }
+        return setup({ lock, messages: stored, rerollHistoryMessageId: reroll ? "r" : undefined });
+    }
+
+    async function editRequest(h: ReturnType<typeof history>, body: string) {
+        const result = await pool.runLua(
+            {
+                identity: h.ctx.identity,
+                mode: "editRequest",
+                data: "[]",
+                code: `listenEdit("editRequest", function(id, data) ${body} end)`,
+            },
+            { host: h.bindings.host },
+        );
+        expect(result.error).toBeUndefined();
+        expect(h.bindings.fatal()).toBeNull();
+        return JSON.parse(result.res as string);
+    }
+
+    it("reads, edits, changes role, and removes the same indexed comment with and without a hidden carrier", async () => {
+        for (const reroll of [true, false]) {
+            const h = history(reroll);
+            const original = reroll ? "Second comment." : "First comment.";
+            expect(
+                await editRequest(
+                    h,
+                    `
+                    local before = getChatData(id, 2)
+                    setChat(id, 2, before .. " edited")
+                    setChatRole(id, 2, "user")
+                    return json.encode({before, getChatData(id, 2), getChatRole(id, 2), getChatLength(id)})
+                `,
+                ),
+            ).toEqual([original, `${original} edited`, "user", reroll ? 3 : 4]);
+            expect(h.chat().message).toEqual(
+                reroll
+                    ? [
+                          messages[0],
+                          messages[1],
+                          messages[2],
+                          { ...messages[3], data: "Second comment. edited", role: "user" },
+                      ]
+                    : [
+                          messages[0],
+                          messages[1],
+                          { ...messages[2], data: "First comment. edited", role: "user" },
+                          messages[3],
+                      ],
+            );
+
+            expect(
+                await editRequest(
+                    h,
+                    `
+                    removeChat(id, 2)
+                    return json.encode({getChatLength(id), getChatData(id, -1)})
+                `,
+                ),
+            ).toEqual(reroll ? [2, "First comment."] : [3, "Second comment."]);
+            expect(h.chat().message).toEqual(
+                reroll ? [messages[0], messages[1], messages[2]] : [messages[0], messages[1], messages[3]],
+            );
+        }
+    });
+
+    it("cuts the visible range while preserving a hidden carrier and cuts stored indexes otherwise", async () => {
+        for (const reroll of [true, false]) {
+            const h = history(reroll);
+            expect(
+                await editRequest(
+                    h,
+                    `
+                    cutChat(id, 2, 3)
+                    return json.encode({getChatLength(id), getChatData(id, 0)})
+                `,
+                ),
+            ).toEqual([1, reroll ? "Second comment." : "First comment."]);
+            expect(h.chat().message).toEqual(reroll ? [messages[1], messages[3]] : [messages[2]]);
+        }
+    });
+
+    it("inserts at the visible start or after its predecessor while keeping an adjacent hidden carrier first", async () => {
+        const inserted = { chatId: expect.any(String), role: "user", data: "Inserted." };
+        for (const example of [
+            { stored: messages, at: 0, reroll: true, expected: [inserted, ...messages], visibleAt: 0 },
+            {
+                stored: messages,
+                at: 1,
+                reroll: true,
+                expected: [messages[0], messages[1], inserted, messages[2], messages[3]],
+                visibleAt: 1,
+            },
+            {
+                stored: messages.slice(1),
+                at: 0,
+                reroll: true,
+                expected: [messages[1], inserted, messages[2], messages[3]],
+                visibleAt: 0,
+            },
+            {
+                stored: messages,
+                at: 1,
+                reroll: false,
+                expected: [messages[0], inserted, messages[1], messages[2], messages[3]],
+                visibleAt: 1,
+            },
+        ]) {
+            const h = history(example.reroll, example.stored);
+            expect(
+                await editRequest(
+                    h,
+                    `
+                    insertChat(id, ${example.at}, "user", "Inserted.")
+                    return json.encode(getChatData(id, ${example.visibleAt}))
+                `,
+                ),
+            ).toBe("Inserted.");
+            expect(h.chat().message).toEqual(example.expected);
+        }
+    });
+
+    it("filters once for a length and 1,000 indexed reads and rebuilds after adopting a Lua write", async () => {
+        const h = history();
+        let filters = 0;
+        let rows = 0;
+        const filter = Array.prototype.filter;
+        const counted = vi.spyOn(Array.prototype, "filter").mockImplementation(function (
+            this: unknown[],
+            callback,
+            thisArg,
+        ) {
+            if (this === scopeChat(h.scope)!.message) {
+                filters++;
+                rows += this.length;
+            }
+            return filter.call(this, callback, thisArg);
+        });
+        const reads = `
+            local length = getChatLength(id)
+            local last
+            for i = 1, 1000 do last = getChatData(id, 2) end
+            return json.encode({length, last})
+        `;
+        try {
+            expect(await editRequest(h, reads)).toEqual([3, "Second comment."]);
+            expect({ filters, rows }).toEqual({ filters: 1, rows: 4 });
+
+            expect(await editRequest(h, `setChat(id, 2, "Updated comment.") ${reads}`)).toEqual([
+                3,
+                "Updated comment.",
+            ]);
+            expect({ filters, rows }).toEqual({ filters: 2, rows: 8 });
+            expect(h.chat().message).toEqual([
+                messages[0],
+                messages[1],
+                messages[2],
+                { ...messages[3], data: "Updated comment." },
+            ]);
+        } finally {
+            counted.mockRestore();
+        }
+    });
+});
 
 describe("the bindings' fences", () => {
     it("skips patchMessage on a message owned by a generation and permits it after release", () => {

@@ -451,12 +451,30 @@ export function scopeChat(scope: JobScope): Chat | undefined {
     return owner?.chats.find((chat) => chat.id === scope.chatId) as Chat | undefined;
 }
 
-/** A fresh prompt-facing view; the stored scope remains intact for writes and incremental adoption. */
+const historyMessages = new WeakMap<JobScope, { source: Message[]; hidden: string; filtered: Message[] }>();
+
+/** Read-only history list, cached until the stored list or hidden carrier changes. */
+export function scopeHistoryMessages(scope: JobScope, chat: Chat): Message[] {
+    const hidden = scope.rerollHistoryMessageId;
+    if (!hidden) {
+        return chat.message;
+    }
+    let cached = historyMessages.get(scope);
+    if (!cached || cached.source !== chat.message || cached.hidden !== hidden) {
+        cached = {
+            source: chat.message,
+            hidden,
+            filtered: chat.message.filter((message) => message.chatId !== hidden),
+        };
+        historyMessages.set(scope, cached);
+    }
+    return cached.filtered;
+}
+
+/** Fresh metadata around the cached history list; stored chat stays intact for writes and adoption. */
 export function scopeHistoryChat(scope: JobScope): Chat | undefined {
     const chat = scopeChat(scope);
-    return chat && scope.rerollHistoryMessageId
-        ? { ...chat, message: chat.message.filter((message) => message.chatId !== scope.rerollHistoryMessageId) }
-        : chat;
+    return chat && scope.rerollHistoryMessageId ? { ...chat, message: scopeHistoryMessages(scope, chat) } : chat;
 }
 
 type PendingChatMeta = { scriptstate?: Record<string, string>; note?: string };

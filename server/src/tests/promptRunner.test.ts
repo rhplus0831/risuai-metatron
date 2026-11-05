@@ -2281,6 +2281,39 @@ describe("in-place reply candidates", () => {
         expect(old.candidates.every((entry: any) => entry.scriptstateAfter === undefined)).toBe(true);
     });
 
+    it("edits the second trailing comment read at index 2 by a Lua editRequest hook during an in-place reroll", async () => {
+        await patchProviders({ useStreaming: false });
+        const firstComment = { role: "char", chatId: "c1", data: "First comment.", isComment: true };
+        const secondComment = { role: "char", chatId: "c2", data: "Second comment.", isComment: true };
+        const chaId = await seed({
+            messages: [{ role: "user", chatId: "u", data: "Question." }, carrier(), firstComment, secondComment],
+            triggerscript: [
+                trig("manual", [
+                    {
+                        type: "triggerlua",
+                        code: `listenEdit("editRequest", function(id, data)
+                            local comment = getChatData(id, 2)
+                            setChat(id, 2, comment .. " edited")
+                            return data
+                        end)`,
+                    },
+                ]),
+            ],
+        });
+        const result = await job("reroll", chaId, { rerollMessageId: "r" });
+        expect(result.terminal, JSON.stringify(result.terminal)).toMatchObject({ type: "done", messageId: "r" });
+        const stored = (await readChat(chaId)).data.message;
+        expect(stored.map((message: { chatId: string }) => message.chatId)).toEqual(["u", "r", "c1", "c2"]);
+        expect(stored.find((message: { chatId: string }) => message.chatId === "c1")).toEqual(firstComment);
+        expect(stored.find((message: { chatId: string }) => message.chatId === "c2")).toEqual({
+            ...secondComment,
+            data: "Second comment. edited",
+        });
+        expect(stored.find((message: { chatId: string }) => message.chatId === "r")).toMatchObject({
+            data: "New reply.",
+        });
+    });
+
     it("keeps trigger appends after the carrier, exposes the history view to Lua and CBS, and removes obsolete checkpoints on success and failure", async () => {
         for (const fail of [false, true]) {
             const chaId = await seed({

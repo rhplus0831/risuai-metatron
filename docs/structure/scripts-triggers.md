@@ -122,6 +122,8 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 - Lua character getters return `""` when the run has no resolvable character, and the stored value (possibly
   `undefined`) for a resolvable one; character setters return without writing when no character resolves.
 - Lua `setDescription` refuses a non-string value ("Invalid data type") and writes nothing.
+- During rerolls, Lua getters and indexed setters share the carrier-hidden history view; setters write by message id,
+  and insertions beside the carrier anchor as trigger insertions do.
 - Lua `getLoreBooksMain` searches the chat's `localLore`, the character's `globalLore` with the chat's `loreOverrides`
   applied (`mergeOwnerLore`, [chat pipeline](chat-pipeline.md)), and the chat's module lore; `upsertLocalLoreBookMain`
   writes `localLore` only. Trigger v2 lore effects read and write the raw character lore.
@@ -198,13 +200,10 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 ### Gotchas
 
 - `src/lib/Playground/PlaygroundRegex.svelte` is empty; it is not an implemented regex playground.
-- Job setters for `scriptstate` and `note` share a pending metadata write until a microtask or explicit flush; a yielded
-  trigger or awaited command can split one run across writes. Another chat write flushes that batch first, so a refused
-  message write cannot discard an earlier setter.
-  - The final `applyTriggerChat` write reconciles the map fields (`CHAT_META_MERGE_KEYS`: `scriptstate`,
-    `GLGlobalVariables`, `toolCalls`, `bookmarkNames`) entry by entry against the trigger's baseline
-    (`meta.merge`/`mergeUnset`), so a variable another command or tab saved during the run survives and the trigger's
-    final value wins only for keys it changed; a key the trigger changed and then restored to its baseline value is not
-    written, so a concurrent value of that key stays.
+- Job `scriptstate` and `note` setters batch until a microtask or explicit flush; yielding or awaiting can split writes.
+  Other chat writes flush first, so their refusal preserves earlier setters.
+  - `applyTriggerChat` merges map fields (`CHAT_META_MERGE_KEYS`: `scriptstate`, `GLGlobalVariables`, `toolCalls`,
+    `bookmarkNames`) against the trigger baseline via `meta.merge`/`mergeUnset`; only changed keys win over concurrent
+    command/tab writes, so keys restored to baseline preserve concurrent values.
   - The metadata write also advances the revision, so that trigger's reorder may be dropped.
   - `server/src/tests/chatMetadataCoalescing.test.ts` pins the batching boundary.

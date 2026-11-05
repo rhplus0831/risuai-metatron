@@ -39,6 +39,27 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
     return prototype === Object.prototype || prototype === null;
 }
 
+/** Inserts beside a hidden carrier follow it, using the last stored predecessor still present in the view. */
+export function historyInsertionAnchor(
+    chat: Chat,
+    hidden: string | undefined,
+    previous: string | null,
+    present: ReadonlySet<string>,
+): MessageAnchor {
+    const carrierIndex = hidden ? chat.message.findIndex((entry) => entry.chatId === hidden) : -1;
+    const carrierPredecessor =
+        carrierIndex >= 0
+            ? (chat.message.slice(0, carrierIndex).findLast((entry) => present.has(entry.chatId!))?.chatId ?? null)
+            : undefined;
+    return carrierIndex >= 0 && previous === carrierPredecessor
+        ? { after: hidden! }
+        : previous === null
+          ? { start: true }
+          : present.has(previous)
+            ? { after: previous }
+            : { end: true };
+}
+
 /**
  * `applyChatResult` of `src/ts/storage/chatStore.svelte.ts` as one job write: what a trigger changed in its
  * copy of the job's chat (`result`) against the copy it started from (`baseline`), onto the chat as stored
@@ -174,20 +195,7 @@ export function applyTriggerChat(
     for (const message of next.message) {
         const id = message.chatId!;
         if (!baseMessages.has(id)) {
-            const carrierIndex = current.message.findIndex((entry) => entry.chatId === scope.rerollHistoryMessageId);
-            const carrierPredecessor =
-                carrierIndex >= 0
-                    ? (current.message.slice(0, carrierIndex).findLast((entry) => present.has(entry.chatId!))?.chatId ??
-                      null)
-                    : undefined;
-            const anchor: MessageAnchor =
-                carrierIndex >= 0 && previous === carrierPredecessor
-                    ? { after: scope.rerollHistoryMessageId! }
-                    : previous === null
-                      ? { start: true }
-                      : present.has(previous)
-                        ? { after: previous }
-                        : { end: true };
+            const anchor = historyInsertionAnchor(current, scope.rerollHistoryMessageId, previous, present);
             ops.push({ op: "append", messages: [message], anchor });
             present.add(id);
         }
