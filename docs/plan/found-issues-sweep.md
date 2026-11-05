@@ -411,19 +411,24 @@ Every slice is independent of the others' code unless listed here; the shared fi
 
 ### G. Job handoff
 
-- **G1. Takeover refuses the owner; the role event names the worker** (_hard_, `server-generation.md`
-  with `network-jobs.md`; Q5). `server/src/jobs/generationJobs.ts` `takeover()`: refuse a ticket for the
-  job's current `ownerClientId` (as `handoff()` refuses a targeted owner), so the owner's tab drops the
-  offer and its running follow reattaches as owner; check the creator's own `absent` take-back path, which
-  `src/ts/network/handoff.ts` `takeOffer` still allows for its own absent offers. Role events: give the
+- **G1. A ticket from the owner reattaches it; the role event names the worker** (_hard_,
+  `server-generation.md` with `network-jobs.md`; Q5). `server/src/jobs/generationJobs.ts` `attach()`: when
+  the ticket holder's `clientId` is the job's current `ownerClientId`, consume the ticket and treat it as a
+  plain owner reattach (no `pendingTakeover`), so outstanding callbacks replay to the new socket. Refusing
+  the owner with a 409 instead was dropped (owner decision 2026-11-05): a reloaded worker owner has no
+  running follow (workers never save the job for boot resume), and its absent-offer ticket is its only way
+  back. Check the creator's own `absent` take-back path, which `src/ts/network/handoff.ts` `takeOffer`
+  still allows for its own absent offers. Role events: give the
   registry a `clientName(clientId)` dependency in `server/src/app.ts`, fed from the events route's
   `registrations` (`server/src/routes/events.ts`, keyed by socket, publishing `FeedClient[]`), and fill
   `clientName` on every role event; then make `util/playwright/checkJobHandoff.mjs`'s creator-keeps-watching
   case require the worker's name in the toast. Q5: add the single-callback sentence and the cancelled-hook
   overlap to server-generation's job handoff section as a limitation.
-  _Done_: an owner that takes its own open offer gets a 409 and keeps its outstanding callback; the creator's
-  toast names the worker; the driver passes with the stricter case.
-  _Test_: `server/src/tests/generationJobs.test.ts` (owner takeover refused; role event carries the name),
+  _Done_: an owner that takes its own open offer reattaches as owner and keeps its outstanding callback; a
+  reloaded worker owner gets its job back through its absent offer; the creator's toast names the worker; the
+  driver passes with the stricter case.
+  _Test_: `server/src/tests/generationJobs.test.ts` (an owner ticket reattaches and replays the outstanding
+  callback; role event carries the name),
   `server/src/tests/events.test.ts` (the name lookup), `src/ts/process/serverCommands.test.ts` (the named
   toast), `src/ts/network/handoff.test.ts`; `node util/playwright/checkJobHandoff.mjs` once.
   _Removes_: A job's current owner can take its own handoff offer; The handoff role event never carries the
