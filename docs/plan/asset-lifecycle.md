@@ -3,7 +3,7 @@
 Status: drafted 2026-11-03, revised 2026-11-04 after the design audit and again after its adversarial challenge
 ([plan design audit](../audit/plan-design-audit-2026-11-04.md), items AL1–AL5, X7, X8, and the same day's
 independent cross-audit of the sweep's check-to-unlink gap; the challenge's findings are cited as "challenge
-F1"–"F6"); landed: 1 (`b7095d591`). Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q3
+F1"–"F6"); landed: 1 (`b7095d591`), 2 (`dd35ebc52`). Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q3
 were answered by the owner on 2026-11-03 (the recommended option each time; Q1's minimum is superseded by D4's
 3-day floor). Code anchors re-checked at `1550ebdd3`; verify them again before editing (STRUCTURE.md protocol
 step 5).
@@ -682,6 +682,23 @@ writer's cache hit is no proof of presence). Not in parallel with Incremental Ch
   safety snapshot (a small import over a large live database); the export prepare answers 507 with
   `{ needed, free }` and writes no staging;
   the snapshot tick skips and logs once on a short disk and resumes when space returns.
+- Landed as `dd35ebc52` with these deviations (approved by the orchestrator during the run):
+  - Files beyond the list: `server/src/app.ts` (wiring), `shared/assetLifecycle.ts` (the sweep path and
+    types), `server/src/http/diskSpace.ts` (`ensureFreeSpace`, `InsufficientStorageError`,
+    `liveDatabaseBytes`), `shared/diagnostics.ts` (`ROUTE_TEMPLATES`), `src/lang/en.ts` (three error keys).
+    The global API guide has no Asset client section, so `docs/structure/assets.md` took that edit;
+    `characters-modules.md` and `chat-pipeline.md` were corrected where they went stale.
+  - A gap in D3's premise: a restore's source snapshot could rotate away while the restore validated, leaving
+    its assets to the sweep. `snapshots.retain` keeps it out of rotation until the restore drops its staging;
+    Slice 3's retention over unpinned snapshots must keep honoring it.
+  - The lease is a root in the scan's classification too, so a key uploaded within the hour is never listed
+    unreferenced. `saveAssets`'s final check fails closed (rewrites every canonical key when the check fails).
+  - User-visible: a card import re-checks the keys its record names (not free-text keys) before
+    `addCharacter`, and ends with an error instead of writing the record when a key is gone and its bytes are
+    not in hand. The upstream commit's 507 keeps the prepared import, so the same token can retry.
+  - D13's turn re-marks the full live store by default and reuses that result for later batches; on the
+    audit seed it lasts about 1.7 s idle and 2.8–3.1 s under load (`docs/audit/asset-scan-2026-11-05.md`),
+    during which every request waits.
 
 ### Slice 3: snapshot pins, labels, manual snapshots, deletion (D8; needs 1; 2 and 3 in either order, one at a time)
 
