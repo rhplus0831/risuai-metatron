@@ -312,6 +312,15 @@ checkpoint: the SD01 fixture 33,265 before, 498 after; the appending fixture 2,0
 bytes either way: it changes a field other than `data`); feed bodies are unchanged. The callback barrier probe is
 unchanged: 503 frames, 2 `chatPatch` frames of 466 bytes, no whole chat.
 
+**After the Incremental Chat Transport plan** (last code commit `f906c864e`): the "Unchanged" sentence of the After at
+`ad0f8ef2b` is closed for both sockets. Past 8 KiB, a checkpoint reaches every other tab as the text it appended (a
+`rowDelta`) and the owner as a `streamed` row of about 500 bytes, whatever the reply's length. Left: the final
+`generationInfo` write still reaches the owner whole; a socket without `rows=streamed`, and a tab older than the
+change (until it reloads), still get whole rows. On that commit (headless Chrome, 2026-11-05) the browser checks
+passed: `checkLiveUpdates.mjs` 49/49, `checkServerSend.mjs` 19/19, `checkJobProtocol.mjs` 5/5 cases,
+`checkTwoClientSmoke.mjs` 50/50 against the Docker image, and the e2e specs `lazyChats`, `perChatSends` and
+`serverTransform` 9/9.
+
 ### TJ03 — A transform miss loads the whole scope; coarse keys invalidate every row
 
 **Measured and confirmed. P2.**
@@ -557,6 +566,16 @@ Node 24.21.0): **538,972 bytes** before for every `Accept-Encoding`; after, **81
 `gzip, deflate, br, zstd`), **106,189 bytes** with gzip (`gzip, deflate, br`), and 538,972 bytes for identity. The
 change cursor and a listing digest stay open (Boot bytes plan).
 
+**After the change log at `ca5a5cb8e`** (Incremental Chat Transport plan D5; `util/playwright/measureBoot.mjs`
+resume-away, its audit fixture, a change made while the tab was hidden, three runs in headless Chrome): before, at the
+slice's base `9bf28c429`, the reconnect read the whole listing, **88,727 bytes** on the wire (574,639 decoded), and
+took 425 ms; after, it reads `GET /api/resources/revisions?since=&until=&epoch=`, **536 bytes** on the wire (236
+decoded), and takes 358 ms. An unchanged resume still reads nothing (the Boot Bytes plan's digest). The listing stays
+the fallback when the log (the newest 20,000 rows) no longer covers the tab's cursor, the replay's digest still
+differs, or the tab holds no cursor (a fresh boot); an epoch mismatch halts as before. Both open items are closed.
+`checkLiveUpdates.mjs` (49/49, its restart and reconnect cases) and `checkTwoClientSmoke.mjs` (50/50 against the
+Docker image, its restart case) passed on the plan's last code commit (`f906c864e`).
+
 ### ST04 — Feed fallbacks expand a small change into a collection or a whole chat
 
 **Confirmed; amplification from measured payloads. P2.**
@@ -592,6 +611,16 @@ whole read without queuing a write", over the same 100 KiB of memory data). Open
 built, so the over-cap change of a loaded chat still reads the chat whole, a reply over 64 KiB streaming into a chat
 another tab has open ([live updates](../../structure/live-updates.md#limitations)). ST01's lore edit is
 not part of this change.
+
+**After the row diffs and the row read** (Incremental Chat Transport plan D2 at `917273384`, D6 at `2272abf6e`; the
+numbers are SD01's and `sync-traffic-measure.mjs`'s): the open item above is closed. A reply streaming past 64 KiB into
+a chat another tab has open reaches that tab as a `rowDelta` of about 1,700 bytes per checkpoint and 218 bytes for the
+final write, and the loaded observer reads the chat whole 0 times where it read it 4 times (SD01's appending fixture).
+An entry that still passes the cap carries a `rows` manifest, and a loaded observer at its base reads the named rows
+and metadata fields through `chatRows`: on the mixed fixture, the 4 over-cap entries (one large paste, three
+reroll-carrier `candidates` writes) cost 394,652 bytes of row reads in place of 967,029 bytes of whole-chat reads. A
+whole read remains for a manifest past 64 KiB, a second over-cap write before the row read, and a `moved` answer
+([live updates](../../structure/live-updates.md#limitations)).
 
 ### ST05 — A completed row still pays a transform round trip on every remount
 

@@ -964,21 +964,28 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - "Last chatted" ordering on the home screen and the mobile character list is derived
     from the chats now and has not been checked in a browser; `checkServerJobMatrix.mjs`
     was not re-run after the server stopped stamping characters on a send.
-  - Not planned: characters as a sidebar projection (Q3), a persisted change log and
-    `changes?since=` cursor (Q2; a reconnect after a change made while hidden still reads
-    the whole revision listing), a summary projection that does not parse whole chat
-    `meta`, and a boot cache that follows the tab's acknowledged state.
+  - Not planned: characters as a sidebar projection (Q3), a summary projection that does
+    not parse whole chat `meta`, and a boot cache that follows the tab's acknowledged state.
+  - Closed by the Incremental Chat Transport plan (D5, `ca5a5cb8e`): Q2's persisted change
+    log and `?since=` cursor. A reconnect after a change made while hidden reads a 536-byte
+    replay instead of the 88,727-byte listing (measureBoot resume-away, 425 → 358 ms); the
+    listing stays the fallback when the log no longer covers the tab's cursor.
   - Found by the run (in `docs/research/found-issues.md`): measureBoot gaps; a
     `readersCharacters` e2e timeout behind the Safe boot notice. The server import and
     restore skipping existing assets on existence alone was fixed after the audit (U2).
 - Per-Event Server Work:
   - Only headless Chrome was checked: the patch-only barrier and the feed's `summary` and
     `delta` entries have no Firefox, Safari, or mobile run.
-  - Not planned: a by-id read for an over-cap change of a loaded chat (a reply over 64 KiB
-    streaming into a chat another tab has open still reads the chat whole), retiring `patch`
-    for `delta` and dropping whole barriers for sockets without `hydration=patch` once an
-    older client can be refused, a streaming-row text delta on the job socket, and the
+  - Not planned: retiring `patch` for `delta` and dropping whole barriers for sockets
+    without `hydration=patch` once an older client can be refused (both sockets now send
+    `proto=1` as that boundary, with no floor: Incremental Chat Transport D4), and the
     chat's summary on the job socket for the owner's own list.
+  - Closed by the Incremental Chat Transport plan: the by-id read for an over-cap change of
+    a loaded chat (D6, `2272abf6e`: the mixed fixture's 4 over-cap entries read 394,652
+    bytes of rows instead of 967,029 of whole chats), and a reply past 64 KiB no longer
+    falls to it (D2 row diffs, `917273384`: about 1,700 bytes per checkpoint, 0 observer
+    whole reads instead of 4); in place of a text delta on the job socket, the owner's
+    `chatPatch` names its streamed row (D3, `f906c864e`: 33,265 → 498 bytes per checkpoint).
   - Found by the run (in `docs/research/found-issues.md`): a first metadata write that may
     still diff (cause unconfirmed), duplicate `loreOverrides` kept after an acknowledged
     write, the test-only `isBarrierFailure`, and the `perChatSends` `localStorage` failure
