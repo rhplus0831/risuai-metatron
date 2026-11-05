@@ -405,8 +405,8 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
   file beside its target.
 - Replacing bytes under an already cached immutable content name does not update a browser's cached asset, and a fresh
   copy stays under the [accepted exposure](#invariants). Decision: Direct Asset URLs closeout, archive.
-- Swept bytes stay in a browser's immutable cache until evicted; browser-only keys are no root. Decision:
-  [Asset Lifecycle](../plan/asset-lifecycle.md) D11.
+- Swept bytes stay in a browser's immutable cache until evicted; browser-only keys are no root. Decision: Asset
+  Lifecycle D11, archive.
 - `/api/set_password` and `/api/crypto` are unauthenticated by design and rate limited. A server has one password and
   registered browser keys, not separate users. Decision: Static Audit Fixes Q6 and Server-Owned Data non-goals, archive.
 - A chunked body over the cap to the snapshot restore is not refused: the operation runs and the adapter discards the

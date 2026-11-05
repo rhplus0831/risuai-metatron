@@ -46,7 +46,7 @@ reaching the feed and the job `chatPatch` as any by-id write does; its carrier r
 per-message cap) change fields other than `data` and can pass 64 KiB, which D2's field diff and D6's row read
 are built for (X1). Its Slice 2 depends on this plan's Slice 4 for traffic, not code: the two may be built on
 separate branches, its Slice 2 reaches `dev` in the same merge or after it, and that merge runs the
-integration checks its **Verification** lists (its D4). The [Asset Lifecycle plan](asset-lifecycle.md) keeps up to 40 snapshots, each of which
+integration checks its **Verification** lists (its D4). The [Asset Lifecycle plan](../archived-plan/README.md) keeps up to 40 snapshots, each of which
 physically contains this plan's change log (D5, X8). The files the slices share with those plans are listed
 under **Slices**.
 

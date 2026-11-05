@@ -2,22 +2,11 @@
 
 Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) records completed plans,
-historical paths/commits, retrieval commands, and pending manual follow-ups. The three feature
+historical paths/commits, retrieval commands, and pending manual follow-ups. The two feature
 plans below were revised on 2026-11-04 after the
-[plan design audit](../manual-audit/plan-design-audit-2026-11-04.md); Job Handoff (since landed and archived), Asset Lifecycle and Reroll
+[plan design audit](../manual-audit/plan-design-audit-2026-11-04.md); Job Handoff, Asset Lifecycle (both since landed and archived), and Reroll
 Candidates were then challenged again and revised a second time the same day. Plugin Storage and Data API was drafted on 2026-11-05.
 
-- [Asset Lifecycle](asset-lifecycle.md): the server marks every stored asset from one retention graph (every
-  text column of the live store, chat metadata and the memory tables included, the checkpoint pages a checkpoint
-  names, every retained snapshot, exports from their copy to the end of their stream, recent uploads and a
-  one-hour lease) with one recognizer over decoded string values (bounded `assets/` tails by prefix, the
-  `/api/asset/` and `/sw/img/` hex forms in either case), reports disk use as logical size, deduplicated size, per-owner shares and orphan inlay records, runs
-  a daily read-only scan, and deletes unreferenced assets only after a grace period (3 days minimum, 7 default),
-  fail-closed, in a synchronous recheck-and-unlink turn against the mark's own write count, under a per-key
-  lock that every publish path and every import's final record write shares, started by the user after a
-  complete run of this server process; snapshots gain pins, labels, manual takes,
-  and deletion; heavy operations get a disk preflight; D1–D14 recommended, Q1–Q3 answered (Q1's minimum
-  superseded), every slice landed (`b7095d591`, `dd35ebc52`, `0c3e7d2d0`, `967cc5be1`, `7d6ff9970`).
 - [Reroll Candidates](reroll-candidates.md): the alternatives of the newest reply persist on the
   message as `candidates` with stable ids, a list revision and the selected index under a per-message size
   budget; a reroll regenerates

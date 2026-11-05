@@ -390,7 +390,7 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 ### Limitations
 
 - Every listed snapshot is an [asset mark](self-host-server.md#asset-mark) root, so its assets stay until it rotates
-  away or is deleted. Decision: [Asset Lifecycle](../plan/asset-lifecycle.md) D3.
+  away or is deleted. Decision: Asset Lifecycle D3, archive.
 - The SQLite resource store assumes one server process and a local filesystem
   ([Invariants](self-host-server.md#invariants)). Network filesystems are unsupported. Decision: Server Byte Budgets Q1,
   archive.

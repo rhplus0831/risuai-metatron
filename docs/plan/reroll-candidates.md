@@ -60,7 +60,7 @@ Relation to other work: Chat Checkpoints (named per-chat save slots, done) snaps
 none of their storage (a message's checkpoint is a field of the message, captured and restored by the job).
 The Deep Audit Fixes (done) made a trigger's result merge `scriptstate` by key (`applyTriggerChat`,
 `CHAT_META_MERGE_KEYS`), which is what the per-key restore of D5 relies on. The [Asset Lifecycle
-plan](asset-lifecycle.md), written in parallel, scans the strings of a message's JSON at any depth, so the
+plan](../archived-plan/README.md), written in parallel, scans the strings of a message's JSON at any depth, so the
 inlay references inside non-selected candidates (`candidates[].data`) are covered by construction; that plan
 adds a test for it, and this plan names the field (D4). The [Incremental Chat Transport
 plan](incremental-chat-transport.md) carries the rows this plan makes larger: its D2's delta forms keep a
