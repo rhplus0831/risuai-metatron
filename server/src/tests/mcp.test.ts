@@ -659,6 +659,8 @@ describe("McpClient OAuth", () => {
     type OAuthOptions = {
         /** What the refresh grant answers. */
         refresh?: "ok" | "empty" | "html" | "denied" | "network";
+        /** The authorization-code exchange answer. */
+        exchange?: Record<string, unknown>;
         /** The server keeps answering 401 after the login. */
         stillUnauthorized?: boolean;
         /** Discovery answers these endpoints (404 when `discovery` is false). */
@@ -690,7 +692,7 @@ describe("McpClient OAuth", () => {
                     }
                 }
                 exchanges.push(form);
-                return json({ access_token: "logged-in", refresh_token: "rt-new" });
+                return json(options.exchange ?? { access_token: "logged-in", refresh_token: "rt-new" });
             }
             if (call.url === "http://mcp.test/.well-known/oauth-authorization-server") {
                 return options.discovery === false
@@ -741,6 +743,63 @@ describe("McpClient OAuth", () => {
         expect(askCode).not.toHaveBeenCalled();
         expect(priv(mcp).accessToken).toBe("refreshed");
         mcp.destroy();
+    });
+
+    it("logs in fully without a refresh request when the stored refresh token is missing or empty", async () => {
+        vi.useFakeTimers();
+        for (const refresh of [
+            { clientId: "c", clientSecret: "s", tokenUrl: stored.tokenUrl },
+            { ...stored, refreshToken: "" },
+        ]) {
+            const oauth = oauthServer({ refresh: "ok" });
+            const server = recorder(oauth.handler);
+            const mcp = client(server.fetchImpl, { refresh });
+            const askCode = vi.fn(async () => "user-code");
+            try {
+                expect((await mcp.checkHandshake(ioOf({ askCode }))).serverInfo.name).toBe("mock");
+                expect(oauth.refreshes).toEqual([]);
+                expect(server.calls[1]).toMatchObject({
+                    url: "http://mcp.test/.well-known/oauth-authorization-server",
+                    method: "GET",
+                });
+                expect(oauth.registrations).toHaveLength(1);
+                expect(oauth.exchanges).toHaveLength(1);
+                expect(askCode).toHaveBeenCalledTimes(1);
+            } finally {
+                mcp.destroy();
+            }
+        }
+    });
+
+    it("omits unusable refresh tokens from full-login records so a recreated client logs in fully again without refreshing", async () => {
+        vi.useFakeTimers();
+        for (const refreshToken of [undefined, "", 42, null]) {
+            const oauth = oauthServer({
+                refresh: "ok",
+                exchange: {
+                    access_token: "logged-in",
+                    ...(refreshToken === undefined ? {} : { refresh_token: refreshToken }),
+                },
+            });
+            const server = recorder(oauth.handler);
+            const written: unknown[] = [];
+            const askCode = vi.fn(async () => "user-code");
+            const io = ioOf({ askCode, writeRefresh: (entry) => written.push(entry) });
+            for (let login = 0; login < 2; login++) {
+                const mcp = client(server.fetchImpl, { refresh: written.at(-1) });
+                try {
+                    expect((await mcp.checkHandshake(io)).serverInfo.name).toBe("mock");
+                } finally {
+                    mcp.destroy();
+                }
+            }
+            const expected = { clientId: "cid", clientSecret: "csec", tokenUrl: "http://mcp.test/token" };
+            expect(written).toStrictEqual([expected, expected]);
+            expect(oauth.refreshes).toEqual([]);
+            expect(oauth.registrations).toHaveLength(2);
+            expect(oauth.exchanges).toHaveLength(2);
+            expect(askCode).toHaveBeenCalledTimes(2);
+        }
     });
 
     it("logs in fully when the refresh answers without a token, with no JSON, or with an error, and when nothing is stored: discovery, registration, PKCE, the owner's code through the helper, the refresh record written", async () => {

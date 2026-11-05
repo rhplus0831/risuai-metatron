@@ -295,6 +295,73 @@ describe("MCPClient refresh rotation", () => {
         }
     });
 
+    it("registers a refresh token from a full login only when it is a non-empty string", async () => {
+        for (const refreshToken of [undefined, "", 42, null, "from-login"]) {
+            calls.length = 0;
+            const client = await newClient();
+            client.getRefreshToken = async () => undefined;
+            const register = vi.fn();
+            client.registerRefreshToken = register;
+            server.handle = (call) => {
+                switch (call.url) {
+                    case "http://mcp.test/.well-known/oauth-authorization-server":
+                        return reply({ status: 404 });
+                    case "http://mcp.test/register":
+                        return reply({ status: 201, json: { client_id: "c1", client_secret: "s1" } });
+                    case "https://account.sionyw.com/oauthhelper/api":
+                        return reply({ json: { success: true, payload: { code: "server-code" } } });
+                    case first.tokenUrl:
+                        return reply({
+                            json: {
+                                access_token: "logged-in",
+                                ...(refreshToken === undefined ? {} : { refresh_token: refreshToken }),
+                            },
+                        });
+                    default:
+                        throw new Error(`unexpected fetchNative(${call.url})`);
+                }
+            };
+
+            await client.oauthLogin();
+            expect(client.accessToken).toBe("logged-in");
+            expect(calls.at(-1)).toMatchObject({
+                url: first.tokenUrl,
+                method: "POST",
+                body: { grant_type: "authorization_code" },
+            });
+            if (refreshToken === "from-login") {
+                expect(register).toHaveBeenCalledExactlyOnceWith({ ...first, refreshToken: "from-login" });
+            } else {
+                expect(register).not.toHaveBeenCalled();
+            }
+        }
+    });
+
+    it("goes straight to discovery without refreshing when the stored refresh token is missing or empty", async () => {
+        for (const record of [
+            { clientId: "c1", clientSecret: "s1", tokenUrl: first.tokenUrl },
+            { ...first, refreshToken: "" },
+        ]) {
+            calls.length = 0;
+            const client = await newClient();
+            client.getRefreshToken = async () => record;
+            server.handle = (call) => {
+                if (call.url === first.tokenUrl) {
+                    return reply({ status: 400, json: { error: "invalid_grant" } });
+                }
+                throw new Error("discovery reached");
+            };
+
+            await expect(client.oauthLogin()).rejects.toThrow("discovery reached");
+            expect(calls).toEqual([
+                expect.objectContaining({
+                    url: "http://mcp.test/.well-known/oauth-authorization-server",
+                    method: "GET",
+                }),
+            ]);
+        }
+    });
+
     it("registers no rotated token from an answer without a usable access token or with a failed status: the login goes on to discovery", async () => {
         const answers = [
             () => reply({ json: { refresh_token: "r2" } }),

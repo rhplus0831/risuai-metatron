@@ -686,10 +686,13 @@ export class McpClient {
         return { status: response.status, json };
     }
 
-    /** `oauthLogin`: the stored refresh token first, else registration, PKCE, and the owner's code. */
+    /**
+     * Refresh is tried only for a stored non-empty string refresh token, else registration, PKCE,
+     * and the owner's code. Full login stores a refresh token only when the server issued a non-empty string.
+     */
     private async oauthLogin(io: McpIo): Promise<void> {
         const stored = this.deps.readRefresh();
-        if (stored && isHttpUrl(stored.tokenUrl)) {
+        if (typeof stored?.refreshToken === "string" && stored.refreshToken !== "" && isHttpUrl(stored.tokenUrl)) {
             const answer = await this.oauthFetch(
                 stored.tokenUrl,
                 {
@@ -697,7 +700,7 @@ export class McpClient {
                     headers: { "Content-Type": "application/x-www-form-urlencoded" },
                     body: new URLSearchParams({
                         grant_type: "refresh_token",
-                        refresh_token: stored.refreshToken ?? "",
+                        refresh_token: stored.refreshToken,
                         client_id: stored.clientId ?? "",
                         client_secret: stored.clientSecret ?? "",
                     }).toString(),
@@ -817,7 +820,7 @@ export class McpClient {
         io.writeRefresh({
             clientId,
             clientSecret,
-            ...(typeof refreshToken === "string" ? { refreshToken } : {}),
+            ...(typeof refreshToken === "string" && refreshToken !== "" ? { refreshToken } : {}),
             tokenUrl: token_endpoint,
         });
         this.publishToken(token);

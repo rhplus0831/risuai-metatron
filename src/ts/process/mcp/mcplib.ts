@@ -133,12 +133,15 @@ export class MCPClient {
         null;
 
     getRefreshToken:
-        | (() => Promise<{
-              clientId: string;
-              clientSecret: string;
-              refreshToken: string;
-              tokenUrl: string;
-          }>)
+        | (() => Promise<
+              | {
+                    clientId: string;
+                    clientSecret: string;
+                    refreshToken?: string;
+                    tokenUrl: string;
+                }
+              | undefined
+          >)
         | null = null;
 
     constructor(
@@ -736,11 +739,12 @@ export class MCPClient {
     }
 
     /**
-     * A stored refresh record is tried first: only HTTP 200 with a non-empty string `access_token`
-     * completes refresh; a non-empty new `refresh_token` replaces the stored one through
-     * `registerRefreshToken`. Other statuses or unusable bodies proceed to full login; a rejected
-     * refresh fetch rejects login instead. The server's authorization endpoint must use `http:` or
-     * `https:` before `openURL` may open it.
+     * Refresh is tried only for a stored non-empty string refresh token: only HTTP 200 with a
+     * non-empty string `access_token` completes refresh; a non-empty new `refresh_token` replaces
+     * the stored one through `registerRefreshToken`. Other statuses or unusable bodies proceed to
+     * full login; a rejected refresh fetch rejects login instead. Full login stores a refresh token
+     * only when the server issued a non-empty string. The server's authorization endpoint must use
+     * `http:` or `https:` before `openURL` may open it.
      */
     async oauthLogin() {
         // A retired client starts no login step: a refresh would spend the token a newer client holds.
@@ -748,7 +752,7 @@ export class MCPClient {
         if (this.getRefreshToken) {
             const refreshTokenData = await this.getRefreshToken();
             this.assertOpen();
-            if (refreshTokenData) {
+            if (typeof refreshTokenData?.refreshToken === "string" && refreshTokenData.refreshToken !== "") {
                 //get access token using refresh token
                 const tokenResponse = await fetchNative(refreshTokenData.tokenUrl, {
                     method: "POST",
@@ -894,7 +898,11 @@ export class MCPClient {
         const tokenData = await tokenResponse.json();
 
         this.assertOpen();
-        if (this.registerRefreshToken) {
+        if (
+            typeof tokenData.refresh_token === "string" &&
+            tokenData.refresh_token !== "" &&
+            this.registerRefreshToken
+        ) {
             this.registerRefreshToken({
                 clientId: clientData.client_id,
                 clientSecret: clientData.client_secret,
