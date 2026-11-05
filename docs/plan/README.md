@@ -26,7 +26,7 @@ Candidates were then challenged again and revised a second time the same day. Pl
   lock that every publish path and every import's final record write shares, started by the user after a
   complete run of this server process; snapshots gain pins, labels, manual takes,
   and deletion; heavy operations get a disk preflight; D1–D14 recommended, Q1–Q3 answered (Q1's minimum
-  superseded), Slices 1–4 landed (`b7095d591`, `dd35ebc52`, `0c3e7d2d0`, `967cc5be1`).
+  superseded), every slice landed (`b7095d591`, `dd35ebc52`, `0c3e7d2d0`, `967cc5be1`, `7d6ff9970`).
 - [Reroll Candidates](reroll-candidates.md): the alternatives of the newest reply persist on the
   message as `candidates` with stable ids, a list revision and the selected index under a per-message size
   budget; a reroll regenerates

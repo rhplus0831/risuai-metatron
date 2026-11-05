@@ -3,7 +3,7 @@
 Status: drafted 2026-11-03, revised 2026-11-04 after the design audit and again after its adversarial challenge
 ([plan design audit](../audit/plan-design-audit-2026-11-04.md), items AL1–AL5, X7, X8, and the same day's
 independent cross-audit of the sweep's check-to-unlink gap; the challenge's findings are cited as "challenge
-F1"–"F6"); landed: 1 (`b7095d591`), 2 (`dd35ebc52`), 3 (`0c3e7d2d0`), 4 (`967cc5be1`). Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q3
+F1"–"F6"); landed: 1 (`b7095d591`), 2 (`dd35ebc52`), 3 (`0c3e7d2d0`), 4 (`967cc5be1`), 5 (`7d6ff9970`), so every slice has landed. Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q3
 were answered by the owner on 2026-11-03 (the recommended option each time; Q1's minimum is superseded by D4's
 3-day floor). Code anchors re-checked at `1550ebdd3`; verify them again before editing (STRUCTURE.md protocol
 step 5).
@@ -785,6 +785,14 @@ guide this plan touched, the audit note of Slice 1 extended with the sweep's cos
   again, then unpinning and deleting the snapshot, frees the key at the next Scan.
 - Device checks (a Docker volume on a nearly full disk for the 507 answers) go to the user as a checklist and
   are reported as not run (V5).
+- Landed as `7d6ff9970` with these deviations (approved by the orchestrator during the run):
+  - The driver moves the clock in five steps (days 0, 8, 16, 24, 32): D3's youth keeps a fresh key out of the
+    ledger until its mtime is past the grace, so the day-0 Scan cannot show the profile image unreferenced.
+    The orphan record's removal on day 8 starts the inlay media's grace, so one Delete on day 16 removes the
+    profile image and the media together; restarts on days 24 and 32 clear the leases that rendering and the
+    restore take.
+  - It deletes only the unpinned periodic snapshots that exist at that point (there may be none), and
+    `stack.mjs` reaches the server through the IPv4 loopback when `RISU_HOST` is one.
 
 ## Recommended order
 
