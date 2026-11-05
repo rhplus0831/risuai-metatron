@@ -149,16 +149,16 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - Plugin storage:
   - `pluginStorage` is saved data in `db.pluginCustomStorage` (the `pluginStorage` resource), a settings record: each
     write queues its save once. It uses the reserved `_pluginStorage` sub-object, and `setItem` JSON-normalizes values
-    (throws on BigInt). The top level holds the non-`allowedDbKeys` properties written through
-    `setDatabase`/`setDatabaseLite`.
+    (throws on BigInt). The top level holds the non-`allowedDbKeys` keys of `setDatabase`/`setDatabaseLite`; a
+    `pluginCustomStorage` write replaces it but keeps a reserved dictionary it omits.
   - Every plugin shares the one record. The storage writes resolve when queued, not when saved. A conflict with another
     tab's or device's write is [merged key by key](resource-sync.md#record-merge), and `onStorageDiscarded` tells every
     listening plugin which keys lost a value.
   - `getLocalPluginStorage()` (`SafeLocalPluginStorage`) is saved too, under the reserved `_safeLocalPluginStorage`
     sub-object (legacy browser-local values are imported at boot). Values must be plain JSON (`isJsonValue`); anything
     else throws `TypeError` and changes nothing.
-  - Any string is a `_safeLocalPluginStorage` key, `__proto__` included (the module rebuilds the dictionary for it, and
-    the save adapter serializes `pluginStorage` straight from the proxy so the key reaches the server).
+  - Any string is a `_safeLocalPluginStorage` key, `__proto__` included (the module rebuilds the dictionary for it; the
+    save adapter serializes `pluginStorage` from the proxy, so the key reaches the server).
   - `safeLocalStorage` (`SafeLocalStorage`) stays device-local (`localStorage` `safe_plugin_*`).
 - v3 permission grants live in the server-owned `pluginPermissions` resource (`permissionStore.ts`), outside the
   settings records: `grants` keyed by `<sha256 of the script>_<permission>`, `lastGrantTime` by plugin name and
@@ -181,7 +181,7 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 - The plugin's internal `name` is its identity. Updates must not change it, because permission hashes, IPC allowlists,
   storage, and arguments are keyed by it.
-- Only API 3.0 exists. Plugins run only inside the iframe; nothing executes plugin code in the main document.
+- Only API 3.0 exists. Plugins run only inside the iframe, never in the main document.
 - v3 calls are async RPC. Nested classes and callbacks inside values are unsupported. Streams need MessagePort
   credit/cancel, and `terminate` must close them.
 - A host call's abort controllers live until every response stream finishes (done, error, guest cancel, unread expiry,
@@ -191,7 +191,7 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - The sandbox host never logs an RPC message or its answer: their arguments carry the plugin's `nativeFetch` headers
   (API keys) and bodies.
 - Main-document DOM access requires the v3 `getRootDocument` permission plus the Safe wrappers.
-- Any new v3 UI or hook must call `addPluginUnloadCallback` and must sanitize external HTML and URLs.
+- Any new v3 UI or hook must call `addPluginUnloadCallback` and sanitize external HTML and URLs.
 - A plugin or MCP write goes through a mutation module (`characterStore.svelte.ts`, `collectionStore.svelte.ts`,
   `pluginStorageStore.svelte.ts`, the chat module); a new host setter or tool never writes a record or a chat directly.
   A refused value warns (plugins) or answers an error (MCP) and changes nothing.
@@ -203,7 +203,7 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - A hook runner captures the call context before its first await and passes it to every hook it calls; a new
   selection-dependent host function reads `currentContext` on its first line.
 - v3 plugin storage accepts JSON data only, at most 256 levels deep (`requireJsonData`).
-- `changeColorScheme` with an unknown name changes nothing: neither the active scheme nor its stored name.
+- `changeColorScheme` with an unknown name changes neither the active scheme nor its stored name.
 - A `SafeElement` listener hears only events that reach its element through DOM propagation; the `SafeDocument` from
   `getRootDocument` registers on `document`. Each registration keeps its target, type, and options, and removal by id
   and the reload teardown replay that record, whatever the caller passes to `removeEventListener`.
@@ -223,11 +223,11 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - `sendChat`'s local checks are per chat: with no job channel callback running, a send in idle chat B can run while chat
   A sends in this tab; shared resource flush (`GenerationBlockedError`), binding, and server refusals still apply.
 - A plugin changes the installed plugin list only through `setDatabase({ plugins })`, which asks the user to confirm
-  each new or changed plugin. `setDatabaseLite` drops `plugins` before it applies anything; the other keys of the call
-  still apply.
+  each new or changed plugin. `setDatabaseLite` drops `plugins` before it applies anything; the call's other keys still
+  apply.
 - `risu-set-module-info` checks every recognized field's type before it writes any field or `enabledModules`.
 - `updateModule` validates a detached patched copy, then applies the patch to the live module in place, so a plugin's or
-  an editor's retained module reference stays current.
+  editor's retained module reference stays current.
 
 ## Recipes
 

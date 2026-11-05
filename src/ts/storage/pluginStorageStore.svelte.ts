@@ -1,3 +1,4 @@
+import { PLUGIN_STORAGE_DICTIONARIES } from "../../../shared/pluginStorage.ts";
 import { settings } from "./settingsViews.svelte";
 import { detach, requireJsonData, requireObject, writeEntries } from "./mutationValidation";
 import { batchRecordWrites } from "./records.svelte";
@@ -6,10 +7,13 @@ import { batchRecordWrites } from "./records.svelte";
  * The `pluginStorage` mutations. `pluginCustomStorage` holds three things: the custom keys
  * a plugin's `setDatabase` stores at its top level, the v3 `pluginStorage` values under
  * `_pluginStorage`, and the shared `getLocalPluginStorage()` values under `_safeLocalPluginStorage`.
+ * Replacing `pluginCustomStorage` through either database setter removes omitted custom keys but
+ * keeps reserved names absent as own keys of the input, retaining their stored values unchanged.
+ * Supplied reserved names are applied normally, including `undefined` removing the field.
  * This is the runtime mutation boundary; `src/ts/bootstrap.ts:installBootRecords` installs the
  * server's record unchanged before `src/ts/storage/resourceSync.svelte.ts:startResourceSync` marks it.
- * Each function checks its value (JSON data) and writes the record (`records.svelte.ts`), inside
- * one `batchRecordWrites` scope, so the record's write is queued once. Reads return
+ * Each function checks its value (JSON data) and queues the record's write once (`records.svelte.ts`);
+ * mutations with multiple writes use one `batchRecordWrites` scope. Reads return
  * detached copies and never create the record. Any string is a valid key: a key
  * that assigning would not store (`__proto__`, or an inherited name such as `constructor`) gets an
  * own property through a rebuilt dictionary (`writeEntries`).
@@ -192,9 +196,21 @@ export function setPluginCustomValue(key: string, value: unknown) {
     });
 }
 
-/** Replaces the whole `pluginCustomStorage` object (the `pluginCustomStorage` key of a plugin's `setDatabase`). */
+/**
+ * Replaces the top-level custom keys through a plugin's `setDatabase` or `setDatabaseLite`.
+ * Reserved names absent as own keys of `value` keep their stored values unchanged; supplied names
+ * are applied normally, including an own `undefined` removing the field.
+ */
 export function replacePluginCustomStorage(value: unknown) {
     requireObject("pluginCustomStorage", value);
     requireJsonData("pluginCustomStorage", value);
-    settings.pluginStorage = detach(value);
+    const next = detach(value);
+    const current = settings.pluginStorage;
+    for (const name of PLUGIN_STORAGE_DICTIONARIES) {
+        if (!Object.hasOwn(value, name) && current && Object.hasOwn(current, name)) {
+            // Same-record wrappers unwrap to their existing state, preserving dictionary key order.
+            next[name] = current[name];
+        }
+    }
+    settings.pluginStorage = next;
 }
