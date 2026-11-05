@@ -250,10 +250,8 @@ on the rendered path; cache buttons remain for LLM. Auto-translate is a [chat se
   used output key stay local drafts, shown with a hint and dropped for good once the stored value they were typed over
   (for a key, also the other steps' keys) changes; a cleared or invalid response size is not written, and the field
   shows the stored size again when committed. So the tab's copy stays the server's normalized text.
-- `translateHTML`'s non-LLM traversal skips `script`/`style` elements and `translate=no` subtrees it visits. With
-  `combineTranslation`, eligible paragraphs are flattened before descendant checks, so protected descendants can be
-  translated and inline markup replaced. The LLM path has no DOM skip traversal. Both apply `edittrans` afterward
-  (`applyEdittransRegex`: the one regex the tab still runs, a plain `RegExp` replacement with no Lua or trigger).
+- Both `translateHTML` paths apply `edittrans` last (`applyEdittransRegex`: the one regex the tab still runs, a plain
+  `RegExp` replacement with no Lua or trigger); the DOM skip rules are the `translateHTML` comment.
 
 ## Recipes
 
@@ -272,6 +270,8 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 - Chat row:
   `pnpm --silent test:agent src/lib/ChatScreens/Chat.test.ts src/lib/ChatScreens/PartialEditController.test.ts src/lib/SideBars/ChatTranslationPanel.test.ts`.
 - Server translation uses `Echo`, a temporary store, and fake LLM requests and token counts.
+- `translateHtmlLifetime.test.ts` and `translateHtmlWorkers.test.ts` stub the Google `fetch`; the workers test holds
+  each answer until it releases it, so the open-request count is read at its peak.
 - Not tested: mounted bilingual rendering.
 
 ## Known Hazards

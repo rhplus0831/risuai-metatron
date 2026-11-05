@@ -98,7 +98,8 @@ None is in the gate.
   `util/playwright/measureFileSources.mjs`. `util/playwright/measureTransformLua.mjs` runs the server in process;
   `util/playwright/probeDirectAssets.mjs` probes the direct asset mechanics on its own server, not the app.
 - `util/playwright/measureRenderWork.mjs` (dev stack, under `offline.sh`, Linux): render work of a styled,
-  auto-translated chat when it opens and after a switch away, its mount trace, its screenshot's peak memory.
+  auto-translated chat when it opens and after a switch away, its mount trace, its screenshot's peak memory
+  ([results](../audit/render-work-budget-2026-11-05.md)).
 - Call counts by name: CDP `Profiler.startPreciseCoverage({ callCount: true, detailed: true })` before navigation,
   `takePreciseCoverage` (it resets) per phase; a function's first range is its call count (without `detailed`, also each
   `await` resumption). Time an uninstrumented run.

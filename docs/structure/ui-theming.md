@@ -85,7 +85,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   branching with `createFolderOnBranch`). Props `messageId`, `streamingOverride`, `pendingReveal`, `isLastMemory`;
   `isEditing` (the trim guard), `whenRendered`, `chatBodyRevision`, `updateRow`, the memory limit line
   (`memoryBoundary`).
-- `src/lib/ChatScreens/ChatBody.svelte`: the body (`markParsing`, `{@html}`, `lastParsed`, `parseRun`, `whenRendered`).
+- `src/lib/ChatScreens/ChatBody.svelte`: the body (`markParsing`, `{@html}`, `lastParsed`, `parseRun`, `whenRendered`);
+  its contract holds the run's abort (`parseController`), the failure retries, and the pending body
+  (`prepareShownBody`).
 - `src/lib/ChatScreens/TransitionImage.svelte`: an image that drops an older `src` resolving late.
 
 ### Message editors
@@ -266,6 +268,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   `requestAnimationFrame` where a case needs the frames.
 - `ContextMeter.svelte.test.ts` stubs the chip's rectangle (happy-dom has no layout) and the count route: each count is
   one request the test answers when it chooses, so fake timers and deferred answers drive the debounce and the races.
+- `ChatBody.svelte.test.ts` mocks `ParseMarkdown` as deferred parses (`hoisted.parses`) the test settles by text.
+- `screenshotExport.test.ts` fakes canvases (happy-dom has no 2D context), counting sizes, draws, and releases.
 - `src/lib/UI/tests/`: `reactiveProps.svelte.ts` changes a mounted component's props from a `.test.ts` file;
   `LazyCharImageFixture.svelte` awaits the image as real consumers do. `ChatStyleProviderFixture.svelte`
   (`src/lib/ChatScreens/tests/`) provides the `ChatStyleRegistry` the chat screen would.

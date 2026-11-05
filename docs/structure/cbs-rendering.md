@@ -135,8 +135,9 @@ and video have two modes:
    `risuChatParserForDisplay` with `rmVar` and `visualize`).
 2. `src/lib/ChatScreens/ChatBody.svelte` `markParsing` captures the transform context and calls `ParseMarkdown` in
    `notrim` mode for the body (`pretranslate` for translation inputs); its steps are the `ParseMarkdown` comment. Only
-   the `editdisplay` step leaves the browser: [Display transform](#display-transform). Reads a failed render retries:
-   `src/ts/parser/renderErrors.ts`.
+   the `editdisplay` step leaves the browser: [Display transform](#display-transform). The run's abort signal goes on to
+   `ParseMarkdown`, `serverProcessScript`, and `translateHTML`; the reads a failed run retries are
+   `src/ts/parser/renderErrors.ts`, the retry policy the `ChatBody` contract ([ui-theming](ui-theming.md#message-row)).
 3. `ChatBody`'s `shownBody` sanitizes the result (`addMetadataToElement(pruneEmptyBilingualPairs(trimMarkdown(...)))`).
    Under the chat screen (`DefaultChatScreen` provides a `ChatStyleRegistry`), a body that holds a `<style>` or
    `<risu-style>` goes through `trimMarkdownSharingStyles` instead: [Shared styles](#shared-styles).
@@ -163,7 +164,6 @@ and video have two modes:
 - Each `Chat.svelte` row reports what it shows (`displaya`: the display text and the bilingual source side) through
   `showDisplayTransformSource`. A row showing another source (an edit or a saved edit from another tab, which mount a
   transcript row again, a stream, or a switch to or from the stored translation) drops the old failure.
-- In a round, each mounted `Chat.svelte` row it names calls `rerenderMessage` and renders again.
 - `editprocess` calls, greetings, and bookmark previews (no captured message id) register nothing.
 
 ### Mixed render refresh
@@ -209,36 +209,16 @@ and video have two modes:
   the scoped evaluators (`scopedEvaluators`), the asset maps (reset by `resetAssetsCache` and by `syncAssetsCache` in an
   `$effect.root` and at the start of an asset parse), and global `CSS.highlights`.
 - Server transform (`server/src/prompt/transformCache.ts`): an LRU of text and emotions, 512 entries / 16 MiB, at most
-  512 KiB per entry.
-  - `transform.ts` keys both modes by epoch, mode, captured context, handler set, viewport and browser language, the
-    stored chat revision the load read, the keyed record revisions, chat metadata, and each target's kind, message id,
-    index, source id/identity, conditions and source digest.
-  - A result stays under the loaded revision even if the chat changes during the run; a new request reads the current
-    revision. Every save of a chat makes its rows' previous entries unreachable to new requests, so remounting after a
-    send renders them on the server again; a batch already running can still use its loaded revision's hits.
-  - Character display identities (`displayScope.ts`) hash stored JSON before runtime chats are attached, preserving
-    property order and excluding only top-level `lastInteraction`; missing characters contribute `missing`. The owner,
-    group members and stored message speakers enter the shared key; each target adds its own source, so another target's
-    source does not change its key.
-  - The member/speaker memo uses owner id, chat id and chat revision and validates the owner's display identity; the
-    all-cached probe reads revisions and chat metadata, plus character records on identity memo misses, without parsing
-    configuration or messages.
-  - `displayKinds.ts` drops the kinds display reads do not reach; admission kinds and `globalChatVariables` stay, and an
-    unclassified kind stays keyed. The display loader's raw configuration cache still uses the full revision vector
-    ([chat pipeline](chat-pipeline.md)).
-- Tab transform (`parser/transformResults.ts`): 2,048 entries / an 8 MiB estimate including identity, server key,
-  source, result and message strings.
+  512 KiB per entry. Its key, the character identities and the all-cached probe are the `server/src/prompt/transform.ts`
+  header ([server generation](server-generation.md)). The key holds the stored chat revision, so after a save, rows that
+  mount again render on the server again.
+- Tab transform (`parser/transformResults.ts`): its header has the bounds and eviction, the `transformClient.ts` header
+  `knownKey`, `same`, the emotions, and the generation fences.
   - Identity includes chat ref, mode, kind, captured message id, index, source id, a synchronous source hash with an
     exact-source hit check, conditions, captured context, handler set, viewport and browser language.
-  - `transformClient.ts` sends `knownKey` for a matching entry only when the caller is `simple` or that key's emotions
-    were already applied; an exact ordinary server cache hit answers `same` with id and key, confirming the tab's
-    retained text. Other answers return full text; cached text and `same` apply no emotions, and full confirmed answers
-    apply them once per key for non-simple callers.
-  - `resourceClient.ts` clears the entries on a changed epoch through `setResourceEpoch` and immediately on
-    `epochMismatch`. `clearTransformResults` is the entry point for a future sign-out (there is no sign-out flow).
+  - `resourceClient.ts` clears the entries on a changed epoch (`setResourceEpoch`) and at once on `epochMismatch`;
     [Script transform client](#script-transform-client) has the other resets (`rerenderMessage`,
     `resetTransformEffects`).
-  - Cache writes, confirmations and provisional callbacks are fenced by the captured cache and Re-render generations.
 
 ## Coupling
 
@@ -329,7 +309,8 @@ and video have two modes:
 
 Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
 
-- Parser, rendering, tab transform: `pnpm --silent test:agent src/ts/parser/tests`.
+- Parser, rendering, tab transform, highlighting:
+  `pnpm --silent test:agent src/ts/parser/tests src/ts/gui/highlight.test.ts`.
 - Server host and limits: `pnpm --silent test:agent server/src/tests/cbs*.test.ts`.
 - Server transform:
   `pnpm --silent test:agent server/src/tests/{transform,transformService,transformBudget,dynamicAssets}.test.ts`.
@@ -340,6 +321,10 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
   (`server/src/tests/cbs.test.ts`).
 - `src/ts/parser/tests/transformClient.test.ts`: the server is a function of the request, the chat module a few maps,
   `transformReactive.svelte.ts` the lock source, and timers are fake.
+- `src/ts/parser/tests/parseMarkdownLifetime.test.ts` stubs `getFileSrc`, `getInlayMedia`, and `serverProcessScript` to
+  abort or reject a render between its awaits.
+- `src/ts/gui/highlight.test.ts` stands in for `CSS.highlights` and `Highlight` (`TestHighlight`), which happy-dom
+  lacks.
 - `e2e/serverTransform.spec.ts`, and `e2e/transformGolden.spec.ts`, which compares final browser HTML with
   `server/src/tests/fixtures/baseline/markdown.json` (read, never written).
 - `slow`: the fresh-process cases of `server/src/tests/cbsLimits.test.ts`.
