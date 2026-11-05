@@ -130,7 +130,7 @@
         pendingMessageJump,
     } from "src/ts/messageSearch.svelte";
     import { runMessageJump } from "./messageJump";
-    import { SCREENSHOT_CAPTURE_OPTIONS } from "./screenshotCapture";
+    import { prepareScreenshotCapture } from "./screenshotCapture";
     import { composeScreenshot, measureScreenshotRow, planScreenshotPages } from "./screenshotExport";
 
     /**
@@ -1002,19 +1002,23 @@
             const chats = document.querySelectorAll<HTMLElement>(".default-chat-screen .risu-chat");
             const pages = planScreenshotPages(chats, measureScreenshotRow);
             alertWait("Taking screenShot...");
-            await withFileSrcFetch(() =>
-                composeScreenshot({
+            await withFileSrcFetch(async () => {
+                const capture = await prepareScreenshotCapture(
+                    html2canvas,
+                    pages.flatMap((page) => page.rows.map(({ row }) => row)),
+                );
+                return composeScreenshot({
                     pages,
                     background:
                         getComputedStyle(document.documentElement).getPropertyValue("--risu-theme-bgcolor").trim() ||
                         "#282a36",
-                    capture: (row) => html2canvas.toCanvas(row, SCREENSHOT_CAPTURE_OPTIONS),
+                    capture,
                     createCanvas: () => document.createElement("canvas"),
                     download: downloadFile,
                     baseName: `chat-${v4()}`,
                     onProgress: (done, total) => alertWait("Taking screenShot... " + done + "/" + total),
-                }),
-            );
+                });
+            });
             alertNormal(language.screenshotSaved);
         } catch (error) {
             console.error(error);
