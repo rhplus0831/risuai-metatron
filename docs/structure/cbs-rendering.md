@@ -343,8 +343,8 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
   `server/src/tests/fixtures/baseline/markdown.json` (read, never written).
 - `slow`: the fresh-process cases of `server/src/tests/cbsLimits.test.ts`.
 - `src/ts/parser/tests/chatML.test.ts` has skipped and FIXME cases.
-- Not directly tested: most of `shared/cbs/registry.ts`, inlay images and dynamic-asset rendering, the matcher's
-  anchor/fuzzy/bigram stages, and `highlight.ts`.
+- Not directly tested: most of `shared/cbs/registry.ts`, inlay images and dynamic-asset rendering, and the matcher's
+  anchor/fuzzy/bigram stages.
 - Not tested: direct transform key tests still omit per-chat `GLGlobalVariables`, changes of context preset/persona ids,
   the greeting index and background targets; preset/persona binding refusals are covered.
 
@@ -353,7 +353,6 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
 ### Issues
 
 - `escapes.test.ts` documents a known broken `cbr` repetition case.
-- `removeHighlight` deletes the stored ID but leaves the global `CSS.highlights` ranges in place.
 - `chatML.ts` references `OpenAIChat` without importing it and relies on an ambient declaration.
 - Unconfirmed: a hang in the additional-asset passes has not been reproduced. The source-image test in
   `src/ts/parser/tests/assetFuzzy.test.ts` pauses and releases `getFileSrc`, but does not test a lookup that never

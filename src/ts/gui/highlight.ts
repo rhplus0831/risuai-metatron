@@ -27,6 +27,7 @@ type HighlightInt = [HighLightRange, HighlightType];
 type HighlightIntRanged = [Range, HighlightType];
 
 let highLights = new Map<number, HighlightIntRanged[]>();
+const ownedHighlights = new Set<string>();
 
 /**
  * Highlights the text nodes under `highlightDom` as editor `id`'s ranges (matching case-insensitively) and
@@ -132,9 +133,17 @@ const runHighlight = () => {
         }
     }
 
+    for (const key of ownedHighlights) {
+        if (!formatedRanges[key]) {
+            CSS.highlights.delete(key);
+            ownedHighlights.delete(key);
+        }
+    }
+
     for (const key in formatedRanges) {
         const highlight = new Highlight(...formatedRanges[key]);
         CSS.highlights.set(key, highlight);
+        ownedHighlights.add(key);
     }
 };
 
@@ -144,9 +153,12 @@ export const getNewHighlightId = () => {
     return highlightIds++;
 };
 
-/** Forgets editor `id`'s ranges without repainting: `CSS.highlights` keeps them until a later call sets their type. */
+/** Removes editor `id`'s ranges and repaints the remaining editors, deleting empty types from `CSS.highlights`. */
 export const removeHighlight = (id: number) => {
     highLights.delete(id);
+    if (typeof CSS !== "undefined" && CSS.highlights) {
+        runHighlight();
+    }
 };
 
 const normalCBS = [
