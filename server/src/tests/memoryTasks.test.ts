@@ -2094,6 +2094,7 @@ describe("the server wiring", () => {
         const a = await w.socket();
         expect(a.frames[0]).toEqual({
             type: "hello",
+            rerollInPlace: true,
             epoch: w.epoch,
             streaming: [],
             memoryTasks: [],
@@ -2275,6 +2276,7 @@ describe("the server wiring", () => {
         const b = await w.socket();
         expect(b.frames[0]).toEqual({
             type: "hello",
+            rerollInPlace: true,
             epoch: next,
             streaming: [],
             memoryTasks: [],

@@ -1,3 +1,4 @@
+import { normalizeCandidateFields } from "../../../shared/rerollCandidates.ts";
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -497,7 +498,7 @@ export function createCheckpointTables(
             return { deleted: true, pagesRemoved: removeFreedPages(collected) };
         },
 
-        /** Builds a detached chat from saved story state and current kept fields; writes nothing. */
+        /** Builds a detached chat from saved story state and current kept fields, dropping invalid optional candidate fields; writes nothing. */
         compose(characterId: string, chatId: string, id: string): Chat | null {
             const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
             if (!chat) {
@@ -535,7 +536,9 @@ export function createCheckpointTables(
             const pages = JSON.parse(checkpoint.pages) as string[];
             return {
                 ...Object.fromEntries(entries),
-                message: pages.flatMap((hash) => readPage(hash) as Message[]),
+                message: pages.flatMap((hash) =>
+                    (readPage(hash) as Message[]).map((message) => normalizeCandidateFields(message)),
+                ),
             } as Chat;
         },
 

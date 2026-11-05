@@ -1,3 +1,4 @@
+import type { RerollAttemptWrite } from "./chatStore.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { closeSync, lstatSync, mkdirSync, openSync, type Stats } from "node:fs";
@@ -353,6 +354,8 @@ export type WrittenChanges = { chats: (ChatWriteChange | undefined)[] };
 type ApplyChangesOptions = {
     epoch?: string;
     jobToken?: string;
+    /** Job-only attempt control; provenance changes commit or roll back with the chat writes. */
+    rerollAttempt?: RerollAttemptWrite;
     inTransaction?: ApplyChangesTransaction;
     /** Also build the write's own chat changes, for `committed`. */
     changes?: boolean;
@@ -1047,6 +1050,7 @@ export function createResourceStore(options: {
 
     function beginTransaction() {
         db.exec("BEGIN IMMEDIATE");
+        chatTables.beginTransaction();
         transactionInvalidations = new Map();
         transactionMessageChanges = [];
     }
@@ -1062,6 +1066,7 @@ export function createResourceStore(options: {
             memoryTables.rebuild.noteSourceReplaced(characterId, id);
         }
         db.exec("COMMIT");
+        chatTables.commitTransaction();
         const invalidated = transactionInvalidations;
         const messageChanges = transactionMessageChanges;
         transactionInvalidations = null;
@@ -1078,6 +1083,7 @@ export function createResourceStore(options: {
 
     /** Rolls back the open transaction, if any, with the invalidations and message changes it recorded. */
     function rollbackTransaction() {
+        chatTables.rollbackTransaction();
         transactionInvalidations = null;
         transactionMessageChanges = null;
         if (db.isTransaction) {
@@ -1589,7 +1595,12 @@ export function createResourceStore(options: {
             chats?: unknown;
             chatOrders?: unknown;
         },
-        options: { epoch?: string; jobToken?: string; inTransaction?: ApplyChangesTransaction },
+        options: {
+            epoch?: string;
+            jobToken?: string;
+            rerollAttempt?: RerollAttemptWrite;
+            inTransaction?: ApplyChangesTransaction;
+        },
         written?: WrittenChanges,
     ): AppliedChanges {
         assertNotInTransaction();
@@ -1791,6 +1802,7 @@ export function createResourceStore(options: {
                 conflicts.length > 0,
                 options.jobToken,
                 written !== undefined,
+                options.rerollAttempt,
             );
             conflicts.push(...chatOutcome.conflicts);
             if (conflicts.length > 0) {
@@ -2737,6 +2749,11 @@ export function createResourceStore(options: {
             return { epoch, kinds: result };
         },
 
+        /** Drop process-local provenance when a job's token ends without a final write. */
+        dropRerollAttempts(token: string) {
+            chatTables.dropRerollAttempts(token);
+        },
+
         /** `applyChanges` with resource operations only; returns their tokens in operation order. */
         applyBatch(
             operations: readonly ResourceBatchOperation[],
@@ -2935,6 +2952,7 @@ export function createResourceStore(options: {
                 }
             }
             epoch = nextEpoch;
+            chatTables.dropRerollAttempts();
             writeCount += 1;
             patchBases.clear();
             chatTables.forgetLastMessageTimes();

@@ -122,6 +122,15 @@ refusal status carried by a failed WebLLM request.
   is owned by [chat pipeline](chat-pipeline.md); memory algorithms are owned by [memory](memory.md).
 - After final chat writes, `runPromptSend` hands off translations and due memory input, detached, before returning.
 
+### Reroll in place
+
+- `context.rerollMessageId` (`reroll` only; in `requestFingerprint`; `hello` sends `rerollInPlace`): the first round
+  regenerates that reply in place. `runSpeaker` writes the begin group (old reply into `candidates`, variable restore,
+  `begin` last) and assembles without it (`scopeHistoryChat`).
+- One final write keeps the new reply or, on any end without one, restores the previous candidate while the store undoes
+  the attempt's variable writes (`rerollAttempt`). Later rounds run as after a send; `finalize`'s comment is the
+  contract.
+
 ### Command sequences
 
 - One `command` job runs a Lua button, form, or manual trigger, then its queued `/multisend` parts under one id, chat
@@ -210,8 +219,7 @@ Rules: the comments of `participantJob`, `attach`, `switchOwner`, `takeover`, `a
 - Table `receipts`, one row per job: `job_id` (primary key), `request_id` and `fingerprint` (null for older clients;
   unique `(epoch, request_id)`), `client_id`, `epoch`, `kind`, `character_id`, `chat_id`, `admitted_at`, `ended_at`
   (null while the job runs; indexed), `progress` (the sequence's `{ total, sent }` JSON, otherwise null), and `status`,
-  the kept `GenerationStatus` JSON: no `result`, alternatives over 64 KiB of JSON dropped, error message cut to 4 KiB,
-  `sequence` intact.
+  the kept `GenerationStatus` JSON: no `result`, error message cut to 4 KiB, `sequence` intact.
 - `PRAGMA user_version` is 1; a file of another version is left untouched and the store runs degraded. WAL with
   `synchronous=NORMAL`.
 - A cancelled request uses the same table: `job_id = "cancel:" + requestId`, private `kind = "cancelled"`, empty

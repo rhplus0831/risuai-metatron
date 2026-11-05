@@ -139,7 +139,7 @@ vi.mock("../plugins/plugins.svelte", async () =>
     (await import("../tests/bootMocks")).createBootMock("plugins", { pluginsStarted: () => deps.pluginsStarted() }),
 );
 vi.mock("../util", () => ({ sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)) }));
-vi.mock("../../lang", () => ({ language: {} }));
+
 vi.mock("../storage/database.svelte", () => ({}));
 vi.mock("../process/tts", () => ({ sayTTS: deps.sayTTS }));
 vi.mock("./pushNotifications", () => ({ showCompletionNotification: deps.showCompletion }));
@@ -363,6 +363,29 @@ describe("notices and questions", () => {
         ]);
         expect(listener).not.toHaveBeenCalled();
         expect(deps.contexts).toEqual([]);
+    });
+
+    it("localizes candidate notices in Korean and keeps the server message for unknown codes", async () => {
+        const locale = await import("../../lang");
+        locale.changeLanguage("ko");
+        try {
+            for (const [code, expected] of [
+                ["rerollCandidateDropped", "메시지의 저장 한도를 지키기 위해 오래된 응답 후보를 삭제했습니다."],
+                ["rerollCandidateTooLarge", "이 응답은 너무 커서 후보로 저장할 수 없습니다."],
+                [
+                    "scriptstateCheckpointSkipped",
+                    "채팅 변수가 너무 커서 체크포인트를 저장할 수 없습니다. 이번 리롤에서는 변수를 복원하지 않습니다.",
+                ],
+            ]) {
+                send(notice("alertToast", { code, message: "English fallback" }));
+                expect(alert()).toMatchObject({ type: "toast", msg: expected });
+                send(notice("alertClear"));
+            }
+            send(notice("alertToast", { code: "futureCode", message: "Future server message" }));
+            expect(alert()).toMatchObject({ type: "toast", msg: "Future server message" });
+        } finally {
+            locale.changeLanguage("en");
+        }
     });
 
     it("drops an ended job's queued statuses, keeps its modal notices, and clears only the status it still owns", async () => {

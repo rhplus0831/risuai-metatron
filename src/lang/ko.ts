@@ -4,6 +4,11 @@ const memoryCostText = (calls: number, tokens: number) =>
 
 /** Korean `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageKorean = {
+    rerollCandidateDropped: "메시지의 저장 한도를 지키기 위해 오래된 응답 후보를 삭제했습니다.",
+    rerollCandidateTooLarge: "이 응답은 너무 커서 후보로 저장할 수 없습니다.",
+    scriptstateCheckpointSkipped:
+        "채팅 변수가 너무 커서 체크포인트를 저장할 수 없습니다. 이번 리롤에서는 변수를 복원하지 않습니다.",
+
     formating: {
         main: "메인 프롬프트",
         jailbreak: "탈옥 프롬프트",
@@ -1722,6 +1727,7 @@ export const languageKorean = {
             "custom-model-key-to-credential": "커스텀 모델 키가 이름 있는 API 키가 되었습니다",
             "cold-character-restored": "콜드 스토리지에서 복원한 캐릭터",
             "cold-chat-restored": "콜드 스토리지에서 복원한 채팅",
+            "message-swipes": "메시지 스와이프 (리롤 후보로 변환)",
             "cold-plugin-storage-restored": "콜드 스토리지에서 복원한 플러그인 데이터",
             "legacy-plugin-storage": "예전 플러그인 데이터를 플러그인 저장소로 복사했습니다",
             "character-id-replaced": "ID가 잘못되었거나 겹친 캐릭터에 새 ID를 주었습니다",
@@ -1828,6 +1834,7 @@ export const languageKorean = {
             "character-fields": "이 앱에만 있는 캐릭터 필드",
             "chat-fields": "이 앱에만 있는 채팅 필드",
             "message-translations": "저장된 메시지 번역",
+            "message-candidates": "메시지의 다른 답변 (리롤 후보, 선택된 답변은 유지)",
             "persona-modules": "페르소나 모듈 연결",
             "translator-steps": "RisuAI에 자리가 없는 번역 설정",
             "plugin-storage": "RisuAI가 브라우저에 보관하는 플러그인 데이터",

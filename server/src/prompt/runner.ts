@@ -1,6 +1,26 @@
+import type { RerollAttemptWrite } from "../data/chatStore.ts";
+import {
+    candidateOf,
+    isLatestReply,
+    isRerollCarrier,
+    isScriptstateSnapshot,
+    scriptstateRestorePatch,
+    trimCandidates,
+    withCandidate,
+    withoutCandidateCheckpoints,
+    type CandidateNoticeCode,
+} from "../../../shared/rerollCandidates.ts";
 import { randomUUID } from "node:crypto";
 import type { ChatOp, CheckpointOutcome, MessageGeneration } from "../../../shared/chats.ts";
-import type { Chat, character, groupChat, Message, MessageGenerationInfo } from "../../../shared/database.ts";
+import type {
+    Chat,
+    character,
+    groupChat,
+    Message,
+    MessageCandidate,
+    ScriptstateSnapshot,
+    MessageGenerationInfo,
+} from "../../../shared/database.ts";
 import { greetingText } from "../../../shared/greetings.ts";
 import { supaMemoryOnCount } from "../../../shared/characters.ts";
 import { completionNotification } from "../../../shared/notifications.ts";
@@ -52,6 +72,7 @@ import {
     refreshChatAfterWrite,
     refreshChat,
     scopeChat,
+    scopeHistoryChat,
 } from "../jobs/jobScope.ts";
 import {
     createJobRunState,
@@ -86,6 +107,25 @@ import { runEmotionMode, runInlayScreen } from "./postProcess.ts";
 import { createScriptProcessor } from "./scripts.ts";
 import { localModelRefusal } from "./transformers.ts";
 import { hasRequestTriggers, parseChatML } from "./triggers.ts";
+
+// Command-sequence facades share their registry job's signal, so they also share this notice limit.
+const candidateNotices = new WeakMap<RunningJob["signal"], Set<CandidateNoticeCode>>();
+/** Coded notices keep an English fallback for older tabs; current tabs use their locale catalog. */
+function candidateNotice(job: RunningJob, code: CandidateNoticeCode): void {
+    if (code === "rerollCandidateDropped" || code === "scriptstateCheckpointSkipped") {
+        let noticed = candidateNotices.get(job.signal);
+        if (noticed?.has(code)) return;
+        if (!noticed) candidateNotices.set(job.signal, (noticed = new Set()));
+        noticed.add(code);
+    }
+    const messages: Record<CandidateNoticeCode, string> = {
+        rerollCandidateDropped: "Older reply candidates were dropped to keep this message within its limit.",
+        rerollCandidateTooLarge: "This reply is too large to keep as a candidate.",
+        scriptstateCheckpointSkipped:
+            "The chat variables are too large to checkpoint; this reroll will not restore them.",
+    };
+    job.channel.notice({ kind: "alertToast", payload: { code, message: messages[code] } });
+}
 
 /** How often a streaming reply's raw text is checkpointed (the client's `CHECKPOINT_INTERVAL_MS`). */
 export const CHECKPOINT_INTERVAL_MS = 3000;
@@ -289,7 +329,9 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  *    auto-continue decision, `igp`, a trigger's resend, the notification, the emotion modes or the
  *    image view; the generation info with its timings; the final write. An auto-continue or a resend
  *    is another round of the same speaker (`MAX_SEND_ROUNDS` for the job).
- * 7. `done` with the last reply's id and the reroll alternatives: the reply is persisted.
+ * 7. The final write stores extra samples as candidates; `done` names the persisted reply.
+ * An in-place reroll locks its carrier before assembly, reads history without it until dispatch,
+ * and restores the previous candidate in its final write on every end without a reply.
  *
  * `throwError` with `inlayErrorResponse` writes the error into the chat as the client does; without
  * it, and always in a preview, which writes no message, the job ends with the error.
@@ -315,7 +357,6 @@ export type PromptSendResult =
           type: "reply";
           revision: string | null;
           messageId?: string;
-          alternatives?: string[];
           stopped?: true;
           /** The reply hooks skipped for want of an owner tab (`done.skipped`), when any was. */
           skipped?: SkippedHook[];
@@ -401,14 +442,18 @@ async function runSend(
     }
 
     /** Writes the job's chat as the job itself (no Lua fence: the abort grace may still persist text). */
-    const writeOwn = (ops: ChatOp[], covers?: { messageId: string; generationId: string; seq: number }[]) => {
-        flushChatMetadata(job);
+    const writeOwn = (
+        ops: ChatOp[],
+        covers?: { messageId: string; generationId: string; seq: number }[],
+        options?: { rerollAttempt?: RerollAttemptWrite; metadataFlushed?: boolean },
+    ) => {
+        if (!options?.metadataFlushed) flushChatMetadata(job);
         refreshChat(store, scope);
         const applied = job.write(
             () => ({
                 chats: [{ characterId, chatId, baseRevision: scope.chatRevision, ops }],
             }),
-            covers ? { covers } : undefined,
+            { covers, rerollAttempt: options?.rerollAttempt },
         );
         refreshChatAfterWrite(store, scope, applied.chats[0], applied.written?.chats[0]);
         job.emitRecords({ chats: [{ characterId, id: chatId }] });
@@ -418,7 +463,11 @@ async function runSend(
     // The user message of this send (appended here, or already in the chat): auto-translated with the replies.
     let sentUserMessageId: string | null = null;
     // The input stage, on the admitted preset.
-    if (INPUT_KINDS.has(job.kind) && job.context.input !== "") {
+    if (
+        INPUT_KINDS.has(job.kind) &&
+        job.context.input !== "" &&
+        !(job.kind === "reroll" && job.context.rerollMessageId)
+    ) {
         state.stage = "input";
         const userMessageId = job.context.userMessageId ?? randomUUID();
         const existing = scopeChat(scope)?.message.find((message) => message.chatId === userMessageId);
@@ -515,10 +564,16 @@ async function runSend(
         speakers = [sendOwner.chaId];
     }
 
+    const rerollMessageId = job.kind === "reroll" ? job.context.rerollMessageId : undefined;
+    if (rerollMessageId) {
+        const carrier = scopeChat(scope)?.message.find((message) => message.chatId === rerollMessageId);
+        speakers = [job.context.speakerChaId ?? carrier?.saying ?? sendOwner.chaId];
+    }
+    let firstSpeakerRound = true;
     const baseRequest = scope.request;
     // Whether a `presetChain` pick is the job's prompt preset (the memory task input says so).
     const fromChain = !!chain && "scope" in chain;
-    let last: { messageId: string; alternatives?: string[] } | null = null;
+    let last: { messageId: string } | null = null;
     /** The memory task of the last completed speaker or round (its memory step's input), or none. */
     let memoryTask: MemoryTaskHandOff | undefined;
     /** Every reply the job wrote (an auto-continue extends one; a resend or a group speaker adds one). */
@@ -543,6 +598,7 @@ async function runSend(
                 speakerId,
                 chatAdditonalTokens: caculatedChatTokens,
                 continueSend: round.continueSend,
+                rerollMessageId: firstSpeakerRound ? rerollMessageId : undefined,
                 ...(round.continueMessageId ? { continueMessageId: round.continueMessageId } : {}),
                 usedContinueTokens: round.usedContinueTokens,
                 baseRequest,
@@ -550,11 +606,16 @@ async function runSend(
                 onSetup,
                 writeOwn,
             });
+            firstSpeakerRound = false;
             if (result.type === "preview") {
                 flushChatMetadata(job);
                 return { type: "preview", result: result.result };
             }
             if (result.type === "stop") {
+                if (result.messageId) {
+                    last = { messageId: result.messageId };
+                    replyIds.add(result.messageId);
+                }
                 stopped = true;
                 break speakers;
             }
@@ -566,10 +627,9 @@ async function runSend(
             }
             replyIds.add(result.messageId);
             memoryTask = result.memoryTask;
-            // The reply of the last round is the one the job reports, with that round's alternatives.
+            // The reply of the last round is the one the job reports.
             last = {
                 messageId: result.messageId,
-                ...(result.alternatives ? { alternatives: result.alternatives } : {}),
             };
             if (preview || !result.next) {
                 break;
@@ -600,7 +660,6 @@ async function runSend(
         type: "reply",
         revision: store.chatRevision(characterId, chatId),
         ...(last ? { messageId: last.messageId } : {}),
-        ...(last?.alternatives ? { alternatives: last.alternatives } : {}),
         ...(stopped ? { stopped: true as const } : {}),
         ...(state.skippedHooks.length > 0 ? { skipped: [...state.skippedHooks] } : {}),
         ...(state.missedHooks.length > 0 ? { missed: [...state.missedHooks] } : {}),
@@ -889,7 +948,6 @@ type SpeakerResult =
     | {
           type: "reply";
           messageId: string;
-          alternatives?: string[];
           /** The round's memory task input (only with a memory task service and an input job). */
           memoryTask?: MemoryTaskHandOff;
           /**
@@ -902,7 +960,7 @@ type SpeakerResult =
     /** The output trigger removed the reply: this speaker's turn ends with the removal. */
     | { type: "removed"; memoryTask?: MemoryTaskHandOff }
     /** The send ended for this speaker (an error shown, stopped by a trigger, nothing to continue). */
-    | { type: "stop" };
+    | { type: "stop"; messageId?: string };
 
 /** How long the tab may take for an image of the tail (an inlay image, the image view). */
 const IMAGE_CALLBACK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -916,6 +974,8 @@ async function runSpeaker(arg: {
     speakerId: string;
     chatAdditonalTokens: number;
     continueSend: boolean;
+    /** Only the first speaker round regenerates this carrier. */
+    rerollMessageId?: string;
     /** The message a continue extends: the reply of the round before (auto-continue), else the job's. */
     continueMessageId?: string;
     /** `usedContinueTokens`: the tokens of the replies this auto-continue chain produced so far. */
@@ -928,6 +988,7 @@ async function runSpeaker(arg: {
     writeOwn: (
         ops: ChatOp[],
         covers?: { messageId: string; generationId: string; seq: number }[],
+        options?: { rerollAttempt?: RerollAttemptWrite; metadataFlushed?: boolean },
     ) => CheckpointOutcome[];
 }): Promise<SpeakerResult> {
     const { job, deps, state, scope, owner, speakerId, writeOwn } = arg;
@@ -944,9 +1005,26 @@ async function runSpeaker(arg: {
     let continuingStream = false;
     let generationInfo: MessageGenerationInfo | undefined;
     let memoryTask: MemoryTaskHandOff | undefined;
+    const reroll = arg.rerollMessageId;
+    let previousCandidate: MessageCandidate | undefined;
+    let newCandidateId: string | undefined;
+    let before: ScriptstateSnapshot | undefined;
+    let failed = false;
+    let noReply = false;
+    let samples: string[] = [];
+    const candidateId = () => randomUUID().replaceAll("-", "");
+    const notice = (code: CandidateNoticeCode) => {
+        // Sends and previews skip oversized checkpoints silently; only this round can lose a reroll restore.
+        if (code === "scriptstateCheckpointSkipped" && !reroll) return;
+        candidateNotice(job, code);
+    };
     const chatNow = (): Chat | undefined => {
         refreshChat(store, scope);
         return scopeChat(scope);
+    };
+    const historyNow = () => {
+        refreshChat(store, scope);
+        return scopeHistoryChat(scope);
     };
     /**
      * The newest streamed chunk the stored reply includes, once its stream is complete. Every later
@@ -958,6 +1036,7 @@ async function runSpeaker(arg: {
             ? [{ messageId: generation.messageId, generationId: generation.generationId, seq: coverSeq }]
             : undefined;
     const owned: OwnedGeneration = {
+        reroll: !!reroll,
         get messageId() {
             return generation?.messageId ?? "";
         },
@@ -1028,7 +1107,10 @@ async function runSpeaker(arg: {
         if (!chat) {
             throw new SendError(error, failure, status);
         }
-        const lastMessage = chat.message[chat.message.length - 1];
+        const lastMessage =
+            reroll && generation && !generation.final
+                ? chat.message.find((message) => message.chatId === generation!.messageId)
+                : chat.message[chat.message.length - 1];
         const suffix = `\n\`\`\`risuerror\n${error}\n\`\`\``;
         if (lastMessage?.role === "char") {
             const mine = generation && !generation.final && generation.messageId === lastMessage.chatId;
@@ -1047,7 +1129,7 @@ async function runSpeaker(arg: {
             } else if (deps.lock.holder(characterId, chatId, lastMessage.chatId!) === null) {
                 writeOwn([{ op: "setText", id: lastMessage.chatId!, text: lastMessage.data + suffix }]);
             }
-            return { type: "stop" };
+            return { type: "stop", ...(reroll && generation ? { messageId: generation.messageId } : {}) };
         }
         const message: Message = {
             role: "char",
@@ -1176,43 +1258,184 @@ async function runSpeaker(arg: {
     }
 
     /**
-     * Closes the generation (its final write, the text as stored when none is given). A final write the
-     * store ignored (another write closed the generation first) did not persist the reply: an error.
+     * Finalize from the stored row after the metadata flush. A failed reroll restores its previous
+     * candidate in this same final write, while the store rolls back attempt-owned variables.
+     * Closure is remembered only after admission succeeds, so a failed write can still recover.
      */
     const finalize = (text?: string, covers: number | undefined = coverSeq) => {
-        if (!generation || generation.final) {
-            return;
+        if (!generation || generation.final) return;
+        let flushError: unknown;
+        try {
+            flushChatMetadata(job);
+        } catch (error) {
+            if (!reroll) throw error;
+            failed = true;
+            flushError = error;
         }
-        const stored = scopeChat(scope)?.message.find((message) => message.chatId === generation!.messageId);
-        if (!stored) {
+        refreshChat(store, scope);
+        const chat = scopeChat(scope);
+        const stored = chat?.message.find((message) => message.chatId === generation!.messageId);
+        if (!stored || !chat) {
             generation.final = true;
             return;
         }
+        let message: Message = { ...structuredClone(stored), data: text ?? stored.data };
+        if (continuingStream) message.time = Date.now();
+        const rollback = !!previousCandidate && (failed || noReply || job.signal.aborted || message.data.length === 0);
+        if (rollback) {
+            const previous = previousCandidate!;
+            message.data = previous.data;
+            delete message.generationInfo;
+            delete message.promptInfo;
+            delete message.translation;
+            if (previous.generationInfo) message.generationInfo = structuredClone(previous.generationInfo);
+            if (previous.promptInfo) message.promptInfo = structuredClone(previous.promptInfo);
+            if (previous.translation) message.translation = structuredClone(previous.translation);
+            const candidates = (message.candidates ?? []).filter((candidate) => candidate.id !== newCandidateId);
+            const selected = candidates.findIndex((candidate) => candidate.id === previous.id);
+            if (selected >= 0 && candidates.length >= 2) {
+                message.candidates = candidates;
+                message.selected = selected;
+            } else {
+                delete message.candidates;
+                delete message.selected;
+            }
+            if (before !== undefined) {
+                message.scriptstateCheckpoint = {
+                    before,
+                    ...(previous.scriptstateAfter !== undefined ? { after: previous.scriptstateAfter } : {}),
+                };
+            } else delete message.scriptstateCheckpoint;
+        } else {
+            const after = structuredClone(chat.scriptstate ?? null);
+            if (before !== undefined && isScriptstateSnapshot(after)) message.scriptstateCheckpoint = { before, after };
+            else {
+                message = withoutCandidateCheckpoints(message);
+                if (before !== undefined) notice("scriptstateCheckpointSkipped");
+            }
+            message = withCandidate(message);
+            if (samples.length > 0) {
+                message.candidates = [
+                    ...(message.candidates ?? [candidateOf(message, candidateId())]),
+                    ...samples.map((data) => ({ id: candidateId(), data })),
+                ];
+                message.selected ??= 0;
+            }
+        }
+        if (!isLatestReply(chat, generation.messageId)) message = withoutCandidateCheckpoints(message);
+        message = trimCandidates(message, notice);
         generation.seq += 1;
         const gen = { id: generation.generationId, seq: generation.seq, final: true };
-        generation.final = true;
+        const ops: ChatOp[] = [{ op: "setMessage", message, generation: gen }];
+        if (rollback)
+            ops.push({ op: "setTranslation", id: generation.messageId, translation: message.translation ?? null });
         const outcomes = writeOwn(
-            [
-                continuingStream
-                    ? {
-                          op: "setMessage",
-                          message: { ...structuredClone(stored), data: text ?? stored.data, time: Date.now() },
-                          generation: gen,
-                      }
-                    : { op: "setText", id: generation.messageId, text: text ?? stored.data, generation: gen },
-            ],
+            ops,
             covers !== undefined
                 ? [{ messageId: generation.messageId, generationId: generation.generationId, seq: covers }]
                 : undefined,
+            {
+                metadataFlushed: true,
+                ...(rollback
+                    ? {
+                          rerollAttempt: {
+                              characterId,
+                              chatId,
+                              messageId: generation.messageId,
+                              generationId: generation.generationId,
+                              action: "rollback",
+                          } as const,
+                      }
+                    : {}),
+            },
         );
         if (outcomes.at(-1) === "ignored") {
             throw new GenerationRunnerError(409, "The reply was closed by another write before it was finished", {
                 stage: "persist",
             });
         }
+        generation.final = true;
+        if (flushError !== undefined) throw flushError;
     };
 
     try {
+        flushChatMetadata(job);
+        const initialChat = chatNow();
+        const snapshot = structuredClone(initialChat?.scriptstate ?? null);
+        const targetId =
+            reroll ?? (arg.continueSend ? (arg.continueMessageId ?? job.context.continueMessageId) : undefined);
+        const initialTarget = targetId
+            ? initialChat?.message.find((message) => message.chatId === targetId)
+            : arg.continueSend
+              ? initialChat?.message.at(-1)
+              : undefined;
+        // Null is a real baseline, so preserve an explicitly absent variable map.
+        const keptBaseline = initialTarget?.scriptstateCheckpoint
+            ? initialTarget.scriptstateCheckpoint.before
+            : snapshot;
+        if (isScriptstateSnapshot(keptBaseline)) before = structuredClone(keptBaseline);
+        else notice("scriptstateCheckpointSkipped");
+        if (reroll) {
+            if (
+                !initialChat ||
+                !initialTarget ||
+                !isRerollCarrier(initialChat, reroll) ||
+                deps.lock.holder(characterId, chatId, reroll) !== null
+            ) {
+                throw new GenerationRunnerError(409, "The reply is no longer the newest reply or is being generated");
+            }
+            previousCandidate = candidateOf(
+                initialTarget,
+                initialTarget.candidates?.[initialTarget.selected ?? 0].id ?? candidateId(),
+            );
+            newCandidateId = candidateId();
+            const refreshed = withCandidate(initialTarget);
+            let begin: Message = {
+                ...refreshed,
+                data: "",
+                candidates: [...(refreshed.candidates ?? [previousCandidate]), { id: newCandidateId, data: "" }],
+                selected: refreshed.candidates?.length ?? 1,
+            };
+            if (before !== undefined) begin.scriptstateCheckpoint = { before };
+            else begin = withoutCandidateCheckpoints(begin);
+            begin = trimCandidates(begin, notice, previousCandidate.id);
+            const set: Extract<ChatOp, { op: "patchMessage" }>["set"] = { data: "" };
+            const unset: NonNullable<Extract<ChatOp, { op: "patchMessage" }>["unset"]> = [];
+            if (begin.candidates) {
+                set.candidates = begin.candidates;
+                set.selected = begin.selected;
+            } else unset.push("candidates", "selected");
+            if (begin.scriptstateCheckpoint) set.scriptstateCheckpoint = begin.scriptstateCheckpoint;
+            else unset.push("scriptstateCheckpoint");
+            const ops: ChatOp[] = [
+                { op: "patchMessage", id: reroll, set, unset },
+                { op: "setTranslation", id: reroll, translation: null },
+            ];
+            const checkpoint = initialTarget.scriptstateCheckpoint;
+            if (before !== undefined && checkpoint?.after !== undefined) {
+                const restore = scriptstateRestorePatch(before, checkpoint.after, initialChat.scriptstate);
+                if (Object.keys(restore.merge).length || restore.mergeUnset.length)
+                    ops.push({
+                        op: "meta",
+                        merge: { scriptstate: restore.merge },
+                        mergeUnset: { scriptstate: restore.mergeUnset },
+                    });
+            }
+            ops.push({ op: "begin", id: reroll, generationId });
+            writeOwn(ops, undefined, {
+                rerollAttempt: { characterId, chatId, messageId: reroll, generationId, action: "begin" },
+            });
+            generation = { messageId: reroll, generationId, seq: 0, final: false };
+            scope.rerollHistoryMessageId = reroll;
+            job.emit({
+                type: "accepted",
+                jobId: job.id,
+                messageId: reroll,
+                generationId,
+                revision: scope.chatRevision,
+                text: "",
+            });
+        }
         // A continue locks the message it extends before anything else (the client's `startGeneration`).
         if (arg.continueSend && !(job.kind === "preview" || job.kind === "previewPrompt")) {
             const chat = chatNow();
@@ -1249,7 +1472,7 @@ async function runSpeaker(arg: {
         });
         /** `runCurrentChatFunction`: every message through CBS with variables, the changed ones written. */
         const runCurrentChatFunction = () => {
-            const chat = chatNow();
+            const chat = historyNow();
             if (!chat) {
                 return;
             }
@@ -1327,7 +1550,7 @@ async function runSpeaker(arg: {
             tasks: !!deps.memoryTasks,
             sourceGeneration: () => scope.chatSourceGeneration,
             readSource: () => {
-                const chat = chatNow();
+                const chat = historyNow();
                 if (!chat) {
                     return null;
                 }
@@ -1377,14 +1600,22 @@ async function runSpeaker(arg: {
                 speaker: currentChar,
                 chatRef,
                 parse: (text, parseArg) => evaluator.risuChatParser(text, { chatRef, ...parseArg }),
-                chat: () => chatNow() ?? services.liveChat(),
+                chat: () => historyNow() ?? services.liveChat(),
                 findCharacter: (id) => findCharacter(scope, id),
                 userName: () => scope.effectivePersona.name,
                 personaPrompt: () => scope.effectivePersona.personaPrompt,
                 activateLore: () => services.activateLore(nativeCtx),
                 scripts,
-                runStartTrigger: () =>
-                    setup.runOnCopy(currentChar, "start", {}, generation ? { generation: owned } : {}),
+                runStartTrigger: async () => {
+                    const result = await setup.runOnCopy(
+                        currentChar,
+                        "start",
+                        {},
+                        generation ? { generation: owned } : {},
+                    );
+                    noReply ||= !!result?.noReply;
+                    return result;
+                },
                 runEditRequest: (formated) => scripts.editRequest(currentChar, formated),
                 readInlay: (id) => bindings.readInlay(id),
                 readAsset: (path) => readStorageFile(deps.savePath, path),
@@ -1498,6 +1729,19 @@ async function runSpeaker(arg: {
             return { type: "preview", result };
         }
 
+        if (reroll && generation) {
+            const stored = chatNow()?.message.find((message) => message.chatId === generation!.messageId);
+            if (stored)
+                writeOwn([
+                    {
+                        op: "setMessage",
+                        message: { ...structuredClone(stored), generationInfo, promptInfo },
+                        generation: owned.next(),
+                    },
+                ]);
+        }
+        // Request triggers and every tail reader see the stored carrier again.
+        delete scope.rerollHistoryMessageId;
         const stage3Start = Date.now();
         state.stage = "request";
         if (job.kind !== "previewPrompt") {
@@ -1558,7 +1802,6 @@ async function runSpeaker(arg: {
         /** The output trigger asked for another send (`sendAIprompt`). */
         let resend = false;
         let replyId: string | undefined;
-        let alternatives: string[] | undefined;
 
         const storedReply = () => {
             const id = generation?.messageId;
@@ -1645,6 +1888,7 @@ async function runSpeaker(arg: {
                 generation && !generation.final ? { generation: owned } : {},
             );
             setup.check();
+            noReply ||= !!triggerResult?.noReply;
             if (triggerResult && triggerResult.sendAIprompt) {
                 resend = true;
             }
@@ -1739,6 +1983,7 @@ async function runSpeaker(arg: {
                 // An abort or a read failure: the final write carries the text so far; nothing after
                 // the stream runs.
                 // A failure of that write is the job's error instead.
+                failed = true;
                 finalize(stream.text, stream.seq);
                 if (stream.error !== undefined && !job.signal.aborted) {
                     const failure = stream.failure ?? {};
@@ -1755,13 +2000,13 @@ async function runSpeaker(arg: {
             }
             state.stage = "tail";
             reportStage(job, "finishing");
-            // The completed raw text is stored before any hook runs: a failure in the tail keeps it.
+            // Store completed raw text before hooks; a failed reroll later restores its previous candidate.
             // Every later write of the reply claims the stream's last chunk.
             coverSeq = stream.seq;
             writeReplyText(stream.text);
             result = stream.result;
             replyId = messageId;
-            alternatives = Object.values(stream.lastChunk);
+            samples = Object.values(stream.lastChunk).slice(1);
 
             // `editoutput` once, on the completed text (per chunk in the tab; the Safety Contract).
             const processed = await scripts.process(owner, stream.text, "editoutput", indexOfMessage(messageId));
@@ -1772,6 +2017,7 @@ async function runSpeaker(arg: {
             runCurrentChatFunction();
             await runOutputTrigger();
             const outputMessage = storedReply();
+            if (noReply) return { type: "stop" };
             if (!outputMessage) {
                 // The trigger removed the reply: the turn ends with the removal.
                 generation!.final = true;
@@ -1789,10 +2035,9 @@ async function runSpeaker(arg: {
         } else {
             state.stage = "tail";
             reportStage(job, "finishing");
-            // Non-streaming: the first text is the reply; every text is a reroll alternative.
+            // Non-streaming: the first text is the reply; later samples become text-only candidates.
             const msgs: readonly (readonly ["user" | "char", string])[] =
                 req.type === "success" ? [["char", req.result]] : req.type === "multiline" ? req.result : [];
-            const mrerolls: string[] = [];
             let outputMessageId: string | undefined;
             for (let i = 0; i < msgs.length; i++) {
                 const [role, mess] = msgs[i];
@@ -1822,12 +2067,13 @@ async function runSpeaker(arg: {
                         generation.final = true;
                         return { type: "stop" };
                     }
-                    // Continue keeps the message's id (its metadata replaced, as the client's `replaceMessage`).
+                    // In-place writes preserve the stored row's candidate and display fields.
                     outputMessageId = generation.messageId;
                     writeOwn([
                         {
                             op: "setMessage",
                             message: {
+                                ...structuredClone(storedReply() ?? lastMessage),
                                 role: "char",
                                 data: result,
                                 saying: currentChar.chaId,
@@ -1861,9 +2107,8 @@ async function runSpeaker(arg: {
                         { op: "begin", id: outputMessageId, generationId },
                     ]);
                     generation = { messageId: outputMessageId, generationId, seq: 0, final: false };
-                    mrerolls.push(result);
                 } else {
-                    mrerolls.push(result);
+                    samples.push(result);
                 }
                 // The images of the reply only: an alternative keeps its `[Generating...]` text (the tab
                 // starts their images too and never uses them).
@@ -1878,12 +2123,10 @@ async function runSpeaker(arg: {
                 return { type: "stop" };
             }
             replyId = outputMessageId;
-            if (mrerolls.length > 1) {
-                alternatives = mrerolls;
-            }
 
             runCurrentChatFunction();
             await runOutputTrigger();
+            if (noReply) return { type: "stop" };
             if (!storedReply()) {
                 generation!.final = true;
                 return { type: "removed", ...(memoryTask ? { memoryTask } : {}) };
@@ -1923,7 +2166,6 @@ async function runSpeaker(arg: {
             return {
                 type: "reply",
                 messageId: replyId,
-                ...(alternatives ? { alternatives } : {}),
                 ...(memoryTask ? { memoryTask } : {}),
                 next: { type: "continue", usedContinueTokens: resultTokens },
             };
@@ -1986,7 +2228,6 @@ async function runSpeaker(arg: {
         const reply = (next?: { type: "resend" }): SpeakerResult => ({
             type: "reply",
             messageId: replyId!,
-            ...(alternatives ? { alternatives } : {}),
             ...(memoryTask ? { memoryTask } : {}),
             ...(next ? { next } : {}),
         });
@@ -2080,6 +2321,7 @@ async function runSpeaker(arg: {
         finalize();
         return reply();
     } catch (error) {
+        failed = true;
         if (error instanceof JobWriteConflictError) {
             throw new GenerationRunnerError(409, "The send's write conflicted with another change", {
                 ...failureOf(error),
@@ -2088,7 +2330,8 @@ async function runSpeaker(arg: {
         }
         throw error;
     } finally {
-        // A generation the send did not close (a continue that failed or stopped) is released as stored.
+        delete scope.rerollHistoryMessageId;
+        // Every unfinished attempt closes while its lock is held, including recovery after a tail failure.
         if (generation && !generation.final) {
             try {
                 finalize();

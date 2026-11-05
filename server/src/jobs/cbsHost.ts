@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { Chat, character, groupChat, loreBook } from "../../../shared/database.ts";
+import type { Chat, Database, character, groupChat, loreBook } from "../../../shared/database.ts";
 import type { RisuModule } from "../../../shared/modules.ts";
 import { calcString } from "../../../shared/cbs/calc.ts";
 import type { CbsHost } from "../../../shared/cbs/evaluator.ts";
@@ -100,13 +100,97 @@ export type JobCbsOptions = {
  * fallback and write through the job; globals read the chat's `GLGlobalVariables` override; the
  * persona is the job's frozen effective one for its chat; modules resolve as the client's
  * `getModules`; the viewport and language are the tab's (`context.client`); `isMobile` is false and
- * the internal function empty, as the client host has them.
+ * the internal function empty, as the client host has them. Message objects omit candidate and
+ * checkpoint payloads; an assembling reroll also omits its carrier. Views are cached by stored
+ * chat identity and hidden carrier, so repeated macros do not traverse message lists again.
  *
  * The host carries `options.limits`, so its evaluator is bounded (`shared/cbs/limits.ts`). The
  * default variables are parsed once per source text, not per missing variable.
  */
 export function createJobCbsHost(scope: JobScope, options: JobCbsOptions): CbsHost {
     const db = scope.db;
+    // History macros serialize whole messages: candidate payloads never enter the CBS database.
+    type ScopeCharacter = character | groupChat;
+    type StoredChat = ScopeCharacter["chats"][number];
+    const chatViews = new WeakMap<StoredChat, Map<string | undefined, StoredChat>>();
+    const characterViews = new WeakMap<
+        ScopeCharacter,
+        { chats: ScopeCharacter["chats"]; views: Map<string | undefined, ScopeCharacter> }
+    >();
+    const databaseViews = new WeakMap<Database["characters"], Map<string | undefined, Database>>();
+    const chatView = (stored: StoredChat, hidden: string | undefined): StoredChat => {
+        let views = chatViews.get(stored);
+        const cached = views?.get(hidden);
+        if (cached) return cached;
+        const view = {
+            ...stored,
+            // Synchronous setters replace these fields before the next stored-chat refresh.
+            get scriptstate() {
+                return stored.scriptstate;
+            },
+            get note() {
+                return stored.note;
+            },
+            message: stored.message
+                .filter((message) => !hidden || message.chatId !== hidden)
+                .map((message) => {
+                    if (
+                        !["candidates", "selected", "candidatesRevision", "scriptstateCheckpoint"].some((key) =>
+                            Object.hasOwn(message, key),
+                        )
+                    )
+                        return message;
+                    const {
+                        candidates: _candidates,
+                        selected: _selected,
+                        candidatesRevision: _revision,
+                        scriptstateCheckpoint: _checkpoint,
+                        ...visible
+                    } = message;
+                    return visible;
+                }),
+        };
+        if (!views) chatViews.set(stored, (views = new Map()));
+        views.set(hidden, view);
+        return view;
+    };
+    const characterView = <T extends ScopeCharacter>(char: T): T => {
+        const hidden = char.chaId === scope.characterId ? scope.rerollHistoryMessageId || undefined : undefined;
+        let cached = characterViews.get(char);
+        // Scope refreshes replace chat lists and chat objects, while keeping the owner when possible.
+        if (!cached || cached.chats !== char.chats) {
+            cached = { chats: char.chats, views: new Map() };
+            characterViews.set(char, cached);
+        }
+        const previous = cached.views.get(hidden);
+        if (previous) return previous as T;
+        const view = {
+            ...char,
+            chats: char.chats.map((chat) => chatView(chat, chat.id === scope.chatId ? hidden : undefined)),
+        };
+        cached.views.set(hidden, view);
+        return view;
+    };
+    const getDatabase = (): Database => {
+        const characters = db.characters;
+        const hidden = scope.rerollHistoryMessageId || undefined;
+        let views = databaseViews.get(characters);
+        let cached = views?.get(hidden);
+        let changed: Database["characters"] | undefined =
+            !cached || cached.characters.length !== characters.length ? [] : undefined;
+        // Character refreshes may mutate this array in place. Check identities without reading messages.
+        for (const [index, char] of characters.entries()) {
+            const view = characterView(char);
+            if (!changed && cached!.characters[index] !== view) changed = cached!.characters.slice(0, index);
+            changed?.push(view);
+        }
+        if (changed) {
+            cached = { ...db, characters: changed };
+            if (!views) databaseViews.set(characters, (views = new Map()));
+            views.set(hidden, cached);
+        }
+        return cached!;
+    };
     const isJobChat = (ref?: ChatRef) => !ref || (ref.chaId === scope.characterId && ref.chatId === scope.chatId);
     const characterOf = (ref?: ChatRef): character | groupChat | undefined =>
         ref ? db.characters.find((entry) => entry?.chaId === ref.chaId) : selectedCharacter();
@@ -173,13 +257,13 @@ export function createJobCbsHost(scope: JobScope, options: JobCbsOptions): CbsHo
     const findCharacterById = (id: string): character => {
         for (const char of db.characters) {
             if (char.type !== "group" && char.chaId === id) {
-                return char;
+                return characterView(char);
             }
         }
         return { name: "Unknown Character", chats: [], chatPage: 0 } as unknown as character;
     };
     return {
-        getDatabase: () => db,
+        getDatabase,
         getUserName: (ref) => {
             const persona = personaFor(ref);
             return persona ? persona.name : (db.username ?? "User");

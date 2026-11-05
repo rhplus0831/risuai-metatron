@@ -191,6 +191,7 @@ export function createEventSockets(options: {
         try {
             const frame: Extract<EventFeedFrame, { type: "hello" }> = {
                 type: "hello",
+                rerollInPlace: true,
                 epoch: epoch(),
                 streaming: streaming(),
                 memoryTasks: memoryTasks(),

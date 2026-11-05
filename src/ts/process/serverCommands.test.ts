@@ -2244,9 +2244,8 @@ describe("server sequence events", () => {
         });
     }
 
-    it("installs every part's alternatives and counts each received part once while following one job", async () => {
+    it("counts each received part once while following one job", async () => {
         const { settings } = await import("../storage/settingsViews.svelte");
-        const { Prereroll } = await import("./prereroll");
         settings.statics = { imports: 0, messages: 7 };
         stubs.current.mockReturnValue(ref);
         stubs.chat.mockReturnValue({
@@ -2271,10 +2270,8 @@ describe("server sequence events", () => {
             total: 2,
             sent: 1,
             messageId: "r1",
-            alternatives: ["first", "first alternative"],
         });
         expect(settings.statics.messages).toBe(8);
-        expect(Prereroll("g1")).toBe("first alternative");
         expect(get(commands.followedJobs).has("sequence")).toBe(true);
         follow.onEvent({
             type: "sequence",
@@ -2283,10 +2280,8 @@ describe("server sequence events", () => {
             total: 2,
             sent: 2,
             messageId: "r2",
-            alternatives: ["second", "second alternative"],
         });
         expect(settings.statics.messages).toBe(9);
-        expect(Prereroll("g2")).toBe("second alternative");
         endWith(follow, { ...done, messageId: "r2", sequence: { total: 2, sent: 2 } });
         expect((await run).terminal).toMatchObject({ type: "done", sequence: { total: 2, sent: 2 } });
         expect(settings.statics.messages).toBe(9);

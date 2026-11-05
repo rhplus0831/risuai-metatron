@@ -64,6 +64,7 @@ export type HandoffOffer = {
 export type EventFeedFrame =
     | {
           type: "hello";
+          rerollInPlace?: true;
           epoch: string;
           streaming: ChatStreamingSnapshot[];
           memoryTasks: MemoryTaskEntry[];

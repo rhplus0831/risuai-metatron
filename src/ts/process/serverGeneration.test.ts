@@ -10,8 +10,7 @@ import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 // and `followed` are a definite refusal, `unknown` an ambiguous one, an error or lost terminal
 // neither; `settled` unless the create got no answer or the follow was lost; `requestUncertain`
 // while this send's own request has no known end; a `replayed` job is this send's own, its chat
-// read's success passed on as `reconciled`; `done` is ok unless `stopped`; a reply's alternatives go to `addRerolls` under its
-// generation, none for a continue; a preview's `result` comes back).
+// read's success passed on as `reconciled`; `done` is ok unless `stopped`; a preview's `result` comes back).
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 const ref = { chaId: "c", chatId: "k" };
@@ -31,7 +30,6 @@ const stubs = vi.hoisted(() => ({
     members: new Set<string>(),
     currentChatRef: vi.fn<() => unknown>(() => null),
     incrementStatic: vi.fn(),
-    addRerolls: vi.fn(),
     db: { characters: [] as Record<string, unknown>[] },
 }));
 
@@ -57,7 +55,6 @@ vi.mock("../storage/characterStore.svelte", () => ({
 }));
 // `stores.svelte` runs module effects; the module under test reads the records through the stubs above.
 vi.mock("../stores.svelte", async () => (await import("src/ts/tests/storesMock")).createStoresMock({}));
-vi.mock("./prereroll", () => ({ addRerolls: stubs.addRerolls }));
 
 type Module = typeof import("./serverGeneration");
 let send: Module["sendChatOnServer"];
@@ -126,7 +123,6 @@ describe("sendChatOnServer", () => {
         // A send writes no character record, so none becomes dirty and none is uploaded before the job:
         // the target keeps its seeded `lastInteraction`, the others are untouched.
         expect(stubs.db.characters).toEqual(seededCharacters());
-        expect(stubs.addRerolls).not.toHaveBeenCalled();
     });
 
     it("picks the kind: continue with its explicit target, group for a group chat, and the previews without input", async () => {
@@ -294,20 +290,5 @@ describe("sendChatOnServer", () => {
             settled: true,
             result: undefined,
         });
-    });
-
-    it("registers a reply's alternatives under its generation, but not a continue's", async () => {
-        stubs.findChat.mockReturnValue({
-            message: [{ chatId: "r1", generationInfo: { generationId: "gen-1" } }, { chatId: "r2" }],
-        });
-        started(done({ messageId: "r1", alternatives: ["a", "b"] }));
-        expect((await send({ target: ref })).ok).toBe(true);
-        expect(stubs.addRerolls).toHaveBeenCalledWith("gen-1", ["a", "b"], ref, "r1");
-
-        started(done({ messageId: "r2", alternatives: ["a"] }));
-        await send({ target: ref });
-        started(done({ messageId: "r1", alternatives: ["c"] }));
-        await send({ target: ref, continue: true });
-        expect(stubs.addRerolls).toHaveBeenCalledTimes(1);
     });
 });

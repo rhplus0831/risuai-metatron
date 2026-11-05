@@ -1,3 +1,4 @@
+import type { CandidateNoticeCode } from "./rerollCandidates.ts";
 import type { Chat, MessageGenerationInfo } from "./database.ts";
 import type { LLMModel } from "./llm.ts";
 import type { OpenAIChat } from "./openai.ts";
@@ -36,6 +37,8 @@ export type GenerationContext = {
     mode: string;
     input: string;
     continueMessageId?: string;
+    /** Regenerate the newest reply in place; accepted only for a reroll job. */
+    rerollMessageId?: string;
     speakerChaId?: string;
     /**
      * A send's user message: the id the job appends `input` under after the input trigger and
@@ -317,7 +320,6 @@ export type GenerationTerminalEvent =
           epoch: string;
           revision: string | null;
           messageId?: string;
-          alternatives?: string[];
           /** A preview's result (`preview`: a `GenerationPreviewResult`; `previewPrompt`: the provider body). */
           result?: unknown;
           /**
@@ -385,7 +387,8 @@ export const MAX_SEQUENCE_PART_CHARS = 100_000;
 
 /** A notice: dialogs go to the owner, display effects to all sockets, device effects to the creator. */
 export type GenerationNotice =
-    | { kind: "alertNormal" | "alertError" | "alertToast" | "alertMd" | "alertWait"; payload: { message: string } }
+    | { kind: "alertToast"; payload: { message: string; code?: CandidateNoticeCode } }
+    | { kind: "alertNormal" | "alertError" | "alertMd" | "alertWait"; payload: { message: string } }
     | { kind: "alertClear"; payload: Record<string, never> }
     | { kind: "reloadDisplay" | "updateGUI"; payload: Record<string, never> }
     | { kind: "reloadChat"; payload: { chaId: string; chatId: string; messageId: string } }
@@ -826,7 +829,6 @@ export type GenerationEvent =
           total: number;
           sent: number;
           messageId?: string;
-          alternatives?: string[];
       }
     | GenerationTerminalEvent
     | { type: "ping"; ts: number };
@@ -834,7 +836,7 @@ export type GenerationEvent =
 /**
  * `GET /api/generations/:id`: what a participant needs to attach again. After an ended job is collected,
  * the server keeps its outcome for a while (`kept`): the job can no longer be attached, and its
- * terminal is trimmed (no preview `result`, large `alternatives` dropped, an error
+ * terminal is trimmed (no preview `result`, an error
  * message cut).
  */
 export type GenerationStatus = {

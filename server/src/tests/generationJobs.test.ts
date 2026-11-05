@@ -26,7 +26,6 @@ import {
     JobWriteConflictError,
     KEPT_OUTCOME_MS,
     markFailure,
-    MAX_KEPT_LIST_BYTES,
     MAX_KEPT_MESSAGE_BYTES,
     MAX_KEPT_OUTCOMES,
     type RunningJob,
@@ -1391,7 +1390,6 @@ describe("the kept outcome of a collected job", () => {
                 revision: revision(),
                 messageId: "r",
                 result: { assembled: "x".repeat(10_000) },
-                alternatives: ["alt"],
                 sequence,
             }),
         );
@@ -1416,7 +1414,6 @@ describe("the kept outcome of a collected job", () => {
                 epoch: store.epoch(),
                 revision: revision(),
                 messageId: "r",
-                alternatives: ["alt"],
                 sequence,
             },
             kept: true,
@@ -1427,17 +1424,15 @@ describe("the kept outcome of a collected job", () => {
         await expect(follow(jobId)).rejects.toThrow();
     });
 
-    it("trims a kept terminal: alternatives whose JSON exceeds 64 KiB are dropped while a sequence summary is kept, and an error message is cut to 4 KiB at a code point boundary", async () => {
+    it("trims a kept terminal: a sequence summary is kept, and an error message is cut to 4 KiB at a code point boundary", async () => {
         fakeClock();
         const s = setup();
         const { jobs, revision } = s;
         jobs.startGc();
-        const big = "y".repeat(MAX_KEPT_LIST_BYTES);
-        const largeAlternatives = await endJob(s, (job) =>
+        const sequenceDone = await endJob(s, (job) =>
             job.emit({
                 type: "done",
                 revision: revision(),
-                alternatives: [big],
                 sequence: { total: 2, sent: 2 },
             }),
         );
@@ -1445,7 +1440,7 @@ describe("the kept outcome of a collected job", () => {
         const message = "x".repeat(MAX_KEPT_MESSAGE_BYTES - 1) + "\u20ac" + "z".repeat(10);
         const longError = await endJob(s, (job) => job.emit({ type: "error", message, status: 500, reason: "failed" }));
         await collect();
-        expect(jobs.status(largeAlternatives, "tab")?.terminal).toEqual({
+        expect(jobs.status(sequenceDone, "tab")?.terminal).toEqual({
             type: "done",
             epoch: expect.any(String),
             revision: expect.any(String),

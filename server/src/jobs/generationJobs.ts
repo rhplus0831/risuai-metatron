@@ -1,3 +1,4 @@
+import type { RerollAttemptWrite } from "../data/chatStore.ts";
 import { createHash, randomUUID } from "node:crypto";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
@@ -93,8 +94,6 @@ export const JOB_DONE_GRACE_MS = 60_000;
 export { KEPT_OUTCOME_MS, MAX_KEPT_OUTCOMES };
 /** A kept error's message is cut to this many UTF-8 bytes. */
 export const MAX_KEPT_MESSAGE_BYTES = 4096;
-/** A kept done's `alternatives` are kept only while their JSON fits this many bytes. */
-export const MAX_KEPT_LIST_BYTES = 64 * 1024;
 /** A running job, or each part of a command sequence, is aborted (`timeout`) after this long. */
 export const JOB_MAX_DURATION_MS = 30 * 60_000;
 const JOB_GC_INTERVAL_MS = 30_000;
@@ -266,10 +265,15 @@ export type RunningJob = {
      * holds that chunk, so a processed checkpoint is not overwritten by older streamed text. Every
      * applied generation write replaces the claim with its own: one without `covers` claims 0, so
      * the client keeps any streamed text over the stored one.
+     * `rerollAttempt` opens provenance with a begin group or requests rollback with its final write;
+     * it reaches the store as an option, separate from the wire ops.
      */
     write(
         build: () => JobChanges,
-        options?: { covers?: readonly { messageId: string; generationId: string; seq: number }[] },
+        options?: {
+            covers?: readonly { messageId: string; generationId: string; seq: number }[];
+            rerollAttempt?: RerollAttemptWrite;
+        },
     ): JobWriteResult;
     /**
      * Throws what `write` throws before it builds anything: the job ended, or maintenance closed the
@@ -360,13 +364,13 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
- * SHA-256 of exactly kind, characterId, chatId, command, input, userMessageId and continueMessageId,
+ * SHA-256 of exactly kind, characterId, chatId, command, input, userMessageId, continueMessageId and rerollMessageId,
  * with recursively sorted JSON object keys, array order kept, and absent fields encoded as null.
  * Revision, binding ids, hooks and client id are excluded: retry identity follows the action and
  * input even after its owner's stored revision or connection changed.
  */
 function requestFingerprint(body: GenerationCreateBody): string {
-    const { characterId, chatId, input, userMessageId, continueMessageId } = body.context;
+    const { characterId, chatId, input, userMessageId, continueMessageId, rerollMessageId } = body.context;
     return createHash("sha256")
         .update(
             canonicalJson({
@@ -377,6 +381,7 @@ function requestFingerprint(body: GenerationCreateBody): string {
                 input,
                 userMessageId,
                 continueMessageId,
+                rerollMessageId,
             }),
         )
         .digest("hex");
@@ -569,12 +574,10 @@ function keptTerminal(terminal: GenerationTerminalEvent): GenerationTerminalEven
     if (terminal.type === "error") {
         return { ...terminal, message: cutUtf8(terminal.message, MAX_KEPT_MESSAGE_BYTES) };
     }
-    const { result: _result, alternatives, ...rest } = terminal;
-    const fits = (value: unknown) => Buffer.byteLength(JSON.stringify(value)) <= MAX_KEPT_LIST_BYTES;
-    return {
-        ...rest,
-        ...(alternatives && fits(alternatives) ? { alternatives } : {}),
-    };
+    const { result: _result, ...rest } = terminal;
+    // Retained outcomes cannot carry request samples from an older in-process emitter.
+    delete (rest as Record<string, unknown>).alternatives;
+    return rest;
 }
 
 /** The same trimmed outcome for memory and disk. */
@@ -1479,6 +1482,7 @@ export function createGenerationJobs(options: {
         }
         try {
             lock.endJob(job.token);
+            store.dropRerollAttempts(job.token);
             try {
                 // Every chat the job ever locked, with its locks now: a final write normally published
                 // the same already; this covers a release that write could not publish and a job that
@@ -1578,6 +1582,7 @@ export function createGenerationJobs(options: {
         job: Job,
         build: () => JobChanges,
         covers: readonly { messageId: string; generationId: string; seq: number }[] = [],
+        rerollAttempt?: RerollAttemptWrite,
     ): JobWriteResult {
         for (let attempt = 0; ; attempt += 1) {
             assertLive(job);
@@ -1609,6 +1614,7 @@ export function createGenerationJobs(options: {
                 const applied = store.applyChanges(changes, {
                     epoch: job.epoch,
                     jobToken: job.token,
+                    rerollAttempt,
                     changes: true,
                     // After the commit and before the change is published, so the published locks
                     // already show a final write's release and a `begin`'s new owner.
@@ -1828,7 +1834,7 @@ export function createGenerationJobs(options: {
                 try {
                     // Before build/applyChanges: never flush inside another write's transaction.
                     job.pendingFlush?.();
-                    return writeAsJob(job, build, options?.covers);
+                    return writeAsJob(job, build, options?.covers, options?.rerollAttempt);
                 } catch (error) {
                     // Every job write fails here: a conflict, a refused write, a storage failure.
                     throw markFailure(error, { stage: "persist" });
@@ -1893,6 +1899,7 @@ export function createGenerationJobs(options: {
                         }
                         if (!chat.ids.has(ref.messageId)) {
                             lock.release(ref, job.token, ref.generationId);
+                            store.dropRerollAttempts(job.token);
                             job.retired.add(retiredKey(ref, ref.generationId));
                             if (
                                 job.current?.messageId === ref.messageId &&

@@ -267,6 +267,7 @@ describe("the live-update socket on the server", () => {
         await waitFor(() => byQuery.frames.length > 0);
         expect(byQuery.frames[0]).toEqual({
             type: "hello",
+            rerollInPlace: true,
             epoch,
             streaming: [],
             memoryTasks: [],
@@ -279,6 +280,7 @@ describe("the live-update socket on the server", () => {
         await waitFor(() => byHeader.frames.length > 0);
         expect(byHeader.frames[0]).toEqual({
             type: "hello",
+            rerollInPlace: true,
             epoch,
             streaming: [],
             memoryTasks: [],
@@ -329,6 +331,7 @@ describe("the live-update socket on the server", () => {
         expect(listing.resources).toContainEqual({ kind: "notes", id: "missed", revision });
         expect(nextHello).toEqual({
             type: "hello",
+            rerollInPlace: true,
             epoch: before.epoch,
             streaming: [],
             memoryTasks: [],
@@ -834,7 +837,9 @@ describe("createEventSockets", () => {
             expect(client.frames[1]).toEqual({ type: "epoch", epoch: "F" });
         }
         expect(await failed.closed).toBe(1006);
-        expect(failed.frames).toEqual([{ type: "hello", epoch: "E", streaming: [], memoryTasks: [], clients: [] }]);
+        expect(failed.frames).toEqual([
+            { type: "hello", rerollInPlace: true, epoch: "E", streaming: [], memoryTasks: [], clients: [] },
+        ]);
         await waitFor(() => sockets.size() === 2);
         for (const client of others) {
             client.ws.terminate();
@@ -908,7 +913,7 @@ describe("createEventSockets", () => {
                 expect(terminate.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
                 expect(await clients[0].closed).toBe(1006);
                 expect(clients[0].frames).toEqual([
-                    { type: "hello", epoch: "E", streaming: [], memoryTasks: [], clients: [] },
+                    { type: "hello", rerollInPlace: true, epoch: "E", streaming: [], memoryTasks: [], clients: [] },
                 ]);
                 for (const client of clients.slice(1)) {
                     expect(await frameAt(client, 1)).toEqual(frame);
@@ -933,7 +938,14 @@ describe("createEventSockets", () => {
         try {
             const admitted = connect(url);
             clients.push(admitted);
-            const hello = { type: "hello", epoch: "E", streaming: [], memoryTasks: [], clients: [] };
+            const hello = {
+                type: "hello",
+                rerollInPlace: true,
+                epoch: "E",
+                streaming: [],
+                memoryTasks: [],
+                clients: [],
+            };
             expect(admissionBytes + Buffer.byteLength(JSON.stringify(hello))).toBeGreaterThan(admissionBytes);
             expect(await frameAt(admitted, 0)).toEqual(hello);
             expect(admitted.ws.readyState).toBe(WsClient.OPEN);
@@ -959,7 +971,14 @@ describe("createEventSockets", () => {
         const client = connect(url);
         expect(await client.opened).toBe("open");
         await waitFor(() => client.frames.length > 0);
-        expect(client.frames[0]).toEqual({ type: "hello", epoch: "E", streaming: [], memoryTasks: [], clients: [] });
+        expect(client.frames[0]).toEqual({
+            type: "hello",
+            rerollInPlace: true,
+            epoch: "E",
+            streaming: [],
+            memoryTasks: [],
+            clients: [],
+        });
         vi.advanceTimersByTime(15_000);
         await waitFor(() => client.frames.length > 1);
         expect(client.frames[1]).toMatchObject({ type: "ping", ts: expect.any(Number) });
@@ -1028,6 +1047,7 @@ describe("createEventSockets", () => {
         try {
             expect(await frameAt(client, 0)).toEqual({
                 type: "hello",
+                rerollInPlace: true,
                 epoch: "E",
                 streaming: [],
                 memoryTasks: [status],
