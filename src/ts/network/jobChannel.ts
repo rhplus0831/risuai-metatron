@@ -291,7 +291,15 @@ function showNotice(jobId: string, notice: GenerationNotice): boolean {
             alertMd(notice.payload.message);
             return true;
         case "alertToast":
-            alertToast(notice.payload.message, (status) => jobStatuses.set(jobId, status));
+            alertToast(
+                notice.payload.code &&
+                    ["rerollCandidateDropped", "rerollCandidateTooLarge", "scriptstateCheckpointSkipped"].includes(
+                        notice.payload.code,
+                    )
+                    ? language[notice.payload.code]
+                    : notice.payload.message,
+                (status) => jobStatuses.set(jobId, status),
+            );
             return false;
         case "alertWait":
             alertWait(notice.payload.message, (status) => jobStatuses.set(jobId, status));

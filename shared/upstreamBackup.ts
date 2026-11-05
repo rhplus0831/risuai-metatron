@@ -17,6 +17,8 @@ export const UPSTREAM_CONVERTED_CODES = [
     "cold-character-restored",
     /** A cold-storage chat came back from its payload, one per chat; examples are character names. */
     "cold-chat-restored",
+    /** PocketRisu/RisuBard swipes and RisuBard variable checkpoints became reroll candidates, one per message; examples are character names. */
+    "message-swipes",
     /** A plugin value came back from `_coldplugin` or an `_coldpluginIndex` entry; examples are storage keys. */
     "cold-plugin-storage-restored",
     /**

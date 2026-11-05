@@ -368,6 +368,50 @@ async function snapshotOf(
     }
 }
 
+async function candidateSnapshot() {
+    return snapshotOf((w) => {
+        w.put("characters", "choices", { chaId: "choices", name: "Choices", type: "character" });
+        w.put("characters", "group", { chaId: "group", name: "Group", type: "group", characters: ["choices"] });
+        w.chat("choices", "chat", {
+            message: [
+                {
+                    chatId: "reply",
+                    role: "char",
+                    data: "Selected reply",
+                    candidates: [
+                        { id: "discarded", data: "Discarded reply" },
+                        { id: "selected", data: "Selected reply" },
+                    ],
+                    selected: 1,
+                    candidatesRevision: 7,
+                    scriptstateCheckpoint: { before: null, after: { score: 2 } },
+                },
+                {
+                    chatId: "checkpoint",
+                    role: "char",
+                    data: "Checkpoint only",
+                    scriptstateCheckpoint: { before: { score: 2 } },
+                },
+            ],
+        });
+        w.chat("group", "chat", {
+            message: [
+                {
+                    chatId: "group-reply",
+                    role: "char",
+                    data: "Group selected",
+                    candidates: [
+                        { id: "gs", data: "Group selected" },
+                        { id: "gd", data: "Group discarded" },
+                    ],
+                    selected: 0,
+                    candidatesRevision: 3,
+                },
+            ],
+        });
+    });
+}
+
 const SELECT_A: UpstreamExportOptions = {
     promptPresetId: "ppA",
     modelPresetId: "mpA",
@@ -762,6 +806,43 @@ describe("buildUpstreamDatabase: HypaV3 budgets", () => {
 });
 
 describe("buildUpstreamDatabase: characters and chats", () => {
+    it("strips reroll fields from every message, keeps selected text, and counts messages with candidates once", async () => {
+        const { db, report } = exportOf(await candidateSnapshot());
+        const messages = (db.characters as Root[]).flatMap((character) =>
+            (character.chats as Root[]).flatMap((chat) => chat.message as Root[]),
+        );
+        expect(messages.map(({ data }) => data)).toEqual(["Selected reply", "Checkpoint only", "Group selected"]);
+        for (const message of messages) {
+            for (const field of ["candidates", "selected", "candidatesRevision", "scriptstateCheckpoint"]) {
+                expect(message).not.toHaveProperty(field);
+            }
+        }
+        expect(
+            report.excluded
+                .filter(({ code }) => code === "message-candidates")
+                .map(({ code, count }) => ({ code, count })),
+        ).toEqual([{ code: "message-candidates", count: 2 }]);
+    });
+
+    it("strips a checkpoint without reporting candidate loss when no message has candidates", async () => {
+        const snapshot = await snapshotOf((w) => {
+            w.put("characters", "choices", { chaId: "choices", name: "Choices", type: "character" });
+            w.chat("choices", "chat", {
+                message: [
+                    {
+                        chatId: "reply",
+                        role: "char",
+                        data: "Only reply",
+                        scriptstateCheckpoint: { before: null, after: { score: 1 } },
+                    },
+                ],
+            });
+        });
+        const { db, report } = exportOf(snapshot);
+        expect(chatsOf(db, "Choices")[0].message).toEqual([{ chatId: "reply", role: "char", data: "Only reply" }]);
+        expect(excluded(report, "message-candidates")).toBeUndefined();
+    });
+
     it("omits writer settings from every preset and Structured Memory overrides from characters, groups, and their chats", async () => {
         const snapshot = await snapshotOf((w) => {
             seedLibrary(w);
@@ -1207,6 +1288,20 @@ describe("buildUpstreamDatabase: purity", () => {
 });
 
 describe("buildUpstreamDatabase: round trip through the import converter", () => {
+    it("round trips selected reply text through the bin codec while reporting and losing reroll candidates", async () => {
+        const { exported, imported } = libraryRoundTrip(await candidateSnapshot());
+        const stored = await stage(imported);
+        const messages = stored.messages.map((message) => JSON.parse(message.data) as Root);
+        expect(messages.map(({ data }) => data)).toEqual(["Selected reply", "Checkpoint only", "Group selected"]);
+        for (const message of messages) {
+            for (const field of ["candidates", "selected", "candidatesRevision", "scriptstateCheckpoint"]) {
+                expect(message).not.toHaveProperty(field);
+            }
+        }
+        expect(excluded(exported.report, "message-candidates")).toMatchObject({ code: "message-candidates", count: 2 });
+        expect(imported.report.converted.find(({ code }) => code === "message-swipes")).toBeUndefined();
+    });
+
     it("brings the settings, translator and HypaV3 selections back", async () => {
         const { imported } = roundTrip(await snapshotOf());
         const translator = record<{ items: Root[]; selectedId: string }>(imported, COLLECTION_KIND.translatorPresets);

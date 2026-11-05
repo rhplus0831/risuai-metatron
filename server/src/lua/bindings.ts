@@ -39,6 +39,7 @@ import {
     refreshChat,
     refreshChatAfterWrite,
     scopeChat,
+    scopeHistoryChat,
 } from "../jobs/jobScope.ts";
 import { requestChatDataOuter } from "../llm/outer.ts";
 import type { requestDataResponse } from "../llm/request.ts";
@@ -364,8 +365,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     };
 
     let lastChat: Chat | undefined = scopeChat(scope);
-    /** The job's chat as last read (the live chat; the last copy once it is gone, as the client keeps it). */
-    const liveChat = (): Chat => (scopeChat(scope) ?? lastChat) as Chat;
+    /** The live prompt view during assembly, otherwise the stored chat; the last copy once gone. */
+    const liveChat = (): Chat => (scopeHistoryChat(scope) ?? lastChat) as Chat;
     /** A trigger's working copy while its Lua runs (`withWorking`), else none. */
     let working: LuaWorkingCopy | null = null;
     /** The run's chat: the trigger's working copy, else the live chat (the client's `engineChat`). */

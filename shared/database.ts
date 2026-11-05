@@ -1308,6 +1308,19 @@ export interface ChatFolder {
     folded: boolean;
 }
 
+/** Variables captured for a reply; null means that the chat had no map. */
+export type ScriptstateSnapshot = NonNullable<Chat["scriptstate"]> | null;
+
+/** A persisted alternative of one reply. Its id stays stable when the selected text is refreshed. */
+export interface MessageCandidate {
+    id: string;
+    data: string;
+    generationInfo?: MessageGenerationInfo;
+    promptInfo?: MessagePresetInfo;
+    translation?: MessageTranslation;
+    scriptstateAfter?: ScriptstateSnapshot;
+}
+
 export interface Message {
     role: "user" | "char";
     data: string;
@@ -1325,6 +1338,14 @@ export interface Message {
      * `setMessage` never changes it.
      */
     translation?: MessageTranslation;
+    /** Two or more alternatives; the message's own fields hold the selected reply. */
+    candidates?: MessageCandidate[];
+    /** Index into candidates; absent means zero. */
+    selected?: number;
+    /** Store-owned, monotonic across list changes and removal; absent means zero. */
+    candidatesRevision?: number;
+    /** Only the newest reply retains variable checkpoints. */
+    scriptstateCheckpoint?: { before: ScriptstateSnapshot; after?: ScriptstateSnapshot };
 }
 
 /** A translation of a message's `data`, kept while `sourceHash` matches the current `data`. */

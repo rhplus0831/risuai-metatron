@@ -80,7 +80,8 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
   export list. Characters store `customscript`, `triggerscript`, and `lowLevelAccess`; modules store `regex`, `trigger`,
   and `lowLevelAccess`.
 - Runtime variables are strings persisted as `chat.scriptstate['$'+key]`; display-mode triggers use temporary variables
-  only.
+  only. A reroll in place restores what its previous reply set, unless changed since; a failed one undoes its own writes
+  ([server generation](server-generation.md#reroll-in-place)).
 - The tab starts command jobs and `/api/transform`; the server owns Lua, triggers, send-script stages, and request
   triggers. See [server-generation](server-generation.md) for job and host semantics, [cbs-rendering](cbs-rendering.md)
   for display transforms, and [LLM requests](llm-requests.md) for request timing.

@@ -7,6 +7,10 @@ const memoryCostText = (calls: number, tokens: number) =>
 
 /** Complete UI string catalog and source type; other `src/lang/` locales supply `DeepPartial` overrides. */
 export const languageEnglish = {
+    rerollCandidateDropped: "Older reply candidates were dropped to keep this message within its limit.",
+    rerollCandidateTooLarge: "This reply is too large to keep as a candidate.",
+    scriptstateCheckpointSkipped: "The chat variables are too large to checkpoint; this reroll will not restore them.",
+
     formating: {
         main: "Main Prompt",
         jailbreak: "Jailbreak Prompt",
@@ -1474,6 +1478,7 @@ export const languageEnglish = {
             "custom-model-key-to-credential": "Custom model keys became named API keys",
             "cold-character-restored": "Characters restored from cold storage",
             "cold-chat-restored": "Chats restored from cold storage",
+            "message-swipes": "Message swipes, kept as reroll candidates",
             "cold-plugin-storage-restored": "Plugin data restored from cold storage",
             "legacy-plugin-storage": "Older plugin data was copied into the plugin storage",
             "character-id-replaced": "Characters with an invalid or repeated id got a new id",
@@ -1583,6 +1588,7 @@ export const languageEnglish = {
             "character-fields": "Character fields only this app has",
             "chat-fields": "Chat fields only this app has",
             "message-translations": "Stored message translations",
+            "message-candidates": "Alternative message replies (reroll candidates; selected reply kept)",
             "persona-modules": "Persona module links",
             "translator-steps": "Translator settings RisuAI has no place for",
             "plugin-storage": "Plugin data RisuAI keeps in the browser",

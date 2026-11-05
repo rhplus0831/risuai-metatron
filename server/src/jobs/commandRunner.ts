@@ -254,7 +254,7 @@ async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, nam
  *
  * Progress updates memory and best-effort receipts before the first part (sent: 0) and after each
  * returned part, before the live-only sequence event: zero-based index, total, sent, optional
- * reply messageId and alternatives. A removed reply counts as sent; a stopped send does not.
+ * reply messageId. A removed reply counts as sent; a stopped send does not.
  * One done terminal carries sequence { total, sent, stopped? }: boundary refusals use their code,
  * a stopped send uses notSent. Throws and registry aborts retain error terminals with current
  * progress; the first abort wins. No queued parts means no sequence. The registry runs one
@@ -348,7 +348,6 @@ async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, comman
             total,
             sent,
             ...(messageId ? { messageId } : {}),
-            ...(result.alternatives ? { alternatives: result.alternatives } : {}),
         });
         if (result.stopped) {
             finish("notSent");

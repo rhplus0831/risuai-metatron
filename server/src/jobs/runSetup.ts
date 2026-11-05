@@ -34,7 +34,7 @@ import { jobModules, type ServerCbsTimeLimits } from "./cbsHost.ts";
 import { applyTriggerChat, type OwnedGeneration } from "./chatResult.ts";
 import { GenerationRunnerError, markFailure, type RunningJob } from "./generationJobs.ts";
 import type { MessageGuard } from "./generationLock.ts";
-import { flushChatMetadata, type JobScope, refreshCharacter, refreshChat, scopeChat } from "./jobScope.ts";
+import { flushChatMetadata, type JobScope, refreshCharacter, refreshChat, scopeHistoryChat } from "./jobScope.ts";
 import { createJobToolState, type JobToolState } from "../mcp/jobTools.ts";
 import type { DiagnosticsRecorder } from "../diagnostics/log.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
@@ -249,14 +249,15 @@ export type RunSetup = {
     runTrigger(char: character, mode: TriggerMode, arg: TriggerArg): Promise<TriggerResult | null | undefined>;
     /**
      * `captureChatBaseline`, `runTrigger(char, mode, { chat })`, and `applyChatResult` on the chat as
-     * stored now; the result (or undefined when the chat is gone or the trigger returned nothing).
+     * stored now (the history view during assembly); a removed reroll carrier returns noReply;
+     * the result (or undefined when the chat is gone or the trigger returned nothing).
      */
     runOnCopy(
         char: character,
         mode: TriggerMode,
         arg?: Omit<TriggerArg, "chat">,
         options?: { generation?: OwnedGeneration },
-    ): Promise<TriggerResult | null | undefined>;
+    ): Promise<(TriggerResult & { noReply?: true }) | null | undefined>;
     /** Raises a latched fatal failure and fences the run. */
     check(): void;
 };
@@ -372,7 +373,7 @@ export function createRunSetup(
         if (!refreshChat(store, scope)) {
             return undefined;
         }
-        const baseline = { chat: structuredClone(scopeChat(scope)!) as Chat, revision: scope.chatRevision };
+        const baseline = { chat: structuredClone(scopeHistoryChat(scope)!) as Chat, revision: scope.chatRevision };
         let result: TriggerResult | null | undefined;
         let threw = false;
         try {
@@ -393,7 +394,8 @@ export function createRunSetup(
         }
         services.fence(nativeCtx);
         if (result) {
-            applyTriggerChat({ job, store, scope, lock: deps.lock }, baseline, result.chat, options);
+            const outcome = applyTriggerChat({ job, store, scope, lock: deps.lock }, baseline, result.chat, options);
+            if (outcome?.noReply) return { ...result, noReply: true };
         }
         return result;
     };

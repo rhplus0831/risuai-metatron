@@ -61,7 +61,8 @@
 
 `confirmedWindows` derives work from stored messages and events, so losing the task queue on restart loses no work;
 there is no startup scan. Its comment owns eligibility, turns, cadence, token thresholds and manual partial windows.
-`WriterWindow` and `windowOf` own the paired messages and source anchors.
+`WriterWindow` and `windowOf` own the paired messages and source anchors. Reroll candidates enter no window: windows
+read `data`, the selected candidate.
 
 The job captures `writerCeiling` before its reply. An automatic task uses that captured ceiling; a manual task uses
 `through` inclusively, else the stored chat's ceiling, else the captured one. A missing, disabled or
@@ -299,8 +300,8 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
 
 - `server/src/tests/normalizeCollections.test.ts` drives the settings rules through `normalizeStructuredMemorySettings`,
   `createHypaV3Preset`, and `normalizeHypaV3Presets`.
-- `server/src/tests/memoryTaskHost.test.ts` drives `memorySettingsFingerprint` on a real job scope, and
-  `server/src/tests/upstreamExport.test.ts` drives what the upstream export leaves out.
+- `memoryTaskHost.test.ts` drives `memorySettingsFingerprint` on a real job scope, and `upstreamExport.test.ts` what the
+  upstream export leaves out.
 - `server/src/prompt/memory/structured/window.test.ts` drives the window rules as a table over plain messages with a
   fake tokenizer, repair windows included. `structured/reconcile.test.ts` drives the swap, and `memoryTasks.test.ts` a
   repair through the real writer.
