@@ -481,6 +481,8 @@ type Job = {
     /** Creator, former owners, and a pending takeover watch the same chat baseline. */
     viewers: Set<WebSocket>;
     offer: HandoffOffer | null;
+    /** Targeted request's opening time, retained while its ticket or pending takeover holds it. */
+    requestedAt: number | null;
     offerTimer: ReturnType<typeof setTimeout> | null;
     ticket: {
         value: string;
@@ -1077,6 +1079,7 @@ export function createGenerationJobs(options: {
     function openOffer(job: Job, reason: HandoffOffer["reason"], target?: string) {
         if (!canHandoff(job) || job.ticket || job.pendingTakeover) return;
         closeOffer(job);
+        if (reason !== "requested" || !target) job.requestedAt = null;
         job.offer = {
             epoch: job.epoch,
             jobId: job.id,
@@ -1089,12 +1092,29 @@ export function createGenerationJobs(options: {
         publishOffer(job.offer);
     }
 
+    /** A targeted request gets an offer-delay window from the later of its opening or owner absence. */
+    function absentOfferAt(job: Job, offer: HandoffOffer | null): number | null {
+        if (job.ownerAbsentSince === null) return null;
+        const since =
+            offer?.reason === "requested" && offer.target
+                ? Math.max(job.ownerAbsentSince, job.requestedAt ?? job.ownerAbsentSince)
+                : job.ownerAbsentSince;
+        return since + handoffOfferDelayMs;
+    }
+
+    /**
+     * Callers refresh owner liveness before releasing the claim. An overdue targeted request
+     * reopens directly as absent; an earlier release keeps the original request's deadline.
+     */
     function reopenOffer(job: Job, offer: HandoffOffer) {
-        const reasonHolds =
-            offer.reason !== "absent" ||
-            (job.ownerAbsentSince !== null && clock() >= job.ownerAbsentSince + handoffOfferDelayMs);
-        if (canHandoff(job) && reasonHolds) {
-            openOffer(job, offer.reason, offer.target);
+        const absentAt = absentOfferAt(job, offer);
+        const absentDue = absentAt !== null && clock() >= absentAt;
+        if (canHandoff(job)) {
+            if (offer.reason === "requested" && offer.target && absentDue) {
+                openOffer(job, "absent");
+            } else if (offer.reason !== "absent" || absentDue) {
+                openOffer(job, offer.reason, offer.target);
+            }
         }
         armOffer(job);
     }
@@ -1102,17 +1122,24 @@ export function createGenerationJobs(options: {
     function expireTicket(job: Job) {
         const ticket = job.ticket;
         if (!ticket || clock() < ticket.until) return;
+        // Keep the claim while silence detection can re-arm offers through removeOwner.
+        expireSilentOwners(job);
         if (ticket.timer) clearTimeout(ticket.timer);
         job.ticket = null;
         reopenOffer(job, ticket.offer);
     }
 
-    /** Timers only wake checks; absence starts at the effective removal time, even if detected late. */
+    /**
+     * An unclaimed targeted request becomes absent one offer delay after the later of its opening
+     * or owner absence. Other open offers stay unchanged; tickets and pending takeovers keep their
+     * claim. Timers only wake checks; absence starts at the effective removal time, even if detected late.
+     */
     function armOffer(job: Job) {
         if (job.offerTimer) clearTimeout(job.offerTimer);
         job.offerTimer = null;
-        if (!canHandoff(job) || job.ownerAbsentSince === null || job.offer || job.ticket || job.pendingTakeover) return;
-        const remaining = job.ownerAbsentSince + handoffOfferDelayMs - clock();
+        if (!canHandoff(job) || job.ownerAbsentSince === null || job.ticket || job.pendingTakeover) return;
+        if (job.offer && (job.offer.reason !== "requested" || !job.offer.target)) return;
+        const remaining = absentOfferAt(job, job.offer)! - clock();
         if (remaining <= 0) {
             openOffer(job, "absent");
             return;
@@ -1132,6 +1159,7 @@ export function createGenerationJobs(options: {
         job.ticket = null;
         job.switchTimer = null;
         job.pendingTakeover = null;
+        job.requestedAt = null;
         closeOffer(job);
     }
 
@@ -2221,6 +2249,7 @@ export function createGenerationJobs(options: {
             sockets: new Set(),
             viewers: new Set(),
             offer: null,
+            requestedAt: null,
             offerTimer: null,
             ticket: null,
             pendingTakeover: null,
@@ -2759,6 +2788,7 @@ export function createGenerationJobs(options: {
     type HandoffResult<T> =
         { ok: true; body: T } | { ok: false; status: 404 | 409 | 412; body: Record<string, unknown> };
 
+    /** Targeted requests start a fresh fallback window even when the owner is already absent. */
     function handoff(
         jobId: string,
         body: GenerationHandoffBody,
@@ -2774,7 +2804,9 @@ export function createGenerationJobs(options: {
         expireTicket(job);
         if (!canHandoff(job) || job.ticket || job.pendingTakeover)
             return { ok: false, status: 409, body: { error: "handoffUnavailable" } };
+        job.requestedAt = body.target ? clock() : null;
         openOffer(job, "requested", body.target);
+        armOffer(job);
         return { ok: true, body: { offered: true } };
     }
 

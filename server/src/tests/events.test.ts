@@ -331,11 +331,13 @@ describe("the live-update socket on the server", () => {
         expect(feed.frames.at(-1)).toEqual({ ...requested, state: "closed" });
         await vi.advanceTimersByTimeAsync(10_000);
         await delivered(feed);
-        expect(feed.frames.filter((frame) => frame.type === "handoff").at(-1)).toEqual(requested);
+        // No owner has attached since admission, so the expired request reopens as an untargeted absent offer.
+        const absent = { ...preferred, reason: "absent" };
+        expect(feed.frames.filter((frame) => frame.type === "handoff").at(-1)).toEqual(absent);
         job.emit({ type: "done", revision: chatRevision });
         await delivered(feed);
         expect(feed.frames.filter((frame) => frame.type === "handoff").at(-1)).toEqual({
-            ...requested,
+            ...absent,
             state: "closed",
         });
         const ended = await open();

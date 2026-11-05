@@ -153,18 +153,18 @@ client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the 
 `generationJobs.ts` holds the owner clock (`ownerAbsentDeadline`, `removeOwner`, `expireSilentOwners`, `attach`);
 `channel.ts` applies it (`absenceDeadline`, `effectiveDeadline`), and its module header holds the deadline checks.
 
-- The tab attaches `/api/generations/:id/ws` with `liveness=1` and answers every `{ type: "ping", ts }` with
-  `{ type: "pong", ts }`, echoing `ts` before checking the event epoch. A negotiated socket with no incoming frame for
-  `OWNER_SILENT_MS` (45 s from attach, then its last frame) is removed from the owner set before being closed. MCP sees
-  the same effective owner presence. Sockets without the query retain the [older-tab rule](#limitations).
+- The tab attaches `/api/generations/:id/ws` with `liveness=1` and answers each `{ type: "ping", ts }` with a `pong`
+  echoing `ts`, before checking the event epoch. A negotiated socket with no frame for `OWNER_SILENT_MS` (45 s from
+  attach, then its last frame) leaves the owner set before closing. MCP sees the same owner presence. Sockets without it
+  keep the [older-tab rule](#limitations).
 - `ownerAbsentSince` starts at admission and when the last effective socket leaves or at the silence deadline; attach
   clears it.
 - Each dispatched question or callback uses the minimum of its own deadline, the job's absence deadline
   (`ownerAbsentSince + OWNER_ABSENT_MS`, 120 s), and its parent's effective deadline. Attach expires overdue requests
   while still absent, then clears absence, sends its snapshot and replays the requests still open, in their original
   request/notice order.
-- Owner absence bounds questions and callbacks only: there is no job-wide absence abort. Callback-free sequence parts
-  and detached memory tasks keep running.
+- Owner absence bounds only questions and callbacks; no job-wide absence abort. Callback-free sequence parts and
+  detached memory tasks keep running.
 - A streaming provider request with no callback outstanding, local-network streaming included
   ([Proxying](self-host-server.md#proxying)), goes on after the socket closes until it completes, its transport fails,
   the run fails (a failed checkpoint write cancels its reader; a fatal host failure aborts the run), or the job aborts
@@ -202,9 +202,9 @@ Rules: the comments of `participantJob`, `attach`, `switchOwner`, `takeover`, `a
 
 - A job keeps its creator (`clientId`: receipts, `owned`, device notices) and gains a current owner (`ownerClientId`:
   callbacks, lanes). Only owner sockets answer and count for `ownerAttached` (MCP included).
-- Offers go on the live-update feed (`HandoffOffer`). A ticketed attach takes one; the switch waits until nothing
-  delivered to the old owner is outstanding, and the old owner's sockets become viewers. An owner's own ticket
-  reattaches it; role events name the owner (`clientName`).
+- Offers go on the live-update feed (`HandoffOffer`); an unclaimed targeted one turns `absent` after owner absence. A
+  ticketed attach takes one; the switch waits until nothing delivered to the old owner is outstanding, and the old
+  owner's sockets become viewers. An owner's own ticket reattaches it; role events name the owner (`clientName`).
 - `skipped` reaches only the late-replay recipient; `done.missed` lists delivered `chatOutput` callbacks that settled
   `disconnected`.
 

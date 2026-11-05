@@ -1735,6 +1735,103 @@ describe("generation ownership handoffs", () => {
         expect(h.handoffs.at(-1)).toEqual({ type: "handoff", ...offer, state: "closed" });
     });
 
+    it("replaces an unclaimed targeted request with an absent offer ten seconds after the owner leaves", async () => {
+        const h = await live();
+        const creator = await h.follow(h.job.id);
+        await creator.fence();
+        expect(roles(creator.events)).toEqual([{ type: "handoff", epoch: h.store.epoch(), owner: "self" }]);
+        const offer = {
+            epoch: h.store.epoch(),
+            jobId: h.job.id,
+            characterId: "c",
+            chatId: "k",
+            state: "open",
+        };
+        const requested = { ...offer, reason: "requested", target: "worker-b" };
+        const absent = { ...offer, reason: "absent" };
+        const refused = { ok: false, status: 409, body: { error: "handoffUnavailable" } };
+        expect(h.offer("worker-b")).toEqual({ ok: true, body: { offered: true } });
+
+        // A present owner keeps the request targeted even past one offer delay.
+        await vi.advanceTimersByTimeAsync(10_001);
+        expect(h.handoffs).toEqual([{ type: "handoff", ...requested }]);
+        expect(h.jobs.handoffSnapshot()).toEqual([requested]);
+        expect(h.jobs.takeover(h.job.id, { clientId: "worker-c" }, h.store.epoch())).toEqual(refused);
+        expect(h.job.ownerAttached()).toBe(true);
+
+        await creator.close();
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(h.handoffs).toEqual([{ type: "handoff", ...requested }]);
+        expect(h.jobs.handoffSnapshot()).toEqual([requested]);
+        expect(h.jobs.takeover(h.job.id, { clientId: "worker-c" }, h.store.epoch())).toEqual(refused);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(h.handoffs).toEqual([
+            { type: "handoff", ...requested },
+            { type: "handoff", ...requested, state: "closed" },
+            { type: "handoff", ...absent },
+        ]);
+        expect(h.jobs.handoffSnapshot()).toEqual([absent]);
+        const ticket = h.ticket("worker-c");
+        const worker = await h.follow(h.job.id, "worker-c", `&ticket=${ticket}`);
+        await worker.fence();
+        expect(roles(worker.events)).toEqual([{ type: "handoff", epoch: h.store.epoch(), owner: "self" }]);
+        expect(h.job.ownerAttached()).toBe(true);
+        expect(h.jobs.handoffSnapshot()).toEqual([]);
+        expect(h.handoffs.at(-1)).toEqual({ type: "handoff", ...absent, state: "closed" });
+    });
+
+    it("gives a targeted request during a long absence a full window and preserves its reserved ticket until expiry", async () => {
+        const h = await live();
+        const creator = await h.follow(h.job.id);
+        await creator.fence();
+        await creator.close();
+        await vi.advanceTimersByTimeAsync(20_000);
+        const offer = {
+            epoch: h.store.epoch(),
+            jobId: h.job.id,
+            characterId: "c",
+            chatId: "k",
+            state: "open",
+        };
+        const requested = { ...offer, reason: "requested", target: "worker-b" };
+        const absent = { ...offer, reason: "absent" };
+        const refused = { ok: false, status: 409, body: { error: "handoffUnavailable" } };
+        expect(h.jobs.handoffSnapshot()).toEqual([absent]);
+        expect(h.offer("worker-b")).toEqual({ ok: true, body: { offered: true } });
+        const opened = [
+            { type: "handoff", ...absent },
+            { type: "handoff", ...absent, state: "closed" },
+            { type: "handoff", ...requested },
+        ];
+
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(h.handoffs).toEqual(opened);
+        expect(h.jobs.handoffSnapshot()).toEqual([requested]);
+        expect(h.jobs.takeover(h.job.id, { clientId: "worker-c" }, h.store.epoch())).toEqual(refused);
+        // B reserves just before fallback and leaves the ticket unconsumed.
+        expect(h.ticket("worker-b")).toEqual(expect.any(String));
+        const reserved = [...opened, { type: "handoff", ...requested, state: "closed" }];
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(h.handoffs).toEqual(reserved);
+        expect(h.jobs.handoffSnapshot()).toEqual([]);
+        expect(h.jobs.takeover(h.job.id, { clientId: "worker-c" }, h.store.epoch())).toEqual(refused);
+        await vi.advanceTimersByTimeAsync(9_998);
+        expect(h.handoffs).toEqual(reserved);
+        expect(h.jobs.handoffSnapshot()).toEqual([]);
+        expect(h.jobs.takeover(h.job.id, { clientId: "worker-c" }, h.store.epoch())).toEqual(refused);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(h.handoffs).toEqual([...reserved, { type: "handoff", ...absent }]);
+        expect(h.jobs.handoffSnapshot()).toEqual([absent]);
+        const worker = await h.take("worker-c");
+        await worker.fence();
+        expect(roles(worker.events)).toEqual([{ type: "handoff", epoch: h.store.epoch(), owner: "self" }]);
+        expect(h.job.ownerAttached()).toBe(true);
+        expect(h.jobs.handoffSnapshot()).toEqual([]);
+    });
+
     it("reattaches the current owner through its absent offer and replays outstanding callbacks in order", async () => {
         const h = await live();
         const old = await h.follow(h.job.id, "tab", "&liveness=1");
@@ -1873,9 +1970,15 @@ describe("generation ownership handoffs", () => {
         await expect(h.follow(second.jobId, "worker", `&ticket=${expired}`)).rejects.toThrow("409");
         await vi.advanceTimersByTimeAsync(10_000);
         await expect(h.follow(h.job.id, "worker", `&ticket=${expired}`)).rejects.toThrow("409");
-        expect(h.jobs.handoffSnapshot()).toContainEqual(
-            expect.objectContaining({ jobId: h.job.id, reason: "requested", target: "worker", state: "open" }),
-        );
+        // No owner has attached since admission, so the expired request reopens as an untargeted absent offer.
+        expect(h.jobs.handoffSnapshot()).toContainEqual({
+            epoch: h.store.epoch(),
+            jobId: h.job.id,
+            characterId: "c",
+            chatId: "k",
+            reason: "absent",
+            state: "open",
+        });
         const used = h.ticket();
         const owner = await h.follow(h.job.id, "worker", `&ticket=${used}`);
         await owner.fence();
