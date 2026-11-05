@@ -17,7 +17,10 @@ const { alerts, flush, refused, writer, requests, exportResponse, upstream, upst
             alertUpstreamImportReport: vi.fn(async () => true),
             alertStore: { set: vi.fn() },
         },
-        flush: vi.fn(async () => ({ discarded: [] as string[], refused: [] as string[] })),
+        flush: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(async () => ({
+            discarded: [],
+            refused: [],
+        })),
         refused: vi.fn<(typeof import("../storage/resourceSync.svelte"))["refusedItems"]>(() => []),
         /** The upstream import routes' answers (`upstreamBackupClient.ts`), set per test. */
         upstream: {
@@ -49,19 +52,21 @@ const { alerts, flush, refused, writer, requests, exportResponse, upstream, upst
     }));
 
 vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock(alerts));
-vi.mock("../storage/resourceSync.svelte", () => ({
-    flushResources: flush,
-    refusedItems: refused,
-    beforeRestoreReload: (fn: () => void) => {
-        hooks.current = fn;
-        return () => {
-            if (hooks.current === fn) {
-                hooks.current = null;
-            }
-            hooks.unregistered += 1;
-        };
-    },
-}));
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        flushResources: flush,
+        refusedItems: refused,
+        beforeRestoreReload: (fn: () => void) => {
+            hooks.current = fn;
+            return () => {
+                if (hooks.current === fn) {
+                    hooks.current = null;
+                }
+                hooks.unregistered += 1;
+            };
+        },
+    }),
+);
 vi.mock("../storage/selection.svelte", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../storage/selection.svelte")>()),
     persistSelection: persisted,

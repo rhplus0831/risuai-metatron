@@ -73,14 +73,13 @@ vi.mock("../storage/resourceClient", async () =>
         getResourceEpoch: () => EPOCH,
     }),
 );
-vi.mock("../storage/resourceSync.svelte", () => ({
-    flushResources: vi.fn(),
-    /** The chat read after a lost follow takes at once: no retry listener outlives a test. */
-    refreshStaleChat: vi.fn(async () => true),
-    GenerationBlockedError: class extends Error {},
-    generatingNoticeCount: () => 0,
-    watchForRestore: vi.fn(),
-}));
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        /** The chat read after a lost follow takes at once: no retry listener outlives a test. */
+        refreshStaleChat: vi.fn<typeof import("../storage/resourceSync.svelte").refreshStaleChat>(async () => true),
+        generatingNoticeCount: () => 0,
+    }),
+);
 vi.mock("../util", () => ({ sleep: async () => {} }));
 vi.mock("../diagnostics/collector", async () =>
     (await import("../diagnostics/tests/collectorMock")).createCollectorMock(),

@@ -35,11 +35,18 @@ vi.mock("../storage/chatStore.svelte", async () =>
         applyServerGenerationChunk: vi.fn(() => true),
     }),
 );
-vi.mock("../storage/resourceSync.svelte", () => ({
-    applyHydration: vi.fn(() => true),
-    applyPatchHydration: vi.fn(() => "applied"),
-    flushResources: vi.fn(async () => ({ discarded: [] })),
-}));
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        applyHydration: vi.fn<typeof import("../storage/resourceSync.svelte").applyHydration>(() => true),
+        applyPatchHydration: vi.fn<typeof import("../storage/resourceSync.svelte").applyPatchHydration>(
+            () => "applied",
+        ),
+        flushResources: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(async () => ({
+            discarded: [],
+            refused: [],
+        })),
+    }),
+);
 vi.mock("./jobChannel", () => ({
     registeredHooks: stubs.registeredHooks,
     handleChannelEvent: stubs.handleChannelEvent,

@@ -84,14 +84,12 @@ vi.mock("src/ts/storage/serverAuth", () => ({
     authFetch: (path: string, init: RequestInit) => hoisted.auth.fetch!(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
-vi.mock("src/ts/storage/resourceSync.svelte", () => {
-    class GenerationBlockedError extends Error {}
-    return {
+vi.mock("src/ts/storage/resourceSync.svelte", async () =>
+    (await import("src/ts/tests/bootMocks")).createBootMock("resourceSync", {
         beginMutationScope: () => ({ resource: 0, chat: 0 }),
         flushResources: async () => ({ discarded: [], refused: [] }),
-        GenerationBlockedError,
-    };
-});
+    }),
+);
 
 import { language } from "src/lang";
 import { runServerJob } from "src/ts/process/serverCommands";

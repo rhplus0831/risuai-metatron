@@ -102,7 +102,13 @@ vi.mock("src/ts/storage/resourceClient", async () =>
         readRefs: (...args: unknown[]) => stubs.readRefs(...args),
     }),
 );
-vi.mock("src/ts/storage/resourceSync.svelte", () => ({ flushResources: () => stubs.flush() }));
+vi.mock("src/ts/storage/resourceSync.svelte", async () =>
+    (await import("../../../tests/bootMocks")).createBootMock("resourceSync", {
+        // These fixtures drive only the save barrier, with arbitrary resolved values or a void latch.
+        flushResources: () =>
+            stubs.flush() as ReturnType<typeof import("../../../storage/resourceSync.svelte").flushResources>,
+    }),
+);
 vi.mock("src/ts/util", () => ({ checkPersonaBinded: () => stubs.selected.bound }));
 vi.mock("../../files/inlays", () => ({
     saveInlayedSignature: stubs.saveInlayedSignature,

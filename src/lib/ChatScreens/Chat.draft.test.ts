@@ -74,10 +74,11 @@ vi.mock("src/ts/storage/serverAuth", () => ({
     authFetch: (path: string, init: RequestInit) => hoisted.auth.fetch!(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
-vi.mock("src/ts/storage/resourceSync.svelte", () => {
-    class GenerationBlockedError extends Error {}
-    return { flushResources: async () => ({ discarded: [] }), GenerationBlockedError };
-});
+vi.mock("src/ts/storage/resourceSync.svelte", async () =>
+    (await import("src/ts/tests/bootMocks")).createBootMock("resourceSync", {
+        flushResources: async () => ({ discarded: [], refused: [] }),
+    }),
+);
 
 vi.mock("src/ts/storage/chatStore.svelte", async (importOriginal) => {
     const actual = await importOriginal<typeof import("src/ts/storage/chatStore.svelte")>();

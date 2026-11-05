@@ -21,8 +21,8 @@ const mocks = vi.hoisted(() => {
         listRevisions: vi.fn(),
         listChanges: vi.fn(),
         epochMismatch: vi.fn(),
-        noteRemoteChanges: vi.fn(),
-        reconcileRemote: vi.fn(),
+        noteRemoteChanges: vi.fn<typeof import("../storage/resourceSync.svelte").noteRemoteChanges>(),
+        reconcileRemote: vi.fn<typeof import("../storage/resourceSync.svelte").reconcileRemote>(),
         /** The chat module's side of a frame's generation locks. */
         noteRemoteStreaming: vi.fn(),
         replaceFeedLocks: vi.fn(),
@@ -44,10 +44,12 @@ vi.mock("../storage/resourceClient", async () =>
 vi.mock("../storage/serverAuth", () => ({
     getNodeServerProxyAuth: vi.fn(async () => `jwt-${++mocks.tokens.next}-${Date.now()}`),
 }));
-vi.mock("../storage/resourceSync.svelte", () => ({
-    noteRemoteChanges: mocks.noteRemoteChanges,
-    reconcileRemote: mocks.reconcileRemote,
-}));
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        noteRemoteChanges: mocks.noteRemoteChanges,
+        reconcileRemote: mocks.reconcileRemote,
+    }),
+);
 vi.mock("../storage/chatStore.svelte", async () =>
     (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
         noteRemoteStreaming: mocks.noteRemoteStreaming,

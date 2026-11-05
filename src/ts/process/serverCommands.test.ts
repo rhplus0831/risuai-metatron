@@ -53,14 +53,14 @@ const stubs = vi.hoisted(() => ({
     alertToast: vi.fn(),
     /** `sleep`: immediate, its requested waits recorded. */
     sleep: vi.fn<(ms: number) => Promise<void>>(async () => {}),
-    flush: vi.fn<() => Promise<{ discarded: string[]; refused: string[] }>>(),
+    flush: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(),
     refused: vi.fn<(typeof import("../storage/resourceSync.svelte"))["refusedItems"]>(() => []),
     /** `refreshStaleChat`: the pre-send read of a chat this tab knows is behind; true once it is current. */
-    refresh: vi.fn<(ref: unknown) => Promise<boolean>>(),
+    refresh: vi.fn<typeof import("../storage/resourceSync.svelte").refreshStaleChat>(),
     /** `generatingNoticeCount`: how many times the save adapter showed `chatGenerating`. */
-    notices: vi.fn<() => number>(() => 0),
+    notices: vi.fn<typeof import("../storage/resourceSync.svelte").generatingNoticeCount>(() => 0),
     /** `watchForRestore`: whether a restore replaced the data (a job ended by `maintenance` waits on it). */
-    restored: vi.fn<() => Promise<boolean>>(async () => false),
+    restored: vi.fn<typeof import("../storage/resourceSync.svelte").watchForRestore>(async () => false),
     /** `ensureChatLoaded`: the target chat, loaded; `undefined` for a chat that is not listed. */
     load: vi.fn<() => Promise<unknown>>(async () => ({})),
     /** `pinChat`: a release per pin, so the runner's pin/release pairs run as the real ones do. */
@@ -194,14 +194,16 @@ vi.mock("../storage/resourceClient", async () =>
         getResourceEpoch: () => EPOCH,
     }),
 );
-vi.mock("../storage/resourceSync.svelte", () => ({
-    flushResources: stubs.flush,
-    refusedItems: stubs.refused,
-    refreshStaleChat: stubs.refresh,
-    GenerationBlockedError: BlockedError,
-    generatingNoticeCount: stubs.notices,
-    watchForRestore: stubs.restored,
-}));
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        flushResources: stubs.flush,
+        refusedItems: stubs.refused,
+        refreshStaleChat: stubs.refresh,
+        GenerationBlockedError: BlockedError,
+        generatingNoticeCount: stubs.notices,
+        watchForRestore: stubs.restored,
+    }),
+);
 vi.mock("../util", () => ({ sleep: (ms: number) => stubs.sleep(ms) }));
 vi.mock("../diagnostics/collector", async () =>
     (await import("../diagnostics/tests/collectorMock")).createCollectorMock({

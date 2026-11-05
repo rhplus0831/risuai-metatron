@@ -32,7 +32,10 @@ type Support = {
 let support: Support;
 
 const mocks = vi.hoisted(() => ({
-    flush: vi.fn(async () => ({ discarded: [] as string[], refused: [] as string[] })),
+    flush: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(async () => ({
+        discarded: [],
+        refused: [],
+    })),
     authFetch: vi.fn(),
     inventory: { current: null as any },
     writer: { chunks: [] as Uint8Array[] },
@@ -46,7 +49,12 @@ const mocks = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("../storage/resourceSync.svelte", () => ({ flushResources: () => mocks.flush(), refusedItems: () => [] }));
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        flushResources: () => mocks.flush(),
+        refusedItems: () => [],
+    }),
+);
 // The refused-change labels' readers: the rune stores do not load in the node environment, and
 // these backups have no refused changes to name.
 vi.mock("../storage/characterStore.svelte", () => ({ findCharacter: () => undefined }));

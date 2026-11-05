@@ -24,15 +24,11 @@ vi.mock("../storage/serverAuth", () => ({
         hoisted.auth.fetch!(path, init, options),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
-vi.mock("../storage/resourceSync.svelte", () => {
-    class GenerationBlockedError extends Error {
-        constructor() {
-            super("A character is still being generated; try again when it finishes");
-            this.name = "GenerationBlockedError";
-        }
-    }
-    return { flushResources: () => hoisted.flush.run!(), GenerationBlockedError };
-});
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        flushResources: () => hoisted.flush.run!(),
+    }),
+);
 vi.mock("../alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: hoisted.alerts.error,

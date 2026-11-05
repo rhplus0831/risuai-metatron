@@ -28,10 +28,10 @@ type FixtureChat = { id: string; message?: { chatId: string }[] };
 const deps = vi.hoisted(() => ({
     /** The alert queue of the test running (`stores.alertStore` reaches it through a proxy). */
     alertQueue: null as unknown as AlertQueue,
-    flush: vi.fn<(options?: { scope?: unknown }) => Promise<{ discarded: string[]; refused: string[] }>>(),
-    applyHydration: vi.fn<(record: unknown) => boolean>(),
+    flush: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(),
+    applyHydration: vi.fn<typeof import("../storage/resourceSync.svelte").applyHydration>(),
     heldChat: vi.fn<(ref: { chaId: string; chatId: string }) => string | null>(),
-    heldRecord: vi.fn<(kind: string, id: string) => string | null>(),
+    heldRecord: vi.fn<typeof import("../storage/resourceSync.svelte").heldRecordRevision>(),
     contexts: [] as unknown[],
     /** `capturePluginContext`: the call context of a chat (the skipped-listener replay's). */
     captured: vi.fn<(ref: { chaId: string; chatId: string }) => unknown>(),
@@ -65,12 +65,14 @@ const deps = vi.hoisted(() => ({
     })),
 }));
 
-vi.mock("../storage/resourceSync.svelte", () => ({
-    flushResources: (options?: { scope?: unknown }) => deps.flush(options),
-    beginMutationScope: () => ({ resource: 7, chat: 3 }),
-    applyHydration: (record: unknown) => deps.applyHydration(record),
-    heldRecordRevision: (kind: string, id: string) => deps.heldRecord(kind, id),
-}));
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        flushResources: (options) => deps.flush(options),
+        beginMutationScope: () => ({ resource: 7, chat: 3 }),
+        applyHydration: (record) => deps.applyHydration(record),
+        heldRecordRevision: (kind, id) => deps.heldRecord(kind, id),
+    }),
+);
 // The chat module's readers the dispatcher calls, over the fixture's chats (`deps.chats`, by
 // character, the selected chat at `chatPage`); the characters themselves are in the real records
 // (`characterList()`, installed in `beforeEach`). The selected character is the real selection's

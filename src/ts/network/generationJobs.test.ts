@@ -22,10 +22,13 @@ const stubs = vi.hoisted(() => ({
     /** `applyServerGenerationChunk`: false when the chat module lacks the delta's base text. */
     applyServerGenerationChunk: vi.fn<(...args: unknown[]) => boolean>(() => true),
     endServerJob: vi.fn(),
-    applyHydration: vi.fn(() => true),
-    applyPatchHydration: vi.fn<() => "applied" | "busy" | "mismatch" | "old">(() => "applied"),
+    applyHydration: vi.fn<typeof import("../storage/resourceSync.svelte").applyHydration>(() => true),
+    applyPatchHydration: vi.fn<typeof import("../storage/resourceSync.svelte").applyPatchHydration>(() => "applied"),
     /** `flushResources`: the recovery's save of the local work that kept a job chat copy out. */
-    flushResources: vi.fn<() => Promise<{ discarded: string[] }>>(async () => ({ discarded: [] })),
+    flushResources: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(async () => ({
+        discarded: [],
+        refused: [],
+    })),
     /** `isChatStale` and `chatHydrationHold`: what the recovery reads of the chat module. */
     isChatStale: vi.fn<() => boolean>(() => false),
     chatHydrationHold: vi.fn<() => "none" | "saving" | "held">(() => "none"),
@@ -57,11 +60,13 @@ vi.mock("../storage/chatStore.svelte", async () =>
         chatHydrationHold: stubs.chatHydrationHold,
     }),
 );
-vi.mock("../storage/resourceSync.svelte", () => ({
-    applyHydration: stubs.applyHydration,
-    applyPatchHydration: stubs.applyPatchHydration,
-    flushResources: stubs.flushResources,
-}));
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        applyHydration: stubs.applyHydration,
+        applyPatchHydration: stubs.applyPatchHydration,
+        flushResources: stubs.flushResources,
+    }),
+);
 vi.mock("./jobChannel", () => ({
     registeredHooks: stubs.registeredHooks,
     handleChannelEvent: stubs.handleChannelEvent,
@@ -168,7 +173,7 @@ afterEach(() => {
     vi.unstubAllGlobals();
     stubs.isChatStale.mockReset().mockReturnValue(false);
     stubs.chatHydrationHold.mockReset().mockReturnValue("none");
-    stubs.flushResources.mockReset().mockResolvedValue({ discarded: [] });
+    stubs.flushResources.mockReset().mockResolvedValue({ discarded: [], refused: [] });
     stubs.applyPatchHydration.mockReset().mockReturnValue("applied");
     stubs.applyHydration.mockReset().mockReturnValue(true);
     stubs.applyServerGenerationChunk.mockReset().mockReturnValue(true);
@@ -1346,8 +1351,8 @@ describe("the event dispatcher and the resume", () => {
             let settle!: { resolve: () => void; reject: (error: unknown) => void };
             stubs.flushResources.mockImplementationOnce(
                 () =>
-                    new Promise<{ discarded: string[] }>((resolve, reject) => {
-                        settle = { resolve: () => resolve({ discarded: [] }), reject };
+                    new Promise<Awaited<ReturnType<typeof stubs.flushResources>>>((resolve, reject) => {
+                        settle = { resolve: () => resolve({ discarded: [], refused: [] }), reject };
                     }),
             );
             return () => settle;

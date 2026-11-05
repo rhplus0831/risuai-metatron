@@ -21,7 +21,9 @@ vi.mock("./storage/selection.svelte", () => ({}));
 vi.mock("./storage/resourceClient", async () =>
     (await import("./storage/tests/resourceClientMock")).createResourceClientMock(),
 );
-vi.mock("./storage/resourceSync.svelte", () => ({ saving: false }));
+vi.mock("./storage/resourceSync.svelte", async () =>
+    (await import("./tests/bootMocks")).createBootMock("resourceSync"),
+);
 vi.mock("./storage/characterOrder", () => ({}));
 vi.mock("./storage/assetClient", async () => (await import("./storage/tests/assetClientMock")).createAssetClientMock());
 vi.mock("./gui/animation", () => ({}));

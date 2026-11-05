@@ -277,8 +277,8 @@ file's own handles as `overrides`. A partial mock over `importOriginal` needs no
 
 - `src/ts/tests/alertMock.ts` `createAlertMock(overrides)`: every other client test that mocks `alert` uses it.
 - `src/ts/tests/storesMock.ts` `createStoresMock(overrides)`: all handwritten stores mocks use it.
-- `src/ts/tests/bootMocks.ts` `createBootMock(module, overrides)` supplies typed boot service defaults to both bootstrap
-  suites; keep the `vi.mock` registrations in each test file and load the factory inside them so Vitest hoisting remains
+- `src/ts/tests/bootMocks.ts` `createBootMock(module, overrides)`: typed boot service defaults for both bootstrap suites
+  and every whole `resourceSync` mock; each `vi.mock` stays in its test file and loads it inside so hoisting stays
   local.
 - `src/ts/storage/tests/resourceClientMock.ts` `createResourceClientMock(overrides)`,
   `src/ts/storage/tests/chatStoreMock.ts` `createChatStoreMock(overrides)`, and `src/ts/tests/globalApiMock.ts`
