@@ -15,7 +15,7 @@ Candidates were then challenged again and revised a second time the same day. Pl
   request lanes follow the owner, every socket of a job shares one chat baseline so the creator keeps
   watching the stream, notices go by kind (dialogs to the owner, display effects to every socket, device
   effects to the creator), and the creator replays skipped listeners when no owner is attached at the
-  end; D1–D8 recommended, Q1–Q4 answered (Q3 superseded by the notice groups), no slice scheduled.
+  end; D1–D8 recommended, Q1–Q4 answered (Q3 superseded by the notice groups), Slice 1 landed.
 - [Asset Lifecycle](asset-lifecycle.md): the server marks every stored asset from one retention graph (every
   text column of the live store, chat metadata and the memory tables included, the checkpoint pages a checkpoint
   names, every retained snapshot, exports from their copy to the end of their stream, recent uploads and a
