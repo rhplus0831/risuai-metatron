@@ -93,6 +93,14 @@ None is in the gate; all are in `util/playwright/`.
   `measureChats.mjs`, `measureHeap.mjs`, `measureBoot.mjs` (also the fixture builder
   `buildBootFixture`/`seedBootFixture`), and `measureFileSources.mjs`. `measureTransformLua.mjs` runs the server in
   process; `probeDirectAssets.mjs` probes the direct asset mechanics on its own server, not the app.
+- `measureRenderWork.mjs` (dev stack, under `offline.sh`, Linux): render work of a styled, auto-translated chat when it
+  opens and after a switch away, its mount trace, its screenshot's peak memory
+  ([results](../audit/render-work-budget-2026-11-05.md)).
+- Call counts by name: CDP `Profiler.startPreciseCoverage({ callCount: true, detailed: true })` before navigation,
+  `takePreciseCoverage` (it resets) per phase; a function's first range is its call count (without `detailed`, also each
+  `await` resumption). Time an uninstrumented run.
+- Peak memory: `VmHWM` in `/proc/<pid>/status`, reset by writing `5` to `clear_refs`; pids from browser CDP
+  `SystemInfo.getProcessInfo`.
 
 ### Fixtures
 

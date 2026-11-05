@@ -2,7 +2,7 @@
 
 Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) records completed plans,
-historical paths/commits, retrieval commands, and pending manual follow-ups. The feature
+historical paths/commits, retrieval commands, and pending manual follow-ups. The three feature
 plans below were revised on 2026-11-04 after the
 [plan design audit](../audit/plan-design-audit-2026-11-04.md); Job Handoff (since landed and archived), Asset Lifecycle and Reroll
 Candidates were then challenged again and revised a second time the same day. Plugin Storage and Data API was drafted on 2026-11-05.
@@ -31,16 +31,6 @@ Candidates were then challenged again and revised a second time the same day. Pl
   input; the tab takes the in-place path only when the server's `hello` advertises it; Slice 2 merges with or
   after Incremental Chat Transport Slice 4 (a traffic dependency, not a code one: separate branches are fine,
   the merge runs the listed integration checks); D1–D14 recommended, Q1–Q4 answered, Slices 1 and 3 landed.
-- [Render Work Budget](render-work-budget.md): a superseded or unmounted chat row's render run is aborted
-  through one signal (parser, transform, translation and retry stop instead of being hidden, and the
-  auto-translate probe's remembered inputs are written only once it completes), deterministic parser errors
-  never retry while the reachable I/O failures (inlay and file reads, the Google fetch, the LLM cache read)
-  retry twice with a delay, transform batches count subscribers and a chunk its last subscriber leaves settles
-  as cancelled outside the failure path, the LLM translation join never serves a regeneration and fences its
-  cache write, identical post-CBS CSS is scoped once in a bounded cache, and the screenshot export sizes its
-  output once, releases each source, pages large exports and downloads a Blob; Slice 0 carries two small items
-  (the message index belongs to Incremental Chat Transport); D1–D9 recommended, Q1–Q4 answered (Q3 narrowed),
-  no slice scheduled.
 - [Incremental Chat Transport](incremental-chat-transport.md): every by-id message lookup in the chat
   store goes through one validated per-chat position index, a feed entry past 8 KiB carries a per-row field
   diff with the text as a delta instead of the whole row, the owner's job `chatPatch` names a byte-equal

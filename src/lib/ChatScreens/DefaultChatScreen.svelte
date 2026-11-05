@@ -131,6 +131,7 @@
     } from "src/ts/messageSearch.svelte";
     import { runMessageJump } from "./messageJump";
     import { SCREENSHOT_CAPTURE_OPTIONS } from "./screenshotCapture";
+    import { composeScreenshot, measureScreenshotRow, planScreenshotPages } from "./screenshotExport";
 
     /**
      * The chat screen inside the layout of `ChatScreen.svelte`: the composers, send/reroll, and the menus. It shows
@@ -969,9 +970,9 @@
     });
 
     /**
-     * Captures the transcript as one image. `loadPages = Infinity` mounts every row (while folded, every row up to
-     * the fold), which `Chats.svelte` takes as a capture: no staging, reveal batch, held rows, or containment, and
-     * `takingScreenshot` suspends trimming.
+     * Captures the transcript as whole-row PNG Blob pages. `loadPages = Infinity` mounts every row (while folded,
+     * every row up to the fold), which `Chats.svelte` takes as a capture: no staging, reveal batch, held rows, or
+     * containment, and `takingScreenshot` suspends trimming.
      * The capture starts only once every row and the greeting have rendered their current markdown
      * (`whenRendered`). The previous window and scroll offset come back in `finally`, only while the same chat is
      * still open.
@@ -987,55 +988,19 @@
             await tick();
             const html2canvas = await import("html-to-image");
             await Promise.all([chatsInstance?.whenRendered(), greetingInstance?.whenRendered()]);
-            const chats = document.querySelectorAll(".default-chat-screen .risu-chat");
+            const chats = document.querySelectorAll<HTMLElement>(".default-chat-screen .risu-chat");
+            const pages = planScreenshotPages(chats, measureScreenshotRow);
             alertWait("Taking screenShot...");
-            let canvases: HTMLCanvasElement[] = [];
-
-            await withFileSrcFetch(async () => {
-                for (const chat of chats) {
-                    const cnv = await html2canvas.toCanvas(chat as HTMLElement, SCREENSHOT_CAPTURE_OPTIONS);
-                    alertWait("Taking screenShot... " + canvases.length + "/" + chats.length);
-                    canvases.push(cnv);
-                }
-            });
-
-            canvases.reverse();
-
-            alertWait("Merging images...");
-
-            let mergedCanvas = document.createElement("canvas");
-            mergedCanvas.width = 0;
-            mergedCanvas.height = 0;
-            let mergedCtx = mergedCanvas.getContext("2d");
-
-            let totalHeight = 0;
-            let maxWidth = 0;
-            for (let i = 0; i < canvases.length; i++) {
-                let canvas = canvases[i];
-                totalHeight += canvas.height;
-                maxWidth = Math.max(maxWidth, canvas.width);
-
-                mergedCanvas.width = maxWidth;
-                mergedCanvas.height = totalHeight;
-            }
-
-            mergedCtx.fillStyle = "var(--risu-theme-bgcolor)";
-            mergedCtx.fillRect(0, 0, maxWidth, totalHeight);
-            let indh = 0;
-            for (let i = 0; i < canvases.length; i++) {
-                let canvas = canvases[i];
-                indh += canvas.height;
-                mergedCtx.drawImage(canvas, 0, indh - canvas.height);
-                canvases[i].remove();
-            }
-
-            if (mergedCanvas) {
-                await downloadFile(
-                    `chat-${v4()}.png`,
-                    Buffer.from(mergedCanvas.toDataURL("png").split(",").at(-1), "base64"),
-                );
-                mergedCanvas.remove();
-            }
+            await withFileSrcFetch(() =>
+                composeScreenshot({
+                    pages,
+                    capture: (row) => html2canvas.toCanvas(row, SCREENSHOT_CAPTURE_OPTIONS),
+                    createCanvas: () => document.createElement("canvas"),
+                    download: downloadFile,
+                    baseName: `chat-${v4()}`,
+                    onProgress: (done, total) => alertWait("Taking screenShot... " + done + "/" + total),
+                }),
+            );
             alertNormal(language.screenshotSaved);
         } catch (error) {
             console.error(error);

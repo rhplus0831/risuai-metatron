@@ -23,7 +23,8 @@
 - `src/ts/translator/translator.ts`: tab provider adapters and rendered translation; `translate`, `runTranslator`,
   `translateMain`, `memoryTranslationContext`, `translateVox`, `isExpTranslator`, `translateHTML`,
   `applyEdittransRegex`, `applyEdittransToStoredTranslation`; the `runTranslator` comment holds its chunking, Exclude
-  Chain-of-Thought, prepared-chunk cache-key and failure rules.
+  Chain-of-Thought, prepared-chunk cache-key and failure rules; the `translateHTML` comment its signal, the global
+  worker cap, and the LLM in-flight map with its regeneration rule and cache-write generations.
 - `server/src/data/normalize/memoryTranslateMedia.ts`: persisted translator normalization;
   `normalizeMemoryTranslateMedia`. Stored `translatorType: "bergamot"` becomes `"google"` with `translator` empty and
   `useAutoTranslateInput` off: translation and chat auto-translate remain inactive until the user enables translation
@@ -137,7 +138,6 @@ on the rendered path; cache buttons remain for LLM. Auto-translate is a [chat se
    raw tags.
 2. `src/ts/translator/translator.ts` uses the selected chat's preset, falling back to global; the playground passes
    `globalPreset`. Its LLM adapter runs `shared/translation/pipeline.ts` through `requestChatData` in translate mode.
-   Non-LLM providers use DOM jobs instead.
 3. Combined DOM paragraph jobs rerun `editdisplay` through the server transform (`serverProcessScript`, target kind
    `translation`) when a captured context exists, then apply Markdown. All DOM jobs finish before `applyEdittransRegex`;
    LLM results go directly to that regex. The regex remains in the tab; see [Invariants](#invariants).
@@ -204,7 +204,7 @@ on the rendered path; cache buttons remain for LLM. Auto-translate is a [chat se
 
 - Browser LLM cache: LocalForage `LLMTranslateCache` (`LLMCacheStorage` in `src/ts/translator/translator.ts`) uses
   `llm:<hash>:<source>` keys, separate from stored `Message.translation`. See `llmCacheKeyPrefix` for hash inputs and
-  legacy-key compatibility.
+  legacy-key compatibility. Beside it: `llmInFlight` and `llmGenerations`, per key in flight.
 - Chat translation settings: the chat fields `translatorPresetId`, `autoTranslate`, `translateBotOnly`,
   `bilingualDisplay`, `bilingualEmphasis`, `bilingualSentences`, stored as sent and carried by the chat summary (list
   fields, `CHAT_TRANSLATION_FIELD_TYPES`), read through `shared/translation/chatSettings.ts`
@@ -250,13 +250,8 @@ on the rendered path; cache buttons remain for LLM. Auto-translate is a [chat se
   used output key stay local drafts, shown with a hint and dropped for good once the stored value they were typed over
   (for a key, also the other steps' keys) changes; a cleared or invalid response size is not written, and the field
   shows the stored size again when committed. So the tab's copy stays the server's normalized text.
-- `translateHTML`'s non-LLM traversal skips `script`/`style` elements and `translate=no` subtrees it visits. With
-  `combineTranslation`, eligible paragraphs are flattened before descendant checks, so protected descendants can be
-  translated and inline markup replaced. The LLM path has no DOM skip traversal. Both apply `edittrans` afterward
-  (`applyEdittransRegex`: the one regex the tab still runs, a plain `RegExp` replacement with no Lua or trigger).
-- Combined DOM jobs run `editdisplay` on the server (`serverProcessScript`, target kind `translation`), with the context
-  captured when `translateHTML` starts. Without a context (a chat not saved on the server yet), that stage leaves
-  translated text unchanged.
+- Both `translateHTML` paths apply `edittrans` last (`applyEdittransRegex`: the one regex the tab still runs, a plain
+  `RegExp` replacement with no Lua or trigger); the DOM skip rules are the `translateHTML` comment.
 
 ## Recipes
 
@@ -275,6 +270,8 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 - Chat row:
   `pnpm --silent test:agent src/lib/ChatScreens/Chat.test.ts src/lib/ChatScreens/PartialEditController.test.ts src/lib/SideBars/ChatTranslationPanel.test.ts`.
 - Server translation uses `Echo`, a temporary store, and fake LLM requests and token counts.
+- `translateHtmlLifetime.test.ts` and `translateHtmlWorkers.test.ts` stub the Google `fetch`; the workers test holds
+  each answer until it releases it, so the open-request count is read at its peak.
 - Not tested: mounted bilingual rendering.
 
 ## Known Hazards

@@ -21,7 +21,7 @@
 - `src/ts/globalApi.svelte.ts`, the rest of the facade (each export's comment states its rule): save (`saving`,
   `loadInternalBackup`), writers (`LocalWriter` with the backup record framing `writeBackup`, `VirtualWriter`,
   `BlankWriter`, `AppendableBuffer`), chat and UI (`changeChatTo`, `openPinnedChat`, `createChatCopyName`,
-  `toggleFullscreen`, `openURL`), and `checkCharOrder`, kept here because plugins see this export.
+  `toggleFullscreen`, `openURL`), `downloadFile`, and `checkCharOrder`, kept here because plugins see this export.
 - The network exports (`globalFetch` with `GlobalFetchArgs`, `fetchNative`, `addFetchLog`, `appendFetchLog`,
   `getFetchLogs`): their routing and the log are [network-jobs](network-jobs.md)'s.
 - `src/ts/chatFold.svelte.ts`: `chatFoldedState`, `chatFoldedStateMessageIndex`, `foldChatToMessage`, re-exported by the

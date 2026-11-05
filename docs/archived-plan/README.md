@@ -56,6 +56,7 @@ git show 0009c22f3:docs/plan/server-byte-budgets.md
 git show 78dbb078f:docs/plan/server-plugin-runtime.md
 git show 786dfc3d3:docs/plan/guides-to-source.md
 git show c34f69365:docs/plan/job-handoff.md
+git show a72c5f736:docs/plan/render-work-budget.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -115,6 +116,7 @@ it is not a current architecture guide.
 | Server Plugin Runtime (retired unbuilt)  | `78dbb078f`: `docs/plan/server-plugin-runtime.md`                         | None: no slice landed; [plugins](../structure/plugin-sandbox.md) keeps the tab runtime and the skip-and-replay path                                                                                                                                                                                                                                                                                                                                                                         |
 | Guides To Source                         | `786dfc3d3`: `docs/plan/guides-to-source.md`                              | [STRUCTURE](../../STRUCTURE.md) (Doc Maintenance, `ownership.json`), [build/test platforms](../structure/build-test-platforms.md) (`util/docsBudget.mjs`, `util/docsLedger.mjs`, `util/guideReads.mjs`)                                                                                                                                                                                                                                                                                     |
 | Job Handoff                              | `c34f69365`: `docs/plan/job-handoff.md`                                   | [server](../structure/server-generation.md) (Job handoff, Limitations), [live-update feed](../structure/live-update-feed.md), [network and jobs](../structure/network-jobs.md), [chat pipeline](../structure/chat-pipeline.md), [plugins](../structure/plugin-sandbox.md) (Job owner presence), [test harness](../structure/test-harness.md) (`checkJobHandoff.mjs`)                                                                                                                        |
+| Render Work Budget                       | `a72c5f736`: `docs/plan/render-work-budget.md`                            | [CBS and rendering](../structure/cbs-rendering.md), [UI and theming](../structure/ui-theming.md), [translation](../structure/translation.md), [test harness](../structure/test-harness.md) (`measureRenderWork.mjs`)                                                                                                                                                                                                                                                                        |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1074,6 +1076,25 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - Found by the run: 4 entries in `docs/research/found-issues.md` (a retaken job's dropped live stream, a current
     owner taking its own offer, the role event's missing `clientName`, a cancelled hook overlapping the worker's
     next callback).
+- Render Work Budget:
+  - All slices landed on 2026-11-05 (plan-runner, on `dev`; Slice 5 split into 5a, the baseline before Slices 1–4,
+    and 5b, the comparison after): obsolete row renders abort, failures are classified transient or final, shared
+    transform and translation requests are cancelled only when their last subscriber leaves, translation has a
+    global cap of 10 provider requests, identical CSS is scoped once in a bounded cache, and the screenshot export
+    writes capped PNG pages through a Blob.
+  - Measured in `docs/audit/render-work-budget-2026-11-05.md`: three acceptance items met (no parser or
+    translation call after a switch, one preparation per sheet); two not met and moved to
+    `docs/research/found-issues.md` by owner decision (more than one transform chunk in flight at a switch, the
+    screenshot peak growing with rows). Traces stay out of git in the main checkout's git directory.
+  - Not planned (the plan's Later list): F3 and F6 (the mount profile did not settle between single runs), an
+    early release of a cancelled chunk's server snapshot, reversing Q4 (let dispatched transform requests finish)
+    or Q2 (selected-range export), and the `measureChats.mjs` settling delay; F1 and the per-chat message index
+    belong to the Incremental Chat Transport plan.
+  - Owner device checklist, open: Firefox and Safari page size at Safari's canvas limit, iOS Safari's canvas area
+    against `MAX_EXPORT_PIXELS`, a multi-page export in an image viewer, a failed export's error alert and scroll
+    restore in a real browser, a phone switching chats mid-auto-translate, far-row containment.
+  - Found by the run: five entries in `docs/research/found-issues.md` (the two unmet items, the black page fill,
+    the run left alive by raw streaming, `getFileSrc` never rejecting).
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.
