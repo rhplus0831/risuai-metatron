@@ -4,6 +4,7 @@ import { type GenerationContext, NO_GENERATION_HOOKS } from "../../../shared/job
 import { createScriptCache, type RegexScriptEffect } from "../../../shared/scripts/regex.ts";
 import {
     MAX_TRANSFORM_REQUEST_TEXT_BYTES,
+    MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT,
     MAX_TRANSFORM_TEXT_BYTES,
     TRANSFORM_SNAPSHOT_TTL_MS,
     type TransformContinueRequest,
@@ -47,8 +48,7 @@ class TransformWriteRefusedError extends Error {
 /** Transform requests running at once; the next ones wait in a queue of `MAX_QUEUED`. */
 const MAX_ACTIVE = 4;
 const MAX_QUEUED = 32;
-/** Snapshots waiting for their second call, per client and in all. */
-const MAX_SNAPSHOTS_PER_CLIENT = 4;
+/** Snapshots waiting for their second call across all clients. */
 const MAX_SNAPSHOTS = 16;
 /** Request-owned retained memory of one snapshot: its projection and each target's setup, copies and texts. */
 const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024;
@@ -158,8 +158,8 @@ function targetRetainedBytes(run: TargetRun): number {
  * exactly that key: `same` is a separate { id, key }[] without text or emotions, omitted when empty.
  * The first call answers each target exactly once in results, same or pending. Different keys,
  * evicted entries, fresh runs, noCache and failures answer in full (or await handlers in pending).
- * Continuations always answer in full and never call this partition. Admission and refusals are
- * unchanged; knownKey is neither authorization nor a promise that a newly computed output is equal.
+ * Continuations answer non-cancelled targets in full and never call this partition. Admission and
+ * refusals are unchanged; knownKey is neither authorization nor a promise that newly computed output is equal.
  */
 function partitionKnownResults(targets: TransformTarget[], results: TransformResult[]): TransformResponse {
     const knownKeys = new Map(targets.map((target) => [target.id, target.knownKey]));
@@ -202,7 +202,8 @@ function partitionKnownResults(targets: TransformTarget[], results: TransformRes
  * containers, texts, changed variables and default-variable map allowance, up to 8 MiB. Shared raw
  * entries are charged once while pinned, alongside snapshots and in-progress reservations against
  * a 64 MiB global limit. Oldest waiting snapshots give way first (this client's, then all clients').
- * Continuations keep their pins through queueing and execution; every end path releases them.
+ * Continuations skip cancelled targets and keep their pins through queueing and execution; every
+ * end path releases them. Cancelling every pending target drops the snapshot without a run slot.
  * Targets that still do not fit fail alone.
  *
  * Results are cached (`transformCache.ts`) under `targetKey`: a digest of the epoch, the stored
@@ -886,7 +887,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             );
             // The oldest snapshots give way: of this client, then of all.
             const own = [...snapshots.values()].filter((entry) => entry.clientId === request.clientId);
-            for (const old of own.slice(0, Math.max(0, own.length + 1 - MAX_SNAPSHOTS_PER_CLIENT))) {
+            for (const old of own.slice(0, Math.max(0, own.length + 1 - MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT))) {
                 dropSnapshot(old, new TransformSnapshotError("The render's snapshot was replaced"));
             }
             for (const old of [...snapshots.values()].slice(0, Math.max(0, snapshots.size + 1 - MAX_SNAPSHOTS))) {
@@ -937,6 +938,9 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
         const unlink = link(signal, life.controller);
         let release: (() => void) | null = null;
         try {
+            if (request.texts.every((entry) => "cancelled" in entry)) {
+                return { results: [] };
+            }
             try {
                 release = await acquire(life);
             } catch (error) {
@@ -946,6 +950,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
             stillValid(life);
             const results: TransformResult[] = [];
             for (const entry of request.texts) {
+                if ("cancelled" in entry) continue;
                 const run = snapshot.runs.get(entry.id)!;
                 if ("error" in entry) {
                     results.push({ id: entry.id, ok: false, error: `A plugin handler failed: ${entry.error}` });

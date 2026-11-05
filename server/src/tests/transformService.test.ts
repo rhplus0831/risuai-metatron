@@ -3,12 +3,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TransformRequest, TransformResponse } from "../../../shared/transform.ts";
+import type { TransformContinueRequest, TransformRequest, TransformResponse } from "../../../shared/transform.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { ChatBindingError, jobScopeKinds } from "../jobs/jobScope.ts";
 import type { GenerationRunnerDeps } from "../jobs/runSetup.ts";
-import { createTransformService, TransformSnapshotError, TransformUnavailableError } from "../prompt/transform.ts";
+import {
+    createTransformService,
+    TransformRequestError,
+    TransformSnapshotError,
+    TransformUnavailableError,
+} from "../prompt/transform.ts";
+import { parseTransformContinue } from "../routes/transform.ts";
 import { createDisplayScopeLoader } from "../prompt/displayScope.ts";
 import { DISPLAY_KIND_CLASSIFICATION, isDisplayKeyKind } from "../prompt/displayKinds.ts";
 import { createTransformCache } from "../prompt/transformCache.ts";
@@ -300,6 +306,96 @@ describe("the transform service's lifetime", () => {
 });
 
 describe("the transform service's deadline and snapshots", () => {
+    it("accepts cancellation without second-call work or a result, requiring every pending id exactly once", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        const h = open();
+        h.setHold(false);
+        const service = createTransformService(h.deps);
+        const signal = new AbortController().signal;
+        try {
+            const first = await service.transform(
+                h.request("gone", {
+                    handlers: "h",
+                    targets: [...h.request("gone").targets, ...h.request("live").targets],
+                }),
+                signal,
+            );
+            expect(first.pending).toEqual([
+                { id: "gone", text: "Xgone" },
+                { id: "live", text: "Xlive" },
+            ]);
+            expect(h.counts).toEqual({ regex: 0, lua: 0 });
+            const body: TransformContinueRequest = {
+                clientId: "tab",
+                snapshotId: first.snapshotId!,
+                texts: [
+                    { id: "gone", cancelled: true },
+                    { id: "live", text: "Xlive +plugin" },
+                ],
+            };
+            const parsed = parseTransformContinue(body);
+            expect(parsed).toEqual(body);
+            if (typeof parsed === "string") throw new Error(parsed);
+            for (const texts of [
+                [body.texts[0]],
+                [body.texts[0], body.texts[0]],
+                [body.texts[0], { id: "unknown", cancelled: true as const }],
+            ]) {
+                await expect(service.resume({ ...parsed, texts }, signal)).rejects.toBeInstanceOf(
+                    TransformRequestError,
+                );
+                expect(service.stats().snapshots).toBe(1);
+                expect(h.counts).toEqual({ regex: 0, lua: 0 });
+            }
+            expect(okText(await service.resume(parsed, signal))).toEqual(["live=Xlive +plugin!"]);
+            expect(h.counts).toEqual({ regex: 1, lua: 0 });
+            expect(service.stats()).toMatchObject({ active: 0, queued: 0, snapshots: 0 });
+            await expect(service.resume(parsed, signal)).rejects.toBeInstanceOf(TransformSnapshotError);
+        } finally {
+            await service.close();
+        }
+    });
+
+    it("consumes an all-cancelled snapshot while all four run slots remain occupied", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        const h = open();
+        const service = createTransformService(h.deps);
+        const signal = new AbortController().signal;
+        const first = await service.transform(
+            h.request("gone-a", {
+                handlers: "h",
+                targets: [...h.request("gone-a").targets, ...h.request("gone-b").targets],
+            }),
+            signal,
+        );
+        const busy = Array.from({ length: 4 }, (_, i) => settle(service.transform(h.request(`busy${i}`), signal)));
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            expect(h.held).toHaveLength(4);
+            expect(service.stats()).toMatchObject({ active: 4, queued: 0, snapshots: 1 });
+            const request: TransformContinueRequest = {
+                clientId: "tab",
+                snapshotId: first.snapshotId!,
+                texts: [
+                    { id: "gone-a", cancelled: true },
+                    { id: "gone-b", cancelled: true },
+                ],
+            };
+            let outcome: unknown;
+            void settle(service.resume(request, signal)).then((result) => (outcome = result));
+            await vi.advanceTimersByTimeAsync(0);
+            expect(outcome).toEqual({ ok: true, value: { results: [] } });
+            expect(service.stats()).toMatchObject({ active: 4, queued: 0, snapshots: 0 });
+            expect(h.counts).toEqual({ regex: 4, lua: 0 });
+            await expect(service.resume(request, signal)).rejects.toBeInstanceOf(TransformSnapshotError);
+        } finally {
+            h.setHold(false);
+            for (const run of h.held.splice(0)) run.release();
+            await Promise.all(busy);
+            await service.close();
+        }
+    });
+
     it("a snapshot expires at the first call's deadline and cannot be claimed after it", async () => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
         const h = open();

@@ -425,6 +425,80 @@ describe("shared transform subscribers", () => {
         expect(state.toasts).toEqual([]);
     });
 
+    it.each([
+        { joiner: false, observed: [63], label: "only the surviving caller" },
+        { joiner: true, observed: [0, 63], label: "the survivor and a returning subscriber" },
+    ])("runs hooks and uploads text for $label after 63 of 64 callers abort", async ({ joiner, observed }) => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        const firstAnswer = deferred<Reply>();
+        const hook = vi.fn((text: string) => `${text}+plugin`);
+        state.hooks.editdisplay.add(hook);
+        state.handler = (path, body) =>
+            path === "/api/transform"
+                ? firstAnswer.promise
+                : {
+                      body: {
+                          results: body.texts
+                              .filter((entry: any) => "text" in entry)
+                              .map((entry: any) => ok(entry.id, `post(${entry.text})`)),
+                      },
+                  };
+        const controllers = Array.from({ length: 64 }, () => new AbortController());
+        const callers = controllers.map((controller, i) =>
+            settledFlag(send(ref, `row${i}`, controller.signal, captured)),
+        );
+        await flush();
+        expect(transformPosts()).toHaveLength(1);
+        const first = transformPosts()[0];
+        expect(first.body.targets.map((target: any) => target.source)).toEqual(
+            Array.from({ length: 64 }, (_, i) => `row${i}`),
+        );
+        const aborted = vi.fn();
+        first.signal.addEventListener("abort", aborted);
+        controllers.slice(0, 63).forEach((controller) => controller.abort());
+        await vi.advanceTimersByTimeAsync(0);
+        expect(callers.slice(0, 63)).toEqual(
+            Array.from({ length: 63 }, (_, i) => ({ done: true, value: { data: `row${i}`, emoChanged: false } })),
+        );
+        expect(callers[63].done).toBe(false);
+        expect(first.signal.aborted).toBe(false);
+        expect(hook).not.toHaveBeenCalled();
+        const returning = joiner ? settledFlag(send(ref, "row0", undefined, captured)) : undefined;
+
+        firstAnswer.resolve({
+            body: {
+                results: [],
+                snapshotId: "departures",
+                pending: first.body.targets.map((target: any) => ({ id: target.id, text: `pre(${target.source})` })),
+            },
+        });
+        await flush();
+        expect(transformPosts()).toHaveLength(1);
+        expect(hook).toHaveBeenCalledTimes(observed.length);
+        expect(hook.mock.calls).toEqual(expect.arrayContaining(observed.map((i) => [`pre(row${i})`])));
+        expect(continuePosts()).toHaveLength(1);
+        expect(continuePosts()[0].body).toEqual({
+            clientId: "client-1",
+            snapshotId: "departures",
+            texts: expect.arrayContaining(
+                first.body.targets.map((target: any, i: number) =>
+                    observed.includes(i)
+                        ? { id: target.id, text: `pre(row${i})+plugin` }
+                        : { id: target.id, cancelled: true },
+                ),
+            ),
+        });
+        expect(continuePosts()[0].body.texts).toHaveLength(64);
+        expect(callers[63]).toEqual({ done: true, value: { data: "post(pre(row63)+plugin)", emoChanged: false } });
+        if (joiner) {
+            expect(returning).toEqual({ done: true, value: { data: "post(pre(row0)+plugin)", emoChanged: false } });
+        }
+        expect(state.calls.every((call) => !call.signal.aborted)).toBe(true);
+        expect(aborted).not.toHaveBeenCalled();
+        expect(state.toasts).toEqual([]);
+    });
+
     it.each(["request", "plugin handler"] as const)(
         "cancels a chunk waiting for its %s only when all open targets lose their subscribers, without failure effects",
         async (waitingFor) => {
@@ -472,7 +546,12 @@ describe("shared transform subscribers", () => {
             await vi.advanceTimersByTimeAsync(0);
             expect(calls[1]).toEqual({ done: true, value: { data: "b", emoChanged: false } });
             expect(hook).toHaveBeenCalledTimes(waitingFor === "request" ? 0 : 2);
-            expect(continuePosts()).toHaveLength(0);
+            // A first call that never answered left no snapshot; an answered one is released, every target cancelled.
+            expect(continuePosts().map((call) => call.body.texts)).toEqual(
+                waitingFor === "request"
+                    ? []
+                    : [transformPosts()[0].body.targets.map((target: any) => ({ id: target.id, cancelled: true }))],
+            );
             expect(state.toasts).toEqual([]);
             expect(failed).not.toHaveBeenCalled();
             expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ notice: "transformFailed" }));
@@ -755,6 +834,74 @@ describe("batching and splitting", () => {
 });
 
 describe("plugin handlers (the two calls)", () => {
+    it("transforms all 320 targets without evicting snapshots while plugin hooks hold five chunks", async () => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        const snapshots = new Map<string, string>();
+        const evicted: string[] = [];
+        const expired: string[] = [];
+        let nextSnapshot = 0;
+        let releaseHooks!: () => void;
+        const held = new Promise<void>((resolve) => (releaseHooks = resolve));
+        const hook = vi.fn(async (text: string) => {
+            await held;
+            return `${text}+plugin`;
+        });
+        state.hooks.editdisplay.add(hook);
+        state.handler = (path, body) => {
+            if (path === "/api/transform") {
+                const snapshotId = `snapshot-${++nextSnapshot}`;
+                snapshots.set(snapshotId, body.clientId);
+                const own = [...snapshots].filter(([, clientId]) => clientId === body.clientId);
+                if (own.length > 4) {
+                    snapshots.delete(own[0][0]);
+                    evicted.push(own[0][0]);
+                }
+                return {
+                    body: {
+                        results: [],
+                        snapshotId,
+                        pending: body.targets.map((target: any) => ({ id: target.id, text: `pre(${target.source})` })),
+                    },
+                };
+            }
+            if (snapshots.get(body.snapshotId) !== body.clientId) {
+                expired.push(body.snapshotId);
+                return { status: 409, body: { error: "SnapshotExpired" } };
+            }
+            snapshots.delete(body.snapshotId);
+            return defaultHandler(path, body);
+        };
+        const callers = Array.from({ length: 320 }, (_, i) =>
+            settledFlag(serverProcessScript(char(ref.chaId), `row${i}`, "editdisplay", 0, {}, captured, "message")),
+        );
+        await flush();
+        try {
+            const admitted = transformPosts().length;
+            expect(admitted).toBeGreaterThan(0);
+            expect(admitted).toBeLessThanOrEqual(4);
+            expect(hook).toHaveBeenCalledTimes(admitted * 64);
+            expect(continuePosts()).toHaveLength(0);
+            expect(callers.every((caller) => !caller.done)).toBe(true);
+        } finally {
+            releaseHooks();
+            await flush();
+        }
+        expect(transformPosts().map((call) => call.body.targets.length)).toEqual([64, 64, 64, 64, 64]);
+        expect(continuePosts()).toHaveLength(5);
+        expect(hook).toHaveBeenCalledTimes(320);
+        expect(callers).toEqual(
+            Array.from({ length: 320 }, (_, i) => ({
+                done: true,
+                value: { data: `post(pre(row${i})+plugin)`, emoChanged: false },
+            })),
+        );
+        expect(evicted).toEqual([]);
+        expect(expired).toEqual([]);
+        expect(snapshots.size).toBe(0);
+        expect(state.toasts).toEqual([]);
+    });
+
     it("sends a bounded handler-set id that changes with the ordered hook list", async () => {
         const ref = newChat();
         const ids: string[] = [];
@@ -900,7 +1047,7 @@ describe("plugin handlers (the two calls)", () => {
         expect(state.toasts).toEqual(["Render failed: A plugin handler took too long"]);
     });
 
-    it("runs no handler and sends no second call when the first call answers after the handler deadline", async () => {
+    it("runs no handler when the first call answers after the handler deadline, and releases its snapshot", async () => {
         const ref = newChat();
         const captured = captureTransform(0)!;
         let hookCalls = 0;
@@ -909,19 +1056,21 @@ describe("plugin handlers (the two calls)", () => {
             return text;
         });
         state.handler = (path, body) =>
-            new Promise((resolve) =>
-                setTimeout(
-                    () =>
-                        resolve({
-                            body: {
-                                results: [ok(body.targets[0].id, "cached", { cached: true })],
-                                snapshotId: "snap-1",
-                                pending: [{ id: body.targets[1].id, text: "pre" }],
-                            },
-                        }),
-                    24_000,
-                ),
-            );
+            path !== "/api/transform"
+                ? { body: { results: [] } }
+                : new Promise((resolve) =>
+                      setTimeout(
+                          () =>
+                              resolve({
+                                  body: {
+                                      results: [ok(body.targets[0].id, "cached", { cached: true })],
+                                      snapshotId: "snap-1",
+                                      pending: [{ id: body.targets[1].id, text: "pre" }],
+                                  },
+                              }),
+                          24_000,
+                      ),
+                  );
         const cached = serverProcessScript(char(ref.chaId), "c", "editdisplay", 0, {}, captured, "message");
         const pending = serverProcessScript(char(ref.chaId), "p", "editdisplay", 0, {}, captured, "message");
         await flush();
@@ -929,7 +1078,13 @@ describe("plugin handlers (the two calls)", () => {
         expect((await cached).data).toBe("cached");
         expect((await pending).data).toBe("p");
         expect(hookCalls).toBe(0);
-        expect(continuePosts()).toHaveLength(0);
+        expect(continuePosts().map((call) => call.body)).toEqual([
+            {
+                clientId: "client-1",
+                snapshotId: "snap-1",
+                texts: [{ id: transformPosts()[0].body.targets[1].id, cancelled: true }],
+            },
+        ]);
         expect(state.toasts).toEqual(["Render failed: The render took too long"]);
     });
 

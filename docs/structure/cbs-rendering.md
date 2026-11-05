@@ -145,9 +145,10 @@ and video have two modes:
 
 ### Display transform
 
-- The batching and in-flight join, the subscribers and the `cancelled` settlement once the last one leaves, the skip of
-  a locked (streaming) message, the provisional display and its correction, and the failure toast are the
-  `src/ts/parser/transformClient.ts` header.
+- The batching and in-flight join, the subscribers, the `cancelled` settlement once the last leaves (a departed target
+  gets no hook and a `cancelled` continuation entry), per-tab two-call admission, the skip of a locked (streaming)
+  message, the provisional display and its correction, and the failure toast are the `src/ts/parser/transformClient.ts`
+  header.
 - The server (`server/src/prompt/transform.ts`) runs Lua `editDisplay`, the `display` trigger, CBS, and the regex
   scripts; the tab's `editdisplay` plugin handlers run read-only between its two calls ([Invariants](#invariants)).
 - `ChatBody` shows provisional text on its stored and plain display paths; translation inputs and auto-translate probes
@@ -159,7 +160,6 @@ and video have two modes:
   id and current cache and Re-render generations, `transformClient.ts` registers it with
   `displayTransformRecovery.svelte.ts` unless it is permanent (the `transformClient.ts` header; the server's marks come
   from `server/src/prompt/transform.ts`: a text or loaded scope over a limit on its own).
-- A permanent failure waits for a changed source or context, a later mount, or a Re-render.
 - When a round runs and how its backoff grows and resets are the `src/ts/parser/displayTransformRecovery.svelte.ts`
   header.
 - Each `Chat.svelte` row reports what it shows (`displaya`: the display text and the bilingual source side) through
@@ -181,8 +181,8 @@ and video have two modes:
   message, then drains each registration once, and those rows render once more through the caches (`Chat.svelte` bumps
   `chatBodyRevision`, and disposes registrations on unmount or a chat/message change). Quarantined, deferred and
   job-blocked work keep the chat unsettled.
-- This refresh covers the server transform; the browser CBS pre-pass retains its own reactivity, and rows rendered
-  before this window receive no refresh (they update on remount).
+- This refresh covers the server transform; the browser CBS pre-pass keeps its own reactivity, and rows rendered before
+  this window receive no refresh (they update on remount).
 
 ### Shared styles
 

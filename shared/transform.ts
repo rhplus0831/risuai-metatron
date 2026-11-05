@@ -79,11 +79,11 @@ export type TransformRequest = {
     handlers?: string;
 };
 
-/** The texts after the tab's plugin handlers, one per pending target: the text, or the handler's failure. */
+/** Every pending id exactly once: its handler text, failure, or cancellation (no tail or result). */
 export type TransformContinueRequest = {
     clientId: string;
     snapshotId: string;
-    texts: ({ id: string; text: string } | { id: string; error: string })[];
+    texts: ({ id: string; text: string } | { id: string; error: string } | { id: string; cancelled: true })[];
 };
 
 /** An `@@emo` effect: the emotion's name and image, in the order the regex scripts produced them. */
@@ -114,7 +114,8 @@ export type TransformResult =
 /**
  * Each first-call target is answered exactly once in results, same or pending. `same` is a separate
  * { id, key }[] (no text or emotions), omitted when empty. A continuation always answers its
- * pending targets in full in results, without same, snapshotId or pending.
+ * non-cancelled pending targets in full in results, without same, snapshotId or pending.
+ * An all-cancelled continuation drops the snapshot and answers { results: [] }.
  */
 export type TransformResponse = {
     results: TransformResult[];
@@ -135,5 +136,7 @@ export const MAX_TRANSFORM_TEXT_BYTES = 512 * 1024;
 export const MAX_TRANSFORM_REQUEST_TEXT_BYTES = 4 * 1024 * 1024;
 /** The request body. */
 export const MAX_TRANSFORM_BODY_BYTES = 8 * 1024 * 1024;
+/** Pending plugin snapshots retained per client; the tab admits two-call chunks within this cap. */
+export const MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT = 4;
 /** How long a snapshot waits for its second call, from the first call's start. */
 export const TRANSFORM_SNAPSHOT_TTL_MS = 30_000;

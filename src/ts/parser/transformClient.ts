@@ -5,10 +5,12 @@ import type { CbsConditions } from "../../../shared/cbs/types.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     MAX_TRANSFORM_REQUEST_TEXT_BYTES,
+    MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT,
     MAX_TRANSFORM_TARGETS,
     MAX_TRANSFORM_TEXT_BYTES,
     TRANSFORM_SNAPSHOT_TTL_MS,
     type TransformContext,
+    type TransformContinueRequest,
     type TransformMode,
     type TransformResponse,
     type TransformResult,
@@ -72,10 +74,17 @@ import {
  * request held that target alone, and a target the server marks so.
  * With the tab's plugin handlers for the mode, the server answers the texts before them; the tab
  * runs each text's handlers in order (with the captured plugin context), the texts side by side,
- * and sends the second call. A chunk has 28 s for both calls and the handlers (the server allows 30 s from the
- * first call's admission), each call bounded as a whole; the handlers end 5 s before that: a handler
+ * and sends the second call. Two-call chunks enter a tab-wide FIFO among eligible waiters: at most
+ * four permits, with one reserved for nested calls captured with plugin purpose "transform". A
+ * nested-in-nested chain can still wait on itself until the handler deadline. Chunks without handlers
+ * need no permit. The 28 s deadline starts at admission, covering both calls and the handlers (the
+ * server allows 30 s from its admission); the handlers end 5 s before that: a handler
  * still running then fails its own target (it is not stopped, but no later handler of its text is
- * started; its result is ignored), and the finished texts go out in the second call.
+ * started; its result is ignored), and the finished texts go out in the second call. A permit stays
+ * held until a continuation answers 200 or SnapshotExpired, either call refuses the epoch, the first
+ * call fails before a 200 response or answers without a snapshot, or the TTL plus a 1 s transit margin ends.
+ * Unreadable 200 bodies retain the permit; abandoned known snapshots get one bounded all-cancelled continuation.
+ * Server memory pressure, the global snapshot cap across tabs, and TTL expiry can still expire snapshots.
  *
  * A bounded tab LRU keeps confirmed text. A matching target sends `knownKey` when it does not need
  * emotions; `same` confirms the retained text without downloading it. ChatBody's final display stage
@@ -91,11 +100,13 @@ import {
  * Identical inputs and capture provenance share an operation through settlement, including in flight.
  * Each caller subscribes until its completion or abort; a caller without a signal keeps its subscription.
  * Abort returns that caller's input immediately and suppresses its completion's effects. The last departure
- * withdraws a queued operation; a dispatched chunk is cancelled only when none of its open operations has
- * subscribers. One controller serves both calls, forwarding the deadline and subscriber cancellation by hand;
- * cancellation starts no further plugin hook or second call. Its `cancelled` settlements touch no cache,
- * recovery, diagnostics or provisional callback and show no toast; deadlines remain failures. Withdrawal and
- * cancellation restore any Re-render bypass the operation consumed, and remove it from the join map at once.
+ * withdraws an operation queued for a frame or permit. After dispatch, zero-subscriber operations remain
+ * joinable until the first answer, each hook start, or continuation preparation and dispatch: checking and settling a
+ * departed target is synchronous, and its continuation carries only { id, cancelled: true }. A dispatched
+ * chunk is aborted only when none of its open operations has subscribers; hung hooks cannot delay its
+ * snapshot release. Its `cancelled` settlements touch no cache, recovery, diagnostics or provisional
+ * callback and show no toast; deadlines remain failures. Cancellation restores a consumed Re-render
+ * bypass at most once per operation and removes the operation from the join map at once.
  *
  * `@@emo` effects apply only from full answers, once per tab and result key, and only when the
  * caller's character argument is not `simple`; cached text and `same` never apply emotions.
@@ -273,6 +284,7 @@ type Operation = {
     settled: boolean;
     chunk?: Chunk;
     bypassKey?: string;
+    bypassRestored?: boolean;
 };
 
 type Chunk = {
@@ -280,6 +292,9 @@ type Chunk = {
     controller: AbortController;
     deadline: number;
     cancelled: boolean;
+    waiting: boolean;
+    snapshot?: TransformContinueRequest;
+    snapshotGone: boolean;
 };
 
 type Batch = {
@@ -304,6 +319,8 @@ function forgetOperation(operation: Operation): void {
 }
 
 function restoreBypass(operation: Operation): void {
+    if (operation.bypassRestored) return;
+    operation.bypassRestored = true;
     const key = operation.bypassKey;
     if (key && generations.get(key) === operation.captured.generation && !noCacheNext.has(key)) {
         noCacheNext.set(key, operation.captured.generation);
@@ -330,13 +347,89 @@ function cancelUnobservedChunk(chunk: Chunk): void {
 function unsubscribe(operation: Operation): void {
     operation.subscribers -= 1;
     if (operation.chunk) {
-        cancelUnobservedChunk(operation.chunk);
+        const chunk = operation.chunk;
+        if (chunk.waiting && !operation.settled && operation.subscribers === 0) {
+            settle(operation, { id: operation.target.id, cancelled: true });
+            if (chunk.open.size === 0) chunk.controller.abort();
+        } else {
+            cancelUnobservedChunk(chunk);
+        }
     } else if (!operation.settled && operation.subscribers === 0) {
         const pending = operation.batch.pending;
         pending.splice(pending.indexOf(operation), 1);
-        restoreBypass(operation);
         settle(operation, { id: operation.target.id, cancelled: true });
     }
+}
+
+type Admission = { nested: boolean; grant: () => void };
+const admissions: Admission[] = [];
+let admittedChunks = 0;
+let admittedTopLevel = 0;
+
+function drainAdmissions(): void {
+    while (admittedChunks < MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT) {
+        const index = admissions.findIndex(
+            (entry) => entry.nested || admittedTopLevel < MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT - 1,
+        );
+        if (index < 0) return;
+        admissions.splice(index, 1)[0].grant();
+    }
+}
+
+/** The oldest eligible waiter takes a permit; nested calls may use the reserved slot. */
+function acquireChunk(chunk: Chunk, nested: boolean): Promise<(() => void) | undefined> {
+    const signal = chunk.controller.signal;
+    if (signal.aborted) return Promise.resolve(undefined);
+    return new Promise((resolve) => {
+        const entry: Admission = {
+            nested,
+            grant: () => {
+                signal.removeEventListener("abort", onAbort);
+                admittedChunks++;
+                if (!nested) admittedTopLevel++;
+                let released = false;
+                resolve(() => {
+                    if (released) return;
+                    released = true;
+                    admittedChunks--;
+                    if (!nested) admittedTopLevel--;
+                    drainAdmissions();
+                });
+            },
+        };
+        const onAbort = () => {
+            const index = admissions.indexOf(entry);
+            if (index >= 0) admissions.splice(index, 1);
+            resolve(undefined);
+            drainAdmissions();
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        admissions.push(entry);
+        drainAdmissions();
+    });
+}
+
+/** Checking and settling together leaves no gap in which a joiner could be lost. */
+function departed(chunk: Chunk, id: string): boolean {
+    const operation = chunk.open.get(id);
+    if (!operation) return true;
+    if (operation.subscribers > 0) return false;
+    settle(operation, { id, cancelled: true });
+    return true;
+}
+
+/** Retains body identity unless a target departed, so unchanged continuations serialize once. */
+function continuationBody(chunk: Chunk, request: TransformContinueRequest): () => TransformContinueRequest {
+    return () => {
+        let texts = request.texts;
+        for (const [index, entry] of request.texts.entries()) {
+            if ("cancelled" in entry || !departed(chunk, entry.id)) continue;
+            if (texts === request.texts) texts = [...texts];
+            texts[index] = { id: entry.id, cancelled: true };
+        }
+        if (texts !== request.texts) request = { ...request, texts };
+        return request;
+    };
 }
 
 const schedule = () => {
@@ -379,18 +472,27 @@ const textBytes = (text: string) => new TextEncoder().encode(text).length;
 const CHUNK_DEADLINE_MS = TRANSFORM_SNAPSHOT_TTL_MS - 2_000;
 /** The part of a chunk's time kept for the second call: the plugin handlers end this much before its deadline. */
 const CONTINUE_RESERVE_MS = 5_000;
+/** Extra permit retention for authentication and transit before the server starts its snapshot TTL. */
+const SNAPSHOT_EXPIRY_MARGIN_MS = 1_000;
 
 /**
  * `work`, or a rejection once `deadline` passes: also when the deadline had passed already, or passed
  * before `work` settled (a timer can run late). A rejection of `work` after that stays observed; its
  * result is ignored.
  */
-function beforeDeadline<T>(work: Promise<T>, deadline: number, message: string): Promise<T> {
+function beforeDeadline<T>(work: Promise<T>, deadline: number, message: string, signal?: AbortSignal): Promise<T> {
     work.catch(() => {});
     if (Date.now() >= deadline) {
         return Promise.reject(new Error(message));
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<never>((_, reject) => {
+        if (!signal) return;
+        onAbort = () => reject(signal.reason);
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+    });
     const expired = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(message)), deadline - Date.now());
     });
@@ -400,12 +502,15 @@ function beforeDeadline<T>(work: Promise<T>, deadline: number, message: string):
         }
         return value;
     });
-    return Promise.race([checked, expired]).finally(() => clearTimeout(timer));
+    return Promise.race([checked, expired, aborted]).finally(() => {
+        clearTimeout(timer);
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+    });
 }
 
 /** One call, within `deadline` as a whole (authentication, the request, and the body). */
 function post(path: string, body: unknown, chunk: Chunk): Promise<TransformResponse> {
-    return beforeDeadline(postOnce(path, body, chunk.controller.signal), chunk.deadline, "The render took too long");
+    return beforeDeadline(postOnce(path, body, chunk), chunk.deadline, "The render took too long");
 }
 
 /** Errors of a request the server refused for another epoch (a restore replaced the data). */
@@ -413,21 +518,51 @@ const epochRefusals = new WeakSet<object>();
 /** Errors of a request the server refused as malformed or too large: the same request fails again. */
 const permanentRefusals = new WeakSet<object>();
 
-async function postOnce(path: string, body: unknown, signal: AbortSignal): Promise<TransformResponse> {
+async function postOnce(path: string, body: unknown, chunk: Chunk): Promise<TransformResponse> {
+    const signal = chunk.controller.signal;
     signal.throwIfAborted();
-    const response = await authFetch(path, {
+    const prepared = typeof body === "function" ? body() : body;
+    const init: RequestInit = {
         method: "POST",
         headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
-        body: JSON.stringify(body),
+        body: JSON.stringify(prepared),
         cache: "no-store",
         signal,
+    };
+    const response = await authFetch(path, init, {
+        beforeDispatch: () => {
+            signal.throwIfAborted();
+            if (typeof body === "function") {
+                const current = body();
+                if (current !== prepared) init.body = JSON.stringify(current);
+            }
+        },
     });
+    const continuation = path === "/api/transform/continue";
+    // Only a successful first response can leave an unreadable, still-owned snapshot.
+    if (response.status === 200) chunk.snapshotGone = continuation;
     let answer: { error?: string; epoch?: string } & Partial<TransformResponse> = {};
     try {
         answer = await response.json();
+        // Record ownership before abort/deadline checks can discard the answer.
+        if (!continuation && response.status === 200) {
+            chunk.snapshotGone = !answer.snapshotId;
+            if (answer.snapshotId) {
+                chunk.snapshot = {
+                    clientId: generationClientId(),
+                    snapshotId: answer.snapshotId,
+                    texts: (answer.pending ?? []).map(({ id }) => ({ id, cancelled: true })),
+                };
+            }
+        }
     } catch {}
+    const epochRefused = response.status === 412 && answer.error === "EpochMismatch";
+    // A restore makes snapshots from the prior epoch unclaimable, even if this caller also aborted.
+    if (epochRefused || (continuation && response.status === 409 && answer.error === "SnapshotExpired")) {
+        chunk.snapshotGone = true;
+    }
     signal.throwIfAborted();
-    if (response.status === 412 && answer.error === "EpochMismatch") {
+    if (epochRefused) {
         const error = epochMismatch(answer.epoch ?? "");
         epochRefusals.add(error);
         throw error;
@@ -457,6 +592,7 @@ function reportFailure(batch: Batch, error: string): void {
 function settle(entry: Operation, result: Answer): void {
     if (entry.settled) return;
     entry.settled = true;
+    if ("cancelled" in result) restoreBypass(entry);
     forgetOperation(entry);
     entry.chunk?.open.delete(entry.target.id);
     entry.resolve(result);
@@ -474,8 +610,9 @@ async function runHandlers(
     batch: Batch,
     entry: { id: string; text: string },
     deadline: number,
-    signal: AbortSignal,
-): Promise<{ id: string; text: string } | { id: string; error: string }> {
+    chunk: Chunk,
+): Promise<TransformContinueRequest["texts"][number]> {
+    const signal = chunk.controller.signal;
     const hooks = batch.handlers?.hooks ?? [];
     // Both transform modes are read-only, even when called from a writable job hook.
     const context: PluginCallContext = {
@@ -488,10 +625,11 @@ async function runHandlers(
     };
     let abandoned = false;
     const timeout = { id: entry.id, error: "A plugin handler took too long" };
-    const run = async (): Promise<{ id: string; text: string } | { id: string; error: string }> => {
+    const run = async (): Promise<TransformContinueRequest["texts"][number]> => {
         let text = entry.text;
         for (const hook of hooks) {
             signal.throwIfAborted();
+            if (departed(chunk, entry.id)) return { id: entry.id, cancelled: true };
             if (abandoned || Date.now() >= deadline) {
                 return timeout;
             }
@@ -503,7 +641,7 @@ async function runHandlers(
         return { id: entry.id, text };
     };
     try {
-        return await beforeDeadline(run(), deadline, timeout.error);
+        return await beforeDeadline(run(), deadline, timeout.error, signal);
     } catch (error) {
         abandoned = true;
         return { id: entry.id, error: error instanceof Error ? error.message : String(error) };
@@ -540,102 +678,156 @@ async function sendBatch(batch: Batch): Promise<void> {
     await Promise.all(chunks.map((entries) => sendChunk(batch, entries)));
 }
 
-/**
- * One request (and its second call): every target is answered as soon as its result is known, and
- * each exactly once; whatever is still open when the chunk fails or its deadline passes fails.
- */
+/** Releases abandoned server work, or keeps the permit through the snapshot TTL and transit margin. */
+async function releaseChunkSnapshot(chunk: Chunk): Promise<void> {
+    if (chunk.snapshotGone) return;
+    const expires = chunk.deadline + (TRANSFORM_SNAPSHOT_TTL_MS - CHUNK_DEADLINE_MS);
+    if (chunk.snapshot && Date.now() < expires) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), expires - Date.now());
+        try {
+            const release = async () => {
+                const response = await authFetch("/api/transform/continue", {
+                    method: "POST",
+                    headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+                    body: JSON.stringify(chunk.snapshot),
+                    cache: "no-store",
+                    signal: controller.signal,
+                });
+                return (
+                    response.status === 200 ||
+                    (response.status === 409 && (await response.json()).error === "SnapshotExpired")
+                );
+            };
+            if (await beforeDeadline(release(), expires, "The render took too long", controller.signal)) return;
+        } catch {
+            // Cleanup must not change any target's outcome or report another failure.
+        } finally {
+            clearTimeout(timer);
+            controller.abort();
+        }
+    }
+    const remaining = expires + SNAPSHOT_EXPIRY_MARGIN_MS - Date.now();
+    if (remaining > 0) await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+}
+
+/** Every target settles once; the permit outlives any snapshot the chunk still owns. */
 async function sendChunk(batch: Batch, entries: Operation[]): Promise<void> {
-    const deadline = Date.now() + CHUNK_DEADLINE_MS;
     const open = new Map(entries.map((entry) => [entry.target.id, entry]));
     const controller = new AbortController();
-    const chunk: Chunk = { open, controller, deadline, cancelled: false };
+    const chunk: Chunk = { open, controller, deadline: Infinity, cancelled: false, waiting: true, snapshotGone: true };
     for (const entry of entries) entry.chunk = chunk;
-    const timer = setTimeout(
-        () => controller.abort(new DOMException("The render took too long", "TimeoutError")),
-        CHUNK_DEADLINE_MS,
-    );
-    const answer = (results: Answer[]) => {
-        for (const received of results) {
-            const result: Answer = chunk.cancelled ? { id: received.id, cancelled: true } : received;
-            const entry = open.get(result.id);
-            if (entry) {
-                // An unrecognized confirmation leaves the target unanswered, like a missing result.
-                if (!("ok" in result) && !("cancelled" in result) && result.key !== entry.target.knownKey) continue;
-                settle(entry, result);
-            }
-        }
-    };
+    const release = batch.handlers
+        ? await acquireChunk(chunk, batch.captured.pluginContext?.purpose === "transform")
+        : undefined;
+    // Install cleanup immediately after acquisition, including admission-time withdrawals.
     try {
-        const clientId = generationClientId();
-        const first = await post(
-            "/api/transform",
-            {
-                clientId,
-                mode: batch.mode,
-                context: batch.captured.context,
-                client: batch.client,
-                targets: entries.map((entry) => entry.target),
-                ...(batch.handlers ? { handlers: batch.handlers.id } : {}),
-            },
-            chunk,
+        if (batch.handlers && !release) return;
+        for (const id of open.keys()) departed(chunk, id);
+        if (open.size === 0) return;
+        chunk.waiting = false;
+        chunk.deadline = Date.now() + CHUNK_DEADLINE_MS;
+        const timer = setTimeout(
+            () => controller.abort(new DOMException("The render took too long", "TimeoutError")),
+            CHUNK_DEADLINE_MS,
         );
-        controller.signal.throwIfAborted();
-        answer(first.results);
-        answer(first.same ?? []);
-        cancelUnobservedChunk(chunk);
-        controller.signal.throwIfAborted();
-        if (first.snapshotId && first.pending && first.pending.length > 0) {
-            // Each text's handlers run in order; the texts run side by side, as the tab renders messages.
-            // They end before the second call's reserve, so the finished texts still go out with a hung
-            // one's error.
-            const handlersDeadline = deadline - CONTINUE_RESERVE_MS;
-            if (Date.now() >= handlersDeadline) {
-                throw new Error("The render took too long");
+        const answer = (results: Answer[]) => {
+            for (const received of results) {
+                const result: Answer = chunk.cancelled ? { id: received.id, cancelled: true } : received;
+                const entry = open.get(result.id);
+                if (entry) {
+                    // An unrecognized confirmation leaves the target unanswered, like a missing result.
+                    if (!("ok" in result) && !("cancelled" in result) && result.key !== entry.target.knownKey) continue;
+                    settle(entry, result);
+                }
             }
-            const texts = await Promise.all(
-                first.pending.map((entry) => runHandlers(batch, entry, handlersDeadline, controller.signal)),
-            );
-            cancelUnobservedChunk(chunk);
-            controller.signal.throwIfAborted();
-            const second = await post(
-                "/api/transform/continue",
-                { clientId, snapshotId: first.snapshotId, texts },
+        };
+        const targets = [...open.values()].map((entry) => entry.target);
+        try {
+            const clientId = generationClientId();
+            const first = await post(
+                "/api/transform",
+                {
+                    clientId,
+                    mode: batch.mode,
+                    context: batch.captured.context,
+                    client: batch.client,
+                    targets,
+                    ...(batch.handlers ? { handlers: batch.handlers.id } : {}),
+                },
                 chunk,
             );
             controller.signal.throwIfAborted();
-            answer(second.results);
+            answer(first.results);
+            answer(first.same ?? []);
+            cancelUnobservedChunk(chunk);
+            controller.signal.throwIfAborted();
+            if (first.snapshotId && first.pending && first.pending.length > 0) {
+                // Settle departures before any hook; surviving texts run side by side.
+                const pending = first.pending.map((entry) => ({ entry, cancelled: departed(chunk, entry.id) }));
+                const handlersDeadline = chunk.deadline - CONTINUE_RESERVE_MS;
+                if (Date.now() >= handlersDeadline) throw new Error("The render took too long");
+                const texts = await Promise.all(
+                    pending.map(({ entry, cancelled }) =>
+                        cancelled
+                            ? { id: entry.id, cancelled: true as const }
+                            : runHandlers(batch, entry, handlersDeadline, chunk),
+                    ),
+                );
+                cancelUnobservedChunk(chunk);
+                controller.signal.throwIfAborted();
+                const second = await post(
+                    "/api/transform/continue",
+                    continuationBody(chunk, {
+                        clientId,
+                        snapshotId: first.snapshotId,
+                        texts,
+                    }),
+                    chunk,
+                );
+                controller.signal.throwIfAborted();
+                answer(second.results);
+            }
+        } catch (error) {
+            if (!chunk.cancelled && typeof error === "object" && error !== null && epochRefusals.has(error)) {
+                // A restore replaced the data: its notice tells the user and the page reloads, so no toast.
+                batch.reported = true;
+            }
+            const message = error instanceof Error ? error.message : String(error);
+            // A refused request of several targets may be refused only for their sum: they retry.
+            const permanent =
+                targets.length === 1 && typeof error === "object" && error !== null && permanentRefusals.has(error);
+            answer(
+                [...open.keys()].map((id) =>
+                    chunk.cancelled
+                        ? { id, cancelled: true as const }
+                        : {
+                              id,
+                              ok: false as const,
+                              error: message,
+                              ...(permanent ? { permanent: true as const } : {}),
+                          },
+                ),
+            );
+        } finally {
+            clearTimeout(timer);
         }
-    } catch (error) {
-        if (!chunk.cancelled && typeof error === "object" && error !== null && epochRefusals.has(error)) {
-            // A restore replaced the data: its notice tells the user and the page reloads, so no toast.
-            batch.reported = true;
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        // A refused request of several targets may be refused only for their sum: they retry.
-        const permanent =
-            entries.length === 1 && typeof error === "object" && error !== null && permanentRefusals.has(error);
         answer(
             [...open.keys()].map((id) =>
                 chunk.cancelled
                     ? { id, cancelled: true as const }
-                    : {
-                          id,
-                          ok: false as const,
-                          error: message,
-                          ...(permanent ? { permanent: true as const } : {}),
-                      },
+                    : { id, ok: false as const, error: "The render did not answer" },
             ),
         );
     } finally {
-        clearTimeout(timer);
+        if (release) {
+            try {
+                await releaseChunkSnapshot(chunk);
+            } finally {
+                release();
+            }
+        }
     }
-    answer(
-        [...open.keys()].map((id) =>
-            chunk.cancelled
-                ? { id, cancelled: true as const }
-                : { id, ok: false as const, error: "The render did not answer" },
-        ),
-    );
 }
 
 function isCurrent(captured: CapturedTransform): boolean {

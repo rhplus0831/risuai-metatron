@@ -184,8 +184,8 @@ export function parseTransformRequest(body: Record<string, unknown>): TransformR
 }
 
 /**
- * Bounds handler texts and truncates handler errors; the service checks that these ids answer
- * exactly the snapshot's pending targets, and consumes the snapshot only once.
+ * Bounds handler texts, truncates handler errors and accepts cancellations; the service checks
+ * that these ids answer exactly the snapshot's pending targets, and consumes the snapshot only once.
  */
 export function parseTransformContinue(body: Record<string, unknown>): TransformContinueRequest | string {
     if (!isValidResourceId(body.clientId)) {
@@ -201,19 +201,21 @@ export function parseTransformContinue(body: Record<string, unknown>): Transform
     const texts: TransformContinueRequest["texts"] = [];
     for (const [index, value] of body.texts.entries()) {
         if (!isPlainObject(value) || !isShortString(value.id, MAX_ID_CHARS)) {
-            return `texts[${index}] must be { id, text } or { id, error }`;
+            return `texts[${index}] must be { id, text }, { id, error } or { id, cancelled: true }`;
         }
-        if (typeof value.text === "string" && value.error === undefined) {
+        if (typeof value.text === "string" && value.error === undefined && value.cancelled === undefined) {
             const size = Buffer.byteLength(value.text);
             if (size > MAX_TRANSFORM_TEXT_BYTES) {
                 return `texts[${index}].text is over ${MAX_TRANSFORM_TEXT_BYTES} bytes`;
             }
             bytes += size;
             texts.push({ id: value.id, text: value.text });
-        } else if (typeof value.error === "string" && value.text === undefined) {
+        } else if (typeof value.error === "string" && value.text === undefined && value.cancelled === undefined) {
             texts.push({ id: value.id, error: value.error.slice(0, MAX_ERROR_CHARS) });
+        } else if (value.cancelled === true && value.text === undefined && value.error === undefined) {
+            texts.push({ id: value.id, cancelled: true });
         } else {
-            return `texts[${index}] must be { id, text } or { id, error }`;
+            return `texts[${index}] must be { id, text }, { id, error } or { id, cancelled: true }`;
         }
     }
     if (bytes > MAX_TRANSFORM_REQUEST_TEXT_BYTES) {
@@ -226,7 +228,8 @@ export function parseTransformContinue(body: Record<string, unknown>): Transform
  * The script transform: `POST /api/transform` (a `TransformRequest`) and
  * `POST /api/transform/continue` (the second call after the tab's plugin handlers), both answering
  * a `TransformResponse` as JSON: the first call returns { results, same? }, with { snapshotId,
- * pending } when targets await the tab's handlers. Continuations always return full { results };
+ * pending } when targets await the tab's handlers. Continuations return full { results } for
+ * non-cancelled targets; cancelling all pending targets releases the snapshot without a run slot.
  * `same` belongs only to the first call (`server/src/prompt/transform.ts` partitionKnownResults).
  * Authenticated before the 8 MiB body cap (`MAX_TRANSFORM_BODY_BYTES`, 413), rate-limited, the
  * resource epoch checked (412 `EpochMismatch`). Malformed bodies, including a knownKey other than
