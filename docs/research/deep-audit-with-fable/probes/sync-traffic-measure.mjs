@@ -6,6 +6,7 @@
 // Each fixture reports body forms and body-less causes over its published-entry denominator;
 // attempted groups and unpublished groups are separate. Independent writes cannot exhaust the
 // publication budget, so body-less by-id changes in these fixtures are known over-cap entries.
+// Each over-cap entry reports its row manifest and the raw/gzip bytes of its row read and whole-chat alternative.
 // Body properties are discovered at runtime, keeping this probe runnable on older production sources.
 import { execFileSync } from "node:child_process";
 import { createChangeFeed } from "../../../../server/src/data/changeFeed.ts";
@@ -225,6 +226,7 @@ try {
         bodies: { patch: 0, delta: 0, rowDelta: 0 },
         bodyless: { overCap: 0, wholeChatWrite: 0, reappendOrNoop: 0, budgetDrop: 0 },
         bodyBytes: 0,
+        overCapReads: [],
     });
     const fixtures = {};
     const write = (fixture, ops, cause = "overCap") => {
@@ -242,7 +244,35 @@ try {
             if (form) {
                 counts.bodies[form] += 1;
                 counts.bodyBytes += size(entry[form]);
-            } else counts.bodyless[cause] += 1;
+            } else {
+                counts.bodyless[cause] += 1;
+                if (cause === "overCap") {
+                    const whole = store.readRefs([], { chats: [{ characterId: entry.characterId, id: entry.id }] });
+                    const sample = {
+                        rowsManifest: !!entry.rows,
+                        wholeChat: { bytes: size(whole), gzip: packed(whole) },
+                    };
+                    if (entry.rows) {
+                        const answer = store.readRefsWithinBudget(
+                            [],
+                            {
+                                chatRows: [
+                                    {
+                                        characterId: entry.characterId,
+                                        id: entry.id,
+                                        revision: entry.revision,
+                                        messageIds: entry.rows.changed,
+                                        meta: entry.rows.meta,
+                                    },
+                                ],
+                            },
+                            Number.MAX_SAFE_INTEGER,
+                        );
+                        sample.chatRows = { bytes: size(answer), gzip: packed(answer) };
+                    }
+                    counts.overCapReads.push(sample);
+                }
+            }
         }
     };
     let reply = "";
@@ -300,6 +330,7 @@ try {
     for (const counts of Object.values(fixtures)) {
         for (const key of ["attemptedGroups", "publishedEntries", "unpublishedGroups", "bodyBytes"])
             total[key] += counts[key];
+        total.overCapReads.push(...counts.overCapReads);
         for (const key of Object.keys(total.bodies)) total.bodies[key] += counts.bodies[key];
         for (const key of Object.keys(total.bodyless)) total.bodyless[key] += counts.bodyless[key];
     }

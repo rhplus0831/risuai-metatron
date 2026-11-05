@@ -193,6 +193,78 @@ describe("epoch replacement", () => {
 });
 
 describe("continued reads", () => {
+    it("accepts a moved row answer on its own without another request", async () => {
+        const request = { characterId: "c", id: "k", revision: "epoch-1:1:2", messageIds: ["b"], meta: [] };
+        const moved = { characterId: "c", id: "k", revision: null, moved: true };
+        server.current = {
+            fetch: vi.fn().mockResolvedValue(Response.json({ epoch: "epoch-1", items: [], chatRows: [moved] })),
+        };
+        expect(await client.readRefs([], { chatRows: [request] })).toEqual({
+            epoch: "epoch-1",
+            items: [],
+            chatRows: [moved],
+        });
+        expect(calls).toHaveLength(1);
+        expect(JSON.parse(calls[0].init.body as string)).toEqual({ refs: [], chatRows: [request], continue: true });
+    });
+
+    it("counts moved row answers as progress and merges row reads across mixed continuations", async () => {
+        const requests = ["k", "j"].map((id) => ({
+            characterId: "c",
+            id,
+            revision: "epoch-1:1:2",
+            messageIds: ["b"],
+            meta: ["scriptstate"],
+        }));
+        const moved = { characterId: "c", id: "k", revision: "epoch-1:1:3", moved: true };
+        const rows = {
+            characterId: "c",
+            id: "j",
+            revision: requests[1].revision,
+            rows: [{ id: "b", after: "a", message: { chatId: "b", role: "char", data: "B" } }],
+            metaFields: { set: { scriptstate: { keep: "same", active: "reroll" } }, remove: [] },
+        };
+        const pending = {
+            refs: [],
+            chats: [],
+            chatRows: [requests[1]],
+            chatCollections: [],
+            chatSummaryCollections: ["c"],
+        };
+        const last = { ...pending, chatRows: [] };
+        const summary = { characterId: "c", order: null, chats: [] };
+        server.current = {
+            fetch: vi
+                .fn()
+                .mockResolvedValueOnce(
+                    Response.json({ epoch: "epoch-1", items: [], chatRows: [moved], unanswered: pending }),
+                )
+                .mockResolvedValueOnce(
+                    Response.json({ epoch: "epoch-1", items: [], chatRows: [rows], unanswered: last }),
+                )
+                .mockResolvedValueOnce(
+                    Response.json({ epoch: "epoch-1", items: [], chatSummaryCollections: [summary] }),
+                ),
+        };
+        const { signal } = new AbortController();
+        expect(await client.readRefs([], { chatRows: requests, chatSummaryCollections: ["c"], signal })).toEqual({
+            epoch: "epoch-1",
+            items: [],
+            chatRows: [moved, rows],
+            chatSummaryCollections: [summary],
+        });
+        expect(calls).toHaveLength(3);
+        expect(calls.map(({ init }) => init.signal)).toEqual([signal, signal, signal]);
+        expect(JSON.parse(calls[0].init.body as string)).toEqual({
+            refs: [],
+            chatRows: requests,
+            chatSummaryCollections: ["c"],
+            continue: true,
+        });
+        expect(JSON.parse(calls[1].init.body as string)).toEqual({ ...pending, continue: true });
+        expect(JSON.parse(calls[2].init.body as string)).toEqual({ ...last, continue: true });
+    });
+
     const a = { kind: "characters", id: "a" };
     const b = { kind: "characters", id: "b" };
     const pending = (refs = [b]) => ({ refs, chats: [], chatCollections: [], chatSummaryCollections: [] });

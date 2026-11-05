@@ -22,6 +22,8 @@ import {
     type ChatMetaFields,
     type ChatPatchBody,
     type ChatRowDeltaBody,
+    type ChatRowsManifest,
+    type ChatRowsReadResult,
     compareRevision,
     parseRevisionToken,
 } from "../../../shared/resources.ts";
@@ -438,9 +440,9 @@ const staleChats = new Set<string>();
  * Chats a live update announced as changed on the server (`noteRemoteChat`) → the sequence of the
  * latest notice and the revision it announced (null: deleted). Only an idle read that began after
  * that notice clears it, or this client coming to hold that revision another way (its own save, a
- * job's chat event).
+ * job's chat event). An eligible row manifest lives with its notice, so every notice reset drops it too.
  */
-const noticedChats = new Map<string, { seq: number; revision: string | null }>();
+const noticedChats = new Map<string, { seq: number; revision: string | null; rows?: ChatRowsManifest }>();
 let noticeSeq = 0;
 /** Bumped when `serverGenerations` or `feedLocks` changes, so the chat screen's lock reads re-run. */
 const lockState = $state({ version: 0 });
@@ -2786,7 +2788,7 @@ function installChatPatch(
 }
 
 /**
- * A feed patch, delta, or rowDelta is optional: a miss neither marks stale nor touches a job's locks.
+ * A feed body or completed row read is optional: a miss neither marks stale nor touches job locks.
  * Metadata fields and row diffs are checked against the held copy before anything changes; one
  * that does not fit is a miss.
  */
@@ -6259,7 +6261,7 @@ function isUnloadedMember(ref: ChatRef): boolean {
 }
 
 /**
- * Stale and noticed chats eligible for a whole-chat read inside the save cycle, never alongside a
+ * Stale and noticed chats eligible for an idle read inside the save cycle, never alongside a
  * batch: loaded ones (and ones no longer listed). A member that is not loaded is refreshed through
  * its character's summary list instead (`idleSummaryRefreshes`).
  */
@@ -6351,6 +6353,89 @@ export function settleSummaryRefresh(
 /** The sequence of a chat's latest notice (0 without one), taken before its read for `finishIdleChatRefresh`. */
 export function chatNoticeSeq(ref: ChatRef): number {
     return noticedChats.get(keyOf(ref.chaId, ref.chatId))?.seq ?? 0;
+}
+
+/** The manifest and notice captured when an idle row read is issued. */
+export type IdleChatRows = { revision: string; rows: ChatRowsManifest; notice: number };
+
+/** A noticed manifest still applies only to the loaded, idle, non-stale copy at its exact base. */
+export function idleChatRows(ref: ChatRef): IdleChatRows | undefined {
+    const key = keyOf(ref.chaId, ref.chatId);
+    const notice = noticedChats.get(key);
+    if (
+        !notice?.rows ||
+        notice.revision === null ||
+        (notice.rows.changed.length === 0 && notice.rows.meta.length === 0) ||
+        !isLoaded(ref) ||
+        !canRefreshChat(ref) ||
+        staleChats.has(key) ||
+        chatRevisions.get(key) !== notice.rows.baseRevision
+    )
+        return undefined;
+    return { revision: notice.revision, rows: notice.rows, notice: notice.seq };
+}
+
+/**
+ * Completes a row read only for the notice captured at issue, checking every requested row before
+ * the staged feed-patch installer runs. A miss keeps the notice and read stamp for a whole-chat
+ * fallback. Success retires only that notice, and leaves job hydration and locks alone.
+ */
+export function finishIdleChatRows(
+    ref: ChatRef,
+    request: IdleChatRows,
+    server: ChatRowsReadResult | undefined,
+    readStamp: number,
+): boolean {
+    const key = keyOf(ref.chaId, ref.chatId);
+    const current = idleChatRows(ref);
+    if (
+        !current ||
+        current.notice !== request.notice ||
+        current.rows !== request.rows ||
+        !server ||
+        "moved" in server ||
+        server.revision !== request.revision ||
+        server.characterId !== ref.chaId ||
+        server.id !== ref.chatId ||
+        !Array.isArray(server.rows)
+    )
+        return false;
+    const fields = server.metaFields;
+    const names = new Set(request.rows.meta);
+    if (fields !== undefined) {
+        if (
+            !isPlainRecord(fields) ||
+            !isPlainRecord(fields.set) ||
+            !Array.isArray(fields.remove) ||
+            fields.merge ||
+            fields.mergeUnset
+        )
+            return false;
+        for (const name of [...Object.keys(fields.set), ...fields.remove]) {
+            if (!names.delete(name)) return false;
+        }
+    }
+    if (names.size > 0) return false;
+    const missing = new Set(request.rows.changed);
+    if (server.rows.length !== missing.size) return false;
+    for (const row of server.rows) {
+        if (!row || !missing.delete(row.id) || !isPlainRecord(row.message) || row.message.chatId !== row.id)
+            return false;
+    }
+    if (
+        missing.size > 0 ||
+        !applyRemoteChatPatch(ref, server.revision, {
+            baseRevision: request.rows.baseRevision,
+            count: request.rows.count,
+            removed: request.rows.removed,
+            messages: server.rows.map(({ after, message }) => ({ after, message })),
+            ...(server.metaFields !== undefined ? { metaFields: server.metaFields } : {}),
+        })
+    )
+        return false;
+    if (noticedChats.get(key)?.seq === request.notice) noticedChats.delete(key);
+    if (laterIdleReadOut(key, readStamp)) staleChats.add(key);
+    return true;
 }
 
 /**
@@ -6572,13 +6657,16 @@ function applyRemoteSummary(
  * summary knowledge (`known`: `summary` or `summaryBase`) settles it at once (`applyRemoteSummary`).
  * An optional by-id change (`patch`: a `ChatPatchBody`, `ChatDeltaBody`, or `ChatRowDeltaBody`)
  * applies without a notice or read only to a loaded, idle, non-stale chat held at exactly its base
- * revision. A miss follows the ordinary notice path. Nothing is queued or discarded.
+ * revision. A miss follows the ordinary notice path. A row manifest is kept with that notice only
+ * under the same eligibility checks; the idle read rechecks them before requesting named rows.
+ * Nothing is queued or discarded.
  */
 export function noteRemoteChat(
     ref: ChatRef,
     revision: string | null,
     patch?: ChatPatchBody | ChatDeltaBody | ChatRowDeltaBody,
     known?: { summary?: ChatSummary; summaryBase?: string },
+    rows?: ChatRowsManifest,
 ): "noticed" | "collection" | "ignored" {
     const key = keyOf(ref.chaId, ref.chatId);
     if (!findCharacter(ref.chaId)) {
@@ -6602,7 +6690,16 @@ export function noteRemoteChat(
         return "ignored";
     }
     noticeSeq += 1;
-    noticedChats.set(key, { seq: noticeSeq, revision });
+    const manifest =
+        revision !== null &&
+        rows &&
+        isLoaded(ref) &&
+        canRefreshChat(ref) &&
+        !staleChats.has(key) &&
+        heldRevision === rows.baseRevision
+            ? rows
+            : undefined;
+    noticedChats.set(key, { seq: noticeSeq, revision, ...(manifest ? { rows: manifest } : {}) });
     notifyWork();
     return isLoaded(ref) ? "noticed" : "collection";
 }

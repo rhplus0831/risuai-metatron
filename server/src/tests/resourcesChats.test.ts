@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import {
+    MAX_FEED_PATCH_BYTES,
     type BatchConflict,
     isChatConflict,
     isChatOrderConflict,
@@ -566,6 +567,179 @@ function budgetedChats(readResponseBytes: number) {
 const zeroRef = { kind: "docs", id: "zero" };
 const chatIds = (read: ResourceReadRefsAnswer) => read.chats?.map(({ characterId, id }) => [characterId, id]);
 
+describe("revision-guarded chat row reads", () => {
+    it("reads a reroll carrier by id with whole scriptstate and removal of absent metadata", async () => {
+        const s = await defaultServer();
+        const tokens = await seed(s);
+        const before = await post(s, {
+            chats: [
+                group("k", tokens.chat, [
+                    {
+                        op: "meta",
+                        set: { scriptstate: { keep: "same", old: "remove" }, folderId: "gone" },
+                    },
+                ]),
+            ],
+        });
+        const candidates = ["한".repeat(24 * 1024)];
+        const carrier = { ...m("b", "B"), candidates };
+        expect(Buffer.byteLength(JSON.stringify(candidates))).toBeGreaterThan(MAX_FEED_PATCH_BYTES);
+        const written = await post(s, {
+            chats: [
+                group("k", before.body.chats![0].revision, [
+                    { op: "setMessage", message: carrier },
+                    { op: "begin", id: "b", generationId: "reroll" },
+                    {
+                        op: "meta",
+                        merge: { scriptstate: { active: "reroll" } },
+                        mergeUnset: { scriptstate: ["old"] },
+                        unset: ["folderId"],
+                    },
+                ]),
+            ],
+        });
+        expect(written.status).toBe(200);
+        const revision = written.body.chats![0].revision!;
+        const response = await s.json("/api/resources/read", {
+            chatRows: [{ characterId: "c", id: "k", revision, messageIds: ["b"], meta: ["scriptstate", "folderId"] }],
+            continue: true,
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+            epoch: s.epoch,
+            items: [],
+            chats: [],
+            chatCollections: [],
+            chatRows: [
+                {
+                    characterId: "c",
+                    id: "k",
+                    revision,
+                    rows: [{ id: "b", after: "a", message: carrier }],
+                    metaFields: { set: { scriptstate: { keep: "same", active: "reroll" } }, remove: ["folderId"] },
+                },
+            ],
+        });
+    });
+
+    it("accepts metadata-only row reads and rejects requests naming neither rows nor metadata", async () => {
+        const s = await defaultServer();
+        const tokens = await seed(s);
+        const note = "n".repeat(MAX_FEED_PATCH_BYTES + 1);
+        const written = await post(s, { chats: [group("k", tokens.chat, [{ op: "meta", set: { note } }])] });
+        expect(written.status).toBe(200);
+        const ref = { characterId: "c", id: "k", revision: written.body.chats![0].revision!, messageIds: [] };
+        const response = await s.json("/api/resources/read", { chatRows: [{ ...ref, meta: ["note"] }] });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+            epoch: s.epoch,
+            items: [],
+            chats: [],
+            chatCollections: [],
+            chatRows: [
+                {
+                    characterId: "c",
+                    id: "k",
+                    revision: ref.revision,
+                    rows: [],
+                    metaFields: { set: { note }, remove: [] },
+                },
+            ],
+        });
+        expect((await s.json("/api/resources/read", { chatRows: [{ ...ref, meta: [] }] })).status).toBe(400);
+    });
+
+    it.each(["at a newer revision", "deleted"] as const)(
+        "answers moved when the chat is %s alongside other read entries",
+        async (state) => {
+            const s = budgetedChats(1024);
+            s.seed("c", [{ id: "k", message: [m("a", "A")] }]);
+            const revision = s.store.chatRevision("c", "k")!;
+            s.store.applyChanges({
+                chats: [
+                    group(
+                        "k",
+                        revision,
+                        state === "deleted" ? [{ op: "delete" }] : [{ op: "setText", id: "a", text: "new" }],
+                    ),
+                ],
+            });
+            const current = state === "deleted" ? null : s.store.chatRevision("c", "k");
+            const read = await s.read({
+                refs: [zeroRef],
+                chatRows: [{ characterId: "c", id: "k", revision, messageIds: ["a"], meta: [] }],
+                continue: true,
+            });
+            expect(read.chatRows).toEqual([{ characterId: "c", id: "k", revision: current, moved: true }]);
+            expect(read.items).toEqual([{ ...zeroRef, revision: expect.any(String), data: 0 }]);
+            expect(read.chats).toEqual([]);
+            expect(read).not.toHaveProperty("unanswered");
+        },
+    );
+
+    it("charges only named stored row bytes and gives each chatRows entry its own budget group", async () => {
+        const a = m("a", "한");
+        const b = m("b", "😀");
+        const bytes = Buffer.byteLength(JSON.stringify(a)) + Buffer.byteLength(JSON.stringify(b));
+        const s = budgetedChats(1 + bytes); // The docs/zero record is the single stored byte `0`.
+        s.seed(
+            "c",
+            ["k", "j"].map((id) => ({
+                id,
+                note: "unrequested metadata".repeat(1024),
+                message: [a, m("untouched", "x".repeat(MAX_FEED_PATCH_BYTES + 1)), b],
+            })),
+        );
+        const requests = ["k", "j"].map((id) => ({
+            characterId: "c",
+            id,
+            revision: s.store.chatRevision("c", id)!,
+            messageIds: ["b", "a"],
+            meta: [],
+        }));
+        const answer = (index: number) => ({
+            characterId: "c",
+            id: requests[index].id,
+            revision: requests[index].revision,
+            rows: [
+                { id: "a", after: null, message: a },
+                { id: "b", after: "untouched", message: b },
+            ],
+        });
+        const read = await s.read({ refs: [zeroRef], chatRows: requests, continue: true });
+        expect(read.chatRows).toEqual([answer(0)]);
+        expect(read.unanswered).toEqual({
+            refs: [],
+            chats: [],
+            chatRows: [requests[1]],
+            chatCollections: [],
+            chatSummaryCollections: [],
+        });
+        const next = await s.read({ ...read.unanswered, continue: true });
+        expect(next.chatRows).toEqual([answer(1)]);
+        expect(next).not.toHaveProperty("unanswered");
+    });
+
+    it("serves whole chats to an older client that does not send chatRows", async () => {
+        const s = budgetedChats(1);
+        const carrier = { ...m("b", "B"), candidates: ["x".repeat(MAX_FEED_PATCH_BYTES + 1)] };
+        const data = { id: "k", name: "K", note: "keep", fmIndex: -1, localLore: [], message: [m("a", "A"), carrier] };
+        s.seed("c", [data]);
+        const revision = s.store.chatRevision("c", "k")!;
+        const read = await s.read({ chats: [{ characterId: "c", id: "k" }] });
+        expect(read.chats).toEqual([
+            {
+                characterId: "c",
+                id: "k",
+                revision,
+                data,
+            },
+        ]);
+        expect(read).not.toHaveProperty("chatRows");
+        expect(read).not.toHaveProperty("unanswered");
+    });
+});
+
 describe("chat read budgets", () => {
     it.each([undefined, true])(
         "deduplicates chats and both collection lists with continuation %s",
@@ -611,6 +785,7 @@ describe("chat read budgets", () => {
         expect(read.unanswered).toEqual({
             refs: [refs[1]],
             chats,
+            chatRows: [],
             chatCollections: ["b", "c"],
             chatSummaryCollections: ["c", "b"],
         });
@@ -618,7 +793,13 @@ describe("chat read budgets", () => {
         expect(next.items.map(({ id }) => id)).toEqual(["b"]);
         expect(next.chatCollections?.map(({ characterId }) => characterId)).toEqual(["b"]);
         expect(next.chatSummaryCollections?.map(({ characterId }) => characterId)).toEqual(["b"]);
-        expect(next.unanswered).toEqual({ refs: [], chats, chatCollections: ["c"], chatSummaryCollections: ["c"] });
+        expect(next.unanswered).toEqual({
+            refs: [],
+            chats,
+            chatRows: [],
+            chatCollections: ["c"],
+            chatSummaryCollections: ["c"],
+        });
     });
 
     it("serves refs then individual chats then collections then summaries without skipping a blocked group", async () => {
@@ -641,12 +822,13 @@ describe("chat read budgets", () => {
         expect(whole).not.toHaveProperty("unanswered");
         const first = await s.read({ ...request, continue: true });
         expect(first.items).toMatchObject([{ ...zeroRef, data: 0 }]);
-        expect(first.unanswered).toEqual({ ...request, refs: [] });
+        expect(first.unanswered).toEqual({ ...request, refs: [], chatRows: [] });
         const second = await s.read({ ...first.unanswered, continue: true });
         expect(chatIds(second)).toEqual([["a", "k"]]);
         expect(second.unanswered).toEqual({
             refs: [],
             chats: [chats[1]],
+            chatRows: [],
             chatCollections: ["a"],
             chatSummaryCollections: ["b"],
         });
@@ -654,7 +836,13 @@ describe("chat read budgets", () => {
         expect(chatIds(third)).toEqual([["a", "j"]]);
         const fourth = await s.read({ ...third.unanswered, continue: true });
         expect(fourth.chatCollections?.[0].chats.map(({ id }) => id)).toEqual(["k", "j"]);
-        expect(fourth.unanswered).toEqual({ refs: [], chats: [], chatCollections: [], chatSummaryCollections: ["b"] });
+        expect(fourth.unanswered).toEqual({
+            refs: [],
+            chats: [],
+            chatRows: [],
+            chatCollections: [],
+            chatSummaryCollections: ["b"],
+        });
         const fifth = await s.read({ ...fourth.unanswered, continue: true });
         expect(fifth.chatSummaryCollections).toMatchObject([{ characterId: "b", chats: [{ id: "k" }] }]);
         expect(fifth).not.toHaveProperty("unanswered");
@@ -696,6 +884,7 @@ describe("chat read budgets", () => {
             expect(first.unanswered).toEqual({
                 refs: [],
                 chats: [],
+                chatRows: [],
                 chatCollections: ["a"],
                 chatSummaryCollections: [],
             });
@@ -722,6 +911,7 @@ describe("chat read budgets", () => {
             expect(read.unanswered).toEqual({
                 refs: [],
                 chats: [],
+                chatRows: [],
                 chatCollections: [],
                 chatSummaryCollections: [],
                 ...entries,
@@ -754,7 +944,13 @@ describe("chat read budgets", () => {
         expect(read.chatSummaryCollections).toMatchObject([
             { characterId: "a", order: { ids: ["k"] }, chats: [{ id: "k", name: "A", fmIndex: -1 }] },
         ]);
-        expect(read.unanswered).toEqual({ refs: [], chats: [], chatCollections: [], chatSummaryCollections: ["b"] });
+        expect(read.unanswered).toEqual({
+            refs: [],
+            chats: [],
+            chatRows: [],
+            chatCollections: [],
+            chatSummaryCollections: ["b"],
+        });
         // The same projection with a two-byte resource no longer fits: the order bytes count too.
         s.store.put(s.kinds.get("docs")!, "two", 10, null);
         const smaller = await s.read({

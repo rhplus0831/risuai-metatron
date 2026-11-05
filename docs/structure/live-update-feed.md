@@ -5,8 +5,6 @@
 - Owns the server's change feed and the live-update socket: the `hello` a socket starts with, how frames are admitted
   per socket, what a chat write publishes (the writer's own change, and the feed's chat entries with their summary and
   by-id body), how a publishing scope coalesces entries, and the publication budget one frame spends.
-- Paths: `server/src/data/changeFeed.ts`, `server/src/routes/events.ts`, the frames in `shared/events.ts`, and the feed
-  parts of `server/src/data/resourceStore.ts` and `server/src/data/chatStore.ts`.
 - Not here:
   - The socket's client and the save loop it feeds → [live updates](live-updates.md#feed-connection).
   - The store's commits, chat summaries, and the epoch → [server resources](server-resources.md).
@@ -55,8 +53,7 @@ the queued bytes alone. What a `change` frame's patches may add is bounded by th
 
 - A server writer that passes `changes: true` with its `committed` hook to `applyChanges` gets
   `committed(applied, written)`: `written.chats` holds each by-id chat group's change as stored (`ChatWriteChange`),
-  aligned with `applied.chats`, uncapped, `undefined` for a group without a by-id change. The contract is on
-  `applyChanges`, `WrittenChanges`, and `ChatWriteChange`.
+  aligned with `applied.chats`, uncapped, `undefined` for a group without a by-id change.
 - The writer is a generation job (`server/src/jobs/generationJobs.ts`); `refreshChatAfterWrite` in
   `server/src/jobs/jobScope.ts` lays the change onto the job's chat ([server generation](server-generation.md)).
 - The feed's capped body is taken from the same change; the [publication budget](#publication-budget) and the HTTP batch
@@ -68,7 +65,8 @@ the queued bytes alone. What a `change` frame's patches may add is bounded by th
 group result, never in `ChatGroupResult`, the HTTP body, or `ChatWriteChange`. An entry carries the group's summary
 knowledge (`ChatFeedPayloads`) and at most one body, chosen by size in `chatFeedChange` (rule: `ChangeSet`): a whole-row
 `patch` under `SMALL_FEED_PATCH_BYTES`, else a smaller `rowDelta` (per-row field and text diffs against the group's
-first read, `chatRowDiff`), else a fitting `patch`, else a `delta`.
+first read, `chatRowDiff`), else a fitting `patch`, else a `delta`, else a fitting `rows` manifest (`ChatRowsManifest`:
+base, row ids, removals, count, changed metadata field names).
 
 ### Coalescing and publish order
 

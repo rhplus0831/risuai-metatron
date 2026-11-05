@@ -45,6 +45,7 @@ import {
     type RecordPatch,
     type ResourceChangesSince,
     type ResourceReadEntries,
+    type ResourceReadRefsResult,
     type ResourceRevisionListing,
     SINGLETON_RESOURCE_ID,
 } from "../../../shared/resources.ts";
@@ -387,6 +388,7 @@ type ChatRead = ChatRecord | { characterId: string; id: string; revision: null; 
 /** What `readRefs` names besides records. */
 type ReadRefsOptions = {
     chats?: readonly { characterId: string; id: string }[];
+    chatRows?: ResourceReadEntries["chatRows"];
     chatCollections?: readonly string[];
     chatSummaryCollections?: readonly string[];
     /**
@@ -435,8 +437,9 @@ type ChatChange = ChangeSet["chats"][number];
 
 /**
  * One feed entry for a chat recorded twice in a publication, `earlier` then `later`: the later ref,
- * without a patch, delta, or rowDelta (their base would be a revision no client was told about), with only the
- * summary knowledge the two prove together. The later `summary` stands; else the earlier `summary`,
+ * without a patch, delta, rowDelta, or row manifest (their base would be a revision no client was
+ * told about), with only the summary knowledge the two prove together. The later `summary` stands; else the earlier
+ * `summary`,
  * moved to the later revision, when the later entry says the summary is unchanged since the earlier
  * revision (`summaryBase`); two such unchanged entries in a row say unchanged since the earlier base.
  * Anything else (a gap, an entry that knows nothing, a deletion) knows nothing. A new entry: neither
@@ -1208,12 +1211,13 @@ export function createResourceStore(options: {
      * A publication's record and chat entries in wire order, with their optional payloads within
      * `MAX_FEED_PUBLICATION_PATCH_BYTES` together. Called once per publication, on the outermost
      * write's final accumulator, so nested scopes have merged and coalescing has dropped repeated keys'
-     * patches, deltas, and rowDeltas. The payloads are taken in wire order: resources, then chats, and within a
-     * chat entry `patch`, `delta`, `rowDelta`, `summary`, then `summaryBase`. A payload stays while
+     * patches, deltas, rowDeltas, and row manifests. Payloads are taken in wire order: resources,
+     * then chats, and within a chat entry `patch`, `delta`, `rowDelta`, `rows`, `summary`, then `summaryBase`. A
+     * payload stays while
      * the running sum including it fits; one that does not fit is left out of a copy of its entry in
      * the same place (a later, smaller payload may still fit), so a dropped `summary` leaves the entry
      * with neither summary field. Every candidate payload is measured, rejected ones included, so the
-     * measuring work is proportional to the payloads the write built (each patch, delta, or rowDelta already
+     * measuring work is proportional to the payloads the write built (each body or row manifest already
      * within `MAX_FEED_PATCH_BYTES` when built), not to the frame. Refs are never dropped.
      */
     function budgetedEntries(changes: ChangeAccumulator): Pick<ChangeSet, "resources" | "chats"> {
@@ -1238,7 +1242,7 @@ export function createResourceStore(options: {
         return {
             resources: [...changes.resources.values()].map((entry) => withinBudget(entry, ["patch"])),
             chats: [...changes.chats.values()].map((entry) =>
-                withinBudget(entry, ["patch", "delta", "rowDelta", "summary", "summaryBase"]),
+                withinBudget(entry, ["patch", "delta", "rowDelta", "rows", "summary", "summaryBase"]),
             ),
         };
     }
@@ -1610,7 +1614,7 @@ export function createResourceStore(options: {
         refs: readonly { kind: ResourceKind; id: string }[],
         options: ReadRefsOptions,
         overlaying = overlaysMemoryProjection(options),
-    ) {
+    ): ResourceReadRefsResult & Required<Pick<ResourceReadRefsResult, "chats" | "chatCollections">> {
         const items = refs.map(({ kind, id }) => {
             assertKind(kind);
             assertId(kind, id);
@@ -1624,6 +1628,9 @@ export function createResourceStore(options: {
             }
             return chat;
         });
+        const rowReads: { chatRows?: ReturnType<typeof chatTables.readRows>[] } = options.chatRows?.length
+            ? { chatRows: options.chatRows.map((request) => chatTables.readRows(request)) }
+            : {};
         const chatCollections = (options.chatCollections ?? []).map((characterId) => {
             const collection = chatTables.readCollection(characterId);
             if (overlaying) {
@@ -1634,13 +1641,13 @@ export function createResourceStore(options: {
             return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
         });
         if (!options.chatSummaryCollections || options.chatSummaryCollections.length === 0) {
-            return { epoch, items, chats, chatCollections };
+            return { epoch, items, chats, ...rowReads, chatCollections };
         }
         const chatSummaryCollections = options.chatSummaryCollections.map((characterId) => {
             const collection = chatTables.readCollectionSummaries(characterId);
             return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
         });
-        return { epoch, items, chats, chatCollections, chatSummaryCollections };
+        return { epoch, items, chats, ...rowReads, chatCollections, chatSummaryCollections };
     }
 
     /**
@@ -2350,6 +2357,8 @@ export function createResourceStore(options: {
          * `chats` names single chats (missing: revision and data null); `chatCollections` names
          * characters whose order and every chat are read (no order: null); `chatSummaryCollections`
          * names characters whose order and every chat's summary are read (with memoized last-message times).
+         * `chatRows` reads named rows and metadata at exactly a revision, or answers moved with the current
+         * revision (null when missing). Row reads always use stored metadata, without projection overlays.
          */
         readRefs(refs: readonly { kind: ResourceKind; id: string }[], options: ReadRefsOptions = {}) {
             assertOpen();
@@ -2359,9 +2368,9 @@ export function createResourceStore(options: {
         /**
          * `readRefs` of what `budget` stored bytes cover, in one synchronous call, with the rest named in
          * `unanswered` (`ResourceReadRefsAnswer`; present only when something was left out). The entries
-         * go in groups, each placed at its first mention in `refs`, `chats`, `chatCollections`,
+         * go in groups, each placed at its first mention in `refs`, `chats`, `chatRows`, `chatCollections`,
          * `chatSummaryCollections` order: a character's record and its two collection entries are one
-         * group, since a client installs them together, and every other entry, a chat included, is alone.
+         * group, since a client installs them together, and every other entry, a chat or row read included, is alone.
          * Groups are charged from SQL in that order and served until the first that would pass the
          * budget; it and every group after it are left unread, and later groups are not charged.
          * The first group is
@@ -2373,8 +2382,10 @@ export function createResourceStore(options: {
          * resource, meta plus message rows for a chat (two queries), order text plus separate chat-meta
          * and message aggregates for a whole collection, order text plus stored chatSummaries rows
          * for a summary collection (`data/chatStore.ts` chatBytes/collectionBytes/collectionSummaryBytes).
-         * Projection reads add memory_events bytes. A chat or collection is never split; the character
-         * group is read in this synchronous call, but separate continuation rounds share no snapshot.
+         * A row read charges its named rows and, when fields are named, whole stored metadata; a moved
+         * answer costs zero and is never deferred for its requested rows' size. Projection reads add
+         * memory_events bytes. A chat or collection is never split; the character group is read in this synchronous
+         * call, but separate continuation rounds share no snapshot.
          * Internal readRefs callers are unbudgeted; `routes/resources.ts` opts into this method only
          * for continue: true and deduplicates each request before calling it.
          */
@@ -2388,7 +2399,7 @@ export function createResourceStore(options: {
                 assertKind(kind);
                 assertId(kind, id);
             }
-            const { chats = [], chatCollections = [], chatSummaryCollections = [] } = options;
+            const { chats = [], chatRows = [], chatCollections = [], chatSummaryCollections = [] } = options;
             const overlaying = overlaysMemoryProjection(options);
             const groups: ReadGroup[] = [];
             const characterGroups = new Map<string, ReadGroup>();
@@ -2419,6 +2430,7 @@ export function createResourceStore(options: {
                         (overlaying ? memoryTables.chatEventBytes(characterId, id) : 0),
                 ),
             );
+            const rowGroups = chatRows.map((request) => groupOf(null, () => chatTables.rowsBytes(request)));
             const collectionGroups = chatCollections.map((characterId) =>
                 groupOf(
                     characterId,
@@ -2447,12 +2459,14 @@ export function createResourceStore(options: {
             ];
             const [servedRefs, leftRefs] = fates(refs, refGroups);
             const [servedChats, leftChats] = fates(chats, chatGroups);
+            const [servedRows, leftRows] = fates(chatRows, rowGroups);
             const [servedCollections, leftCollections] = fates(chatCollections, collectionGroups);
             const [servedSummaries, leftSummaries] = fates(chatSummaryCollections, summaryGroups);
             const read = readNamed(
                 servedRefs,
                 {
                     chats: servedChats,
+                    chatRows: servedRows,
                     chatCollections: servedCollections,
                     chatSummaryCollections: servedSummaries,
                 },
@@ -2466,6 +2480,7 @@ export function createResourceStore(options: {
                 unanswered: {
                     refs: leftRefs.map(({ kind, id }) => ({ kind: kind.name, id })),
                     chats: leftChats,
+                    chatRows: leftRows,
                     chatCollections: leftCollections,
                     chatSummaryCollections: leftSummaries,
                 },

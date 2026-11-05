@@ -56,7 +56,7 @@ Proxies must preserve encoded ids ([Gotchas](self-host-server.md#gotchas)). Shap
 (`ResourceBootRequest`, `ResourceBootResult`, `ChatReadRecord`) and `shared/chats.ts`.
 
 - Reads: `GET /api/resources?kinds=` (whole kinds, one committed state), `POST /api/resources/read` (named records,
-  chats, and collections; the [read budget](#read-budget)), `POST /api/resources/boot` (skips what the tab holds),
+  chats, rows, and collections; the [read budget](#read-budget)), `POST /api/resources/boot` (skips what the tab holds),
   `GET /api/resources/revisions` (revision refs), `GET /api/resources/:kind`, and `GET /api/resources/:kind/:id`, all
   compressed per `Accept-Encoding` (`compressedJson`).
 - Writes, + epoch: `POST /api/resources/batch` (resource ops, chat groups, chat orders; a conflict applies nothing),
@@ -132,11 +132,12 @@ Realm bodies capped at 4 KiB).
 `POST /api/resources/read` deduplicates its entries, always. With `continue: true` one answer is bounded by its charged
 bytes (`readResponseBytes`, default `MAX_READ_RESPONSE_BYTES` in `shared/resources.ts`, 16 MiB) and names what it left
 out in `unanswered`; without it the answer is whole, so an older tab that takes an absent entry for a deleted one never
-meets `unanswered`. The budget is soft: an answer's first group is served whatever its size, so a chat or a collection
-that outgrew it stays readable, and a chat or a collection is never split. The groups, their order, and the charge
-(stored bytes from SQL, not wire bytes; a [projection](structured-memory/projection.md#the-hypav3-projection) read,
-which the routes ask for and the store does when structured memory is the stored memory algorithm
-(`overlaysMemoryProjection`), adds the chats' `memory_events`) are `readRefsWithinBudget`'s comment.
+meets `unanswered`. The budget is soft: an answer's first group is served whatever its size, so an entry that outgrew it
+stays readable, and a chat or a collection is never split. The groups, their order, and the charge (stored SQL bytes,
+not wire bytes; a [projection](structured-memory/projection.md#the-hypav3-projection) read, asked by the routes and done
+under structured memory, `overlaysMemoryProjection`, adds the chats' `memory_events`) are `readRefsWithinBudget`'s
+comment. A `chatRows` entry (one group, charged its rows and stored metadata) answers its rows and named fields as
+stored (no projection) at exactly its revision, else `moved` with the current one (null: gone), never `unanswered`.
 
 ### Chat summaries
 

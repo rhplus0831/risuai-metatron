@@ -58,6 +58,76 @@ function setup() {
 }
 
 describe("by-id chat feed patches", () => {
+    it("publishes an over-cap row manifest with removals and no body", () => {
+        const b = setup();
+        const baseRevision = b.read().revision;
+        const candidates = ["한".repeat(24 * 1024)];
+        const carrier = { ...m("b", "B"), candidates };
+        expect(Buffer.byteLength(JSON.stringify(candidates))).toBeGreaterThan(MAX_FEED_PATCH_BYTES);
+        b.write([
+            { op: "setMessage", message: carrier },
+            { op: "append", anchor: { after: "b" }, messages: [m("inserted", "I")] },
+            { op: "remove", ids: ["a", "c"] },
+        ]);
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            summaryBase: baseRevision,
+            rows: { baseRevision, changed: ["b", "inserted"], removed: ["a", "c"], count: 2, meta: [] },
+        });
+    });
+
+    it("names set, removed, merged and merge-unset metadata in an over-cap manifest", () => {
+        const b = setup();
+        b.write([
+            {
+                op: "meta",
+                set: { folderId: "gone", scriptstate: { keep: "same" }, bookmarkNames: { old: "remove" } },
+            },
+        ]);
+        const baseRevision = b.read().revision;
+        const carrier = { ...m("b", "B"), candidates: ["x".repeat(MAX_FEED_PATCH_BYTES + 1)] };
+        b.write([
+            { op: "setMessage", message: carrier },
+            { op: "begin", id: "b", generationId: "reroll" },
+            {
+                op: "meta",
+                set: { note: "reroll started" },
+                unset: ["folderId"],
+                merge: { scriptstate: { active: "reroll" } },
+                mergeUnset: { bookmarkNames: ["old"] },
+            },
+        ]);
+        const entry = b.notice();
+        expect(entry).toMatchObject({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            rows: {
+                baseRevision,
+                changed: ["b"],
+                removed: [],
+                count: 3,
+                meta: expect.arrayContaining(["note", "folderId", "scriptstate", "bookmarkNames"]),
+            },
+        });
+        expect(entry.rows!.meta).toHaveLength(4);
+        for (const key of ["patch", "delta", "rowDelta"]) expect(entry).not.toHaveProperty(key);
+    });
+
+    it("omits the row manifest too when its ids exceed the feed cap", () => {
+        const b = setup();
+        const messages = Array.from({ length: 140 }, (_, i) => m(`${i}-${"x".repeat(500)}`, "new"));
+        expect(Buffer.byteLength(JSON.stringify(messages.map((message) => message.chatId)))).toBeGreaterThan(
+            MAX_FEED_PATCH_BYTES,
+        );
+        b.write([{ op: "append", anchor: { end: true }, messages }]);
+        const entry = b.notice();
+        expect(entry.revision).toBe(b.read().revision);
+        for (const key of ["patch", "delta", "rowDelta", "rows"]) expect(entry).not.toHaveProperty(key);
+    });
+
     it.each([
         { label: "4 KiB", before: "x".repeat(4 * 1024), body: "patch" },
         { label: "32 KiB", before: "x".repeat(32 * 1024), body: "rowDelta" },
@@ -236,7 +306,7 @@ describe("by-id chat feed patches", () => {
         expect(b.read().data.message[1]).toEqual(message);
     });
 
-    it("publishes no body when a changed row field exceeds the UTF-8 cap", () => {
+    it("publishes a row manifest and no body when a changed row field exceeds the UTF-8 cap", () => {
         const b = setup();
         const data = "x".repeat(100 * 1024);
         b.write([{ op: "setText", id: "b", text: data }]);
@@ -249,6 +319,7 @@ describe("by-id chat feed patches", () => {
             id: "k",
             revision: b.read().revision,
             summaryBase: baseRevision,
+            rows: { baseRevision, changed: ["b"], removed: [], count: 3, meta: [] },
         });
         expect(b.read().data.message[1]).toEqual({ ...m("b", data), generationInfo });
     });
@@ -517,7 +588,7 @@ describe("by-id chat feed patches", () => {
         expect(b.notice()).toEqual({ characterId: "c", id: "k", revision });
     });
 
-    it("allows a whole-row patch of 64 KiB exactly and none above it, measured in UTF-8 bytes", () => {
+    it("allows a whole-row patch of 64 KiB exactly and a row manifest above it, measured in UTF-8 bytes", () => {
         const b = setup();
         for (const excess of [0, 1]) {
             const baseRevision = b.read().revision;
@@ -539,7 +610,7 @@ describe("by-id chat feed patches", () => {
                 revision: b.read().revision,
                 // The summary base is independent of whether the patch fits.
                 summaryBase: baseRevision,
-                ...(excess ? {} : { patch }),
+                ...(excess ? { rows: { baseRevision, changed: [id], removed: [], count, meta: [] } } : { patch }),
             });
             expect(b.read().data.message.at(-1)).toEqual(m(id, text));
         }
@@ -717,7 +788,7 @@ describe("a writer's own chat changes", () => {
         }
     });
 
-    it("returns every touched row above the feed byte cap while publishing no patch", () => {
+    it("returns every touched row above the feed byte cap while publishing a row manifest instead of a body", () => {
         for (const changes of [false, true]) {
             const b = setup();
             const baseRevision = b.read().revision;
@@ -746,7 +817,13 @@ describe("a writer's own chat changes", () => {
                 ],
             };
             expect(committed.mock.calls).toStrictEqual([changes ? [applied, { chats: [change] }] : [applied]]);
-            expect(b.notice()).toEqual({ characterId: "c", id: "k", revision, summaryBase: baseRevision });
+            expect(b.notice()).toEqual({
+                characterId: "c",
+                id: "k",
+                revision,
+                summaryBase: baseRevision,
+                rows: { baseRevision, changed: ["b", "a"], removed: [], count: 3, meta: [] },
+            });
         }
     });
 

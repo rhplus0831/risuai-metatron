@@ -6,7 +6,7 @@ import {
     RESOURCE_BOOT_PATH,
     RESOURCE_EPOCH_HEADER,
 } from "../../../shared/resources.ts";
-import type { ResourceReadRefsResult } from "../../../shared/resources.ts";
+import type { ResourceReadEntries, ResourceReadRefsResult } from "../../../shared/resources.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import {
     isValidResourceId,
@@ -30,8 +30,9 @@ import { parseBootRequest, readBoot } from "./resourceBoot.ts";
 export const MAX_BATCH_OPERATIONS = 5000;
 export const RESOURCE_READ_PATH = "/api/resources/read";
 /**
- * A read's body cap. The largest valid request, 5,000 entries of two ids of 512 units at up to 3 UTF-8
- * bytes each, is about 15.4 million bytes before framing, and an older tab may send it.
+ * A read's body cap, also bounding named row and metadata lists. A request of 5,000 entries of two
+ * ids of 512 units at up to 3 UTF-8 bytes each is about 15.4 million bytes before framing, and an
+ * older tab may send it.
  */
 export const MAX_READ_BODY_BYTES = 32 * 1024 * 1024;
 
@@ -46,11 +47,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * the revision it was based on (`baseRevision`: null to create); a stale one is a 409 carrying the
  * current revision (null when the record is gone). A batch op may be a record patch instead of whole
  * data (`patch`, with a string `baseRevision`; see `ResourceBatchOperation`). The batch also carries
- * chat groups and reorders, and the reads chats and chat collections (`shared/chats.ts`). With a
+ * chat groups and reorders, and the reads chats, named rows, and chat collections (`shared/chats.ts`). With a
  * streaming source, whole chats carry authoritative lock lists sampled in the same synchronous step
- * as the read; summaries and missing chats do not. Both
- * reads answer a structured chat's `hypaV3Data` with its projection, which only these routes ask for
- * (`memoryProjection`), so a tab's plugins read it from the chat they hold.
+ * as the read; summaries, row reads and missing chats do not. Whole-chat reads answer a structured
+ * chat's `hypaV3Data` with its projection, which only these routes ask for (`memoryProjection`),
+ * so a tab's plugins read it from the chat they hold. Row reads use stored metadata.
  * `POST /api/resources/read` lists each named entry once. With `continue: true`, it uses a soft
  * stored-byte budget (`readResponseBytes`, default `MAX_READ_RESPONSE_BYTES`): the first group is
  * always served whole; groups left out are named in `unanswered` (`ResourceReadRefsAnswer`).
@@ -189,12 +190,15 @@ export function registerResourceRoutes(
 
     /**
      * POST /api/resources/read: { refs?: [{ kind, id }], chats?: [{ characterId, id }],
+     * chatRows?: [{ characterId, id, revision, messageIds, meta }],
      * chatCollections?: [characterId], chatSummaryCollections?: [characterId], continue?: boolean }.
      * Names 1–5000 entries before deduplication; each distinct entry is answered once. Authentication
      * precedes the 32 MiB cap (`MAX_READ_BODY_BYTES`; 413), independent of the app's global limit.
-     * Returns compressed { epoch, items, chats?, chatCollections?, chatSummaryCollections?, unanswered? };
-     * a missing record/chat has null data and revision. Summary collections omit messages, memory,
-     * bookmarks and toolCalls (`shared/chats.ts`). With continue: true, whole groups are served within
+     * Returns compressed { epoch, items, chats?, chatRows?, chatCollections?, chatSummaryCollections?, unanswered? };
+     * a missing record/chat has null data and revision. Row reads at another revision answer moved,
+     * including a missing chat; identical row requests coalesce, conflicting requests for one chat
+     * refuse. Summary collections omit messages, memory, bookmarks and toolCalls (`shared/chats.ts`). With continue:
+     * true, whole groups are served within
      * the soft stored-byte budget in `data/resourceStore.ts` readRefsWithinBudget; otherwise all are read.
      * Malformed entries, unknown kinds, an empty request or more than 5000 entries are 400.
      */
@@ -206,6 +210,7 @@ export function registerResourceRoutes(
         const {
             refs = [],
             chats = [],
+            chatRows = [],
             chatCollections = [],
             chatSummaryCollections = [],
             continue: canContinue,
@@ -213,13 +218,17 @@ export function registerResourceRoutes(
         if (!Array.isArray(refs) || !Array.isArray(chats) || !Array.isArray(chatCollections)) {
             return c.json({ error: "Body must be { refs?, chats?, chatCollections? } of arrays" }, 400);
         }
+        if (!Array.isArray(chatRows)) {
+            return c.json({ error: "chatRows must be an array" }, 400);
+        }
         if (!Array.isArray(chatSummaryCollections)) {
             return c.json({ error: "chatSummaryCollections must be an array of character ids" }, 400);
         }
         if (canContinue !== undefined && typeof canContinue !== "boolean") {
             return c.json({ error: "continue must be a boolean" }, 400);
         }
-        const total = refs.length + chats.length + chatCollections.length + chatSummaryCollections.length;
+        const total =
+            refs.length + chats.length + chatRows.length + chatCollections.length + chatSummaryCollections.length;
         if (total === 0 || total > MAX_BATCH_OPERATIONS) {
             return c.json({ error: `Body must name 1 to ${MAX_BATCH_OPERATIONS} entries` }, 400);
         }
@@ -239,6 +248,40 @@ export function registerResourceRoutes(
             }
             chatRefs.set(`${ref.characterId}\u0000${ref.id}`, { characterId: ref.characterId, id: ref.id });
         }
+        const rowRefs = new Map<string, ResourceReadEntries["chatRows"][number]>();
+        for (const [index, ref] of chatRows.entries()) {
+            if (
+                !isPlainObject(ref) ||
+                !isValidResourceId(ref.characterId) ||
+                !isValidResourceId(ref.id) ||
+                typeof ref.revision !== "string" ||
+                !Array.isArray(ref.messageIds) ||
+                !ref.messageIds.every(isValidResourceId) ||
+                !Array.isArray(ref.meta) ||
+                !ref.meta.every((name) => typeof name === "string") ||
+                (ref.messageIds.length === 0 && ref.meta.length === 0)
+            ) {
+                return c.json(
+                    {
+                        error: `chatRows[${index}] must name a chat, revision and at least one message id or meta field`,
+                    },
+                    400,
+                );
+            }
+            const entry = {
+                characterId: ref.characterId,
+                id: ref.id,
+                revision: ref.revision,
+                messageIds: ref.messageIds,
+                meta: ref.meta,
+            };
+            const key = `${entry.characterId}\u0000${entry.id}`;
+            const previous = rowRefs.get(key);
+            if (previous && JSON.stringify(previous) !== JSON.stringify(entry)) {
+                return c.json({ error: `chatRows[${index}] conflicts with another request for this chat` }, 400);
+            }
+            rowRefs.set(key, entry);
+        }
         if (!chatCollections.every(isValidResourceId)) {
             return c.json({ error: "chatCollections must be character ids" }, 400);
         }
@@ -248,6 +291,7 @@ export function registerResourceRoutes(
         const named = [...resolved.values()];
         const options = {
             chats: [...chatRefs.values()],
+            chatRows: [...rowRefs.values()],
             chatCollections: [...new Set(chatCollections)],
             chatSummaryCollections: [...new Set(chatSummaryCollections)],
             memoryProjection: true,

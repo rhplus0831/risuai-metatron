@@ -2,7 +2,7 @@ import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../../shared/chats.ts";
 import type { Message } from "../../../../shared/database.ts";
-import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { MAX_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
@@ -200,6 +200,150 @@ const quiet = (b: Booted) => {
 };
 
 describe("feed patches through the tab save adapter", () => {
+    it("reads an over-cap carrier once by id and applies inserted and removed rows", async () => {
+        const b = await boot();
+        const before = JSON.parse(JSON.stringify(mirror(b)));
+        const baseRevision = b.chat.heldChatRevision(refK);
+        const carrier = { ...m("b", "B", "char"), candidates: ["한".repeat(24 * 1024)] };
+        remote(b, [
+            { op: "setMessage", message: carrier },
+            { op: "append", anchor: { after: "b" }, messages: [m("inserted", "I")] },
+            { op: "remove", ids: ["a", "c"] },
+        ]);
+        const revision = b.fake.chat("c", "k")!.revision;
+        expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+        expect(mirror(b)).toEqual(before);
+        expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+        expect(reads(b)).toEqual([
+            {
+                refs: [],
+                chats: [],
+                continue: true,
+                chatRows: [{ characterId: "c", id: "k", revision, messageIds: ["b", "inserted"], meta: [] }],
+            },
+        ]);
+        expect(mirror(b)).toEqual({ ...before, message: [carrier, m("inserted", "I")] });
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        expect(b.chat.messagePositionOf(refK, "b")).toBe(0);
+        expect(b.chat.messagePositionOf(refK, "inserted")).toBe(1);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toHaveLength(1);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it("applies whole scriptstate and absent-field removal from a reroll manifest without a whole read", async () => {
+        const b = await boot({ meta: { scriptstate: { keep: "same", old: "remove" }, folderId: "gone" } });
+        const before = JSON.parse(JSON.stringify(mirror(b)));
+        const carrier = { ...m("b", "B", "char"), candidates: ["x".repeat(MAX_FEED_PATCH_BYTES + 1)] };
+        remote(b, [
+            { op: "setMessage", message: carrier },
+            { op: "begin", id: "b", generationId: "reroll" },
+            {
+                op: "meta",
+                merge: { scriptstate: { active: "reroll" } },
+                mergeUnset: { scriptstate: ["old"] },
+                unset: ["folderId"],
+            },
+        ]);
+        const revision = b.fake.chat("c", "k")!.revision;
+        expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+        expect(reads(b)).toHaveLength(1);
+        expect(reads(b)[0].chats).toEqual([]);
+        expect(reads(b)[0].chatRows).toEqual([
+            {
+                characterId: "c",
+                id: "k",
+                revision,
+                messageIds: ["b"],
+                meta: expect.arrayContaining(["folderId", "scriptstate"]),
+            },
+        ]);
+        expect(reads(b)[0].chatRows[0].meta).toHaveLength(2);
+        const expected = {
+            ...before,
+            scriptstate: { keep: "same", active: "reroll" },
+            message: [m("a", "A", "char"), carrier, m("c", "C")],
+        };
+        delete expected.folderId;
+        expect(mirror(b)).toEqual(expected);
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toHaveLength(1);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it("applies a metadata-only over-cap manifest without a whole read", async () => {
+        const b = await boot();
+        const before = JSON.parse(JSON.stringify(mirror(b)));
+        const baseRevision = b.chat.heldChatRevision(refK);
+        const note = "n".repeat(MAX_FEED_PATCH_BYTES + 1);
+        remote(b, [{ op: "meta", set: { note } }]);
+        const event = b.fake.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("expected a committed change");
+        const revision = b.fake.chat("c", "k")!.revision;
+        expect(event.changes.chats[0]).toEqual({
+            characterId: "c",
+            id: "k",
+            revision,
+            summaryBase: baseRevision,
+            rows: { baseRevision, changed: [], removed: [], count: 3, meta: ["note"] },
+        });
+        expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+        expect(reads(b)).toEqual([
+            {
+                refs: [],
+                chats: [],
+                continue: true,
+                chatRows: [{ characterId: "c", id: "k", revision, messageIds: [], meta: ["note"] }],
+            },
+        ]);
+        expect(mirror(b)).toEqual({ ...before, note });
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toHaveLength(1);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it.each(["at a newer revision", "deleted"] as const)(
+        "reads a moved chat whole once in the same refresh when it is %s",
+        async (state) => {
+            const b = await boot();
+            const before = JSON.parse(JSON.stringify(mirror(b)));
+            const carrier = { ...m("b", "B", "char"), candidates: ["x".repeat(MAX_FEED_PATCH_BYTES + 1)] };
+            remote(b, [{ op: "setMessage", message: carrier }]);
+            const requestedRevision = b.fake.chat("c", "k")!.revision;
+            b.live.paused = true;
+            remote(b, state === "deleted" ? [{ op: "delete" }] : [{ op: "setText", id: "c", text: "newer" }]);
+            b.live.queue.length = 0;
+            const currentRevision = state === "deleted" ? null : b.fake.chat("c", "k")!.revision;
+            expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+            expect(reads(b)).toEqual([
+                {
+                    refs: [],
+                    chats: [],
+                    continue: true,
+                    chatRows: [{ characterId: "c", id: "k", revision: requestedRevision, messageIds: ["b"], meta: [] }],
+                },
+                { refs: [], chats: [{ characterId: "c", id: "k" }], continue: true },
+            ]);
+            if (state === "deleted") expect(b.chat.findChat(refK)).toBeUndefined();
+            else expect(mirror(b)).toEqual({ ...before, message: [m("a", "A", "char"), carrier, m("c", "newer")] });
+            expect(b.chat.heldChatRevision(refK) ?? null).toBe(currentRevision);
+            await b.sync.flushResources();
+            await vi.advanceTimersByTimeAsync(1500);
+            expect(reads(b).flatMap((read) => read.chatRows ?? [])).toHaveLength(1);
+            expect(reads(b).flatMap((read) => read.chats ?? [])).toEqual([{ characterId: "c", id: "k" }]);
+            expect(b.fake.batchCount()).toBe(0);
+            quiet(b);
+        },
+    );
+
     it("applies successive row diffs without reads or rebuilding positions, then applies mixed whole rows and metadata", async () => {
         const prefix = "x".repeat(100 * 1024) + "😀";
         const b = await boot({ messages: [m("a", "A"), { ...m("b", prefix, "char"), saying: "gone" }, m("c", "C")] });

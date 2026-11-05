@@ -261,8 +261,8 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 - `src/ts/storage/resourceClient.ts` owns loaded-epoch checks, `readRefs` continuation and pre-signed unload transport.
   Mutations carry the loaded epoch; a read of another epoch reaches the adapter's restore halt through the registered
   listener. Normal requests pass through `authFetch` in `src/ts/storage/serverAuth.ts`.
-- `readRefs` returns a complete result in request order or throws. Its rounds share an epoch, not a moment: only a
-  character record and its collection entries are guaranteed the same round's read
+- `readRefs` returns a complete result in request order or throws; a `moved` row read is an answer. Its rounds share an
+  epoch, not a moment: only a character record and its collection entries are guaranteed the same round's read
   ([server contract](server-resources.md)).
 
 ## State

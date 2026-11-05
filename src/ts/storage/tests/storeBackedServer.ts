@@ -27,6 +27,7 @@ import {
     type ChangeSet,
     RESOURCE_EPOCH_HEADER,
     type ResourceReadEntries,
+    type ResourceReadRefsResult,
     type ResourceRevisionListing,
 } from "../../../../shared/resources.ts";
 
@@ -70,6 +71,7 @@ export type ServerStore = {
         refs: readonly { kind: unknown; id: string }[],
         options?: {
             chats?: readonly { characterId: string; id: string }[];
+            chatRows?: ResourceReadEntries["chatRows"];
             chatCollections?: readonly string[];
             chatSummaryCollections?: readonly string[];
         },
@@ -77,6 +79,7 @@ export type ServerStore = {
         epoch: string;
         items: { kind: string; id: string; revision: string | null; data: unknown }[];
         chats: (ChatRecord | { characterId: string; id: string; revision: null; data: null })[];
+        chatRows?: ResourceReadRefsResult["chatRows"];
         chatCollections: { characterId: string; order: ChatOrderRecord | null; chats: ChatRecord[] }[];
         chatSummaryCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatSummary[] }[];
     };
@@ -565,6 +568,7 @@ export class StoreBackedServer {
                         ]),
                     ).values(),
                 ],
+                chatRows: body.chatRows,
                 chatCollections: [...new Set<string>(body.chatCollections ?? [])],
                 chatSummaryCollections: [...new Set<string>(body.chatSummaryCollections ?? [])],
             };

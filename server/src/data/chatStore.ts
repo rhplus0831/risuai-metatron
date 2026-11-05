@@ -20,6 +20,8 @@ import {
     type ChatPatchBody,
     type ChatRowDeltaBody,
     type ChatRowDiff,
+    type ChatRowsReadResult,
+    type ResourceReadEntries,
     MAX_FEED_PATCH_BYTES,
     SMALL_FEED_PATCH_BYTES,
     RESOURCE_KIND,
@@ -423,8 +425,8 @@ export type ChatWriteChange = {
 
 /**
  * What a group's feed entry carries beside its ref (`shared/resources.ts` `ChangeSet["chats"]`):
- * its by-id change, as a `patch`, `delta`, or `rowDelta`, and its summary knowledge. Feed-only: never in HTTP
- * results.
+ * its by-id change, as a `patch`, `delta`, `rowDelta`, or `rows` manifest, and its summary knowledge.
+ * Feed-only: never in HTTP results.
  *
  * An applied by-id group carries `summary` at its revision when the summary changed, otherwise
  * `summaryBase`, its stored base revision. The comparison ignores revisions: projection text before
@@ -434,14 +436,14 @@ export type ChatWriteChange = {
  * the transaction without the memo. Thus a note edit with removal of the last row, or leaving an
  * undated last row, still detects a changed time. A changed summary without a message op reads the
  * time once to complete it.
- * Removing and reappending one id keeps summary knowledge but carries no `patch`, `delta`, or `rowDelta`.
+ * Removing and reappending one id keeps summary knowledge but carries no body or row manifest.
  * Whole-chat writes, no-op groups and deletions carry neither summary field: unknown, preserving
  * the summary-list read in `src/ts/storage/chatStore.svelte.ts`. Remembered groups publish no feed
  * entry at all (`server/src/data/resourceStore.ts`).
  */
 export type ChatFeedPayloads = Pick<
     ChangeSet["chats"][number],
-    "patch" | "delta" | "rowDelta" | "summary" | "summaryBase"
+    "patch" | "delta" | "rowDelta" | "rows" | "summary" | "summaryBase"
 >;
 
 /**
@@ -1308,7 +1310,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     );
     // A budgeted read's charges: stored sizes only, so no row text leaves SQLite for an entry left out.
     const selectChatBytes = db.prepare(
-        "SELECT seq, octet_length(meta) AS bytes FROM chats WHERE characterId = ? AND id = ?",
+        "SELECT seq, revision, octet_length(meta) AS bytes FROM chats WHERE characterId = ? AND id = ?",
+    );
+    const sumNamedMessageBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM messages " +
+            "WHERE chatSeq = ? AND id IN (SELECT value FROM json_each(?))",
     );
     const sumMessageBytes = db.prepare(
         "SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM messages WHERE chatSeq = ?",
@@ -1542,24 +1548,27 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     /**
      * One optional feed body, selected by its UTF-8 JSON size: the whole-row patch below
      * `SMALL_FEED_PATCH_BYTES`, else a fitting rowDelta with at least one diff smaller than the
-     * patch, else a fitting patch, else a fitting delta. Metadata is whole in a patch and by field
-     * in both deltas. Inserted rows and rows that cannot be diffed keep their whole values and anchors.
+     * patch, else a fitting patch, else a fitting delta, else a fitting row manifest. Metadata is
+     * whole in a patch and by field in both deltas. Inserted rows and rows that cannot be diffed
+     * keep their whole values and anchors.
      *
      * One pass over the stored row iterator, with separate running sizes. Small patches defer the
      * alternatives; crossing the selection threshold considers the rows already read. Once a size
      * passes the cap its exact value is unnecessary. The iterator stops when all three forms exceed
      * the cap. Stored rows are parsed only for a live diff candidate or the selected whole-row body,
-     * with each after value reused if the diff loses the size comparison.
+     * with each after value reused if the diff loses the size comparison. The manifest takes ids
+     * from `touched`, never the iterator that may have stopped before reading them all.
      */
     function chatFeedChange(
         baseRevision: string,
         count: number,
         meta: { stored: string; fields: () => ChatMetaFields | null } | undefined,
         removed: ReadonlySet<string>,
+        touched: ReadonlySet<string>,
         rows: Iterable<{ id: string; after: string | null; data: string }> | null,
         before: ReadonlyMap<string, string>,
         insertedHere: ReadonlySet<string>,
-    ): Pick<ChatFeedPayloads, "patch" | "delta" | "rowDelta"> {
+    ): Pick<ChatFeedPayloads, "patch" | "delta" | "rowDelta" | "rows"> {
         const head = Buffer.byteLength(JSON.stringify({ baseRevision, count }));
         const capped = (size: number) => Math.min(size, MAX_FEED_PATCH_BYTES + 1);
         let patchBytes = capped(head + (meta === undefined ? 0 : Buffer.byteLength(meta.stored) + ',"meta":'.length));
@@ -1573,6 +1582,26 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             deltaBytes = capped(deltaBytes + size);
             rowDeltaBytes = capped(rowDeltaBytes + size);
         };
+        const manifest = (): Pick<ChatFeedPayloads, "rows"> => {
+            readFields();
+            const rows = {
+                baseRevision,
+                changed: [...touched],
+                removed: [...removed],
+                count,
+                meta: fields
+                    ? [
+                          ...new Set([
+                              ...Object.keys(fields.set),
+                              ...fields.remove,
+                              ...Object.keys(fields.merge ?? {}),
+                              ...Object.keys(fields.mergeUnset ?? {}),
+                          ]),
+                      ]
+                    : [],
+            };
+            return Buffer.byteLength(JSON.stringify(rows)) <= MAX_FEED_PATCH_BYTES ? { rows } : {};
+        };
         // Without a captured row, only an over-cap patch can make the metadata field form useful.
         const considerAlternatives = () =>
             patchBytes > MAX_FEED_PATCH_BYTES ||
@@ -1582,7 +1611,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             deltaBytes > MAX_FEED_PATCH_BYTES &&
             rowDeltaBytes > MAX_FEED_PATCH_BYTES;
         if (considerAlternatives()) readFields();
-        if (allOver()) return {};
+        if (allOver()) return manifest();
         if (removed.size > 0) {
             let index = 0;
             for (const id of removed) {
@@ -1591,7 +1620,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 deltaBytes = capped(deltaBytes + size);
                 rowDeltaBytes = capped(rowDeltaBytes + size);
                 if (considerAlternatives()) readFields();
-                if (allOver()) return {};
+                if (allOver()) return manifest();
             }
         }
         type FeedRow = {
@@ -1628,7 +1657,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             patchBytes = capped(patchBytes + ',"messages":[]'.length);
             deltaBytes = capped(deltaBytes + ',"messages":[]'.length);
             if (considerAlternatives()) readFields();
-            if (allOver()) return {};
+            if (allOver()) return manifest();
             for (const row of rows) {
                 const size =
                     Buffer.byteLength(JSON.stringify(row.after)) +
@@ -1641,7 +1670,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     readFields();
                     diffRows();
                 }
-                if (allOver()) return {};
+                if (allOver()) return manifest();
             }
         }
         const useRowDelta =
@@ -1650,7 +1679,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             rowDeltaBytes <= MAX_FEED_PATCH_BYTES &&
             rowDeltaBytes < patchBytes;
         const usePatch = !useRowDelta && patchBytes <= MAX_FEED_PATCH_BYTES;
-        if (!useRowDelta && !usePatch && deltaBytes > MAX_FEED_PATCH_BYTES) return {};
+        if (!useRowDelta && !usePatch && deltaBytes > MAX_FEED_PATCH_BYTES) return manifest();
         const body: ChatPatchBody & ChatDeltaBody = { baseRevision, count };
         if (usePatch && meta !== undefined) {
             body.meta = JSON.parse(meta.stored) as Record<string, unknown>;
@@ -2270,6 +2299,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         change.count,
                         meta,
                         removedIds,
+                        touched,
                         touched.size > 0 ? change.rows : null,
                         rowsBefore,
                         insertedHere,
@@ -2282,6 +2312,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         count,
                         meta,
                         removedIds,
+                        touched,
                         touched.size > 0 ? touchedRows(row!.seq, touched) : null,
                         rowsBefore,
                         insertedHere,
@@ -2356,6 +2387,45 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         chatRevision(characterId: string, id: string): string | null {
             const row = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq" | "revision"> | undefined;
             return row ? tokens.token(row.seq, row.revision) : null;
+        },
+
+        /**
+         * The named rows in position order, with their immediate predecessors and named metadata
+         * fields as stored. A different revision (including incarnation) or deletion answers moved;
+         * no projection is overlaid, so the client's patch installer can keep its sealed projection.
+         */
+        readRows(request: ResourceReadEntries["chatRows"][number]): ChatRowsReadResult {
+            const { characterId, id, revision, messageIds, meta } = request;
+            const current = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq" | "revision"> | undefined;
+            const token = current ? tokens.token(current.seq, current.revision) : null;
+            if (!current || token !== revision) {
+                return { characterId, id, revision: token, moved: true };
+            }
+            const rows = Array.from(touchedRows(current.seq, new Set(messageIds)), ({ id, after, data }) => ({
+                id,
+                after,
+                message: JSON.parse(data) as Record<string, unknown>,
+            }));
+            if (meta.length === 0) return { characterId, id, revision, rows };
+            const stored = JSON.parse((selectChat.get(characterId, id) as ChatRow).meta) as Record<string, unknown>;
+            const metaFields: ChatMetaFields = {
+                set: Object.fromEntries(
+                    meta.filter((name) => Object.hasOwn(stored, name)).map((name) => [name, stored[name]]),
+                ),
+                remove: meta.filter((name) => !Object.hasOwn(stored, name)),
+            };
+            return { characterId, id, revision, rows, metaFields };
+        },
+
+        /**
+         * Named rows' stored UTF-8 bytes, plus conservative whole metadata bytes when fields are named, before parsing.
+         */
+        rowsBytes({ characterId, id, revision, messageIds, meta }: ResourceReadEntries["chatRows"][number]): number {
+            const row = selectChatBytes.get(characterId, id) as
+                { seq: number; revision: number; bytes: number } | undefined;
+            if (!row || tokens.token(row.seq, row.revision) !== revision) return 0;
+            const messages = sumNamedMessageBytes.get(row.seq, JSON.stringify(messageIds)) as { bytes: number };
+            return messages.bytes + (meta.length > 0 ? row.bytes : 0);
         },
 
         /** How many of the chat's messages have the user role, or null when it does not exist (no message row read). */

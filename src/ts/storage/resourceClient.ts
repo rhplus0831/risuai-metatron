@@ -217,6 +217,7 @@ function readKeys(entries: Partial<ResourceReadEntries>): Set<string> {
     return new Set([
         ...(entries.refs ?? []).map(({ kind, id }) => readKey("refs", kind, id)),
         ...(entries.chats ?? []).map(({ characterId, id }) => readKey("chats", characterId, id)),
+        ...(entries.chatRows ?? []).map(({ characterId, id }) => readKey("chatRows", characterId, id)),
         ...(entries.chatCollections ?? []).map((id) => readKey("chatCollections", id)),
         ...(entries.chatSummaryCollections ?? []).map((id) => readKey("chatSummaryCollections", id)),
     ]);
@@ -247,6 +248,10 @@ function mergeRounds(rounds: ResourceReadRefsResult[], requested: ReadonlySet<st
         rounds.map((round) => round.chats),
         ({ characterId, id }) => readKey("chats", characterId, id),
     );
+    const chatRows = merged(
+        rounds.map((round) => round.chatRows),
+        ({ characterId, id }) => readKey("chatRows", characterId, id),
+    );
     const chatCollections = merged(
         rounds.map((round) => round.chatCollections),
         ({ characterId }) => readKey("chatCollections", characterId),
@@ -259,13 +264,15 @@ function mergeRounds(rounds: ResourceReadRefsResult[], requested: ReadonlySet<st
         ...rounds[0],
         ...(items && { items }),
         ...(chats && { chats }),
+        ...(chatRows && { chatRows }),
         ...(chatCollections && { chatCollections }),
         ...(chatSummaryCollections && { chatSummaryCollections }),
     };
 }
 
 /**
- * Named records, chats (`chats`), characters' whole chat lists with their order (`chatCollections`),
+ * Named records, chats (`chats`), revision-guarded rows and metadata fields (`chatRows`), characters' whole chat lists
+ * with their order (`chatCollections`),
  * and characters' chat summaries with their order (`chatSummaryCollections`).
  *
  * The answer is complete and in request order, or the call throws: the server may stop at its byte
@@ -274,12 +281,14 @@ function mergeRounds(rounds: ResourceReadRefsResult[], requested: ReadonlySet<st
  * (a character's record and its collections come from one round; separate entries may not), and a
  * round of another epoch halts through `epochMismatch` like any other read, discarding all rounds.
  * A continuation that makes no progress throws `ResourceRequestError`; an aborted signal stops
- * continuation. Callers install only the complete result, never partially collected rounds.
+ * continuation. A moved row read is an answered entry; its caller can read the chat whole.
+ * Callers install only the complete result, never partially collected rounds.
  */
 export async function readRefs(
     refs: readonly { kind: string; id: string }[],
     options: {
         chats?: readonly { characterId: string; id: string }[];
+        chatRows?: ResourceReadEntries["chatRows"];
         chatCollections?: readonly string[];
         chatSummaryCollections?: readonly string[];
         signal?: AbortSignal;

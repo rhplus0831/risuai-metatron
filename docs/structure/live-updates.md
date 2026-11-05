@@ -5,8 +5,6 @@
 - Owns the tab's side of the live-update feed: the connection and its reconnect, what a `hello` reconciles, how a
   `change` frame's record refs and patches, chat entries, and lock lists reach the mirror, when a noticed record or chat
   is read instead, the feed locks, and the halt a restore or import causes.
-- Paths: `src/ts/network/eventFeed.ts`, `src/ts/network/socketLiveness.ts`, and the live-update part of
-  `src/ts/storage/resourceSync.svelte.ts`; chat entries and locks go to [chat-store](chat-store.md)'s module.
 - Not here:
   - The save cycle, conflicts, and the reads the loop runs → [resource-sync](resource-sync.md); a live update that
     cannot apply waits for [a cycle or refresh pass](resource-sync.md#save-cycle).
@@ -68,6 +66,9 @@
   Chat revisions advance by applied op count; a feed patch never settles a job hydration.
 - Feed deltas enter through `applyRemoteChatPatch`, never `mergeChatMeta`, which queues a write. `stagedRowDiffs` checks
   all row diffs first (a failure is a miss); diffs alone keep the position index.
+- A `rows` manifest stays on the notice of a loaded, idle chat at its `baseRevision`; the idle read asks `chatRows` for
+  its rows and fields and applies them as a patch (`finishIdleChatRows`). A `moved` answer or a miss reads the chat
+  whole once in the same read (`refreshStaleChat` awaits it).
 - A list that meets this client's order work: `canApplyRemoteCollection` and `applyRemoteCollection` in
   [chat store](chat-store.md#summaries-and-refresh); only the acknowledgement rebase (`keepPendingOrder`) takes a list
   over a queued reorder.
@@ -173,6 +174,5 @@
 
 - Two tabs editing one record converge only through the 409 path: live updates skip a record with an unsent change.
   Decision: Durable Drafts D11, D8, archive.
-- A loaded chat noticed without a by-id change is read whole when idle: not a reply (`rowDelta`), but one write over
-  `MAX_FEED_PATCH_BYTES` (64 KiB) in every form, such as a large paste or a reroll carrier's candidates. Decision: no
-  by-id row read yet (ST04, [server migration audit](../research/deep-audit-with-fable/server-migration-audit.md)).
+- A loaded chat noticed without a body or an applicable `rows` manifest is read whole when idle: a manifest past 64 KiB,
+  a second over-cap write before the row read, or a `moved` answer. Decision: Incremental Chat Transport D6, plan.

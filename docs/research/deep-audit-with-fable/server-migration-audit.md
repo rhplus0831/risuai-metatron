@@ -296,6 +296,13 @@ one is a `rowDelta` of about 1,700 bytes, the final write 218 bytes, and the obs
 of `sync-traffic-measure.mjs` (56 entries): body bytes 1,394,061 before, 91,266 after; over-cap entries 8 before, 4
 after (one large paste, three reroll-carrier `candidates` writes), the before line of the by-id row read.
 
+**Over-cap row reads, after the `rows` manifest** (the `b234d14ff+rows` line of
+[sync-traffic-measure.output.txt](probes/sync-traffic-measure.output.txt), same mixed fixture, whose bodies and body
+bytes are unchanged): all 4 over-cap entries now carry a `rows` manifest, and a loaded observer at the base reads them
+through `chatRows` instead of the whole chat: 394,652 bytes in place of 967,029 (2,897 in place of 6,806 gzipped; this
+fixture's repeated text compresses far better than real chats). The large paste reads 98,639 bytes instead of 168,009;
+each reroll-carrier write 98,671 instead of 266,340, the carrier's row and its `candidates` and no other row.
+
 ### TJ03 — A transform miss loads the whole scope; coarse keys invalidate every row
 
 **Measured and confirmed. P2.**
