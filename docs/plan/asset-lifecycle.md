@@ -3,7 +3,7 @@
 Status: drafted 2026-11-03, revised 2026-11-04 after the design audit and again after its adversarial challenge
 ([plan design audit](../audit/plan-design-audit-2026-11-04.md), items AL1–AL5, X7, X8, and the same day's
 independent cross-audit of the sweep's check-to-unlink gap; the challenge's findings are cited as "challenge
-F1"–"F6"); landed: 1 (`b7095d591`), 2 (`dd35ebc52`). Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q3
+F1"–"F6"); landed: 1 (`b7095d591`), 2 (`dd35ebc52`), 3 (`0c3e7d2d0`). Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q3
 were answered by the owner on 2026-11-03 (the recommended option each time; Q1's minimum is superseded by D4's
 3-day floor). Code anchors re-checked at `1550ebdd3`; verify them again before editing (STRUCTURE.md protocol
 step 5).
@@ -719,6 +719,20 @@ with Incremental Chat Transport Slices 1, 3, and 4 (`shared/resources.ts`, and `
   entry, and its index rows; a manual snapshot carries its label and counts toward the unpinned 20 until
   pinned; a pin whose file is gone is not listed; the restore still works through `stageCopy` while retention
   runs; the mark still indexes through `stageCopy`; the client calls send the right methods and bodies.
+- Landed as `0c3e7d2d0` with these deviations (approved by the orchestrator during the run):
+  - `heldBytes` is in the report's `snapshots[]` (D9) only, not in `BackupSnapshotInfo` or `GET /api/backups`:
+    it needs the whole retention graph. Slice 4 reads it from the report.
+  - `setPinned(id, { pinned?, label? })`; an omitted field keeps its current value, resolved inside
+    `exclusive`. A label is trimmed, empty is null, over 200 characters is a 400.
+  - `remove` also refuses (409) a snapshot a restore holds through `snapshots.retain`. A corrupt `pins.json`
+    fails the manager's start (only a missing file is empty); a failed durable write keeps a snapshot pinned
+    in memory if either the old or the new state pinned it.
+  - The mark re-checks the snapshot file synchronously before writing its index rows, and an `onRemoved`
+    listener drops a removed or rotated snapshot's rows. The manual snapshot takes the tick's disk preflight
+    (507). The client surfaces a snapshot 409 as `ResourceRequestError` with the server's message.
+  - Files beyond the list: `shared/assetLifecycle.ts` (the report's snapshot type), `shared/diagnostics.ts`
+    and its test (the backup routes in `ROUTE_TEMPLATES`), `src/ts/storage/tests/resourceClientMock.ts`, and
+    `self-host-server.md` (the rename).
 
 ### Slice 4: the Storage section of Advanced settings (D9's UI, D14's action; needs 2 and 3)
 
