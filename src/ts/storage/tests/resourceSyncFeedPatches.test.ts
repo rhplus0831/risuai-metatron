@@ -204,7 +204,14 @@ describe("feed patches through the tab save adapter", () => {
         const b = await boot();
         const before = JSON.parse(JSON.stringify(mirror(b)));
         const baseRevision = b.chat.heldChatRevision(refK);
-        const carrier = { ...m("b", "B", "char"), candidates: ["한".repeat(24 * 1024)] };
+        const carrier = {
+            ...m("b", "B", "char"),
+            candidates: [
+                { id: "previous", data: "한".repeat(24 * 1024) },
+                { id: "current", data: "B" },
+            ],
+            candidatesRevision: 1,
+        };
         remote(b, [
             { op: "setMessage", message: carrier },
             { op: "append", anchor: { after: "b" }, messages: [m("inserted", "I")] },
@@ -236,7 +243,14 @@ describe("feed patches through the tab save adapter", () => {
     it("applies whole scriptstate and absent-field removal from a reroll manifest without a whole read", async () => {
         const b = await boot({ meta: { scriptstate: { keep: "same", old: "remove" }, folderId: "gone" } });
         const before = JSON.parse(JSON.stringify(mirror(b)));
-        const carrier = { ...m("b", "B", "char"), candidates: ["x".repeat(MAX_FEED_PATCH_BYTES + 1)] };
+        const carrier = {
+            ...m("b", "B", "char"),
+            candidates: [
+                { id: "previous", data: "x".repeat(MAX_FEED_PATCH_BYTES + 1) },
+                { id: "current", data: "B" },
+            ],
+            candidatesRevision: 1,
+        };
         remote(b, [
             { op: "setMessage", message: carrier },
             { op: "begin", id: "b", generationId: "reroll" },
@@ -315,7 +329,14 @@ describe("feed patches through the tab save adapter", () => {
         async (state) => {
             const b = await boot();
             const before = JSON.parse(JSON.stringify(mirror(b)));
-            const carrier = { ...m("b", "B", "char"), candidates: ["x".repeat(MAX_FEED_PATCH_BYTES + 1)] };
+            const carrier = {
+                ...m("b", "B", "char"),
+                candidates: [
+                    { id: "previous", data: "x".repeat(MAX_FEED_PATCH_BYTES + 1) },
+                    { id: "current", data: "B" },
+                ],
+                candidatesRevision: 1,
+            };
             remote(b, [{ op: "setMessage", message: carrier }]);
             const requestedRevision = b.fake.chat("c", "k")!.revision;
             b.live.paused = true;

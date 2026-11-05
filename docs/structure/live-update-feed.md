@@ -15,46 +15,51 @@
 - `server/src/data/changeFeed.ts`: the feed (`createChangeFeed`, `ChangeFeedEvent`): publish order and listener
   failures.
 - `server/src/routes/events.ts`: the live-update socket (`createEventSockets`): its `hello`, the fan-out, and
-  [frame admission](#frame-admission) (`send`, `MAX_BUFFERED_BYTES`). WS upgrade `/api/events/ws` (`EVENT_FEED_PATH`),
-  dispatched by `attachWebSocket` in `server/src/app.ts` outside the HTTP app, so no HTTP limiter; JWT in the
-  `risu-auth` query or header, never the password; `proto` logged, never enforced.
-- `shared/events.ts`: the frames (`EventFeedFrame`: `hello`, `change`, `memoryTask`, `epoch`, `ping`), `ChatStreaming`,
-  `ChatStreamingSnapshot`, `MemoryTaskEntry`.
+  [frame admission](#frame-admission). WS upgrade `/api/events/ws` (`EVENT_FEED_PATH`), dispatched by `attachWebSocket`
+  in `server/src/app.ts` outside the HTTP app, so no HTTP limiter; JWT in the `risu-auth` query or header, never the
+  password; `proto` logged, never enforced.
+- `shared/events.ts`: the frames (`EventFeedFrame`: `hello`, `change`, `memoryTask`, `handoff`, `clients`, `epoch`,
+  `ping`), the one client message (`EventFeedClientMessage`), `ChatStreaming`, `ChatStreamingSnapshot`,
+  `MemoryTaskEntry`.
 - `shared/resources.ts`: what a `change` frame carries (`ChangeSet`, `ChatDeltaBody`, `ChatRowDeltaBody`) and its sizes
   (`MAX_FEED_PATCH_BYTES`, `SMALL_FEED_PATCH_BYTES`, `MAX_FEED_PUBLICATION_PATCH_BYTES`).
-- `server/src/data/chatStore.ts`, feed parts: a by-id group's entry, built in `applyGroup` (`ChatFeedPayloads`,
-  `chatFeedChange`, `chatRowDiff`), and the writer's own change (`ChatWriteChange`).
-- `server/src/data/resourceStore.ts`, feed parts: the publishing scope (`publishing`, `recordChat`, `mergeChanges`,
-  `coalescedChat`, `budgetedEntries`), `applyChanges`' `changes` and `committed` options (`WrittenChanges`), and
+- `server/src/data/chatStore.ts`, feed parts: a by-id group's [entry](#feed-chat-entries) and the writer's own change
+  (`ChatWriteChange`).
+- `server/src/data/resourceStore.ts`, feed parts: the publishing scope ([coalescing](#coalescing-and-publish-order),
+  [budget](#publication-budget)), `applyChanges`' `changes` and `committed` options (`WrittenChanges`), and
   `publishStreaming`.
 
 ## Flows
 
 ### Live-update hello
 
-`createEventSockets` samples epoch, locks (`streaming`), memory statuses (`memoryTasks`), optional `hello.digest`
-(`revisionDigest`) and `hello.cursor` (`resources.cursor()`) synchronously before registration; `server/src/app.ts`
-wires the samplers. Failed digest/cursor samples omit that field; other failures close.
-[Reconciliation](live-updates.md#feed-connection) uses the map, bounded replay, or whole listing.
+`createEventSockets` samples epoch, locks (`streaming`), memory statuses (`memoryTasks`), open handoff offers
+(`handoffs`), registered clients (`clients`), optional `hello.digest` (`revisionDigest`) and `hello.cursor`
+(`resources.cursor()`) synchronously before registration; `server/src/app.ts` wires the samplers. Failed digest/cursor
+samples omit that field; other failures close. [Reconciliation](live-updates.md#feed-connection) uses the map, bounded
+replay, or whole listing.
 
 `change.cursor` is its refs' newest committed log row, nested commits included, never resampled during dispatch.
 Streaming-only frames have none; older servers omit both cursors.
 
 ### Frame admission
 
-Every frame but the `hello` is admitted per socket by its own UTF-8 size, measured once for every socket (`send`,
-`MAX_BUFFERED_BYTES`, 4 MiB): a socket the frame would push past the bound is terminated before the frame is queued, the
-other sockets still get it, and its client reconnects and [reconciles](#live-update-hello). The `hello` is checked on
-the queued bytes alone. What a `change` frame's patches may add is bounded by the
-[publication budget](#publication-budget).
+Every frame but the `hello` is admitted per socket by its own UTF-8 size (`send`, `MAX_BUFFERED_BYTES`, 4 MiB; the rules
+are on both): a socket that cannot take it is terminated, and its client [reconciles](#live-update-hello). What a
+`change` frame's patches may add is bounded by the [publication budget](#publication-budget).
+
+### Presence
+
+A socket's `register` message lists it in the `clients` frame every socket gets (rules: `createEventSockets` comment);
+the tab side is [feed connection](live-updates.md#feed-connection).
 
 ### Own chat changes
 
 - A server writer that passes `changes: true` with its `committed` hook to `applyChanges` gets
   `committed(applied, written)`: `written.chats` holds each by-id chat group's change as stored (`ChatWriteChange`),
   aligned with `applied.chats`, uncapped, `undefined` for a group without a by-id change.
-- The writer is a generation job (`server/src/jobs/generationJobs.ts`); `refreshChatAfterWrite` in
-  `server/src/jobs/jobScope.ts` lays the change onto the job's chat ([server generation](server-generation.md)).
+- The writer is a generation job; `refreshChatAfterWrite` (`jobs/jobScope.ts`) lays the change onto the job's chat
+  ([server generation](server-generation.md)).
 - The feed's capped body is taken from the same change; the [publication budget](#publication-budget) and the HTTP batch
   body leave `written` as it is.
 

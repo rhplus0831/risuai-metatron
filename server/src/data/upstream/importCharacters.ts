@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { CharacterShapeError, normalizeCharacter } from "../../../../shared/characters.ts";
-import type { Chat } from "../../../../shared/database.ts";
+import type { Chat, Message, MessageCandidate } from "../../../../shared/database.ts";
 import type { ChatGroup } from "../../../../shared/chats.ts";
 import { ModuleShapeError, upgradeLorebook } from "../../../../shared/modules.ts";
+import { candidateOf, isScriptstateSnapshot, trimCandidates } from "../../../../shared/rerollCandidates.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import type { UpstreamImportReport, UpstreamImportSelection } from "../../../../shared/upstreamBackup.ts";
 import { isPlainObject } from "../../../../shared/valueKinds.ts";
@@ -47,6 +48,8 @@ import { kindOf, ownCopy, PendingReport, setOwn, storedValue, tryNormalize } fro
  *   missing one is unset). A missing payload keeps the chat without messages (`cold-missing`).
  * - Ids: a valid chat id unique in its character is kept, else replaced; message `chatId`s likewise
  *   within the chat (`normalizeMessage` then drops an invalid stored translation).
+ * - PocketRisu/RisuBard message swipes become reroll candidates with the displayed text selected;
+ *   only the newest non-comment reply keeps RisuBard's variable checkpoints (`message-swipes`).
  * - Bindings: the converted selected prompt and model preset, `bindedPersona` when it names a
  *   converted persona and else the selected persona, no `bindingReview`.
  * - Toggles: upstream reads a chat's `GLGlobalVariables` value first whenever it is not `""` or
@@ -606,13 +609,115 @@ function convertMessages(value: unknown, label: string, notes: PendingReport): R
             copy.chatId = uniqueId(seen);
         }
         seen.add(copy.chatId as string);
-        const normalized = normalizeMessage(copy);
-        if (Object.hasOwn(copy, "translation") && !Object.hasOwn(normalized, "translation")) {
+        messages.push(copy);
+    }
+    return convertMessageSwipes(messages, label, notes);
+}
+
+/** Converts foreign swipes, keeping the displayed reply selected and variable copies only on the newest reply. */
+function convertMessageSwipes(
+    messages: Record<string, unknown>[],
+    label: string,
+    notes: PendingReport,
+): Record<string, unknown>[] {
+    const newest = messages.findLast((message) => !message.isComment);
+    return messages.map((input) => {
+        const latestReply = input === newest && input.role === "char";
+        const hadCandidates = Object.hasOwn(input, "candidates");
+        if (!latestReply) {
+            delete input.scriptstateCheckpoint;
+            if (Array.isArray(input.candidates)) {
+                input.candidates = input.candidates.map((candidate) => {
+                    if (!isPlainObject(candidate)) return candidate;
+                    const { scriptstateAfter: _after, ...copy } = candidate;
+                    return copy;
+                });
+            }
+        }
+        let message = normalizeImportedMessage(input, label, notes);
+        const swipes: { data: string; originalIndex?: number }[] = [];
+        let selected: number | undefined;
+        const convertSwipes = message.role === "char" && Array.isArray(message.swipes) && !hadCandidates;
+        if (convertSwipes) {
+            (message.swipes as unknown[]).forEach((data, originalIndex) => {
+                if (typeof data !== "string") return;
+                if (originalIndex === message.swipeId) selected = swipes.length;
+                swipes.push({ data, originalIndex });
+            });
+            if (selected === undefined) {
+                const matching = swipes.flatMap((swipe, index) => (swipe.data === message.data ? [index] : []));
+                if (matching.length === 1) selected = matching[0];
+            }
+            if (selected === undefined || swipes[selected].data !== message.data) {
+                selected = swipes.length;
+                swipes.push({ data: message.data as string });
+            }
+        }
+        const checkpoints = Array.isArray(message.scriptstateSwipeCheckpoints)
+            ? message.scriptstateSwipeCheckpoints
+            : [];
+        const selectedSwipe = selected === undefined ? undefined : swipes[selected].originalIndex;
+        const selectedCheckpoint = selectedSwipe === undefined ? undefined : checkpoints[selectedSwipe];
+        if (latestReply) {
+            const checkpoint = isPlainObject(message.scriptstateCheckpoint) ? message.scriptstateCheckpoint : undefined;
+            const swipeCheckpoint = isPlainObject(selectedCheckpoint) ? selectedCheckpoint : undefined;
+            const swipeBefore = swipeCheckpoint?.before;
+            // Null is a snapshot: unlike an absent half, it must not fall back to another swipe's state.
+            const baseline = checkpoint
+                ? checkpoint.before
+                : isScriptstateSnapshot(swipeBefore)
+                  ? swipeBefore
+                  : undefined;
+            const after = checkpoint?.after !== undefined ? checkpoint.after : swipeCheckpoint?.after;
+            if (baseline !== undefined) {
+                message.scriptstateCheckpoint = {
+                    before: baseline,
+                    ...(isScriptstateSnapshot(after) ? { after } : {}),
+                };
+            }
+        }
+        delete message.swipes;
+        delete message.swipeId;
+        delete message.scriptstateSwipeCheckpoints;
+        if (convertSwipes) {
+            const ids = new Set<string>();
+            const candidates = swipes.map(({ data, originalIndex }, index): MessageCandidate => {
+                let id = randomUUID().replaceAll("-", "");
+                while (ids.has(id)) id = randomUUID().replaceAll("-", "");
+                ids.add(id);
+                if (index === selected) return candidateOf(message as unknown as Message, id);
+                const candidate: MessageCandidate = { id, data };
+                const checkpoint = originalIndex === undefined ? undefined : checkpoints[originalIndex];
+                if (latestReply && isPlainObject(checkpoint) && isScriptstateSnapshot(checkpoint.after)) {
+                    candidate.scriptstateAfter = checkpoint.after;
+                }
+                return candidate;
+            });
+            message = trimCandidates({ ...message, candidates, selected } as unknown as Message, () => {
+                notes.excluded("invalid-data", label);
+            }) as unknown as Record<string, unknown>;
+        }
+        message = normalizeImportedMessage(message, label, notes);
+        if ((convertSwipes && message.candidates) || (latestReply && message.scriptstateCheckpoint)) {
+            notes.converted("message-swipes", label);
+        }
+        return message;
+    });
+}
+
+/** Tolerant message validation reports each malformed optional field it removes. */
+function normalizeImportedMessage(
+    message: Record<string, unknown>,
+    label: string,
+    notes: PendingReport,
+): Record<string, unknown> {
+    const normalized = normalizeMessage(message);
+    for (const field of ["translation", "candidates", "selected", "candidatesRevision", "scriptstateCheckpoint"]) {
+        if (Object.hasOwn(message, field) && !Object.hasOwn(normalized, field)) {
             notes.excluded("invalid-data", label);
         }
-        messages.push(normalized);
     }
-    return messages;
+    return normalized;
 }
 
 /**

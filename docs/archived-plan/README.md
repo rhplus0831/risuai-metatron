@@ -55,6 +55,9 @@ git show aff71b423:docs/plan/per-event-server-work.md
 git show 0009c22f3:docs/plan/server-byte-budgets.md
 git show 78dbb078f:docs/plan/server-plugin-runtime.md
 git show 786dfc3d3:docs/plan/guides-to-source.md
+git show c34f69365:docs/plan/job-handoff.md
+git show 72830e9f6:docs/plan/asset-lifecycle.md
+git show a72c5f736:docs/plan/render-work-budget.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -113,6 +116,9 @@ it is not a current architecture guide.
 | Structured Memory                        | `0cd49a3d3`: `docs/plan/structured-memory.md`                             | [structured memory](../structure/structured-memory/records.md), [writer](../structure/structured-memory/writer.md), [read path](../structure/structured-memory/read.md), [lifecycle](../structure/structured-memory/lifecycle.md), [rebuild](../structure/structured-memory/rebuild.md), [pages](../structure/structured-memory/pages.md)                                                                                                                                                   |
 | Server Plugin Runtime (retired unbuilt)  | `78dbb078f`: `docs/plan/server-plugin-runtime.md`                         | None: no slice landed; [plugins](../structure/plugin-sandbox.md) keeps the tab runtime and the skip-and-replay path                                                                                                                                                                                                                                                                                                                                                                         |
 | Guides To Source                         | `786dfc3d3`: `docs/plan/guides-to-source.md`                              | [STRUCTURE](../../STRUCTURE.md) (Doc Maintenance, `ownership.json`), [build/test platforms](../structure/build-test-platforms.md) (`util/docsBudget.mjs`, `util/docsLedger.mjs`, `util/guideReads.mjs`)                                                                                                                                                                                                                                                                                     |
+| Job Handoff                              | `c34f69365`: `docs/plan/job-handoff.md`                                   | [server](../structure/server-generation.md) (Job handoff, Limitations), [live-update feed](../structure/live-update-feed.md), [network and jobs](../structure/network-jobs.md), [chat pipeline](../structure/chat-pipeline.md), [plugins](../structure/plugin-sandbox.md) (Job owner presence), [test harness](../structure/test-harness.md) (`checkJobHandoff.mjs`)                                                                                                                        |
+| Asset Lifecycle                          | `72830e9f6`: `docs/plan/asset-lifecycle.md`                               | [self-host server](../structure/self-host-server.md) (Asset mark, Storage routes, Limitations), [server resources](../structure/server-resources.md) (Snapshots and restore, pins), [assets](../structure/assets.md) (Asset client, Asset queues), [settings and i18n](../structure/settings-i18n.md) (Storage section), [test harness](../structure/test-harness.md) (`checkAssetLifecycle.mjs`)                                                                                           |
+| Render Work Budget                       | `a72c5f736`: `docs/plan/render-work-budget.md`                            | [CBS and rendering](../structure/cbs-rendering.md), [UI and theming](../structure/ui-theming.md), [translation](../structure/translation.md), [test harness](../structure/test-harness.md) (`measureRenderWork.mjs`)                                                                                                                                                                                                                                                                        |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -125,7 +131,7 @@ The archived Status and Decisions paragraphs list its commits and the choices ea
 Still open: `e2e/settingsPages.spec.ts` was updated in each slice but never run; the fetched
 WaveSpeed model list still resets when Image Generation is left; the subtitle tool's Whisper mode
 uses the OpenAI key with no status or link there.
-Data-Loss Under Concurrency (the fix plan for `docs/audit/data-loss-concurrency-2026-10-18.md`)
+Data-Loss Under Concurrency (the fix plan for `docs/manual-audit/data-loss-concurrency-2026-10-18.md`)
 landed all 18 slices on 2026-10-18 and 2026-10-19; the archived Status line lists each slice's
 commit and its "Decisions made by landed slices" paragraph records the choices the slices made
 (1a's `setMessage` rule, 1c's summary merge rule, 5a's `onStorageDiscarded` event, 6b's 100-id
@@ -1066,6 +1072,52 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     path, and a `Files` generator from the owned modules' exports.
   - Found by the run: 51 findings, as 34 new entries and one updated entry, across most sections of
     `docs/research/found-issues.md`.
+- Job Handoff:
+  - All four slices landed on 2026-11-05 (plan-runner, on `dev`): `d60741baf` (server creator/owner,
+    takeover tickets, offers), `5ea1222a4` (tab roles, worker policy, the creator's view), `c9344075d` (presence
+    and the manual handoff), `0a9c56d20` (the two-tab browser driver and the final guide pass, after the `dev`
+    merge `2f48542c5`).
+  - Owner decisions recorded in the server-generation guide's Limitations: `handoff: "prefer"` does not guarantee
+    that the first callback runs on the worker (no first-dispatch gate), and a queued root cascaded `disconnected`
+    behind another job's expired root can end before the `absent` offer's 50 s budget.
+  - Still open: the device checks (a phone with its screen off handing a job to a PC worker, a PC worker minimized
+    for over 5 minutes, the phone's toast, stream, Stop and "Take back", the "Hand off to" menu across two browsers).
+  - Found by the run: 4 entries in `docs/research/found-issues.md` (a retaken job's dropped live stream, a current
+    owner taking its own offer, the role event's missing `clientName`, a cancelled hook overlapping the worker's
+    next callback).
+- Render Work Budget:
+  - All slices landed on 2026-11-05 (plan-runner, on `dev`; Slice 5 split into 5a, the baseline before Slices 1–4,
+    and 5b, the comparison after): obsolete row renders abort, failures are classified transient or final, shared
+    transform and translation requests are cancelled only when their last subscriber leaves, translation has a
+    global cap of 10 provider requests, identical CSS is scoped once in a bounded cache, and the screenshot export
+    writes capped PNG pages through a Blob.
+  - Measured in `docs/audit/render-work-budget-2026-11-05.md`: three acceptance items met (no parser or
+    translation call after a switch, one preparation per sheet); two not met and moved to
+    `docs/research/found-issues.md` by owner decision (more than one transform chunk in flight at a switch, the
+    screenshot peak growing with rows). Traces stay out of git in the main checkout's git directory.
+  - Not planned (the plan's Later list): F3 and F6 (the mount profile did not settle between single runs), an
+    early release of a cancelled chunk's server snapshot, reversing Q4 (let dispatched transform requests finish)
+    or Q2 (selected-range export), and the `measureChats.mjs` settling delay; F1 and the per-chat message index
+    belong to the Incremental Chat Transport plan.
+  - Owner device checklist, open: Firefox and Safari page size at Safari's canvas limit, iOS Safari's canvas area
+    against `MAX_EXPORT_PIXELS`, a multi-page export in an image viewer, a failed export's error alert and scroll
+    restore in a real browser, a phone switching chats mid-auto-translate, far-row containment.
+  - Found by the run: five entries in `docs/research/found-issues.md` (the two unmet items, the black page fill,
+    the run left alive by raw streaming, `getFileSrc` never rejecting).
+- Asset Lifecycle:
+  - All five slices landed on 2026-11-05 (plan-runner, on `dev`): `b7095d591` (the mark, the ledger, the report and
+    scan routes, the daily scan), `dd35ebc52` (the sweep, `claimAssetKey`, the disk preflights, the restore retention
+    hold), `0c3e7d2d0` (snapshot pins, labels, manual snapshots, deletion, `pin` → `stageCopy`), `967cc5be1` (the
+    Storage section of Advanced settings), `7d6ff9970` (the browser driver), with `dev` merged in at `68fe47877`,
+    `36a8e6e1e`, and `1f85bea4b`. Each slice's deviations from its text are listed under it in the archived file.
+  - Owner-visible behavior: a card import ends with an error when a key its record names is gone and its bytes
+    are not in hand; the sweep's synchronous turn re-marks the whole live store (about 1.7 s idle, 2.8–3.1 s under
+    load on the audit seed, `docs/audit/asset-scan-2026-11-05.md`), during which every request waits.
+  - Still open: the device checks (a Docker volume on a nearly full disk: the 507 answers of the restore, the
+    backup import, the upstream commit, the upstream export prepare, and the manual snapshot, and the snapshot
+    tick logging once and skipping); a clicked-through check of the Storage panel beyond the driver.
+  - Found by the run: 2 entries in `docs/research/found-issues.md` (a declined lowLevelAccess on a JSON card
+    falling through to the off-spec import, `docs:owner` sending the asset lifecycle client to persistence).
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.

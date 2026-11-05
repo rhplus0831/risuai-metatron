@@ -120,11 +120,19 @@
     let isBlockActive = $derived(blockEditEnabled && isInViewport);
     let isDragActive = $derived(dragEditEnabled && isInViewport);
 
+    const textContentCache = new WeakMap<HTMLElement, { text: string | null; result: boolean }>();
+
     // Check if element has text content (excluding buttons)
     function hasTextContent(el: HTMLElement): boolean {
+        const text = el.textContent;
+        const cached = textContentCache.get(el);
+        if (cached && cached.text === text) return cached.result;
+
         const clone = el.cloneNode(true) as HTMLElement;
         clone.querySelectorAll("button").forEach((btn) => btn.remove());
-        return !!clone.textContent?.trim();
+        const result = !!clone.textContent?.trim();
+        textContentCache.set(el, { text, result });
+        return result;
     }
 
     // Create edit/delete button pair
@@ -179,7 +187,7 @@
 
     // Show/hide block edit button
     function showBlockButton(block: HTMLElement) {
-        if (currentHoveredBlock === block && blockButtonWrapper?.style.display === "block") return;
+        if (currentHoveredBlock === block && blockButtonWrapper?.style.display === "flex") return;
 
         currentHoveredBlock = block;
 
@@ -591,19 +599,28 @@
                     return;
                 }
 
+                const elementAtPoint = document.elementFromPoint(lastMouseX, lastMouseY);
+                const block = elementAtPoint ? (elementAtPoint.closest(SELECTOR) as HTMLElement | null) : null;
+                if (
+                    block &&
+                    block === currentHoveredBlock &&
+                    block !== bodyRoot &&
+                    bodyRoot.contains(block) &&
+                    blockButtonWrapper?.style.display === "flex" &&
+                    hasTextContent(block)
+                ) {
+                    return;
+                }
+
                 if (currentHoveredBlock) {
                     if (isMouseInButtonZone(lastMouseX, lastMouseY, currentHoveredBlock)) {
                         return;
                     }
                 }
 
-                const elementAtPoint = document.elementFromPoint(lastMouseX, lastMouseY);
-                if (elementAtPoint) {
-                    const block = elementAtPoint.closest(SELECTOR) as HTMLElement | null;
-                    if (block && block !== bodyRoot && bodyRoot.contains(block) && hasTextContent(block)) {
-                        showBlockButton(block);
-                        return;
-                    }
+                if (block && block !== bodyRoot && bodyRoot.contains(block) && hasTextContent(block)) {
+                    showBlockButton(block);
+                    return;
                 }
 
                 hideBlockButton();

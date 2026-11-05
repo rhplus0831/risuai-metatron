@@ -1,3 +1,4 @@
+import type { RerollAttemptWrite } from "./chatStore.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { closeSync, lstatSync, mkdirSync, openSync, type Stats } from "node:fs";
@@ -355,6 +356,8 @@ export type WrittenChanges = { chats: (ChatWriteChange | undefined)[] };
 type ApplyChangesOptions = {
     epoch?: string;
     jobToken?: string;
+    /** Job-only attempt control; provenance changes commit or roll back with the chat writes. */
+    rerollAttempt?: RerollAttemptWrite;
     inTransaction?: ApplyChangesTransaction;
     /** Also build the write's own chat changes, for `committed`. */
     changes?: boolean;
@@ -1087,6 +1090,7 @@ export function createResourceStore(options: {
 
     function beginTransaction() {
         db.exec("BEGIN IMMEDIATE");
+        chatTables.beginTransaction();
         transactionInvalidations = new Map();
         transactionChanges = new Map();
         transactionMessageChanges = [];
@@ -1109,6 +1113,7 @@ export function createResourceStore(options: {
         }
         if (newestCursor !== undefined) pruneChanges.run(changeLogLimit);
         db.exec("COMMIT");
+        chatTables.commitTransaction();
         if (newestCursor !== undefined && publishingScope) {
             publishingScope.changes.cursor = Math.max(publishingScope.changes.cursor ?? 0, newestCursor);
         }
@@ -1129,6 +1134,7 @@ export function createResourceStore(options: {
 
     /** Rolls back the open transaction, if any, dropping its refs, invalidations and message changes. */
     function rollbackTransaction() {
+        chatTables.rollbackTransaction();
         transactionChanges = null;
         transactionInvalidations = null;
         transactionMessageChanges = null;
@@ -1660,7 +1666,12 @@ export function createResourceStore(options: {
             chats?: unknown;
             chatOrders?: unknown;
         },
-        options: { epoch?: string; jobToken?: string; inTransaction?: ApplyChangesTransaction },
+        options: {
+            epoch?: string;
+            jobToken?: string;
+            rerollAttempt?: RerollAttemptWrite;
+            inTransaction?: ApplyChangesTransaction;
+        },
         written?: WrittenChanges,
     ): AppliedChanges {
         assertNotInTransaction();
@@ -1862,6 +1873,7 @@ export function createResourceStore(options: {
                 conflicts.length > 0,
                 options.jobToken,
                 written !== undefined,
+                options.rerollAttempt,
             );
             conflicts.push(...chatOutcome.conflicts);
             if (conflicts.length > 0) {
@@ -1955,6 +1967,56 @@ export function createResourceStore(options: {
         /** Committed writes since the store opened. */
         writeCount(): number {
             return writeCount;
+        },
+
+        /**
+         * Synchronous retention recheck on the writer's connection. Fixed schema identifiers only;
+         * needles are bound parameters, including the JSON escape superset. The lifecycle supplies
+         * only generic recognition needles; it narrows selected text in JS before parsing, avoiding
+         * per-key SQL predicates over every row's full text. Reads every checkpoint
+         * page conservatively. Missing tables/columns, invalid text, or a throwing visitor abort the
+         * caller's batch; no transaction or await separates this read from its synchronous deletes.
+         */
+        readAssetReferenceText(
+            filter: { needles: readonly string[]; lowerNeedles: readonly string[] },
+            visit: (text: string, json: boolean) => void,
+        ): void {
+            assertOpen();
+            const columns: [string, string, boolean][] = [
+                ["resources", "data", true],
+                ["chats", "meta", true],
+                ["messages", "data", true],
+                ["chatCheckpoints", "name", false],
+                ["chatCheckpoints", "preview", true],
+                ["checkpointPages", "text", true],
+            ];
+            for (const table of [
+                "memory_pages",
+                "memory_events",
+                "memory_threads",
+                "memory_runs",
+                "memory_staged_pages",
+                "memory_staged_events",
+                "memory_staged_threads",
+                "memory_staged_runs",
+            ]) {
+                columns.push([table, "data", true]);
+                if (!table.endsWith("runs")) columns.push([table, "title", false]);
+            }
+            for (const [table, column, json] of columns) {
+                const needles = [...new Set([...filter.needles, ...(json ? ["\\u", "\\/"] : [])])];
+                const lower = [...new Set(filter.lowerNeedles)];
+                const predicate =
+                    [
+                        ...needles.map(() => `instr(${column}, ?) > 0`),
+                        ...lower.map(() => `instr(lower(${column}), ?) > 0`),
+                    ].join(" OR ") || "0";
+                const query = db.prepare(`SELECT ${column} AS text FROM ${table} WHERE ${predicate}`);
+                for (const row of query.iterate(...needles, ...lower)) {
+                    if (typeof row.text !== "string") throw new Error(`Invalid reference text in ${table}.${column}`);
+                    visit(row.text, json);
+                }
+            }
         },
 
         /** Cold checkpoint data: writes count toward snapshots without publishing chat changes. */
@@ -2859,6 +2921,11 @@ export function createResourceStore(options: {
             return { epoch, kinds: result };
         },
 
+        /** Drop process-local provenance when a job's token ends without a final write. */
+        dropRerollAttempts(token: string) {
+            chatTables.dropRerollAttempts(token);
+        },
+
         /** `applyChanges` with resource operations only; returns their tokens in operation order. */
         applyBatch(
             operations: readonly ResourceBatchOperation[],
@@ -3058,6 +3125,7 @@ export function createResourceStore(options: {
                 }
             }
             epoch = nextEpoch;
+            chatTables.dropRerollAttempts();
             writeCount += 1;
             patchBases.clear();
             chatTables.forgetLastMessageTimes();

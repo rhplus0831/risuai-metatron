@@ -619,6 +619,38 @@ describe("a running sequence part", () => {
         },
     );
 
+    it("retains every delivered disconnected listener from command parts in missed instead of skipped", async () => {
+        const h = fixture({ hooks: { ...NO_GENERATION_HOOKS, chatOutput: true } });
+        const id = h.create();
+        let owner = await h.follow(id);
+        h.start.resolve();
+        const missed: { name: "chatOutput"; payload: unknown }[] = [];
+        for (const part of [1, 2, 3]) {
+            await owner.until((events) =>
+                events.some((event) => event.type === "callback" && event.name === "chatOutput"),
+            );
+            const callback = owner.events.find(
+                (event): event is Extract<GenerationEvent, { type: "callback" }> =>
+                    event.type === "callback" && event.name === "chatOutput",
+            )!;
+            missed.push({ name: "chatOutput", payload: callback.payload });
+            await owner.close();
+            h.setNow(1_000_000 + part * CALLBACK_TIMEOUT_MS);
+            await vi.advanceTimersByTimeAsync(CALLBACK_TIMEOUT_MS);
+            h.jobs.callbackDrained(id, "owner", callback.id);
+            if (part < 3) owner = await h.follow(id);
+        }
+        await h.jobs.drain();
+        const terminal = h.jobs.status(id, "owner")?.terminal;
+        expect(terminal).toMatchObject({ type: "done", sequence: { total: 3, sent: 3 }, missed });
+        expect(terminal).not.toHaveProperty("skipped");
+        expect(new Set(missed.map((entry) => (entry.payload as { messageId: string }).messageId)).size).toBe(3);
+        const late = await h.follow(id);
+        await late.until((events) => events.some((event) => event.type === "done"));
+        expect(late.events.find((event) => event.type === "done")).toEqual(terminal);
+        expect(h.receipts.read(id)).toMatchObject({ clientId: "owner", status: { terminal: { missed } } });
+    });
+
     it("finishes callback-free parts after the owner's socket closes after part one", async () => {
         const h = fixture();
         const held = holdSecond(h);

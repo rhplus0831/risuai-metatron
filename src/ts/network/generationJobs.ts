@@ -38,7 +38,7 @@ import { dropJobStage, setJobStage } from "../process/jobStages";
 
 /**
  * The client transport of server generation jobs (`shared/jobs.ts`): create, status, abort, and the
- * owner socket. `applyGenerationEvent` mirrors events into `src/ts/storage/chatStore.svelte.ts` and
+ * owner/viewer socket. `applyGenerationEvent` mirrors events into `src/ts/storage/chatStore.svelte.ts` and
  * `src/ts/storage/resourceSync.svelte.ts` without outgoing writes. Its command and send callers are
  * in `src/ts/process/serverCommands.ts`.
  *
@@ -86,8 +86,8 @@ const liveJobs = new Set<string>();
 const busyJobs = new Map<string, Set<{ reading: boolean }>>();
 let queuedChannelWork = 0;
 let channelCallbacks = 0;
-/** Holds taken by a follow for listeners it runs after its job ended (`replaySkippedListeners`). */
-let replayHolds = 0;
+/** Holds spanning plugin startup/takeover and listeners replayed after a job ends. */
+let extraPluginHolds = 0;
 const pluginWorkListeners = new Set<() => void>();
 
 function notifyPluginWork() {
@@ -108,17 +108,17 @@ export function generationPluginWorkActive(): boolean {
         busyJobs.size > 0 ||
         queuedChannelWork > 0 ||
         channelCallbacks > 0 ||
-        replayHolds > 0 ||
+        extraPluginHolds > 0 ||
         savedGenerationJobIds().length > 0
     );
 }
 
 /**
- * Keeps plugin work active past a job's release, for listeners the follow runs late; returns the
- * release (idempotent). Taken before the job's terminal is applied, so no reload slips in between.
+ * Holds plugin registries through takeover preparation or late listeners; returns an idempotent
+ * release. Acquire before awaiting plugin startup, and before applying a terminal with late work.
  */
 export function holdGenerationPluginWork(): () => void {
-    replayHolds += 1;
+    extraPluginHolds += 1;
     notifyPluginWork();
     let released = false;
     return () => {
@@ -126,7 +126,7 @@ export function holdGenerationPluginWork(): () => void {
             return;
         }
         released = true;
-        replayHolds -= 1;
+        extraPluginHolds -= 1;
         notifyPluginWork();
     };
 }
@@ -684,6 +684,7 @@ export async function readChatGeneration(ref: ChatRef): Promise<GenerationCurren
             !GENERATION_ID_PATTERN.test(body.jobId) ||
             !GENERATION_KINDS.some((kind) => kind === body.kind) ||
             typeof body.owned !== "boolean" ||
+            (body.handedOff !== undefined && body.handedOff !== true) ||
             (body.stage !== undefined && !GENERATION_STAGES.some((stage) => stage === body.stage)) ||
             (body.sequence !== undefined &&
                 (!object(body.sequence) ||
@@ -737,9 +738,62 @@ export async function stopChatGeneration(ref: ChatRef, jobId: string): Promise<"
     }
 }
 
+/** Requests a targeted handoff; 404/409 mean the job or target is unavailable. */
+export async function requestGenerationHandoff(jobId: string, target: string): Promise<"offered" | "unavailable"> {
+    try {
+        const answer: unknown = await boundedAttempt(
+            async (signal) =>
+                (
+                    await request(`/api/generations/${encodeURIComponent(jobId)}/handoff`, {
+                        method: "POST",
+                        signal,
+                        headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+                        body: JSON.stringify({ clientId: generationClientId(), target }),
+                    })
+                ).json(),
+            undefined,
+            language.serverJob.handoff.requestTimedOut,
+        );
+        if (!object(answer) || answer.offered !== true) {
+            throw new ResourceRequestError(0, language.serverJob.handoff.invalidHandoff);
+        }
+        return "offered";
+    } catch (error) {
+        if (error instanceof ResourceRequestError && (error.status === 404 || error.status === 409))
+            return "unavailable";
+        throw error;
+    }
+}
+
+/** Claims an open offer with a bounded control request; 404/409 mean it is unavailable. */
+export async function takeoverGenerationJob(jobId: string): Promise<string | null> {
+    try {
+        const answer: unknown = await boundedAttempt(
+            async (signal) =>
+                (
+                    await request(`/api/generations/${encodeURIComponent(jobId)}/takeover`, {
+                        method: "POST",
+                        signal,
+                        headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+                        body: JSON.stringify({ clientId: generationClientId() }),
+                    })
+                ).json(),
+            undefined,
+            language.serverJob.handoff.timedOut,
+        );
+        if (!object(answer) || typeof answer.ticket !== "string" || !answer.ticket) {
+            throw new ResourceRequestError(0, language.serverJob.handoff.invalidTakeover);
+        }
+        return answer.ticket;
+    } catch (error) {
+        if (error instanceof ResourceRequestError && (error.status === 404 || error.status === 409)) return null;
+        throw error;
+    }
+}
+
 /**
- * This tab's job (or its kept outcome, `kept`, once the server collected it), or null when the server
- * does not know it (ended long ago, the server restarted, or another tab's). `deadlineMs` bounds the
+ * A participant's job (or its kept outcome, `kept`, once the server collected it), or null when the server
+ * cannot give this tab access (unknown or no longer a participant/ticket holder). `deadlineMs` bounds the
  * whole read (authentication, request, and body): past it the request is aborted and the read fails
  * as a request without an answer (`ResourceRequestError` status 0).
  */
@@ -832,8 +886,12 @@ export async function reportCallbackDrained(jobId: string, callbackId: string): 
     }
 }
 
-/** One owner-socket attachment, with separate open and close outcomes; closing does not release the job. */
+/** One socket attachment; role events decide authority, and closing does not release the job. */
 export type GenerationFollow = {
+    /** The latest role event, or null before the first one. */
+    readonly role: "owner" | "viewer" | "pending" | null;
+    /** Viewer/pending callbacks are protocol failures, including a known viewer before its first role. */
+    viewing(): boolean;
     /** Sends a JSON message to the job (`src/ts/network/jobChannel.ts` answers); false while closed or not yet open. */
     send(message: unknown): boolean;
     close(): void;
@@ -860,7 +918,10 @@ function attachStamp(): number {
 }
 
 /**
- * Follows a job over its owner socket with a fresh JWT: on every attach the server sends the job
+ * Follows a job with a fresh JWT and optional one-use takeover ticket. Every attach starts with
+ * its role; later role events replace it. `initiallyViewing` guards a handed-off boot/reconnect
+ * until that event, without forcing a viewer query (the server may have handed it back).
+ * On every attach the server sends the job
  * chat and the records it changed (fresh), the chosen preset, the current reply with its text,
  * and the result if the job ended. Pings are answered with pongs before events of another epoch
  * than the loaded one are dropped. The follow gives its socket up, as its own `close()` would
@@ -869,14 +930,19 @@ function attachStamp(): number {
  * for 45 s while the page is visible, and when the page comes back
  * (`src/ts/network/socketLiveness.ts`); a terminal that arrived stands. The caller attaches again.
  * A newer follow cancels the older socket (even while connecting), events, and sends immediately;
- * its higher `attach` stamp also orders ownership across reloads on the server. `send` carries the
+ * its higher `attach` stamp also orders this client's attaches across reloads on the server. `send` carries the
  * channel's answers; `closed` retains any terminal, and distinguishes a resumed page from a lost link.
  */
-export function followGenerationJob(jobId: string, onEvent: (event: GenerationEvent) => void): GenerationFollow {
+export function followGenerationJob(
+    jobId: string,
+    onEvent: (event: GenerationEvent) => void,
+    options: { ticket?: string; initiallyViewing?: boolean } = {},
+): GenerationFollow {
     liveJobs.add(jobId);
     let ws: WebSocket | null = null;
     let cancelled = false;
     let terminal: GenerationTerminalEvent | null = null;
+    let role: GenerationFollow["role"] = null;
     type Closed = { terminal: GenerationTerminalEvent | null; resumed?: boolean; received?: boolean };
     // Settles on the socket's close or on cancellation, whichever comes first (even before auth).
     let resolveClosed!: (value: Closed) => void;
@@ -935,7 +1001,8 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
         const url =
             `${protocol}//${location.host}/api/generations/${encodeURIComponent(jobId)}/ws` +
             `?risu-auth=${encodeURIComponent(auth)}&clientId=${encodeURIComponent(generationClientId())}` +
-            `&attach=${stamp}&liveness=1&hydration=patch&rows=streamed&proto=1`;
+            `&attach=${stamp}&liveness=1&hydration=patch&rows=streamed&proto=1` +
+            (options.ticket ? `&ticket=${encodeURIComponent(options.ticket)}` : "");
         const socket = new WebSocket(url);
         ws = socket;
         socket.onopen = () => {
@@ -968,6 +1035,9 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             }
             if (event.epoch !== getResourceEpoch()) {
                 return;
+            }
+            if (event.type === "handoff") {
+                role = event.pending ? "pending" : event.owner === "self" ? "owner" : "viewer";
             }
             if (event.type === "done" || event.type === "error") {
                 terminal = event;
@@ -1006,6 +1076,13 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
         finish();
     });
     const follow: GenerationFollow = {
+        get role() {
+            return role;
+        },
+        viewing: () =>
+            role === "viewer" ||
+            role === "pending" ||
+            (role === null && (!!options.ticket || options.initiallyViewing === true)),
         send(message) {
             const socket = ws as WebSocket | null;
             if (cancelled || !socket || socket.readyState !== WebSocket.OPEN) {
@@ -1243,9 +1320,26 @@ export function applyGenerationEvent(
             }
             return;
         }
+        case "callback":
+            if (transport) {
+                // Lazy channel loading must not let a later promotion authorize an earlier viewer callback.
+                const viewing = transport.viewing?.() === true;
+                onChannel((channel) =>
+                    channel.handleChannelEvent(
+                        jobId,
+                        event,
+                        viewing
+                            ? {
+                                  send: (message) => transport.send(message),
+                                  viewing: () => true,
+                              }
+                            : transport,
+                    ),
+                );
+            }
+            return;
         case "notice":
         case "question":
-        case "callback":
         case "cancel":
             if (transport) {
                 onChannel((channel) => channel.handleChannelEvent(jobId, event, transport));

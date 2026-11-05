@@ -1078,7 +1078,8 @@ function projectUpstreamMemory(
 
 /**
  * One upstream chat: the stored metadata without metatron's fields, the projection of its structured
- * memory (`projectUpstreamMemory`), the messages in order without their translations,
+ * memory (`projectUpstreamMemory`), the messages in order without their translations, reroll
+ * candidates, selection and revision fields, or variable checkpoints,
  * `useLocallySetGlobalVariables` when the chat holds toggle values (so upstream keeps writing them to
  * the chat, as metatron does), and `lastDate` at least as recent as its newest message.
  */
@@ -1103,12 +1104,20 @@ function upstreamChat(
         projectUpstreamMemory(chat, stored, memory, report);
     }
     let translations = 0;
+    let candidates = 0;
     let newest: number | undefined;
     const message = stored.map((entry) => {
         if (Object.hasOwn(entry, "translation")) {
             delete entry.translation;
             translations++;
         }
+        if (Object.hasOwn(entry, "candidates")) {
+            candidates++;
+        }
+        delete entry.candidates;
+        delete entry.selected;
+        delete entry.candidatesRevision;
+        delete entry.scriptstateCheckpoint;
         if (
             typeof entry.time === "number" &&
             Number.isFinite(entry.time) &&
@@ -1120,6 +1129,9 @@ function upstreamChat(
     });
     if (translations > 0) {
         addEntry(report.excluded, "message-translations", [], translations);
+    }
+    if (candidates > 0) {
+        addEntry(report.excluded, "message-candidates", [], candidates);
     }
     chat.message = message;
     if (isPlainObject(chat.GLGlobalVariables) && Object.keys(chat.GLGlobalVariables).length > 0) {

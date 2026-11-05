@@ -1,5 +1,7 @@
 # Rendering Performance Investigation
 
+History: the follow-up fixes and their before-and-after measurements are in [render work budget](../audit/render-work-budget-2026-11-05.md).
+
 Date: 2026-10-25 (Asia/Seoul)  
 Repository: `/home/codex/risuai-metatron`  
 Inspected revision: `6336e29549c55421f548816f41c6e7abd50ce0cf`  

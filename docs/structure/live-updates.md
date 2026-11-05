@@ -5,28 +5,25 @@
 - Owns the tab's side of the live-update feed: the connection and its reconnect, what a `hello` reconciles, how a
   `change` frame's record refs and patches, chat entries, and lock lists reach the mirror, when a noticed record or chat
   is read instead, the feed locks, and the halt a restore or import causes.
-- Not here:
-  - The save cycle, conflicts, and the reads the loop runs → [resource-sync](resource-sync.md); a live update that
-    cannot apply waits for [a cycle or refresh pass](resource-sync.md#save-cycle).
-  - The server's feed, its frames, and the publication budget → [live-update-feed](live-update-feed.md).
-  - What a chat patch does to the chat module → [chat-store](chat-store.md#summaries-and-refresh); the restore journal →
-    [draft-recovery](draft-recovery.md#journal-writes).
-  - The job sockets that share `socketLiveness.ts` → [network-jobs](network-jobs.md).
+- Not here: the save cycle, conflicts, and the loop's reads ([resource-sync](resource-sync.md); an update that cannot
+  apply waits for [a cycle or refresh pass](resource-sync.md#save-cycle)); the server's feed, frames, and publication
+  budget ([live-update-feed](live-update-feed.md)); what a chat patch does to the chat module
+  ([chat-store](chat-store.md#summaries-and-refresh)); the restore journal
+  ([draft-recovery](draft-recovery.md#journal-writes)); the job sockets sharing `socketLiveness.ts`
+  ([network-jobs](network-jobs.md)).
 
 ## Files
 
-- `src/ts/network/eventFeed.ts`: client feed socket; `startEventFeed`, `stopEventFeed`, `receive`, `reconcile`,
-  `scheduleReconnect`, `resumeReconnect`, `generation`, `advertised`, `RECONCILE_DEADLINE_MS`.
-- `src/ts/network/socketLiveness.ts`: shared socket liveness and resume policy; `watchSocket`, `watchResume`,
-  `CONNECT_TIMEOUT_MS`, `STALE_AFTER_MS`, `RESUME_AFTER_HIDDEN_MS`, `RESUME_FOLD_MS`.
-- `src/ts/storage/resourceSync.svelte.ts`, live-update part: record refresh and restore adapter; `noteRemoteChanges`,
-  `reconcileRemote`, `setRemoteResourceOwner`, `remoteRecords`, `remoteCollections`, `applyRemotePatch`,
-  `patchedRecord`, `canApplyRemote`, `applyToMirror`, `applyRemoteUpdates`, `REMOTE_DELAY_MS`, `MAX_REMOTE_READS`,
-  `beforeRestoreReload`, `haltForRestore`, `watchForRestore`.
+Identifiers the flows below name are not repeated here.
+
+- `src/ts/network/eventFeed.ts`: client feed socket; `stopEventFeed`, `receive`, `reconcile`, `scheduleReconnect`,
+  `resumeReconnect`, `generation`, `advertised`, `RECONCILE_DEADLINE_MS`.
+- `src/ts/network/socketLiveness.ts`: shared socket liveness and resume policy; `CONNECT_TIMEOUT_MS`, `STALE_AFTER_MS`,
+  `RESUME_AFTER_HIDDEN_MS`, `RESUME_FOLD_MS`.
+- `src/ts/storage/resourceSync.svelte.ts`, live-update part: record refresh and restore adapter; `remoteRecords`,
+  `remoteCollections`, `patchedRecord`, `canApplyRemote`, `REMOTE_DELAY_MS`, `MAX_REMOTE_READS`, `beforeRestoreReload`.
 - `src/ts/storage/chatStore.svelte.ts`: chat updates and feed locks, owned by [chat-store](chat-store.md);
-  `noteRemoteChat`, `applyRemoteChatPatch`, `stagedMetaFields`, `noteRemoteStreaming`, `replaceFeedLocks`, `feedLocks`,
-  `issueChatReadStamp`, `dropFeedLocksOf`, `canRefreshChat`, `isChatStreamedHere`, `isCharacterStreamedHere`,
-  `finishIdleChatRefresh`, `removeRemoteChat`, `dropChatRevision`, `forgetCharacter`.
+  `stagedMetaFields`, `feedLocks`, `canRefreshChat`, `finishIdleChatRefresh`.
 
 ## Flows
 
@@ -43,6 +40,7 @@
 - The unoverlaid replay/listing reaches reconciliation and `src/ts/process/memoryTasks.svelte.ts` fences; only the
   advertised map takes the overlay. Same-epoch frames advance the held cursor; success also takes `hello.cursor`.
   Reconciliation routes listed and missing refs through the adapter and owners. Epoch mismatches [halt](#restore-halt).
+- Handoff offers and presence go to `src/ts/network/handoff.ts`; `register` timing: the `eventFeed.ts` header.
 - `watchSocket` abandons dead sockets; `watchResume` replaces the connection when the page returns
   (`src/ts/network/socketLiveness.ts`).
 
@@ -75,10 +73,9 @@
 
 ### Feed locks
 
-- A `change` frame's lock lists reach `noteRemoteStreaming` after its refs, so a fitting `begin` patch puts the row in
-  before its lock; otherwise the lock is installed by id and the row arrives locked. Each listed chat's list replaces
-  its `feedLocks`. Deletion/forget paths (`removeRemoteChat`, `dropChatRevision`, `forgetCharacter`) clear locks without
-  retiring the generation; its next job write can lock again.
+- A `change` frame's lock lists reach `noteRemoteStreaming` after its refs (`eventFeed.ts` header). Each listed chat's
+  list replaces its `feedLocks`. Deletion/forget paths (`removeRemoteChat`, `dropChatRevision`, `forgetCharacter`) clear
+  locks without retiring the generation; its next job write can lock again.
 - Whole reads carry `ChatReadRecord.streaming`, sampled with the read, never on summaries. The adapter stamps issue with
   `issueChatReadStamp`; an adopted read replaces the chat's locks regardless of revision only when issued after its
   newest feed list, the newest `hello` and its last honored read. `dropFeedLocksOf` defines suppression and the revision
@@ -100,10 +97,10 @@
   settles, then halts saving and opens `resourceRestored` through `alertTerminal`. Reload follows acknowledgement and
   the snapshot's existing wait, bounded to 1 s from its start before the notice; journal failure or timeout still
   permits reload. Acknowledgement has no timeout.
-- A restore-refused transform shows no extra toast (`src/ts/parser/transformClient.ts`). `setMutationAdmission` in
-  `src/ts/storage/resourceClient.ts` checks after signing, immediately before dispatch. A halt seen before a batch
-  requeues that batch and the rest; after a request answers or rejects, a halt returns without requeueing. Queue reads
-  abort and late answers apply nothing.
+- A restore-refused transform shows no extra toast (`src/ts/parser/transformClient.ts`). `setMutationAdmission`
+  (`resourceClient.ts`) checks after signing, immediately before dispatch. A halt seen before a batch requeues that
+  batch and the rest; after a request answers or rejects, a halt returns without requeueing. Queue reads abort and late
+  answers apply nothing.
 - A job ended by `maintenance` calls `watchForRestore` from `src/ts/process/serverCommands.ts`, so its owner learns of
   replacement even with its socket down; only a watch finding no replacement shows the job's error.
 

@@ -24,8 +24,10 @@ import type { MemoryTokenizer } from "../host.ts";
  *   The job names the message its windows stop before (`writerCeiling`), a manual task takes it from
  *   the chat as stored, and everything here reads only what lies before it, so the newest reply and
  *   one being generated or continued stay out. A press on a message is its confirmation, so that id
- *   is `inclusive`: the windows run through it, newest reply included. Swipe candidates are not stored
- *   messages at all.
+ *   is `inclusive`: the windows run through it, newest reply included. A reply's reroll candidates are
+ *   stored on its message (`candidates`) but are never messages of their own: windows read only the
+ *   message's `data`, the selected candidate, and the newest reply stays out until the user sends past
+ *   it, so a discarded candidate is never writer input.
  * - A turn is one assistant message and the unrecorded messages since the turn before it: an event
  *   names one speaker, so two replies in a row are two turns.
  * - Recorded means cited by a stored event in any status: the writer must not automatically record it

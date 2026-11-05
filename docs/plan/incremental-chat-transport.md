@@ -1,7 +1,7 @@
 # Incremental Chat Transport Plan
 
 Status: drafted 2026-11-03, revised 2026-11-04 after the [design
-audit](../audit/plan-design-audit-2026-11-04.md) (its Incremental Chat Transport items TR1–TR5 and the
+audit](../manual-audit/plan-design-audit-2026-11-04.md) (its Incremental Chat Transport items TR1–TR5 and the
 cross-plan items X1–X4 and X8); landed: 3 (`ca5a5cb8e`), 0 (`f033d69ce`), 1 (`917273384`), 4 (`2272abf6e`), 2 (`f906c864e`), 5 (`054ad8130`), so every slice has landed. Decisions D1–D10 are recommendations for the owner; the
 revision applies the owner's decisions on the audit's corrections, and each changed decision lists its earlier
 choice under "Rejected". The **Open questions** Q1–Q4 were answered by the owner on 2026-11-03 (the recommended
@@ -25,8 +25,8 @@ updates, Limitations), the [resource sync guide](../structure/resource-sync.md) 
 [server generation guide](../structure/server-generation.md) (Job chat and barriers), the
 [chat store guide](../structure/chat-store.md) (Job chunks, Summaries and refresh) and the [server resources
 guide](../structure/server-resources.md) (Resource routes, Store tables) at `215cbce1d`; the design audit's
-[per-plan report](../audit/plan-design-audit-2026-11-04/incremental-chat-transport.md) and [cross-plan
-report](../audit/plan-design-audit-2026-11-04/cross-plan.md).
+[per-plan report](../manual-audit/plan-design-audit-2026-11-04/incremental-chat-transport.md) and [cross-plan
+report](../manual-audit/plan-design-audit-2026-11-04/cross-plan.md).
 
 Owning guides when sliced: [live updates](../structure/live-updates.md) (the cursor replay on reconnect, the
 new feed entry forms a tab applies, the by-id row read), [live-update feed](../structure/live-update-feed.md)
@@ -37,16 +37,16 @@ store](../structure/chat-store.md) (the message index, what a streamed row means
 [persistence](../structure/persistence.md) (the shared types in `shared/resources.ts` and `shared/events.ts`),
 [test harness](../structure/test-harness.md) (the drivers and probes the slices change and rerun).
 
-Relation to the other active plans: the [Render Work Budget plan](render-work-budget.md) drops its F1 memo after
+Relation to the other active plans: the [Render Work Budget plan](../archived-plan/README.md) (archived) dropped its F1 memo after
 the design audit (X3); this plan's Slice 0 owns the message position index (D1). The [Job Handoff
-plan](job-handoff.md) adds viewer sockets, `role`, `register` and `clients` to the same sockets (its D2, D3,
+plan](../archived-plan/README.md) adds viewer sockets, `role`, `register` and `clients` to the same sockets (its D2, D3,
 D6): this plan adds no frame those need; under it every socket of a job shares the one `sentChat` baseline, and
 D3 says what a viewer gets (X2). The [Reroll Candidates plan](reroll-candidates.md) D12 relies on reroll writes
 reaching the feed and the job `chatPatch` as any by-id write does; its carrier rows (candidates up to its
 per-message cap) change fields other than `data` and can pass 64 KiB, which D2's field diff and D6's row read
 are built for (X1). Its Slice 2 depends on this plan's Slice 4 for traffic, not code: the two may be built on
 separate branches, its Slice 2 reaches `dev` in the same merge or after it, and that merge runs the
-integration checks its **Verification** lists (its D4). The [Asset Lifecycle plan](asset-lifecycle.md) keeps up to 40 snapshots, each of which
+integration checks its **Verification** lists (its D4). The [Asset Lifecycle plan](../archived-plan/README.md) keeps up to 40 snapshots, each of which
 physically contains this plan's change log (D5, X8). The files the slices share with those plans are listed
 under **Slices**.
 

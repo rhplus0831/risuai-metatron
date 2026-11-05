@@ -37,10 +37,10 @@ Relation to other work: no active plan edits `src/ts/plugins/`, `src/ts/storage/
 `src/lib/Setting/Pages/PluginSettings.svelte`. The [Incremental Chat Transport plan](incremental-chat-transport.md)
 Slice 0 owns the per-chat position index in `chatStore.svelte.ts`; this plan reads the chat store through its
 exports (`heldChatRefs`, `chatsLoaded`, the summaries) and adds at most one read-only export there, so a rebase, not
-a conflict. The [Asset Lifecycle plan](asset-lifecycle.md) marks assets from every text column of the live store, the
+a conflict. The [Asset Lifecycle plan](../archived-plan/README.md) marks assets from every text column of the live store, the
 `pluginStorage` record included; the new reserved dictionary (D6) is a field of that record and needs nothing from
 it. The [Guides To Source plan](../archived-plan/README.md) rewrote `plugin-sandbox` and `resource-sync` in its wave 3
-(landed 2026-11-05): a slice here that edits either guide checks that rewrite's ledger (`pnpm docs:ledger`). The [Job Handoff plan](job-handoff.md) moves the owner role of a running
+(landed 2026-11-05): a slice here that edits either guide checks that rewrite's ledger (`pnpm docs:ledger`). The [Job Handoff plan](../archived-plan/README.md) moves the owner role of a running
 job; the hook rule of D7 keys on "inside a hook", which a handed-off owner keeps.
 
 ## Goal

@@ -1,3 +1,4 @@
+import { normalizeCandidateFields, withoutCandidateCheckpoints } from "../../../shared/rerollCandidates.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
     ChatConflict,
@@ -12,7 +13,7 @@ import type {
     TranslationOutcome,
 } from "../../../shared/chats.ts";
 import { CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
-import type { Chat, MessageTranslation } from "../../../shared/database.ts";
+import type { Chat, Message, MessageTranslation } from "../../../shared/database.ts";
 import {
     type ChangeSet,
     type ChatDeltaBody,
@@ -52,7 +53,8 @@ import {
  * keyed by the chat's incarnation `seq` and `Message.chatId`, ordered by `position`), each
  * character's chat order (`chatOrders`), and each chat's stored summary projection (`chatSummaries`).
  * The resource store owns the connection, the epoch, and the transactions; this module prepares,
- * applies, reads, and validates chat changes inside them.
+ * applies, reads, and validates chat changes inside them. Candidate revisions and append-time
+ * checkpoint cleanup are store-owned. Reroll variable provenance is staged with the same transaction.
  *
  * Positions: an insert shifts the rows after its anchor by the number of inserted messages; a
  * removal leaves a gap. Positions are distinct within a chat but not unique-constrained, because
@@ -691,7 +693,7 @@ function isPositiveSafeInteger(value: unknown): value is number {
 
 /** Normalizes the JSON copy of a message (what is stored), not the input: an in-process `toJSON` cannot change it after the check. */
 function prepareMessage(input: unknown): PreparedMessage {
-    const message = normalizeMessage(serialize(input).stored);
+    const message = normalizeMessage(serialize(input).stored, true);
     return { id: message.chatId as string, text: serialize(message).text };
 }
 
@@ -718,7 +720,7 @@ function prepareWholeChat(
     const summary = summaryText(stored as Record<string, unknown>);
     // Keep whole-array JSON semantics, but measure depth per message as `prepareMessage` does.
     const sent = chat.message === undefined ? undefined : serialize(chat.message, { arrayElementDepth: true }).stored;
-    const messages = normalizeMessageList(sent).map((message) => ({
+    const messages = normalizeMessageList(sent, true).map((message) => ({
         id: message.chatId as string,
         text: serialize(message).text,
     }));
@@ -1192,11 +1194,98 @@ export function openChatSchema(db: DatabaseSync): void {
     db.exec("COMMIT");
 }
 
+/** Process-local attempt control, admitted only through the job write path; never a wire op. */
+export type RerollAttemptWrite = {
+    characterId: string;
+    chatId: string;
+    messageId: string;
+    generationId: string;
+    action: "begin" | "rollback";
+};
+type AttemptEntry = { before: unknown; foreign?: { value: unknown }; last: "job" | "foreign" };
+type RerollAttempt = Omit<RerollAttemptWrite, "action"> & { token: string; entries: Map<string, AttemptEntry> };
+
+/** Only the new optional fields are sanitized on legacy reads; unrelated message data stays as stored. */
+function readMessage(text: string): Message {
+    return normalizeCandidateFields(JSON.parse(text)) as Message;
+}
+
+/** The counter is assigned after admission. Writers can neither reset it nor choose its next value. */
+function withCandidateRevision(text: string, previous?: string): string {
+    const message = JSON.parse(text) as Message;
+    const before = previous === undefined ? undefined : (JSON.parse(previous) as Message);
+    const revision = isNonNegativeSafeInteger(before?.candidatesRevision) ? before.candidatesRevision : undefined;
+    const changed =
+        sortedJson(message.candidates) !== sortedJson(before?.candidates) ||
+        sortedJson(message.selected) !== sortedJson(before?.selected);
+    delete message.candidatesRevision;
+    if (changed || revision !== undefined) {
+        message.candidatesRevision = nextRevision(revision ?? 0, changed ? 1 : 0);
+    }
+    return serialize(message).text;
+}
+
+/** Replay equality still compares the complete row's bytes, apart from the store-owned counter. */
+function appendReplay(text: string, stored: string): boolean {
+    const withoutRevision = (value: string) => {
+        const message = JSON.parse(value);
+        delete message.candidatesRevision;
+        return JSON.stringify(message);
+    };
+    return withoutRevision(text) === withoutRevision(stored);
+}
+
 /**
  * Prepares the chat statements and returns the methods over them. The tables must exist:
  * `openChatSchema` and `createCheckpointTables` (`chatRestoreFloors`) run first.
  */
 export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard?: MessageGuard) {
+    let attempts = new Map<string, RerollAttempt>();
+    let stagedAttempts: Map<string, RerollAttempt> | null = null;
+    const attemptKey = (characterId: string, chatId: string) => `${characterId}\u0000${chatId}`;
+    const liveAttempt = (characterId: string, chatId: string) => {
+        const map = stagedAttempts ?? attempts;
+        const key = attemptKey(characterId, chatId);
+        const attempt = map.get(key);
+        if (
+            attempt &&
+            (!guard?.isLive(attempt.token) || guard.holder(characterId, chatId, attempt.messageId) !== attempt.token)
+        ) {
+            map.delete(key);
+            return undefined;
+        }
+        return attempt;
+    };
+    const mapOf = (value: unknown): Record<string, unknown> => (isPlainObject(value) ? value : {});
+    const entryOf = (map: Record<string, unknown>, key: string) => (Object.hasOwn(map, key) ? map[key] : undefined);
+    function recordVariable(
+        attempt: RerollAttempt | undefined,
+        token: string | undefined,
+        key: string,
+        before: unknown,
+        after: unknown,
+    ) {
+        if (!attempt) return;
+        const own = token === attempt.token;
+        let entry = attempt.entries.get(key);
+        if (!entry) {
+            if (!own) return;
+            entry = { before, last: "job" };
+            attempt.entries.set(key, entry);
+        }
+        entry.last = own ? "job" : "foreign";
+        if (!own) entry.foreign = { value: after };
+    }
+    function recordMap(attempt: RerollAttempt | undefined, token: string | undefined, before: unknown, after: unknown) {
+        const was = mapOf(before),
+            now = mapOf(after);
+        for (const key of new Set([...Object.keys(was), ...Object.keys(now)])) {
+            if (sortedJson(entryOf(was, key)) !== sortedJson(entryOf(now, key))) {
+                recordVariable(attempt, token, key, entryOf(was, key), entryOf(now, key));
+            }
+        }
+    }
+
     const selectGroup = db.prepare("SELECT revision, result FROM chatGroups WHERE chatSeq = ? AND groupId = ?");
     const insertGroup = db.prepare("INSERT INTO chatGroups (chatSeq, groupId, revision, result) VALUES (?, ?, ?, ?)");
     const trimGroups = db.prepare(
@@ -1277,6 +1366,15 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const selectCharacterSummaries = db.prepare(`${summaryRead} WHERE c.characterId = ? ORDER BY c.seq`);
     const selectAllMessages = db.prepare("SELECT chatSeq, data FROM messages ORDER BY chatSeq, position");
     const selectChatMessages = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position");
+    // Only rows with candidate state need their previous revision carried through a replacement.
+    const selectCandidateRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND (
+        json_type(data, '$.candidates') IS NOT NULL OR json_type(data, '$.selected') IS NOT NULL OR
+        json_type(data, '$.candidatesRevision') IS NOT NULL)`);
+    // Appending reads only rows needing cleanup. Open generations clean their own carrier at finalize.
+    const selectCheckpointRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND id != ?
+        AND (generationId IS NULL OR generationFinal = 1) AND (
+        json_type(data, '$.scriptstateCheckpoint') IS NOT NULL OR EXISTS (
+            SELECT 1 FROM json_tree(messages.data, '$.candidates') WHERE key = 'scriptstateAfter'))`);
     const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");
     const countUserTurns = db.prepare(COUNT_USER_TURNS_SQL);
     const selectPatchMessages = db.prepare(
@@ -1536,12 +1634,13 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
 
     /**
      * The touched rows as stored now, in position order, each with the id of the row right before it
-     * by position. Lazy: nothing is read before the first row is asked for, and a caller that stops
-     * early ends the read.
+     * by position. Invalid optional candidate fields are omitted from the returned row text.
+     * Lazy: nothing is read before the first row is asked for, and a caller that stops early ends the read.
      */
     function* touchedRows(chatSeq: number, touched: ReadonlySet<string>): Generator<ChatWriteChange["rows"][number]> {
         for (const stored of selectPatchMessages.iterate(chatSeq, JSON.stringify([...touched]))) {
-            yield stored as ChatWriteChange["rows"][number];
+            const row = stored as ChatWriteChange["rows"][number];
+            yield { ...row, data: JSON.stringify(readMessage(row.data)) };
         }
     }
 
@@ -1825,6 +1924,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         changedOrders: Set<string>,
         jobToken: string | undefined,
         changes: boolean,
+        attemptWrite?: RerollAttemptWrite,
     ): {
         result: ChatGroupResult;
         applied: number;
@@ -1892,6 +1992,25 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             }
             stale = base!.revision !== row!.revision;
         }
+        let attempt = liveAttempt(characterId, chatId);
+        const control =
+            attemptWrite?.characterId === characterId && attemptWrite.chatId === chatId ? attemptWrite : undefined;
+        if (control?.action === "begin") {
+            if (
+                !jobToken ||
+                !guard?.isLive(jobToken) ||
+                guard.holder(characterId, chatId, control.messageId) !== jobToken ||
+                !group.ops.some(
+                    (op) =>
+                        op.op === "begin" && op.id === control.messageId && op.generationId === control.generationId,
+                )
+            ) {
+                throw new ResourceValidationError("A reroll attempt must begin with its owned generation");
+            }
+            attempt = { ...control, token: jobToken, entries: new Map() };
+            (stagedAttempts ?? attempts).set(attemptKey(characterId, chatId), attempt);
+        }
+        let finishedAttempt = false;
         /** Messages this group inserted; a new generation may begin on them without the current revision. */
         const insertedHere = new Set<string>();
         // The actual stored base, which can be newer than a stale group's requested base.
@@ -1939,7 +2058,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             switch (op.op) {
                 case "create": {
                     const seq = writeChatMeta({ kind: "create", characterId, id: chatId, meta: op.meta }, op.summary);
-                    insertAt(seq, -1, op.messages);
+                    insertAt(
+                        seq,
+                        -1,
+                        op.messages.map((message) => ({ ...message, text: withCandidateRevision(message.text) })),
+                    );
                     const order = ensureOrder(characterId);
                     const ids = order.ids.filter((id) => id !== chatId);
                     ids.splice(Math.min(op.index ?? ids.length, ids.length), 0, chatId);
@@ -1953,6 +2076,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     break;
                 }
                 case "delete": {
+                    (stagedAttempts ?? attempts).delete(attemptKey(characterId, chatId));
                     deleteChat.run(chatSeq);
                     const order = readOrder(characterId);
                     if (order) {
@@ -1976,9 +2100,23 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         generationSeq: number;
                         generationHistory: string | null;
                     }[];
+                    recordMap(attempt, jobToken, JSON.parse(row!.meta).scriptstate, JSON.parse(op.meta).scriptstate);
+                    const previous = new Map(
+                        (selectCandidateRows.all(chatSeq) as { id: string; data: string }[]).map(({ id, data }) => [
+                            id,
+                            data,
+                        ]),
+                    );
                     writeChatMeta({ kind: "update", seq: chatSeq, revision: row!.revision, meta: op.meta }, op.summary);
                     deleteMessages.run(chatSeq);
-                    insertAt(chatSeq, -1, op.messages);
+                    insertAt(
+                        chatSeq,
+                        -1,
+                        op.messages.map((message) => ({
+                            ...message,
+                            text: withCandidateRevision(message.text, previous.get(message.id)),
+                        })),
+                    );
                     const kept = new Set(op.messages.map((message) => message.id));
                     for (const fence of fences) {
                         if (kept.has(fence.id)) {
@@ -2003,17 +2141,22 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         summaryBefore = freshSummaryText(row!.seq, row!.revision, { meta: row!.meta });
                     }
                     const current = JSON.parse(row!.meta) as Record<string, unknown>;
+                    const previousVariables = current.scriptstate;
                     for (const key of op.unset) {
                         delete current[key];
                     }
                     Object.assign(current, op.set);
+                    recordMap(attempt, jobToken, previousVariables, current.scriptstate);
                     for (const key of new Set([...Object.keys(op.mergeUnset), ...Object.keys(op.merge)])) {
                         // Onto the entries as stored now: another writer's entries stay.
                         const stored = current[key];
                         const isMap = isPlainObject(stored);
                         const entries = Object.hasOwn(op.merge, key) ? op.merge[key] : undefined;
                         if (!isMap && !entries) {
-                            // Removals alone from a field that is not a map: nothing to remove.
+                            // An explicit removal still has an origin, even when already absent.
+                            if (key === "scriptstate")
+                                for (const id of op.mergeUnset[key] ?? [])
+                                    recordVariable(attempt, jobToken, id, undefined, undefined);
                             continue;
                         }
                         const map: Record<string, unknown> = Object.create(null);
@@ -2023,9 +2166,13 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                             }
                         }
                         for (const id of Object.hasOwn(op.mergeUnset, key) ? op.mergeUnset[key] : []) {
+                            if (key === "scriptstate")
+                                recordVariable(attempt, jobToken, id, entryOf(map, id), undefined);
                             delete map[id];
                         }
                         for (const id of Object.keys(entries ?? {})) {
+                            if (key === "scriptstate")
+                                recordVariable(attempt, jobToken, id, entryOf(map, id), entries![id]);
                             map[id] = entries![id];
                         }
                         current[key] = { ...map };
@@ -2058,8 +2205,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     for (const message of op.messages) {
                         const existing = selectMessage.get(chatSeq, message.id) as MessageRow | undefined;
                         if (!existing) {
-                            fresh.push(message);
-                        } else if (existing.data !== message.text) {
+                            fresh.push({ ...message, text: withCandidateRevision(message.text) });
+                        } else if (!appendReplay(message.text, existing.data)) {
                             conflictHere(row);
                         }
                     }
@@ -2070,6 +2217,22 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         }
                         fresh.forEach((message) => insertedHere.add(message.id));
                         insertAt(chatSeq, after, fresh);
+                        if (fresh.some(({ text }) => !JSON.parse(text).isComment)) {
+                            const newest = fresh.findLast(({ text }) => !JSON.parse(text).isComment)!.id;
+                            for (const { data } of selectCheckpointRows.all(chatSeq, newest) as { data: string }[]) {
+                                const message = readMessage(data);
+                                // A job may already own a row whose begin comes later in this group.
+                                if (guard && guard.holder(characterId, chatId, message.chatId!) !== null) continue;
+                                const cleaned = withoutCandidateCheckpoints(message);
+                                if (data === JSON.stringify(cleaned)) continue;
+                                setMessageData.run(
+                                    withCandidateRevision(serialize(cleaned).text, data),
+                                    chatSeq,
+                                    message.chatId!,
+                                );
+                                touched.add(message.chatId!);
+                            }
+                        }
                         applied += 1;
                     }
                     break;
@@ -2097,6 +2260,14 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         if (outcome !== "applied") {
                             break;
                         }
+                        if (
+                            op.generation.final &&
+                            attempt &&
+                            attempt.token === jobToken &&
+                            attempt.messageId === id &&
+                            attempt.generationId === op.generation.id
+                        )
+                            finishedAttempt = true;
                     } else {
                         closeFence(chatSeq, id, existing!);
                     }
@@ -2132,13 +2303,14 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                             message[key] = op.set[key];
                         }
                         rewrites = message.role !== role || message.data !== data;
-                        text = serialize(normalizeMessage(message)).text;
+                        text = serialize(normalizeMessage(message, true)).text;
                     } else {
                         const message = JSON.parse(existing!.data) as Record<string, unknown>;
                         rewrites = message.data !== op.text;
                         message.data = op.text;
                         text = serialize(message).text;
                     }
+                    if (op.op !== "setText") text = withCandidateRevision(text, existing!.data);
                     setMessageData.run(text, chatSeq, id);
                     if (text !== existing!.data) {
                         touched.add(id);
@@ -2233,6 +2405,42 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     break;
                 }
             }
+        }
+        if (finishedAttempt && attempt) {
+            if (
+                control?.action === "rollback" &&
+                control.generationId === attempt.generationId &&
+                control.messageId === attempt.messageId &&
+                row &&
+                !deleted
+            ) {
+                if (patchBase && summaryBefore === undefined)
+                    summaryBefore = freshSummaryText(row.seq, row.revision, { meta: row.meta });
+                const current = JSON.parse(row.meta) as Record<string, unknown>;
+                const variables = { ...mapOf(current.scriptstate) };
+                for (const [key, entry] of attempt.entries) {
+                    if (entry.last === "foreign") continue;
+                    const value = entry.foreign ? entry.foreign.value : entry.before;
+                    if (value === undefined) delete variables[key];
+                    else
+                        Object.defineProperty(variables, key, {
+                            value,
+                            enumerable: true,
+                            configurable: true,
+                            writable: true,
+                        });
+                }
+                if (attempt.entries.size > 0) current.scriptstate = variables;
+                const meta = serialize(normalizeChatMeta(current, chatId)).text;
+                if (meta !== row.meta) {
+                    summaryAfter = summaryText(current);
+                    writeChatMeta({ kind: "update", seq: row.seq, revision: row.revision, meta }, summaryAfter);
+                    row = { ...row, meta };
+                    metaChanged = true;
+                    applied += 1;
+                }
+            }
+            (stagedAttempts ?? attempts).delete(attemptKey(characterId, chatId));
         }
         let revision: string | null = null;
         let next = 0;
@@ -2381,6 +2589,23 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         /** Whether a generation job owns any of the chat's `messageIds` (what `refusedByLock` reads). */
         messagesLocked(characterId: string, chatId: string, messageIds: readonly string[]): boolean {
             return !!guard && messageIds.some((id) => guard.holder(characterId, chatId, id) !== null);
+        },
+
+        /** Stage provenance alongside SQLite, including every later callback in the transaction. */
+        beginTransaction() {
+            for (const attempt of attempts.values()) liveAttempt(attempt.characterId, attempt.chatId);
+            stagedAttempts = structuredClone(attempts);
+        },
+        commitTransaction() {
+            if (stagedAttempts) attempts = stagedAttempts;
+            stagedAttempts = null;
+        },
+        rollbackTransaction() {
+            stagedAttempts = null;
+        },
+        dropRerollAttempts(token?: string) {
+            const map = stagedAttempts ?? attempts;
+            for (const [key, attempt] of map) if (token === undefined || attempt.token === token) map.delete(key);
         },
 
         /** The chat's revision token, or null when it does not exist (no metadata or messages read). */
@@ -2628,6 +2853,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             priorConflicts: boolean,
             jobToken?: string,
             changes = false,
+            attemptWrite?: RerollAttemptWrite,
         ) {
             const conflicts: (ChatConflict | ChatOrderConflict)[] = [];
             const results: ChatGroupResult[] = [];
@@ -2643,7 +2869,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             for (const [index, group] of groups.entries()) {
                 applyingOp = -1;
                 try {
-                    const outcome = applyGroup(group, changedOrders, jobToken, changes);
+                    const outcome = applyGroup(group, changedOrders, jobToken, changes, attemptWrite);
                     results.push(outcome.result);
                     written?.push(outcome.change);
                     if (outcome.duplicate) {
@@ -2761,7 +2987,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     list = [];
                     messagesBySeq.set(row.chatSeq, list);
                 }
-                list.push(JSON.parse(row.data));
+                list.push(readMessage(row.data));
             }
             const chats = (
                 selectAllChats.all() as {
@@ -2825,7 +3051,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 return null;
             }
             const messages = (selectChatMessages.all(row.seq) as { data: string }[]).map((entry) =>
-                JSON.parse(entry.data),
+                readMessage(entry.data),
             );
             return chatRecord(characterId, { ...row, id }, messages);
         },
@@ -2840,7 +3066,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 selectCharacterChats.all(characterId) as { seq: number; id: string; revision: number; meta: string }[]
             ).map((row) => {
                 const messages = (selectChatMessages.all(row.seq) as { data: string }[]).map((entry) =>
-                    JSON.parse(entry.data),
+                    readMessage(entry.data),
                 );
                 return chatRecord(characterId, row, messages);
             });

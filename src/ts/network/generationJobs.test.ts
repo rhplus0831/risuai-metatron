@@ -138,8 +138,8 @@ let client: Client;
 
 /** The follows a test started: each owns a connect timer and a resume subscription, so the test's end closes them. */
 const startedFollows: ReturnType<Transport["followGenerationJob"]>[] = [];
-const startFollow: Transport["followGenerationJob"] = (jobId, onEvent) => {
-    const follow = transport.followGenerationJob(jobId, onEvent);
+const startFollow: Transport["followGenerationJob"] = (jobId, onEvent, options) => {
+    const follow = transport.followGenerationJob(jobId, onEvent, options);
     startedFollows.push(follow);
     return follow;
 };
@@ -172,6 +172,101 @@ afterEach(() => {
     stubs.applyPatchHydration.mockReset().mockReturnValue("applied");
     stubs.applyHydration.mockReset().mockReturnValue(true);
     stubs.applyServerGenerationChunk.mockReset().mockReturnValue(true);
+});
+
+describe("handoff transport", () => {
+    it("posts a manual handoff for the named job with this tab, the chosen target and the loaded epoch", async () => {
+        vi.useFakeTimers();
+        stubs.fetch.mockResolvedValue(Response.json({ offered: true }));
+        expect(await transport.requestGenerationHandoff("job/one", "chosen-worker")).toBe("offered");
+        expect(stubs.fetch).toHaveBeenCalledTimes(1);
+        const [path, request] = stubs.fetch.mock.calls[0];
+        expect(path).toBe("/api/generations/job%2Fone/handoff");
+        expect(request?.method).toBe("POST");
+        expect(new Headers(request?.headers).get(RESOURCE_EPOCH_HEADER)).toBe(EPOCH);
+        expect(JSON.parse(String(request?.body))).toEqual({
+            clientId: transport.generationClientId(),
+            target: "chosen-worker",
+        });
+    });
+
+    it("posts a takeover with this client, treats 409 and 404 as unavailable, and preserves handedOff on reads", async () => {
+        vi.useFakeTimers();
+        const jobId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        stubs.fetch.mockResolvedValueOnce(json(200, { ticket: "one-use / ticket" }));
+        expect(await transport.takeoverGenerationJob(jobId)).toBe("one-use / ticket");
+        const [path, request] = stubs.fetch.mock.calls.at(-1)!;
+        expect(path).toBe(`/api/generations/${jobId}/takeover`);
+        expect(request?.method).toBe("POST");
+        expect(JSON.parse(String(request?.body))).toEqual({ clientId: transport.generationClientId() });
+        for (const code of [409, 404]) {
+            stubs.fetch.mockResolvedValueOnce(json(code, { error: "unavailable" }));
+            expect(await transport.takeoverGenerationJob(jobId)).toBeNull();
+        }
+        stubs.fetch.mockResolvedValueOnce(json(200, { jobId, kind: "send", owned: true, handedOff: true }));
+        expect(await transport.readChatGeneration({ chaId: "c", chatId: "k" })).toEqual({
+            jobId,
+            kind: "send",
+            owned: true,
+            handedOff: true,
+        });
+        stubs.fetch.mockResolvedValueOnce(
+            json(200, {
+                jobId,
+                kind: "send",
+                characterId: "c",
+                chatId: "k",
+                state: "running",
+                epoch: EPOCH,
+                handedOff: true,
+            }),
+        );
+        expect(await transport.readGenerationJob(jobId)).toMatchObject({ jobId, handedOff: true });
+        expect(FakeSocket.instances).toHaveLength(0);
+    });
+
+    it("attaches with the ticket and uses the latest role for callbacks while ignoring unknown job events", async () => {
+        vi.useFakeTimers();
+        const ref = { chaId: "c", chatId: "k" };
+        const follow = startFollow("worker", (event) => transport.applyGenerationEvent("worker", ref, event, follow), {
+            ticket: "ticket / + ?",
+        });
+        expect(follow.viewing()).toBe(true);
+        stubs.auth[0].resolve("jwt");
+        await microtasks();
+        const ws = FakeSocket.instances[0];
+        expect(new URL(ws.url).searchParams.get("ticket")).toBe("ticket / + ?");
+        ws.open();
+        for (const [fields, role, viewing] of [
+            [{ owner: "other", pending: true }, "pending", true],
+            [{ owner: "self" }, "owner", false],
+            [{ owner: "other" }, "viewer", true],
+            [{ owner: "self" }, "owner", false],
+        ] as const) {
+            ws.message({ type: "handoff", epoch: EPOCH, ...fields });
+            expect(follow.role).toBe(role);
+            expect(follow.viewing()).toBe(viewing);
+            ws.message({
+                type: "callback",
+                epoch: EPOCH,
+                id: `callback-${stubs.handleChannelEvent.mock.calls.length}`,
+            });
+            await vi.dynamicImportSettled();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(stubs.handleChannelEvent.mock.calls.at(-1)?.[2].viewing()).toBe(viewing);
+        }
+        const calls = stubs.handleChannelEvent.mock.calls.length;
+        ws.message({ type: "future-job-event", epoch: EPOCH, owner: "other", pending: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(follow.role).toBe("owner");
+        expect(follow.viewing()).toBe(false);
+        expect(stubs.handleChannelEvent).toHaveBeenCalledTimes(calls);
+        expect(stubs.applyServerGeneration).not.toHaveBeenCalled();
+        expect(stubs.endServerJob).not.toHaveBeenCalled();
+        expect(ws.closeCalls).toBe(0);
+        ws.message({ type: "done", epoch: EPOCH, revision: "e:1:2" });
+        expect((await follow.closed).terminal?.type).toBe("done");
+    });
 });
 
 describe("the tab's identity and saved jobs", () => {

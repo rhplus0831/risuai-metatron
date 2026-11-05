@@ -18,6 +18,7 @@ import {
     nextRevision,
     ResourceBatchConflictError,
     type ResourceStore,
+    type WrittenChanges,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
@@ -3052,5 +3053,216 @@ describe("summary reads in transactions", () => {
         } finally {
             db.close();
         }
+    });
+});
+
+describe("persisted reply candidates", () => {
+    const candidates = [
+        { id: "first", data: "First", scriptstateAfter: { $x: "1" } },
+        { id: "second", data: "Second", scriptstateAfter: { $x: "2" } },
+    ];
+    const checkpoint = { before: { $x: "0" }, after: { $x: "2" } };
+    const reply = () => ({ ...m("r", "Second", "char"), candidates, selected: 1, scriptstateCheckpoint: checkpoint });
+    const init = (store: ResourceStore) =>
+        store.applyChanges({
+            ops: [createCharacter("c")],
+            chats: [
+                group("k", null, [
+                    { op: "create", chat: { name: "K", note: "", localLore: [], message: [m("u", "q"), reply()] } },
+                ]),
+            ],
+        });
+    const row = (store: ResourceStore) => chat(store, "k")!.data.message.find((entry) => entry.chatId === "r")!;
+    const write = (store: ResourceStore, ops: ChatOp[]) =>
+        store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), ops)] });
+
+    it("refuses malformed and oversized candidate writes atomically and owns revisions across old whole-row writes and list removal", () => {
+        const store = memoryStore();
+        init(store);
+        const original = snapshotState(store);
+        const invalid = [
+            { candidates: [candidates[0]], selected: 0 },
+            { candidates: [candidates[0], candidates[0]], selected: 0 },
+            { candidates: [{ id: "", data: "A" }, candidates[1]] },
+            { candidates: [{ id: "a".repeat(33), data: "A" }, candidates[1]] },
+            { candidates: [{ id: "a", data: 3 }, candidates[1]] },
+            { candidates: [{ id: "a", data: "A", generationInfo: { model: 3 } }, candidates[1]] },
+            { candidates: [{ id: "a", data: "A", promptInfo: { promptName: 3 } }, candidates[1]] },
+            { candidates: [{ id: "a", data: "A", translation: {} }, candidates[1]] },
+            { candidates: [{ id: "a", data: "A", scriptstateAfter: [] }, candidates[1]] },
+            { candidates: Array.from({ length: 17 }, (_, i) => ({ id: String(i), data: "A" })) },
+            { candidates: [{ id: "a", data: "A".repeat(256 * 1024) }, candidates[1]] },
+            {
+                candidates: [
+                    { id: "a", data: "A".repeat(100 * 1024) },
+                    { id: "b", data: "B".repeat(100 * 1024) },
+                ],
+            },
+            { selected: 2 },
+            { selected: 0.5 },
+            { candidatesRevision: -1 },
+            { scriptstateCheckpoint: { after: null } },
+            { scriptstateCheckpoint: { before: [] } },
+            { scriptstateCheckpoint: { before: null, after: { $x: "X".repeat(64 * 1024) } } },
+        ];
+        for (const fields of invalid) {
+            for (const op of [
+                { op: "patchMessage", id: "r", set: fields },
+                { op: "setMessage", message: { ...reply(), ...fields } },
+            ] as ChatOp[]) {
+                expect(
+                    () => write(store, [{ op: "meta", set: { note: "must roll back" } }, op]),
+                    JSON.stringify(fields).slice(0, 150),
+                ).toThrow(ResourceValidationError);
+                expect(snapshotState(store)).toBe(original);
+            }
+        }
+        expect(row(store).candidatesRevision).toBe(1);
+        const old = structuredClone(row(store));
+        write(store, [{ op: "patchMessage", id: "r", set: { selected: 0, candidatesRevision: 99 } }]);
+        expect(row(store).candidatesRevision).toBe(2);
+        write(store, [{ op: "setMessage", message: old }]);
+        expect(row(store)).toMatchObject({ selected: 1, candidatesRevision: 3 });
+        write(store, [{ op: "patchMessage", id: "r", unset: ["candidates", "selected", "candidatesRevision"] }]);
+        expect(row(store).candidatesRevision).toBe(4);
+        expect(row(store).candidates).toBeUndefined();
+        write(store, [{ op: "setMessage", message: old }]);
+        expect(row(store).candidatesRevision).toBe(5);
+        write(store, [{ op: "setMessage", message: old }]);
+        expect(row(store).candidatesRevision).toBe(5);
+    });
+
+    it("drops corrupt optional candidate fields on stored chat, collection, and own-write reads while keeping the reply", () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        init(store);
+        const db = new DatabaseSync(path.join(dir, "live.sqlite"));
+        try {
+            db.prepare("UPDATE messages SET data = ? WHERE id = 'r'").run(
+                JSON.stringify({
+                    ...reply(),
+                    candidates: [{ id: "only", data: "keep the carrier" }],
+                    selected: 9,
+                    candidatesRevision: -1,
+                    scriptstateCheckpoint: { before: [] },
+                }),
+            );
+        } finally {
+            db.close();
+        }
+        const expected = m("r", "Second", "char");
+        expect(row(store)).toEqual(expected);
+        expect(store.readRefs([], { chatCollections: ["c"] }).chatCollections[0].chats[0].data.message[1]).toEqual(
+            expected,
+        );
+        expect(store.readKinds([characters], { chats: true }).chats![0].data.message[1]).toEqual(expected);
+        let written: WrittenChanges | undefined;
+        store.applyChanges(
+            { chats: [group("k", store.chatRevision("c", "k"), [{ op: "setText", id: "r", text: "Edited" }])] },
+            {
+                changes: true,
+                committed(_applied, changes) {
+                    written = changes;
+                    return [];
+                },
+            },
+        );
+        expect(written?.chats).toHaveLength(1);
+        expect(written!.chats[0]!.rows.map((entry) => JSON.parse(entry.data))).toEqual([
+            { ...expected, data: "Edited" },
+        ]);
+        expect(row(store)).toMatchObject({ ...expected, data: "Edited" });
+    });
+
+    it("clears older checkpoints on append, retains candidate texts, and admits the open carrier's later final write", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        init(store);
+        write(store, [{ op: "append", anchor: { end: true }, messages: [{ ...m("comment"), isComment: true }] }]);
+        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        write(store, [{ op: "append", anchor: { end: true }, messages: [m("next", "next question")] }]);
+        expect(row(store).scriptstateCheckpoint).toBeUndefined();
+        expect(row(store).candidates).toEqual(candidates.map(({ scriptstateAfter: _after, ...entry }) => entry));
+        expect(row(store).candidatesRevision).toBe(2);
+        write(store, [{ op: "setMessage", message: reply() }]);
+        const token = "reroll-token";
+        lock.addToken(token);
+        lock.acquire({ characterId: "c", chatId: "k", messageId: "r" }, { token, jobId: "J", generationId: "g" });
+        const own = (ops: ChatOp[]) =>
+            store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), ops)] }, { jobToken: token });
+        own([{ op: "begin", id: "r", generationId: "g" }]);
+        own([{ op: "append", anchor: { end: true }, messages: [m("trigger", "from Lua", "char")] }]);
+        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        expect(
+            own([{ op: "setText", id: "r", text: "Finished", generation: { id: "g", seq: 1, final: true } }]).chats[0]
+                .checkpoints,
+        ).toEqual(["applied"]);
+        expect(row(store).data).toBe("Finished");
+    });
+
+    it("rolls back only attempt-owned variables, preserves intervening writes even when overwritten or removed, and discards rolled-back ledger entries", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        init(store);
+        write(store, [{ op: "meta", set: { scriptstate: { $x: "1", $removed: "1", $own: "1", $later: "1" } } }]);
+        const token = "attempt-token";
+        lock.addToken(token);
+        lock.acquire({ characterId: "c", chatId: "k", messageId: "r" }, { token, jobId: "J", generationId: "g" });
+        const control = { characterId: "c", chatId: "k", messageId: "r", generationId: "g" };
+        const own = (ops: ChatOp[]) =>
+            store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), ops)] }, { jobToken: token });
+        store.applyChanges(
+            {
+                chats: [
+                    group("k", store.chatRevision("c", "k"), [
+                        { op: "meta", merge: { scriptstate: { $x: "0", $removed: "0", $own: "0", $later: "0" } } },
+                        { op: "begin", id: "r", generationId: "g" },
+                    ]),
+                ],
+            },
+            { jobToken: token, rerollAttempt: { ...control, action: "begin" } },
+        );
+        write(store, [{ op: "meta", merge: { scriptstate: { $x: "9", $removed: "9" } } }]);
+        own([
+            {
+                op: "meta",
+                merge: { scriptstate: { $x: "2", $own: "2", $introduced: "attempt", $later: "2" } },
+                mergeUnset: { scriptstate: ["$removed"] },
+            },
+        ]);
+        write(store, [{ op: "meta", merge: { scriptstate: { $later: "outside" } } }]);
+        expect(() =>
+            store.applyChanges(
+                {
+                    chats: [
+                        group("k", store.chatRevision("c", "k"), [
+                            { op: "meta", merge: { scriptstate: { $x: "not committed" } } },
+                        ]),
+                    ],
+                },
+                {
+                    inTransaction: {
+                        after() {
+                            throw new Error("rollback transaction");
+                        },
+                    },
+                },
+            ),
+        ).toThrow("rollback transaction");
+        const result = store.applyChanges(
+            {
+                chats: [
+                    group("k", store.chatRevision("c", "k"), [
+                        { op: "setMessage", message: reply(), generation: { id: "g", seq: 1, final: true } },
+                    ]),
+                ],
+            },
+            { jobToken: token, rerollAttempt: { ...control, action: "rollback" } },
+        );
+        expect(result.chats[0].checkpoints).toEqual(["applied"]);
+        expect(chat(store, "k")!.data.scriptstate).toEqual({ $x: "9", $removed: "9", $own: "1", $later: "outside" });
+        expect(row(store).data).toBe("Second");
     });
 });

@@ -29,7 +29,10 @@ import { warmModules } from "../storage/tests/mutationStoresHarness";
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 const ref = { chaId: "c", chatId: "k" };
 
-type Follow = ReturnType<typeof createFollowStub> & { onEvent: (event: GenerationEvent) => void };
+type Follow = ReturnType<typeof createFollowStub> & {
+    onEvent: (event: GenerationEvent) => void;
+    options: Parameters<Transport["followGenerationJob"]>[2];
+};
 type Transport = typeof import("../network/generationJobs");
 
 const stubs = vi.hoisted(() => ({
@@ -114,6 +117,13 @@ vi.mock("src/lang", () => ({
             lost: "job lost",
             endedAway: "ended away",
             hooksSkipped: "hooks skipped: {hooks}",
+            handoff: {
+                takenBy: "taken by {name}",
+                takenByOther: "taken by another device",
+                missedCallback: "output callback missed",
+                pending: "waiting for {character}",
+                working: "working for {character}",
+            },
             sequenceStopped: "/multisend stopped after {sent} of {total} parts: {reason}",
             sequenceReasons: { chatBindingMismatch: "binding changed" },
             discarded: { send: "discarded: send", button: "discarded: button", trigger: "discarded: trigger" },
@@ -153,9 +163,9 @@ vi.mock("../network/generationJobs", async () => {
         applyGenerationEvent: stubs.apply,
         holdGenerationPluginWork: () => stubs.hold(),
         createGenerationJob: stubs.create,
-        followGenerationJob: (jobId: string, onEvent: (event: GenerationEvent) => void) => {
+        followGenerationJob: (jobId, onEvent, options) => {
             const stub = createFollowStub(jobId);
-            stubs.follows.push({ ...stub, onEvent });
+            stubs.follows.push({ ...stub, onEvent, options });
             stubs.attached?.();
             return stub.follow;
         },
@@ -246,6 +256,7 @@ beforeAll(
 
 beforeEach(async () => {
     vi.resetModules();
+    localStorage.clear();
     stubs.follows.length = 0;
     stubs.attached = undefined;
     stubs.chat.mockReset().mockReturnValue(undefined);
@@ -306,6 +317,8 @@ describe("followJobToEnd", () => {
                 });
                 const end = commands.followJobToEnd(abortedBy ?? "self", ref);
                 await attached;
+                follows().at(-1)!.onEvent({ type: "handoff", epoch: EPOCH, owner: "other" });
+                stubs.alertToast.mockClear();
                 const terminal: GenerationTerminalEvent = {
                     type: "error",
                     epoch: EPOCH,
@@ -2231,9 +2244,8 @@ describe("server sequence events", () => {
         });
     }
 
-    it("installs every part's alternatives and counts each received part once while following one job", async () => {
+    it("counts each received part once while following one job", async () => {
         const { settings } = await import("../storage/settingsViews.svelte");
-        const { Prereroll } = await import("./prereroll");
         settings.statics = { imports: 0, messages: 7 };
         stubs.current.mockReturnValue(ref);
         stubs.chat.mockReturnValue({
@@ -2258,10 +2270,8 @@ describe("server sequence events", () => {
             total: 2,
             sent: 1,
             messageId: "r1",
-            alternatives: ["first", "first alternative"],
         });
         expect(settings.statics.messages).toBe(8);
-        expect(Prereroll("g1")).toBe("first alternative");
         expect(get(commands.followedJobs).has("sequence")).toBe(true);
         follow.onEvent({
             type: "sequence",
@@ -2270,10 +2280,8 @@ describe("server sequence events", () => {
             total: 2,
             sent: 2,
             messageId: "r2",
-            alternatives: ["second", "second alternative"],
         });
         expect(settings.statics.messages).toBe(9);
-        expect(Prereroll("g2")).toBe("second alternative");
         endWith(follow, { ...done, messageId: "r2", sequence: { total: 2, sent: 2 } });
         expect((await run).terminal).toMatchObject({ type: "done", sequence: { total: 2, sent: 2 } });
         expect(settings.statics.messages).toBe(9);
@@ -2308,5 +2316,253 @@ describe("server sequence events", () => {
         expect(stubs.create).not.toHaveBeenCalled();
         expect(multisendStubs.runMultisend).not.toHaveBeenCalled();
         expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+});
+
+describe("handoff lifecycles", () => {
+    const attached = () =>
+        new Promise<void>((resolve) => {
+            stubs.attached = resolve;
+        });
+    const role = (owner: "self" | "other", extra: { pending?: true; clientName?: string } = {}): GenerationEvent => ({
+        type: "handoff",
+        epoch: EPOCH,
+        owner,
+        ...extra,
+    });
+
+    it("tracks creator viewers for Take back and reuses their follow when a ticket returns ownership", async () => {
+        vi.useFakeTimers();
+        let ready = attached();
+        const end = commands.followJobToEnd("take-back", ref);
+        await ready;
+        const viewer = follows().at(-1)!;
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+        viewer.onEvent(role("other"));
+        expect([...get(commands.viewingJobs)]).toEqual(["take-back"]);
+        ready = attached();
+        expect(commands.followJobToEnd("take-back", ref, undefined, { ticket: "take-back-ticket" })).toBe(end);
+        await ready;
+        const owner = follows().at(-1)!;
+        expect(owner).not.toBe(viewer);
+        expect(owner.options).toEqual({ ticket: "take-back-ticket", initiallyViewing: true });
+        owner.onEvent(role("self"));
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+        owner.onEvent(role("other"));
+        expect([...get(commands.viewingJobs)]).toEqual(["take-back"]);
+        endWith(owner, done);
+        await end;
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+
+        ready = attached();
+        const foreign = commands.followJobToEnd("foreign-job", ref, undefined, { ticket: "worker-ticket" });
+        await ready;
+        const worker = follows().at(-1)!;
+        worker.onEvent(role("other", { pending: true }));
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+        worker.onEvent(role("other"));
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+        endWith(worker, done);
+        await foreign;
+    });
+
+    it("releases a refused or closed pending takeover without chat recovery or loss notices", async () => {
+        vi.useFakeTimers();
+        const { recoveryChatKeys } = await import("./chatStatus.svelte");
+        for (const pending of [false, true]) {
+            const ready = attached();
+            const end = commands.followJobToEnd(`worker-${pending}`, ref, undefined, { ticket: "claim" });
+            await ready;
+            const socket = follows().at(-1)!;
+            expect(socket.options?.ticket).toBe("claim");
+            if (pending) {
+                socket.open();
+                socket.onEvent(role("other", { pending: true }));
+            }
+            socket.end(null);
+            expect(await end).toBe("lost");
+            expect(stubs.pin.mock.results.at(-1)!.value).toHaveBeenCalledTimes(1);
+            expect(get(commands.followedJobs).size).toBe(0);
+        }
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        expect(stubs.markStale).not.toHaveBeenCalled();
+        expect(get(recoveryChatKeys).size).toBe(0);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
+    });
+
+    it("switches the creator's viewer socket with a ticket and resumes viewing after a lost claim in the same lifecycle", async () => {
+        vi.useFakeTimers();
+        const { acceptHandoffs } = await import("../network/handoff");
+        acceptHandoffs.set(false);
+        for (const pending of [false, true]) {
+            stubs.pin.mockClear();
+            stubs.alertToast.mockClear();
+            const jobId = `creator-${pending}`;
+            let ready = attached();
+            const end = commands.followJobToEnd(jobId, ref);
+            await ready;
+            const viewer = follows().at(-1)!;
+            const other = role("other", pending ? {} : { clientName: "Desk worker" });
+            viewer.onEvent(other);
+            viewer.onEvent(other);
+            expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith(
+                pending ? "taken by another device" : "taken by Desk worker",
+            );
+            expect(get(commands.followedJobs).get(jobId)).toBe("c\u0000k");
+            ready = attached();
+            expect(commands.followJobToEnd(jobId, ref, undefined, { ticket: "expired" })).toBe(end);
+            await ready;
+            const claim = follows().at(-1)!;
+            expect(claim).not.toBe(viewer);
+            expect(claim.options).toEqual({ ticket: "expired", initiallyViewing: true });
+            if (pending) claim.onEvent(role("other", { pending: true }));
+            ready = attached();
+            claim.end(null);
+            await ready;
+            const resumed = follows().at(-1)!;
+            expect(resumed.options).toEqual({ initiallyViewing: true });
+            resumed.onEvent(other);
+            expect(commands.followJobToEnd(jobId, ref)).toBe(end);
+            ready = attached();
+            expect(commands.followJobToEnd(jobId, ref, undefined, { ticket: "take-back" })).toBe(end);
+            await ready;
+            const owner = follows().at(-1)!;
+            expect(owner.options?.ticket).toBe("take-back");
+            owner.onEvent(role("self"));
+            endWith(owner, done);
+            expect(await end).toEqual(done);
+            expect(stubs.pin).toHaveBeenCalledTimes(1);
+            expect(stubs.pin.mock.results[0].value).toHaveBeenCalledTimes(1);
+            expect(stubs.alertToast).toHaveBeenCalledTimes(1);
+        }
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it("shows pending and working status and ends a never-promoted worker as a viewer", async () => {
+        vi.useFakeTimers();
+        const { handoffWork } = await import("../network/handoff");
+        const { mount, unmount, flushSync } = await import("svelte");
+        const { default: HandoffStatus } = await import("../../lib/Others/HandoffStatus.svelte");
+        const target = document.createElement("div");
+        const component = mount(HandoffStatus, { target });
+        try {
+            for (const promote of [false, true]) {
+                const jobId = `pending-${promote}`;
+                const ready = attached();
+                const end = commands.followJobToEnd(jobId, ref, undefined, { ticket: "ticket" });
+                await ready;
+                const socket = follows().at(-1)!;
+                socket.onEvent(role("other", { pending: true }));
+                flushSync();
+                expect(get(handoffWork).get(jobId)).toEqual({ jobId, characterName: "c", phase: "pending" });
+                expect(target.querySelector('[role="status"]')?.textContent?.trim()).toBe("waiting for c");
+                expect(get(commands.followedJobs).has(jobId)).toBe(false);
+                if (promote) {
+                    socket.onEvent(role("self"));
+                    flushSync();
+                    expect(get(handoffWork).get(jobId)?.phase).toBe("working");
+                    expect(target.querySelector('[role="status"]')?.textContent?.trim()).toBe("working for c");
+                }
+                const terminal: GenerationTerminalEvent = {
+                    ...done,
+                    messageId: "reply",
+                    skipped: [],
+                    missed: [{ name: "chatOutput", payload: { messageId: "reply", speakerId: "c" } }],
+                };
+                endWith(socket, terminal);
+                expect(await end).toEqual(terminal);
+                flushSync();
+                expect(get(handoffWork).size).toBe(0);
+                expect(target.querySelector('[role="status"]')).toBeNull();
+                expect(stubs.pin.mock.results.at(-1)!.value).toHaveBeenCalledTimes(1);
+            }
+            expect(stubs.refresh).not.toHaveBeenCalled();
+            expect(stubs.replay).not.toHaveBeenCalled();
+            expect(stubs.alertToast).not.toHaveBeenCalled();
+            expect(stubs.alertError).not.toHaveBeenCalled();
+        } finally {
+            await unmount(component);
+        }
+    });
+
+    it("resumes a handed-off saved job as a viewer and follows the first role event", async () => {
+        vi.useFakeTimers();
+        stubs.saved.mockReturnValue(["j"]);
+        stubs.read.mockResolvedValue({ ...status, handedOff: true });
+        const ready = attached();
+        const boot = commands.resumeServerJobs();
+        await ready;
+        const socket = follows()[0];
+        expect(socket.options).toEqual({ initiallyViewing: true });
+        const { handoffWork } = await import("../network/handoff");
+        socket.onEvent(role("other", { pending: true }));
+        expect(get(handoffWork).get("j")?.phase).toBe("pending");
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        socket.onEvent(role("other"));
+        expect(get(handoffWork).size).toBe(0);
+        expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("taken by another device");
+        endWith(socket, done);
+        await boot;
+        expect(follows()).toHaveLength(1);
+        expect(stubs.pin.mock.results[0].value).toHaveBeenCalledTimes(1);
+    });
+
+    it("warns the creator once about missed callbacks from live and resumed ends, combining skipped-hook text and replaying only skipped listeners", async () => {
+        vi.useFakeTimers();
+        const listener = { name: "chatOutput", payload: { messageId: "reply", speakerId: "c" } } as const;
+        for (const source of ["live", "boot"] as const) {
+            for (const skipped of [[], [listener, { name: "editoutput" as const }]]) {
+                stubs.alertToast.mockClear();
+                stubs.replay.mockClear();
+                stubs.held.mockReturnValue(`${EPOCH}:1:2`);
+                const terminal: GenerationTerminalEvent = {
+                    ...done,
+                    revision: `${EPOCH}:1:2`,
+                    missed: [listener],
+                    skipped,
+                };
+                if (source === "live") {
+                    const ready = attached();
+                    const end = commands.followJobToEnd("missed", ref);
+                    const joined = commands.followJobToEnd("missed", ref);
+                    await ready;
+                    endWith(follows().at(-1)!, terminal);
+                    await Promise.all([end, joined]);
+                } else {
+                    stubs.saved.mockReturnValue(["missed"]);
+                    stubs.read.mockResolvedValue({ ...kept(terminal), jobId: "missed", handedOff: true });
+                    await commands.resumeServerJobs();
+                }
+                expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith(
+                    skipped.length ? "hooks skipped: editoutput output callback missed" : "output callback missed",
+                );
+                if (skipped.length) expect(stubs.replay).toHaveBeenCalledExactlyOnceWith(ref, terminal);
+                else expect(stubs.replay).not.toHaveBeenCalled();
+            }
+        }
+    });
+
+    it("adds the local handoff preference to new jobs only while enabled", async () => {
+        vi.useFakeTimers();
+        const { preferHandoff } = await import("../network/handoff");
+        for (const enabled of [false, true]) {
+            preferHandoff.set(enabled);
+            stubs.stale.mockReturnValue(false);
+            stubs.create.mockResolvedValue({ outcome: "created", jobId: `create-${enabled}` });
+            const ready = attached();
+            const run = commands.runServerJob({ chaId: "c", type: "character" } as never, ref, {
+                kind: "send",
+                label: "send",
+            });
+            await ready;
+            const body = stubs.create.mock.calls.at(-1)![0];
+            if (enabled) expect(body).toHaveProperty("handoff", "prefer");
+            else expect(body).not.toHaveProperty("handoff");
+            endWith(follows().at(-1)!, done);
+            expect((await run).outcome).toBe("started");
+        }
     });
 });

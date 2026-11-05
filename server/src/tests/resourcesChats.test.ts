@@ -581,8 +581,11 @@ describe("revision-guarded chat row reads", () => {
                 ]),
             ],
         });
-        const candidates = ["한".repeat(24 * 1024)];
-        const carrier = { ...m("b", "B"), candidates };
+        const candidates = [
+            { id: "previous", data: "한".repeat(24 * 1024) },
+            { id: "current", data: "B" },
+        ];
+        const carrier = { ...m("b", "B"), candidates, candidatesRevision: 1 };
         expect(Buffer.byteLength(JSON.stringify(candidates))).toBeGreaterThan(MAX_FEED_PATCH_BYTES);
         const written = await post(s, {
             chats: [
@@ -722,7 +725,14 @@ describe("revision-guarded chat row reads", () => {
 
     it("serves whole chats to an older client that does not send chatRows", async () => {
         const s = budgetedChats(1);
-        const carrier = { ...m("b", "B"), candidates: ["x".repeat(MAX_FEED_PATCH_BYTES + 1)] };
+        const carrier = {
+            ...m("b", "B"),
+            candidates: [
+                { id: "previous", data: "x".repeat(MAX_FEED_PATCH_BYTES + 1) },
+                { id: "current", data: "B" },
+            ],
+            candidatesRevision: 1,
+        };
         const data = { id: "k", name: "K", note: "keep", fmIndex: -1, localLore: [], message: [m("a", "A"), carrier] };
         s.seed("c", [data]);
         const revision = s.store.chatRevision("c", "k")!;

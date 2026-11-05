@@ -273,7 +273,7 @@ entrypoint's comment.
 ### Limitations
 
 - `CHAT_READ_DEADLINE_MS` bounds one `readRefs` call, not a whole load: a load can make three passes of 500-chat calls
-  plus a summary list read. Decision: U1, [durable drafts audit](../audit/durable-drafts-2026-10-29.md).
+  plus a summary list read. Decision: U1, [durable drafts audit](../manual-audit/durable-drafts-2026-10-29.md).
 - A same-id recreation reconciles only the chats this client knows: a chat another tab created survives, and a reused
   id's `replace` on a changed base conflicts through the usual 409 path, with eligible content captured as a recovery
   draft. Explicit recreation releases old chat refusals, so they do not hold the reorder. Decision: reconciliation can

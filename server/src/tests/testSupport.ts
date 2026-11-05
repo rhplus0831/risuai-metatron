@@ -29,6 +29,7 @@ export const TEST_INDEX_HTML = '<!doctype html><html lang="en"><head><meta chars
  */
 export type TestServerOptions = {
     password?: string;
+    assetLifecycle?: Parameters<typeof createServerContext>[0]["assetLifecycle"];
     resourceKinds?: readonly ResourceKind[];
     snapshotIntervalMs?: number;
     /**
@@ -97,6 +98,7 @@ export function createTestServer(options: TestServerOptions = {}) {
     }
     const context = createServerContext({
         rootDir,
+        assetLifecycle: options.assetLifecycle,
         resourceKinds: options.resourceKinds,
         snapshotIntervalMs: options.snapshotIntervalMs,
         scriptWorkerOptions: options.scriptWorkerOptions,

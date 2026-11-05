@@ -188,14 +188,13 @@ async function setup() {
             ws.once("open", resolve);
             ws.once("error", reject);
         });
-        return {
-            ws,
-            closed,
-            next: () =>
-                events.length
-                    ? Promise.resolve(events.shift()!)
-                    : new Promise<GenerationEvent>((resolve) => waiters.push(resolve)),
-        };
+        const next = () =>
+            events.length
+                ? Promise.resolve(events.shift()!)
+                : new Promise<GenerationEvent>((resolve) => waiters.push(resolve));
+        // Every attach opens with the owner's role, before the attach chat the callers check next.
+        expect(await next()).toEqual({ type: "handoff", epoch: store.epoch(), owner: "self" });
+        return { ws, closed, next };
     };
     const resetReads = () => {
         wholeReads = 0;

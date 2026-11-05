@@ -18,7 +18,7 @@ import { authFetch, getNodeServerProxyAuth } from "./serverAuth";
 import { clearTransformResults } from "../parser/transformResults";
 
 /**
- * Transport for the server resource routes (`/api/resources`, `/api/backups`). Every mutation sends
+ * Transport for the server resource routes (`/api/resources`, `/api/backups`). Every resource mutation sends
  * the database epoch the client loaded (`setResourceEpoch`); the server answers 412 when a restore
  * replaced the data since, which surfaces as `ResourceEpochMismatchError`. Once an epoch is loaded,
  * every epoch-bearing read is checked too; a mismatch calls the listener before throwing. Normal
@@ -109,7 +109,9 @@ function checkedEpoch<T extends { epoch?: string }>(result: T): T {
     return result;
 }
 
-async function send(path: string, init: RequestInit & { mutation?: boolean } = {}): Promise<Response> {
+type ResourceRequestInit = RequestInit & { mutation?: boolean; conflictAsRequestError?: boolean };
+
+async function send(path: string, init: ResourceRequestInit = {}): Promise<Response> {
     const headers = new Headers(init.headers);
     if (init.mutation) {
         headers.set(RESOURCE_EPOCH_HEADER, currentEpoch);
@@ -152,7 +154,7 @@ async function send(path: string, init: RequestInit & { mutation?: boolean } = {
     if (response.status === 412 && body.error === "EpochMismatch") {
         throw epochMismatch(body.epoch ?? "");
     }
-    if (response.status === 409) {
+    if (response.status === 409 && !init.conflictAsRequestError) {
         throw new ResourceConflictError(
             Array.isArray(body.conflicts)
                 ? body.conflicts
@@ -169,7 +171,7 @@ async function send(path: string, init: RequestInit & { mutation?: boolean } = {
     throw new ResourceRequestError(response.status, body.error ?? `Request failed (${response.status})`);
 }
 
-async function sendJson<T>(path: string, init: RequestInit & { mutation?: boolean } = {}): Promise<T> {
+async function sendJson<T>(path: string, init: ResourceRequestInit = {}): Promise<T> {
     return (await (await send(path, init)).json()) as T;
 }
 
@@ -515,6 +517,39 @@ export function sendBatchOnUnload(body: string, onResult?: (result: ResourceBatc
 
 export async function listBackups(): Promise<BackupSnapshotInfo[]> {
     return (await sendJson<{ items: BackupSnapshotInfo[] }>("/api/backups")).items;
+}
+
+/** Snapshot controls have no resource epoch and preserve the server's conflict message. */
+export async function takeSnapshot(label?: string | null): Promise<BackupSnapshotInfo> {
+    return (
+        await sendJson<{ snapshot: BackupSnapshotInfo }>("/api/backups/snapshot", {
+            method: "POST",
+            headers: jsonHeaders,
+            body: JSON.stringify({ label }),
+            conflictAsRequestError: true,
+        })
+    ).snapshot;
+}
+
+export async function updateSnapshot(
+    id: string,
+    update: { pinned?: boolean; label?: string | null },
+): Promise<BackupSnapshotInfo> {
+    return (
+        await sendJson<{ snapshot: BackupSnapshotInfo }>(`/api/backups/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            headers: jsonHeaders,
+            body: JSON.stringify(update),
+            conflictAsRequestError: true,
+        })
+    ).snapshot;
+}
+
+export function deleteSnapshot(id: string): Promise<{ deleted: true }> {
+    return sendJson(`/api/backups/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        conflictAsRequestError: true,
+    });
 }
 
 export async function restoreBackup(id: string): Promise<string> {

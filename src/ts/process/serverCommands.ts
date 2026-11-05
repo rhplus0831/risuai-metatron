@@ -1,3 +1,5 @@
+import { findCharacter } from "../storage/characterStore.svelte";
+import { preferHandoff, setHandoffWork } from "../network/handoff";
 import type { AnyClientCharacter } from "../storage/characterStore.svelte";
 import {
     chatBinding,
@@ -6,6 +8,7 @@ import {
     chatContextIds,
 } from "../storage/chatBinding.svelte";
 import type {
+    GenerationEvent,
     GenerationCommand,
     GenerationContext,
     GenerationKind,
@@ -13,7 +16,7 @@ import type {
     GenerationStatus,
 } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
-import { get, writable } from "svelte/store";
+import { get, readonly, writable } from "svelte/store";
 import { alertConfirm, alertError, alertJobError, alertToast } from "../alert";
 import {
     abortGenerationJob,
@@ -98,7 +101,6 @@ import {
     noteForeignJob,
     clearForeignJob,
 } from "src/ts/process/chatStatus.svelte";
-import { installReplyAlternatives } from "./serverGeneration";
 import { incrementStatic } from "../storage/collectionStore.svelte";
 import { dropJobStage } from "./jobStages";
 import { chatLoreOverrideRefusalText } from "./loreOverrides";
@@ -122,9 +124,11 @@ const retryDelay = (attempt: number) => RETRY_DELAYS_MS[Math.min(attempt, RETRY_
  * How a follow ended: a terminal (`applied` when the socket delivered it through the events, else
  * read from the job's status: `kept` when it is the server's kept outcome of a collected job), a job
  * the server does not know (`"gone"`: collected long ago, the server restarted, another epoch), or
- * a server that could not be reached through every attach (`"lost"`).
+ * a server that could not be reached through every attach (`"lost"`), or a ticket that never
+ * acquired ownership (`"takeoverLost"`, released silently).
  */
-type FollowEnd = { terminal: GenerationTerminalEvent; applied: boolean; kept: boolean } | "gone" | "lost";
+type FollowEnd =
+    { terminal: GenerationTerminalEvent; applied: boolean; kept: boolean } | "gone" | "lost" | "takeoverLost";
 
 function errorText(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -136,17 +140,98 @@ function withError(message: string, error: unknown): string {
 }
 
 /** The one lifecycle of each job this tab follows to its end, shared by every caller. */
-const following = new Map<string, Promise<GenerationTerminalEvent | "lost">>();
+type FollowLifecycle = {
+    promise: Promise<GenerationTerminalEvent | "lost">;
+    active?: GenerationFollow;
+    ticket?: string;
+    ref?: ChatRef;
+    creator: boolean;
+    everOwner: boolean;
+    attemptOwner: boolean;
+    role: GenerationFollow["role"];
+    notified: boolean;
+    wake: Promise<void>;
+    wakeUp: () => void;
+    pluginHold?: () => void;
+    terminal?: Extract<FollowEnd, object>;
+};
+const following = new Map<string, FollowLifecycle>();
+const WOKEN = Symbol("followWoken");
+
+function resetFollowWake(lifecycle: FollowLifecycle) {
+    lifecycle.wake = new Promise<void>((resolve) => {
+        lifecycle.wakeUp = resolve;
+    });
+}
+
+/** Ticket/replay delivery wakes socket waits, retry sleeps and in-flight status reads alike. */
+function waitForFollow<T>(lifecycle: FollowLifecycle, work: Promise<T>): Promise<T | typeof WOKEN> {
+    return Promise.race([work, lifecycle.wake.then<typeof WOKEN>(() => WOKEN)]);
+}
+
+function removeFollowedJob(jobId: string) {
+    followedJobs.update((jobs) => {
+        const next = new Map(jobs);
+        next.delete(jobId);
+        return next;
+    });
+}
+
+/** Only creators and current owners have participant Stop authority; pending/former workers do not. */
+function handleFollowRole(
+    lifecycle: FollowLifecycle,
+    jobId: string,
+    ref: ChatRef,
+    event: Extract<GenerationEvent, { type: "handoff" }>,
+) {
+    setFollowRole(lifecycle, jobId, event.pending ? "pending" : event.owner === "self" ? "owner" : "viewer");
+    if (event.owner === "self") {
+        lifecycle.everOwner = true;
+        lifecycle.attemptOwner = true;
+    }
+    if (lifecycle.creator || lifecycle.role === "owner") {
+        clearForeignJob(ref);
+        followedJobs.update((jobs) => new Map(jobs).set(jobId, chatKeyOf(ref)));
+    } else {
+        removeFollowedJob(jobId);
+        noteForeignJob(ref, jobId);
+    }
+    const phase =
+        lifecycle.role === "pending" ? "pending" : !lifecycle.creator && lifecycle.role === "owner" ? "working" : null;
+    setHandoffWork(jobId, phase ? { characterName: findCharacter(ref.chaId)?.name ?? ref.chaId, phase } : null);
+    if (lifecycle.creator && lifecycle.role === "viewer" && !lifecycle.notified) {
+        lifecycle.notified = true;
+        const text = language.serverJob.handoff;
+        alertToast(event.clientName ? text.takenBy.replace("{name}", () => event.clientName!) : text.takenByOther);
+    }
+}
 const replayedStatuses = new Map<string, GenerationStatus>();
 
 /**
- * The reactive registry of followed jobs whose chats are known, keyed by job id so overlapping
- * follows stay visible. `src/lib/ChatScreens/DefaultChatScreen.svelte` uses `followedJobsOf` to
+ * The reactive registry of participant follows (creators, including viewers, and current workers),
+ * keyed by job id so overlapping follows stay visible. `src/lib/ChatScreens/DefaultChatScreen.svelte` uses `followedJobsOf` to
  * make a followed job of the selected chat (command jobs included) stoppable through
  * `abortGenerationJob` in `src/ts/network/generationJobs.ts`. Its separate `stopChatJob` button
  * stops a job another tab started. `src/ts/process/chatStatus.svelte.ts` also reads this registry.
+ * `viewingJobs` identifies creator-viewers among these follows for the chat's Take back control.
  */
 export const followedJobs = writable<ReadonlyMap<string, string>>(new Map());
+
+const viewers = writable<ReadonlySet<string>>(new Set());
+/** Jobs this tab follows as their creator while another tab owns them. */
+export const viewingJobs = readonly(viewers);
+
+function setFollowRole(lifecycle: FollowLifecycle, jobId: string, role: GenerationFollow["role"]) {
+    lifecycle.role = role;
+    const viewing = lifecycle.creator && role === "viewer";
+    viewers.update((jobs) => {
+        if (jobs.has(jobId) === viewing) return jobs;
+        const next = new Set(jobs);
+        if (viewing) next.add(jobId);
+        else next.delete(jobId);
+        return next;
+    });
+}
 
 /** The jobs this tab follows for a chat. */
 export function followedJobsOf(jobs: ReadonlyMap<string, string>, ref: ChatRef): string[] {
@@ -231,123 +316,180 @@ export async function stopChatJob(ref: ChatRef): Promise<void> {
  * pinned and loaded before the follow attaches (a load that keeps failing makes the job lost) and
  * stays pinned through every reconnect, the terminal's hydration, and the chat's read again, so no
  * event of the job finds its chat evicted.
+ *
+ * A ticket wakes the same lifecycle and replaces its socket without spending retries. Socket or
+ * replay terminals take precedence. Each ticket attempt must reach owner:self: losing it earlier
+ * silently releases a worker, while a creator resumes its viewer attach immediately. Roles come
+ * from events, not creator identity; creator viewers retain Stop, stream and device notices. A
+ * worker is listed in followedJobs only as owner. Plugin holds bridge ticket delivery through the
+ * first attach; status lines clear on role loss/end. A worker never saves the job for boot resume.
  */
 export function followJobToEnd(
     jobId: string,
     ref?: ChatRef,
     initialStatus?: GenerationStatus,
+    options: { ticket?: string } = {},
 ): Promise<GenerationTerminalEvent | "lost"> {
     if (initialStatus?.state === "ended" && initialStatus.terminal) replayedStatuses.set(jobId, initialStatus);
-    let shared = following.get(jobId);
-    if (!shared) {
-        shared = (async () => {
-            let release: (() => void) | null = ref ? pinChat(ref) : null;
-            try {
-                const discovered = ref ? { ref, status: undefined } : await discover(jobId);
-                if (discovered === "gone") {
-                    // No chat known (the boot resume): the page has just read its data.
-                    recordClientEvent({ kind: "jobLink", phase: "gone", jobId });
-                    releaseGenerationJob(jobId);
-                    return "lost";
-                }
-                const target: ChatRef | "lost" = discovered === "lost" ? "lost" : discovered.ref;
-                if (target !== "lost") {
-                    const key = chatKeyOf(target);
+    const existing = following.get(jobId);
+    if (existing) {
+        if (options.ticket) {
+            existing.pluginHold ??= holdGenerationPluginWork();
+            existing.ticket = options.ticket;
+            existing.ref ??= ref;
+        }
+        if (options.ticket || replayedStatuses.has(jobId)) {
+            existing.wakeUp();
+            // A replay keeps the socket for its final hydration and applied terminal.
+            if (options.ticket) existing.active?.close();
+        }
+        return existing.promise;
+    }
+    const lifecycle: FollowLifecycle = {
+        promise: undefined!,
+        creator: !options.ticket,
+        everOwner: false,
+        attemptOwner: false,
+        role: null,
+        notified: false,
+        ref,
+        ticket: options.ticket,
+        wake: undefined!,
+        wakeUp: () => {},
+        pluginHold: options.ticket ? holdGenerationPluginWork() : undefined,
+    };
+    setFollowRole(lifecycle, jobId, initialStatus?.handedOff ? "viewer" : null);
+    resetFollowWake(lifecycle);
+    let resolveFollow!: (end: GenerationTerminalEvent | "lost") => void;
+    let rejectFollow!: (error: unknown) => void;
+    lifecycle.promise = new Promise((resolve, reject) => {
+        resolveFollow = resolve;
+        rejectFollow = reject;
+    });
+    following.set(jobId, lifecycle);
+    void (async () => {
+        let release: (() => void) | null = ref ? pinChat(ref) : null;
+        try {
+            const discovered = ref ? { ref, status: initialStatus } : await discover(jobId, lifecycle);
+            if (discovered === "gone") {
+                // No chat known (the boot resume): the page has just read its data.
+                recordClientEvent({ kind: "jobLink", phase: "gone", jobId });
+                releaseGenerationJob(jobId);
+                return "lost";
+            }
+            const target: ChatRef | "lost" = discovered === "lost" ? "lost" : discovered.ref;
+            if (target !== "lost") {
+                const key = chatKeyOf(target);
+                lifecycle.ref = target;
+                if (lifecycle.creator) {
                     clearForeignJob(target);
                     followedJobs.update((jobs) => new Map(jobs).set(jobId, key));
-                    release ??= pinChat(target);
+                } else {
+                    noteForeignJob(target, jobId);
                 }
-                // A terminal already received is authoritative even if the chat cannot be loaded.
-                const loaded = target !== "lost" && (replayedStatuses.has(jobId) || (await loadJobChat(target)));
-                const replay = replayedStatuses.get(jobId);
-                // Discovery's ended status stands, as a replay does, when the chat cannot be loaded.
-                const read = discovered === "lost" ? undefined : discovered.status;
-                let result: FollowEnd = replay?.terminal
-                    ? { terminal: replay.terminal, applied: false, kept: replay.kept === true }
-                    : !loaded
-                      ? read?.state === "ended" && read.terminal
-                          ? { terminal: read.terminal, applied: false, kept: read.kept === true }
-                          : "lost"
-                      : await followOnce(jobId, target as ChatRef, read);
-                if (typeof result === "string") {
-                    // Another caller may have registered an ended replay while followOnce was awaiting the network.
-                    const replayAfterFollow = replayedStatuses.get(jobId);
-                    if (replayAfterFollow?.terminal) {
-                        result = {
-                            terminal: replayAfterFollow.terminal,
-                            applied: false,
-                            kept: replayAfterFollow.kept === true,
-                        };
-                    }
+                release ??= pinChat(target);
+            }
+            // A terminal already received is authoritative even if the chat cannot be loaded.
+            const loaded = target !== "lost" && (replayedStatuses.has(jobId) || (await loadJobChat(target)));
+            const replay = replayedStatuses.get(jobId);
+            // Discovery's ended status stands, as a replay does, when the chat cannot be loaded.
+            const read = discovered === "lost" ? undefined : discovered.status;
+            if (read?.handedOff) setFollowRole(lifecycle, jobId, "viewer");
+            let result: FollowEnd = replay?.terminal
+                ? { terminal: replay.terminal, applied: false, kept: replay.kept === true }
+                : !loaded
+                  ? read?.state === "ended" && read.terminal
+                      ? { terminal: read.terminal, applied: false, kept: read.kept === true }
+                      : lifecycle.creator
+                        ? "lost"
+                        : "takeoverLost"
+                  : await followOnce(jobId, target as ChatRef, lifecycle, read);
+            if (typeof result === "string") {
+                // Another caller may have registered an ended replay while followOnce was awaiting the network.
+                const replayAfterFollow = replayedStatuses.get(jobId);
+                if (replayAfterFollow?.terminal) {
+                    result = {
+                        terminal: replayAfterFollow.terminal,
+                        applied: false,
+                        kept: replayAfterFollow.kept === true,
+                    };
                 }
-                const end = typeof result === "string" ? "lost" : result.terminal;
-                if (typeof result === "string") {
-                    recordClientEvent({ kind: "jobLink", phase: result, jobId });
-                    releaseGenerationJob(jobId);
-                    // No longer a follow that covers its chat: a completion push for the chat during
-                    // the read below must read it again (`refreshChatAfterPush`).
-                    followedJobs.update((jobs) => {
-                        const next = new Map(jobs);
-                        next.delete(jobId);
-                        return next;
-                    });
-                } else if (!result.applied) {
-                    if (result.kept) {
-                        recordClientEvent({ kind: "jobLink", phase: "kept", jobId });
-                    }
-                    // Released as the socket's terminal releases the job (its locks, channel, saved job).
-                    holdForReplay(jobId, result.terminal);
-                    applyGenerationEvent(jobId, target as ChatRef, result.terminal);
-                }
-                if (result !== "gone") {
-                    reportEnd(end, jobId);
-                }
-                if (target !== "lost") {
-                    if (end === "lost") {
-                        noteJobLost(target, jobId);
-                    } else {
-                        noteJobDone(target, end);
-                    }
-                }
-                // The listeners the job skipped while this tab was away need the reply: they run once
-                // this tab holds the terminal's revision (a socket's final hydration may have been
-                // refused for local work), after a read when it does not; after a read that did not
-                // take they do not run (the chat is read again later, without the job).
-                const lateListeners = target !== "lost" && listsSkippedListeners(end) ? end : null;
-                const holdsEnd = () =>
-                    lateListeners !== null && holdsRevision(target as ChatRef, lateListeners.revision);
-                let current = true;
-                if (
-                    target !== "lost" &&
-                    (replayedStatuses.has(jobId) ||
-                        needsChatRead(result, target) ||
-                        (lateListeners !== null && !holdsEnd()))
-                ) {
-                    current = await recoverJobChat(target, jobId, typeof result === "string" ? result : "outcome");
-                }
-                if (lateListeners !== null && current && holdsEnd()) {
-                    await replaySkippedListeners(target as ChatRef, lateListeners).catch((error) =>
-                        console.error("[Generation]", error),
-                    );
-                }
-                return end;
-            } finally {
-                replayHolds.get(jobId)?.();
-                replayHolds.delete(jobId);
-                following.delete(jobId);
-                replayedStatuses.delete(jobId);
+            }
+            if (result === "takeoverLost") {
+                releaseGenerationJob(jobId);
+                return "lost";
+            }
+            const end = typeof result === "string" ? "lost" : result.terminal;
+            if (typeof result === "string") {
+                recordClientEvent({ kind: "jobLink", phase: result, jobId });
+                releaseGenerationJob(jobId);
+                // No longer a follow that covers its chat: a completion push for the chat during
+                // the read below must read it again (`refreshChatAfterPush`).
                 followedJobs.update((jobs) => {
                     const next = new Map(jobs);
                     next.delete(jobId);
                     return next;
                 });
-                dropJobStage(jobId);
-                release?.();
+            } else if (!result.applied) {
+                if (result.kept) {
+                    recordClientEvent({ kind: "jobLink", phase: "kept", jobId });
+                }
+                // Released as the socket's terminal releases the job (its locks, channel, saved job).
+                holdForReplay(jobId, result.terminal);
+                applyGenerationEvent(jobId, target as ChatRef, result.terminal);
             }
-        })();
-        following.set(jobId, shared);
-    }
-    return shared;
+            if (typeof result !== "string" && target !== "lost") clearForeignJob(target, jobId);
+            if (!lifecycle.creator && !lifecycle.everOwner) return end;
+            if (result !== "gone") {
+                reportEnd(end, jobId, lifecycle.creator);
+            }
+            if (target !== "lost") {
+                if (end === "lost") {
+                    noteJobLost(target, jobId);
+                } else {
+                    noteJobDone(target, end);
+                }
+            }
+            // The listeners the job skipped while this tab was away need the reply: they run once
+            // this tab holds the terminal's revision (a socket's final hydration may have been
+            // refused for local work), after a read when it does not; after a read that did not
+            // take they do not run (the chat is read again later, without the job).
+            const lateListeners = target !== "lost" && listsSkippedListeners(end) ? end : null;
+            const holdsEnd = () => lateListeners !== null && holdsRevision(target as ChatRef, lateListeners.revision);
+            let current = true;
+            if (
+                target !== "lost" &&
+                (replayedStatuses.has(jobId) ||
+                    needsChatRead(result, target) ||
+                    (lateListeners !== null && !holdsEnd()))
+            ) {
+                current = await recoverJobChat(target, jobId, typeof result === "string" ? result : "outcome");
+            }
+            if (lateListeners !== null && current && holdsEnd()) {
+                await replaySkippedListeners(target as ChatRef, lateListeners).catch((error) =>
+                    console.error("[Generation]", error),
+                );
+            }
+            return end;
+        } finally {
+            lifecycle.active?.close();
+            setFollowRole(lifecycle, jobId, null);
+            lifecycle.pluginHold?.();
+            setHandoffWork(jobId, null);
+            replayHolds.get(jobId)?.();
+            replayHolds.delete(jobId);
+            following.delete(jobId);
+            replayedStatuses.delete(jobId);
+            followedJobs.update((jobs) => {
+                const next = new Map(jobs);
+                next.delete(jobId);
+                return next;
+            });
+            dropJobStage(jobId);
+            release?.();
+        }
+    })().then(resolveFollow, rejectFollow);
+    return lifecycle.promise;
 }
 
 /**
@@ -567,21 +709,30 @@ async function loadJobChat(ref: ChatRef): Promise<boolean> {
  * `"gone"` when the server does not know it, `"lost"` after the retries (each read bounded by
  * `STEP_DEADLINE_MS`).
  */
-async function discover(jobId: string): Promise<{ ref: ChatRef; status: GenerationStatus } | "gone" | "lost"> {
+async function discover(
+    jobId: string,
+    lifecycle: FollowLifecycle,
+): Promise<{ ref: ChatRef; status?: GenerationStatus } | "gone" | "lost"> {
     for (let read = 0; read < MAX_ATTACHES; read++) {
-        if (read > 0) {
-            await sleep(retryDelay(read));
+        if (lifecycle.ref && lifecycle.ticket) return { ref: lifecycle.ref };
+        const replay = replayedStatuses.get(jobId);
+        if (replay?.terminal) return { ref: { chaId: replay.characterId, chatId: replay.chatId }, status: replay };
+        if (read > 0 && (await waitForFollow(lifecycle, sleep(retryDelay(read)))) === WOKEN) {
+            read--;
+            continue;
         }
         let status;
         try {
-            status = await readGenerationJob(jobId, { deadlineMs: STEP_DEADLINE_MS });
+            status = await waitForFollow(lifecycle, readGenerationJob(jobId, { deadlineMs: STEP_DEADLINE_MS }));
         } catch (error) {
             console.error("[Generation]", error);
             continue;
         }
-        if (!status || status.epoch !== getResourceEpoch()) {
-            return "gone";
+        if (status === WOKEN) {
+            read--;
+            continue;
         }
+        if (!status || status.epoch !== getResourceEpoch()) return "gone";
         return { ref: { chaId: status.characterId, chatId: status.chatId }, status };
     }
     return "lost";
@@ -611,41 +762,76 @@ function pageAway(): boolean {
  * outcome is the end without an attach (one would be refused), and its ended terminal is the first
  * one known.
  */
-async function followOnce(jobId: string, ref: ChatRef, read?: GenerationStatus): Promise<FollowEnd> {
+async function followOnce(
+    jobId: string,
+    ref: ChatRef,
+    lifecycle: FollowLifecycle,
+    read?: GenerationStatus,
+): Promise<FollowEnd> {
     if (read?.kept && read.terminal) return { terminal: read.terminal, applied: false, kept: true };
     let known: GenerationTerminalEvent | null = read?.state === "ended" ? (read.terminal ?? null) : null;
-    // Attaches counted against the budget since the server was last reached, the closes without a
-    // frame since then (the wait before the next attach), and whether the last socket was replaced on
-    // the page's return.
     let attach = 0;
     let failures = 0;
     let resumed = false;
     let attached = false;
-    while (attach < MAX_ATTACHES) {
+    const authoritative = (): Extract<FollowEnd, object> | undefined => {
+        if (lifecycle.terminal) return lifecycle.terminal;
         const replay = replayedStatuses.get(jobId);
         if (replay?.terminal) return { terminal: replay.terminal, applied: false, kept: replay.kept === true };
-        if (attached) {
+        if (lifecycle.ticket && known) return { terminal: known, applied: false, kept: false };
+    };
+    while (attach < MAX_ATTACHES || lifecycle.ticket) {
+        const terminal = authoritative();
+        if (terminal) return terminal;
+        if (attached && !lifecycle.ticket) {
             if (!resumed) {
-                await sleep(retryDelay(Math.max(failures, 1)));
+                if ((await waitForFollow(lifecycle, sleep(retryDelay(Math.max(failures, 1))))) === WOKEN) continue;
             }
             recordClientEvent({ kind: "jobLink", phase: "reattach", jobId, attempt: attach });
         }
+        const afterWait = authoritative();
+        if (afterWait) return afterWait;
+        const ticket = lifecycle.ticket;
+        lifecycle.ticket = undefined;
+        lifecycle.attemptOwner = false;
+        resetFollowWake(lifecycle);
         attached = true;
-        const follow: GenerationFollow = followGenerationJob(jobId, (event) => {
-            if (event.type === "done") {
-                holdForReplay(jobId, event);
-            }
-            applyGenerationEvent(jobId, ref, event, follow);
-            if (event.type === "sequence") {
-                incrementStatic("messages");
-                if (event.messageId && event.alternatives) {
-                    installReplyAlternatives(ref, event.messageId, event.alternatives);
+        const follow: GenerationFollow = followGenerationJob(
+            jobId,
+            (event) => {
+                if (event.type === "handoff") handleFollowRole(lifecycle, jobId, ref, event);
+                if (event.type === "done") {
+                    holdForReplay(jobId, event);
                 }
-            }
-        });
+                if (event.type === "done" || event.type === "error") {
+                    lifecycle.terminal = { terminal: event, applied: true, kept: false };
+                }
+                applyGenerationEvent(jobId, ref, event, follow);
+                if (event.type === "sequence") {
+                    incrementStatic("messages");
+                }
+            },
+            {
+                ...(ticket ? { ticket } : {}),
+                initiallyViewing: lifecycle.role === "viewer" || lifecycle.role === "pending",
+            },
+        );
+        lifecycle.active = follow;
+        lifecycle.pluginHold?.();
+        lifecycle.pluginHold = undefined;
+        // Ticket delivery closes active too; closed retains a terminal already delivered by that socket.
         const closed = await follow.closed;
-        if (closed.terminal) {
-            return { terminal: closed.terminal, applied: true, kept: false };
+        lifecycle.active = undefined;
+        if (closed.terminal) return { terminal: closed.terminal, applied: true, kept: false };
+        const afterClose = authoritative();
+        if (afterClose) return afterClose;
+        if (lifecycle.ticket) continue;
+        if (ticket && !lifecycle.attemptOwner) {
+            setHandoffWork(jobId, null);
+            if (!lifecycle.creator) return "takeoverLost";
+            setFollowRole(lifecycle, jobId, "viewer");
+            attached = false;
+            continue;
         }
         resumed = closed.resumed === true;
         if (closed.received) {
@@ -654,32 +840,34 @@ async function followOnce(jobId: string, ref: ChatRef, read?: GenerationStatus):
         }
         if (!resumed && !closed.received) {
             failures += 1;
-            if (pageAway()) {
-                recordClientEvent({ kind: "jobLink", phase: "closedAway", jobId });
-            } else {
-                attach += 1;
-            }
+            if (pageAway()) recordClientEvent({ kind: "jobLink", phase: "closedAway", jobId });
+            else attach += 1;
         }
         let status;
         try {
-            status = await readGenerationJob(jobId, { deadlineMs: STEP_DEADLINE_MS });
+            status = await waitForFollow(
+                lifecycle,
+                readGenerationJob(jobId, { deadlineMs: STEP_DEADLINE_MS }).then((status) => {
+                    // Even if a ticket wakes this wait, an ended answer already decoded stays authoritative.
+                    if (status?.epoch === getResourceEpoch() && status.state === "ended" && status.terminal)
+                        known = status.terminal;
+                    return status;
+                }),
+            );
         } catch {
-            // A failed read (the network, the server restarting): attach again.
             continue;
         }
-        if (!status) {
-            // Not known any more (the server restarted meanwhile): an end an earlier read named stands.
+        const afterRead = authoritative();
+        if (afterRead) return afterRead;
+        if (status === WOKEN || lifecycle.ticket) continue;
+        if (!status)
             return known && known.epoch === getResourceEpoch()
                 ? { terminal: known, applied: false, kept: false }
                 : "gone";
-        }
-        if (status.epoch !== getResourceEpoch()) {
-            return "gone";
-        }
-        if (status.kept && status.terminal) {
-            return { terminal: status.terminal, applied: false, kept: true };
-        }
-        known = status.state === "ended" ? (status.terminal ?? null) : null;
+        if (status.epoch !== getResourceEpoch()) return "gone";
+        if (status.kept && status.terminal) return { terminal: status.terminal, applied: false, kept: true };
+        if (lifecycle.creator && status.handedOff) setFollowRole(lifecycle, jobId, "viewer");
+        if (status.state === "ended" && status.terminal) known = status.terminal;
     }
     return known ? { terminal: known, applied: false, kept: false } : "lost";
 }
@@ -689,9 +877,10 @@ async function followOnce(jobId: string, ref: ChatRef, read?: GenerationStatus):
  * import ended (`maintenance`) shows the restore notice once the data is replaced
  * (`watchForRestore`), or its error when nothing was replaced. A done whose reply hooks were skipped
  * while the tab was away names the ones that changed nothing then (`serverJob.hooksSkipped`); the
- * skipped listeners run late instead (`replaySkippedListeners`).
+ * skipped listeners run late instead (`replaySkippedListeners`). Missed listeners never replay;
+ * only the creator gets their warning, combined with skipped-hook text in one toast.
  */
-function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string) {
+function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string, creator: boolean) {
     if (end === "lost") {
         alertError(language.serverJob.lost);
         recordClientEvent({ kind: "notice", notice: "serverJobLost" });
@@ -718,11 +907,13 @@ function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string) {
     } else if (end.type === "error" && end.reason !== "aborted") {
         alertJobError(jobId, end);
     }
-    if (end !== "lost" && end.type === "done" && end.skipped) {
-        const names = [...new Set(end.skipped.map((hook) => hook.name))].filter((name) => name !== "chatOutput");
-        if (names.length > 0) {
-            alertToast(language.serverJob.hooksSkipped.replace("{hooks}", () => names.join(", ")));
-        }
+    if (end !== "lost" && end.type === "done") {
+        const names = [...new Set(end.skipped?.map((hook) => hook.name) ?? [])].filter((name) => name !== "chatOutput");
+        const notices: string[] = [];
+        if (names.length > 0) notices.push(language.serverJob.hooksSkipped.replace("{hooks}", () => names.join(", ")));
+        if (creator && end.missed?.length) notices.push(language.serverJob.handoff.missedCallback);
+        // One toast preserves both messages; its plain-text rendering needs a space separator.
+        if (notices.length) alertToast(notices.join(" "));
     }
 }
 
@@ -944,6 +1135,7 @@ async function runPinnedServerJob(
                   {
                       kind: request.kind,
                       requestId: request.requestId,
+                      ...(get(preferHandoff) ? { handoff: "prefer" } : {}),
                       context: (prepared as { context: GenerationContext }).context,
                       ...(request.command ? { command: request.command } : {}),
                   } as Parameters<typeof createGenerationJob>[0],

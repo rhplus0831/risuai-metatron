@@ -61,8 +61,11 @@ describe("by-id chat feed patches", () => {
     it("publishes an over-cap row manifest with removals and no body", () => {
         const b = setup();
         const baseRevision = b.read().revision;
-        const candidates = ["한".repeat(24 * 1024)];
-        const carrier = { ...m("b", "B"), candidates };
+        const candidates = [
+            { id: "previous", data: "한".repeat(24 * 1024) },
+            { id: "current", data: "B" },
+        ];
+        const carrier = { ...m("b", "B"), candidates, candidatesRevision: 1 };
         expect(Buffer.byteLength(JSON.stringify(candidates))).toBeGreaterThan(MAX_FEED_PATCH_BYTES);
         b.write([
             { op: "setMessage", message: carrier },
@@ -87,7 +90,14 @@ describe("by-id chat feed patches", () => {
             },
         ]);
         const baseRevision = b.read().revision;
-        const carrier = { ...m("b", "B"), candidates: ["x".repeat(MAX_FEED_PATCH_BYTES + 1)] };
+        const carrier = {
+            ...m("b", "B"),
+            candidates: [
+                { id: "previous", data: "x".repeat(MAX_FEED_PATCH_BYTES + 1) },
+                { id: "current", data: "B" },
+            ],
+            candidatesRevision: 1,
+        };
         b.write([
             { op: "setMessage", message: carrier },
             { op: "begin", id: "b", generationId: "reroll" },

@@ -2,12 +2,11 @@
 
 ## Scope
 
-- Owns the tab's asset transport: how `assets/` keys become URLs (direct mode and the worker fallback, thumbnails, holds
-  and releases, the signed fetch for copies and screenshots), the asset client's reads and writes with the missing check
-  and the batch caps, the bounded save queues and batched reads of bulk imports and exports, and the batch record
-  framing both sides share.
-- Paths: the asset functions of `src/ts/globalApi.svelte.ts`, `src/ts/storage/{assetClient,assetQueue}.ts`, and
-  `shared/assetBatch.ts`.
+- Owns the tab's asset transport: how `assets/` keys become URLs (direct or fallback, thumbnails, holds, signed
+  fetches), the asset and storage report clients, the bulk save queues and batched reads, and the batch record framing
+  both sides share.
+- Paths: the asset functions of `src/ts/globalApi.svelte.ts`, `src/ts/storage/asset{Client,Queue,LifecycleClient}.ts`,
+  and `shared/assetBatch.ts`.
 - Not here:
   - The asset routes, their verification budget, and the HTTP cache → [self-host server](self-host-server.md).
   - The worker that signs subresource loads → [build-test-platforms](build-test-platforms.md).
@@ -38,18 +37,19 @@ has the routes, the record framing ([batch codec](#batch-codec)), and the retry 
 errors.
 
 - One file: `readAsset`, `writeAsset`, behind globalApi's `saveAsset` (key from `assetKey`; a canonical save asks
-  `missingAssets` first), `loadAsset`, and `readImage`.
-- Batches: `writeAssets` (the skip rule for `AssetWriteItem.sha256`), `readAssets`, and `missingAssets`, behind
-  globalApi's `saveAssetBatch` and `loadAssets`; `ASSET_BATCH_CLIENT_RECORDS`, `ASSET_BATCH_CLIENT_BYTES`,
-  `MISSING_CHECK_DEADLINE_MS`, and `assetContentHash`.
+  `missingAssets` first; present means a one-hour lease), `loadAsset`, and `readImage`.
+- Batches: `writeAssets` (the skip rule for `AssetWriteItem.sha256`, asked per batch), `readAssets`, and
+  `missingAssets`, behind globalApi's `saveAssetBatch` and `loadAssets`; `ASSET_BATCH_CLIENT_RECORDS`,
+  `ASSET_BATCH_CLIENT_BYTES`, `MISSING_CHECK_DEADLINE_MS`, and `assetContentHash`.
+- `src/ts/storage/assetLifecycleClient.ts`: the Storage panel's report, scan, and sweep calls.
 
 ### Asset queues
 
 `src/ts/storage/assetQueue.ts`: the bounded save queues for bulk imports and the batched reads of exports. Its header
 and export comments state admission, batching, settlement, and failure.
 
-- `saveAssets` (`AssetSaveItem`, `AssetSaveError`), `savePickedFiles`, `AssetSaveQueue` (the in-tab `CharXImporter`,
-  `src/ts/process/processzip.ts`), and `loadAssetsInBatches`.
+- `saveAssets` (`AssetSaveItem`, `AssetSaveError`; asks again before returning), `savePickedFiles`, `AssetSaveQueue`
+  (the in-tab `CharXImporter`, `src/ts/process/processzip.ts`), and `loadAssetsInBatches`.
 
 ### Batch codec
 
@@ -76,7 +76,7 @@ probe answers, and URLs already handed out stay as they are ([Issues](#issues)).
 
 - Assets go `globalApi` (`readImage`, `saveAsset`, `loadAsset`, and `getFileSrc` in the fallback without a worker cache
   hit; direct URLs load through the worker) or `inlays.ts` → `assetClient.ts` → `/api/read|write`; its batch calls go to
-  `/api/assets/write|read`, and a canonical `saveAsset` asks `/api/assets/missing` first.
+  `/api/assets/write|read`.
 - Bulk import writes go `saveAssets` → `saveAssetBatch` → `writeAssets`; card and module export reads go
   `loadAssetsInBatches` → `loadAssets` → `readAssets` ([Asset client](#asset-client)).
 
@@ -95,7 +95,7 @@ probe answers, and URLs already handed out stay as they are ([Issues](#issues)).
 ## Tests
 
 - Vitest:
-  `pnpm --silent test:agent src/ts/globalApi{Retention,Thumbnails}.test.ts src/ts/screenshotCaptureCache.test.ts src/ts/storage/tests/asset{Client,Queue}.test.ts shared/tests/assetBatch.test.ts`.
+  `pnpm --silent test:agent src/ts/globalApi{Retention,Thumbnails}.test.ts src/ts/screenshotCaptureCache.test.ts src/ts/storage/tests/asset{Client,Queue,LifecycleClient}.test.ts shared/tests/assetBatch.test.ts`.
 - Asset fixture: `src/ts/storage/tests/assetClientMock.ts` (`createAssetClientMock`) reports every asset missing.
   `src/ts/storage/tests/assetClient.test.ts` uses fake routes controlled through mocked `authFetch` and
   `answer.current`.
@@ -103,7 +103,7 @@ probe answers, and URLs already handed out stay as they are ([Issues](#issues)).
   `util/playwright/measureFileSources.mjs` and `probeDirectAssets.mjs`.
 - Slow: no client tests; the server asset batch cap in `server/src/tests/assets.test.ts` is `slow`
   ([test-harness](test-harness.md)).
-- Not tested: none recorded beyond that; the browser spec and the probes cover the worker paths.
+- Not tested: none; the browser spec and the probes cover the worker paths.
 
 ## Known Hazards
 

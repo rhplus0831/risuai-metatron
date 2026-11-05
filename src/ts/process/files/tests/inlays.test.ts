@@ -758,3 +758,30 @@ describe("live updates", () => {
         expect((await I.getInlayMetadata("a"))?.text).toBe("two");
     });
 });
+
+test.each(["present", "swept"])("checks a cached inlay's %s media before writing a new record", async (presence) => {
+    const assetClient = await import("../../../storage/assetClient");
+    await I.setInlayAsset("old", image(blobOf("cached media")));
+    const key = fake.data<InlayResource>("inlays", "old")!.asset!;
+    if (presence === "swept") assets.delete(key);
+    vi.mocked(assetClient.writeAsset).mockClear();
+    vi.mocked(assetClient.missingAssets).mockImplementation(async (names) => {
+        expect(names).toEqual([key]);
+        expect(fake.data("inlays", "new")).toBeNull();
+        return new Set(names.filter((name) => !assets.has(name)));
+    });
+    const fetch = fake.fetch.bind(fake);
+    const write = vi.spyOn(fake, "fetch").mockImplementation(async (url, init) => {
+        if (url.includes("/inlays/new") && init?.method === "PUT")
+            expect(assets.get(key)).toEqual(new TextEncoder().encode("cached media"));
+        return fetch(url, init);
+    });
+    try {
+        await I.setInlayAsset("new", image(blobOf("cached media")));
+        expect(assetClient.missingAssets).toHaveBeenCalledWith([key]);
+        expect(assetClient.writeAsset).toHaveBeenCalledTimes(presence === "swept" ? 1 : 0);
+        expect(fake.data<InlayResource>("inlays", "new")!.asset).toBe(key);
+    } finally {
+        write.mockRestore();
+    }
+});

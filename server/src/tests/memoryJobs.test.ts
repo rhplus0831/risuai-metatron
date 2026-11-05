@@ -24,6 +24,7 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { messageSourceHash } from "../data/memoryStore.ts";
 import type { Message } from "../../../shared/database.ts";
 import { readRecordSet, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
+import { confirmedWindows, writerCadence, writerCeiling } from "../prompt/memory/structured/window.ts";
 import { memoryRecords, writeMemory } from "./memoryFixtures.ts";
 import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
@@ -304,6 +305,22 @@ const longText = (i: number) =>
     `the party walked through the ${["forest", "desert", "city", "cave"][i % 4]} and talked at length about item ${i}. `.repeat(
         3,
     );
+
+function candidateReply(): Message {
+    return {
+        chatId: "a2",
+        role: "char",
+        data: "Selected reply: the beacon shines blue.",
+        candidates: [
+            { id: "discarded", data: "Discarded reply: the beacon shines red." },
+            { id: "selected", data: "Selected reply: the beacon shines blue." },
+            { id: "unused", data: "Unused reply: the beacon shines green." },
+        ],
+        selected: 1,
+        candidatesRevision: 4,
+        scriptstateCheckpoint: { before: null, after: { beacon: "blue" } },
+    };
+}
 
 let seeded = 0;
 /** A character with memory on and a chat `k` of `count` long messages (`m0..`), or the given messages. */
@@ -2522,6 +2539,68 @@ describe("HypaV3 with the server's memory task service", () => {
         await patchSettings({ hypaV3: true });
     });
 
+    it("records only the selected candidate text when record now is pressed on the newest reply", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const previousAlgorithm = (await single("ui")).data.memoryAlgorithmType;
+        try {
+            await patchSettings({ hypaV3: false, memoryAlgorithmType: "structuredMemory" });
+            await patchHypaV3({ structured: { cadence: "manual" } });
+            const carrier = candidateReply();
+            const chaId = await seedCharacter({
+                messages: [{ chatId: "u2", role: "user", data: "Second user" }, { ...carrier }],
+            });
+            state.summaries = [
+                JSON.stringify({
+                    title: "The beacon",
+                    summary: "The beacon shines blue.",
+                    participants: [],
+                    storyTime: { text: "" },
+                    keyLines: [],
+                    stateChanges: [],
+                    knowledge: [],
+                    relationshipShifts: [],
+                    openThreads: { add: [], close: [], transitions: [] },
+                }),
+            ];
+            const recordedTask = nextTerminal(chaId);
+            const result = await job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryRecord", messageId: "a2" } },
+            );
+            expect(result.terminal?.type, JSON.stringify(result)).toBe("done");
+            expect(await recordedTask).toMatchObject({ kind: "structuredMemory", state: "done", done: 1 });
+            expect(summaries()).toHaveLength(1);
+            const input = JSON.stringify(summaries()[0].body.messages);
+            expect(input).toContain("Second user");
+            expect(input).toContain("Selected reply: the beacon shines blue.");
+            expect(input).not.toContain("Discarded reply: the beacon shines red.");
+            expect(input).not.toContain("Unused reply: the beacon shines green.");
+            const store = createResourceStore({
+                file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+            });
+            try {
+                const events = store.memory.readContents(chaId, "k")!.events;
+                expect(events).toHaveLength(1);
+                const recorded = store.memory.readRecord(chaId, "k", "events", events[0].id)!.data;
+                expect(recorded.sources.map(({ messageId }) => messageId)).toEqual(["u2", "a2"]);
+                expect(recorded.sources[1].hash).toBe(
+                    messageSourceHash({ role: "char", data: "Selected reply: the beacon shines blue." }),
+                );
+            } finally {
+                store.close();
+            }
+            const reply = (await readChat(chaId)).data.message.at(-1);
+            expect(reply.data).toBe(carrier.data);
+            expect(reply.candidates[reply.selected].data).toBe(carrier.data);
+        } finally {
+            await patchSettings({ memoryAlgorithmType: previousAlgorithm });
+            vi.useRealTimers();
+        }
+    });
+
     it(
         "a send over the lookahead line ends `done` with no summary request, the task's summary requests start only after the job's terminal, and the next send selects the task's summaries without embedding them again",
         async () => {
@@ -2661,6 +2740,104 @@ describe("structured memory job hand-offs", () => {
     afterAll(async () => {
         use(blockingStack);
         await closeStack(stack);
+    });
+
+    describe("candidate memory confirmation", () => {
+        beforeEach(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }));
+        afterEach(() => vi.useRealTimers());
+
+        async function windowsFor(messages: Message[], confirmedBefore: string) {
+            const presets = (await single("hypaV3Presets")).data;
+            return confirmedWindows({
+                messages,
+                confirmedBefore,
+                recorded: new Set(),
+                cadence: writerCadence({ hypaV3Presets: presets.items, hypaV3PresetId: presets.selectedId }),
+                maxContext: 5000,
+                tokenizer: { tokenizeChat: async () => 1 },
+                limit: 10,
+            });
+        }
+
+        it("rerolls in place with no carrier or candidate text in writer windows, HypaV3 input, or the prompt", async () => {
+            for (const algorithm of ["structuredMemory", "hypaV3"]) {
+                fake.reset();
+                fake.setPendingManual(algorithm === "hypaV3");
+                upstream.length = 0;
+                embedCalls.length = 0;
+                await patchSettings({
+                    memoryAlgorithmType: algorithm === "structuredMemory" ? algorithm : "none",
+                    hypaV3: algorithm === "hypaV3",
+                });
+                const carrier = candidateReply();
+                const chaId = await seedCharacter({ messages: [...messages.slice(0, 3), { ...carrier }] });
+                state.mainTexts = ["Regenerated reply: the beacon shines gold."];
+                const result = await job("reroll", chaId, { rerollMessageId: "a2" });
+                expect(result.terminal, JSON.stringify(result)).toMatchObject({ type: "done", messageId: "a2" });
+                const stored = (await readChat(chaId)).data.message as Message[];
+                expect(stored.map(({ chatId }) => chatId)).toEqual(["u1", "a1", "u2", "a2"]);
+                const reply = stored.at(-1)!;
+                expect(reply.data).toBe("Regenerated reply: the beacon shines gold.");
+                expect(reply.candidates![reply.selected!].data).toBe(reply.data);
+                if (algorithm === "structuredMemory") {
+                    expect(fake.handOffs).toHaveLength(1);
+                    expect(fake.handOffs[0]).toMatchObject({ kind: "structuredMemory", confirmedBefore: "u2" });
+                    expect(writerCeiling(stored)).toBe("u2");
+                    const input = fake.handOffs[0] as unknown as StructuredMemoryTaskInput;
+                    const windows = await windowsFor(stored, input.confirmedBefore);
+                    expect(windows!.map(({ messages }) => messages.map(({ data }) => data))).toEqual([
+                        ["First user", "First reply"],
+                    ]);
+                } else {
+                    expect(fake.handOffs).toHaveLength(1);
+                    const input = fake.handOffs[0];
+                    expect(
+                        input.history
+                            .filter(({ memo }) => ["u1", "a1", "u2", "a2"].includes(memo ?? ""))
+                            .map(({ memo, content }) => ({ memo, content })),
+                    ).toEqual([
+                        { memo: "u1", content: "First user" },
+                        { memo: "a1", content: "First reply" },
+                        { memo: "u2", content: "Second user" },
+                    ]);
+                    expect(
+                        input.sources.filter((source) => source.kind === "message").map((source) => source.id),
+                    ).toEqual(["u1", "a1", "u2"]);
+                    for (const { data } of carrier.candidates!) expect(JSON.stringify(input)).not.toContain(data);
+                }
+                const inputs = JSON.stringify({
+                    requests: upstream.map(({ body }) => body.messages),
+                    embeddings: embedCalls.map(({ input }) => input),
+                });
+                expect(inputs).toContain("Second user");
+                for (const text of [...carrier.candidates!.map(({ data }) => data), reply.data]) {
+                    expect(inputs).not.toContain(text);
+                }
+            }
+        });
+
+        it("confirms only the selected candidate in the writer window after the next send", async () => {
+            const carrier = candidateReply();
+            const chaId = await seedCharacter({ messages: [...messages.slice(0, 3), { ...carrier }] });
+            const result = await job("send", chaId, { input: "Keep the blue beacon", userMessageId: "u3" });
+            expect(result.terminal?.type, JSON.stringify(result)).toBe("done");
+            expect(fake.handOffs).toHaveLength(1);
+            expect(fake.handOffs[0]).toMatchObject({ kind: "structuredMemory", confirmedBefore: "u3" });
+            const stored = (await readChat(chaId)).data.message as Message[];
+            expect(stored.find(({ chatId }) => chatId === "a2")!.data).toBe(carrier.data);
+            const input = fake.handOffs[0] as unknown as StructuredMemoryTaskInput;
+            const windows = await windowsFor(stored, input.confirmedBefore);
+            expect(windows!.map(({ messages }) => messages.map(({ data }) => data))).toEqual([
+                ["First user", "First reply"],
+                ["Second user", "Selected reply: the beacon shines blue."],
+            ]);
+            expect(windows!.flatMap(({ sources }) => sources.map(({ messageId }) => messageId))).toEqual([
+                "u1",
+                "a1",
+                "u2",
+                "a2",
+            ]);
+        });
     });
 
     describe("approved Structured Memory gaps", () => {

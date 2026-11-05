@@ -1,3 +1,12 @@
+import {
+    acceptHandoffs,
+    clientName,
+    receiveHandoffOffer,
+    registration,
+    replaceConnectedClients,
+    replaceHandoffOffers,
+} from "./handoff";
+import { generationClientId } from "./generationJobs";
 import { EVENT_FEED_PATH, type EventFeedFrame } from "../../../shared/events.ts";
 import { revisionDigest, type ChangeSet, type ResourceRevisionListing } from "../../../shared/resources.ts";
 import {
@@ -29,12 +38,15 @@ import {
  * revisions independently of held records and overlays changes received during either read, after
  * the hello-time listing has reached reconciliation and memory fences. Every connection signs a
  * fresh JWT (they live five minutes). A `hello` or `epoch` frame of another epoch means a restore replaced the data: the
- * save loop halts and the page reloads; `change` and `memoryTask` frames of another epoch are
+ * save loop halts and the page reloads; `change`, `handoff`, and `memoryTask` frames of another epoch are
  * ignored. A `change` frame's refs are dispatched before its generation locks (`streaming`) go to
  * `src/ts/storage/chatStore.svelte.ts` (`noteRemoteStreaming`), so a fitting `begin` patch puts the
  * row in the mirror before its lock. For a chat the mirror lacks, an unloaded chat, or a patch that
  * does not fit, the lock is installed by id and the row arrives locked with the read. A `hello`
  * replaces the feed's whole lock set with the server's snapshot before reconciliation starts.
+ * Handoff offers go to `handoff.ts`: hello replaces them, and open/closed frames update one job.
+ * Hello and `clients` replace presence there. The tab registers after each same-epoch hello and
+ * when its name or worker preference changes; retiring a connection or an epoch mismatch clears presence.
  *
  * One connection is current at a time (`generation`). A connection that has not opened within 10 s
  * (authentication included) or that has had no frame for 45 s while the page is visible is
@@ -76,6 +88,17 @@ let attempt = 0;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 /** The socket that got its `hello` (recorded `connected` once), and the attempt it was. */
 let connectedSocket: WebSocket | null = null;
+let connectedGeneration = -1;
+
+function registerClient() {
+    const ws = socket;
+    if (!ws || connectedSocket !== ws || connectedGeneration !== generation || ws.readyState !== 1) return;
+    ws.send(JSON.stringify(registration(generationClientId())));
+}
+
+// One subscription per preference, shared by every connection; only a current hello permits a send.
+clientName.subscribe(registerClient);
+acceptHandoffs.subscribe(registerClient);
 
 type RevisionMap = {
     [K in keyof ChangeSet]: Map<string, ResourceRevisionListing[K][number] | null>;
@@ -150,6 +173,9 @@ function clearAdvertised() {
     advertised = null;
     heldCursor = null;
     listingOverlay = null;
+    replaceHandoffOffers([]);
+    connectedGeneration = -1;
+    replaceConnectedClients([]);
 }
 
 function isCursor(value: unknown): value is number {
@@ -170,6 +196,7 @@ function retire() {
     liveness?.stop();
     liveness = null;
     socket = null;
+    replaceConnectedClients([]);
 }
 
 /**
@@ -332,12 +359,19 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
                 return;
             }
             replaceFeedLocks(Array.isArray(frame.streaming) ? frame.streaming : []);
+            replaceHandoffOffers(frame.handoffs ?? []);
+            replaceConnectedClients(frame.clients ?? []);
             const hello = noteMemoryTaskHello(frame.memoryTasks);
             if (connectedSocket !== ws) {
                 connectedSocket = ws;
                 recordClientEvent({ kind: "feed", phase: "connected", attempt: connectAttempt });
             }
+            connectedGeneration = gen;
+            registerClient();
             void reconcile(gen, ws, hello, frame.digest, frame.cursor, connectAttempt);
+            return;
+        case "clients":
+            if (connectedSocket === ws && connectedGeneration === gen) replaceConnectedClients(frame.clients);
             return;
         case "change":
             if (frame.epoch === loaded) {
@@ -349,6 +383,9 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
                     noteRemoteStreaming(frame.streaming, frame.changes);
                 }
             }
+            return;
+        case "handoff":
+            if (frame.epoch === loaded) receiveHandoffOffer(frame);
             return;
         case "memoryTask":
             if (frame.epoch === loaded) {

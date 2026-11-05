@@ -26,6 +26,7 @@
     import Sidebar from "./lib/SideBars/Sidebar.svelte";
     import ChatScreen from "./lib/ChatScreens/ChatScreen.svelte";
     import AlertComp from "./lib/Others/AlertComp.svelte";
+    import HandoffStatus from "./lib/Others/HandoffStatus.svelte";
     import ReloadNotice from "./lib/Others/ReloadNotice.svelte";
     import RefusedDataBanner from "./lib/UI/RefusedDataBanner.svelte";
     import TerminalNotice from "./lib/Others/TerminalNotice.svelte";
@@ -298,6 +299,7 @@
     {/if}
     <RefusedDataBanner form="app" />
     <ReloadNotice />
+    <HandoffStatus />
     <TerminalNotice />
     {#if $loadedStore}
         <PushPrompt />

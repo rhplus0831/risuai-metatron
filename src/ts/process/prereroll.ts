@@ -1,11 +1,6 @@
 import { type ChatRef, currentChatRef, findChat } from "../storage/chatStore.svelte";
 
-/**
- * Swipe candidates of the replies a send brought with alternatives (`addRerolls`, from
- * `src/ts/process/serverGeneration.ts`), in memory and keyed by the reply's `generationId`: they are
- * kept for the page's life, lost on reload, and apply only while the selected chat is the one the
- * reply was generated in.
- */
+/** Legacy in-memory swipe navigation. New samples are persisted on the message by the server. */
 
 /** A reply's reroll candidates: the one it shows (`index`), and the chat and message it was generated in. */
 type Candidates = { values: string[]; index: number; ref: ChatRef; messageId: string };
@@ -57,9 +52,4 @@ export function Prereroll(genId: string) {
 export function PreUnreroll(genId: string) {
     const entry = currentCandidates(genId);
     return entry ? swapFrom(entry, -1) : null;
-}
-
-/** The reroll alternatives of reply `messageId` in `ref`; the reply shows the first. */
-export function addRerolls(genId: string, values: string[], ref: ChatRef, messageId: string) {
-    rerolls.set(genId, { values: [...values], index: 0, ref: { chaId: ref.chaId, chatId: ref.chatId }, messageId });
 }

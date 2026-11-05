@@ -26,7 +26,11 @@ import {
  * Timers only wake work: answers, chunks, dispatch, attach, parent lookup and watchCallback must
  * check the current effective deadline too, so a late timer or frame cannot accept overdue work.
  * Owner transitions re-arm wakeups. Reconnection removes the absence cap without extending a
- * dispatched request's own allowance or its parent's allowance.
+ * dispatched request's own allowance or its parent's allowance. Ownership transfer moves only
+ * undelivered requests into the new owner's lane, ahead of queued work, with a fresh dispatch
+ * allowance. Delivered requests and cancellation drain holds keep their recorded dispatch lane.
+ * A pending transfer blocks new roots until the registry switches at an enqueue or a deferred task,
+ * after settlement has allowed the runner to end a failed job.
  */
 
 /** A question waits this long from the moment it is dispatched (not while it waits in the client's queue). */
@@ -41,6 +45,8 @@ const MAX_QUEUED_PER_CLIENT = 256;
 /** Outstanding requests one client may have: a callback and one child (an aux request's callback). */
 const MAX_DEPTH = 2;
 
+export type NoticeAudience = "owner" | "all" | "creator";
+
 /** What the registry gives the channel of one job. */
 export type ChannelTransport = {
     readonly jobId: string;
@@ -49,8 +55,8 @@ export type ChannelTransport = {
     readonly targets: CallbackTargets;
     readonly hooks: GenerationHooks;
     /**
-     * Sends to the owner's current socket (works until the job's end has been sent). Returns whether
-     * an open owner socket took the frame (it may have reached the client).
+     * Sends requests/cancels only to the current owner, and notices to their audience. Returns
+     * whether an eligible open socket took the frame (it may have reached the client).
      */
     send(event: GenerationChannelEvent): boolean;
     /** Sends the job chat and every record the job sent, read now; returns what was sent. */
@@ -58,6 +64,12 @@ export type ChannelTransport = {
     /** Persists synchronous setters before a notice or request leaves the runner. */
     flushPending?(): void;
     ownerAttached(): boolean;
+    /** Notice delivery groups have independent first-attach buffers. Defaults to owner. */
+    noticeAudience?(notice: GenerationNotice): NoticeAudience;
+    /** Runs before choosing an enqueue lane, after the previous callback's runner continued. */
+    beforeEnqueue?(): void;
+    /** Settlement notification: the registry must defer any ownership switch. */
+    onSettled?(): void;
     /** The job's absence bound, or Infinity while an effective owner is present. */
     ownerAbsentDeadline?(): number;
 };
@@ -111,6 +123,8 @@ type Request = {
     dispatched: boolean;
     /** When it took the client's slot; `Infinity` while queued. */
     dispatchedAt: number;
+    /** Fixed before dispatch expiry; queued requests instead follow the current owner. */
+    laneClientId: string | null;
     /** An open owner socket took it at least once: a later send is a replay. */
     delivered: boolean;
     settled: boolean;
@@ -132,14 +146,15 @@ type ChannelState = {
     openedAt: number;
     requests: Set<Request>;
     closed: boolean;
+    transferPending: boolean;
+    settling: number;
+    attachedAudiences: Set<NoticeAudience>;
     /**
-     * Notices sent before an owner socket first attached (a job starts at once, its owner attaches
-     * right after the create answer): kept, within `MAX_EARLY_NOTICE_BYTES`, and sent on that first
-     * attach in their order among the requests made meanwhile, even after the job ended (the
-     * registry takes them before the terminal), then null. After the first attach a notice nobody
-     * receives is gone, as a notice is one way.
+     * Notices kept until their audience first attaches, bounded together by MAX_EARLY_NOTICE_BYTES.
+     * Each audience drains independently, in original request/notice order on an owner attach.
+     * Later notices for an absent audience are dropped: notices are one way.
      */
-    early: { order: number; event: GenerationChannelEvent }[] | null;
+    early: { order: number; event: Extract<GenerationChannelEvent, { type: "notice" }>; bytes: number }[];
     earlyBytes: number;
 };
 
@@ -319,48 +334,54 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         if (request.settled) {
             return;
         }
-        request.settled = true;
-        if (request.timer) {
-            clearTimeout(request.timer);
-            request.timer = null;
-        }
-        for (const child of [...request.children]) {
-            settle(child, { outcome: "aborted", error: "The callback it ran inside ended" }, true);
-        }
-        const lane = laneOf(request.channel.transport.clientId);
-        lane.queue = lane.queue.filter((entry) => entry !== request);
-        lane.stack = lane.stack.filter((entry) => entry !== request);
-        request.parent?.children.delete(request);
-        request.channel.requests.delete(request);
-        if (notifyClient && request.dispatched && request.delivered && request.kind === "callback") {
-            holdDraining(lane, request);
-        }
-        if (notifyClient && request.dispatched) {
-            try {
-                request.channel.transport.send({
-                    type: "cancel",
-                    epoch: request.channel.transport.epoch,
-                    id: request.id,
-                });
-            } catch (error) {
-                console.error("[Channel]", error);
+        request.channel.settling += 1;
+        try {
+            request.settled = true;
+            if (request.timer) {
+                clearTimeout(request.timer);
+                request.timer = null;
             }
-        }
-        request.resolve(result);
-        for (const listener of request.onSettled) {
-            try {
-                listener();
-            } catch (error) {
-                console.error("[Channel]", error);
+            for (const child of [...request.children]) {
+                settle(child, { outcome: "aborted", error: "The callback it ran inside ended" }, true);
             }
+            const lane = laneOf(request.laneClientId ?? request.channel.transport.clientId);
+            lane.queue = lane.queue.filter((entry) => entry !== request);
+            lane.stack = lane.stack.filter((entry) => entry !== request);
+            request.parent?.children.delete(request);
+            request.channel.requests.delete(request);
+            if (notifyClient && request.dispatched && request.delivered && request.kind === "callback") {
+                holdDraining(lane, request);
+            }
+            if (notifyClient && request.dispatched) {
+                try {
+                    request.channel.transport.send({
+                        type: "cancel",
+                        epoch: request.channel.transport.epoch,
+                        id: request.id,
+                    });
+                } catch (error) {
+                    console.error("[Channel]", error);
+                }
+            }
+            request.resolve(result);
+            for (const listener of request.onSettled) {
+                try {
+                    listener();
+                } catch (error) {
+                    console.error("[Channel]", error);
+                }
+            }
+            request.onSettled.clear();
+            request.channel.transport.onSettled?.();
+            pump(request.laneClientId ?? request.channel.transport.clientId);
+        } finally {
+            request.channel.settling -= 1;
         }
-        request.onSettled.clear();
-        pump(request.channel.transport.clientId);
     }
 
     /** Keeps the lane for a cancelled callback the tab may still run (see the hub's comment). */
     function holdDraining(lane: ClientLane, request: Request) {
-        const clientId = request.channel.transport.clientId;
+        const clientId = request.laneClientId!;
         const entry: Draining = { channel: request.channel, until: now() + CANCELLED_CALLBACK_DRAIN_MS, timer: null };
         lane.draining.set(request.id, entry);
         // A wakeup only, as for a deadline: `releaseDue` compares the clock.
@@ -394,8 +415,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
     }
 
     /** The tab reports the cancelled callback `id` of `channel` drained: it no longer holds the lane. */
-    function releaseDraining(channel: ChannelState, id: string): boolean {
-        const clientId = channel.transport.clientId;
+    function releaseDraining(channel: ChannelState, id: string, clientId: string): boolean {
         const lane = lanes.get(clientId);
         const entry = lane?.draining.get(id);
         if (!lane || !entry || entry.channel !== channel) {
@@ -449,7 +469,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         const attached = request.channel.transport.ownerAttached();
         const disconnected = !attached || now() >= absenceDeadline(request);
         if (!attached && request.parent === null && request.dispatchedAt !== Infinity) {
-            const lane = laneOf(request.channel.transport.clientId);
+            const lane = laneOf(request.laneClientId ?? request.channel.transport.clientId);
             const queued = lane.queue.filter(
                 (entry) =>
                     !entry.settled &&
@@ -480,7 +500,8 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         return true;
     }
 
-    function dispatch(request: Request, lane: ClientLane) {
+    function dispatch(request: Request, lane: ClientLane, clientId: string) {
+        request.laneClientId = clientId;
         // The deadline starts now: time spent behind other requests in the queue is not counted.
         request.dispatchedAt = now();
         request.deadline = request.dispatchedAt + request.timeoutMs;
@@ -496,7 +517,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         request.build = build;
         armDeadline(request);
         const send = () => {
-            if (request.settled || expireIfDue(request)) {
+            if (request.settled || request.build !== build || expireIfDue(request)) {
                 return;
             }
             try {
@@ -512,7 +533,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 );
             }
         };
-        const sends = attachSends.get(request.channel.transport.clientId);
+        const sends = attachSends.get(clientId);
         if (sends) {
             sends.push({ order: request.order, send });
         } else {
@@ -525,9 +546,10 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         const lane = laneOf(clientId);
         const draining = releaseDue(lane);
         while (!draining && lane.stack.length === 0 && lane.queue.length > 0) {
+            if (lane.queue[0].channel.transferPending) break;
             const next = lane.queue.shift()!;
             if (!next.settled && !next.channel.closed) {
-                dispatch(next, lane);
+                dispatch(next, lane, clientId);
             }
         }
         if (lane.stack.length === 0 && lane.queue.length === 0 && lane.draining.size === 0) {
@@ -544,6 +566,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         extra: { onChunk?: (text: string) => void; signal?: AbortSignal } = {},
     ): Promise<QuestionResult | CallbackResult> {
         return new Promise((resolve) => {
+            channel.transport.beforeEnqueue?.();
             const { transport } = channel;
             if (channel.closed) {
                 resolve({ outcome: "aborted", error: "The job has ended" });
@@ -587,6 +610,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 children: new Set(),
                 dispatched: false,
                 dispatchedAt: Infinity,
+                laneClientId: null,
                 delivered: false,
                 settled: false,
                 timer: null,
@@ -609,7 +633,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 request.onSettled.add(() => signal.removeEventListener("abort", onAbort));
             }
             if (parent) {
-                dispatch(request, lane);
+                dispatch(request, lane, transport.clientId);
             } else {
                 lane.queue.push(request);
                 armDeadline(request);
@@ -620,12 +644,23 @@ export function createChannelHub(options: { now?: () => number } = {}) {
 
     return {
         /** Opens the channel of one job. The registry passes answers, attaches, and the job's end to it. */
-        open(transport: ChannelTransport) {
+        open(initialTransport: ChannelTransport) {
+            let ownerClientId = initialTransport.clientId;
+            // Private mutable identity: callers transfer through the link, never by mutating a transport.
+            const transport: ChannelTransport = {
+                ...initialTransport,
+                get clientId() {
+                    return ownerClientId;
+                },
+            };
             const state: ChannelState = {
                 transport,
                 openedAt: now(),
                 requests: new Set(),
                 closed: false,
+                transferPending: false,
+                settling: 0,
+                attachedAudiences: new Set(),
                 early: [],
                 earlyBytes: 0,
             };
@@ -636,11 +671,18 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                     if (state.closed) {
                         return;
                     }
-                    const event = { type: "notice", epoch: transport.epoch, ...notice } as GenerationChannelEvent;
-                    if (state.early && !transport.ownerAttached()) {
+                    const event = { type: "notice", epoch: transport.epoch, ...notice } as Extract<
+                        GenerationChannelEvent,
+                        { type: "notice" }
+                    >;
+                    const audience = transport.noticeAudience?.(notice) ?? "owner";
+                    if (
+                        !state.attachedAudiences.has(audience) &&
+                        (transport.noticeAudience || !transport.ownerAttached())
+                    ) {
                         const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
                         if (state.earlyBytes + bytes <= MAX_EARLY_NOTICE_BYTES) {
-                            state.early.push({ order: ++earlyOrder, event });
+                            state.early.push({ order: ++earlyOrder, event, bytes });
                             state.earlyBytes += bytes;
                         }
                         return;
@@ -701,8 +743,70 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 },
             };
 
+            function takeEarly(audiences: NoticeAudience[]) {
+                for (const audience of audiences) state.attachedAudiences.add(audience);
+                const taken = state.early.filter(({ event }) =>
+                    audiences.includes(transport.noticeAudience?.(event) ?? "owner"),
+                );
+                state.early = state.early.filter((entry) => !taken.includes(entry));
+                state.earlyBytes -= taken.reduce((sum, entry) => sum + entry.bytes, 0);
+                return taken;
+            }
+
             return {
                 channel,
+                get closed() {
+                    return state.closed;
+                },
+                /** Includes listener calls and child settlement, before any runner continuation. */
+                get settling() {
+                    return state.settling > 0;
+                },
+                hasDeliveredRequests() {
+                    return [...state.requests].some((request) => request.delivered && !request.settled);
+                },
+                deferTransfer(pending: boolean) {
+                    state.transferPending = pending;
+                    if (!pending) pump(transport.clientId);
+                },
+                /**
+                 * Called only at a safe boundary. Migration is synchronous: neither lane pumps
+                 * until all undelivered dispatches and queued requests have changed lanes. Build
+                 * identity invalidates sends collected by an attach before this move.
+                 */
+                transferOwner(clientId: string, audiences?: NoticeAudience[]): boolean {
+                    if (
+                        state.closed ||
+                        state.settling > 0 ||
+                        [...state.requests].some((request) => request.delivered && !request.settled)
+                    )
+                        return false;
+                    const oldId = transport.clientId;
+                    const oldLane = laneOf(oldId);
+                    const moving = [...state.requests]
+                        .filter((request) => !request.settled && !request.delivered)
+                        .sort((a, b) => Number(b.dispatched) - Number(a.dispatched) || a.order - b.order);
+                    const moved = new Set(moving);
+                    oldLane.stack = oldLane.stack.filter((request) => !moved.has(request));
+                    oldLane.queue = oldLane.queue.filter((request) => !moved.has(request));
+                    for (const request of moving) {
+                        if (request.timer) clearTimeout(request.timer);
+                        request.timer = null;
+                        request.dispatched = false;
+                        request.dispatchedAt = Infinity;
+                        request.deadline = Infinity;
+                        request.laneClientId = null;
+                        request.build = null;
+                    }
+                    ownerClientId = clientId;
+                    state.transferPending = false;
+                    laneOf(clientId).queue.unshift(...moving);
+                    for (const request of moving) armDeadline(request);
+                    if (clientId !== oldId) pump(oldId);
+                    if (audiences) this.handleAttach(audiences);
+                    else pump(clientId);
+                    return true;
+                },
 
                 /** Owner presence changed: children also inherit the parent's new absence bound. */
                 ownerChanged() {
@@ -746,7 +850,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                         // A valid answer of a callback the server stopped waiting for (now or before):
                         // its hook is over, so its draining hold (if any) ends.
                         if (message.type === "answer" && readAnswer("callback", message)) {
-                            releaseDraining(state, message.id);
+                            releaseDraining(state, message.id, transport.clientId);
                         }
                         return;
                     }
@@ -784,13 +888,12 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                  * request/notice order. A promoted request joins this batch once, through dispatch,
                  * rather than also being collected as an outstanding replay.
                  */
-                handleAttach() {
-                    const early = state.early ?? [];
-                    state.early = null;
-                    state.earlyBytes = 0;
-                    const active = attachSends.get(transport.clientId);
+                handleAttach(audiences: NoticeAudience[] = ["owner", "all", "creator"]) {
+                    const clientId = transport.clientId;
+                    const early = takeEarly(audiences);
+                    const active = attachSends.get(clientId);
                     const sends = active ?? [];
-                    attachSends.set(transport.clientId, sends);
+                    attachSends.set(clientId, sends);
                     try {
                         // Promotions during collection or delivery join the kept notices and replays.
                         sends.push(
@@ -812,7 +915,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                                 order: request.order,
                                 send: () => {
                                     // An earlier send may have settled it, or used up its time.
-                                    if (request.settled || expireIfDue(request)) {
+                                    if (request.settled || request.build !== build || expireIfDue(request)) {
                                         return;
                                     }
                                     const sent = transport.send(build(request.delivered));
@@ -820,7 +923,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                                 },
                             });
                         }
-                        pump(transport.clientId);
+                        pump(clientId);
                         if (active) {
                             return;
                         }
@@ -835,20 +938,14 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                         }
                     } finally {
                         if (!active) {
-                            attachSends.delete(transport.clientId);
+                            attachSends.delete(clientId);
                         }
                     }
                 },
 
-                /**
-                 * The notices kept for an owner that never attached while the job ran (the registry
-                 * sends them before the terminal of an ended job's first attach); empties the buffer.
-                 */
-                takeEarly(): GenerationChannelEvent[] {
-                    const early = state.early ?? [];
-                    state.early = null;
-                    state.earlyBytes = 0;
-                    return early.map(({ event }) => event);
+                /** Drains only audiences present on this attach, retaining notices for the others. */
+                takeEarly(audiences: NoticeAudience[] = ["owner", "all", "creator"]): GenerationChannelEvent[] {
+                    return takeEarly(audiences).map(({ event }) => event);
                 },
 
                 /**
@@ -872,8 +969,8 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                  * /api/generations/:id/drained`): the lane it kept is free. False when it holds none
                  * (answered, never delivered, released by its bound, or reported before).
                  */
-                drained(id: string): boolean {
-                    return releaseDraining(state, id);
+                drained(id: string, clientId = transport.clientId): boolean {
+                    return releaseDraining(state, id, clientId);
                 },
 
                 /** The job ends: every request of it is settled `aborted`. Idempotent. */

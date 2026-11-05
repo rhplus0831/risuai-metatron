@@ -40,7 +40,8 @@ import {
  * kinds' contract: a kind's `project` on every read, its `prepareWrite` on every plain write, and
  * `/api/llm-secrets/*` for the credential writes; and `POST /api/import/module`, the `.risum`
  * import's answer without its asset store, and `POST /api/import/charx`, the CharX import's answer
- * without its asset store. The
+ * without its asset store, and `POST /api/assets/missing`, which answers every key present, since
+ * these tests take the keys the import routes and `saveAsset` spies hand out as stored. The
  * hooks mirror `FakeResourceServer`'s: hold a batch, drop or hold a response after it was applied,
  * fail requests.
  *
@@ -525,6 +526,9 @@ export class StoreBackedServer {
         }
         if (url.pathname === CHARX_IMPORT_PATH && method === "POST") {
             return this.importCharxRoute(init.body);
+        }
+        if (url.pathname === "/api/assets/missing" && method === "POST") {
+            return Response.json({ missing: [] });
         }
         if (url.pathname === "/api/resources" && method === "GET") {
             const names = (url.searchParams.get("kinds") ?? "").split(",").filter((name) => name !== "");

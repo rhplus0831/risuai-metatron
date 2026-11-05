@@ -23,6 +23,7 @@ import {
     ThumbnailsUnavailable,
     type ThumbnailService,
 } from "../http/assetThumbnails.ts";
+import { bumpAssetLease, withAssetLocks } from "../http/assetLeases.ts";
 import { readJsonBody } from "../http/body.ts";
 import { isMissingFileError, iteratorStream, STORAGE_READ_FLAGS, storedFileRecord } from "../http/recordStream.ts";
 import type { AppEnv } from "../types.ts";
@@ -193,10 +194,88 @@ export async function storageFileExists(savePath: string, key: string): Promise<
 }
 
 /**
- * Writes a stored file by logical key in-process (a server job's asset write), staged under
- * `save/.tmp/`, flushed, and renamed into place with its directory synced. The caller holds the job's
- * admission: a job ends before maintenance replaces the data. A caller that already hashed the
- * bytes can supply that digest; otherwise content names are hashed while streaming into staging.
+ * The publish/reuse contract. Verification, publication, and the one-hour lease share the sweep's
+ * key lock. Bytes use the private durable staging primitive; publish is for already-staged files.
+ * Never call writeStorageFile (or another claim) from either callback: this lock is not reentrant.
+ * Restore/import installation instead holds snapshots.exclusive through maintenance and epoch change.
+ */
+export async function claimAssetKey(
+    savePath: string,
+    key: string,
+    options: {
+        verify?: (fullPath: string) => Promise<boolean>;
+        publish?: (fullPath: string) => Promise<void>;
+        bytes?: Uint8Array | (() => Promise<Uint8Array>);
+        hashHex?: string;
+        signal?: AbortSignal;
+    } = {},
+): Promise<"present" | "published" | "missing"> {
+    const fullPath = resolveStorageKey(savePath, key);
+    if (fullPath === null) throw new Error(`No storage location for ${key}`);
+    return withAssetLocks(
+        [fullPath],
+        async () => {
+            if (await options.verify?.(fullPath)) {
+                options.signal?.throwIfAborted();
+                bumpAssetLease(fullPath);
+                return "present";
+            }
+            options.signal?.throwIfAborted();
+            if (options.publish) {
+                await options.publish(fullPath);
+            } else if (options.bytes !== undefined) {
+                const bytes = typeof options.bytes === "function" ? await options.bytes() : options.bytes;
+                options.signal?.throwIfAborted();
+                const staged = await stageStorageFile(savePath, key, bytes, options.hashHex);
+                try {
+                    options.signal?.throwIfAborted();
+                    await staged.publish(fullPath);
+                } finally {
+                    await staged.discard();
+                }
+            } else {
+                return "missing";
+            }
+            bumpAssetLease(fullPath);
+            return "published";
+        },
+        options.signal,
+    );
+}
+
+/**
+ * Stages bytes without a key lock. Its private publish callback must run under claimAssetKey:
+ * flush before rename, record the staged identity, then sync the destination directory.
+ */
+async function stageStorageFile(savePath: string, key: string, bytes: Uint8Array, hashHex?: string) {
+    const tmpPath = path.join(savePath, TMP_DIR);
+    await fs.mkdir(tmpPath, { recursive: true });
+    const stagedPath = path.join(tmpPath, `${randomUUID()}.tmp`);
+    const discard = () => fs.rm(stagedPath, { force: true }).catch(() => {});
+    const expectedHex = contentNameHash(key);
+    const hash = expectedHex !== null && hashHex === undefined ? createHash("sha256") : null;
+    try {
+        await fs.writeFile(stagedPath, hash ? hashedChunks(bytes, hash) : bytes, { flag: "wx", flush: true });
+        const stat = expectedHex === null ? null : await fs.stat(stagedPath, { bigint: true });
+        const digest = hash ? hash.digest("hex") : hashHex;
+        return {
+            discard,
+            async publish(fullPath: string) {
+                await mkdirDurable(path.dirname(fullPath));
+                await fs.rename(stagedPath, fullPath);
+                if (stat) assetVerification.recordVerification(fullPath, stat, digest === expectedHex);
+                await syncDir(path.dirname(fullPath));
+            },
+        };
+    } catch (error) {
+        await discard();
+        throw error;
+    }
+}
+
+/**
+ * In-process writes stage outside the key lock, then publish and lease through claimAssetKey.
+ * The caller holds job/storage admission until completion; maintenance waits for admitted writes.
  */
 export async function writeStorageFile(
     savePath: string,
@@ -204,28 +283,12 @@ export async function writeStorageFile(
     bytes: Uint8Array,
     hashHex?: string,
 ): Promise<void> {
-    const fullPath = resolveStorageKey(savePath, key);
-    if (fullPath === null) {
-        throw new Error(`No storage location for ${key}`);
-    }
-    const tmpPath = path.join(savePath, TMP_DIR);
-    await mkdirDurable(path.dirname(fullPath));
-    await fs.mkdir(tmpPath, { recursive: true });
-    const stagedPath = path.join(tmpPath, `${randomUUID()}.tmp`);
-    const expectedHex = contentNameHash(key);
-    const hash = expectedHex !== null && hashHex === undefined ? createHash("sha256") : null;
+    if (resolveStorageKey(savePath, key) === null) throw new Error(`No storage location for ${key}`);
+    const staged = await stageStorageFile(savePath, key, bytes, hashHex);
     try {
-        await fs.writeFile(stagedPath, hash ? hashedChunks(bytes, hash) : bytes, { flag: "wx", flush: true });
-        const stat = expectedHex === null ? null : await fs.stat(stagedPath, { bigint: true });
-        const digest = hash ? hash.digest("hex") : hashHex;
-        await fs.rename(stagedPath, fullPath);
-        if (stat) {
-            assetVerification.recordVerification(fullPath, stat, digest === expectedHex);
-        }
-        await syncDir(path.dirname(fullPath));
-    } catch (error) {
-        await fs.rm(stagedPath, { force: true }).catch(() => {});
-        throw error;
+        await claimAssetKey(savePath, key, { publish: staged.publish });
+    } finally {
+        await staged.discard();
     }
 }
 
@@ -589,6 +652,8 @@ export function registerStorageRoutes(
                 await handle.close();
                 return c.json({ error: "Not found" }, 404);
             }
+            // Recent use of this open handle, not an atomic claim of the pathname.
+            bumpAssetLease(fullPath);
             const expectedHex = contentNameHash(key);
             const verification =
                 expectedHex === null ? "unknown" : assetVerification.lookupVerification(fullPath, stat);
@@ -784,6 +849,7 @@ export function registerStorageRoutes(
         const targetDirs = new Set<string>();
         /** The record whose bytes are being staged. */
         let staged: {
+            key: string;
             target: string;
             file: string;
             out: FileHandle;
@@ -815,6 +881,7 @@ export function registerStorageRoutes(
                 const file = path.join(tmpPath, `${randomUUID()}.tmp`);
                 const expectedHex = contentNameHash(event.name);
                 staged = {
+                    key: event.name,
                     target,
                     file,
                     out: await fs.open(file, "wx"),
@@ -840,11 +907,14 @@ export function registerStorageRoutes(
             try {
                 const targetDir = path.dirname(current.target);
                 await mkdirDurable(targetDir);
-                await fs.rename(current.file, current.target);
+                await claimAssetKey(savePath, current.key, {
+                    signal: c.req.raw.signal,
+                    publish: async (fullPath) => {
+                        await fs.rename(current.file, fullPath);
+                        if (stat) assetVerification.recordVerification(fullPath, stat, ok);
+                    },
+                });
                 targetDirs.add(targetDir);
-                if (stat) {
-                    assetVerification.recordVerification(current.target, stat, ok);
-                }
             } finally {
                 admitted.leave();
             }
@@ -917,7 +987,8 @@ export function registerStorageRoutes(
     // only when `assetVerification.verifyFiles` proves its bytes now (four hashes at once and 256 MiB
     // of reads per request by default): an absent, empty, symlinked, corrupt, changed, or over-budget
     // file is missing, so the tab uploads it again and the upload repairs it. The success answer is
-    // `no-store` (a 400 or 413 comes before that header). Read-only, so it stays open during
+    // `no-store` (a 400 or 413 comes before that header). Sorted, abortable key locks cover verification
+    // and the lease of every present answer. No resource mutation, so it stays open during
     // maintenance; a client that leaves stops the hashes not yet started.
     app.post(
         ASSET_MISSING_PATH,
@@ -956,10 +1027,19 @@ export function registerStorageRoutes(
                     files.set(fullPath, { fullPath, expectedHex });
                 }
             }
-            const present = await assetVerification.verifyFiles([...files.values()], {
-                ...arg.missingVerification,
-                signal: c.req.raw.signal,
-            });
+            const present = await withAssetLocks(
+                [...files.keys()],
+                async () => {
+                    const verified = await assetVerification.verifyFiles([...files.values()], {
+                        ...arg.missingVerification,
+                        signal: c.req.raw.signal,
+                    });
+                    c.req.raw.signal.throwIfAborted();
+                    for (const fullPath of verified) bumpAssetLease(fullPath);
+                    return verified;
+                },
+                c.req.raw.signal,
+            );
             c.header("Cache-Control", "no-store");
             return c.json({
                 missing: [...asked].filter(([, file]) => file === null || !present.has(file)).map(([name]) => name),

@@ -668,8 +668,13 @@ describe("saving content-addressed assets", () => {
         const present = content("present portrait");
         const missing = content("new portrait");
         const custom = content("custom portrait");
+        // The server holds the missing key once its upload lands: the batch's check answers it
+        // missing, the check after the queue drains answers it present.
+        let checks = 0;
         answer.current = (path) =>
-            Response.json(path === "/api/assets/missing" ? { missing: [missing.key] } : { success: true });
+            Response.json(
+                path === "/api/assets/missing" ? { missing: checks++ === 0 ? [missing.key] : [] } : { success: true },
+            );
         const first = deferred<Uint8Array>();
         const secondLoaded = deferred<void>();
         const pending = queue.saveAssets([
@@ -698,7 +703,33 @@ describe("saving content-addressed assets", () => {
         answer.current = () => Response.json({ missing: [] });
         const files = items.map(({ bytes }, index) => new File([bytes], `${index}.png`));
         expect(await queue.savePickedFiles(files, (file) => file.name)).toEqual(items.map(({ key }) => key));
-        expect(calls.map(({ path }) => path)).toEqual(["/api/assets/missing"]);
-        expect(new Set(JSON.parse(calls[0].init.body as string).names)).toEqual(new Set(items.map(({ key }) => key)));
+        // The batch's check, then the check after the queue drains; neither uploads a byte.
+        expect(calls.map(({ path }) => path)).toEqual(["/api/assets/missing", "/api/assets/missing"]);
+        for (const call of calls) {
+            expect(new Set(JSON.parse(call.init.body as string).names)).toEqual(new Set(items.map(({ key }) => key)));
+        }
     });
+});
+
+it("checks presence separately beside each of two write batches", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const items = Array.from({ length: 501 }, (_, i) => content(`lease-batch-${i}`));
+    const events: { path: string; keys: string[] }[] = [];
+    answer.current = (url, init) => {
+        if (url === "/api/assets/missing") {
+            const { names } = JSON.parse(init.body as string);
+            events.push({ path: url, keys: names });
+            return Response.json({ missing: names });
+        }
+        events.push({ path: url, keys: postedRecords(init).map((r) => r.key) });
+        return Response.json({ success: true });
+    };
+    await writeAssets(items);
+    expect(events).toEqual([
+        { path: "/api/assets/missing", keys: items.slice(0, 500).map((x) => x.key) },
+        { path: "/api/assets/write", keys: items.slice(0, 500).map((x) => x.key) },
+        { path: "/api/assets/missing", keys: [items[500].key] },
+        { path: "/api/assets/write", keys: [items[500].key] },
+    ]);
+    expect(uploads()).toEqual(recordsOf(items));
 });

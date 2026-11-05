@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
+import { diskNeeded, diskWithFree, liveBytes } from "./assetSweepFixtures.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ResourceReadKindsResult } from "../../../shared/resources.ts";
 import {
@@ -1037,4 +1038,34 @@ describe("upstream commit verification window", () => {
         await s.readEpoch();
         expect((await s.get("characters", FIXTURE_CHARACTER)).status).toBe(200);
     });
+});
+
+it("reserves the large live safety copy at commit and returns a short-disk token for retry", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    let free = Number.MAX_SAFE_INTEGER;
+    const s = await server({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+    await s.create("characters", "large-live", { chaId: "large-live", desc: "x".repeat(2 * 1024 * 1024) });
+    const prepared = await prepare(s);
+    const folder = staged(s).find((name) => name.startsWith("upstream-"))!;
+    const sqliteFiles = readdirSync(path.join(tmpDir(s), folder)).filter((name) => name.endsWith(".sqlite"));
+    const stagedDb = sqliteFiles.find((name) => name.includes("staged")) ?? sqliteFiles[0];
+    const stagedBytes = (await fs.stat(path.join(tmpDir(s), folder, stagedDb))).size;
+    const live = liveBytes(s.savePath);
+    expect(live).toBeGreaterThan(stagedBytes);
+    free = diskNeeded(stagedBytes);
+    const body = { token: prepared.token, ...prepared.selection };
+    const response = await commitRequest(s, body);
+    expect(response.status).toBe(507);
+    expect(await response.json()).toEqual({
+        error: "Insufficient Storage",
+        needed: diskNeeded(live + stagedBytes),
+        free,
+    });
+    expect((await s.get("characters", "large-live")).status).toBe(200);
+    expect(await listBackups(s)).toEqual([]);
+    free = Number.MAX_SAFE_INTEGER;
+    const retry = await commitRequest(s, body);
+    expect(retry.status, await retry.clone().text()).toBe(200);
+    await s.readEpoch();
+    expect((await s.get("characters", FIXTURE_CHARACTER)).status).toBe(200);
 });

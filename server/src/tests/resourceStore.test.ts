@@ -1656,3 +1656,22 @@ describe("staged install identity", () => {
         expect({ rows: store.readKinds([root]), epoch: store.epoch(), writes: store.writeCount() }).toEqual(before);
     });
 });
+
+it("reads asset reference text synchronously from the writer including escaped JSON and case-folded URL needles", () => {
+    const store = memoryStore();
+    const values = [
+        { text: 'assets/quote"\\\n.png' },
+        { text: "/sw/img/6173736574732F636166C3A9" },
+        { text: "unrelated" },
+    ];
+    values.forEach((value, i) => store.put(root, String(i), value, null));
+    const seen: unknown[] = [];
+    store.transaction(() => {
+        store.put(root, "inside", { text: "assets/inside" }, null);
+        store.readAssetReferenceText({ needles: ["assets/"], lowerNeedles: ["/sw/img/6173736574732f"] }, (text, json) =>
+            seen.push(json ? JSON.parse(text) : text),
+        );
+        expect(seen).toHaveLength(3);
+        expect(seen).toEqual(expect.arrayContaining([values[0], values[1], { text: "assets/inside" }]));
+    });
+});
