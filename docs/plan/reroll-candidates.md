@@ -323,9 +323,10 @@ does not re-propose it.
   lines 579–608). This plan relies on the Incremental Chat Transport plan for the delta forms (its D2, being
   widened to a per-row top-level field diff with `data` as a text delta, so a text-only checkpoint stays small
   whatever the candidates weigh) and on its Slice 4 (the over-cap row manifest and the by-id row read) with
-  that plan's D6 amended so that a manifest with `meta: true` is answered with the rows plus the chat's
-  changed metadata fields at that revision (`metaFields`) instead of falling to a whole-chat read. The
-  amendment is what makes the fallback one row read for this plan: the begin group, the write-back and a
+  that plan's D6 amended so that a manifest naming the changed metadata fields (`meta: string[]`) is answered
+  with the rows plus those fields' stored values at that revision (`metaFields`) instead of falling to a
+  whole-chat read. The amendment is what makes the fallback one row read for this plan: the begin group, the
+  write-back and a
   switch change `scriptstate` in the same transaction as `candidates` (D5, D10, D13), and Slice 4 as first
   written reads the chat whole for every such entry. With it, a loaded observer at the base revision applies a
   reroll's begin group (the candidates and the `scriptstate` merge) without a whole read. This plan makes that
@@ -879,8 +880,8 @@ the owner asked for; 3 settles the export and the memory proofs; 4 is the browse
   branches (D4): after the merge, besides V1 and `pnpm check:docs` on the guides both plans edit, add these
   cases to the two plans' focused tests and run them, since each branch's tests cover only its side:
   - a reroll's begin group, its write-back and a `selectCandidate` switch on a carrier over
-    `MAX_FEED_PATCH_BYTES` each publish a row manifest with `meta: true` and the carrier's id in `changed`, and
-    a second tab holding the chat loaded at the base revision applies the rows and `metaFields` through the
+    `MAX_FEED_PATCH_BYTES` each publish a row manifest whose `meta` names the restored variables' field
+    (`scriptstate`) and the carrier's id in `changed`, and a second tab holding the chat loaded at the base revision applies the rows and `metaFields` through the
     `chatRows` read without a whole-chat read (`server/src/tests/chatFeedPatches.test.ts`,
     `src/ts/storage/tests/resourceSyncFeedPatches.test.ts`, with this plan's real ops in place of Transport
     Slice 4's fixture);

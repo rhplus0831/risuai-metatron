@@ -363,16 +363,21 @@ not re-propose it.
   copy of the data on the hottest write path, the reason Boot Bytes Q2 deferred it); a per-tab cursor on the
   server (the server keeps no per-tab state on the feed).
 - **D6. An over-cap entry names its rows; a loaded chat reads them by id.** When no body fits, the entry carries
-  `rows: { changed: string[]; removed: string[]; count: number; meta: boolean }` (ids only, the information
-  `chatFeedChange` already holds). A loaded, idle chat held at exactly `baseRevision` reads the changed rows
-  through a new `chatRows` entry of `POST /api/resources/read` (`{ characterId, id, revision, messageIds, meta }`,
-  answered as `{ revision, rows: { id, after, message }[], metaFields? }` at that revision, where `metaFields`
-  carries the chat's changed metadata by field, as a `delta` body does, when the manifest said `meta: true`),
-  and applies rows and metadata together with `removed` and `count` as a patch; every other case (not loaded,
+  `rows: { changed: string[]; removed: string[]; count: number; meta: string[] }` with the entry's `baseRevision`
+  (ids and names only, the information `chatFeedChange` already holds): `meta` names the top-level metadata
+  fields the group set, removed, merged or merge-unset, empty when none. A loaded, idle chat held at exactly
+  `baseRevision` reads the changed rows through a new `chatRows` entry of `POST /api/resources/read`
+  (`{ characterId, id, revision, messageIds, meta }`, answered as `{ revision, rows: { id, after, message }[],
+metaFields? }` at that revision, where `metaFields` sets each named field whole to its stored value at that
+  revision, or removes it when the stored metadata lacks it; a merge key such as `scriptstate` goes whole), and
+  applies rows and metadata together with `removed` and `count` as a patch; every other case (not loaded,
   not idle, another revision) reads the chat whole as today. The metadata ride along because the Reroll
   Candidates plan's begin group and candidate switch change `candidates` and `scriptstate` in one write: a
-  manifest with `meta: true` that fell to a whole read would make every reroll on a loaded observer a whole
-  read, which is the traffic this slice removes. When the chat moved on past `revision`, the answer is a distinct `{ moved: true }` entry with the
+  manifest naming metadata that fell to a whole read would make every reroll on a loaded observer a whole
+  read, which is the traffic this slice removes. The fields go by name, not as the `delta` diff from the base,
+  because the server keeps no metadata before the write: the diff exists only inside the write's transaction
+  (`chatMetaFields`, `server/src/data/chatStore.ts`), so a read cannot rebuild it (2026-11-05, Slice 4's
+  challenge). When the chat moved on past `revision`, the answer is a distinct `{ moved: true }` entry with the
   current revision, never `unanswered`, which `readRefs` re-sends and then fails as "no progress", failing every
   other entry of that read with it; a `moved` answer makes the client read the chat whole once. The server
   selects by the `(chatSeq, id)` key and `messages_position` for `after`. Not gated: after D2, an over-cap entry
@@ -380,7 +385,11 @@ not re-propose it.
   rows (candidates up to its per-message cap, the array set whole at each begin, end and switch) make that a
   normal case on a loaded chat, so Slice 4 is scheduled after Slice 1 unconditionally (Q2's answer superseded).
   Rejected: answering a moved chat as `unanswered` (the 2026-11-03 choice: `readRefs` throws before any
-  whole-chat fallback); a row read only for `meta: false` manifests, whole read otherwise (the first 2026-11-04
+  whole-chat fallback); `meta: boolean` answered with `metaFields` as the diff from the base (the second
+  2026-11-04 text: the server cannot compute that diff at read time); the stored metadata whole in every
+  answer (simpler, but a reroll would carry `hypaV3Data` and every other large field each time); the feed's
+  `metaFields` in the manifest when it fits (two paths, and a whole read when it does not); a row read only
+  for `meta: false` manifests, whole read otherwise (the first 2026-11-04
   text: a reroll's begin group always changes the metadata too, so the reroll plan's dependency on this slice
   would have been empty); gating the slice on the over-cap share Slice 1 measured (the 2026-11-03 Q2 answer:
   reroll carriers make the case routine, and the probes had no input for the gate, D9).
@@ -603,8 +612,9 @@ resources guide (Resource routes, Read budget).
   the manifest and no payload; a loaded chat at the base reads the named rows once and applies them; a row with
   a field over the cap (a reroll carrier's `candidates` as a fixture) is read by id; a chat that moved on is
   answered `moved` and the client reads it whole once, with `readRefs` not failing as "no progress", also when
-  the read carries other entries; a `meta: true` manifest (a reroll begin group fixture: `candidates` plus a
-  `scriptstate` merge in one write) is answered with the rows and `metaFields` and applied without a whole read;
+  the read carries other entries; a manifest naming `scriptstate` (a reroll begin group fixture: `candidates`
+  plus a `scriptstate` merge in one write) is answered with the rows and `scriptstate` whole in `metaFields` and
+  applied without a whole read; a named field the stored metadata lacks is removed;
   the read budget counts rows; an older client (no `chatRows`) reads whole as today.
 - Measurement: Slice 1's `sync-traffic-measure.mjs` line rerun with the same fixture: the over-cap entries
   become row reads.
