@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (15)
+- [Client and plugins](#client-and-plugins) (12)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
@@ -278,13 +278,6 @@ Since Reroll Candidates Slice 2 (2026-11-05) `Chats.svelte` passes `rerollIcon` 
 
 ## Client and plugins
 
-### Chinese browsers never match the first-boot language list
-
-`src/ts/bootstrap.ts:279` compares `navigator.language?.split("-")[0]` with `BROWSER_UI_LANGUAGES` (`["de", "en", "ko", "cn", "vi", "zh-Hant"]`, :268). A `zh-CN` or `zh-TW` browser yields `zh`, so `cn` and `zh-Hant` cannot match at first boot. Read in source by Guide Budgets slice 5c and again in the Guides To Source run (2026-11-05), not run. app-shell owns `bootstrap.ts`; settings-i18n's "Expose a new language" recipe tells authors to add a code to `BROWSER_UI_LANGUAGES`, which reads as if a code like `zh-Hant` works there.
-
-**Why it matters:** those users start in the default language although the list advertises their language.
-**Suggested handling:** map `zh-CN`/`zh-SG`/`zh` to `cn` and `zh-TW`/`zh-HK`/`zh-Hant` to `zh-Hant` before the lookup, with a bootstrap test, and fix the recipe's wording in the same change.
-
 ### Plugin tests cite a skip no guide records
 
 `src/ts/plugins/apiV3/pluginContext.test.ts:1285` and `src/ts/plugins/apiV3/permissions.test.ts:314` say the skipped-instance bug of `loadV3Plugins` is recorded in `plugins-mcp.md`. The guide did not record it even before Guide Budgets slice 5b, and `src/ts/plugins/apiV3/v3.svelte.ts:2412` now unloads a snapshot of the instances.
@@ -365,22 +358,6 @@ The flag buttons of `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte`
 **Why it matters:** a custom endpoint that supports pooling cannot say so, and the hazard list reads as complete.
 
 **Suggested handling:** confirm whether the flag is meant for custom models, then add the button or the hazard clause.
-
-### Settings search lists remPunc under Structured Memory
-
-`src/ts/setting/searchIndex.ts` `supaMemoryBranch` (~126) transcribes `MemorySettings.svelte`'s Hanurai, HypaV2, HypaV3 and SupaMemory chain but not the page's leading Structured Memory branch (`ui.memoryAlgorithmType`). A mixed record (Structured Memory selected, `supaModelType` not `none`, legacy flags false) lists `adv.remPunc` as available, and the jump lands on a page that does not render it. Found and confirmed in the Guides To Source run (2026-11-05); not a routine UI path, since the page's own switch normally clears those fields. Owner: settings-i18n.
-
-**Why it matters:** a search result jumps to a page that does not show it.
-
-**Suggested handling:** add the Structured Memory test to `supaMemoryBranch`, with a `searchIndex.test.ts` case.
-
-### Switching a prompt item to chatML leaves its text unset
-
-The type `SelectInput`'s `onchange` in `src/lib/UI/PromptDataItem.svelte` (~268) sets `text`/`role` only for plain, jailbreak and cot, `depth` for cache and ranges for chat, so switching to `chatML` leaves `text` undefined although `PromptItemChatML.text` is required (`shared/prompt.ts`). `normalizePromptTemplate` (`shared/presets.ts`) repairs it only on import and server normalization. Found in the Guides To Source run (2026-11-05); runtime impact unverified. Owner: settings-i18n.
-
-**Why it matters:** the textarea may show `undefined`, or the prompt builder may read a missing string.
-
-**Suggested handling:** check what the editor and `src/ts/process/prompt.ts` do with a missing `text`, then initialize it in the `onchange` if needed.
 
 ### getFileSrc never rejects, so asset reads are never retried
 

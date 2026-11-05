@@ -251,7 +251,7 @@ section.
   1. Add the locale file.
   2. Add a `changeLanguage` branch.
   3. Add the option in `languageSettingsData.svelte.ts`. For the first boot (`src/ts/bootstrap.ts`), add a base code to
-     `BROWSER_UI_LANGUAGES`, or map a code like `zh-Hant`'s browser tags in `BROWSER_UI_LANGUAGE_MAP`.
+     `BROWSER_UI_LANGUAGES` or map browser tags in `BROWSER_UI_LANGUAGE_MAP`.
   4. No download step: locales are bundled. The `translang` download (`lang.uiLanguage`'s `onChange`) exports for
      translators; list the code in its `langs` only to offer it for translation.
 
