@@ -57,7 +57,7 @@ Candidates were then challenged again and revised a second time the same day. Pl
   bounded epoch-scoped change log (one row per committed ref, written before `COMMIT`, the table created at
   open) against a map frozen at `hello` with the whole listing as the fallback, both sockets carry `proto=1`,
   and an over-cap change of a loaded chat reads its rows by id (Slice 4, no longer gated: Reroll Candidates
-  Slice 2 merges with or after it); D1–D10 recommended, Q1–Q4 answered (Q2 and Q4 superseded), Slices 0–4 landed.
+  Slice 2 merges with or after it); D1–D10 recommended, Q1–Q4 answered (Q2 and Q4 superseded), every slice landed.
 - [Plugin Storage and Data API](plugin-storage.md): plugin data becomes visible, owned, and cheap to move: a plugin
   data page lists and deletes what every storage namespace holds and permission grants become revocable (a reset per
   plugin, revoked on removal); a `pluginStorage` write sends the changed key as a nested patch one level down and a

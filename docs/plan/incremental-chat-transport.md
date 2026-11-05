@@ -2,7 +2,7 @@
 
 Status: drafted 2026-11-03, revised 2026-11-04 after the [design
 audit](../audit/plan-design-audit-2026-11-04.md) (its Incremental Chat Transport items TR1–TR5 and the
-cross-plan items X1–X4 and X8); landed: 3 (`ca5a5cb8e`), 0 (`f033d69ce`), 1 (`917273384`), 4 (`2272abf6e`), 2 (`f906c864e`). Decisions D1–D10 are recommendations for the owner; the
+cross-plan items X1–X4 and X8); landed: 3 (`ca5a5cb8e`), 0 (`f033d69ce`), 1 (`917273384`), 4 (`2272abf6e`), 2 (`f906c864e`), 5 (`054ad8130`), so every slice has landed. Decisions D1–D10 are recommendations for the owner; the
 revision applies the owner's decisions on the audit's corrections, and each changed decision lists its earlier
 choice under "Rejected". The **Open questions** Q1–Q4 were answered by the owner on 2026-11-03 (the recommended
 option each time); the revision supersedes the answers to Q2 and Q4, as said there. Code anchors re-checked at
