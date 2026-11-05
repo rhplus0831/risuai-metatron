@@ -35,6 +35,7 @@ import {
     readGenerationJob,
     readChatGeneration,
     stopChatGeneration,
+    detachGenerationJob,
     releaseGenerationJob,
     savedGenerationJobIds,
 } from "../network/generationJobs";
@@ -124,11 +125,16 @@ const retryDelay = (attempt: number) => RETRY_DELAYS_MS[Math.min(attempt, RETRY_
  * How a follow ended: a terminal (`applied` when the socket delivered it through the events, else
  * read from the job's status: `kept` when it is the server's kept outcome of a collected job), a job
  * the server does not know (`"gone"`: collected long ago, the server restarted, another epoch), or
- * a server that could not be reached through every attach (`"lost"`), or a ticket that never
- * acquired ownership (`"takeoverLost"`, released silently).
+ * a server that could not be reached through every attach (`"lost"`), a ticket that never acquired
+ * ownership (`"takeoverLost"`), or a non-creator that lost participant access (`"detached"`). The
+ * last two drop the follow silently without retiring its generations.
  */
 type FollowEnd =
-    { terminal: GenerationTerminalEvent; applied: boolean; kept: boolean } | "gone" | "lost" | "takeoverLost";
+    | { terminal: GenerationTerminalEvent; applied: boolean; kept: boolean }
+    | "gone"
+    | "lost"
+    | "takeoverLost"
+    | "detached";
 
 function errorText(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -311,16 +317,20 @@ export async function stopChatJob(ref: ChatRef): Promise<void> {
  * an error terminal as it is when watched live, a server that stayed unreachable as
  * `serverJob.lost`. A job the server no longer knows shows no alert: its chat is read again, then
  * `serverJob.endedAway`. After a lost or gone follow, and after an end from the status that this
- * tab's copy may lack, the chat is marked stale and read again (`recoverJobChat`). Returns the terminal event, or `"lost"` (also for a gone job:
- * its outcome is unknown); a lost job is released as its end would release it. The job's chat is
+ * tab's copy may lack, the chat is marked stale and read again (`recoverJobChat`). Returns the
+ * terminal event, or `"lost"` (also for a gone job or a detached follow); a lost job is released as
+ * its end would release it. The job's chat is
  * pinned and loaded before the follow attaches (a load that keeps failing makes the job lost) and
  * stays pinned through every reconnect, the terminal's hydration, and the chat's read again, so no
  * event of the job finds its chat evicted.
  *
  * A ticket wakes the same lifecycle and replaces its socket without spending retries. Socket or
  * replay terminals take precedence. Each ticket attempt must reach owner:self: losing it earlier
- * silently releases a worker, while a creator resumes its viewer attach immediately. Roles come
- * from events, not creator identity; creator viewers retain Stop, stream and device notices. A
+ * silently detaches a worker, while a creator resumes its viewer attach immediately. A non-creator
+ * whose status becomes inaccessible detaches if its latest role is viewer/pending, or if an uncertain
+ * role's `/current` read confirms the same job. Detach preserves the foreign-job mark and permits
+ * retaking the same generations, with no lost/gone diagnostic, end notice or lost-job chat recovery.
+ * Roles come from events, not creator identity; creator viewers retain Stop, stream and device notices. A
  * worker is listed in followedJobs only as owner. Plugin holds bridge ticket delivery through the
  * first attach; status lines clear on role loss/end. A worker never saves the job for boot resume.
  */
@@ -415,8 +425,9 @@ export function followJobToEnd(
                     };
                 }
             }
-            if (result === "takeoverLost") {
-                releaseGenerationJob(jobId);
+            if (result === "takeoverLost" || result === "detached") {
+                detachGenerationJob(jobId);
+                if (target !== "lost") noteForeignJob(target, jobId);
                 return "lost";
             }
             const end = typeof result === "string" ? "lost" : result.terminal;
@@ -754,13 +765,16 @@ function pageAway(): boolean {
  * counted either, since the server was not tried: the follow keeps attaching on the retry schedule
  * (its last wait repeated) until the page is back and the attaches fail in front of the user. After
  * every close without the terminal the job's status is read (bounded by `STEP_DEADLINE_MS`): a
- * failed read attaches again (the server may be out of reach), a job the server does not know is
- * `"gone"`, its kept outcome is the end, and a job still running or ended but still live is attached
+ * failed read attaches again (the server may be out of reach), an unknown job is `"gone"` for its
+ * creator, its kept outcome is the end, and a job still running or ended but still live is attached
  * again. When the attaches run out, or the job is no longer known after an ended status was read,
  * the terminal of the last ended status read is the end, if there was one; `"lost"` (or `"gone"`)
  * otherwise. `read` is a status read before the follow (the boot resume's discovery): its kept
  * outcome is the end without an attach (one would be refused), and its ended terminal is the first
- * one known.
+ * one known. A null status for a non-creator viewer/pending worker is `"detached"`; for an owner or
+ * unknown role, a bounded `/current` read confirms detach only if it names the same job. A failed
+ * current read retries like a failed status read. Known terminals, epoch changes and ticket/replay
+ * wake-ups retain precedence across that read.
  */
 async function followOnce(
     jobId: string,
@@ -860,10 +874,24 @@ async function followOnce(
         const afterRead = authoritative();
         if (afterRead) return afterRead;
         if (status === WOKEN || lifecycle.ticket) continue;
-        if (!status)
-            return known && known.epoch === getResourceEpoch()
-                ? { terminal: known, applied: false, kept: false }
-                : "gone";
+        if (!status) {
+            if (known && known.epoch === getResourceEpoch()) return { terminal: known, applied: false, kept: false };
+            if (lifecycle.creator) return "gone";
+            if (lifecycle.role === "viewer" || lifecycle.role === "pending") return "detached";
+            const epoch = getResourceEpoch();
+            let current;
+            try {
+                current = await waitForFollow(lifecycle, readChatGeneration(ref));
+            } catch {
+                continue;
+            }
+            const afterCurrent = authoritative();
+            if (afterCurrent) return afterCurrent;
+            if (current === WOKEN || lifecycle.ticket) continue;
+            if (epoch !== getResourceEpoch()) return "gone";
+            if (known && known.epoch === getResourceEpoch()) return { terminal: known, applied: false, kept: false };
+            return current?.jobId === jobId ? "detached" : "gone";
+        }
         if (status.epoch !== getResourceEpoch()) return "gone";
         if (status.kept && status.terminal) return { terminal: status.terminal, applied: false, kept: true };
         if (lifecycle.creator && status.handedOff) setFollowRole(lifecycle, jobId, "viewer");

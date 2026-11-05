@@ -3,6 +3,7 @@ import { sealHypaV3Data } from "../../../../shared/structuredMemory.ts";
 import type { MessageTranslation } from "../../../../shared/database.ts";
 import { translationSourceHash } from "../../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../../shared/translation/messageTranslation.ts";
+import { SMALL_FEED_PATCH_BYTES } from "../../../../shared/resources.ts";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
@@ -2377,6 +2378,116 @@ describe("stream updates per frame", () => {
         generationId,
         text,
         seq,
+    });
+
+    it("detaches without retiring a generation that a later hydration, accepted reply and chunk resume", async () => {
+        const { chat, ref, server } = await boot();
+        const job = { jobId: "J", streaming: [{ messageId: "a", generationId: "g", seq: 0 }] };
+        expect(chat.hydrateChat(server.chat("c", "k")!, job)).toBe(true);
+        expect(chat.applyServerGeneration(ref, update(1, "first stream"))).toBe(true);
+
+        chat.detachServerJob("J");
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        expect(chat.hydrateChat(server.chat("c", "k")!, job)).toBe(true);
+        expect(chat.applyServerGeneration(ref, update(2, "retaken"))).toBe(true);
+        expect(
+            chat.applyServerGenerationChunk(ref, "J", {
+                type: "chunk",
+                epoch: server.store.epoch(),
+                messageId: "a",
+                generationId: "g",
+                base: 2,
+                seq: 3,
+                keep: 7,
+                text: " live",
+            }),
+        ).toBe(true);
+        frames.splice(0).forEach((frame) => frame(0));
+        expect(chat.findChat(ref)!.message[0].data).toBe("retaken live");
+        expect(chat.isMessageLocked(ref, "a")).toBe(true);
+    });
+
+    it("restores the last proven stored text on detach so the next feed text diff uses the server prefix", async () => {
+        const { chat, ref, server } = await boot(await StoreBackedServer.create({ feed: true }));
+        const stored = "stored ".repeat(SMALL_FEED_PATCH_BYTES);
+        const streamed = "stream ".repeat(SMALL_FEED_PATCH_BYTES);
+        const write = (text: string) =>
+            server.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: server.chat("c", "k")!.revision,
+                    ops: [{ op: "setText", id: "a", text }],
+                },
+            ]);
+        chat.applyServerGeneration(ref, update(2, streamed));
+        write(stored);
+        expect(
+            chat.hydrateChat(server.chat("c", "k")!, {
+                jobId: "J",
+                streaming: [{ messageId: "a", generationId: "g", seq: 1 }],
+            }),
+        ).toBe(true);
+        expect(chat.findChat(ref)!.message[0].data).toBe(streamed);
+
+        chat.detachServerJob("J");
+        expect(chat.findChat(ref)!.message[0].data).toBe(stored);
+        expect(chat.isChatStale(ref)).toBe(false);
+        write(stored + "server suffix");
+        const event = server.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("expected the committed text change");
+        const change = event.changes.chats[0];
+        expect(change.rowDelta?.rowDiffs).toEqual([{ id: "a", text: { keep: stored.length, text: "server suffix" } }]);
+        expect(chat.noteRemoteChat(ref, change.revision, change.rowDelta)).toBe("ignored");
+        expect(chat.findChat(ref)!.message[0].data).toBe(stored + "server suffix");
+        expect(server.texts("c", "k")).toEqual([stored + "server suffix", "B", "C"]);
+        expect(chat.isChatStale(ref)).toBe(false);
+    });
+
+    it("marks the chat stale on detach when an ahead compact checkpoint leaves the stored text unknown", async () => {
+        const { chat, ref, server } = await boot();
+        const streaming = (seq: number) => [{ messageId: "a", generationId: "g", seq }];
+        expect(chat.hydrateChat(server.chat("c", "k")!, { jobId: "J", streaming: streaming(0) })).toBe(true);
+        chat.applyServerGeneration(ref, update(2, "checkpoint plus newer stream"));
+        const baseRevision = server.chat("c", "k")!.revision;
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision,
+                ops: [{ op: "setText", id: "a", text: "checkpoint" }],
+            },
+        ]);
+        expect(
+            chat.hydrateChatPatch(
+                {
+                    characterId: "c",
+                    id: "k",
+                    baseRevision,
+                    revision: server.chat("c", "k")!.revision,
+                    count: 3,
+                    messages: [{ after: null, id: "a", streamed: { generationId: "g", seq: 1 } }],
+                },
+                { jobId: "J", streaming: streaming(1) },
+            ),
+        ).toBe("applied");
+        expect(chat.findChat(ref)!.message[0].data).toBe("checkpoint plus newer stream");
+        expect(chat.isChatStale(ref)).toBe(false);
+        chat.detachServerJob("J");
+        expect(chat.isChatStale(ref)).toBe(true);
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+    });
+
+    it("retires an ended job's generation so even a later hydration cannot admit its late accepted reply", async () => {
+        const { chat, ref, server } = await boot();
+        const job = { jobId: "J", streaming: [{ messageId: "a", generationId: "g", seq: 0 }] };
+        chat.hydrateChat(server.chat("c", "k")!, job);
+        chat.applyServerGeneration(ref, update(1, "last stream"));
+        chat.endServerJob("J");
+        expect(chat.hydrateChat(server.chat("c", "k")!, job)).toBe(true);
+        expect(chat.applyServerGeneration(ref, update(2, "late accepted"))).toBe(false);
+        expect(chat.findChat(ref)!.message[0].data).toBe("A");
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
     });
 
     it("writes a generation's first update at once, holds the later ones, and writes the newest at the next frame", async () => {

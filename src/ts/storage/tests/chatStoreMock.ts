@@ -78,6 +78,7 @@ export function createChatStoreMock(overrides: ModuleMockOverrides<ChatStoreModu
         applyServerGeneration: vi.fn(() => false),
         applyServerGenerationChunk: vi.fn(() => false),
         endServerJob: vi.fn(),
+        detachServerJob: vi.fn(),
         markChatStale: vi.fn(() => false),
         noteRemoteStreaming: vi.fn(),
         replaceFeedLocks: vi.fn(),

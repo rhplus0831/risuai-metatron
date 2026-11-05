@@ -2,15 +2,17 @@ import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
 import { type GenerationHooks, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 // The client transport of server generation jobs (`generationJobs.ts`): the tab's identity and
 // saved jobs, the create/status/abort requests and their errors (a status read's deadline), the
 // owner socket's lifetime (cancellation before and after authentication, `opened`, supersession,
 // stamps, event filtering), its liveness (`socketLiveness.ts`, real: the connect timeout, the
 // watchdog, the page's return, a terminal that stands), the event
-// dispatcher's wiring, and the resume after a reload. The chat module, the save adapter, and the
-// channel dispatcher (`jobChannel.ts`, whose `registeredHooks` fills a create body's `hooks`) are
-// stubbed here; the hydration contracts are in `src/ts/storage/tests/resourceSyncHydration.test.ts`.
+// dispatcher's wiring, and the resume after a reload. Transport-only cases stub the chat module,
+// save adapter and channel dispatcher (`jobChannel.ts`, whose `registeredHooks` fills a create
+// body's `hooks`). The retake round trip runs the real chat store and hydration adapter; further
+// hydration contracts are in `src/ts/storage/tests/resourceSyncHydration.test.ts`.
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 
@@ -1025,6 +1027,147 @@ describe("following a job", () => {
 
 describe("the event dispatcher and the resume", () => {
     const ref = { chaId: "c", chatId: "k" };
+
+    it("retakes a lost pending takeover and streams three compact checkpoints without requesting a whole-chat resync", async () => {
+        vi.useFakeTimers();
+        const chat = await vi.importActual<typeof import("../storage/chatStore.svelte")>("../storage/chatStore.svelte");
+        const mockedChat = await import("../storage/chatStore.svelte");
+        // This round trip needs the real stream buffer and hydration, including their shared locks.
+        vi.spyOn(mockedChat, "applyServerGeneration").mockImplementation(chat.applyServerGeneration);
+        vi.spyOn(mockedChat, "applyServerGenerationChunk").mockImplementation(chat.applyServerGenerationChunk);
+        vi.spyOn(mockedChat, "detachServerJob").mockImplementation(chat.detachServerJob);
+        vi.spyOn(mockedChat, "endServerJob").mockImplementation(chat.endServerJob);
+        vi.spyOn(mockedChat, "hydrateChat").mockImplementation(chat.hydrateChat);
+        vi.spyOn(mockedChat, "hydrateChatPatch").mockImplementation(chat.hydrateChatPatch);
+        vi.spyOn(mockedChat, "isChatStale").mockImplementation(chat.isChatStale);
+        vi.spyOn(mockedChat, "chatHydrationHold").mockImplementation(chat.chatHydrationHold);
+        const sync = await vi.importActual<typeof import("../storage/resourceSync.svelte")>(
+            "../storage/resourceSync.svelte",
+        );
+        stubs.applyHydration.mockImplementation(sync.applyHydration);
+        stubs.applyPatchHydration.mockImplementation(sync.applyPatchHydration);
+        const server = await StoreBackedServer.create();
+        try {
+            const epoch = server.store.epoch();
+            client.setResourceEpoch(epoch);
+            server.store.applyChanges({
+                ops: [
+                    { kind: server.kind("characters"), id: "c", baseRevision: null, data: { chaId: "c", name: "C" } },
+                ],
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: null,
+                        ops: [
+                            {
+                                op: "create",
+                                chat: {
+                                    id: "k",
+                                    name: "K",
+                                    note: "",
+                                    localLore: [],
+                                    message: [{ chatId: "a", role: "char", data: "stored" }],
+                                },
+                            },
+                        ],
+                    },
+                ],
+            });
+            const records = await import("../storage/records.svelte");
+            const { characterList } = await import("../storage/characterStore.svelte");
+            records.initializeRecords(records.takeRecordFields({ characters: [{ chaId: "c", name: "C" }] }));
+            const copy = server.chat("c", "k")!;
+            const order = server.order("c")!;
+            chat.seedChats([copy], [order]);
+            chat.assembleChats(characterList(), [copy], [order]);
+            chat.initializeChats();
+            const streaming = (seq: number) => [{ messageId: "a", generationId: "g", seq }];
+            const whole = (seq: number) => ({
+                type: "resource" as const,
+                epoch,
+                kind: "chats" as const,
+                ...server.chat("c", "k")!,
+                streaming: streaming(seq),
+            });
+            const accepted = (seq: number, text: string) => ({
+                type: "accepted" as const,
+                epoch,
+                jobId: "j",
+                messageId: "a",
+                generationId: "g",
+                revision: server.chat("c", "k")!.revision,
+                seq,
+                text,
+            });
+            const attach = async (ticket: string) => {
+                const follow = startFollow("j", (event) => transport.applyGenerationEvent("j", ref, event, follow), {
+                    ticket,
+                });
+                stubs.auth.at(-1)!.resolve("jwt");
+                await microtasks();
+                const socket = FakeSocket.instances.at(-1)!;
+                socket.open();
+                return { follow, socket };
+            };
+            const pending = await attach("lost-ticket");
+            pending.socket.message({ type: "handoff", epoch, owner: "other", pending: true });
+            pending.socket.message(whole(0));
+            pending.socket.message(accepted(1, "pending stream"));
+            expect(chat.findChat(ref)!.message[0].data).toBe("pending stream");
+            expect(pending.follow.role).toBe("pending");
+            pending.follow.close();
+            await pending.follow.closed;
+            transport.detachGenerationJob("j");
+
+            const retaken = await attach("new-ticket");
+            retaken.socket.message({ type: "handoff", epoch, owner: "self" });
+            retaken.socket.message(whole(0));
+            retaken.socket.message(accepted(1, "retaken"));
+            let previous = "retaken";
+            for (const [step, suffix] of [" one", " two", " three"].entries()) {
+                const seq = step + 2;
+                retaken.socket.message({
+                    type: "chunk",
+                    epoch,
+                    messageId: "a",
+                    generationId: "g",
+                    base: seq - 1,
+                    seq,
+                    keep: previous.length,
+                    text: suffix,
+                });
+                const text = previous + suffix;
+                const baseRevision = server.chat("c", "k")!.revision;
+                server.chatBatch([
+                    { characterId: "c", chatId: "k", baseRevision, ops: [{ op: "setText", id: "a", text }] },
+                ]);
+                retaken.socket.message({
+                    type: "chatPatch",
+                    epoch,
+                    characterId: "c",
+                    id: "k",
+                    baseRevision,
+                    revision: server.chat("c", "k")!.revision,
+                    count: 1,
+                    streaming: streaming(seq),
+                    messages: [{ after: null, id: "a", streamed: { generationId: "g", seq } }],
+                });
+                expect(
+                    retaken.socket.sent
+                        .map((message) => JSON.parse(message))
+                        .filter((message) => message.type === "resync"),
+                ).toHaveLength(0);
+                expect(chat.findChat(ref)!.message[0].data).toBe(text);
+                expect(chat.heldChatRevision(ref)).toBe(server.chat("c", "k")!.revision);
+                expect(chat.isChatStale(ref)).toBe(false);
+                previous = text;
+            }
+            expect(chat.findChat(ref)!.message[0].data).toBe("retaken one two three");
+        } finally {
+            server.store.close();
+        }
+    });
 
     it("shows preparing on accepted until the first stage event, preserves that stage on reaccept, and removes it on release", async () => {
         const { jobStages, chatStageOf } = await import("../process/jobStages");

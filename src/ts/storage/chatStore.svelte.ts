@@ -460,6 +460,12 @@ const serverGenerations = new Map<string, { jobId: string; generationId: string;
  * copy holds (from the job's chat events); a streamed text at or below it is older than the copy.
  */
 const serverWatermarks = new Map<string, { generationId: string; seq: number }>();
+/**
+ * Verified stored text behind a held generation's display overlay, at its watermark (undefined
+ * without a matching watermark). A compact checkpoint with an ahead buffer cannot prove this text.
+ * Entries exist only while their message has a held generation.
+ */
+const storedGenerationText = new Map<string, { generationId: string; seq: number | undefined; text: string }>();
 /** Server generations that ended or were replaced: their late events are dropped. */
 const retiredGenerations = new Set<string>();
 /**
@@ -2001,6 +2007,7 @@ export function applyServerGeneration(
     if (existing && existing.generationId !== update.generationId) {
         // A new generation of the message (a continue): the previous one's late events are dropped.
         retiredGenerations.add(existing.generationId);
+        storedGenerationText.delete(messageKey);
     } else if (existing && update.seq <= existing.seq) {
         return false;
     }
@@ -2083,9 +2090,10 @@ export function applyServerGenerationChunk(ref: ChatRef, jobId: string, chunk: G
 }
 
 /**
- * Releases every message a server generation job still locks (its terminal event). The terminal's
- * chat hydration normally released them already; one still locked here may hold streamed text
- * instead of the stored final, so its chat is marked for an idle refresh.
+ * Releases and retires every generation a job still holds after its terminal or a lost follow.
+ * The terminal's chat hydration normally released them already; one still locked here may hold
+ * streamed text instead of the stored final, so its chat is marked for an idle refresh. Losing
+ * participation in a running job uses `detachServerJob` so the same generation can be followed again.
  */
 export function endServerJob(jobId: string) {
     flushStreamText((_, messageKey) => serverGenerations.get(messageKey)?.jobId === jobId);
@@ -2094,6 +2102,7 @@ export function endServerJob(jobId: string) {
         if (entry.jobId === jobId) {
             serverGenerations.delete(messageKey);
             serverWatermarks.delete(messageKey);
+            storedGenerationText.delete(messageKey);
             retiredGenerations.add(entry.generationId);
             releaseStreaming(entry.generationId);
             const [chaId, chatId] = messageKey.split("\u0000");
@@ -2111,6 +2120,44 @@ export function endServerJob(jobId: string) {
         // not fit): its end lets the idle refresh read it.
         notifyWork();
     }
+}
+
+/**
+ * Releases this tab's participation without retiring the job's generations. Pending display
+ * updates are discarded; a displayed stream overlay is replaced with its verified stored text so
+ * later feed text diffs use the stored prefix. An unknown baseline leaves the chat stale for an
+ * idle refresh. Existing stale marks and feed notices remain, as do other jobs' held messages.
+ */
+export function detachServerJob(jobId: string) {
+    let released = false;
+    for (const [messageKey, entry] of serverGenerations) {
+        if (entry.jobId !== jobId) continue;
+        heldStreamText.delete(messageKey);
+        const [chaId, chatId, messageId] = messageKey.split("\u0000");
+        const key = keyOf(chaId, chatId);
+        const mark = serverWatermarks.get(messageKey);
+        const seq = mark?.generationId === entry.generationId ? mark.seq : undefined;
+        if (entry.seq >= 0 && (seq === undefined || entry.seq > seq)) {
+            const stored = storedGenerationText.get(messageKey);
+            const chat = heldChat({ chaId, chatId });
+            const message = chat?.message[positionOf(key, chat, messageId)];
+            if (message && stored?.generationId === entry.generationId && stored.seq === seq) {
+                if (message.data !== stored.text) {
+                    message.data = stored.text;
+                    changed(key);
+                }
+            } else if (chatRevisions.has(key)) {
+                staleChats.add(key);
+            }
+        }
+        serverGenerations.delete(messageKey);
+        serverWatermarks.delete(messageKey);
+        storedGenerationText.delete(messageKey);
+        releaseStreaming(entry.generationId);
+        released = true;
+    }
+    if (released) lockState.version += 1;
+    if (released || staleChats.size > 0) notifyWork();
 }
 
 /**
@@ -2351,12 +2398,13 @@ export function hydrateChatPatch(
     job?: { jobId: string; streaming: readonly StreamingMessage[] },
 ): "applied" | "busy" | "mismatch" | "old" {
     flushStreamText((target) => target.chaId === patch.characterId && target.chatId === patch.id);
-    const outcome = applyChatPatch(patch, job);
+    const storedText = new Map<string, string | null>();
+    const outcome = applyChatPatch(patch, storedText, job);
     if (outcome === "old") {
         return outcome;
     }
     // The locks of a copy that did not apply: as for local work.
-    settleJobHydration(patch, outcome === "applied" ? "applied" : "busy", job);
+    settleJobHydration(patch, outcome === "applied" ? "applied" : "busy", job, storedText);
     if (outcome !== "applied") {
         // Marked stale: the save loop runs its idle refresh once the chat is idle (after the job).
         notifyWork();
@@ -2455,12 +2503,15 @@ export type JobChatPatch = Omit<ChatPatch, "messages"> & {
 
 /**
  * The job-lock part of a chat hydration (`hydrateChat`, `hydrateChatPatch`) after its copy was
- * applied (`applied`: the mirror holds the stored rows of the job's messages) or not (`busy`).
+ * applied (`applied`) or not (`busy`). Before restoring stream overlays, capture verified stored
+ * text: all rows of a whole copy, or the patch's `storedText` (null means an ahead stream buffer).
+ * Rows omitted from an applied patch retain a previously verified baseline; they did not change.
  */
 function settleJobHydration(
     server: { characterId: string; id: string; revision: string },
     outcome: "applied" | "busy",
     job?: { jobId: string; streaming: readonly StreamingMessage[] },
+    storedText?: ReadonlyMap<string, string | null>,
 ) {
     const key = keyOf(server.characterId, server.id);
     const prefix = `${key}\u0000`;
@@ -2479,6 +2530,7 @@ function settleJobHydration(
             if (!still || still.generationId !== entry.generationId) {
                 serverGenerations.delete(messageKey);
                 serverWatermarks.delete(messageKey);
+                storedGenerationText.delete(messageKey);
                 retiredGenerations.add(entry.generationId);
                 releaseStreaming(entry.generationId);
                 released = true;
@@ -2490,6 +2542,7 @@ function settleJobHydration(
             if (holder && holder.generationId !== entry.generationId) {
                 // The server says this generation owns the message now: an older owner is gone.
                 serverGenerations.delete(messageKey);
+                storedGenerationText.delete(messageKey);
                 retiredGenerations.add(holder.generationId);
                 releaseStreaming(holder.generationId);
                 released = true;
@@ -2527,13 +2580,28 @@ function settleJobHydration(
                 continue;
             }
             const mark = serverWatermarks.get(messageKey);
+            const seq = mark?.generationId === entry.generationId ? mark.seq : undefined;
+            const messageId = messageKey.slice(prefix.length);
+            const chat = heldChat({ chaId: server.characterId, chatId: server.id });
+            const message = chat?.message[positionOf(key, chat, messageId)];
+            const previous = storedGenerationText.get(messageKey);
+            const text = !storedText
+                ? message?.data
+                : storedText.has(messageId)
+                  ? storedText.get(messageId)
+                  : previous?.generationId === entry.generationId
+                    ? previous.text
+                    : undefined;
+            if (message && typeof text === "string") {
+                storedGenerationText.set(messageKey, { generationId: entry.generationId, seq, text });
+            } else {
+                storedGenerationText.delete(messageKey);
+            }
             if (mark && mark.generationId === entry.generationId && entry.seq <= mark.seq) {
                 // The copy holds this text or a later one; the stream buffer is kept for a lower claim.
                 continue;
             }
-            const chat = heldChat({ chaId: server.characterId, chatId: server.id });
-            const message = chat?.message[positionOf(key, chat, messageKey.slice(prefix.length))];
-            if (message) {
+            if (message && entry.seq >= 0) {
                 message.data = entry.text;
             }
         }
@@ -2614,6 +2682,7 @@ function applyChatHydration(server: {
  */
 function applyChatPatch(
     patch: JobChatPatch,
+    storedText: Map<string, string | null>,
     job?: { jobId: string; streaming: readonly StreamingMessage[] },
 ): "applied" | "busy" | "mismatch" | "old" {
     const key = keyOf(patch.characterId, patch.id);
@@ -2657,7 +2726,7 @@ function applyChatPatch(
     const ownedRows = new Set<object>();
     try {
         if (fits && chat && !staleChats.has(key)) {
-            resolved = resolveJobChatPatch(chat, patch, ownedRows, job);
+            resolved = resolveJobChatPatch(chat, patch, ownedRows, storedText, job);
             patched = resolved ? patchedTail(chat.message, resolved, ownedRows) : null;
         }
     } catch (error) {
@@ -2678,6 +2747,7 @@ function resolveJobChatPatch(
     chat: Chat,
     patch: JobChatPatch,
     ownedRows: Set<object>,
+    storedText: Map<string, string | null>,
     job?: { jobId: string; streaming: readonly StreamingMessage[] },
 ): ChatPatch | null {
     const messages: NonNullable<ChatPatch["messages"]>[number][] = [];
@@ -2687,6 +2757,8 @@ function resolveJobChatPatch(
     for (const entry of patch.messages ?? []) {
         if (!("streamed" in entry)) {
             messages.push(entry);
+            const message = entry.message as Message;
+            if (message.chatId) storedText.set(message.chatId, message.data);
             continue;
         }
         const { id, streamed } = entry;
@@ -2712,6 +2784,8 @@ function resolveJobChatPatch(
         }
         const message = { ...row };
         message.data = buffer.text;
+        // An ahead buffer resolves the displayed row, but cannot reconstruct the stored prefix.
+        storedText.set(id, buffer.seq === streamed.seq ? buffer.text : null);
         ownedRows.add(message);
         messages.push({ after: entry.after, message });
     }
@@ -4676,6 +4750,7 @@ export function seedChats(
     chats: readonly { characterId: string; id: string; revision: string }[],
     orders: readonly ChatOrderRecord[],
 ) {
+    storedGenerationText.clear();
     chatRevisions.clear();
     ackedRevisions.clear();
     absentChats.clear();
@@ -4743,6 +4818,7 @@ export function assembleChats(
     chats: readonly ListedChat[],
     orders: readonly ChatOrderRecord[],
 ) {
+    storedGenerationText.clear();
     const byCharacter = new Map<string, ListedChat[]>();
     for (const record of chats) {
         let list = byCharacter.get(record.characterId);

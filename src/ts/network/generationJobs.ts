@@ -25,6 +25,7 @@ import {
     applyServerGenerationChunk,
     type ChatRef,
     chatHydrationHold,
+    detachServerJob,
     endServerJob,
     isChatStale,
 } from "../storage/chatStore.svelte";
@@ -1364,16 +1365,28 @@ export function applyGenerationEvent(
 }
 
 /**
- * Everything this tab holds for a job, released as its end releases it: the channel's outstanding
- * questions and callbacks (cancelled), the job's message locks, saved job, and presentation stage.
- * Also for a job the tab stopped following without its end (lost).
+ * Releases a terminal or lost job: cancels channel questions and callbacks, retires its held
+ * generations, and drops its saved job, presentation stage and plugin work. A tab that only lost
+ * participation in a running job uses `detachGenerationJob` instead.
  */
 export function releaseGenerationJob(jobId: string) {
+    clearGenerationJob(jobId, endServerJob);
+}
+
+/**
+ * Drops this tab's channel, saved job, stage and plugin work after losing participation. Its chat
+ * drops stream overlays without retiring generations, allowing a later follow of the same job.
+ */
+export function detachGenerationJob(jobId: string) {
+    clearGenerationJob(jobId, detachServerJob);
+}
+
+function clearGenerationJob(jobId: string, releaseMessages: (jobId: string) => void) {
     dropJobStage(jobId);
     if (dispatcher) {
         onChannel((channel) => channel.endJobChannel(jobId));
     }
-    endServerJob(jobId);
+    releaseMessages(jobId);
     forgetGenerationJob(jobId);
     liveJobs.delete(jobId);
     busyJobs.delete(jobId);

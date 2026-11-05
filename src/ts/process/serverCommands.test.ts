@@ -43,6 +43,7 @@ const stubs = vi.hoisted(() => ({
     create: vi.fn<Transport["createGenerationJob"]>(),
     abort: vi.fn<(jobId: string) => Promise<void>>(async () => {}),
     read: vi.fn<Transport["readGenerationJob"]>(),
+    detach: vi.fn<Transport["detachGenerationJob"]>(),
     release: vi.fn(),
     saved: vi.fn<() => string[]>(() => []),
     apply: vi.fn(),
@@ -171,6 +172,7 @@ vi.mock("../network/generationJobs", async () => {
             return stub.follow;
         },
         readGenerationJob: stubs.read,
+        detachGenerationJob: stubs.detach,
         releaseGenerationJob: stubs.release,
         savedGenerationJobIds: stubs.saved,
     });
@@ -2355,6 +2357,103 @@ describe("handoff lifecycles", () => {
         owner,
         ...extra,
     });
+
+    const expectQuietDetach = async (jobId: string) => {
+        const { foreignJobs, recoveryChatKeys } = await import("./chatStatus.svelte");
+        expect(stubs.detach).toHaveBeenCalledExactlyOnceWith(jobId);
+        expect(stubs.release).not.toHaveBeenCalled();
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
+        for (const phase of ["gone", "lost"]) {
+            expect(stubs.record).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "jobLink", phase }));
+        }
+        expect(get(recoveryChatKeys).size).toBe(0);
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        expect(stubs.markStale).not.toHaveBeenCalled();
+        expect(stubs.loadChat).not.toHaveBeenCalled();
+        expect(stubs.load).toHaveBeenCalledExactlyOnceWith(ref);
+        expect(get(foreignJobs).get("c\u0000k")).toBe(jobId);
+        expect(get(commands.followedJobs).has(jobId)).toBe(false);
+        expect(stubs.pin.mock.results[0].value).toHaveBeenCalledTimes(1);
+    };
+
+    it("quietly detaches a former worker whose viewer reconnect finds no accessible job status", async () => {
+        vi.useFakeTimers();
+        const { readChatGeneration } = await import("../network/generationJobs");
+        stubs.read.mockResolvedValueOnce(status).mockResolvedValueOnce(null);
+        let ready = attached();
+        const end = commands.followJobToEnd("j", ref, undefined, { ticket: "worker-ticket" });
+        await ready;
+        const worker = follows().at(-1)!;
+        worker.open();
+        worker.frame();
+        worker.onEvent(role("self"));
+        expect(get(commands.followedJobs).get("j")).toBe("c\u0000k");
+        worker.onEvent(role("other"));
+        ready = attached();
+        worker.end(null);
+        await ready;
+        const viewer = follows().at(-1)!;
+        expect(viewer).not.toBe(worker);
+        expect(viewer.options).toEqual({ initiallyViewing: true });
+        viewer.end(null);
+
+        expect(await end).toBe("lost");
+        expect(stubs.read).toHaveBeenCalledTimes(2);
+        expect(readChatGeneration).not.toHaveBeenCalled();
+        await expectQuietDetach("j");
+    });
+
+    it("quietly detaches an uncertain owner when the chat's current view still names the same job", async () => {
+        vi.useFakeTimers();
+        const { readChatGeneration } = await import("../network/generationJobs");
+        vi.mocked(readChatGeneration).mockResolvedValueOnce({ jobId: "j", kind: "command", owned: false });
+        stubs.read.mockResolvedValueOnce(null);
+        const ready = attached();
+        const end = commands.followJobToEnd("j", ref, undefined, { ticket: "worker-ticket" });
+        await ready;
+        const worker = follows().at(-1)!;
+        worker.open();
+        worker.onEvent(role("self"));
+        worker.end(null);
+
+        expect(await end).toBe("lost");
+        expect(readChatGeneration).toHaveBeenCalledExactlyOnceWith(ref);
+        await expectQuietDetach("j");
+    });
+
+    it.each(["another job", "no job"] as const)(
+        "keeps gone handling for an uncertain owner when the chat's current view names %s",
+        async (current) => {
+            vi.useFakeTimers();
+            const { readChatGeneration } = await import("../network/generationJobs");
+            const { recoveryChatKeys } = await import("./chatStatus.svelte");
+            vi.mocked(readChatGeneration).mockResolvedValueOnce(
+                current === "another job" ? { jobId: "another", kind: "command", owned: false } : null,
+            );
+            stubs.read.mockResolvedValueOnce(null);
+            const ready = attached();
+            const end = commands.followJobToEnd("j", ref, undefined, { ticket: "worker-ticket" });
+            await ready;
+            const worker = follows().at(-1)!;
+            worker.open();
+            worker.onEvent(role("self"));
+            worker.end(null);
+
+            expect(await end).toBe("lost");
+            expect(readChatGeneration).toHaveBeenCalledExactlyOnceWith(ref);
+            expect(stubs.release).toHaveBeenCalledExactlyOnceWith("j");
+            expect(stubs.detach).not.toHaveBeenCalled();
+            expect(stubs.markStale).toHaveBeenCalledWith(ref);
+            expect(stubs.refresh).toHaveBeenCalledExactlyOnceWith(ref);
+            expect(get(recoveryChatKeys).get("c\u0000k")).toBe("j");
+            expect(stubs.alertError).not.toHaveBeenCalled();
+            expect(stubs.alertJobError).not.toHaveBeenCalled();
+            expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("ended away");
+            expect(stubs.record).toHaveBeenCalledWith({ kind: "jobLink", phase: "gone", jobId: "j" });
+        },
+    );
 
     it("tracks creator viewers for Take back and reuses their follow when a ticket returns ownership", async () => {
         vi.useFakeTimers();

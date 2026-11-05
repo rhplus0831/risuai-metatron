@@ -32,7 +32,7 @@ Module headers and export comments hold the contracts; these lists give lookup i
   `idleChatRefreshes`, `idleSummaryRefreshes`, `settleSummaryRefresh`.
 - Live updates and jobs: `noteRemoteChat`, `applyRemoteSummary`, `applyRemoteCollection`, `canApplyRemoteCollection`,
   `noteRemoteStreaming`, `replaceFeedLocks`, `markChatStale`, `applyServerGeneration`, `applyServerGenerationChunk`,
-  `heldStreamText`, `endServerJob`, `hydrateChat`, `hydrateChatPatch`, `chatHydrationHold`,
+  `heldStreamText`, `endServerJob`, `detachServerJob`, `hydrateChat`, `hydrateChatPatch`, `chatHydrationHold`,
   `prepareChatHydrationRefresh`, `deferredReloads`, `finishDeferredReload`.
 - `src/ts/storage/chatEdits.ts`: `editChat` (may await), `editChatSync`, `editCurrentChat`, `setCurrentChatMeta`, over a
   whole chat copy; `readChatsDetached` serves `src/ts/storage/exportAsDataset.ts` and `src/ts/characters.ts`;
@@ -225,8 +225,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 ## Coupling
 
 - The chain is in [resource sync](resource-sync.md#coupling). `characterStore.svelte.ts` installs and adopts a
-  character's chats, `network/generationJobs.ts` delivers job events, `process/serverCommands.ts` starts jobs and
-  recovers lost follows.
+  character's chats, `network/generationJobs.ts` delivers job events, `process/serverCommands.ts` starts and follows
+  jobs.
 - `Chat.svelte` renders a chat's rows again on `chatSaveVersion`; `transformClient.ts` and `settledRender.svelte.ts`
   read `chatInstallVersion` and `chatHasUnackedWork` ([CBS rendering](cbs-rendering.md)).
 
@@ -298,15 +298,15 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 ### Gotchas
 
-- `selectedChat()` and `findChat` return the live read-only chat: take `$state.snapshot` before handing it to code that
-  mutates. A snapshot or spread of a character has no chats: build the legacy shape with `withChatsCopy`.
+- `selectedChat()` and `findChat` return the live read-only chat: take `$state.snapshot` before passing it to mutating
+  code. A snapshot or spread of a character has no chats: build the legacy shape with `withChatsCopy`.
 - `SideChatList.svelte` renders a chat whose `folderId` names no folder at the root as unfiled (`chatFolderOf`) and
   keeps the id: a drop at the root does not remove it, a move into a folder replaces it. The pinned rail and the modal
   chat list do not group by folder.
 - A job's membership changes are not hydrated on its socket; they reach every tab through the live updates.
 - An observing tab sees a job's reply at its 3 s checkpoints, then the final text; a disconnected tab catches up at the
   reconnect's reconcile.
-- A character wrapper's read-only `chats` view builds a fresh array on every read: read one chat through `findChat`, not
-  by scanning `chats` in a loop ([observation](../audit/chat-scan-observations-2026-10-24.md)).
+- A character wrapper's `chats` view builds a fresh array per read: read one chat through `findChat`, not by scanning
+  `chats` ([observation](../audit/chat-scan-observations-2026-10-24.md)).
 - `installRead` treats an incomparable revision as older, `adoptChatRead` as not older; only fixtures with tokens like
   `r1` reach the difference.

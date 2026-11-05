@@ -48,7 +48,7 @@ The transport below retains this tab's in-memory log.
   `ChatBindingRefusedError`, `ChatLoreOverrideOrphanedError`, `readGenerationJob`, `abortGenerationJob`,
   `takeoverGenerationJob`, `requestGenerationHandoff`.
 - Socket/events: `GenerationFollow`, `followGenerationJob`, `applyGenerationEvent`, `releaseGenerationJob`,
-  `resyncAfterLocalWork`, `requestResync`, `dispatcher`.
+  `detachGenerationJob`, `resyncAfterLocalWork`, `requestResync`, `dispatcher`.
 - `src/ts/network/handoff.ts`: local preferences, offers, acceptance, presence and manual requests; module contract,
   `replaceHandoffOffers`, `receiveHandoffOffer`, `setHandoffWork`, `connectedClients`, `handoffTargets`, `handOffJob`.
   `src/lib/Others/HandoffStatus.svelte` renders worker progress.
@@ -125,7 +125,6 @@ The transport below retains this tab's in-memory log.
 
 - `handoff.ts` state is in its module contract and `setHandoffWork`; `eventFeed.ts` feeds offers and presence, and
   `serverCommands.ts` owns roles and lifetime.
-
 - `fetchLog[]` is private, this tab's list only (the durable history is the server's). `getFetchLogs` exposes the live
   array (the popup's "This tab" and plugins' `getFetchLogs`); its identity stays fixed.
 - Every writer (including `addFetchLogInGlobalFetch`) uses `writeFetchLog`, which trims the live array in place to
