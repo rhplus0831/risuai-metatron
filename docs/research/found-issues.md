@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (12)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (18)
+- [Structured Memory](#structured-memory) (16)
 
 ## Chat store, sync, and change feeds
 
@@ -478,13 +478,6 @@ In `src/ts/process/structuredMemory.svelte.ts` and `StructuredMemoryPanel.svelte
 **Why it matters:** a key only in the first messages of a short chat does not activate.
 **Suggested handling:** clamp the start to 0 and update `server/src/tests/fixtures/baseline/`, after checking upstream parity.
 
-### Snapshot layout check is copied
-
-`memoryStateLayout` in `server/src/data/memoryStore.ts` copies the layout block at the head of `walkCheckpointSnapshot` (`server/src/data/checkpointStore.ts`): name match, ordinary table, exact columns, all or none. Slice 1c could not edit `checkpointStore.ts`.
-
-**Why it matters:** two copies of a check on crafted snapshot files can drift apart.
-**Suggested handling:** one helper beside `snapshotRows` in `resourceStore.ts`.
-
 ### Hand-written resourceSync mocks
 
 `src/lib/ChatScreens/Chat.test.ts` keeps a hand-written `vi.mock` of `src/ts/storage/resourceSync.svelte`, and other files mock it too, though `src/ts/tests/bootMocks.ts` has a typed factory. Slice 5c met three tests failing at run time on a missing `beginMutationScope`.
@@ -515,17 +508,10 @@ Left by slice 6a. An adopted summary's `pinned` selects nothing in any lane (`ad
 
 ### Highlight and revert leftovers
 
-Left by slice 7b. `retract` stays in `MEMORY_HISTORY_CHANGE_KINDS`, `STRUCTURED_MEMORY_HIGHLIGHT_KINDS`, and the default `highlightKinds`, though only a restored entry can carry it and the settings offer no box. `mayCompact`'s `userCorrected` check is reached only by a disputed join, which `disputed` already refuses. A new page's receipt row has no highlight and no revert. Changing a chat's highlight mode moves `memorySettingsFingerprint`, so a queued writer input ends `skipped` (`staleInput`).
+Left by slice 7b; the dead `retract` kind left in the Found Issues Sweep (I3). A new page's receipt row has no highlight and no revert. Changing a chat's highlight mode moves `memorySettingsFingerprint`, so a queued writer input ends `skipped` (`staleInput`).
 
-**Why it matters:** dead values and checks, and one lost queued run per mode change.
-**Suggested handling:** drop `retract` with `normalizeStructuredMemorySettings` dropping a stored one; leave highlight out of the fingerprint if a replay may ignore it.
-
-### Prompt test run leftovers
-
-Left by slice 7c. `server/src/prompt/memory/structured/testRun.ts` is missing from `STRUCTURE.md`'s Path Ownership for structured-memory-writer, though the writer guide lists it. `TEST_REFUSALS.gap` is unreachable, since `jobMemoryBlockingReason` answers only `pluginModel` and `requestTrigger`. The result screen says "Outcome: Recorded" for a test that saved nothing.
-
-**Why it matters:** misrouted questions, dead code, and a word that reads as a save.
-**Suggested handling:** add the path, drop or narrow the record, and word the outcome for a test.
+**Why it matters:** one lost queued run per mode change.
+**Suggested handling:** leave highlight out of the fingerprint if a replay may ignore it (the sweep plan's Structured Memory follow-up).
 
 ### Page tool leftovers
 
