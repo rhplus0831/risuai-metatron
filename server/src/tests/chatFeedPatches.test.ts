@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Chat, Message, MessageTranslation } from "../../../shared/database.ts";
 import type { ChatGroup, ChatOp } from "../../../shared/chats.ts";
-import { MAX_FEED_PATCH_BYTES, type ResourceBatchResult } from "../../../shared/resources.ts";
+import { MAX_FEED_PATCH_BYTES, SMALL_FEED_PATCH_BYTES, type ResourceBatchResult } from "../../../shared/resources.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import type { ChatWriteChange } from "../data/chatStore.ts";
@@ -58,6 +58,201 @@ function setup() {
 }
 
 describe("by-id chat feed patches", () => {
+    it.each([
+        { label: "4 KiB", before: "x".repeat(4 * 1024), body: "patch" },
+        { label: "32 KiB", before: "x".repeat(32 * 1024), body: "rowDelta" },
+        { label: "100 KiB", before: "x".repeat(100 * 1024), body: "rowDelta" },
+        { label: "9 KiB of UTF-8", before: "한".repeat(3 * 1024), body: "rowDelta" },
+    ] as const)("publishes an appending $label checkpoint as $body", ({ before, body }) => {
+        const b = setup();
+        b.write([{ op: "setText", id: "b", text: before }]);
+        const baseRevision = b.read().revision;
+        const suffix = "😀 appended";
+        const patch = { baseRevision, count: 3, messages: [{ after: "a", message: m("b", before + suffix) }] };
+        const rowDelta = {
+            baseRevision,
+            count: 3,
+            rowDiffs: [{ id: "b", text: { keep: before.length, text: suffix } }],
+        };
+        b.write([{ op: "setText", id: "b", text: before + suffix }]);
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            summaryBase: baseRevision,
+            [body]: body === "patch" ? patch : rowDelta,
+        });
+        const patchBytes = Buffer.byteLength(JSON.stringify(patch));
+        if (body === "patch") expect(patchBytes).toBeLessThan(SMALL_FEED_PATCH_BYTES);
+        else {
+            expect(patchBytes).toBeGreaterThanOrEqual(SMALL_FEED_PATCH_BYTES);
+            expect(Buffer.byteLength(JSON.stringify(rowDelta))).toBeLessThan(patchBytes);
+            expect(Buffer.byteLength(JSON.stringify(rowDelta))).toBeLessThanOrEqual(MAX_FEED_PATCH_BYTES);
+        }
+        expect(b.read().data.message[1]).toEqual(m("b", before + suffix));
+    });
+
+    it("publishes a same-text final generationInfo write as fields without text", () => {
+        const b = setup();
+        const data = "x".repeat(100 * 1024);
+        b.write([
+            {
+                op: "setMessage",
+                message: { ...m("b", data), generationInfo: { model: "before", inputTokens: 1, maxContext: 1000 } },
+            },
+        ]);
+        const baseRevision = b.read().revision;
+        const generationInfo = { model: "test-model", generationId: "g", inputTokens: 12, outputTokens: 34 };
+        b.write([{ op: "setMessage", message: { ...m("b", data), generationInfo } }]);
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            summaryBase: baseRevision,
+            rowDelta: {
+                baseRevision,
+                count: 3,
+                rowDiffs: [{ id: "b", fields: { set: { generationInfo }, unset: [] } }],
+            },
+        });
+        expect(b.read().data.message[1]).toEqual({ ...m("b", data), generationInfo });
+    });
+
+    it("diffs a group's final fields and UTF-16 text against its first read beside whole inserted rows", () => {
+        const b = setup();
+        const prefix = "x".repeat(32 * 1024) + "😀";
+        b.write([
+            {
+                op: "setMessage",
+                message: {
+                    ...m("b", prefix + "old"),
+                    saying: "gone",
+                    generationInfo: { model: "same", inputTokens: 12 },
+                },
+            },
+        ]);
+        const baseRevision = b.read().revision;
+        b.write([
+            {
+                op: "setMessage",
+                message: {
+                    ...m("b", prefix + "intermediate"),
+                    saying: "gone",
+                    role: "user",
+                    generationInfo: { inputTokens: 12, model: "same" },
+                },
+            },
+            { op: "patchMessage", id: "b", set: { data: prefix + "new" }, unset: ["saying"] },
+            { op: "append", anchor: { after: "b" }, messages: [m("inserted", "first")] },
+            { op: "setText", id: "inserted", text: "final" },
+            { op: "remove", ids: ["a"] },
+            { op: "meta", set: { note: "changed" } },
+        ]);
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            summaryBase: baseRevision,
+            rowDelta: {
+                baseRevision,
+                count: 3,
+                metaFields: { set: { note: "changed" }, remove: [] },
+                removed: ["a"],
+                messages: [{ after: "b", message: m("inserted", "final") }],
+                rowDiffs: [
+                    {
+                        id: "b",
+                        fields: { set: { role: "user" }, unset: ["saying"] },
+                        text: { keep: prefix.length, text: "new" },
+                    },
+                ],
+            },
+        });
+        expect(b.read().data.message).toEqual([
+            { ...m("b", prefix + "new"), role: "user", generationInfo: { model: "same", inputTokens: 12 } },
+            m("inserted", "final"),
+            m("c", "C"),
+        ]);
+    });
+
+    it("keeps a row with a changed __proto__ whole beside an eligible row diff", () => {
+        const b = setup();
+        const data = "x".repeat(32 * 1024);
+        const before = m("c", "old");
+        const after = {
+            ...m("c", "new"),
+            ...JSON.parse('{"__proto__":{"value":"own field"}}'),
+        };
+        b.write([
+            { op: "setText", id: "b", text: data },
+            { op: "setMessage", message: before },
+        ]);
+        const baseRevision = b.read().revision;
+        b.write([
+            { op: "setText", id: "b", text: data + "!" },
+            { op: "setMessage", message: after },
+        ]);
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            summaryBase: baseRevision,
+            rowDelta: {
+                baseRevision,
+                count: 3,
+                messages: [{ after: "b", message: after }],
+                rowDiffs: [{ id: "b", text: { keep: data.length, text: "!" } }],
+            },
+        });
+        expect(b.read().data.message).toEqual([m("a", "A"), m("b", data + "!"), after]);
+    });
+
+    it.each([
+        { comparison: "equal in size", saying: "s".repeat(8), excess: 0 },
+        { comparison: "larger", saying: undefined, excess: 20 },
+    ])("keeps a fitting whole-row patch when the row diff would be $comparison", ({ saying, excess }) => {
+        const b = setup();
+        const unchanged = saying === undefined ? {} : { saying };
+        b.write([{ op: "setMessage", message: { ...m("b", "B"), ...unchanged } }]);
+        const baseRevision = b.read().revision;
+        const message = { ...m("b", "x".repeat(12 * 1024)), role: "user" as const, ...unchanged };
+        const patch = { baseRevision, count: 3, messages: [{ after: "a", message }] };
+        const rowDelta = {
+            baseRevision,
+            count: 3,
+            rowDiffs: [
+                { id: "b", fields: { set: { role: "user" }, unset: [] }, text: { keep: 0, text: message.data } },
+            ],
+        };
+        expect(Buffer.byteLength(JSON.stringify(rowDelta)) - Buffer.byteLength(JSON.stringify(patch))).toBe(excess);
+        b.write([{ op: "setMessage", message }]);
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            summaryBase: baseRevision,
+            patch,
+        });
+        expect(b.read().data.message[1]).toEqual(message);
+    });
+
+    it("publishes no body when a changed row field exceeds the UTF-8 cap", () => {
+        const b = setup();
+        const data = "x".repeat(100 * 1024);
+        b.write([{ op: "setText", id: "b", text: data }]);
+        const baseRevision = b.read().revision;
+        const generationInfo = { model: "한".repeat(23 * 1024) };
+        expect(Buffer.byteLength(JSON.stringify(generationInfo))).toBeGreaterThan(MAX_FEED_PATCH_BYTES);
+        b.write([{ op: "setMessage", message: { ...m("b", data), generationInfo } }]);
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            summaryBase: baseRevision,
+        });
+        expect(b.read().data.message[1]).toEqual({ ...m("b", data), generationInfo });
+    });
+
     it("keeps summaryBase for equal listed fields without reparsing large metadata for the summary", () => {
         const b = setup();
         const memory = "m".repeat(56 * 1024);
@@ -177,6 +372,7 @@ describe("by-id chat feed patches", () => {
             const entry = b.notice();
             expect(entry.delta, JSON.stringify(ops)).toEqual({ baseRevision, count: 3, metaFields: fields });
             expect(entry).not.toHaveProperty("patch");
+            expect(entry).not.toHaveProperty("rowDelta");
             expect(Buffer.byteLength(JSON.stringify(entry.delta))).toBeLessThan(1024);
             expect(b.read().data.supaMemoryData).toBe("m".repeat(100 * 1024));
         }
@@ -321,16 +517,20 @@ describe("by-id chat feed patches", () => {
         expect(b.notice()).toEqual({ characterId: "c", id: "k", revision });
     });
 
-    it("allows 64 KiB exactly and falls back above it, measured in UTF-8 bytes", () => {
+    it("allows a whole-row patch of 64 KiB exactly and none above it, measured in UTF-8 bytes", () => {
         const b = setup();
         for (const excess of [0, 1]) {
             const baseRevision = b.read().revision;
+            // An inserted row has no row diff, so the whole-row patch is the only body that can carry it.
+            const count = b.read().data.message.length + 1;
+            const after = b.read().data.message.at(-1)!.chatId!;
+            const id = `inserted-${excess}`;
             const overhead = Buffer.byteLength(
-                JSON.stringify({ baseRevision, count: 3, messages: [{ after: "a", message: m("b", "") }] }),
+                JSON.stringify({ baseRevision, count, messages: [{ after, message: m(id, "") }] }),
             );
             const text = "한".repeat(100) + "x".repeat(64 * 1024 - overhead - 300 + excess);
-            b.write([{ op: "setText", id: "b", text }]);
-            const patch = { baseRevision, count: 3, messages: [{ after: "a", message: m("b", text) }] };
+            b.write([{ op: "append", anchor: { end: true }, messages: [m(id, text)] }]);
+            const patch = { baseRevision, count, messages: [{ after, message: m(id, text) }] };
             expect(Buffer.byteLength(JSON.stringify(patch))).toBe(64 * 1024 + excess);
             expect(Object.hasOwn(b.notice(), "patch")).toBe(excess === 0);
             expect(b.notice()).toEqual({
@@ -341,7 +541,7 @@ describe("by-id chat feed patches", () => {
                 summaryBase: baseRevision,
                 ...(excess ? {} : { patch }),
             });
-            expect(b.read().data.message[1].data).toBe(text);
+            expect(b.read().data.message.at(-1)).toEqual(m(id, text));
         }
     });
 

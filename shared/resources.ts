@@ -416,35 +416,65 @@ export type ChatMetaFields = {
 export type ChatDeltaBody = Omit<ChatPatchBody, "meta"> & { metaFields?: ChatMetaFields };
 
 /**
- * The largest record or chat patch, or chat delta (UTF-8 bytes of its JSON), a feed entry carries;
- * larger ones are left out.
+ * One existing row's change from the stored base to the group's result. Fields compare as JSON
+ * values, without key order: `set` holds added or changed values whole, `unset` names fields gone.
+ * `data` comes separately as its common prefix length in UTF-16 code units and the remaining text.
+ * Optional feed-only data for older clients: `fields` and `text` are independently absent when
+ * unchanged; the id needs no anchor because surviving existing rows never reorder in a by-id group.
+ */
+export type ChatRowDiff = {
+    id: string;
+    fields?: { set: Record<string, unknown>; unset: string[] };
+    text?: { keep: number; text: string };
+};
+
+/**
+ * An optional feed body older clients ignore: metadata by field, eligible existing rows in
+ * `rowDiffs`, other changed rows whole in `messages` with their anchors. Never a job socket body.
+ * `rowDiffs` is required within this body; older servers omit the entire `rowDelta` field.
+ */
+export type ChatRowDeltaBody = ChatDeltaBody & { rowDiffs: ChatRowDiff[] };
+
+/**
+ * The largest record patch or chat body (UTF-8 bytes of its JSON) a feed entry carries. A chat has
+ * at most one of `patch`, `delta`, `rowDelta`: a patch below `SMALL_FEED_PATCH_BYTES`, else a fitting
+ * rowDelta with row diffs smaller than the whole patch, else a fitting patch, else a fitting delta.
+ * If none fits, the entry carries no body.
  */
 export const MAX_FEED_PATCH_BYTES = 64 * 1024;
 
+/** Selection threshold, not a cap: whole-row patches below it take precedence over row diffs. */
+export const SMALL_FEED_PATCH_BYTES = 8 * 1024;
+
 /**
  * The most optional-payload bytes one `change` frame carries: the UTF-8 bytes of the JSON of each
- * record `patch`, chat `patch` or `delta`, `summary`, and `summaryBase`, summed over its record and
- * chat entries in wire order. A payload that would pass it is left out of its entry.
+ * record `patch`, chat `patch`, `delta`, `rowDelta`, `summary`, and `summaryBase`, summed in wire
+ * order. A chat carries at most one body, selected as `MAX_FEED_PATCH_BYTES` describes (small patch,
+ * smaller rowDelta, fitting patch, fitting delta). A payload that would pass this budget is left out.
  */
 export const MAX_FEED_PUBLICATION_PATCH_BYTES = 256 * 1024;
 
 /**
  * What one committed write changed (live updates): refs and their new revisions, and data only as
- * optional payloads: a record patch (`RecordPatch`), and for a chat a by-id change (`patch`, or
- * `delta` with the metadata by field) and what the entry knows about its summary. A `null` revision
+ * optional payloads: a record patch (`RecordPatch`), and for a chat a by-id change (`patch`, `delta`
+ * with metadata by field, or `rowDelta` with row diffs too) and its summary knowledge. A `null` revision
  * is a deletion. A record or chat recorded more than once in the write appears once with its final
- * revision and no patch or delta. A client holding exactly a patch's or delta's base revision may
+ * revision and no body. A client holding exactly a body's base revision may
  * apply it when idle (a chat must also be loaded and not stale); otherwise it handles the plain
  * notice as before. Chat revisions advance by the applied op count, not necessarily one. Whole-chat
  * writes, no-op groups, remove-and-reappend groups, and changes over `MAX_FEED_PATCH_BYTES` carry
- * neither; an entry carries at most one of them, a `delta` only when the `patch` would not fit.
+ * no body. An entry carries at most one of `patch`, `delta`, `rowDelta`: a whole-row patch below
+ * `SMALL_FEED_PATCH_BYTES`; else a rowDelta with at least one row diff that fits the cap and is
+ * strictly smaller than the patch; else a fitting patch; else a fitting delta; else none. These
+ * bodies are optional for older clients and servers: a client that does not know `rowDelta` takes
+ * the notice and reads, without advancing its revision from a body it cannot apply.
  *
  * A chat entry carries at most one of `summary` (the chat's summary at the entry's revision, when
  * the write changed it) and `summaryBase` (a revision, the stored one right before the write: the
  * summary, `revision` aside, is the same as at that revision). Neither means unknown: a whole-chat
  * write, a no-op group, a deletion, a payload left out, or a chat recorded twice without that proof.
  * The payloads of one publication share `MAX_FEED_PUBLICATION_PATCH_BYTES`: taken in wire order
- * (resources, then chats; within a chat entry `patch` or `delta` before `summary` or `summaryBase`),
+ * (resources, then chats; within a chat entry `patch`, `delta`, `rowDelta`, `summary`, `summaryBase`),
  * one that does not fit is left out of its entry, and a later smaller one may still fit.
  */
 export type ChangeSet = {
@@ -455,6 +485,8 @@ export type ChangeSet = {
         revision: string | null;
         patch?: ChatPatchBody;
         delta?: ChatDeltaBody;
+        /** Optional for older clients and servers; mutually exclusive with `patch` and `delta`. */
+        rowDelta?: ChatRowDeltaBody;
         summary?: ChatSummary;
         summaryBase?: string;
     }[];

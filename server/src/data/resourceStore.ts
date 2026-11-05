@@ -344,7 +344,7 @@ export type ApplyChangesTransaction = {
 /**
  * The chat changes a write made, for the writer that asked (`applyChanges` with `changes: true`):
  * aligned with `AppliedChanges.chats`, each by-id group's change as stored, undefined for a group
- * without one. The feed's capped patch or delta comes from the same change in
+ * without one. The feed's capped patch, delta, or rowDelta comes from the same change in
  * `server/src/data/chatStore.ts`; `budgetedEntries` drops payloads only from feed entries, leaving
  * these writer changes intact.
  */
@@ -435,7 +435,7 @@ type ChatChange = ChangeSet["chats"][number];
 
 /**
  * One feed entry for a chat recorded twice in a publication, `earlier` then `later`: the later ref,
- * without a patch or delta (their base would be a revision no client was told about), with only the
+ * without a patch, delta, or rowDelta (their base would be a revision no client was told about), with only the
  * summary knowledge the two prove together. The later `summary` stands; else the earlier `summary`,
  * moved to the later revision, when the later entry says the summary is unchanged since the earlier
  * revision (`summaryBase`); two such unchanged entries in a row say unchanged since the earlier base.
@@ -1208,12 +1208,12 @@ export function createResourceStore(options: {
      * A publication's record and chat entries in wire order, with their optional payloads within
      * `MAX_FEED_PUBLICATION_PATCH_BYTES` together. Called once per publication, on the outermost
      * write's final accumulator, so nested scopes have merged and coalescing has dropped repeated keys'
-     * patches and deltas. The payloads are taken in wire order: resources, then chats, and within a
-     * chat entry its `patch` or `delta`, then its `summary` or `summaryBase`. A payload stays while
+     * patches, deltas, and rowDeltas. The payloads are taken in wire order: resources, then chats, and within a
+     * chat entry `patch`, `delta`, `rowDelta`, `summary`, then `summaryBase`. A payload stays while
      * the running sum including it fits; one that does not fit is left out of a copy of its entry in
      * the same place (a later, smaller payload may still fit), so a dropped `summary` leaves the entry
      * with neither summary field. Every candidate payload is measured, rejected ones included, so the
-     * measuring work is proportional to the payloads the write built (each patch or delta already
+     * measuring work is proportional to the payloads the write built (each patch, delta, or rowDelta already
      * within `MAX_FEED_PATCH_BYTES` when built), not to the frame. Refs are never dropped.
      */
     function budgetedEntries(changes: ChangeAccumulator): Pick<ChangeSet, "resources" | "chats"> {
@@ -1238,7 +1238,7 @@ export function createResourceStore(options: {
         return {
             resources: [...changes.resources.values()].map((entry) => withinBudget(entry, ["patch"])),
             chats: [...changes.chats.values()].map((entry) =>
-                withinBudget(entry, ["patch", "delta", "summary", "summaryBase"]),
+                withinBudget(entry, ["patch", "delta", "rowDelta", "summary", "summaryBase"]),
             ),
         };
     }

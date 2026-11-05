@@ -1,6 +1,7 @@
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../../shared/chats.ts";
+import type { Message } from "../../../../shared/database.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
@@ -75,7 +76,7 @@ const refK = { chaId: "c", chatId: "k" };
  * with the change feed: presets `pa` and `pb`, character `c` (chats `k` with messages a, b, c and
  * `j`, empty) and character `d` (chat `m`), at home. Then live delivery starts.
  */
-async function boot(options: { summaries?: boolean; meta?: Record<string, unknown> } = {}) {
+async function boot(options: { summaries?: boolean; meta?: Record<string, unknown>; messages?: Message[] } = {}) {
     vi.resetModules();
     const fake = await StoreBackedServer.create({ lock: true, feed: true });
     fake.set("presets", "main", [
@@ -95,7 +96,7 @@ async function boot(options: { summaries?: boolean; meta?: Record<string, unknow
             { kind: fake.kind("characters"), id: "d", baseRevision: null, data: { chaId: "d", name: "D" } },
         ],
         chats: [
-            create("c", "k", [m("a", "A", "char"), m("b", "B", "char"), m("c", "C")]),
+            create("c", "k", options.messages ?? [m("a", "A", "char"), m("b", "B", "char"), m("c", "C")]),
             create("c", "j"),
             create("d", "m", [m("x", "X")]),
         ],
@@ -199,6 +200,163 @@ const quiet = (b: Booted) => {
 };
 
 describe("feed patches through the tab save adapter", () => {
+    it("applies successive row diffs without reads or rebuilding positions, then applies mixed whole rows and metadata", async () => {
+        const prefix = "x".repeat(100 * 1024) + "😀";
+        const b = await boot({ messages: [m("a", "A"), { ...m("b", prefix, "char"), saying: "gone" }, m("c", "C")] });
+        expect(b.chat.messagePositionOf(refK, "b")).toBe(1);
+        const positions = b.chat.messagePositionStats();
+        const generationInfo = { model: "remote", outputTokens: 34 };
+        const steps: { ops: ChatOp[]; row: Message }[] = [
+            {
+                ops: [{ op: "setText", id: "b", text: prefix + " appended" }],
+                row: { ...m("b", prefix + " appended", "char"), saying: "gone" },
+            },
+            {
+                ops: [{ op: "patchMessage", id: "b", set: { generationInfo } }],
+                row: { ...m("b", prefix + " appended", "char"), saying: "gone", generationInfo },
+            },
+            {
+                ops: [{ op: "patchMessage", id: "b", unset: ["saying"] }],
+                row: { ...m("b", prefix + " appended", "char"), generationInfo },
+            },
+        ];
+        for (const { ops, row } of steps) {
+            const baseRevision = b.chat.heldChatRevision(refK);
+            remote(b, ops);
+            const event = b.fake.feedEvents.at(-1)!;
+            if (event.type !== "change") throw new Error("expected a committed change");
+            const entry = event.changes.chats[0];
+            expect(entry.rowDelta?.baseRevision).toBe(baseRevision);
+            expect(entry.rowDelta?.rowDiffs).toHaveLength(1);
+            expect(entry.rowDelta).not.toHaveProperty("messages");
+            expect(entry).not.toHaveProperty("delta");
+            expect(entry).not.toHaveProperty("patch");
+            expect(mirror(b).message[1]).toEqual(row);
+            expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+            expect(b.chat.heldChatRevision(refK)).toBe(entry.revision);
+            expect(b.chat.isChatBehind(refK)).toBe(false);
+            expect(b.chat.messagePositionOf(refK, "b")).toBe(1);
+            expect(b.chat.messagePositionStats().builds).toBe(positions.builds);
+            await b.sync.flushResources();
+            await vi.advanceTimersByTimeAsync(1500);
+            expect(reads(b)).toEqual([]);
+            expect(b.fake.batchCount()).toBe(0);
+            quiet(b);
+        }
+        remote(b, [
+            { op: "remove", ids: ["a"] },
+            { op: "setText", id: "b", text: prefix + " final" },
+            { op: "append", anchor: { after: "b" }, messages: [m("inserted", "I")] },
+            { op: "meta", set: { note: "remote note" } },
+        ]);
+        expect(mirror(b).message).toEqual([
+            { ...m("b", prefix + " final", "char"), generationInfo },
+            m("inserted", "I"),
+            m("c", "C"),
+        ]);
+        expect(mirror(b).note).toBe("remote note");
+        expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toEqual([]);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it.each(["another revision", "short held text", "missing held row", "generating", "stale"] as const)(
+        "leaves a row delta unapplied for %s and reads the whole chat once idle",
+        async (state) => {
+            const data = "x".repeat(100 * 1024);
+            const b = await boot({ messages: [m("a", "A"), { ...m("b", data, "char"), saying: "gone" }, m("c", "C")] });
+            const baseRevision = b.chat.heldChatRevision(refK)!;
+            b.live.paused = true;
+            if (state === "another revision") {
+                remote(b, [{ op: "meta", set: { note: "missed" } }]);
+                b.live.queue.length = 0;
+            }
+            if (state === "short held text" || state === "missing held row") {
+                const held = b.fake.chat("c", "k")!;
+                const messages = [
+                    m("a", "A"),
+                    {
+                        ...m(
+                            state === "missing held row" ? "other" : "b",
+                            state === "short held text" ? "short" : data,
+                            "char",
+                        ),
+                        saying: "gone",
+                    },
+                    m("c", "C"),
+                ];
+                b.chat.acceptRemoteChat({ ...held, data: { ...held.data, message: messages } } as Parameters<
+                    ChatModule["acceptRemoteChat"]
+                >[0]);
+            }
+            if (state === "generating") {
+                expect(
+                    b.chat.applyServerGeneration(refK, {
+                        jobId: "J",
+                        messageId: "c",
+                        generationId: "g",
+                        seq: 1,
+                        text: "streaming",
+                    }),
+                ).toBe(true);
+            }
+            if (state === "stale") {
+                const future = baseRevision.replace(/:\d+$/, ":999");
+                expect(
+                    b.sync.applyPatchHydration({
+                        characterId: "c",
+                        id: "k",
+                        baseRevision: future,
+                        revision: future.replace(/999$/, "1000"),
+                        count: 3,
+                    }),
+                ).toBe("mismatch");
+                expect(b.chat.isChatStale(refK)).toBe(true);
+            }
+            const before = JSON.parse(JSON.stringify(mirror(b)));
+            remote(b, [
+                { op: "setText", id: "a", text: "A!" },
+                { op: "setText", id: "b", text: data + " appended" },
+                { op: "patchMessage", id: "b", set: { generationInfo: { model: "remote" } }, unset: ["saying"] },
+                { op: "meta", set: { note: "remote note" } },
+            ]);
+            const event = b.live.queue[0];
+            if (event.type !== "change") throw new Error("expected a committed change");
+            expect(event.changes.chats[0].rowDelta?.rowDiffs.map(({ id }) => id)).toEqual(["a", "b"]);
+            b.flushFeed();
+            expect(reads(b)).toEqual([]);
+            expect(mirror(b)).toEqual(before);
+            expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+            expect(b.chat.isChatBehind(refK)).toBe(true);
+            if (state === "generating") {
+                await vi.advanceTimersByTimeAsync(1500);
+                expect(reads(b)).toEqual([]);
+                expect(mirror(b)).toEqual(before);
+                b.chat.endServerJob("J");
+            }
+            await b.sync.flushResources();
+            await vi.advanceTimersByTimeAsync(1500);
+            expect(reads(b)).toHaveLength(1);
+            expect(reads(b)[0]).toMatchObject({ chats: [{ characterId: "c", id: "k" }] });
+            expect(reads(b)[0].chatSummaryCollections ?? []).toEqual([]);
+            expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+            expect(mirror(b).message[1]).toEqual({
+                ...m("b", data + " appended", "char"),
+                generationInfo: { model: "remote" },
+            });
+            expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+            expect(b.chat.isChatBehind(refK)).toBe(false);
+            await vi.advanceTimersByTimeAsync(1500);
+            expect(reads(b)).toHaveLength(1);
+            expect(b.fake.batchCount()).toBe(0);
+            quiet(b);
+        },
+    );
+
     it("applies metadata deltas as remote values equal to a whole read without queuing a write", async () => {
         const memory = "m".repeat(100 * 1024);
         const b = await boot({

@@ -283,6 +283,19 @@ output already shows 3.3 ms, and the rise was not broken down further. The recom
 kept for stale or intervening writes. Unchanged: the feed patch still carries the whole changed message to every
 connected feed socket.
 
+**Feed row diffs, before at `de72fc1eb` and after the `rowDelta` body** ([checkpoint-probe.mjs](probes/checkpoint-probe.mjs),
+the `de72fc1eb` and `de72fc1eb+rowDelta` lines of [checkpoint-probe.output.txt](probes/checkpoint-probe.output.txt) and
+[sync-traffic-measure.output.txt](probes/sync-traffic-measure.output.txt)): the probe now reports the feed body's form
+and bytes, ends each fixture with a same-text `generationInfo` write, and counts the whole-chat reads of a model loaded
+observer. The SD01 fixture (seven unrelated 32 KiB texts, no shared prefix): 32,989 bytes of `patch` per checkpoint
+before, 32,927 bytes of `rowDelta` after; the final write 33,045 bytes of `patch` before, 217 bytes of `rowDelta` after;
+no observer read either way. An appending fixture (1,536 characters per checkpoint, 45 checkpoints, past 64 KiB):
+before, the patch grew by 1,536 bytes per checkpoint, the last three checkpoints and the final write carried no body,
+and the observer read the chat whole 4 times; after, the first five checkpoints stay `patch` (under 8 KiB), every later
+one is a `rowDelta` of about 1,700 bytes, the final write 218 bytes, and the observer reads nothing. The mixed fixture
+of `sync-traffic-measure.mjs` (56 entries): body bytes 1,394,061 before, 91,266 after; over-cap entries 8 before, 4
+after (one large paste, three reroll-carrier `candidates` writes), the before line of the by-id row read.
+
 ### TJ03 — A transform miss loads the whole scope; coarse keys invalidate every row
 
 **Measured and confirmed. P2.**

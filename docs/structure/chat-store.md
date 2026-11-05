@@ -13,9 +13,8 @@
 
 ## Files
 
-Each module's contract is its doc comments: the module header of `chatStore.svelte.ts` holds the write protocol, locks,
-and projection rules, and each export's comment holds that export's rule. Read the comment with the code; the lists
-below are the identifiers to look up.
+Contracts are doc comments: the module header of `chatStore.svelte.ts` holds the write protocol, locks, and projection
+rules, each export's comment its own rule; the lists below are identifiers to look up.
 
 - `src/ts/storage/chatStore.svelte.ts`: the chat module. Per character it holds the chat ids in order (the membership)
   and each chat loaded or as its summary, reactively; boot reads summaries only. Readers: `chatList`, `chatEntry`,
@@ -88,9 +87,9 @@ entrypoint's comment.
 
 ### By-id ops
 
-- By-id reads and writes use `positionOf`'s lazy per-chat message index; `heldMessageById` and `messagePositionOf` share
-  it with translation and the transcript. A hit validates the row id; a miss or mismatch rebuilds once.
-- Structural paths drop the chat's map through `dropMessagePositions`; validation keeps stale positions safe.
+- By-id reads and writes use `positionOf`'s lazy per-chat message index, shared with translation and the transcript
+  (`heldMessageById`, `messagePositionOf`). A hit validates the row id, so a stale position is safe; a miss or mismatch
+  rebuilds once. Structural paths drop the map (`dropMessagePositions`).
 - Which ops apply on a stale revision and which need the current one is the `ChatOp` contract in `shared/chats.ts`,
   enforced by the server ([chat writes](server-resources.md#chat-writes-and-checkpoints)) and the
   [restore floor](#restore-floor). A `remove` may carry `retract`,
@@ -124,8 +123,8 @@ entrypoint's comment.
 ### Summaries and refresh
 
 - A live update reaches `noteRemoteChat` ([chat live updates](live-updates.md#chat-live-updates)): a loaded chat takes a
-  fitting patch or delta, an unloaded member its summary (`applyRemoteSummary`), everything else asks for the
-  character's list. Whole-chat reads are for loaded chats only (`idleChatRefreshes`); a server copy never loads a chat.
+  fitting body, an unloaded member its summary (`applyRemoteSummary`), everything else asks for the character's list.
+  Whole-chat reads are for loaded chats only (`idleChatRefreshes`); a server copy never loads a chat.
 - The refresh queue in `resourceSync.svelte.ts` reads summary lists for live list updates, for characters a recovery
   inserted or refreshed (`hydrate`: what the server's list has no room for is discarded with the notice), for characters
   an acknowledgement showed another writer's chats of (`listRefresh`, keeping a queued reorder), and for idle stale or
@@ -150,8 +149,7 @@ entrypoint's comment.
 
 ### Job chunks
 
-- Generation updates, frame flushes, and job hydration share the [by-id index](#by-id-ops): hits check the row id,
-  misses or mismatches rebuild once. Streaming text shares one build; structural paths call `dropMessagePositions`.
+- Generation updates, frame flushes, and job hydration share the [by-id index](#by-id-ops); a stream shares one build.
 - A chunk (`GenerationChunkEvent` in `shared/jobs.ts`) that `applyServerGenerationChunk` cannot apply asks
   `{ type: "resyncReply" }` once per follow until an `accepted` arrives or the follow ends
   (`network/generationJobs.ts`); the job answers only its current full-text `accepted` while live with a message id,

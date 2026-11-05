@@ -21,6 +21,7 @@ import {
     type ChatDeltaBody,
     type ChatMetaFields,
     type ChatPatchBody,
+    type ChatRowDeltaBody,
     compareRevision,
     parseRevisionToken,
 } from "../../../shared/resources.ts";
@@ -2638,20 +2639,103 @@ function stagedMetaFields(chat: Chat, fields: unknown): { remove: string[]; set:
 }
 
 /**
+ * A feed body's row diffs, checked and cloned before installation. Every id must be held once in
+ * the diff list and absent from the body's whole rows and removals. Field changes exclude identity,
+ * text, and `__proto__`; text reconstructs from the held UTF-16 prefix at exactly the body's base.
+ * The JSON clone preserves own keys on reactive rows, including nested `__proto__` entries.
+ */
+function stagedRowDiffs(
+    key: string,
+    chat: Chat,
+    patch: Pick<ChatPatch, "removed" | "messages">,
+    diffs: unknown,
+): { position: number; message: Message }[] | null {
+    if (!Array.isArray(diffs)) return null;
+    const named = new Set(patch.removed ?? []);
+    for (const { message } of patch.messages ?? []) named.add((message as Message).chatId!);
+    const staged: { position: number; message: Message }[] = [];
+    for (const diff of diffs) {
+        if (!isPlainRecord(diff) || typeof diff.id !== "string" || named.has(diff.id)) return null;
+        named.add(diff.id);
+        const position = positionOf(key, chat, diff.id);
+        if (position < 0) return null;
+        const held = chat.message[position];
+        const unset: string[] = [];
+        const set: [string, unknown][] = [];
+        if (diff.fields !== undefined) {
+            if (!isPlainRecord(diff.fields) || !isPlainRecord(diff.fields.set) || !Array.isArray(diff.fields.unset))
+                return null;
+            const fields = new Set<string>();
+            const fresh = (name: unknown): name is string => {
+                if (
+                    typeof name !== "string" ||
+                    name === "data" ||
+                    name === "chatId" ||
+                    name === "__proto__" ||
+                    fields.has(name)
+                )
+                    return false;
+                fields.add(name);
+                return true;
+            };
+            for (const name of diff.fields.unset) {
+                if (!fresh(name)) return null;
+                unset.push(name);
+            }
+            for (const [name, value] of Object.entries(diff.fields.set)) {
+                if (!fresh(name)) return null;
+                set.push([name, clone(value)]);
+            }
+        }
+        let data: string | undefined;
+        if (diff.text !== undefined) {
+            if (
+                !isPlainRecord(diff.text) ||
+                typeof diff.text.keep !== "number" ||
+                !Number.isSafeInteger(diff.text.keep) ||
+                diff.text.keep < 0 ||
+                typeof diff.text.text !== "string" ||
+                typeof held.data !== "string" ||
+                held.data.length < diff.text.keep
+            )
+                return null;
+            data = held.data.slice(0, diff.text.keep) + diff.text.text;
+        }
+        const message = clone(held);
+        const target = message as unknown as Record<string, unknown>;
+        for (const name of unset) delete target[name];
+        for (const [name, value] of set) {
+            Object.defineProperty(target, name, { value, enumerable: true, configurable: true, writable: true });
+        }
+        if (data !== undefined) message.data = data;
+        staged.push({ position, message });
+    }
+    return staged;
+}
+
+/**
  * The checked row/meta/revision step shared by job hydration and idle change-feed patches. A whole
  * `meta` replaces the chat's fields; `fields` (a feed delta's, from `stagedMetaFields`) changes only
- * the fields it names.
+ * the fields it names. Diffed rows before the patched tail retain their positions.
  */
 function installChatPatch(
     chat: Chat,
     patch: ChatPatch,
     patched: { start: number; tail: Message[] },
     fields?: { remove: string[]; set: [string, unknown][] },
+    rowsBeforeTail: { position: number; message: Message }[] = [],
 ) {
     // Only the positions that changed are written (an append writes one; a removal or insertion
     // writes the positions after it), never the whole list as call arguments.
     const { start, tail } = patched;
-    dropMessagePositions(keyOf(patch.characterId, patch.id));
+    // Field/text-only checkpoints keep the lazy index: ids and their order are unchanged.
+    if (
+        chat.message.length !== start + tail.length ||
+        tail.some((message, index) => chat.message[start + index]?.chatId !== message.chatId)
+    ) {
+        dropMessagePositions(keyOf(patch.characterId, patch.id));
+    }
+    for (const { position, message } of rowsBeforeTail) chat.message[position] = message;
     for (let index = 0; index < tail.length; index++) {
         if (chat.message[start + index] !== tail[index]) {
             chat.message[start + index] = tail[index];
@@ -2702,11 +2786,15 @@ function installChatPatch(
 }
 
 /**
- * A feed patch or delta is optional: a miss neither marks stale nor touches a job's locks. A delta's
- * metadata fields are checked against the held copy with its rows, before anything changes; one
+ * A feed patch, delta, or rowDelta is optional: a miss neither marks stale nor touches a job's locks.
+ * Metadata fields and row diffs are checked against the held copy before anything changes; one
  * that does not fit is a miss.
  */
-function applyRemoteChatPatch(ref: ChatRef, revision: string, body: ChatPatchBody | ChatDeltaBody): boolean {
+function applyRemoteChatPatch(
+    ref: ChatRef,
+    revision: string,
+    body: ChatPatchBody | ChatDeltaBody | ChatRowDeltaBody,
+): boolean {
     const key = keyOf(ref.chaId, ref.chatId);
     if (!isLoaded(ref) || !canRefreshChat(ref) || staleChats.has(key) || chatRevisions.get(key) !== body.baseRevision) {
         return false;
@@ -2741,16 +2829,36 @@ function applyRemoteChatPatch(ref: ChatRef, revision: string, body: ChatPatchBod
     const patch: ChatPatch = { ...change, characterId: ref.chaId, id: ref.chatId, revision };
     let patched: { start: number; tail: Message[] } | null = null;
     let fields: ReturnType<typeof stagedMetaFields> | undefined = null;
+    let rowDiffs: ReturnType<typeof stagedRowDiffs> = null;
+    const rowsBeforeTail: { position: number; message: Message }[] = [];
     try {
         patched = patchedTail(chat.message, patch);
         fields = metaFields === undefined ? undefined : stagedMetaFields(chat, metaFields);
+        rowDiffs = "rowDiffs" in body ? stagedRowDiffs(key, chat, patch, body.rowDiffs) : [];
+        if (patched && rowDiffs) {
+            const inTail = rowDiffs.filter(({ position }) => position >= patched!.start);
+            const tailPositions =
+                inTail.length > 0
+                    ? new Map(patched.tail.map((message, index) => [message.chatId, index]))
+                    : new Map<string, number>();
+            for (const row of rowDiffs) {
+                if (row.position < patched.start) {
+                    rowsBeforeTail.push(row);
+                } else {
+                    const index = tailPositions.get(row.message.chatId!);
+                    if (index === undefined) return false;
+                    patched.tail[index] = row.message;
+                }
+            }
+        }
     } catch (error) {
         console.error("[Save]", error);
-    }
-    if (!patched || fields === null) {
         return false;
     }
-    installChatPatch(chat, patch, patched, fields);
+    if (!patched || fields === null || rowDiffs === null) {
+        return false;
+    }
+    installChatPatch(chat, patch, patched, fields, rowsBeforeTail);
     return true;
 }
 
@@ -6462,14 +6570,14 @@ function applyRemoteSummary(
  * (`applyRemoteCollection`). A member that is not loaded is noticed too and also answers
  * `"collection"`: its summary comes with that list (never a whole-chat read), unless the entry's
  * summary knowledge (`known`: `summary` or `summaryBase`) settles it at once (`applyRemoteSummary`).
- * An optional by-id change (`patch`: a `ChatPatchBody`, or a `ChatDeltaBody` with the metadata by
- * field) applies without a notice or read only to a loaded, idle, non-stale chat held at exactly its
- * base revision. A miss follows the ordinary notice path. Nothing is queued or discarded.
+ * An optional by-id change (`patch`: a `ChatPatchBody`, `ChatDeltaBody`, or `ChatRowDeltaBody`)
+ * applies without a notice or read only to a loaded, idle, non-stale chat held at exactly its base
+ * revision. A miss follows the ordinary notice path. Nothing is queued or discarded.
  */
 export function noteRemoteChat(
     ref: ChatRef,
     revision: string | null,
-    patch?: ChatPatchBody | ChatDeltaBody,
+    patch?: ChatPatchBody | ChatDeltaBody | ChatRowDeltaBody,
     known?: { summary?: ChatSummary; summaryBase?: string },
 ): "noticed" | "collection" | "ignored" {
     const key = keyOf(ref.chaId, ref.chatId);

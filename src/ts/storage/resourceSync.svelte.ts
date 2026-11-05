@@ -4655,8 +4655,9 @@ function runOwner(kind: string, run: (owner: RemoteResourceOwner) => void) {
  * only without local edits, except preserved `llmSecrets` siblings (`applyRemoteUpdates`); a
  * missing character or a singleton absent at boot (such as pluginStorage) can be inserted remotely,
  * but a locally created unsaved record waits for its save's 409 instead of adopting another create.
- * A chat goes to `src/ts/storage/chatStore.svelte.ts` with its optional by-id change (`delta`, else
- * `patch`: applied at its exact base while loaded and idle, otherwise the ordinary idle refresh)
+ * A chat goes to `src/ts/storage/chatStore.svelte.ts` with its optional by-id change (`rowDelta`, else
+ * `delta`, else `patch`: applied at its exact base while loaded and idle, otherwise the ordinary idle
+ * refresh)
  * and its summary knowledge (`summary` or `summaryBase`: settles a chat held only as its summary
  * without its character's chat list when it fits); a new chat or a changed chat order reads the
  * character's chat list (also for a character still waiting to be inserted). Never an outgoing
@@ -4721,8 +4722,8 @@ export function noteRemoteChanges(changes: ChangeSet) {
             }
             continue;
         }
-        // At most one of the two: a delta carries the metadata by field when the whole one did not fit.
-        const change = chat.delta ?? chat.patch;
+        // At most one body: whole rows, metadata by field, or row diffs with metadata by field.
+        const change = chat.rowDelta ?? chat.delta ?? chat.patch;
         const { summary, summaryBase } = chat;
         const outcome = noteRemoteChat({ chaId: chat.characterId, chatId: chat.id }, chat.revision, change, {
             summary,

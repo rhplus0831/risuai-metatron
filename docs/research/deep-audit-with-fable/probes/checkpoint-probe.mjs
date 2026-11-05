@@ -1,4 +1,4 @@
-// What one streaming checkpoint of a send costs on the server (audit finding SD01).
+// Streaming checkpoint transport and server work, with a model loaded feed observer.
 //
 // Run from the repository root: `node --expose-gc docs/research/deep-audit-with-fable/probes/checkpoint-probe.mjs`
 // (without `--expose-gc` the runs go without a collection before each). `PROBE_COMMIT` names the measured commit
@@ -8,7 +8,12 @@
 // preset, and persona. A real generation job registry runs a custom runner with a real owner socket attached
 // (`/api/generations/<jobId>/ws?clientId=probe&attach=1`). The runner appends a `char` reply and begins its
 // generation (unmeasured), then writes seven checkpoints, each a `setText` of that reply to a different 32 KiB
-// text with its generation and `covers`, as the runner's stream checkpoint does, then a final write and `done`.
+// text with its generation and `covers`, as the runner's stream checkpoint does (the SD01 fixture).
+// A second fixture appends a fixed 1,536-character ASCII chunk per checkpoint, representing about three
+// seconds of streaming, for 45 checkpoints (69,120 characters). Each fixture ends with a same-text
+// `setMessage` changing only `generationInfo`, matching `writeReplyGenerationInfo` in prompt/runner.ts.
+// A model observer starts with one whole-chat read, applies any known body at its exact base revision,
+// and counts fallback whole-chat reads separately from that seed and the SQL-phase counters/timings.
 //
 // Each checkpoint mirrors the runner's `writeOwn` (server/src/prompt/runner.ts, a closure inside `runSend`)
 // call for call: `flushChatMetadata`, `refreshChat`, `job.write`, `refreshChatAfterWrite`, `job.emitRecords`.
@@ -24,18 +29,18 @@
 //   counted in `baselineMs`), so `readMs` is 0.
 // - `totalMs`: `writeMs + scopeMs + emitMs`.
 // Also per run: `ownerPatchBytes` (the `chatPatch` frame the owner socket received for that checkpoint),
-// `feedPatchBytes` / `feedEventBytes` (UTF-8 bytes of `JSON.stringify` of the feed's chat patch and of the
+// `feedBodyForm` / `feedBodyBytes` / `feedEventBytes` (the selected body, its UTF-8 JSON bytes, and the
 // whole `change` event), and `wholeTranscriptReads` by phase: `.all()` calls of the store's whole-chat message
 // SELECT at the SQL boundary.
 //
-// A second JSON line (label `feed-entries-st04-sd03`, after the job ended, in its own small store with a feed) reads
+// A final JSON line (label `feed-entries-st04-sd03`, after the job ended, in its own small store with a feed) reads
 // what a real `change` event carries for the audit's findings ST04 and SD03:
 // - `memoryToggle`: one `meta` set of `autoTranslate` on a three-message chat with 100 KiB of `supaMemoryData`:
-//   the `delta` bytes, whether `patch` is present, the fields, whether the entry has `summaryBase` or `summary`.
+//   the body form and bytes, its metadata fields, and whether the entry has `summaryBase` or `summary`.
 // - `textCheckpoint`: one `setText` on that chat: the bytes of the entry's `summaryBase` and whether `summary` is
 //   present.
 // - `publication`: one `applyChanges` of 100 `setText` groups, one per chat, of 60,000 characters each: the event's
-//   UTF-8 bytes, how many entries kept a patch and a `summaryBase`, the optional payload bytes they sum to, and the
+//   UTF-8 bytes, entries by body form and kept `summaryBase`s, all optional payload bytes (including rowDelta), and the
 //   time spent, serialization as `routes/events.ts` does it included.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -45,6 +50,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { WebSocket } from "ws";
 import { createChangeFeed } from "../../../../server/src/data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../../../../server/src/data/kinds.ts";
@@ -55,6 +61,7 @@ import { createGenerationLock } from "../../../../server/src/jobs/generationLock
 import {
     flushChatMetadata,
     loadJobScope,
+    scopeChat,
     refreshChat,
     refreshChatAfterWrite,
 } from "../../../../server/src/jobs/jobScope.ts";
@@ -64,6 +71,8 @@ const MESSAGES = 5000;
 const MESSAGE_FILL = 2048;
 const REPLY_CHARS = 32 * 1024;
 const RUNS = 7;
+const APPEND_RUNS = 45;
+const APPEND_CHUNK = "The reply grows in a deterministic stream. ".repeat(40).slice(0, 1536);
 const WHOLE_TRANSCRIPT_SQL = "SELECT data FROM messages WHERE chatSeq = ? ORDER BY position";
 const FEED_MEMORY_CHARS = 100 * 1024;
 const FEED_CHATS = 100;
@@ -156,7 +165,100 @@ function nextChatFrame() {
 }
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
-const bytes = (value) => Buffer.byteLength(JSON.stringify(value), "utf8");
+const bytes = (value) => (value === undefined ? 0 : Buffer.byteLength(JSON.stringify(value), "utf8"));
+const bodyForm = (entry) => ["rowDelta", "delta", "patch"].find((name) => entry?.[name]) ?? "none";
+const bodyReport = (entry) => ({ feedBodyForm: bodyForm(entry), feedBodyBytes: bytes(entry?.[bodyForm(entry)]) });
+
+// Independent transport model: apply by-id bodies to a loaded copy, falling back to one read on a miss.
+// It deliberately discovers rowDelta by property, so this same probe runs on older production sources.
+function loadedObserver(characterId, id) {
+    const read = () => {
+        const previousPhase = phase;
+        phase = "observer";
+        try {
+            return store.readRefs([], { chats: [{ characterId, id }] }).chats[0];
+        } finally {
+            phase = previousPhase;
+        }
+    };
+    let held = read();
+    let wholeChatReads = 0;
+    let entries = 0;
+    return {
+        apply(entry) {
+            entries += 1;
+            const body = entry?.[bodyForm(entry)];
+            try {
+                if (!body || held.revision !== body.baseRevision) throw new Error("body miss");
+                const next = JSON.parse(JSON.stringify(held.data));
+                const removed = new Set(body.removed ?? []);
+                const messages = body.messages ?? [];
+                const replaced = new Set(messages.map(({ message }) => message.chatId));
+                const following = new Map(messages.map((row) => [row.after, row.message]));
+                const ordered = [];
+                const follow = (anchor) => {
+                    while (following.has(anchor)) {
+                        const row = following.get(anchor);
+                        following.delete(anchor);
+                        ordered.push(row);
+                        anchor = row.chatId;
+                    }
+                };
+                follow(null);
+                for (const row of next.message) {
+                    if (!removed.has(row.chatId) && !replaced.has(row.chatId)) {
+                        ordered.push(row);
+                        follow(row.chatId);
+                    }
+                }
+                if (following.size || ordered.length !== body.count) throw new Error("row order miss");
+                for (const diff of body.rowDiffs ?? []) {
+                    const row = ordered.find((message) => message.chatId === diff.id);
+                    if (!row) throw new Error("row miss");
+                    for (const key of diff.fields?.unset ?? []) delete row[key];
+                    for (const [key, value] of Object.entries(diff.fields?.set ?? {})) {
+                        Object.defineProperty(row, key, {
+                            value,
+                            enumerable: true,
+                            writable: true,
+                            configurable: true,
+                        });
+                    }
+                    if (diff.text) {
+                        if (typeof row.data !== "string" || row.data.length < diff.text.keep)
+                            throw new Error("text miss");
+                        row.data = row.data.slice(0, diff.text.keep) + diff.text.text;
+                    }
+                }
+                if (body.meta) {
+                    for (const key of Object.keys(next)) if (key !== "message") delete next[key];
+                    Object.assign(next, body.meta);
+                }
+                for (const key of body.metaFields?.remove ?? []) delete next[key];
+                Object.assign(next, body.metaFields?.set ?? {});
+                for (const [key, names] of Object.entries(body.metaFields?.mergeUnset ?? {})) {
+                    for (const name of names) delete next[key][name];
+                }
+                for (const [key, values] of Object.entries(body.metaFields?.merge ?? {})) {
+                    next[key] = { ...next[key], ...values };
+                }
+                next.message = ordered;
+                held = { ...held, revision: entry.revision, data: next };
+            } catch {
+                wholeChatReads += 1;
+                held = read();
+            }
+        },
+        report() {
+            return { entries, seedWholeChatReads: 1, wholeChatReads };
+        },
+        verify() {
+            const actual = read();
+            // This end-of-fixture validation read is not an observer fallback or a measured SQL phase.
+            if (!isDeepStrictEqual(held, actual)) throw new Error("observer diverged from stored chat");
+        },
+    };
+}
 const round = (ms) => +ms.toFixed(3);
 const median = (values) => {
     const sorted = [...values].sort((a, b) => a - b);
@@ -164,7 +266,7 @@ const median = (values) => {
     return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 };
 
-// The second output line: what the feed's `change` events carry, in a small store of its own.
+// The final output line: what the feed's `change` events carry, in a small store of its own.
 function measureFeedEntries() {
     const entriesFeed = createChangeFeed();
     const entriesStore = createResourceStore({ file: ":memory:", kinds, feed: entriesFeed });
@@ -212,7 +314,9 @@ function measureFeedEntries() {
         const applyMs = performance.now() - start;
         const entries = event.changes.chats;
         const payloads = entries.flatMap((entry) =>
-            ["patch", "delta", "summary", "summaryBase"].filter((name) => name in entry).map((name) => entry[name]),
+            ["patch", "delta", "rowDelta", "summary", "summaryBase"]
+                .filter((name) => name in entry)
+                .map((name) => entry[name]),
         );
         return {
             label: "feed-entries-st04-sd03",
@@ -220,14 +324,14 @@ function measureFeedEntries() {
             node: process.version,
             memoryToggle: {
                 fixture: { messages: rows.length, memoryField: "supaMemoryData", memoryChars: FEED_MEMORY_CHARS },
-                deltaBytes: bytes(toggle.delta),
-                patchPresent: "patch" in toggle,
-                metaFields: toggle.delta.metaFields,
+                ...bodyReport(toggle),
+                metaFields: toggle[bodyForm(toggle)]?.metaFields,
                 summaryBasePresent: "summaryBase" in toggle,
                 summaryPresent: "summary" in toggle,
                 eventBytes: toggleEventBytes,
             },
             textCheckpoint: {
+                ...bodyReport(checkpoint),
                 summaryBaseBytes: bytes(checkpoint.summaryBase),
                 summaryPresent: "summary" in checkpoint,
             },
@@ -235,8 +339,13 @@ function measureFeedEntries() {
                 fixture: { chats: FEED_CHATS, textChars: FEED_TEXT_CHARS, inputBytes: bytes(groups) },
                 eventBytes: Buffer.byteLength(frame),
                 entries: entries.length,
-                patchesKept: entries.filter((entry) => entry.patch).length,
-                maxPatchBytes: Math.max(...entries.filter((entry) => entry.patch).map((entry) => bytes(entry.patch))),
+                bodiesKept: Object.fromEntries(
+                    ["patch", "delta", "rowDelta", "none"].map((form) => [
+                        form,
+                        entries.filter((entry) => bodyForm(entry) === form).length,
+                    ]),
+                ),
+                maxBodyBytes: Math.max(0, ...entries.map((entry) => bodyReport(entry).feedBodyBytes)),
                 summaryBasesKept: entries.filter((entry) => entry.summaryBase).length,
                 optionalPayloadBytes: payloads.reduce((sum, payload) => sum + bytes(payload), 0),
                 applyIncludingSerializeMs: round(applyMs),
@@ -251,6 +360,8 @@ function measureFeedEntries() {
 let begin;
 const ready = new Promise((r) => (begin = r));
 const runs = [];
+const appendRuns = [];
+let sdFinal, appendFinal, sdObserver, appendObserver;
 const jobs = createGenerationJobs({
     store,
     kinds,
@@ -331,26 +442,23 @@ const jobs = createGenerationJobs({
         chatFrames.length = 0;
 
         let seq = 0;
-        for (let run = 0; run < RUNS; run++) {
+        let replyText = "";
+        const measure = async (observer, ops) => {
             globalThis.gc?.();
             for (const key of Object.keys(reads)) delete reads[key];
             lastChange = null;
             seq += 1;
-            const text = `${run}:`.padEnd(REPLY_CHARS, String.fromCharCode(97 + run));
-            const { applied, t } = writeOwn(
-                [{ op: "setText", id: messageId, text, generation: { id: generationId, seq } }],
-                [{ messageId, generationId, seq }],
-            );
+            const { applied, t } = writeOwn(ops({ id: generationId, seq }), [{ messageId, generationId, seq }]);
             const outcome = applied.chats[0]?.checkpoints?.at(-1);
-            if (outcome !== "applied") throw new Error(`checkpoint ${run} was ${outcome}`);
+            if (outcome !== "applied") throw new Error(`checkpoint ${seq} was ${outcome}`);
             const runReads = { ...reads };
             const frame = await nextChatFrame();
-            if (frame.type !== "chatPatch") throw new Error(`checkpoint ${run} sent a ${frame.type} frame`);
+            if (frame.type !== "chatPatch") throw new Error(`checkpoint ${seq} sent a ${frame.type} frame`);
             await settle();
-            if (chatFrames.length > 0) throw new Error(`checkpoint ${run} sent ${chatFrames.length + 1} chat frames`);
-            if (!lastChange) throw new Error(`checkpoint ${run} published no feed change`);
+            if (chatFrames.length > 0) throw new Error(`checkpoint ${seq} sent ${chatFrames.length + 1} chat frames`);
+            if (!lastChange) throw new Error(`checkpoint ${seq} published no feed change`);
             const feedChat = lastChange.changes.chats.find((chat) => chat.characterId === "c" && chat.id === "k");
-            if (!feedChat.patch) throw new Error(`checkpoint ${run} published no feed patch`);
+            observer.apply(feedChat);
             const scopeMs = t.scopeBeforeMs + t.scopeAfterMs;
             const wholeTranscriptReads = {
                 write: runReads.write ?? 0,
@@ -359,7 +467,7 @@ const jobs = createGenerationJobs({
                 emit: runReads.emit ?? 0,
             };
             wholeTranscriptReads.total = Object.values(wholeTranscriptReads).reduce((a, b) => a + b, 0);
-            runs.push({
+            return {
                 writeMs: round(t.writeMs),
                 scopeMs: round(scopeMs),
                 scopeBeforeMs: round(t.scopeBeforeMs),
@@ -369,11 +477,56 @@ const jobs = createGenerationJobs({
                 baselineMs: round(t.emitMs - t.readMs),
                 totalMs: round(t.writeMs + scopeMs + t.emitMs),
                 ownerPatchBytes: frame.bytes,
-                feedPatchBytes: bytes(feedChat.patch),
+                ...bodyReport(feedChat),
                 feedEventBytes: bytes(lastChange),
                 wholeTranscriptReads,
+            };
+        };
+        const finalInfo = (observer, duration) =>
+            measure(observer, (generation) => [
+                {
+                    op: "setMessage",
+                    message: {
+                        ...scopeChat(scope).message.find((message) => message.chatId === messageId),
+                        generationInfo: { model: "probe", generationTime: duration },
+                    },
+                    generation,
+                },
+            ]);
+        const sd = loadedObserver(characterId, chatId);
+        for (let run = 0; run < RUNS; run++) {
+            replyText = `${run}:`.padEnd(REPLY_CHARS, String.fromCharCode(97 + run));
+            runs.push(
+                await measure(sd, (generation) => [{ op: "setText", id: messageId, text: replyText, generation }]),
+            );
+        }
+        sdFinal = await finalInfo(sd, 21);
+        sd.verify();
+        sdObserver = sd.report();
+
+        // Reset outside the measured fixtures; the appending observer starts at this known revision.
+        seq += 1;
+        writeOwn(
+            [{ op: "setText", id: messageId, text: "", generation: { id: generationId, seq } }],
+            [{ messageId, generationId, seq }],
+        );
+        await nextChatFrame();
+        await settle();
+        const appending = loadedObserver(characterId, chatId);
+        replyText = "";
+        for (let run = 0; run < APPEND_RUNS; run++) {
+            replyText += APPEND_CHUNK;
+            appendRuns.push({
+                checkpoint: run + 1,
+                replyTextChars: replyText.length,
+                ...(await measure(appending, (generation) => [
+                    { op: "setText", id: messageId, text: replyText, generation },
+                ])),
             });
         }
+        appendFinal = await finalInfo(appending, 135);
+        appending.verify();
+        appendObserver = appending.report();
 
         // The final write, as the runner's `finalize` of a streamed reply (unmeasured).
         seq += 1;
@@ -464,6 +617,28 @@ try {
                 medians: Object.fromEntries(phases.map((name) => [name, round(median(runs.map((run) => run[name])))])),
                 firstTotalMs: runs[0].totalMs,
                 runs,
+                finalGenerationInfo: sdFinal,
+                observer: sdObserver,
+            },
+            null,
+            2,
+        ),
+    );
+    console.log(
+        JSON.stringify(
+            {
+                label: "appending-checkpoints-5000-messages",
+                commit: commitOf(),
+                node: process.version,
+                fixture: {
+                    messages: MESSAGES,
+                    chunkChars: APPEND_CHUNK.length,
+                    simulatedSecondsPerCheckpoint: 3,
+                    runs: APPEND_RUNS,
+                },
+                runs: appendRuns,
+                finalGenerationInfo: appendFinal,
+                observer: appendObserver,
             },
             null,
             2,
