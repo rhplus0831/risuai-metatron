@@ -169,8 +169,8 @@ required slots, and compaction's unchanged frame. Analysis requires `messages` a
 (`inputTooLarge`). Both invalid-frame failures count toward the pause.
 
 `customPrompt` means fine-tuning was enabled, even if no frame ran, on runs, failed and recorded receipts, and send
-notices. Failed custom receipts carry bounded, redacted `error` for the receipt line and Log. The panel and
-[health badge](#the-health-badge) read current settings; receipt and Log rows read their stored mode.
+notices. Failed custom receipts carry bounded, redacted `error` for the receipt line and Log. The panel reads current
+settings; receipt and Log rows read their stored mode. It is not a health state, so no badge warns about it.
 
 ### The test run
 
@@ -202,9 +202,9 @@ holds a screened reply and takes the window the cadence would close.
 ### The health badge
 
 `memoryHealthStates()` in `src/ts/process/chatStatus.svelte.ts` combines `POST /health` facts, the open chat's newest
-report, current `fineTuning`, and tab-held over-cap marks for open and pinned chats while the algorithm and owner's
-`supaMemory` are on. Its comment owns selection; `MEMORY_HEALTH_STATES` gives the worst state, and `health` is last in
-`CHAT_STATUS_PRIORITY`, hiding no `unseen`.
+report, and tab-held over-cap marks for open and pinned chats while the algorithm and owner's `supaMemory` are on. Its
+comment owns selection; `MEMORY_HEALTH_STATES` gives the worst state, and `health` is last in `CHAT_STATUS_PRIORITY`,
+hiding no `unseen`.
 
 | State                 | Input                                                                       |
 | --------------------- | --------------------------------------------------------------------------- |
@@ -214,7 +214,6 @@ report, current `fineTuning`, and tab-held over-cap marks for open and pinned ch
 | `unsupportedSections` | It reads health's `unsupportedSections`.                                    |
 | `requiredOverCap`     | It reads the tab's `memoryRequiredOverCap` failure mark.                    |
 | `pageOverBudget`      | It reads health's `overBudgetSections`.                                     |
-| `customPrompt`        | It reads current `fineTuning` without a request and is neutral.             |
 
 `watchChatVisibility` owns deferred read triggers and failed-read retention. `POST /health` can answer a prefix and the
 tab resumes ([routes](records.md#the-read-routes),

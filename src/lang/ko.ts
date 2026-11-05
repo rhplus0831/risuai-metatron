@@ -745,7 +745,6 @@ export const languageKorean = {
             unsupportedSections: "메모리 섹션의 근거가 사라짐",
             requiredOverCap: "필수 메모리 페이지가 한도를 넘음",
             pageOverBudget: "메모리 섹션이 예산을 넘음",
-            customPrompt: "사용자 정의 메모리 작성 프롬프트",
         },
     },
     refusedData: {

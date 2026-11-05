@@ -293,7 +293,7 @@ describe("PinnedChatsRail memory badges", () => {
     });
 });
 
-it("shows the worst health state on chats and groups, with only custom prompts neutral and unseen ahead", () => {
+it("shows the worst health state on chats and groups as a fault, with unseen ahead", () => {
     const order: MemoryHealthState[] = [
         "writerPaused",
         "gap",
@@ -301,7 +301,6 @@ it("shows the worst health state on chats and groups, with only custom prompts n
         "unsupportedSections",
         "requiredOverCap",
         "pageOverBudget",
-        "customPrompt",
     ];
     for (let index = 0; index < order.length; index++) {
         const state = order[index];
@@ -312,12 +311,12 @@ it("shows the worst health state on chats and groups, with only custom prompts n
         expect(memoryHealthState(holds)).toBe(state);
         const health = new Map<string, MemoryHealthState>([
             ["a\u0000shared", state],
-            ["b\u0000shared", "customPrompt"],
+            ["b\u0000shared", "pageOverBudget"],
             ["outside\u0000k", "writerPaused"],
         ]);
         expect(groupHealthState(health, ["a"])).toBe(state);
         expect(groupHealthState(health, ["b", "a"])).toBe(state);
-        expect(groupHealthState(health, ["b"])).toBe("customPrompt");
+        expect(groupHealthState(health, ["b"])).toBe("pageOverBudget");
         const sets = {
             recovery: new Set<string>(),
             generating: new Set<string>(),
@@ -358,8 +357,8 @@ it("shows the worst health state on chats and groups, with only custom prompts n
         expect(badges).toHaveLength(2);
         for (const badge of badges) {
             expect(badge.dataset.risuChatHealth).toBe(state);
-            expect(/(?:bg|text)-danger-500/.test(badge.className)).toBe(state !== "customPrompt");
-            expect(/bg-neutral-500|text-textcolor2/.test(badge.className)).toBe(state === "customPrompt");
+            expect(badge.className).toMatch(/(?:bg|text)-danger-500/);
+            expect(badge.className).not.toMatch(/bg-neutral-500|text-textcolor2/);
         }
     }
 });

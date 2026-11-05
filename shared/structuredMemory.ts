@@ -688,7 +688,7 @@ export type StructuredMemoryHealthAnswer = { health: (StructuredMemoryHealthFact
  * The states of the memory health badge, worst first. The badge shows the first that holds:
  * `writerPaused` from the runs, `gap` and `staleEvents` from the last send's report and the stored
  * events, `unsupportedSections` and `pageOverBudget` from the live pages, `requiredOverCap` from the
- * last send's failure, and `customPrompt` from the preset, which is a neutral notice, not a fault.
+ * last send's failure. A custom writer prompt is not a health state: the run receipts show it.
  */
 export const MEMORY_HEALTH_STATES = [
     "writerPaused",
@@ -697,7 +697,6 @@ export const MEMORY_HEALTH_STATES = [
     "unsupportedSections",
     "requiredOverCap",
     "pageOverBudget",
-    "customPrompt",
 ] as const;
 export type MemoryHealthState = (typeof MEMORY_HEALTH_STATES)[number];
 

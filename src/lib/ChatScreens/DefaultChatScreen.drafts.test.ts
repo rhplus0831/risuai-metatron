@@ -831,6 +831,8 @@ it("renders a memory health badge with the context meter off and opens the panel
     const { findCharacter } = await import("src/ts/storage/characterStore.svelte");
     const { createHypaV3Preset } = await import("../../../shared/hypaV3Presets.ts");
     const { hypaV3ModalOpen } = await import("src/ts/screenVisibility");
+    const { currentChatRef } = await import("src/ts/storage/chatStore.svelte");
+    const { noteJobDone } = await import("src/ts/process/chatStatus.svelte");
     const { get } = await import("svelte/store");
     settings.ui.memoryAlgorithmType = "structuredMemory";
     settings.ui.contextMeter = false;
@@ -839,7 +841,18 @@ it("renders a memory health badge with the context meter off and opens the panel
     Object.assign(findCharacter("c")!, { supaMemory: true });
     hypaV3ModalOpen.set(false);
     flushSync();
-    const badge = target.querySelector('[data-memory-health-badge="customPrompt"]');
+    // A custom writer prompt alone is not a health state.
+    expect(target.querySelector("[data-memory-health-badge]")).toBeNull();
+    noteJobDone(currentChatRef()!, {
+        type: "error",
+        epoch: "e",
+        message: "over",
+        status: 500,
+        reason: "failed",
+        code: "memoryRequiredOverCap",
+    });
+    flushSync();
+    const badge = target.querySelector('[data-memory-health-badge="requiredOverCap"]');
     expect(badge).not.toBeNull();
     click(badge);
     expect(get(hypaV3ModalOpen)).toBe(true);

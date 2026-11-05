@@ -630,14 +630,9 @@ it("reads only pinned and open health on visibility triggers, resumes prefixes a
             { characterId: "c", chatId: "j" },
         ],
     ]);
-    // The open chat and custom notice remain usable while the boot read is unanswered.
+    // The open chat remains usable while the boot read is unanswered, and a custom writer prompt is no state.
     expect(chat.currentChatRef()).toEqual(a);
-    expect(status.memoryHealthStates()).toEqual(
-        new Map([
-            [keyA, "customPrompt"],
-            [keyB, "customPrompt"],
-        ]),
-    );
+    expect(status.memoryHealthStates().size).toBe(0);
     release(Response.json({ health: [{ ...healthy, storedStale: 1 }] }));
     await settleHealth();
     expect(requests[1]).toEqual([{ characterId: "c", chatId: "j" }]);
@@ -721,8 +716,7 @@ it("reads only pinned and open health on visibility triggers, resumes prefixes a
 });
 
 it("marks required overflow and clears successful sends strictly by character and chat", async () => {
-    const settings = await enableMemory();
-    settings.hypaV3Presets.items[0].settings.structured.fineTuning = false;
+    await enableMemory();
     view(a);
     chat.setChatMeta(b, { pinned: true });
     chat.setChatMeta(other, { pinned: true });
@@ -749,7 +743,7 @@ it("marks required overflow and clears successful sends strictly by character an
     expect(stubs.healthFetch).not.toHaveBeenCalled();
 });
 
-it("uses the newest report's strict gap threshold and the preset's custom notice only for memory-enabled chats", async () => {
+it("uses the newest report's strict gap threshold only for memory-enabled chats, with no custom-prompt state", async () => {
     const settings = await enableMemory();
     view(a);
     chat.setChatMeta(b, { pinned: true });
@@ -774,18 +768,15 @@ it("uses the newest report's strict gap threshold and the preset's custom notice
     });
     chat.patchMessage(a, "m1", { generationInfo: { context: report(99) } });
     for (const [tokens, expected] of [
-        [11, "gap"],
-        [10, "customPrompt"],
-        [undefined, "customPrompt"],
+        [11, new Map([[keyA, "gap"]])],
+        [10, new Map()],
+        [undefined, new Map()],
     ] as const) {
         chat.patchMessage(a, "m2", { generationInfo: { context: report(tokens) } });
-        expect(status.memoryHealthStates()).toEqual(
-            new Map([
-                [keyA, expected],
-                [keyB, "customPrompt"],
-            ]),
-        );
+        expect(status.memoryHealthStates()).toEqual(expected);
     }
+    chat.patchMessage(a, "m2", { generationInfo: { context: report(11) } });
+    expect(status.memoryHealthStates().size).toBe(1);
     const { findCharacter } = await import("../storage/characterStore.svelte");
     Object.assign(findCharacter("c")!, { supaMemory: false });
     expect(status.memoryHealthStates().size).toBe(0);

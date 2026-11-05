@@ -9,7 +9,6 @@ import type { DeepReadonly } from "../../../shared/readonly.ts";
 import {
     MEMORY_HEALTH_CHATS_MAX,
     memoryHealthState,
-    normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_ALGORITHM,
     type MemoryHealthState,
     type StructuredMemoryHealthFacts,
@@ -248,8 +247,7 @@ function newestMemoryReport(messages: readonly DeepReadonly<Message>[]): NonNull
  * chats and the open chat, while Structured Memory is the selected algorithm and the chat's character
  * has memory on (reactive). A chat not loaded is judged from its last read facts, so its stale count is
  * partial and it knows no gap; the open chat adds its newest report's gap against the preset's
- * `gapConfirmTokens`, its writer state, and its stale exclusions. `customPrompt` is the preset's and
- * needs no facts.
+ * `gapConfirmTokens`, its writer state, and its stale exclusions.
  */
 export function memoryHealthStates(): ReadonlyMap<string, MemoryHealthState> {
     const states = new Map<string, MemoryHealthState>();
@@ -260,7 +258,6 @@ export function memoryHealthStates(): ReadonlyMap<string, MemoryHealthState> {
         hypaV3Presets: settings.hypaV3Presets.items,
         hypaV3PresetId: settings.hypaV3Presets.selectedId,
     })?.settings;
-    const customPrompt = normalizeStructuredMemorySettings(preset?.structured).fineTuning;
     const open = currentChatRef();
     const openKey = open ? chatStatusKey(open) : null;
     for (const key of healthChatKeys()) {
@@ -278,7 +275,6 @@ export function memoryHealthStates(): ReadonlyMap<string, MemoryHealthState> {
             unsupportedSections: (facts?.unsupportedSections ?? 0) > 0,
             requiredOverCap: requiredOverCapChats.has(key),
             pageOverBudget: (facts?.overBudgetSections ?? 0) > 0,
-            customPrompt,
         });
         if (state) {
             states.set(key, state);

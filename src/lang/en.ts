@@ -830,7 +830,6 @@ export const languageEnglish = {
             unsupportedSections: "Memory sections lost their evidence",
             requiredOverCap: "The required memory pages did not fit",
             pageOverBudget: "A memory section is past its budget",
-            customPrompt: "Custom memory writer prompt",
         },
     },
     refusedData: {

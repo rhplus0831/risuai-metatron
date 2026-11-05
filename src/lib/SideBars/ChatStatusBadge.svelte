@@ -15,7 +15,7 @@
         label: string;
         /** A memory status's count, shown as `k/n` instead of the icon; ignored for other statuses. */
         count?: MemoryCount | null;
-        /** A health status's state: `customPrompt` is a notice and looks neutral; ignored for other statuses. */
+        /** A health status's state, kept on the chip's data attribute; ignored for other statuses. */
         health?: MemoryHealthState | null;
         /** A chip in the flow with the label as text, in place of the corner dot over an avatar. */
         inline?: boolean;
@@ -23,7 +23,7 @@
 
     let { status, label, count = null, health = null, inline = false }: Props = $props();
     const countText = $derived(status === "memory" && count ? memoryCountText(count) : null);
-    const neutral = $derived(status === "refused" || (status === "health" && health === "customPrompt"));
+    const neutral = $derived(status === "refused");
 </script>
 
 {#snippet icon()}

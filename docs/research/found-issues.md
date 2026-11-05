@@ -401,7 +401,7 @@ Left by slice 7d. `splitPage` and `splitTimeline` in `src/ts/process/structuredM
 
 ### Health badge leftovers
 
-Left by slice 7e. `memoryHealthStates` (`src/ts/process/chatStatus.svelte.ts`) walks every character's chats on each recompute in three consumers (`Sidebar`, `MainMenu`, `DefaultChatScreen`). It does not exclude group chats, so a pinned group chat can show `customPrompt` though the writer refuses group chats (unconfirmed in a browser). The contents route calls `readHealth` with no byte budget.
+Left by slice 7e. `memoryHealthStates` (`src/ts/process/chatStatus.svelte.ts`) walks every character's chats on each recompute in three consumers (`Sidebar`, `MainMenu`, `DefaultChatScreen`). It does not exclude group chats; the `customPrompt` state that showed on them was removed on 2026-11-05, but nothing filters them out. The contents route calls `readHealth` with no byte budget.
 
 **Why it matters:** repeated walks, and a badge on a chat the writer never serves.
 **Suggested handling:** one shared derived, a group exclusion, and a budget on the contents read; measure first.
