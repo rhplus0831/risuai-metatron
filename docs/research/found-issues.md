@@ -8,15 +8,15 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (7)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (2)
 - [Server routes and resource store](#server-routes-and-resource-store) (1)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (3)
-- [Client and plugins](#client-and-plugins) (6)
+- [Client and plugins](#client-and-plugins) (5)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
-- [Guides](#guides) (6)
+- [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (14)
 
@@ -36,13 +36,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 **Why it matters:** a single bad subscriber (plugin or component) could silently freeze unrelated store notifications.
 **Suggested handling:** if store notifications mysteriously stop after an error, check for a throwing subscriber first; a fix would wrap subscribers or avoid svelte/store for hot paths.
-
-### No guide states the restore floor's check order
-
-`docs/structure/chat-store.md` `### Restore floor` links to `server-resources.md#chat-writes-and-checkpoints` for the check, and `server-resources.md:424` sends floor details back to `chat-store.md#restore-floor`. Neither states the order of the checks, and `reason: "generating"` handling has no rule in any guide. Found by Guide Budgets slice 2.
-
-**Why it matters:** a reader changing the floor finds a circular pointer instead of the rule.
-**Suggested handling:** read the checks in `server/src/data/chatStore.ts`, state the order once in `chat-store.md` `### Restore floor`, paying for the bytes in the same edit, and keep the link one way.
 
 ### Phase 6 review leftovers
 
@@ -95,14 +88,6 @@ The no-memory trim question (aad461e63, 2026-10-11; `server/src/prompt/runner.ts
 
 **Why it matters:** a user can still see a silent trim or an English error from a feature meant to ask first.
 **Suggested handling:** raise when a silent trim or an English job error is reported; the cleanup gap needs a design, the other two are small.
-
-### `{{// ...}}` stays literal in rendered and prompt text
-
-`shared/cbs/registry.ts` registers `//` (~2483) as `doc_only`, so `shared/cbs/evaluator.ts`'s matcher finds no callback and `{{// note}}` is left in the text of any parse; the evaluator's `commentMode` (~793) is never set true. Only `shared/lore/activation.ts` strips `{{//...}}`, from lore key matching. Upstream behaves the same. Found in the Guides To Source run (2026-11-05), whose old guide claimed the scanner handles comments; intent unrecorded. Owner: cbs-rendering.
-
-**Why it matters:** card authors may expect a comment to vanish from what the model or the reader sees.
-
-**Suggested handling:** ask the owner whether comments should be stripped; a change keeps client/server parity (`server/src/tests/fixtures/cbs-parity.json`).
 
 ## Server routes and resource store
 
@@ -181,13 +166,6 @@ After the paged export (`src/lib/ChatScreens/screenshotExport.ts`), the Render W
 **Suggested handling:** take a heap snapshot and `VmHWM` per page during a 150-row export to find what scales with rows, then release it per page.
 
 ## Client and plugins
-
-### plugins.md omits two parsed headers
-
-`plugins.md` documents neither `//@allowed-ipc` nor `//@risu-arg`, though `importPlugin` in `src/ts/plugins/plugins.svelte.ts` parses both and the runtime's IPC warnings tell authors to use `//@allowed-ipc`. Found by Guide Budgets slice 5b.
-
-**Why it matters:** an author told to use a header cannot find it in the author guide.
-**Suggested handling:** add both headers to `plugins.md` with their parsing rules.
 
 ### Stop B leftovers
 
@@ -283,51 +261,6 @@ On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the firs
 **Suggested handling:** if it shows again, print the dialog text before `openCharacterChat` to tell the two apart; consider clearing safe-boot attempts in the driver.
 
 ## Guides
-
-### Archive README cites a gone emotion table hazard
-
-`docs/archived-plan/README.md:824` says the emotion table's `bind:value` throw is a Known Hazard in its guide. `characters-modules.md` has no such entry and the table no longer uses `bind:value`.
-
-**Why it matters:** the archive sends a reader to a hazard that is gone.
-**Suggested handling:** a one-clause correction, only when the archive is touched anyway.
-
-### Choose By Task rows missing routing words
-
-Lookup trials of the Guides To Source run (2026-11-04/05) hesitated or guessed at these `STRUCTURE.md` Choose By Task rows; each chose right or recovered through a guide's links, and the slices could not edit `STRUCTURE.md`.
-
-- cbs-rendering ("CBS, markdown/sanitization, ...") does not say display transforms; only server-generation's row says "transforms", though the tab-side client and retries live in cbs-rendering (`src/ts/parser/transformClient.ts`, `displayTransformRecovery.svelte.ts`). Add "display transform client and retries".
-- Only network-jobs names "Web Push"; a push-diagnostics question (`public/sw.js` `showPushNow`, `workerRecords.ts`, `BROWSER_PUSH_PHASES`) belongs to diagnostics. Add "push diagnostics" to the diagnostics row.
-- memory ("SupaMemory, HypaV2/V3, Hanurai, embeddings") does not name HypaV3 job modes (blocking or select-only, the gap question), which also match server-generation's "Generation jobs". Add "HypaV3 job modes".
-- app-shell ("Boot, screen selection, ...") lacks "safe boot", and plugin-sandbox is a plausible wrong turn for a plugin failing at startup. Add "safe boot".
-- assets' "Asset sources and thumbnails" competes with self-host-server for thumbnail HTTP answers (`/api/asset/*?w=`, `x-risu-thumbnail`, `thumbnailRedirect` in `server/src/routes/storage.ts`). Add "thumbnail HTTP responses" to the self-host row, or narrow the assets row to the client.
-- test-harness's "network guard, Playwright stack" and `docs/structure/test-harness.md`'s `Tests > Network guard` (~287) cover only the Vitest guard; the Playwright egress tripwire is `egressGuard` in `util/playwright/stack.mjs`, routed from Files > Browser stack. Point Playwright egress there from the heading's first line.
-
-**Why it matters:** the row is the first routing step, and a misroute costs a guide read.
-
-**Suggested handling:** add the words at the next `STRUCTURE.md` edit (and the test-harness pointer at its next edit).
-
-### Protocol step 1 reads the Invariants on every lookup
-
-`STRUCTURE.md:13` (Agent Read Protocol step 1) says to read Repository-Wide Invariants unconditionally. In a writer lookup trial of the Guides To Source run (2026-11-05) a fresh agent answering two read-only questions spent about 9.5 KB (about 11% of its reading) on it and used none of it. D9 of that plan already limits a guide's `Invariants` to add and change tasks.
-
-**Why it matters:** every session reads `STRUCTURE.md` first, so the cost repeats on every lookup.
-
-**Suggested handling:** apply the same split to step 1 when the protocol is next edited.
-
-### chat-pipeline links a reroll hazard to the wrong section
-
-`docs/structure/chat-pipeline.md:399` (Known Hazards > Issues: a reroll's restore cannot see another tab's job that holds no lock yet) says "see [server generation's own chat changes](live-update-feed.md#own-chat-changes)", but that section describes `applyChanges` `changes: true` and `ChatWriteChange`, nothing about a lockless job meeting a restore; the label suggests it once pointed into `server-generation.md`. Line 285's link (labelled "generation") reaches `refreshChatAfterWrite`'s contract only through the section's `server/src/jobs/jobScope.ts` pointer. Found in the Guides To Source run (2026-11-05). Owner: chat-pipeline.
-
-**Why it matters:** a reader following the hazard's link finds no explanation.
-
-**Suggested handling:** point the link at the server-generation section on job creation and lock acquisition (or drop the "see"), and relabel line 285's link.
-
-### The global-api guide misses the checkbox confirm
-
-`docs/structure/global-api.md` says `AlertComp.svelte` "answers with `alertStore.answer(msg)`", and its `src/ts/alert.ts` helper list omits `alertConfirmWithCheckbox`. Since the Plugin Storage and Data API run (2026-11-05, slice 6) the `ask`/`pluginconfirm` buttons and the Enter path in `src/ts/hotkey.ts` answer through `alertStore.answerConfirm(confirmed, shown)` (`src/ts/alertQueue.ts`), which answers `{ confirmed, checked }` when the dialog has a `confirmCheckbox`; `setConfirmChecked` updates the box without queuing a dialog.
-
-**Why it matters:** a reader adding a confirm variant follows the guide and misses the checkbox path.
-**Suggested handling:** fix on the next global-api guide edit, paid for with a trim (the guide tree is at its byte ratchet).
 
 ### Structured Memory decision pointers name the plan
 
