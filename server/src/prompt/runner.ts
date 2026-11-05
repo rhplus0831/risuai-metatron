@@ -400,7 +400,10 @@ async function runSend(
     }
 
     /** Writes the job's chat as the job itself (no Lua fence: the abort grace may still persist text). */
-    const writeOwn = (ops: ChatOp[], covers?: { messageId: string; generationId: string; seq: number }[]) => {
+    const writeOwn = (
+        ops: ChatOp[],
+        covers?: { messageId: string; generationId: string; seq: number; raw?: true }[],
+    ) => {
         flushChatMetadata(job);
         refreshChat(store, scope);
         const applied = job.write(
@@ -925,7 +928,7 @@ async function runSpeaker(arg: {
     onSetup: (setup: RunSetup) => void;
     writeOwn: (
         ops: ChatOp[],
-        covers?: { messageId: string; generationId: string; seq: number }[],
+        covers?: { messageId: string; generationId: string; seq: number; raw?: true }[],
     ) => CheckpointOutcome[];
 }): Promise<SpeakerResult> {
     const { job, deps, state, scope, owner, speakerId, writeOwn } = arg;
@@ -1728,7 +1731,7 @@ async function runSpeaker(arg: {
                                 generation: { id: generationId, seq: generation!.seq },
                             },
                         ],
-                        [{ messageId, generationId, seq }],
+                        [{ messageId, generationId, seq, raw: true }],
                     );
                 },
             });

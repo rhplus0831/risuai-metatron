@@ -303,6 +303,15 @@ through `chatRows` instead of the whole chat: 394,652 bytes in place of 967,029 
 fixture's repeated text compresses far better than real chats). The large paste reads 98,639 bytes instead of 168,009;
 each reroll-carrier write 98,671 instead of 266,340, the carrier's row and its `candidates` and no other row.
 
+**Owner streamed rows, before at `db9ca1de0` and after the `rows=streamed` form** (the `db9ca1de0` and
+`db9ca1de0+streamed` lines of [checkpoint-probe.output.txt](probes/checkpoint-probe.output.txt) and
+[job-channel-probe.output.txt](probes/job-channel-probe.output.txt)): the probe's owner socket now attaches with
+`rows=streamed&proto=1`, each text checkpoint carries the raw cover and follows its chunk. Owner `chatPatch` bytes per
+checkpoint: the SD01 fixture 33,265 before, 498 after; the appending fixture 2,091 growing by 1,536 a checkpoint to
+69,675 before, 502 at every checkpoint after. The final `generationInfo` write still goes whole (33,322 and 69,676
+bytes either way: it changes a field other than `data`); feed bodies are unchanged. The callback barrier probe is
+unchanged: 503 frames, 2 `chatPatch` frames of 466 bytes, no whole chat.
+
 ### TJ03 — A transform miss loads the whole scope; coarse keys invalidate every row
 
 **Measured and confirmed. P2.**

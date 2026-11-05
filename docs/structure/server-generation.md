@@ -55,9 +55,9 @@ body, answer and statuses are the comment above its registration. "+ epoch" is t
 - `GET` and `DELETE /api/generations/:id`, `POST /api/generations/:id/memory-stop` + epoch, and
   `POST /api/generations/:id/drained` (`ChannelDrainedBody`): owner-scoped by `clientId`; a status read after the 60 s
   grace answers from the [kept outcome](#process-memory).
-- WS upgrade `/api/generations/:id/ws?clientId=&attach=&liveness=&hydration=` (`handleUpgrade`): JWT in the `risu-auth`
-  query or header, no HTTP limiter; the owner's `GenerationEvent` stream ([Generation channels](#generation-channels),
-  [Job chat and barriers](#job-chat-and-barriers)).
+- WS upgrade `/api/generations/:id/ws?clientId=&attach=&liveness=&hydration=&rows=&proto=` (`handleUpgrade`): JWT in the
+  `risu-auth` query or header, no HTTP limiter; the owner's `GenerationEvent` stream
+  ([Generation channels](#generation-channels), [Job chat and barriers](#job-chat-and-barriers)).
 
 ### Transform, translation, and memory routes
 
@@ -88,8 +88,8 @@ JWT, authenticated limiter.
 ### Transform confirmations
 
 A tab's `knownKey` (from [the transform client](cbs-rendering.md#script-transform-client)) turns an exact successful
-cache hit into a `same` confirmation on the first call only; `server/src/prompt/transform.ts` `partitionKnownResults`
-holds the rule and what still answers in full.
+cache hit into a `same` confirmation on the first call only; `partitionKnownResults` holds the rule and what still
+answers in full.
 
 ### Local model refusals
 
@@ -102,7 +102,7 @@ refusal status carried by a failed WebLLM request.
 - The route's limiter, authentication and body validation run first; then `create` checks the epoch, synchronizes the
   identity maps and receipts with it, and looks up `requestId` (`GENERATION_ID_PATTERN`) before the admission gates. The
   gate order, the synchronous install and the replay rules are `create`'s comment; identity is `requestFingerprint`, the
-  lookup order `lookupRequest`, and cancellation `cancel`, all in `server/src/jobs/generationJobs.ts`.
+  lookup order `lookupRequest`, and cancellation `cancel`.
 - Ownership is client-id equality; a non-owner's status is a copy without `terminal.result`. GET/DELETE by job id,
   sockets and callback routes remain owner-scoped. The chat-slot `GET /current` and `POST /stop` are available to any
   authenticated tab or device.
@@ -127,8 +127,8 @@ refusal status carried by a failed WebLLM request.
 - One `command` job runs a Lua button, form, or manual trigger, then its queued `/multisend` parts under one id, chat
   slot, channel, owner and hooks: `createCommandExecutor` parses, `createRunSetup` queues (`MAX_SEQUENCE_PARTS`,
   `MAX_SEQUENCE_PART_CHARS`), `finishCommand` runs each part after the registry's synchronous preflight
-  (`RunningJob.sequence.beginPart` in `server/src/jobs/generationJobs.ts`) and sends it through `runPromptSend`. The
-  boundary checks, the clear-and-append write, the send view, progress and the terminal are those comments.
+  (`RunningJob.sequence.beginPart`) and sends it through `runPromptSend`. The boundary checks, the clear-and-append
+  write, the send view, progress and the terminal are those comments.
 - Each part gets `JOB_MAX_DURATION_MS` (30 minutes) anew. After a part returns, the tab receives the live-only
   `sequence` event, the [receipt](#job-receipts) keeps `progress`, and the one terminal carries
   `sequence: { total, sent, stopped? }`. A part needing a browser callback waits under the channel's absence rules;
@@ -143,16 +143,15 @@ comment holds the rest.
 
 ### Generation channels
 
-`server/src/jobs/generationJobs.ts` holds the owner clock (`ownerAbsentDeadline`, `removeOwner`, `expireSilentOwners`,
-`attach`); `server/src/jobs/channel.ts` applies it (`absenceDeadline`, `effectiveDeadline`), and its module header holds
-the deadline checks.
+`generationJobs.ts` holds the owner clock (`ownerAbsentDeadline`, `removeOwner`, `expireSilentOwners`, `attach`);
+`channel.ts` applies it (`absenceDeadline`, `effectiveDeadline`), and its module header holds the deadline checks.
 
 - The tab attaches `/api/generations/:id/ws` with `liveness=1` and answers every `{ type: "ping", ts }` with
   `{ type: "pong", ts }`, echoing `ts` before checking the event epoch. A negotiated socket with no incoming frame for
   `OWNER_SILENT_MS` (45 s from attach, then its last frame) is removed from the owner set before being closed. MCP sees
   the same effective owner presence. Sockets without the query retain the [older-tab rule](#limitations).
-- `ownerAbsentSince` starts at admission, clears at attach, and starts again when the last effective socket leaves or at
-  the silence deadline.
+- `ownerAbsentSince` starts at admission and when the last effective socket leaves or at the silence deadline; attach
+  clears it.
 - Each dispatched question or callback uses the minimum of its own deadline, the job's absence deadline
   (`ownerAbsentSince + OWNER_ABSENT_MS`, 120 s), and its parent's effective deadline. Attach expires overdue requests
   while still absent, then clears absence, sends its snapshot and replays the requests still open, in their original
@@ -172,21 +171,22 @@ the deadline checks.
   scripts still run); `chatOutput` and image callbacks run nothing. The first three are kept in order as `done.skipped`
   (`JobRunState.skippedHooks`); the tab runs the listeners late once it holds that revision (`replaySkippedListeners`).
 - The hooks above are the tab's plugin callbacks; the character's and modules' Lua edit hooks run on the server and
-  never wait for the tab (`runLuaEdit`, `createScriptProcessor` in `server/src/prompt/scripts.ts`).
+  never wait for the tab (`runLuaEdit`, `createScriptProcessor`).
 
 ### Job chat and barriers
 
 - The owner's job chat `chatPatch` is the diff (`diffChat`) of two stored states: `sentChat`, the last copy a socket
-  took, and `workingChat`, the chat as the job's own writes left it (`writeAsJob`'s `committed` hook). Their rules are
-  the `Job` members' comments in `server/src/jobs/generationJobs.ts`, the event's `jobChatEvent`.
-- The callback barrier (`hydrateAll`, `hydrateJobChat`) flushes the job's pending own write first. For an owner socket
-  attached with `hydration=patch`, a job chat still at `sentChat`'s revision sends no chat event and the receipt names
-  that revision; otherwise the patch-mode event and its receipt go. A socket without the flag (an older tab) gets the
-  chat whole on every callback.
+  took, and `workingChat`, the chat as the job's own writes left it (`writeAsJob`'s `committed` hook); rules: the `Job`
+  members' comments, `jobChatEvent`.
+- `rows=streamed`: `chatPatchEvent` sends a generated row as `streamed: { generationId, seq }` if its watermark is the
+  stream checkpoint's (the one `raw` cover) matching `streaming`, with that text and `sentChat`'s other fields.
+- The callback barrier (`hydrateAll`, `hydrateJobChat`) flushes the job's pending own write first. For a
+  `hydration=patch` owner socket, a job chat still at `sentChat`'s revision sends no chat event and the receipt names
+  that revision; otherwise the patch-mode event and its receipt go; without the flag, [whole](#limitations).
 - A callback's client barrier flushes local work and retries the job's remembered hydration copies. When the job chat's
-  receipt is still not held (no remembered whole copy, an older one, or one refused by the acknowledged floor), it makes
-  one whole resource read of the job chat, even while streaming, fenced on the callback, epoch, chat owner and
-  incarnation, and job metadata, and installs it with the job's newest held `streaming` list.
+  receipt is still not held (no remembered whole copy, an older one, or one refused by the acknowledged floor), it reads
+  the job chat whole once, even while streaming, fenced on the callback, epoch, chat owner and incarnation, and job
+  metadata, and installs it with the job's newest held `streaming` list.
 - Normal hydration admission still protects local work and the floor; the callback runs only when the client holds every
   receipt or a newer revision ([chat store](chat-store.md#callback-hydration)).
 
@@ -194,16 +194,15 @@ the deadline checks.
 
 ### Job receipts
 
-`data/generation-jobs.sqlite` (plus its `-wal` and `-shm` files) holds the generation job receipts
-(`data/generationReceipts.ts` `createGenerationReceipts`). Like the request history it is in no snapshot or archive.
+`data/generation-jobs.sqlite` (plus `-wal`, `-shm`) holds the receipts; like the request history, in no snapshot or
+archive.
 
 - Table `receipts`, one row per job: `job_id` (primary key), `request_id` and `fingerprint` (null for older clients;
   unique `(epoch, request_id)`), `client_id`, `epoch`, `kind`, `character_id`, `chat_id`, `admitted_at`, `ended_at`
   (null while the job runs; indexed), `progress` (the sequence's `{ total, sent }` JSON, otherwise null), and `status`,
   the kept `GenerationStatus` JSON: no `result`, alternatives over 64 KiB of JSON dropped, error message cut to 4 KiB,
   `sequence` intact.
-- `PRAGMA user_version` is 1; a file of another version is left untouched and the store runs degraded. WAL with
-  `synchronous=NORMAL`.
+- `PRAGMA user_version` is 1; a file of another version is left untouched and the store runs degraded.
 - A cancelled request uses the same table: `job_id = "cancel:" + requestId`, private `kind = "cancelled"`, empty
   character/chat ids, `admitted_at = ended_at` at cancellation, and null fingerprint/status/progress. It is never served
   by a job-status read and is pruned with compact rows.
@@ -225,9 +224,9 @@ the deadline checks.
   not among the 500 newest payloads (`MAX_KEPT_OUTCOMES`); the compact row stays 72 h after its end
   (`GENERATION_RECEIPT_MS`), at most 10,000 rows (`MAX_GENERATION_RECEIPTS`, oldest end first). A running row is never
   pruned.
-- Degraded mode: a failure to open, write, read, sync or prune closes the connection for the rest of the process. The
-  disk is no longer read or written, jobs are admitted and end as before, the in-memory kept outcomes go on, and the
-  failure is one content-free `runtime` event (origin `generation.receipts`).
+- Degraded mode: a failure to open, write, read, sync or prune closes the connection (no disk use) for the rest of the
+  process; jobs are admitted and end as before, the in-memory kept outcomes go on, and the failure is one content-free
+  `runtime` event (origin `generation.receipts`).
 
 ### Process memory
 
@@ -237,10 +236,10 @@ the deadline checks.
   changes clear memory.
 - Request identity moves from live job through grace to the kept entry, then disk. Cancellation tombstones are kept in
   memory 72 h/up to 10,000 entries; epoch changes clear both.
-- The transform service (`prompt/transform.ts`): its result LRU, pending two-call snapshots and pins, plus
-  `prompt/displayScope.ts`'s `createDisplayScopeLoader` (raw configuration and transcript caches, shared read-only, with
-  a fresh projection per request). Maintenance aborts renders and empties these caches; shutdown aborts renders and
-  clears the loader ([CBS rendering](cbs-rendering.md), [chat pipeline](chat-pipeline.md)).
+- The transform service: its result LRU, pending two-call snapshots and pins, plus `createDisplayScopeLoader` (raw
+  configuration and transcript caches, shared read-only, with a fresh projection per request). Maintenance aborts
+  renders and empties these caches; shutdown aborts renders and clears the loader ([CBS rendering](cbs-rendering.md),
+  [chat pipeline](chat-pipeline.md)).
 - The memory task registry (`createMemoryTasks`): per chat the running task, the queued input, the latest retained
   input, a waiting manual start, and the last terminal status (10 minutes), plus the held summary writer leases. A
   restart loses them: no task resumes.
@@ -305,6 +304,8 @@ Runtime limits of other subsystems live with their owners: [chat-pipeline](chat-
 - Without `hydration=patch`, each callback sends the whole job chat. Older tabs can reapply it only after local work
   settles, so traffic scales with callbacks × chat size ([measured](../audit/server-measurements-2026-11-01.md)).
   Decision: Per-Event Server Work D4, archive.
+- An owner behind a `streamed` row's `seq` (after missed chunks) reads the job chat whole once (`resync`); `proto` is
+  only logged to the console, never enforced. Decision: Incremental Chat Transport D3, D4, plan.
 - Restart ends a running job as `shutdown`; reply text since its last checkpoint (3 s target, `CHECKPOINT_INTERVAL_MS`)
   is lost, and its message fence stays open until an ordinary write. Decision: Job Protocol D1, D8, and Q3, archive.
 - If receipt storage degrades, outcomes stay in memory and are lost on restart; without a persisted receipt, request

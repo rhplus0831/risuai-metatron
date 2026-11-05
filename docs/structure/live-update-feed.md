@@ -5,11 +5,10 @@
 - Owns the server's change feed and the live-update socket: the `hello` a socket starts with, how frames are admitted
   per socket, what a chat write publishes (the writer's own change, and the feed's chat entries with their summary and
   by-id body), how a publishing scope coalesces entries, and the publication budget one frame spends.
-- Not here:
-  - The socket's client and the save loop it feeds → [live updates](live-updates.md#feed-connection).
-  - The store's commits, chat summaries, and the epoch → [server resources](server-resources.md).
-  - Generation jobs, the job socket, and the job channel → [server generation](server-generation.md).
-  - The memory task registry whose statuses the `memoryTask` frames carry → [memory](memory.md#background-memory-task).
+- Not here: the socket's client and the save loop it feeds ([live updates](live-updates.md#feed-connection)); the
+  store's commits, chat summaries, and the epoch ([server resources](server-resources.md)); jobs, the job socket and
+  channel ([server generation](server-generation.md)); the memory tasks of `memoryTask` frames
+  ([memory](memory.md#background-memory-task)).
 
 ## Files
 
@@ -18,7 +17,7 @@
 - `server/src/routes/events.ts`: the live-update socket (`createEventSockets`): its `hello`, the fan-out, and
   [frame admission](#frame-admission) (`send`, `MAX_BUFFERED_BYTES`). WS upgrade `/api/events/ws` (`EVENT_FEED_PATH`),
   dispatched by `attachWebSocket` in `server/src/app.ts` outside the HTTP app, so no HTTP limiter; JWT in the
-  `risu-auth` query or header, never the password.
+  `risu-auth` query or header, never the password; `proto` logged, never enforced.
 - `shared/events.ts`: the frames (`EventFeedFrame`: `hello`, `change`, `memoryTask`, `epoch`, `ping`), `ChatStreaming`,
   `ChatStreamingSnapshot`, `MemoryTaskEntry`.
 - `shared/resources.ts`: what a `change` frame carries (`ChangeSet`, `ChatDeltaBody`, `ChatRowDeltaBody`) and its sizes

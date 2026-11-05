@@ -655,6 +655,26 @@ describe("createEventSockets", () => {
         return { feed, sockets, url: `ws://127.0.0.1:${port}/api/events/ws?risu-auth=t` };
     }
 
+    it("serves the same hello and changes with a known, invalid or absent protocol number", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const { feed, sockets, url } = await host(async () => true);
+        const clients = ["&proto=1", "&proto=garbage", ""].map((query) => connect(url + query));
+        try {
+            for (const client of clients) {
+                expect(await client.opened).toBe("open");
+                expect(await frameAt(client, 0)).toEqual({ type: "hello", epoch: "E", streaming: [], memoryTasks: [] });
+            }
+            const change = { resources: [{ kind: "notes", id: "r", revision: "E:1:2" }], chats: [], chatOrders: [] };
+            feed.publish({ type: "change", epoch: "E", changes: change });
+            for (const client of clients) {
+                expect(await frameAt(client, 1)).toEqual({ type: "change", epoch: "E", changes: change });
+            }
+        } finally {
+            sockets.close();
+            await Promise.all(clients.map((client) => client.closed));
+        }
+    });
+
     it("samples hello's digest and cursor before a queued commit can intervene", async () => {
         vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
         let cursor = 7;

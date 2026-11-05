@@ -26,7 +26,9 @@ export type EventSockets = ReturnType<typeof createEventSockets>;
 /**
  * The live-update socket (`/api/events/ws`): every committed change the resource store
  * publishes goes to every connected client as refs and revisions (`shared/events.ts`). The handshake
- * needs a JWT (`risu-auth` query or header), never the raw password. On connect the socket sends
+ * needs a JWT (`risu-auth` query or header), never the raw password. Optional `proto` is a finite
+ * non-negative integer recorded per socket and logged without content (absent or invalid: none);
+ * the number never changes admission or behavior. On connect the socket sends
  * `hello` with the epoch, current generation locks (`streaming`), and every chat's memory task
  * status (`memoryTasks`), plus an optional revision-listing `digest`, all read in the same synchronous
  * step before the socket is registered and the hello sent. A client reconciles
@@ -56,6 +58,7 @@ export function createEventSockets(options: {
     const { feed, epoch, authorize, streaming, memoryTasks, digest } = options;
     const wsServer = new WebSocketServer({ noServer: true });
     const sockets = new Set<WebSocket>();
+    const protocols = new WeakMap<WebSocket, number | null>();
     let closed = false;
 
     /**
@@ -128,7 +131,9 @@ export function createEventSockets(options: {
         }
     });
 
-    function attach(ws: WebSocket) {
+    function attach(ws: WebSocket, proto: number | null) {
+        protocols.set(ws, proto);
+        console.info(`[Live-update socket] proto=${proto ?? "none"}`);
         let ping: ReturnType<typeof setInterval> | undefined;
         const drop = () => {
             clearInterval(ping);
@@ -206,12 +211,15 @@ export function createEventSockets(options: {
                     socket.destroy();
                     return;
                 }
+                const protocolQuery = url.searchParams.get("proto");
+                const protocolNumber = protocolQuery?.trim() ? Number(protocolQuery) : NaN;
+                const proto = Number.isInteger(protocolNumber) && protocolNumber >= 0 ? protocolNumber : null;
                 wsServer.handleUpgrade(req, socket, head, (ws) => {
                     if (closed) {
                         ws.close(1001);
                         return;
                     }
-                    attach(ws);
+                    attach(ws, proto);
                 });
             } catch {
                 socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");

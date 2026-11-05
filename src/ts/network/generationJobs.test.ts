@@ -779,6 +779,8 @@ describe("following a job", () => {
         expect(url.pathname).toBe("/api/generations/j1/ws");
         expect(url.searchParams.get("risu-auth")).toBe("jwt-1");
         expect(url.searchParams.get("clientId")).toBe(transport.generationClientId());
+        expect(url.searchParams.get("rows")).toBe("streamed");
+        expect(url.searchParams.get("proto")).toBe("1");
         expect(socket.stamp).toBeGreaterThan(0);
         expect(follow.send({ x: 1 })).toBe(false);
         socket.open();

@@ -6,9 +6,10 @@
 //
 // Fixture: character `c`, chat `k` with 5,000 messages of about 2 KiB, bound to the default prompt preset, model
 // preset, and persona. A real generation job registry runs a custom runner with a real owner socket attached
-// (`/api/generations/<jobId>/ws?clientId=probe&attach=1`). The runner appends a `char` reply and begins its
+// (`/api/generations/<jobId>/ws?clientId=probe&attach=1&rows=streamed&proto=1`), taking streamed rows.
+// The runner appends a `char` reply and begins its
 // generation (unmeasured), then writes seven checkpoints, each a `setText` of that reply to a different 32 KiB
-// text with its generation and `covers`, as the runner's stream checkpoint does (the SD01 fixture).
+// text with its generation and raw `covers`, as the runner's stream checkpoint does (the SD01 fixture).
 // A second fixture appends a fixed 1,536-character ASCII chunk per checkpoint, representing about three
 // seconds of streaming, for 45 checkpoints (69,120 characters). Each fixture ends with a same-text
 // `setMessage` changing only `generationInfo`, matching `writeReplyGenerationInfo` in prompt/runner.ts.
@@ -28,7 +29,7 @@
 //   the job's working baseline makes the patch, `emitMs` reads only the chat's revision (`store.chatRevision`,
 //   counted in `baselineMs`), so `readMs` is 0.
 // - `totalMs`: `writeMs + scopeMs + emitMs`.
-// Also per run: `ownerPatchBytes` (the `chatPatch` frame the owner socket received for that checkpoint),
+// Also per run: `ownerPatchBytes` (the streamed-row `chatPatch` frame the owner socket received for that checkpoint),
 // `feedBodyForm` / `feedBodyBytes` / `feedEventBytes` (the selected body, its UTF-8 JSON bytes, and the
 // whole `change` event), and `wholeTranscriptReads` by phase: `.all()` calls of the store's whole-chat message
 // SELECT at the SQL boundary.
@@ -443,12 +444,15 @@ const jobs = createGenerationJobs({
 
         let seq = 0;
         let replyText = "";
-        const measure = async (observer, ops) => {
+        const measure = async (observer, ops, raw = false) => {
+            seq += 1;
+            if (raw) job.emit({ type: "chunk", messageId, generationId, text: replyText, seq });
             globalThis.gc?.();
             for (const key of Object.keys(reads)) delete reads[key];
             lastChange = null;
-            seq += 1;
-            const { applied, t } = writeOwn(ops({ id: generationId, seq }), [{ messageId, generationId, seq }]);
+            const { applied, t } = writeOwn(ops({ id: generationId, seq }), [
+                { messageId, generationId, seq, ...(raw ? { raw: true } : {}) },
+            ]);
             const outcome = applied.chats[0]?.checkpoints?.at(-1);
             if (outcome !== "applied") throw new Error(`checkpoint ${seq} was ${outcome}`);
             const runReads = { ...reads };
@@ -497,7 +501,11 @@ const jobs = createGenerationJobs({
         for (let run = 0; run < RUNS; run++) {
             replyText = `${run}:`.padEnd(REPLY_CHARS, String.fromCharCode(97 + run));
             runs.push(
-                await measure(sd, (generation) => [{ op: "setText", id: messageId, text: replyText, generation }]),
+                await measure(
+                    sd,
+                    (generation) => [{ op: "setText", id: messageId, text: replyText, generation }],
+                    true,
+                ),
             );
         }
         sdFinal = await finalInfo(sd, 21);
@@ -519,9 +527,11 @@ const jobs = createGenerationJobs({
             appendRuns.push({
                 checkpoint: run + 1,
                 replyTextChars: replyText.length,
-                ...(await measure(appending, (generation) => [
-                    { op: "setText", id: messageId, text: replyText, generation },
-                ])),
+                ...(await measure(
+                    appending,
+                    (generation) => [{ op: "setText", id: messageId, text: replyText, generation }],
+                    true,
+                )),
             });
         }
         appendFinal = await finalInfo(appending, 135);
@@ -567,7 +577,7 @@ if (!created.ok) throw new Error(JSON.stringify(created));
 let ws;
 try {
     ws = new WebSocket(
-        `ws://127.0.0.1:${server.address().port}/api/generations/${created.jobId}/ws?clientId=probe&attach=1`,
+        `ws://127.0.0.1:${server.address().port}/api/generations/${created.jobId}/ws?clientId=probe&attach=1&rows=streamed&proto=1`,
     );
     let attached = false;
     const terminal = await new Promise((resolve, reject) => {

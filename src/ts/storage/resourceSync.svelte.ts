@@ -116,7 +116,7 @@ import {
     hydrateChat,
     hydrateChatPatch,
     isChatBehind,
-    type ChatPatch,
+    type JobChatPatch,
     JOB_RETRY_MS,
     hasUnsavedChatWork,
     hasRefusedChatWork,
@@ -5346,7 +5346,7 @@ export function applyHydration(record: HydrationRecord): boolean {
  * through `hydrateChatPatch`: `"mismatch"` asks the caller to request the chat whole.
  */
 export function applyPatchHydration(
-    patch: ChatPatch,
+    patch: JobChatPatch,
     job?: { jobId: string; streaming: readonly StreamingMessage[] },
 ): "applied" | "busy" | "mismatch" | "old" {
     if (halted || parseRevisionToken(patch.revision)?.epoch !== getResourceEpoch()) {

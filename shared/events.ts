@@ -1,7 +1,10 @@
 import type { MemoryTaskStatus, StreamingMessage } from "./jobs.ts";
 import type { ChangeSet } from "./resources.ts";
 
-/** The path of the live-update socket (`/api/events/ws?risu-auth=<JWT>`). */
+/**
+ * The path of the live-update socket (`/api/events/ws?risu-auth=<JWT>`). Optional `proto` is a finite
+ * non-negative integer recorded per socket and logged (invalid or absent: none), never enforced.
+ */
 export const EVENT_FEED_PATH = "/api/events/ws";
 
 /**

@@ -99,6 +99,7 @@ describe("the live-update socket client", () => {
         feed.startEventFeed();
         await vi.advanceTimersByTimeAsync(0);
         expect(FakeSocket.instances).toHaveLength(1);
+        expect(new URL(ws.url).searchParams.get("proto")).toBe("1");
         expect(ws.url).toMatch(/^wss:\/\/risu\.test\/api\/events\/ws\?risu-auth=jwt-1-/);
         ws.frame({ type: "hello", epoch: "E1" });
         await vi.advanceTimersByTimeAsync(0);

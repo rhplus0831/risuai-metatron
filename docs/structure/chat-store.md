@@ -19,23 +19,23 @@ rules, each export's comment its own rule; the lists below are identifiers to lo
 - `src/ts/storage/chatStore.svelte.ts`: the chat module. Per character it holds the chat ids in order (the membership)
   and each chat loaded or as its summary, reactively; boot reads summaries only. Readers: `chatList`, `chatEntry`,
   `selectedChat`, `currentChatRef`, `selectedChatLoad`, `findChat`, `chatCount`, `countChatEntries`.
-- Loads and pins there: `ensureChatLoaded`, `loadChat`, `loadChats`, `pinChat`, `pinChats`, `trimLoadedChats`,
+- Loads and pins: `ensureChatLoaded`, `loadChat`, `loadChats`, `pinChat`, `pinChats`, `trimLoadedChats`,
   `MAX_LOADED_CHATS`, `CHAT_READ_DEADLINE_MS`. Boundaries: `withChatsCopy`, `withCompatChats`, `seedChats`,
   `assembleChats`, `initializeChats`, `startChatDriftCheck` (dev only).
-- Writers there: `createChat`, `ensureChat`, `deleteChat`, `reorderChats`, `selectChat`, `appendMessage`,
-  `replaceMessage`, `patchMessage`, `setMessageText`, `setMessageTranslation`, `removeMessages`,
-  `removeMessagesUnasked`, `restoreUnsentRemoval`, `setChatMeta`, `mergeChatMeta`, `replaceChat`, `captureChatBaseline`,
-  `applyChatResult`, `reconcileCharacterChats`, `installChatProjection`. Versions: `chatSaveVersion`,
-  `chatInstallVersion`, `chatHasUnackedWork`.
-- Save-loop side there: `takeChatWork`, `ackChatWork` (the acknowledged floor: `ackedRevisions`, `belowAckedRevision`),
+- Writers: `createChat`, `ensureChat`, `deleteChat`, `reorderChats`, `selectChat`, `appendMessage`, `replaceMessage`,
+  `patchMessage`, `setMessageText`, `setMessageTranslation`, `removeMessages`, `removeMessagesUnasked`,
+  `restoreUnsentRemoval`, `setChatMeta`, `mergeChatMeta`, `replaceChat`, `captureChatBaseline`, `applyChatResult`,
+  `reconcileCharacterChats`, `installChatProjection`. Versions: `chatSaveVersion`, `chatInstallVersion`,
+  `chatHasUnackedWork`.
+- Save-loop side: `takeChatWork`, `ackChatWork` (the acknowledged floor: `ackedRevisions`, `belowAckedRevision`),
   `requeueChatWork`, `recoverChatConflicts` (`reanchorGoneAppends`, `dropLockedEdits`), `acceptRemoteChat`,
   `acceptRemoteCollection`, `quarantineChat`, `unloadPendingChatWork`, `hasUnsavedChatWork`, `hasRefusedChatWork`,
   `refusedChatItems`, `retryRefusedChat`, `discardRefusedChat`, `finishIdleChatRefresh`, `noteIdleChatRead`,
   `idleChatRefreshes`, `idleSummaryRefreshes`, `settleSummaryRefresh`.
-- Live updates and jobs there: `noteRemoteChat`, `applyRemoteSummary`, `applyRemoteCollection`,
-  `canApplyRemoteCollection`, `noteRemoteStreaming`, `replaceFeedLocks`, `markChatStale`, `applyServerGeneration`,
-  `applyServerGenerationChunk`, `heldStreamText`, `endServerJob`, `hydrateChat`, `hydrateChatPatch`,
-  `chatHydrationHold`, `prepareChatHydrationRefresh`, `deferredReloads`, `finishDeferredReload`.
+- Live updates and jobs: `noteRemoteChat`, `applyRemoteSummary`, `applyRemoteCollection`, `canApplyRemoteCollection`,
+  `noteRemoteStreaming`, `replaceFeedLocks`, `markChatStale`, `applyServerGeneration`, `applyServerGenerationChunk`,
+  `heldStreamText`, `endServerJob`, `hydrateChat`, `hydrateChatPatch`, `chatHydrationHold`,
+  `prepareChatHydrationRefresh`, `deferredReloads`, `finishDeferredReload`.
 - `src/ts/storage/chatEdits.ts`: `editChat` (may await), `editChatSync`, `editCurrentChat`, `setCurrentChatMeta`, over a
   whole chat copy; `readChatsDetached` for exports.
 - `src/ts/storage/chatFieldDraft.svelte.ts` (`createChatFieldDraft`, `loreWriteFenced`),
@@ -150,11 +150,10 @@ entrypoint's comment.
 ### Job chunks
 
 - Generation updates, frame flushes, and job hydration share the [by-id index](#by-id-ops); a stream shares one build.
-- A chunk (`GenerationChunkEvent` in `shared/jobs.ts`) that `applyServerGenerationChunk` cannot apply asks
-  `{ type: "resyncReply" }` once per follow until an `accepted` arrives or the follow ends
-  (`network/generationJobs.ts`); the job answers only its current full-text `accepted` while live with a message id,
-  also during a lock handoff ([server generation](server-generation.md)). The recovery never marks stale or asks for the
-  whole chat.
+- A chunk (`GenerationChunkEvent`) that `applyServerGenerationChunk` cannot apply asks `resyncReply` once per follow
+  until an `accepted` arrives or the follow ends (`network/generationJobs.ts`); the job answers only its current
+  full-text `accepted` while live with a message id, also during a lock handoff
+  ([server generation](server-generation.md)). The recovery never marks stale or asks for the whole chat.
 - `runServerJob` (`process/serverCommands.ts`) saves and reads a chat it knows is behind (`refreshStaleChat`, true once
   `isChatBehind` is false) before creating a job, once more when a change or notice arrived meanwhile; a chat still
   behind goes as it is and the server refuses its old revision ([chat pipeline](chat-pipeline.md)).
@@ -162,8 +161,9 @@ entrypoint's comment.
 ### Job hydration
 
 - A job's `resource` event goes through `hydrateChat` and a `chatPatch` through `hydrateChatPatch`
-  (`network/generationJobs.ts`). On `mismatch`, `applyGenerationEvent` sends the follow's one `resync`, cleared by the
-  job chat's next whole `resource` event.
+  (`network/generationJobs.ts`). A `streamed` row gets this job's buffer text if that generation's buffer reached its
+  `seq` (`resolveJobChatPatch`), else the patch is a `mismatch` keeping revision and watermark. On `mismatch`,
+  `applyGenerationEvent` sends the follow's one `resync`, cleared by the job chat's next whole `resource` event.
 - On `busy`, or a whole job chat refused for local work, `generationJobs.ts` waits for `flushResources`, then sends the
   `resync` if the chat is still stale and `chatHydrationHold` is `none`; a failed save or new local work retries with a
   growing wait (up to 15 s) while the follow lasts, one recovery per follow. Work no save settles asks nothing, nor does

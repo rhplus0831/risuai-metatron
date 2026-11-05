@@ -411,7 +411,9 @@ async function connect() {
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     let ws: WebSocket;
     try {
-        ws = new WebSocket(`${protocol}//${location.host}${EVENT_FEED_PATH}?risu-auth=${encodeURIComponent(token)}`);
+        ws = new WebSocket(
+            `${protocol}//${location.host}${EVENT_FEED_PATH}?risu-auth=${encodeURIComponent(token)}&proto=1`,
+        );
     } catch (error) {
         console.error("[Live updates]", error);
         retire();

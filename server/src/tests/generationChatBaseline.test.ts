@@ -42,6 +42,8 @@ function applyPatch(copy: Copy, patch: GenerationChatPatchEvent): Copy {
     const removed = new Set(patch.removed ?? []);
     const messages = data.message.filter((row) => !removed.has(row.chatId!));
     for (const row of patch.messages ?? []) {
+        // These sockets never advertise `rows=streamed`: every carried row is whole.
+        if (!("message" in row)) throw new Error(`unexpected streamed row ${row.id}`);
         const incoming = row.message as Message;
         const previous = messages.findIndex((item) => item.chatId === incoming.chatId);
         if (previous !== -1) messages.splice(previous, 1);
@@ -257,9 +259,10 @@ async function setup() {
 }
 
 const rows = (patch: GenerationChatPatchEvent) =>
-    (patch.messages ?? []).map(({ after, message }) => {
-        const row = message as Message;
-        return [row.chatId, after, row.data];
+    (patch.messages ?? []).map((entry) => {
+        if (!("message" in entry)) throw new Error(`unexpected streamed row ${entry.id}`);
+        const row = entry.message as Message;
+        return [row.chatId, entry.after, row.data];
     });
 
 describe("owner chat working baselines", () => {

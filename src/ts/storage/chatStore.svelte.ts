@@ -14,7 +14,7 @@ import type {
 } from "../../../shared/chats.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { ChatStreaming, ChatStreamingSnapshot } from "../../../shared/events.ts";
-import type { GenerationChunkEvent, StreamingMessage } from "../../../shared/jobs.ts";
+import type { GenerationChatPatchEvent, GenerationChunkEvent, StreamingMessage } from "../../../shared/jobs.ts";
 import { readChatBindingIds } from "../../../shared/chatBinding.ts";
 import {
     type ChangeSet,
@@ -2252,18 +2252,20 @@ export function hydrateChat(
 /**
  * Applies a job's `chatPatch` (`GenerationChatPatchEvent`): the change from `baseRevision` to
  * `revision` of a loaded chat, applied only when the mirror holds exactly one of the two revisions,
- * the chat is not marked stale, and it has no local work. Its messages are the stored rows (each
+ * the chat is not marked stale, and it has no local work. Streamed entries are staged from a real,
+ * matching job buffer at or above their checkpoint; a missing or behind buffer mismatches the patch.
+ * Resolved messages are the stored rows (each
  * replaces the mirror's message of its id, or is inserted after `after`); every other message keeps
  * its object. Then `job` is handled as for `hydrateChat`. `"busy"`: local work (marked stale, as
  * `hydrateChat`); `"mismatch"`: the mirror cannot take it (marked stale: the caller asks the job for
  * the chat whole); `"old"`: older than the held revision, another epoch, or a chat this client lacks.
  */
 export function hydrateChatPatch(
-    patch: ChatPatch,
+    patch: JobChatPatch,
     job?: { jobId: string; streaming: readonly StreamingMessage[] },
 ): "applied" | "busy" | "mismatch" | "old" {
     flushStreamText((target) => target.chaId === patch.characterId && target.chatId === patch.id);
-    const outcome = applyChatPatch(patch);
+    const outcome = applyChatPatch(patch, job);
     if (outcome === "old") {
         return outcome;
     }
@@ -2351,13 +2353,18 @@ export function prepareChatHydrationRefresh(ref: ChatRef, revision: string): ((s
         chatHydrationHold(ref) === "none";
 }
 
-/** The body of a job's `chatPatch` (`GenerationChatPatchEvent` without its event fields). */
+/** A whole-row patch, shared by feed installation and resolved job hydration. */
 export type ChatPatch = Omit<ChatPatchBody, "removed" | "messages"> & {
     characterId: string;
     id: string;
     revision: string;
     removed?: readonly string[];
     messages?: Readonly<ChatPatchBody["messages"]>;
+};
+
+/** Job hydration's input; streamed rows are resolved before the whole-row installer runs. */
+export type JobChatPatch = Omit<ChatPatch, "messages"> & {
+    messages?: Readonly<GenerationChatPatchEvent["messages"]>;
 };
 
 /**
@@ -2519,7 +2526,10 @@ function applyChatHydration(server: {
  * loaded, or a patch whose messages do not fit the mirror's is a mismatch. Nothing changes before
  * the whole result is checked.
  */
-function applyChatPatch(patch: ChatPatch): "applied" | "busy" | "mismatch" | "old" {
+function applyChatPatch(
+    patch: JobChatPatch,
+    job?: { jobId: string; streaming: readonly StreamingMessage[] },
+): "applied" | "busy" | "mismatch" | "old" {
     const key = keyOf(patch.characterId, patch.id);
     const ref = { chaId: patch.characterId, chatId: patch.id };
     const heldRevision = chatRevisions.get(key);
@@ -2556,20 +2566,67 @@ function applyChatPatch(patch: ChatPatch): "applied" | "busy" | "mismatch" | "ol
     }
     const fits = held.seq === next.seq && (held.revision === base.revision || held.revision === next.revision);
     const chat = isLoaded(ref) ? heldChat(ref) : undefined;
+    let resolved: ChatPatch | null = null;
     let patched: { start: number; tail: Message[] } | null = null;
     try {
-        patched = fits && chat && !staleChats.has(key) ? patchedTail(chat.message, patch) : null;
+        if (fits && chat && !staleChats.has(key)) {
+            resolved = resolveJobChatPatch(chat, patch, job);
+            patched = resolved ? patchedTail(chat.message, resolved) : null;
+        }
     } catch (error) {
         // Anything unexpected in a server copy: read whole instead of failing the event.
         console.error("[Save]", error);
     }
-    if (!chat || !patched) {
+    if (!chat || !resolved || !patched) {
         staleChats.add(key);
         return "mismatch";
     }
     staleChats.delete(key);
-    installChatPatch(chat, patch, patched);
+    installChatPatch(chat, resolved, patched);
     return "applied";
+}
+
+/** Resolves job-only stream references into detached rows without changing the mirror or its claims. */
+function resolveJobChatPatch(
+    chat: Chat,
+    patch: JobChatPatch,
+    job?: { jobId: string; streaming: readonly StreamingMessage[] },
+): ChatPatch | null {
+    const messages: NonNullable<ChatPatch["messages"]>[number][] = [];
+    const ref = { chaId: patch.characterId, chatId: patch.id };
+    const key = keyOf(ref.chaId, ref.chatId);
+    const streaming = new Map(job?.streaming.map((entry) => [entry.messageId, entry]));
+    for (const entry of patch.messages ?? []) {
+        if (!("streamed" in entry)) {
+            messages.push(entry);
+            continue;
+        }
+        const { id, streamed } = entry;
+        const buffer = serverGenerations.get(messageKeyOf(ref, id));
+        const active = streaming.get(id);
+        const row = chat.message[positionOf(key, chat, id)];
+        if (
+            !job ||
+            !row ||
+            !buffer ||
+            buffer.jobId !== job.jobId ||
+            buffer.generationId !== streamed.generationId ||
+            buffer.seq < 0 ||
+            retiredGenerations.has(streamed.generationId) ||
+            !active ||
+            active.generationId !== streamed.generationId ||
+            active.seq !== streamed.seq ||
+            !Number.isSafeInteger(streamed.seq) ||
+            streamed.seq < 0 ||
+            buffer.seq < streamed.seq
+        ) {
+            return null;
+        }
+        const message = clone<Message>(row);
+        message.data = buffer.text;
+        messages.push({ after: entry.after, message });
+    }
+    return { ...patch, messages };
 }
 
 /**

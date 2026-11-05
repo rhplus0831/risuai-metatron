@@ -930,11 +930,12 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
         const protocol = location.protocol === "https:" ? "wss:" : "ws:";
         // `liveness=1`: this tab answers pings. `hydration=patch`: its callback barrier reads the job
         // chat itself for a receipt it does not hold, so the server may send that chat only as it
-        // changed (`jobChannel.ts` `barrier`).
+        // changed (`jobChannel.ts` `barrier`). `rows=streamed`: it rebuilds raw checkpoint rows from
+        // the stream buffer. `proto=1` is recorded and logged by the server, never enforced.
         const url =
             `${protocol}//${location.host}/api/generations/${encodeURIComponent(jobId)}/ws` +
             `?risu-auth=${encodeURIComponent(auth)}&clientId=${encodeURIComponent(generationClientId())}` +
-            `&attach=${stamp}&liveness=1&hydration=patch`;
+            `&attach=${stamp}&liveness=1&hydration=patch&rows=streamed&proto=1`;
         const socket = new WebSocket(url);
         ws = socket;
         socket.onopen = () => {

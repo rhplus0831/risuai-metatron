@@ -9,6 +9,10 @@ import type { StructuredMemoryRebuildMode } from "./structuredMemory.ts";
  * tab's `clientId`) follows it over `/api/generations/:id/ws`, and `DELETE /api/generations/:id`
  * aborts it. Any authenticated tab can read `/api/generations/current` and explicitly stop that
  * chat's named job through `/api/generations/stop`. One chat has at most one running job.
+ * The job socket's optional `rows=streamed` query accepts raw checkpoint rows reconstructed from
+ * the owner's stream buffer, independently of `hydration=patch` (incremental callback hydration).
+ * Optional `proto` is a finite non-negative integer recorded per socket and logged (invalid or
+ * absent: none), never enforced and never used to select capabilities.
  */
 
 export type GenerationKind = "send" | "continue" | "reroll" | "group" | "preview" | "previewPrompt" | "command";
@@ -277,8 +281,19 @@ export type GenerationResourceEvent =
  * (`after`, null at the start). `meta` (the chat's fields without `message`) is present only when
  * it changed. `count` is the message count at `revision`. `streaming` is as in the chat `resource`
  * event. A client that cannot apply it sends `ChatResyncRequest`.
+ * With `rows=streamed`, a carried row already in the base may instead be `{ after, id, streamed }`:
+ * it is still locked to the named generation, its applied raw checkpoint covers exactly `seq`,
+ * its stored text equals that checkpoint's raw text, and all other fields equal the base row's.
+ * The client stages a detached held row with its stream buffer text only when that buffer belongs
+ * to the job and generation, is real and not retired, and has reached `seq`. The entry must agree
+ * with `streaming`; otherwise the entire patch mismatches and asks for a whole-chat resync without
+ * advancing the revision or claiming the checkpoint. At equality the buffer text is installed too.
  */
-export type GenerationChatPatchEvent = ChatPatchBody & {
+export type GenerationChatPatchEvent = Omit<ChatPatchBody, "messages"> & {
+    messages?: (
+        | NonNullable<ChatPatchBody["messages"]>[number]
+        | { after: string | null; id: string; streamed: { generationId: string; seq: number } }
+    )[];
     type: "chatPatch";
     epoch: string;
     characterId: string;

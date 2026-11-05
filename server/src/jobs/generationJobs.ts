@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type http from "node:http";
 import type { Duplex } from "node:stream";
+import { isDeepStrictEqual } from "node:util";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Chat } from "../../../shared/database.ts";
 import type { ChatGroup, ChatOrderChange } from "../../../shared/chats.ts";
@@ -35,7 +36,7 @@ import {
     HIDDEN_HYDRATION_KINDS,
 } from "../../../shared/jobs.ts";
 import { isProviderCode } from "../../../shared/requestHistory.ts";
-import { type BatchConflict, parseRevisionToken } from "../../../shared/resources.ts";
+import { type BatchConflict, type ChatPatchBody, parseRevisionToken } from "../../../shared/resources.ts";
 import { type ChatWriteChange, messageOrderAfterChange } from "../data/chatStore.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import {
@@ -252,10 +253,12 @@ export type RunningJob = {
      * holds that chunk, so a processed checkpoint is not overwritten by older streamed text. Every
      * applied generation write replaces the claim with its own: one without `covers` claims 0, so
      * the client keeps any streamed text over the stored one.
+     * Only a raw stream checkpoint marks its cover `raw`; its operation's text is retained so a
+     * later rewrite without a generation cannot make the row eligible for stream reconstruction.
      */
     write(
         build: () => JobChanges,
-        options?: { covers?: readonly { messageId: string; generationId: string; seq: number }[] },
+        options?: { covers?: readonly { messageId: string; generationId: string; seq: number; raw?: true }[] },
     ): JobWriteResult;
     /**
      * Throws what `write` throws before it builds anything: the job ended, or maintenance closed the
@@ -413,8 +416,12 @@ type Job = {
     ownerAbsentSince: number | null;
     /** The latest `accepted`, its text kept current by `chunk`; null once its final write applied. */
     current: Extract<GenerationEvent, { type: "accepted" }> | null;
-    /** Per message id: the newest chunk the stored text includes (the last applied write's `covers`). */
-    watermarks: Map<string, { generationId: string; seq: number }>;
+    /**
+     * Per message id: the last applied generation write's chunk claim. Only a raw checkpoint keeps
+     * `raw` and `rawText`, taken from its operation, not the group's final row. Every applied
+     * generation write replaces this claim; unmarked writes clear raw eligibility.
+     */
+    watermarks: Map<string, { generationId: string; seq: number; raw?: true; rawText?: string }>;
     /** The newest attach stamp admitted (the client's `attach` query); an older handshake is refused. */
     attachStamp: number;
     preset: Extract<GenerationEvent, { type: "preset" }> | null;
@@ -605,7 +612,7 @@ export function diffChat(
     base: ChatBaseline,
     next: ChatBaseline,
     generated: ReadonlySet<string>,
-): Pick<GenerationChatPatchEvent, "meta" | "removed" | "messages" | "count"> | null {
+): Pick<ChatPatchBody, "meta" | "removed" | "messages" | "count"> | null {
     const from = parseRevisionToken(base.revision);
     const to = parseRevisionToken(next.revision);
     if (!from || !to || from.epoch !== to.epoch || from.seq !== to.seq || from.revision > to.revision) {
@@ -709,6 +716,10 @@ export function createGenerationJobs(options: {
      * barrier sends them the chat only as it changed (`hydrateAll`).
      */
     const patchHydration = new WeakSet<WebSocket>();
+    /** Owner sockets that can reconstruct raw checkpoint rows from their stream buffers. */
+    const streamedRows = new WeakSet<WebSocket>();
+    /** Optional advertised protocol numbers, recorded and logged without enforcing a floor. */
+    const socketFlags = new WeakMap<WebSocket, { proto: number | null }>();
     /** Chat → its running job. */
     const chatSlots = new Map<string, string>();
     const wsServer = new WebSocketServer({ noServer: true });
@@ -940,6 +951,37 @@ export function createGenerationJobs(options: {
         diff: NonNullable<ReturnType<typeof diffChat>>,
     ): GenerationEvent {
         const { characterId, chatId } = job.context;
+        const streaming = streamingIn(job, characterId, chatId);
+        let messages: GenerationChatPatchEvent["messages"] = diff.messages;
+        const sockets = [...job.sockets];
+        // Today every socket is the one owner. Future viewer sockets must receive whole rows,
+        // since sharing this baseline does not mean they hold the owner's stream buffer.
+        if (sockets.length > 0 && sockets.every((ws) => streamedRows.has(ws)) && messages) {
+            const live = new Map(streaming.map((entry) => [entry.messageId, entry]));
+            messages = diff.messages!.map((entry) => {
+                const row = entry.message as Chat["message"][number];
+                const id = row.chatId!;
+                const mark = job.watermarks.get(id);
+                const active = live.get(id);
+                const before = base.texts.get(id);
+                if (
+                    !job.generated.has(id) ||
+                    before === undefined ||
+                    !mark?.raw ||
+                    !active ||
+                    active.generationId !== mark.generationId ||
+                    active.seq !== mark.seq ||
+                    row.data !== mark.rawText
+                ) {
+                    return entry;
+                }
+                const { data: _beforeData, ...beforeFields } = JSON.parse(before) as Chat["message"][number];
+                const { data: _data, ...fields } = row;
+                return isDeepStrictEqual(fields, beforeFields)
+                    ? { after: entry.after, id, streamed: { generationId: mark.generationId, seq: mark.seq } }
+                    : entry;
+            });
+        }
         return {
             type: "chatPatch",
             epoch: job.epoch,
@@ -948,7 +990,8 @@ export function createGenerationJobs(options: {
             baseRevision: base.revision,
             revision,
             ...diff,
-            streaming: streamingIn(job, characterId, chatId),
+            ...(messages ? { messages } : {}),
+            streaming,
         };
     }
 
@@ -1287,7 +1330,7 @@ export function createGenerationJobs(options: {
     function writeAsJob(
         job: Job,
         build: () => JobChanges,
-        covers: readonly { messageId: string; generationId: string; seq: number }[] = [],
+        covers: readonly { messageId: string; generationId: string; seq: number; raw?: true }[] = [],
     ): JobWriteResult {
         for (let attempt = 0; ; attempt += 1) {
             assertLive(job);
@@ -1357,6 +1400,12 @@ export function createGenerationJobs(options: {
                                         job.watermarks.set(written, {
                                             generationId: op.generation.id,
                                             seq: cover?.seq ?? 0,
+                                            ...(cover?.raw
+                                                ? {
+                                                      raw: true,
+                                                      rawText: op.op === "setText" ? op.text : op.message.data,
+                                                  }
+                                                : {}),
                                         });
                                     }
                                     if (
@@ -2025,8 +2074,17 @@ export function createGenerationJobs(options: {
      * Expire overdue channel requests while still absent, then clear absence, send the snapshot and
      * replay those still open. Reconnection removes the absence cap without extending a request's
      * own allowance (`server/src/jobs/channel.ts` effectiveDeadline).
+     * `takesStreamedRows` advertises `rows=streamed`, independently of callback hydration. Record
+     * it and the optional protocol number before building the snapshot; log the number, never enforce it.
      */
-    function attach(job: Job, ws: WebSocket, negotiated: boolean, hydratesByPatch: boolean) {
+    function attach(
+        job: Job,
+        ws: WebSocket,
+        negotiated: boolean,
+        hydratesByPatch: boolean,
+        takesStreamedRows: boolean,
+        proto: number | null,
+    ) {
         expireSilentOwners(job);
         job.channelLink.expireOverdue();
         // One delivery stream per job: a new attach of the owner replaces the older sockets, so a
@@ -2042,6 +2100,11 @@ export function createGenerationJobs(options: {
         if (hydratesByPatch) {
             patchHydration.add(ws);
         }
+        if (takesStreamedRows) {
+            streamedRows.add(ws);
+        }
+        socketFlags.set(ws, { proto });
+        console.info(`[Generation socket] proto=${proto ?? "none"}`);
         job.channelLink.ownerChanged();
         for (const old of previous) {
             const live = liveness.get(old);
@@ -2150,7 +2213,9 @@ export function createGenerationJobs(options: {
      * The `upgrade` handler for `/api/generations/:id/ws` (the server's one dispatcher calls it).
      * False, leaving the socket untouched, for any other path. The handshake needs a JWT (`risu-auth`
      * query or header) and the job's `clientId` query; another client's or an unknown job is a 404.
-     * The `liveness=1` and `hydration=patch` queries advertise what the tab supports (`attach`).
+     * The `liveness=1`, `hydration=patch`, and independent `rows=streamed` queries advertise what
+     * the tab supports (`attach`). Optional `proto` is recorded and logged, never enforced; absent
+     * or invalid (not a finite non-negative integer) is recorded as none.
      * The password is never accepted; there is no HTTP limiter on this upgrade path. The stream
      * carries the owner's GenerationEvents. With liveness=1 the tab answers each ping with pong.
      * `attach` is a finite connection stamp (default 0): a lower stamp cannot displace
@@ -2193,6 +2258,9 @@ export function createGenerationJobs(options: {
                     return;
                 }
                 job.attachStamp = stamp;
+                const protocolQuery = url.searchParams.get("proto");
+                const protocolNumber = protocolQuery?.trim() ? Number(protocolQuery) : NaN;
+                const proto = Number.isInteger(protocolNumber) && protocolNumber >= 0 ? protocolNumber : null;
                 wsServer.handleUpgrade(req, socket, head, (ws) => {
                     if (disposed || stamp < job.attachStamp) {
                         ws.close();
@@ -2203,6 +2271,8 @@ export function createGenerationJobs(options: {
                         ws,
                         url.searchParams.get("liveness") === "1",
                         url.searchParams.get("hydration") === "patch",
+                        url.searchParams.get("rows") === "streamed",
+                        proto,
                     );
                 });
             } catch {
