@@ -6,8 +6,9 @@ Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1�
 2026-11-03 (the recommended option each time). The first revision corrected D2–D5 and D7–D10 (D10 took the
 server op its draft rejected) and added D13 and D14; the second corrects D2–D8, D10 and D13 (a trigger's
 append during a reroll, the attempt ledger, candidate ids and the list revision, the kept baseline, the
-transport's metadata rows, the error's target), narrows D9 and D14, and completes the slice inventories. Code
-anchors re-checked at `1550ebdd3`; verify them again before editing (STRUCTURE.md protocol step 5).
+transport's metadata rows, the error's target), narrows D9 and D14, and completes the slice inventories. On
+2026-11-05 the dependency on Incremental Chat Transport Slice 4 was restated as a merge-time one (D4), with the
+merge's integration checks under **Verification**. Code anchors re-checked at `1550ebdd3`; verify them again before editing (STRUCTURE.md protocol step 5).
 
 Sources: the owner's 2026-11-03 choice of this plan as the next one after the asset lifecycle plan;
 [PocketRisu/RisuBard picks](../research/pocketrisu-risubard-picks.md) §1.1 item 1 (per-reroll scriptstate
@@ -62,8 +63,9 @@ inlay references inside non-selected candidates (`candidates[].data`) are covere
 adds a test for it, and this plan names the field (D4). The [Incremental Chat Transport
 plan](incremental-chat-transport.md) carries the rows this plan makes larger: its D2's delta forms keep a
 text-only checkpoint small, and its Slice 4 (the over-cap row manifest and the by-id row read, with that
-plan's D6 amended so the read also carries the chat's changed metadata fields) is a hard dependency of this
-plan's Slice 2 (D4); its Slice 2 is not. The [Job Handoff plan](job-handoff.md) keys nothing this plan needs
+plan's D6 amended so the read also carries the chat's changed metadata fields) is a merge-time dependency of
+this plan's Slice 2 (D4): no code here calls what it adds, so the two may be built on separate branches, but
+Slice 2 reaches `dev` only in the same merge or after it; its Slice 2 is no dependency at all. The [Job Handoff plan](job-handoff.md) keys nothing this plan needs
 by owner (the reroll lock is the job's, so a takeover does not touch it), but its notices reach the job's
 owner only (D12); the slices that share files are listed under **Slices**.
 
@@ -327,7 +329,13 @@ does not re-propose it.
   switch change `scriptstate` in the same transaction as `candidates` (D5, D10, D13), and Slice 4 as first
   written reads the chat whole for every such entry. With it, a loaded observer at the base revision applies a
   reroll's begin group (the candidates and the `scriptstate` merge) without a whole read. This plan makes that
-  Slice 4 a hard dependency of its Slice 2 rather than a gated one. Transport Slice 2 (the owner's job socket
+  Slice 4 a merge-time dependency of its Slice 2 rather than a gated one. The dependency is traffic, not code:
+  Slice 2 calls nothing Slice 4 adds (a switch is an ordinary by-id write, and the feed decides how a write
+  travels), and without Slice 4 an over-cap carrier write falls to today's whole-chat read, which is correct
+  but costs every loaded observer a read of the chat on each begin, write-back and switch. So the two may be
+  built on separate branches; Slice 2 reaches `dev` only in the same merge as Transport Slice 4 or after it,
+  and that merge runs the integration checks under **Verification**, which neither branch's own tests prove
+  (Slice 4's tests use a carrier fixture, not this plan's ops). Transport Slice 2 (the owner's job socket
   sending row changes instead of whole rows) is not a dependency: until it lands the owner tab receives the
   carrier whole on each checkpoint, a cost to that one tab, accepted. Even then a write that changes
   `candidates` is not small: the field travels whole.
@@ -673,8 +681,11 @@ Slice 1 also edits `server/src/data/chatStore.ts` (the op-write refusal, the tol
 parallel with those three slices either. Slice 2 edits `src/ts/storage/chatStore.svelte.ts`,
 `src/ts/network/eventFeed.ts`, `DefaultChatScreen.svelte` and `Chats.svelte`, which Transport Slices 0–4, Job
 Handoff Slices 2 and 3 and Render Work Budget Slice 4 also edit; its `server/src/data/chatStore.ts` (the op)
-is Transport Slices 1 and 4's too; it runs after Transport Slice 4 with that plan's D6 metadata amendment (its
-dependency, D4) and not in parallel with the others.
+is Transport Slices 1 and 4's too; it reaches `dev` in the same merge as Transport Slice 4 with that plan's D6
+metadata amendment or after it (its merge-time dependency, D4). When it is built on a branch beside those
+slices rather than after them, the merge resolves these overlaps by hand (`server/src/data/chatStore.ts` and
+`src/ts/storage/chatStore.svelte.ts` above all, and the guides both edit) and runs the integration checks
+under **Verification**.
 
 ### Slice 1: the schema, the normalizer, and the reroll job (D1–D9, D13, D14 server side; needs nothing)
 
@@ -754,7 +765,7 @@ variables).
     `reroll` job without the field runs as a send with empty input; the `hello` frame carries `rerollInPlace`;
     a sequence event of `commandRunner.ts` carries no `alternatives`.
 
-### Slice 2: the switch op and the tab's candidate controls (D10, D12, D14; needs 1 and Transport Slice 4)
+### Slice 2: the switch op and the tab's candidate controls (D10, D12, D14; needs 1; merges with or after Transport Slice 4)
 
 Files: `shared/chats.ts` (the `selectCandidate` op), `server/src/data/chatStore.ts` (applying it from the
 stored row, the `candidatesRevision` and missing-`candidateId` refusals as an answer the tab sees, the
@@ -840,8 +851,9 @@ list), a final pass over every guide this plan touched (the chat pipeline guide'
 
 ## Recommended order
 
-1 → 2 → 3 → 4, with Slice 2 after Incremental Chat Transport Slice 4 with that plan's D6 metadata amendment
-(D4); Transport Slice 2 is not needed first. After Slice 1 no tab sends `rerollMessageId` yet, so every reroll
+1 → 2 → 3 → 4. Slice 2 may be built beside Incremental Chat Transport Slice 4 (with that plan's D6 metadata
+amendment) on a separate branch, but reaches `dev` only in the same merge or after it (D4); Transport Slice 2
+is not needed first. After Slice 1 no tab sends `rerollMessageId` yet, so every reroll
 runs today's removal path, and the swipe to an extra sample is gone until Slice 2 (the samples are stored as
 `candidates`, which no tab shows yet); a tab that removes a carrier with samples loses them as it loses them
 today. After Slice 2's deploy a tab not yet reloaded still removes the carrier on its reroll, and the
@@ -863,6 +875,22 @@ the owner asked for; 3 settles the export and the memory proofs; 4 is the browse
   export (file names as the slices create them).
 - `e2e`: `e2e/perChatSends.spec.ts` after Slice 2 (the send path's argument changes) and
   `e2e/rerollCandidates.spec.ts` after Slice 4, one e2e run at a time.
+- The merge with Incremental Chat Transport, when Slice 2 and Transport Slices 0–4 were built on separate
+  branches (D4): after the merge, besides V1 and `pnpm check:docs` on the guides both plans edit, add these
+  cases to the two plans' focused tests and run them, since each branch's tests cover only its side:
+  - a reroll's begin group, its write-back and a `selectCandidate` switch on a carrier over
+    `MAX_FEED_PATCH_BYTES` each publish a row manifest with `meta: true` and the carrier's id in `changed`, and
+    a second tab holding the chat loaded at the base revision applies the rows and `metaFields` through the
+    `chatRows` read without a whole-chat read (`server/src/tests/chatFeedPatches.test.ts`,
+    `src/ts/storage/tests/resourceSyncFeedPatches.test.ts`, with this plan's real ops in place of Transport
+    Slice 4's fixture);
+  - the tab's optimistic switch, the reroll's result and `unReroll` change the message through the chat
+    store's position-index path (Transport D1), and the index still validates after each;
+  - the owner tab of an in-place reroll receives `streamed` entries for the carrier's raw checkpoints after
+    the begin group and the whole row for a write that changes `candidates` (Transport D3), and its display
+    matches the stored row at the end;
+  - `hello` carries `rerollInPlace` beside the transport's `cursor`, and after a reconnect (`retire`, then a
+    new `hello`) the capability is set again from the new `hello`.
 - Not covered by any gate: the phone swipe on the owner's server, and a server process death mid-reroll or an
   abort past the grace (D8's partial text), which only a manual kill shows.
 

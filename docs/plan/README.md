@@ -37,8 +37,9 @@ Candidates were then challenged again and revised a second time the same day. Pl
   and the list by revision, evaluated from the stored row, and moves the variables and the checkpoint's
   `after` with it while the turn's `before` is kept; the extra samples of one request
   become candidates; only the newest reply keeps the snapshots and a discarded candidate is never memory
-  input; the tab takes the in-place path only when the server's `hello` advertises it; Slice 2 depends on
-  Incremental Chat Transport Slice 4; D1–D14 recommended, Q1–Q4 answered, no slice scheduled.
+  input; the tab takes the in-place path only when the server's `hello` advertises it; Slice 2 merges with or
+  after Incremental Chat Transport Slice 4 (a traffic dependency, not a code one: separate branches are fine,
+  the merge runs the listed integration checks); D1–D14 recommended, Q1–Q4 answered, no slice scheduled.
 - [Render Work Budget](render-work-budget.md): a superseded or unmounted chat row's render run is aborted
   through one signal (parser, transform, translation and retry stop instead of being hidden, and the
   auto-translate probe's remembered inputs are written only once it completes), deterministic parser errors
@@ -56,7 +57,7 @@ Candidates were then challenged again and revised a second time the same day. Pl
   bounded epoch-scoped change log (one row per committed ref, written before `COMMIT`, the table created at
   open) against a map frozen at `hello` with the whole listing as the fallback, both sockets carry `proto=1`,
   and an over-cap change of a loaded chat reads its rows by id (Slice 4, no longer gated: Reroll Candidates
-  depends on it); D1–D10 recommended, Q1–Q4 answered (Q2 and Q4 superseded), no slice scheduled.
+  Slice 2 merges with or after it); D1–D10 recommended, Q1–Q4 answered (Q2 and Q4 superseded), no slice scheduled.
 - [Plugin Storage and Data API](plugin-storage.md): plugin data becomes visible, owned, and cheap to move: a plugin
   data page lists and deletes what every storage namespace holds and permission grants become revocable (a reset per
   plugin, revoked on removal); a `pluginStorage` write sends the changed key as a nested patch one level down and a
