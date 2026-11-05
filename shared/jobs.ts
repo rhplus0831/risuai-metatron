@@ -135,6 +135,8 @@ type GenerationCreateBase = {
     clientId: string;
     /** Identifies one attempt across retries; omitted by older clients. */
     requestId?: string;
+    /** Publishes an offer at admission; the creator remains owner until a ticket attaches. */
+    handoff?: "prefer";
 };
 
 /** A create body: a `command` job carries its `command`; every other kind has none. */
@@ -159,12 +161,19 @@ export type GenerationCurrent = {
     jobId: string;
     kind: GenerationKind;
     owned: boolean;
+    handedOff?: true;
     stage?: GenerationStage;
     sequence?: Pick<GenerationSequence, "total" | "sent">;
 };
 
 /** Stops only the named job while it still holds this chat; clientId is attribution, not authority. */
 export type GenerationStopBody = { characterId: string; chatId: string; jobId: string; clientId: string };
+
+/** A participant opens an offer, optionally for one client. */
+export type GenerationHandoffBody = { clientId: string; target?: string };
+/** Claims an open offer; the returned ticket authorizes one socket attach. */
+export type GenerationTakeoverBody = { clientId: string };
+export type GenerationTakeoverAnswer = { ticket: string };
 
 /** 409: the chat has a running job (the owner can attach to it). */
 export type GenerationBusyBody = { error: "chatBusy"; jobId: string };
@@ -322,8 +331,11 @@ export type GenerationTerminalEvent =
            * The plugin hooks of its replies the job skipped because no owner tab was attached when
            * they came due (`disconnected`); absent when none was. The tab runs the `chatOutput`
            * listeners of each entry late (`replaySkippedListeners`) once it holds the job's chat.
+           * Only the frozen late-replay recipient receives the list; other readers receive [].
            */
           skipped?: SkippedHook[];
+          /** Delivered listeners that disconnected; may have run and must never be replayed. */
+          missed?: Extract<SkippedHook, { name: "chatOutput" }>[];
       }
     | {
           type: "error";
@@ -331,7 +343,7 @@ export type GenerationTerminalEvent =
           message: string;
           status: number;
           reason: GenerationErrorReason;
-          /** An explicit chat stop from another client; present only for reason `aborted`. */
+          /** A participant or chat stop from another client; present only for reason `aborted`. */
           abortedBy?: "other";
           sequence?: GenerationSequence;
           /**
@@ -371,7 +383,7 @@ export const MAX_SEQUENCE_PART_CHARS = 100_000;
 // the owner answers. Every request has one deadline from the moment it is dispatched; the server alone
 // decides `timedOut`, `disconnected`, `aborted`, and `refused`.
 
-/** A notice: a UI effect the job asks the owner's tab to show. */
+/** A notice: dialogs go to the owner, display effects to all sockets, device effects to the creator. */
 export type GenerationNotice =
     | { kind: "alertNormal" | "alertError" | "alertToast" | "alertMd" | "alertWait"; payload: { message: string } }
     | { kind: "alertClear"; payload: Record<string, never> }
@@ -796,6 +808,7 @@ export type ChannelAnswer =
     | { type: "answer"; id: string; outcome: "failed"; failure: CallbackFailure; error: string; discarded?: string[] };
 
 export type GenerationEvent =
+    | { type: "handoff"; epoch: string; owner: "self" | "other"; clientName?: string; pending?: true }
     | GenerationAcceptedEvent
     | GenerationChunkEvent
     | { type: "preset"; epoch: string; presetId: string }
@@ -819,7 +832,7 @@ export type GenerationEvent =
     | { type: "ping"; ts: number };
 
 /**
- * `GET /api/generations/:id`: what the owner needs to attach again. After an ended job is collected,
+ * `GET /api/generations/:id`: what a participant needs to attach again. After an ended job is collected,
  * the server keeps its outcome for a while (`kept`): the job can no longer be attached, and its
  * terminal is trimmed (no preview `result`, large `alternatives` dropped, an error
  * message cut).
@@ -831,6 +844,7 @@ export type GenerationStatus = {
     chatId: string;
     epoch: string;
     state: "running" | "ended";
+    handedOff?: true;
     messageId?: string;
     generationId?: string;
     terminal?: GenerationTerminalEvent;

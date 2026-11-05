@@ -24,10 +24,22 @@ export type ChatStreamingSnapshot = ChatStreaming & { revision: string | null };
  */
 export type MemoryTaskEntry = { characterId: string; chatId: string; status: MemoryTaskStatus };
 
+/** An offer contains only job identity and routing, never chat content. */
+export type HandoffOffer = {
+    epoch: string;
+    jobId: string;
+    characterId: string;
+    chatId: string;
+    state: "open" | "closed";
+    reason: "absent" | "preferred" | "requested";
+    target?: string;
+};
+
 /**
  * A frame of the live-update socket, server to client:
  * - `hello`: sent once on every connection with the database epoch, current generation locks
- *   (`streaming`), and every chat's memory task status (`memoryTasks`); both snapshots replace the
+ *   (`streaming`), every chat's memory task status (`memoryTasks`), and optional open handoff offers
+ *   (`handoffs`); these snapshots replace the
  *   client's whole sets. The optional `digest` fingerprints the revision listing sampled with those
  *   snapshots. A matching advertised map reconciles locally; otherwise the client reads
  *   `GET /api/resources/revisions` (nothing is replayed);
@@ -36,6 +48,7 @@ export type MemoryTaskEntry = { characterId: string; chatId: string; status: Mem
  *   job's end released (then `changes` may be empty);
  * - `memoryTask`: a chat's memory task status changed (in `epoch`); a task's summary write reaches
  *   the client as its `change` frame first;
+ * - `handoff`: a content-free job handoff offer opened or closed;
  * - `epoch`: a restore or import replaced the database; the client reloads;
  * - `ping`: the heartbeat.
  */
@@ -46,9 +59,11 @@ export type EventFeedFrame =
           streaming: ChatStreamingSnapshot[];
           memoryTasks: MemoryTaskEntry[];
           digest?: string;
+          handoffs?: HandoffOffer[];
       }
     | { type: "change"; epoch: string; changes: ChangeSet; streaming?: ChatStreaming[] }
     | ({ type: "memoryTask"; epoch: string } & MemoryTaskEntry)
+    | ({ type: "handoff" } & HandoffOffer)
     | { type: "epoch"; epoch: string }
     | { type: "ping"; ts: number };
 

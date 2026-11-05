@@ -266,11 +266,13 @@ async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, comman
     const parts = commandState.sequence.flatMap(({ clear, parts }) => parts.map((part) => ({ clear, part })));
     /** The command's own skipped reply hooks (a Lua request's), then each part's (its own state). */
     const skipped: SkippedHook[] = [...commandState.skippedHooks];
+    const missed = [...commandState.missedHooks];
     if (parts.length === 0) {
         job.emit({
             type: "done",
             revision: deps.store.chatRevision(characterId, chatId),
             ...(skipped.length > 0 ? { skipped } : {}),
+            ...(missed.length > 0 ? { missed } : {}),
         });
         return;
     }
@@ -290,6 +292,7 @@ async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, comman
             ...(present ? { messageId } : {}),
             sequence: { total, sent, ...(stopped ? { stopped } : {}) },
             ...(skipped.length > 0 ? { skipped } : {}),
+            ...(missed.length > 0 ? { missed } : {}),
         });
     };
     sequence.progress({ total, sent });
@@ -340,6 +343,7 @@ async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, comman
         sequence.releaseRemovedReplies();
         messageId = result.messageId;
         if (result.skipped) skipped.push(...result.skipped);
+        if (result.missed) missed.push(...result.missed);
         if (!result.stopped) sent += 1;
         sequence.progress({ total, sent });
         job.emit({

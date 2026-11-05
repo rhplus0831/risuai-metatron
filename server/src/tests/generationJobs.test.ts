@@ -8,7 +8,9 @@ import { WebSocket as WsClient } from "ws";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { loreBook } from "../../../shared/database.ts";
-import { GENERATION_KINDS, type GenerationEvent } from "../../../shared/jobs.ts";
+import { GENERATION_KINDS, NO_GENERATION_HOOKS, type GenerationEvent } from "../../../shared/jobs.ts";
+import { createGenerationReceipts } from "../data/generationReceipts.ts";
+import { createChannelHub } from "../jobs/channel.ts";
 import { type ChangeFeedEvent, createChangeFeed } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { CommittedWriteError, createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
@@ -32,6 +34,17 @@ import {
 import { createGenerationLock } from "../jobs/generationLock.ts";
 import { installSnapshot } from "./stagedRestore.ts";
 import { allowListenerOrigin, sleep, waitFor } from "./testSupport.ts";
+
+/** A promise with its settle functions (`Promise.withResolvers` is newer than the server's `lib`). */
+function withResolvers<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+        resolve = done;
+        reject = fail;
+    });
+    return { promise, resolve, reject };
+}
 
 // The generation job registry (`server/src/jobs/generationJobs.ts`) in process, with a fake runner
 // per test: admission, the job's write capability (lock handoff, rollback, the one F-b retry, the
@@ -79,7 +92,9 @@ afterEach(async () => {
  * while `current`, the store the jobs write through throws from a write's `committed` hook after the
  * job's own bookkeeping ran (a `CommittedWriteError`).
  */
-function setup(options: { feed?: boolean; failCommitted?: { current: boolean } } = {}) {
+function setup(
+    options: { feed?: boolean; failCommitted?: { current: boolean }; now?: () => number; receipts?: boolean } = {},
+) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-generation-jobs-"));
     const lock = createGenerationLock();
     const feed = options.feed ? createChangeFeed() : undefined;
@@ -110,6 +125,10 @@ function setup(options: { feed?: boolean; failCommitted?: { current: boolean } }
           })
         : store;
     const snapshots: SnapshotManager = createSnapshotManager({ store, dir: path.join(dir, "backups") });
+    const handoffs: unknown[] = [];
+    const receipts = options.receipts
+        ? createGenerationReceipts({ file: path.join(dir, "receipts.sqlite"), epoch: store.epoch(), now: options.now })
+        : undefined;
     let runner: GenerationRunner = async () => {};
     const jobs = createGenerationJobs({
         store: jobStore,
@@ -119,12 +138,17 @@ function setup(options: { feed?: boolean; failCommitted?: { current: boolean } }
         lock,
         authorize: async () => true,
         runner: (job) => runner(job),
+        now: options.now,
+        hub: createChannelHub({ now: options.now }),
+        receipts,
+        publishHandoff: (event) => handoffs.push(event),
     });
     cleanups.push(async () => {
         jobs.beginShutdown();
         await jobs.drain();
         jobs.dispose();
         await snapshots.stop();
+        receipts?.close();
         store.close();
         rmSync(dir, { recursive: true, force: true });
     });
@@ -198,21 +222,23 @@ function setup(options: { feed?: boolean; failCommitted?: { current: boolean } }
     const ended = (jobId: string) => waitFor(() => jobs.status(jobId, "tab")?.state === "ended");
     const owner = (messageId: string) => lock.ownerOf({ ...ref, messageId })?.generationId ?? null;
     /** Follows the registry's owner stream; a ping fences the snapshot and any preceding emits. */
-    const follow = async (jobId: string) => {
+    const follow = async (jobId: string, clientId = "tab", query = "") => {
         const listener = createServer();
         listener.on("upgrade", (req, socket, head) => jobs.handleUpgrade(req, socket, head));
         await new Promise<void>((resolve) => listener.listen(0, "127.0.0.1", resolve));
         allowListenerOrigin(listener);
         cleanups.push(() => new Promise<void>((resolve) => listener.close(() => resolve())));
         const { port } = listener.address() as { port: number };
-        const ws = new WsClient(`ws://127.0.0.1:${port}/api/generations/${jobId}/ws?clientId=tab`);
+        const ws = new WsClient(`ws://127.0.0.1:${port}/api/generations/${jobId}/ws?clientId=${clientId}${query}`);
         const events: GenerationEvent[] = [];
         const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()));
+        const waiters = new Set<() => void>();
         ws.on("message", (data) => {
             const event = JSON.parse(String(data)) as GenerationEvent;
             if (event.type !== "ping") {
                 events.push(event);
             }
+            for (const notify of waiters) notify();
         });
         cleanups.push(async () => {
             ws.close();
@@ -232,10 +258,34 @@ function setup(options: { feed?: boolean; failCommitted?: { current: boolean } }
                 });
                 ws.ping();
             });
-        return { events, fence };
+        const until = async (predicate: (events: GenerationEvent[]) => boolean) => {
+            if (predicate(events)) return;
+            await new Promise<void>((resolve) => {
+                const notify = () => {
+                    if (predicate(events)) {
+                        waiters.delete(notify);
+                        resolve();
+                    }
+                };
+                waiters.add(notify);
+            });
+        };
+        return {
+            events,
+            fence,
+            ws,
+            until,
+            closed,
+            close: async () => {
+                ws.close();
+                await closed;
+            },
+        };
     };
     return {
         dir,
+        handoffs,
+        receipts,
         lock,
         store,
         snapshots,
@@ -1453,4 +1503,491 @@ describe("the kept outcome of a collected job", () => {
         await collect();
         expect(jobs.status(during, "tab")).toBeNull();
     });
+});
+
+describe("generation ownership handoffs", () => {
+    const hooks = { ...NO_GENERATION_HOOKS, scripts: ["editoutput" as const], chatOutput: true, interceptors: true };
+    const clock = () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        vi.setSystemTime(0);
+    };
+    async function live(options: { preferred?: boolean; receipts?: boolean } = {}) {
+        clock();
+        const s = setup({ now: () => Date.now(), receipts: options.receipts });
+        const entered = withResolvers<RunningJob>();
+        const finish = withResolvers<void>();
+        const completed = s.run(async (job) => {
+            entered.resolve(job);
+            await Promise.race([finish.promise, aborted(job)]);
+        });
+        cleanups.push(() => {
+            finish.resolve();
+        });
+        const body = {
+            kind: "send" as const,
+            clientId: "tab",
+            context: s.context(),
+            hooks,
+            requestId: "handoff-request",
+            ...(options.preferred ? { handoff: "prefer" as const } : {}),
+        };
+        const created = s.jobs.create(body, s.store.epoch());
+        if (!created.ok) throw new Error(JSON.stringify(created));
+        const job = await entered.promise;
+        const offer = (target?: string, clientId = "tab") =>
+            s.jobs.handoff(job.id, { clientId, ...(target ? { target } : {}) }, s.store.epoch());
+        const ticket = (clientId = "worker") => {
+            const result = s.jobs.takeover(job.id, { clientId }, s.store.epoch());
+            if (!result.ok) throw new Error(JSON.stringify(result));
+            return result.body.ticket;
+        };
+        const take = async (clientId = "worker", query = "&hydration=patch") =>
+            s.follow(job.id, clientId, `&ticket=${ticket(clientId)}${query}`);
+        return { ...s, job, body, offer, ticket, take, finish, completed };
+    }
+    const roles = (events: GenerationEvent[]) => events.filter((event) => event.type === "handoff");
+    const callbacks = (events: GenerationEvent[]) => events.filter((event) => event.type === "callback");
+    const chats = (events: GenerationEvent[]) =>
+        events.filter((event) => event.type === "chatPatch" || (event.type === "resource" && event.kind === "chats"));
+    const answer = async (
+        socket: Awaited<ReturnType<ReturnType<typeof setup>["follow"]>>,
+        id: string,
+        value: unknown = "ok",
+    ) => {
+        socket.ws.send(JSON.stringify({ type: "answer", id, outcome: "answered", value }));
+        await socket.fence();
+    };
+
+    it("publishes absence only after ten seconds without an owner and closes it on return", async () => {
+        const h = await live();
+        const first = await h.follow(h.job.id);
+        await first.fence();
+        await first.close();
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(h.handoffs).toEqual([]);
+        const returned = await h.follow(h.job.id);
+        await returned.fence();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(h.handoffs).toEqual([]);
+        await returned.close();
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(h.jobs.handoffSnapshot()).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        const offer = {
+            epoch: h.store.epoch(),
+            jobId: h.job.id,
+            characterId: "c",
+            chatId: "k",
+            state: "open",
+            reason: "absent",
+        };
+        expect(h.jobs.handoffSnapshot()).toEqual([offer]);
+        expect(h.handoffs).toEqual([{ type: "handoff", ...offer }]);
+        await h.follow(h.job.id);
+        expect(h.jobs.handoffSnapshot()).toEqual([]);
+        expect(h.handoffs.at(-1)).toEqual({ type: "handoff", ...offer, state: "closed" });
+    });
+
+    it("binds one-use tickets to the job and client, reopens expired offers, and refuses ended or shutting-down jobs", async () => {
+        const h = await live();
+        const takeover = (id = h.job.id, clientId = "worker") => h.jobs.takeover(id, { clientId }, h.store.epoch());
+        expect(takeover("unknown")).toMatchObject({ ok: false, status: 404 });
+        expect(takeover()).toMatchObject({ ok: false, status: 409 });
+        await expect(h.follow(h.job.id, "worker")).rejects.toThrow("404");
+        expect(h.offer("worker")).toMatchObject({ ok: true });
+        expect(takeover(h.job.id, "third")).toMatchObject({ ok: false, status: 409 });
+        const expired = h.ticket();
+        expect(takeover()).toMatchObject({ ok: false, status: 409 });
+        await expect(h.follow(h.job.id, "third", `&ticket=${expired}`)).rejects.toThrow("409");
+        // A second known job cannot consume the first job's ticket.
+        const second = h.jobs.create(
+            {
+                ...h.body,
+                requestId: "second",
+                context: { ...h.body.context, chatId: "j", chatRevision: h.store.chatRevision("c", "j")! },
+            },
+            h.store.epoch(),
+        );
+        if (!second.ok) throw new Error(JSON.stringify(second));
+        await expect(h.follow(second.jobId, "worker", `&ticket=${expired}`)).rejects.toThrow("409");
+        await vi.advanceTimersByTimeAsync(10_000);
+        await expect(h.follow(h.job.id, "worker", `&ticket=${expired}`)).rejects.toThrow("409");
+        expect(h.jobs.handoffSnapshot()).toContainEqual(
+            expect.objectContaining({ jobId: h.job.id, reason: "requested", target: "worker", state: "open" }),
+        );
+        const used = h.ticket();
+        const owner = await h.follow(h.job.id, "worker", `&ticket=${used}`);
+        await owner.fence();
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch: h.store.epoch(), owner: "self" });
+        await expect(h.follow(h.job.id, "worker", `&ticket=${used}`)).rejects.toThrow("409");
+        expect(takeover()).toMatchObject({ ok: false, status: 409 });
+        h.job.emit({ type: "done", revision: h.revision() });
+        expect(takeover()).toMatchObject({ ok: false, status: 409 });
+        h.jobs.beginShutdown();
+        expect(takeover(second.jobId)).toMatchObject({ ok: false, status: 409 });
+    });
+
+    it("compares attach stamps within each client and requires a ticket for the creator to reclaim ownership", async () => {
+        const h = await live({ preferred: true });
+        const creator = await h.follow(h.job.id, "tab", "&attach=900");
+        await creator.fence();
+        expect(creator.events[0]).toMatchObject({ type: "handoff", owner: "self" });
+        const worker = await h.take("worker", "&attach=1");
+        await worker.fence();
+        expect(worker.events[0]).toMatchObject({ type: "handoff", owner: "self" });
+        const viewer = await h.follow(h.job.id, "tab", "&attach=901");
+        await viewer.fence();
+        expect(viewer.events[0]).toMatchObject({ type: "handoff", owner: "other" });
+        const reattached = await h.follow(h.job.id, "worker", "&attach=2");
+        await reattached.fence();
+        expect(reattached.events[0]).toMatchObject({ type: "handoff", owner: "self" });
+        await expect(h.follow(h.job.id, "worker", "&attach=1")).rejects.toThrow("409");
+        expect(h.offer("tab", "worker")).toMatchObject({ ok: true });
+        const reclaimed = await h.take("tab", "&attach=902");
+        await reclaimed.fence();
+        expect(reclaimed.events[0]).toMatchObject({ type: "handoff", owner: "self" });
+        expect(h.jobs.status(h.job.id, "tab")).not.toHaveProperty("handedOff");
+    });
+
+    it("keeps delivered work with the old owner until its answer and sends queued work to the new owner once", async () => {
+        const h = await live({ preferred: true });
+        const creator = await h.follow(h.job.id);
+        const edit = h.job.channel.callback("editoutput", { text: "original" });
+        await creator.fence();
+        const first = callbacks(creator.events)[0];
+        const tail = h.job.channel.callback("chatOutput", { messageId: "r", speakerId: "c" });
+        const worker = await h.take();
+        await worker.fence();
+        expect(worker.events[0]).toMatchObject({ type: "handoff", owner: "other", pending: true });
+        expect(callbacks(worker.events)).toEqual([]);
+        expect(h.jobs.parentCallback(h.job.id, "worker", first.id, () => {})).toBeNull();
+        const parent = h.jobs.parentCallback(h.job.id, "tab", first.id, () => {});
+        expect(parent).not.toBeNull();
+        parent!.unwatch();
+        await vi.advanceTimersByTimeAsync(10_001);
+        expect(h.jobs.handoffSnapshot()).toEqual([]);
+        await answer(worker, first.id, "intruder");
+        await answer(creator, first.id, "edited by creator");
+        expect(await edit).toEqual({ outcome: "answered", value: "edited by creator" });
+        await vi.advanceTimersByTimeAsync(0);
+        await worker.fence();
+        await creator.fence();
+        expect(roles(worker.events).at(-1)).toMatchObject({ owner: "self" });
+        expect(roles(creator.events).at(-1)).toMatchObject({ owner: "other" });
+        expect(callbacks(worker.events)).toHaveLength(1);
+        const next = callbacks(worker.events)[0];
+        expect(next).toMatchObject({ name: "chatOutput", payload: { messageId: "r", speakerId: "c" } });
+        expect(next).not.toHaveProperty("replay");
+        expect(callbacks(creator.events).map((event) => event.id)).toEqual([first.id]);
+        await answer(worker, next.id);
+        expect(await tail).toMatchObject({ outcome: "answered" });
+    });
+
+    it("waits for the last delivered request and promotes the pending owner after cancellation", async () => {
+        const h = await live({ preferred: true });
+        const creator = await h.follow(h.job.id);
+        const controller = new AbortController();
+        const root = h.job.channel.callback("editoutput", { text: "root" }, { signal: controller.signal });
+        await creator.fence();
+        const rootId = callbacks(creator.events)[0].id;
+        const child = h.job.channel.callback("editoutput", { text: "child" }, { parentId: rootId });
+        await creator.fence();
+        const childId = callbacks(creator.events)[1].id;
+        const worker = await h.take();
+        await worker.fence();
+        expect(worker.events[0]).toMatchObject({ owner: "other", pending: true });
+        await answer(creator, childId, "child done");
+        expect(await child).toMatchObject({ value: "child done" });
+        await vi.advanceTimersByTimeAsync(1);
+        await worker.fence();
+        expect(roles(worker.events).at(-1)).toMatchObject({ owner: "other", pending: true });
+        controller.abort();
+        expect(await root).toMatchObject({ outcome: "aborted" });
+        await vi.advanceTimersByTimeAsync(1);
+        await worker.fence();
+        expect(roles(worker.events).at(-1)).toMatchObject({ owner: "self" });
+        expect(callbacks(worker.events)).toEqual([]);
+        expect(h.jobs.callbackDrained(h.job.id, "third", rootId)).toBeNull();
+        expect(h.jobs.callbackDrained(h.job.id, "tab", rootId)).toBe(true);
+    });
+
+    it("reopens a requested offer when the pending socket leaves before the old request settles", async () => {
+        const h = await live();
+        const creator = await h.follow(h.job.id);
+        const pending = h.job.channel.callback("editoutput", { text: "held" });
+        await creator.fence();
+        h.offer("worker");
+        const worker = await h.take();
+        await worker.fence();
+        expect(worker.events[0]).toMatchObject({ pending: true, owner: "other" });
+        await worker.close();
+        expect(h.jobs.handoffSnapshot()).toEqual([
+            expect.objectContaining({ state: "open", reason: "requested", target: "worker" }),
+        ]);
+        await answer(creator, callbacks(creator.events)[0].id, "kept");
+        expect(await pending).toMatchObject({ value: "kept" });
+        expect(h.jobs.status(h.job.id, "tab")).not.toHaveProperty("handedOff");
+        const replacement = await h.take();
+        await replacement.fence();
+        expect(replacement.events[0]).toMatchObject({ owner: "self" });
+    });
+
+    it("delivers an absent owner's callback at one hundred seconds as a first delivery before its real deadline", async () => {
+        const h = await live();
+        const old = await h.follow(h.job.id, "tab", "&liveness=1");
+        await old.fence();
+        await vi.advanceTimersByTimeAsync(45_000);
+        expect(h.job.ownerAttached()).toBe(false);
+        const pending = h.job.channel.callback("editoutput", { text: "waiting" });
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(h.jobs.handoffSnapshot()).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(h.jobs.handoffSnapshot()).toEqual([expect.objectContaining({ reason: "absent", state: "open" })]);
+        await vi.advanceTimersByTimeAsync(45_000);
+        const worker = await h.take();
+        await worker.fence();
+        expect(worker.events[0]).toMatchObject({ owner: "self" });
+        const callback = callbacks(worker.events)[0];
+        expect(callback).toMatchObject({ name: "editoutput", payload: { text: "waiting" } });
+        expect(callback).not.toHaveProperty("replay");
+        expect(callbacks(old.events)).toEqual([]);
+        await answer(worker, callback.id, "rescued");
+        expect(await pending).toEqual({ outcome: "answered", value: "rescued" });
+    });
+
+    it("settles an undelivered callback at one hundred five seconds when nobody takes over", async () => {
+        const h = await live();
+        const old = await h.follow(h.job.id, "tab", "&liveness=1");
+        await old.fence();
+        await vi.advanceTimersByTimeAsync(45_000);
+        let result: unknown;
+        const pending = h.job.channel.callback("editoutput", { text: "waiting" }).then((value) => {
+            result = value;
+            return value;
+        });
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect(result).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await pending).toMatchObject({ outcome: "disconnected" });
+        expect(callbacks(old.events)).toEqual([]);
+    });
+
+    it("lets a delivered callback expire on its old owner at seventy seconds before promoting the pending socket", async () => {
+        const h = await live();
+        const old = await h.follow(h.job.id, "tab", "&liveness=1");
+        await old.fence();
+        await vi.advanceTimersByTimeAsync(10_000);
+        let result: unknown;
+        const pending = h.job.channel.callback("editoutput", { text: "keep this text" }).then((value) => {
+            result = value;
+            return value;
+        });
+        await old.until((events) => callbacks(events).length === 1);
+        expect(callbacks(old.events)[0].deadline).toBe(70_000);
+        await vi.advanceTimersByTimeAsync(46_000);
+        const worker = await h.take();
+        await worker.fence();
+        expect(worker.events[0]).toMatchObject({ owner: "other", pending: true });
+        await vi.advanceTimersByTimeAsync(13_999);
+        expect(result).toBeUndefined();
+        expect(callbacks(worker.events)).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await pending).toMatchObject({ outcome: "disconnected", delivered: true });
+        await vi.advanceTimersByTimeAsync(1);
+        await worker.fence();
+        expect(roles(worker.events).at(-1)).toMatchObject({ owner: "self" });
+        expect(callbacks(worker.events)).toEqual([]);
+    });
+
+    it("routes display events to viewers, dialogs to the owner, and device notices to the creator", async () => {
+        const h = await live({ preferred: true });
+        const viewer = await h.follow(h.job.id, "tab", "&liveness=1");
+        const owner = await h.take();
+        await owner.fence();
+        await viewer.fence();
+        expect(roles(viewer.events).at(-1)).toMatchObject({ owner: "other" });
+        const display = [
+            "emotion",
+            "progress",
+            "memoryProgress",
+            "translating",
+            "reloadChat",
+            "reloadDisplay",
+            "updateGUI",
+        ];
+        const dialogs = ["alertNormal", "alertError", "alertToast", "alertMd", "alertWait", "alertClear", "openURL"];
+        for (const kind of [...display, ...dialogs, "tts", "notification"])
+            h.job.channel.notice({ kind, payload: {} } as never);
+        h.job.emit({
+            type: "accepted",
+            jobId: h.job.id,
+            revision: h.revision(),
+            messageId: "r",
+            generationId: "g",
+            text: "",
+        });
+        h.job.emit({ type: "chunk", messageId: "r", generationId: "g", seq: 1, text: "visible" });
+        const question = h.job.channel.ask({ kind: "alertConfirm", payload: { message: "owner?" } });
+        await owner.fence();
+        await viewer.fence();
+        const noticeKinds = (events: GenerationEvent[]) =>
+            events.filter((event) => event.type === "notice").map((event) => event.kind);
+        expect(noticeKinds(viewer.events)).toEqual([...display, "tts", "notification"]);
+        expect(noticeKinds(owner.events)).toEqual([...display, ...dialogs]);
+        expect(viewer.events.some((event) => event.type === "chunk" && event.text === "visible")).toBe(true);
+        expect(viewer.events.some((event) => event.type === "question")).toBe(false);
+        const request = owner.events.find((event) => event.type === "question")!;
+        let settled = false;
+        void question.then(() => {
+            settled = true;
+        });
+        const ownerMessages: unknown[] = [];
+        const unlisten = h.job.onClientMessage((message) => ownerMessages.push(message));
+        await answer(viewer, request.id, false);
+        viewer.ws.send(JSON.stringify({ type: "pong", ts: 0 }));
+        await viewer.fence();
+        expect(settled).toBe(false);
+        expect(ownerMessages).toEqual([]);
+        unlisten();
+        const ping = new Promise<void>((resolve) =>
+            viewer.ws.on("message", (raw) => {
+                if (JSON.parse(String(raw)).type === "ping") resolve();
+            }),
+        );
+        await vi.advanceTimersByTimeAsync(45_001);
+        await ping;
+        expect(h.job.ownerAttached()).toBe(true);
+        expect(viewer.ws.readyState).toBe(WsClient.OPEN);
+        await answer(owner, request.id, true);
+        expect(await question).toEqual({ outcome: "answered", value: true });
+        h.job.emit({ type: "done", revision: h.revision() });
+        await viewer.fence();
+        expect(viewer.events.at(-1)).toMatchObject({ type: "done" });
+    });
+
+    it("shares whole hydration, speaker checkpoints, viewer resync, and a legacy viewer's callback barrier with every socket", async () => {
+        const h = await live({ preferred: true });
+        const viewer = await h.follow(h.job.id, "tab", "&hydration=patch");
+        await viewer.fence();
+        viewer.events.length = 0;
+        const owner = await h.take();
+        await owner.fence();
+        await viewer.fence();
+        expect(chats(owner.events)).toHaveLength(1);
+        expect(chats(owner.events)[0]).toMatchObject({
+            type: "resource",
+            kind: "chats",
+            data: { message: [m("u", "hi"), m("r", "", "char")] },
+        });
+        expect(chats(viewer.events)).toEqual(chats(owner.events));
+        owner.events.length = viewer.events.length = 0;
+        h.job.write(() => ({
+            chats: [group(h.revision(), [begin("r", "g1"), checkpoint("r", "g1", 1, "first speaker")])],
+        }));
+        h.job.emitRecords({ chats: [{ characterId: "c", id: "k" }] });
+        h.job.write(() => ({
+            chats: [
+                group(h.revision(), [
+                    {
+                        op: "append",
+                        anchor: { end: true },
+                        messages: [{ ...m("second", "second speaker", "char"), saying: "speaker-two" }],
+                    },
+                ]),
+            ],
+        }));
+        h.job.emitRecords({ chats: [{ characterId: "c", id: "k" }] });
+        await owner.fence();
+        await viewer.fence();
+        expect(chats(viewer.events)).toEqual(chats(owner.events));
+        expect(chats(owner.events)).toHaveLength(2);
+        expect(chats(owner.events)[1]).toMatchObject({
+            type: "chatPatch",
+            messages: expect.arrayContaining([
+                expect.objectContaining({
+                    after: "r",
+                    message: expect.objectContaining({
+                        chatId: "second",
+                        data: "second speaker",
+                        saying: "speaker-two",
+                    }),
+                }),
+            ]),
+        });
+        owner.events.length = viewer.events.length = 0;
+        viewer.ws.send(JSON.stringify({ type: "resync" }));
+        await viewer.fence();
+        await owner.fence();
+        expect(chats(owner.events)[0]).toMatchObject({ type: "resource", kind: "chats" });
+        expect(chats(viewer.events)).toEqual(chats(owner.events));
+        const legacy = await h.follow(h.job.id, "tab", "&attach=1");
+        await legacy.fence();
+        await owner.fence();
+        legacy.events.length = owner.events.length = 0;
+        const pending = h.job.channel.callback("editoutput", { text: "barrier" });
+        await owner.fence();
+        await legacy.fence();
+        expect(chats(owner.events)).toHaveLength(1);
+        expect(chats(owner.events)[0]).toMatchObject({ type: "resource", kind: "chats" });
+        expect(chats(legacy.events)).toEqual(chats(owner.events));
+        const callback = callbacks(owner.events)[0];
+        expect(owner.events.indexOf(chats(owner.events)[0])).toBeLessThan(owner.events.indexOf(callback));
+        await answer(owner, callback.id);
+        await pending;
+    });
+
+    it.each([true, false])(
+        "freezes late replay for the final recipient when the worker is attached: %s",
+        async (attached) => {
+            const h = await live({ preferred: true, receipts: true });
+            const creator = await h.follow(h.job.id);
+            const worker = await h.take();
+            await worker.fence();
+            if (!attached) await worker.close();
+            const skipped = [{ name: "chatOutput" as const, payload: { messageId: "r", speakerId: "c" } }];
+            const missed = [{ name: "chatOutput" as const, payload: { messageId: "previous", speakerId: "c" } }];
+            h.job.emit({ type: "done", revision: h.revision(), skipped, missed });
+            await creator.fence();
+            if (attached) await worker.fence();
+            const creatorList = attached ? [] : skipped;
+            const workerList = attached ? skipped : [];
+            expect(creator.events.at(-1)).toMatchObject({ type: "done", skipped: creatorList, missed });
+            if (attached) expect(worker.events.at(-1)).toMatchObject({ type: "done", skipped: workerList, missed });
+            const lateCreator = await h.follow(h.job.id);
+            await lateCreator.fence();
+            expect(lateCreator.events[0]).toMatchObject({ type: "handoff", owner: "other" });
+            expect(lateCreator.events.at(-1)).toMatchObject({ skipped: creatorList, missed });
+            expect(h.jobs.status(h.job.id, "tab")).toMatchObject({
+                handedOff: true,
+                terminal: { skipped: creatorList, missed },
+            });
+            expect(h.jobs.status(h.job.id, "worker")).toMatchObject({
+                handedOff: true,
+                terminal: { skipped: workerList, missed },
+            });
+            expect(h.jobs.create(h.body, h.store.epoch())).toMatchObject({
+                ok: true,
+                status: { terminal: { skipped: creatorList, missed } },
+            });
+            expect(h.jobs.cancel({ requestId: "handoff-request", clientId: "tab" }, h.store.epoch())).toMatchObject({
+                ok: true,
+                body: { status: { terminal: { skipped: creatorList, missed } } },
+            });
+            expect(h.receipts!.read(h.job.id)).toMatchObject({
+                clientId: "tab",
+                status: { terminal: { skipped: creatorList, missed } },
+            });
+            h.jobs.startGc();
+            await vi.advanceTimersByTimeAsync(JOB_DONE_GRACE_MS);
+            expect(h.jobs.status(h.job.id, "worker")).toMatchObject({
+                kept: true,
+                terminal: { skipped: workerList, missed },
+            });
+            expect(h.jobs.status(h.job.id, "tab")).toMatchObject({
+                kept: true,
+                terminal: { skipped: creatorList, missed },
+            });
+            expect(h.jobs.status(h.job.id, "third")).toBeNull();
+        },
+    );
 });

@@ -319,6 +319,7 @@ export type PromptSendResult =
           stopped?: true;
           /** The reply hooks skipped for want of an owner tab (`done.skipped`), when any was. */
           skipped?: SkippedHook[];
+          missed?: Extract<SkippedHook, { name: "chatOutput" }>[];
       };
 
 /**
@@ -602,6 +603,7 @@ async function runSend(
         ...(last?.alternatives ? { alternatives: last.alternatives } : {}),
         ...(stopped ? { stopped: true as const } : {}),
         ...(state.skippedHooks.length > 0 ? { skipped: [...state.skippedHooks] } : {}),
+        ...(state.missedHooks.length > 0 ? { missed: [...state.missedHooks] } : {}),
     };
 }
 
@@ -1604,8 +1606,9 @@ async function runSpeaker(arg: {
                     return { value: outcome.value };
                 case "disconnected":
                     // Listeners a tab had taken may have run there: only ones nobody took run late.
-                    if (name === "chatOutput" && !outcome.delivered) {
-                        state.skippedHooks.push({ name, payload: payload as CallbackPayloads["chatOutput"] });
+                    if (name === "chatOutput") {
+                        const hooks = outcome.delivered ? state.missedHooks : state.skippedHooks;
+                        hooks.push({ name, payload: payload as CallbackPayloads["chatOutput"] });
                     }
                     return null;
                 case "refused":

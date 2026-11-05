@@ -19,6 +19,10 @@ import {
     type GenerationCurrent,
     type GenerationStopBody,
     type GenerationHooks,
+    type GenerationNotice,
+    type GenerationHandoffBody,
+    type GenerationTakeoverBody,
+    type GenerationTakeoverAnswer,
     type HydrationReceipt,
     GENERATION_ERROR_CODES,
     GENERATION_ERROR_STAGES,
@@ -45,7 +49,7 @@ import {
     MAX_KEPT_OUTCOMES,
     type GenerationReceipts,
 } from "../data/generationReceipts.ts";
-import type { ChatStreaming, ChatStreamingSnapshot } from "../../../shared/events.ts";
+import type { ChatStreaming, ChatStreamingSnapshot, HandoffOffer } from "../../../shared/events.ts";
 import {
     type AppliedChanges,
     CommittedWriteError,
@@ -59,7 +63,13 @@ import { type DiagnosticsRecorder, logEvent, recordSafely } from "../diagnostics
 import type { DiagnosticEventInput } from "../../../shared/diagnostics.ts";
 import { checkChatBinding, readChatBindingState } from "./chatBinding.ts";
 import { readOrphanedOverrideEntries } from "./loreOverrides.ts";
-import { type ChannelHub, createChannelHub, type JobChannel, parseGenerationHooks } from "./channel.ts";
+import {
+    type ChannelHub,
+    createChannelHub,
+    type JobChannel,
+    type NoticeAudience,
+    parseGenerationHooks,
+} from "./channel.ts";
 import type { GenerationLock, MessageOwner, MessageRef } from "./generationLock.ts";
 
 /** After its first abort, a job has this long to persist its text and end before it is ended for it. */
@@ -68,6 +78,10 @@ export const JOB_ABORT_GRACE_MS = 5000;
 export const OWNER_SILENT_MS = 45_000;
 /** A dispatched channel request waits at most this long while its job has no effective owner. */
 export const OWNER_ABSENT_MS = 120_000;
+/** Delay before an absent owner offers its running job to another client. */
+export const HANDOFF_OFFER_DELAY_MS = 10_000;
+/** A takeover ticket must attach within this allowance; a pending attached takeover has no expiry. */
+export const HANDOFF_TICKET_MS = 10_000;
 /** An ended job stays readable (status, reconnect) this long. */
 export const JOB_DONE_GRACE_MS = 60_000;
 /**
@@ -368,26 +382,73 @@ function requestFingerprint(body: GenerationCreateBody): string {
         .digest("hex");
 }
 
+/** Frozen terminal routing survives collection; disk receipts already contain the creator's view. */
+type TerminalReaders = {
+    clientId: string | null;
+    ownerClientId?: string;
+    skippedRecipient?: string;
+    stoppedBy?: string;
+};
+
 type RequestIdentity =
     | { cancelled: true }
     | {
           cancelled: false;
           jobId: string;
           clientId: string | null;
+          ownerClientId?: string;
+          skippedRecipient?: string;
+          stoppedBy?: string;
           fingerprint: string | null;
           status: GenerationStatus | null;
       };
 
-/** Omits a non-owner's preview result from a copy, preserving the owner's retained terminal. */
-function replayStatus(status: GenerationStatus | null, owned: boolean): GenerationStatus | null {
-    if (owned || status?.terminal?.type !== "done") return status;
+/** Each view keeps the canonical terminal intact; only its frozen recipient runs late listeners. */
+function projectTerminal(
+    terminal: GenerationTerminalEvent,
+    readers: TerminalReaders,
+    clientId: string | undefined,
+): GenerationTerminalEvent {
+    if (terminal.type === "done") {
+        return terminal.skipped === undefined || clientId === (readers.skippedRecipient ?? readers.clientId)
+            ? { ...terminal }
+            : { ...terminal, skipped: [] };
+    }
+    if (terminal.reason !== "aborted" || !readers.stoppedBy) return { ...terminal };
+    const { abortedBy, ...rest } = terminal;
+    return {
+        ...rest,
+        ...(clientId !== readers.stoppedBy && (clientId === readers.clientId || clientId === readers.ownerClientId)
+            ? { abortedBy: "other" as const }
+            : {}),
+    };
+}
+
+function projectStatus(
+    status: GenerationStatus | null,
+    readers: TerminalReaders,
+    clientId: string | undefined,
+): GenerationStatus | null {
+    return status?.terminal ? { ...status, terminal: projectTerminal(status.terminal, readers, clientId) } : status;
+}
+
+/** Replays also omit another client's preview result, independently of late-listener routing. */
+function replayStatus(
+    identity: Exclude<RequestIdentity, { cancelled: true }>,
+    clientId: string,
+): GenerationStatus | null {
+    const status = projectStatus(identity.status, identity, clientId);
+    if (identity.clientId === clientId || status?.terminal?.type !== "done") return status;
     const { result, ...terminal } = status.terminal;
     return { ...status, terminal };
 }
 
 type Job = {
     id: string;
+    /** Immutable creator: receipts, owned, and device notices keep this identity. */
     clientId: string;
+    /** Current callback authority and request-lane identity. */
+    ownerClientId: string;
     requestId?: string;
     fingerprint: string | null;
     kind: GenerationKind;
@@ -399,7 +460,10 @@ type Job = {
     token: string;
     controller: AbortController;
     abortReason: GenerationErrorReason | null;
-    stoppedByOther?: true;
+    /** First explicit Stop participant (or the foreign client of a chat-slot Stop). */
+    stoppedBy?: string;
+    /** Frozen at finalize: owner if present, otherwise creator. */
+    skippedRecipient?: string;
     abortTimer: ReturnType<typeof setTimeout> | null;
     startedAt: number;
     /** The duration limit starts anew for each sequence part; diagnostics use startedAt. */
@@ -408,15 +472,29 @@ type Job = {
     sequenceAttempted: boolean;
     ended: boolean;
     endedAt: number;
+    /** Only the current owner's sockets can answer callbacks or count as owner presence. */
     sockets: Set<WebSocket>;
+    /** Creator, former owners, and a pending takeover watch the same chat baseline. */
+    viewers: Set<WebSocket>;
+    offer: HandoffOffer | null;
+    offerTimer: ReturnType<typeof setTimeout> | null;
+    ticket: {
+        value: string;
+        clientId: string;
+        until: number;
+        offer: HandoffOffer;
+        timer: ReturnType<typeof setTimeout> | null;
+    } | null;
+    pendingTakeover: { clientId: string; ws: WebSocket; offer: HandoffOffer } | null;
+    switchTimer: ReturnType<typeof setTimeout> | null;
     /** Admission or the last effective owner's departure; null while an owner is present. */
     ownerAbsentSince: number | null;
     /** The latest `accepted`, its text kept current by `chunk`; null once its final write applied. */
     current: Extract<GenerationEvent, { type: "accepted" }> | null;
     /** Per message id: the newest chunk the stored text includes (the last applied write's `covers`). */
     watermarks: Map<string, { generationId: string; seq: number }>;
-    /** The newest attach stamp admitted (the client's `attach` query); an older handshake is refused. */
-    attachStamp: number;
+    /** Attach stamps are ordered only within one client, never across devices. */
+    attachStamps: Map<string, number>;
     preset: Extract<GenerationEvent, { type: "preset" }> | null;
     /** The current presentation stage, retained for attach while the job runs. */
     stage: GenerationStage | null;
@@ -425,7 +503,7 @@ type Job = {
     /** Records the job sent (`kind\0id`, or `chats\0characterId\0id`), re-sent fresh on attach. */
     refs: Map<string, { kind: string; id: string; characterId?: string }>;
     /**
-     * The job chat as last handed to an owner socket (seeded at admission, then advanced when send
+     * The job chat as last handed to every attached socket (seeded at admission, then advanced when send
      * succeeds, without a tab acknowledgement; a stored state at its `revision`: a read, or
      * `workingChat`): the base of the next `chatPatch`. Null once the job ended. It is not what the
      * owner holds: the owner applies a patch only at exactly its base or its revision, and asks for a
@@ -508,6 +586,7 @@ function keptStatus(job: Job, terminal: GenerationTerminalEvent): GenerationStat
         chatId: job.context.chatId,
         epoch: job.epoch,
         state: "ended",
+        ...(job.ownerClientId !== job.clientId ? { handedOff: true as const } : {}),
         ...(job.current?.messageId ? { messageId: job.current.messageId } : {}),
         terminal: keptTerminal(terminal),
         kept: true,
@@ -650,7 +729,7 @@ const abortMessages: Record<GenerationErrorReason, { status: number; message: st
 };
 
 /**
- * The generation job registry: admission (one running job per chat), the owner socket, the job's
+ * The generation job registry: admission (one running job per chat), the owner and viewer sockets, the job's
  * writes (`writeAsJob` with the generation lock), and the lifecycle. Every abort fixes one
  * deadline (`abortGraceMs`, `JOB_ABORT_GRACE_MS` by default); a job is finalized once: its token dies,
  * its locks and chat slot are released, its chat's hydration and one terminal event are sent, and `finished`
@@ -691,6 +770,10 @@ export function createGenerationJobs(options: {
      * test option generationOwnerSilentMs.
      */
     ownerSilentMs?: number;
+    handoffOfferDelayMs?: number;
+    handoffTicketMs?: number;
+    /** Publishes content-free open/closed offers to the live-update feed. */
+    publishHandoff?: (event: { type: "handoff" } & HandoffOffer) => void;
     /** Clock for job timestamps, owner liveness, channel deadlines and identity retention (defaults to Date.now). */
     now?: () => number;
 }) {
@@ -698,6 +781,8 @@ export function createGenerationJobs(options: {
     const abortGraceMs = options.abortGraceMs ?? JOB_ABORT_GRACE_MS;
     const ownerAbsentMs = options.ownerAbsentMs ?? OWNER_ABSENT_MS;
     const ownerSilentMs = options.ownerSilentMs ?? OWNER_SILENT_MS;
+    const handoffOfferDelayMs = options.handoffOfferDelayMs ?? HANDOFF_OFFER_DELAY_MS;
+    const handoffTicketMs = options.handoffTicketMs ?? HANDOFF_TICKET_MS;
     const clock = options.now ?? (() => Date.now());
     const runner = options.runner ?? unavailableRunner;
     const hub = options.hub ?? createChannelHub({ now: clock });
@@ -709,6 +794,7 @@ export function createGenerationJobs(options: {
      * barrier sends them the chat only as it changed (`hydrateAll`).
      */
     const patchHydration = new WeakSet<WebSocket>();
+    const socketClients = new WeakMap<WebSocket, string>();
     /** Chat → its running job. */
     const chatSlots = new Map<string, string>();
     const wsServer = new WebSocketServer({ noServer: true });
@@ -719,7 +805,7 @@ export function createGenerationJobs(options: {
     /** The kept outcomes of collected jobs, oldest first (`KEPT_OUTCOME_MS`), all of `keptEpoch`. */
     const kept = new Map<
         string,
-        { clientId: string; keptAt: number; status: GenerationStatus; requestId?: string; fingerprint: string | null }
+        TerminalReaders & { keptAt: number; status: GenerationStatus; requestId?: string; fingerprint: string | null }
     >();
     /** Request id → current-epoch job id, including ended jobs until collection moves their identity to kept. */
     const requestJobs = new Map<string, string>();
@@ -741,6 +827,7 @@ export function createGenerationJobs(options: {
         if (job.sockets.size === 0) {
             job.ownerAbsentSince = at;
             job.channelLink.ownerChanged();
+            armOffer(job);
         }
     }
 
@@ -782,25 +869,225 @@ export function createGenerationJobs(options: {
         live.timer.unref?.();
     }
 
+    const noticeAudience: Record<GenerationNotice["kind"], NoticeAudience> = {
+        alertNormal: "owner",
+        alertError: "owner",
+        alertToast: "owner",
+        alertMd: "owner",
+        alertWait: "owner",
+        alertClear: "owner",
+        openURL: "owner",
+        emotion: "all",
+        progress: "all",
+        memoryProgress: "all",
+        translating: "all",
+        reloadChat: "all",
+        reloadDisplay: "all",
+        updateGUI: "all",
+        tts: "creator",
+        notification: "creator",
+    };
+
+    const allSockets = (job: Job) => [...job.sockets, ...job.viewers];
+
     function send(job: Job, event: GenerationEvent): boolean {
-        return sendText(job, JSON.stringify(event));
+        const audience =
+            event.type === "notice"
+                ? noticeAudience[event.kind]
+                : event.type === "callback" || event.type === "question" || event.type === "cancel"
+                  ? "owner"
+                  : "all";
+        return sendText(job, JSON.stringify(event), audience);
     }
 
-    /** Sends to every open owner socket; one failing socket never stops the others. Whether one took it. */
-    function sendText(job: Job, text: string): boolean {
+    /** A failing socket never stops the others; the result says whether an eligible socket took it. */
+    function sendText(job: Job, text: string, audience: NoticeAudience = "all"): boolean {
         expireSilentOwners(job);
         let taken = false;
-        for (const ws of job.sockets) {
-            try {
-                if (ws.readyState === ws.OPEN) {
-                    ws.send(text);
-                    taken = true;
-                }
-            } catch (error) {
-                logEvent("generation.socketSend", { job: job.id }, error, diagnostics);
-            }
+        for (const ws of audience === "owner" ? job.sockets : allSockets(job)) {
+            if (audience === "creator" && socketClients.get(ws) !== job.clientId) continue;
+            taken = sendSocket(job, ws, text) || taken;
         }
         return taken;
+    }
+
+    function sendSocket(job: Job, ws: WebSocket, text: string): boolean {
+        try {
+            if (ws.readyState === ws.OPEN) {
+                ws.send(text);
+                return true;
+            }
+        } catch (error) {
+            logEvent("generation.socketSend", { job: job.id }, error, diagnostics);
+        }
+        return false;
+    }
+
+    function roleEvent(job: Job, ws: WebSocket): GenerationEvent {
+        return {
+            type: "handoff",
+            epoch: job.epoch,
+            owner: job.sockets.has(ws) ? "self" : "other",
+            ...(job.pendingTakeover?.ws === ws ? { pending: true as const } : {}),
+        };
+    }
+
+    function sendRoles(job: Job) {
+        for (const ws of allSockets(job)) sendSocket(job, ws, JSON.stringify(roleEvent(job, ws)));
+    }
+
+    function canHandoff(job: Job): boolean {
+        return (
+            !closed &&
+            !disposed &&
+            !maintenancePending &&
+            !gate.active &&
+            !job.abortReason &&
+            !job.ended &&
+            !job.channelLink.closed &&
+            job.epoch === store.epoch()
+        );
+    }
+
+    function publishOffer(offer: HandoffOffer) {
+        try {
+            options.publishHandoff?.({ type: "handoff", ...offer });
+        } catch (error) {
+            logEvent("generation.handoffPublish", { job: offer.jobId }, error, diagnostics);
+        }
+    }
+
+    function closeOffer(job: Job) {
+        const offer = job.offer;
+        job.offer = null;
+        if (offer) publishOffer({ ...offer, state: "closed" });
+    }
+
+    function openOffer(job: Job, reason: HandoffOffer["reason"], target?: string) {
+        if (!canHandoff(job) || job.ticket || job.pendingTakeover) return;
+        closeOffer(job);
+        job.offer = {
+            epoch: job.epoch,
+            jobId: job.id,
+            characterId: job.context.characterId,
+            chatId: job.context.chatId,
+            state: "open",
+            reason,
+            ...(target ? { target } : {}),
+        };
+        publishOffer(job.offer);
+    }
+
+    function reopenOffer(job: Job, offer: HandoffOffer) {
+        const reasonHolds =
+            offer.reason !== "absent" ||
+            (job.ownerAbsentSince !== null && clock() >= job.ownerAbsentSince + handoffOfferDelayMs);
+        if (canHandoff(job) && reasonHolds) {
+            openOffer(job, offer.reason, offer.target);
+        }
+        armOffer(job);
+    }
+
+    function expireTicket(job: Job) {
+        const ticket = job.ticket;
+        if (!ticket || clock() < ticket.until) return;
+        if (ticket.timer) clearTimeout(ticket.timer);
+        job.ticket = null;
+        reopenOffer(job, ticket.offer);
+    }
+
+    /** Timers only wake checks; absence starts at the effective removal time, even if detected late. */
+    function armOffer(job: Job) {
+        if (job.offerTimer) clearTimeout(job.offerTimer);
+        job.offerTimer = null;
+        if (!canHandoff(job) || job.ownerAbsentSince === null || job.offer || job.ticket || job.pendingTakeover) return;
+        const remaining = job.ownerAbsentSince + handoffOfferDelayMs - clock();
+        if (remaining <= 0) {
+            openOffer(job, "absent");
+            return;
+        }
+        job.offerTimer = setTimeout(() => {
+            job.offerTimer = null;
+            armOffer(job);
+        }, remaining);
+        job.offerTimer.unref?.();
+    }
+
+    function clearHandoff(job: Job) {
+        if (job.offerTimer) clearTimeout(job.offerTimer);
+        if (job.ticket?.timer) clearTimeout(job.ticket.timer);
+        if (job.switchTimer) clearTimeout(job.switchTimer);
+        job.offerTimer = null;
+        job.ticket = null;
+        job.switchTimer = null;
+        job.pendingTakeover = null;
+        closeOffer(job);
+    }
+
+    function attachedAudiences(job: Job): NoticeAudience[] {
+        return [
+            "all",
+            ...(job.sockets.size ? ["owner" as const] : []),
+            ...(allSockets(job).some((ws) => socketClients.get(ws) === job.clientId && ws.readyState === ws.OPEN)
+                ? ["creator" as const]
+                : []),
+        ];
+    }
+
+    /**
+     * Never switch inside settlement: its promise continuation must first keep the reply or end
+     * the job. The next enqueue switches before selecting a lane; otherwise a timer after the
+     * continuation does it. Queued roots stay paused meanwhile, including settlement's own pump.
+     */
+    function scheduleSwitch(job: Job) {
+        // Arm after the settlement stack unwinds, including when a clock batches timer wakeups.
+        queueMicrotask(() => {
+            if (!job.pendingTakeover || job.switchTimer || !canHandoff(job)) return;
+            job.switchTimer = setTimeout(() => {
+                job.switchTimer = null;
+                switchOwner(job);
+            }, 0);
+            job.switchTimer.unref?.();
+        });
+    }
+
+    function switchOwner(job: Job, snapshot?: () => void): boolean {
+        const pending = job.pendingTakeover;
+        if (
+            !pending ||
+            !canHandoff(job) ||
+            job.channelLink.settling ||
+            job.channelLink.hasDeliveredRequests() ||
+            pending.ws.readyState !== pending.ws.OPEN
+        )
+            return false;
+        if (job.switchTimer) clearTimeout(job.switchTimer);
+        job.switchTimer = null;
+        for (const ws of job.sockets) {
+            const live = liveness.get(ws);
+            if (live?.timer) clearTimeout(live.timer);
+            if (live) live.timer = null;
+            job.viewers.add(ws);
+        }
+        job.sockets.clear();
+        job.viewers.delete(pending.ws);
+        job.sockets.add(pending.ws);
+        job.ownerClientId = pending.clientId;
+        job.ownerAbsentSince = null;
+        job.pendingTakeover = null;
+        const live = liveness.get(pending.ws);
+        if (live) {
+            live.lastFrameAt = clock();
+            armSilence(job, pending.ws);
+        }
+        armOffer(job);
+        sendRoles(job);
+        deliverJobChat(job, "whole");
+        snapshot?.();
+        // Transfer pumps both lanes only after roles and the shared whole-chat baseline are sent.
+        job.channelLink.transferOwner(pending.clientId, attachedAudiences(job));
+        job.channelLink.ownerChanged();
+        return true;
     }
 
     /** The chat as stored now, or null (gone, another epoch, or the store closed during shutdown). */
@@ -1072,7 +1359,7 @@ export function createGenerationJobs(options: {
     /**
      * The job chat's part of the callback barrier, as its receipt; null when the chat is gone.
      *
-     * When every owner socket advertised `hydration=patch` and a socket took a copy (`sentChat`), the
+     * When every attached socket advertised `hydration=patch` and a socket took a copy (`sentChat`), the
      * chat goes only as it changed since that copy: nothing while the stored revision is still its
      * revision (the receipt names it), else a `chatPatch` from it, or the chat whole when no patch can
      * express the change. Such a tab reads the chat itself when it does not hold the receipt. Without
@@ -1085,7 +1372,7 @@ export function createGenerationJobs(options: {
      */
     function hydrateJobChat(job: Job): HydrationReceipt | null {
         const base = job.sentChat;
-        const sockets = [...job.sockets];
+        const sockets = allSockets(job);
         if (!base || sockets.length === 0 || !sockets.every((ws) => patchHydration.has(ws))) {
             const event = deliverJobChat(job, "whole");
             return event ? receiptOf(event) : null;
@@ -1117,6 +1404,7 @@ export function createGenerationJobs(options: {
         if (job.ended) {
             return;
         }
+        job.skippedRecipient = ownerAttached(job) ? job.ownerClientId : job.clientId;
         // Before anything dies: the channel's requests settle `aborted` and the owner gets their `cancel`.
         try {
             job.channelLink.close("The job has ended");
@@ -1130,12 +1418,10 @@ export function createGenerationJobs(options: {
         if (terminal.type === "error" && job.sequence) {
             terminal.sequence = { ...job.sequence };
         }
-        if (terminal.type === "error" && terminal.reason === "aborted" && job.stoppedByOther) {
-            terminal.abortedBy = "other";
-        }
-        let text: string;
         try {
-            text = JSON.stringify(terminal);
+            // Freeze the wire value once: role projections must not rerun a result's toJSON
+            // or getters independently and strand later sockets after an earlier send.
+            terminal = JSON.parse(JSON.stringify(terminal)) as GenerationTerminalEvent;
         } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
             terminal = {
@@ -1143,16 +1429,17 @@ export function createGenerationJobs(options: {
                 epoch: job.epoch,
                 ...(job.sequence ? { sequence: { ...job.sequence } } : {}),
             };
-            text = JSON.stringify(terminal);
+            JSON.stringify(terminal);
         }
         job.ended = true;
+        clearHandoff(job);
         job.stage = null;
         job.endedAt = clock();
         job.terminal = terminal as GenerationTerminalEvent;
         job.memoryControl = null;
         try {
             if (receipts) {
-                receipts.end(job.id, job.endedAt, keptStatus(job, job.terminal));
+                receipts.end(job.id, job.endedAt, keptStatus(job, projectTerminal(job.terminal, job, job.clientId)));
             }
         } catch (error) {
             // Even building a receipt must never strand the job's locks, slot, or finished promise.
@@ -1167,7 +1454,7 @@ export function createGenerationJobs(options: {
             ...(terminal.type === "error"
                 ? {
                       reason: terminal.reason,
-                      ...(terminal.abortedBy === "other" ? { stoppedBy: "otherClient" } : {}),
+                      ...(job.stoppedBy && job.stoppedBy !== job.clientId ? { stoppedBy: "otherClient" } : {}),
                       status: terminal.status,
                       stage: terminal.stage,
                       requestId: terminal.requestId,
@@ -1208,7 +1495,9 @@ export function createGenerationJobs(options: {
             }
             job.listeners.clear();
             sendChat(job);
-            sendText(job, text);
+            for (const ws of allSockets(job)) {
+                sendSocket(job, ws, JSON.stringify(projectTerminal(terminal, job, socketClients.get(ws))));
+            }
         } catch (error) {
             logEvent("generation.endDelivery", { job: job.id }, error, diagnostics);
         } finally {
@@ -1268,6 +1557,7 @@ export function createGenerationJobs(options: {
             return false;
         }
         job.abortReason = reason;
+        clearHandoff(job);
         // One deadline per job, set before the signal's listeners run (one may end the job at once);
         // later aborts do not extend it.
         job.abortTimer = setTimeout(() => finalize(job, abortTerminal(reason)), abortGraceMs);
@@ -1515,7 +1805,8 @@ export function createGenerationJobs(options: {
                     if (ref.characterId === job.context.characterId && ref.id === job.context.chatId) {
                         // Nothing is buffered here. Leave sentChat alone: the working baseline keeps
                         // following the job's own writes, so the next attach's patch carries this one.
-                        if (!ownerAttached(job) || ![...job.sockets].some((ws) => ws.readyState === ws.OPEN)) {
+                        expireSilentOwners(job);
+                        if (!allSockets(job).some((ws) => ws.readyState === ws.OPEN)) {
                             continue;
                         }
                         // The job chat: what changed since the last copy a socket took.
@@ -1696,7 +1987,7 @@ export function createGenerationJobs(options: {
                 jobId: identity.jobId,
                 replayed: true,
                 owned,
-                status: replayStatus(identity.status, owned),
+                status: replayStatus(identity, body.clientId),
             };
         }
         if (closed || maintenancePending > 0 || gate.active) {
@@ -1743,6 +2034,7 @@ export function createGenerationJobs(options: {
         const job: Job = {
             id: randomUUID(),
             clientId: body.clientId,
+            ownerClientId: body.clientId,
             requestId: body.requestId,
             fingerprint,
             kind: body.kind,
@@ -1761,11 +2053,17 @@ export function createGenerationJobs(options: {
             ended: false,
             endedAt: 0,
             sockets: new Set(),
+            viewers: new Set(),
+            offer: null,
+            offerTimer: null,
+            ticket: null,
+            pendingTakeover: null,
+            switchTimer: null,
             ownerAbsentSince: startedAt,
             current: null,
             watermarks: new Map(),
             retired: new Set(),
-            attachStamp: -1,
+            attachStamps: new Map(),
             preset: null,
             stage: null,
             targets: {
@@ -1792,6 +2090,11 @@ export function createGenerationJobs(options: {
             targets: job.targets,
             hooks,
             flushPending: () => job.pendingFlush?.(),
+            noticeAudience: (notice) => noticeAudience[notice.kind],
+            beforeEnqueue: () => {
+                switchOwner(job);
+            },
+            onSettled: () => scheduleSwitch(job),
             send: (event) => {
                 job.pendingFlush?.();
                 return !job.ended && send(job, event);
@@ -1824,13 +2127,15 @@ export function createGenerationJobs(options: {
             fingerprint: job.fingerprint,
         });
         record({ kind: "job", phase: "accepted", jobId: job.id, jobKind: job.kind });
+        if (body.handoff === "prefer") openOffer(job, "preferred");
+        armOffer(job);
         start(job);
         return { ok: true, jobId: job.id };
     }
 
-    function ownJob(jobId: string, clientId: string | undefined): Job | null {
+    function participantJob(jobId: string, clientId: string | undefined): Job | null {
         const job = jobs.get(jobId);
-        return job && job.clientId === clientId ? job : null;
+        return job && (job.clientId === clientId || job.ownerClientId === clientId) ? job : null;
     }
 
     function currentJob(characterId: string, chatId: string): Job | null {
@@ -1850,6 +2155,7 @@ export function createGenerationJobs(options: {
                   jobId: job.id,
                   kind: job.kind,
                   owned: job.clientId === clientId,
+                  ...(job.ownerClientId !== job.clientId ? { handedOff: true as const } : {}),
                   ...(job.stage ? { stage: job.stage } : {}),
                   ...(job.sequence ? { sequence: { ...job.sequence } } : {}),
               }
@@ -1859,10 +2165,10 @@ export function createGenerationJobs(options: {
     /**
      * Checks the epoch, compares the confirmed job id with the current slot and aborts synchronously:
      * a replacement is never stopped. After jobChanged, look up and confirm the replacement again.
-     * First abort wins: only this explicit stop by a different clientId attributes abortedBy: "other"
-     * in finalize's error terminal and stoppedBy: "otherClient" in its diagnostic end. It remains
-     * reason aborted, not a failure. Request cancel and owner DELETE are unattributed. The abort
-     * ends the whole sequence, whose progress and attribution survive in kept outcomes.
+     * First abort wins: its stopping client is frozen for participant-relative abortedBy: "other"
+     * projection and creator-relative stoppedBy: "otherClient" diagnostics. Request-id cancel
+     * remains unattributed. The abort ends the whole sequence, whose progress and attribution
+     * survive in kept outcomes.
      */
     function stop(
         body: GenerationStopBody,
@@ -1877,7 +2183,7 @@ export function createGenerationJobs(options: {
         if (!job) return { ok: false, status: 404, body: { error: "idle" } };
         if (job.id !== body.jobId) return { ok: false, status: 409, body: { error: "jobChanged" } };
         // Signal listeners can finalize synchronously; only the first abort decides attribution.
-        if (!job.abortReason && body.clientId !== job.clientId) job.stoppedByOther = true;
+        if (!job.abortReason) job.stoppedBy = body.clientId;
         return { ok: true, body: { aborted: abort(job, "aborted") } };
     }
 
@@ -1885,6 +2191,7 @@ export function createGenerationJobs(options: {
     function keptOutcomes(): typeof kept {
         const epoch = store.epoch();
         if (epoch !== keptEpoch) {
+            for (const job of jobs.values()) if (job.epoch !== epoch) clearHandoff(job);
             kept.clear();
             requestJobs.clear();
             cancelledRequests.clear();
@@ -1920,6 +2227,9 @@ export function createGenerationJobs(options: {
                 jobId: job.id,
                 clientId: job.clientId,
                 fingerprint: job.fingerprint,
+                ownerClientId: job.ownerClientId,
+                skippedRecipient: job.skippedRecipient,
+                stoppedBy: job.stoppedBy,
                 status: status(job),
             };
         }
@@ -1959,7 +2269,7 @@ export function createGenerationJobs(options: {
                     state: running ? "aborted" : "ended",
                     jobId: identity.jobId,
                     owned,
-                    status: replayStatus(identity.status, owned),
+                    status: replayStatus(identity, body.clientId),
                 },
             };
         }
@@ -1981,6 +2291,9 @@ export function createGenerationJobs(options: {
         outcomes.delete(job.id);
         outcomes.set(job.id, {
             clientId: job.clientId,
+            ownerClientId: job.ownerClientId,
+            skippedRecipient: job.skippedRecipient,
+            stoppedBy: job.stoppedBy,
             keptAt: now,
             requestId: job.requestId,
             fingerprint: job.fingerprint,
@@ -2011,6 +2324,7 @@ export function createGenerationJobs(options: {
             chatId: job.context.chatId,
             epoch: job.epoch,
             state: job.ended ? "ended" : "running",
+            ...(job.ownerClientId !== job.clientId ? { handedOff: true as const } : {}),
             ...(job.current?.messageId ? { messageId: job.current.messageId } : {}),
             ...(job.current?.generationId ? { generationId: job.current.generationId } : {}),
             ...(job.terminal ? { terminal: job.terminal } : {}),
@@ -2018,77 +2332,79 @@ export function createGenerationJobs(options: {
     }
 
     /**
-     * Makes `ws` the job's one owner socket. `negotiated`: the tab answers pings (`liveness=1`), so
-     * its silence ends ownership. `hydratesByPatch`: the tab reads the job chat itself for a callback
-     * receipt it does not hold (`hydration=patch`), so callback barriers send this socket the chat only
-     * as it changed since the last copy a socket took (`hydrateAll`), starting from this attach's.
-     * Expire overdue channel requests while still absent, then clear absence, send the snapshot and
-     * replay those still open. Reconnection removes the absence cap without extending a request's
-     * own allowance (`server/src/jobs/channel.ts` effectiveDeadline).
+     * Every attach begins with its role and a chat copy shared by all sockets, keeping one baseline.
+     * Ordinary reconnects replace only this client's sockets. Only an owner attach clears absence
+     * and replays requests; a ticket attaches as a pending viewer until a safe boundary promotes it.
+     * Viewers accept only chat/reply resync; pings reach them but their silence does not affect work.
      */
-    function attach(job: Job, ws: WebSocket, negotiated: boolean, hydratesByPatch: boolean) {
+    function attach(
+        job: Job,
+        ws: WebSocket,
+        clientId: string,
+        negotiated: boolean,
+        hydratesByPatch: boolean,
+        viewer: boolean,
+        ticket: Job["ticket"],
+    ) {
+        const deliveredBeforeExpiry = job.channelLink.hasDeliveredRequests();
         expireSilentOwners(job);
         job.channelLink.expireOverdue();
-        // One delivery stream per job: a new attach of the owner replaces the older sockets, so a
-        // chunk still queued on one cannot arrive after this one's snapshot.
-        const previous = [...job.sockets];
-        job.sockets.clear();
-        job.sockets.add(ws);
-        job.ownerAbsentSince = null;
-        if (negotiated) {
-            liveness.set(ws, { lastFrameAt: clock(), timer: null });
-            armSilence(job, ws);
+        if (ticket) {
+            if (ticket.timer) clearTimeout(ticket.timer);
+            job.ticket = null;
+            job.pendingTakeover = { clientId, ws, offer: ticket.offer };
+            job.channelLink.deferTransfer(true);
         }
-        if (hydratesByPatch) {
-            patchHydration.add(ws);
-        }
-        job.channelLink.ownerChanged();
-        for (const old of previous) {
-            const live = liveness.get(old);
-            if (live?.timer) clearTimeout(live.timer);
+        for (const old of allSockets(job)) {
+            if (socketClients.get(old) !== clientId) continue;
+            removeOwner(job, old, clock());
+            job.viewers.delete(old);
             old.close(4001, "Superseded by a newer connection");
         }
-        // What the owner needs to resume: the job chat (what changed since the last copy a socket
-        // took while the job runs: the owner applies it only at exactly that copy's revision or the
-        // current one, and asks for the chat whole otherwise; whole once it ended) and every record
-        // the job sent, read fresh, the chosen preset, the current stage while the job runs, the
-        // current reply with its text, and the result if it ended.
-        const chat = jobChatEvent(job, job.ended ? "whole" : "patch");
-        const events: GenerationEvent[] = [...(chat ? [chat.event] : []), ...freshRecords(job)];
-        if (job.preset) {
-            events.push(job.preset);
+        socketClients.set(ws, clientId);
+        if (negotiated) liveness.set(ws, { lastFrameAt: clock(), timer: null });
+        if (hydratesByPatch) patchHydration.add(ws);
+        const owner = !ticket && !viewer && clientId === job.ownerClientId;
+        (owner ? job.sockets : job.viewers).add(ws);
+        if (owner) {
+            job.ownerAbsentSince = null;
+            armSilence(job, ws);
+            if (job.offer?.reason === "absent") closeOffer(job);
+            armOffer(job);
+            job.channelLink.ownerChanged();
         }
-        if (!job.ended && job.stage !== null) {
-            events.push({ type: "stage", epoch: job.epoch, stage: job.stage });
+        const snapshot = () => {
+            const events: GenerationEvent[] = freshRecords(job);
+            if (job.preset) events.push(job.preset);
+            if (!job.ended && job.stage !== null) events.push({ type: "stage", epoch: job.epoch, stage: job.stage });
+            const current = currentReply(job);
+            if (current) events.push(current);
+            for (const event of events) sendSocket(job, ws, JSON.stringify(event));
+        };
+        const switched = !!ticket && !deliveredBeforeExpiry && switchOwner(job, snapshot);
+        if (ticket && !switched) scheduleSwitch(job);
+        if (!switched) {
+            sendSocket(job, ws, JSON.stringify(roleEvent(job, ws)));
+            deliverJobChat(job, job.ended ? "whole" : "patch");
+            snapshot();
+            if (!job.ended && owner) {
+                job.channelLink.handleAttach(attachedAudiences(job));
+            } else {
+                // A viewer must not replay the owner's requests or consume its dialog buffer.
+                const audiences: NoticeAudience[] = attachedAudiences(job).filter((audience) => audience !== "owner");
+                if (job.ended && owner) audiences.push("owner");
+                for (const event of job.channelLink.takeEarly(audiences)) send(job, event);
+            }
         }
-        const current = currentReply(job);
-        if (current) {
-            events.push(current);
-        }
-        if (job.terminal) {
-            // A job that ended before its owner first attached: the notices it sent meanwhile first.
-            events.push(...(job.channelLink.takeEarly() as GenerationEvent[]));
-            events.push(job.terminal);
-        }
-        for (const event of events) {
-            ws.send(JSON.stringify(event));
-        }
-        if (chat && !job.ended) {
-            job.sentChat = chat.baseline;
-        }
-        if (!job.ended) {
-            // Then every request still waiting for an answer, marked as a replay.
-            job.channelLink.handleAttach();
-        }
+        if (job.terminal) sendSocket(job, ws, JSON.stringify(projectTerminal(job.terminal, job, clientId)));
         const ping = setInterval(() => {
             expireSilentOwners(job);
-            if (job.sockets.has(ws) && ws.readyState === ws.OPEN) {
-                ws.send(JSON.stringify({ type: "ping", ts: clock() }));
+            if (job.sockets.has(ws) || job.viewers.has(ws)) {
+                sendSocket(job, ws, JSON.stringify({ type: "ping", ts: clock() }));
             }
         }, JOB_HEARTBEAT_MS);
         const frame = () => {
             expireSilentOwners(job);
-            // Only the job's current socket speaks for the owner (a superseded one may still deliver).
             if (!job.sockets.has(ws)) return false;
             const live = liveness.get(ws);
             if (live) {
@@ -2100,7 +2416,8 @@ export function createGenerationJobs(options: {
         ws.on("ping", frame);
         ws.on("pong", frame);
         ws.on("message", (data) => {
-            if (!frame()) return;
+            const ownerFrame = frame();
+            if (!ownerFrame && !job.viewers.has(ws)) return;
             let message: unknown;
             try {
                 message = JSON.parse(String(data));
@@ -2108,24 +2425,17 @@ export function createGenerationJobs(options: {
                 return;
             }
             if (isReplyResyncRequest(message)) {
-                // Recovery needs the stream base even during a lock handoff. The client drops a
-                // retired generation; unlike currentReply, this does not require lock ownership.
-                if (!job.ended && job.current?.messageId) {
-                    send(job, job.current);
-                }
+                if (!job.ended && job.current?.messageId) send(job, job.current);
                 return;
             }
             if (isResyncRequest(message)) {
-                // A `chatPatch` did not apply on the owner: the job chat whole, as the next base, and
-                // the current reply again (its stream update may have been dropped for a missing message).
                 if (!job.ended && deliverJobChat(job, "whole")) {
                     const current = currentReply(job);
-                    if (current) {
-                        send(job, current);
-                    }
+                    if (current) send(job, current);
                 }
                 return;
             }
+            if (!ownerFrame) return;
             job.channelLink.handleMessage(message);
             for (const listener of [...job.listeners]) {
                 try {
@@ -2135,26 +2445,30 @@ export function createGenerationJobs(options: {
                 }
             }
         });
-        ws.on("close", () => {
+        const drop = () => {
             clearInterval(ping);
             expireSilentOwners(job);
             removeOwner(job, ws, clock());
-        });
-        ws.on("error", () => {
-            clearInterval(ping);
-            expireSilentOwners(job);
-        });
+            job.viewers.delete(ws);
+            if (job.pendingTakeover?.ws === ws) {
+                const offer = job.pendingTakeover.offer;
+                job.pendingTakeover = null;
+                if (job.switchTimer) clearTimeout(job.switchTimer);
+                job.switchTimer = null;
+                job.channelLink.deferTransfer(false);
+                reopenOffer(job, offer);
+                sendRoles(job);
+            }
+        };
+        ws.on("close", drop);
+        ws.on("error", drop);
     }
 
     /**
-     * The `upgrade` handler for `/api/generations/:id/ws` (the server's one dispatcher calls it).
-     * False, leaving the socket untouched, for any other path. The handshake needs a JWT (`risu-auth`
-     * query or header) and the job's `clientId` query; another client's or an unknown job is a 404.
-     * The `liveness=1` and `hydration=patch` queries advertise what the tab supports (`attach`).
-     * The password is never accepted; there is no HTTP limiter on this upgrade path. The stream
-     * carries the owner's GenerationEvents. With liveness=1 the tab answers each ping with pong.
-     * `attach` is a finite connection stamp (default 0): a lower stamp cannot displace
-     * a newer handshake (409), and a successful attach supersedes the previous owner socket.
+     * JWT-protected job socket. A participant attaches with clientId and optional role=viewer;
+     * a valid ticket authorizes its bound client instead. The creator cannot reclaim ownership
+     * without a ticket. Attach stamps are compared within each client only (a lower one is 409).
+     * liveness=1 negotiates owner silence; hydration=patch negotiates callback barrier patches.
      */
     function handleUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): boolean {
         let url: URL;
@@ -2177,32 +2491,60 @@ export function createGenerationJobs(options: {
                     socket.destroy();
                     return;
                 }
-                const job = disposed
-                    ? null
-                    : ownJob(decodeURIComponent(match[1]), url.searchParams.get("clientId") ?? undefined);
-                if (!job) {
-                    socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+                const jobId = decodeURIComponent(match[1]);
+                const clientId = url.searchParams.get("clientId") ?? undefined;
+                const ticketValue = url.searchParams.get("ticket");
+                const job = jobs.get(jobId);
+                const refuse = (status: 404 | 409) => {
+                    socket.write(`HTTP/1.1 ${status} ${status === 404 ? "Not Found" : "Conflict"}\r\n\r\n`);
                     socket.destroy();
+                };
+                if (!job || !clientId) {
+                    refuse(404);
                     return;
                 }
-                // Handshakes finish in any order: an older follow (a lower stamp) never displaces a newer one.
+                expireTicket(job);
+                const ticket =
+                    ticketValue && job.ticket?.value === ticketValue && job.ticket.clientId === clientId
+                        ? job.ticket
+                        : null;
+                if (ticketValue && (!canHandoff(job) || !ticket)) {
+                    refuse(409);
+                    return;
+                }
+                if (disposed || (!ticket && !participantJob(jobId, clientId))) {
+                    refuse(404);
+                    return;
+                }
                 const stamp = Number(url.searchParams.get("attach") ?? 0);
-                if (!Number.isFinite(stamp) || stamp < job.attachStamp || socket.destroyed) {
-                    socket.write("HTTP/1.1 409 Conflict\r\n\r\n");
-                    socket.destroy();
+                const role = url.searchParams.get("role") ?? "owner";
+                if (
+                    !Number.isFinite(stamp) ||
+                    stamp < (job.attachStamps.get(clientId) ?? -1) ||
+                    socket.destroyed ||
+                    (role !== "owner" && role !== "viewer")
+                ) {
+                    refuse(409);
                     return;
                 }
-                job.attachStamp = stamp;
+                job.attachStamps.set(clientId, stamp);
                 wsServer.handleUpgrade(req, socket, head, (ws) => {
-                    if (disposed || stamp < job.attachStamp) {
+                    if (
+                        disposed ||
+                        stamp < (job.attachStamps.get(clientId) ?? -1) ||
+                        (ticket && (job.ticket !== ticket || !canHandoff(job) || clock() >= ticket.until))
+                    ) {
                         ws.close();
                         return;
                     }
                     attach(
                         job,
                         ws,
+                        clientId,
                         url.searchParams.get("liveness") === "1",
                         url.searchParams.get("hydration") === "patch",
+                        role === "viewer",
+                        ticket,
                     );
                 });
             } catch {
@@ -2227,8 +2569,90 @@ export function createGenerationJobs(options: {
         };
     });
 
+    type HandoffResult<T> =
+        { ok: true; body: T } | { ok: false; status: 404 | 409 | 412; body: Record<string, unknown> };
+
+    function handoff(
+        jobId: string,
+        body: GenerationHandoffBody,
+        epoch: string | undefined,
+    ): HandoffResult<{ offered: true }> {
+        if (epoch !== store.epoch())
+            return { ok: false, status: 412, body: { error: "EpochMismatch", epoch: store.epoch() } };
+        const job = participantJob(jobId, body.clientId);
+        if (!job || job.epoch !== store.epoch())
+            return { ok: false, status: 404, body: { error: "Generation not found" } };
+        expireTicket(job);
+        if (!canHandoff(job) || job.ticket || job.pendingTakeover)
+            return { ok: false, status: 409, body: { error: "handoffUnavailable" } };
+        openOffer(job, "requested", body.target);
+        return { ok: true, body: { offered: true } };
+    }
+
+    function takeover(
+        jobId: string,
+        body: GenerationTakeoverBody,
+        epoch: string | undefined,
+    ): HandoffResult<GenerationTakeoverAnswer> {
+        if (epoch !== store.epoch())
+            return { ok: false, status: 412, body: { error: "EpochMismatch", epoch: store.epoch() } };
+        const job = jobs.get(jobId);
+        if (!job) {
+            expireOutcomes(clock());
+            const receipt = receipts?.read(jobId);
+            if (kept.has(jobId) || (receipt && receipt.epoch === store.epoch())) {
+                return { ok: false, status: 409, body: { error: "jobEnded" } };
+            }
+            return { ok: false, status: 404, body: { error: "Generation not found" } };
+        }
+        if (job.epoch !== store.epoch()) return { ok: false, status: 404, body: { error: "Generation not found" } };
+        expireSilentOwners(job);
+        expireTicket(job);
+        armOffer(job);
+        if (
+            !canHandoff(job) ||
+            !job.offer ||
+            job.ticket ||
+            job.pendingTakeover ||
+            (job.offer.target && job.offer.target !== body.clientId)
+        ) {
+            return { ok: false, status: 409, body: { error: "handoffUnavailable" } };
+        }
+        const ticket: NonNullable<Job["ticket"]> = {
+            value: randomUUID(),
+            clientId: body.clientId,
+            until: clock() + handoffTicketMs,
+            offer: job.offer,
+            timer: null,
+        };
+        job.ticket = ticket;
+        closeOffer(job);
+        const wake = () => {
+            if (job.ticket !== ticket) return;
+            expireTicket(job);
+            if (job.ticket === ticket) {
+                ticket.timer = setTimeout(wake, Math.max(1, ticket.until - clock()));
+                ticket.timer.unref?.();
+            }
+        };
+        ticket.timer = setTimeout(wake, Math.max(1, handoffTicketMs));
+        ticket.timer.unref?.();
+        return { ok: true, body: { ticket: ticket.value } };
+    }
+
     return {
         create,
+        handoff,
+        takeover,
+        handoffSnapshot(): HandoffOffer[] {
+            keptOutcomes();
+            for (const job of jobs.values()) {
+                expireSilentOwners(job);
+                expireTicket(job);
+                armOffer(job);
+            }
+            return [...jobs.values()].flatMap((job) => (job.offer && canHandoff(job) ? [{ ...job.offer }] : []));
+        },
         cancel,
         current,
         stop,
@@ -2246,10 +2670,9 @@ export function createGenerationJobs(options: {
             return chatSlots.has(chatKey(characterId, chatId));
         },
 
-        /** The owner's view of its job, or null for an unknown job or another client's. */
         /**
          * The job callback an aux request runs inside (`POST /api/llm/request` with `channelCall`),
-         * when the job is `clientId`'s, has not ended, and that callback is outstanding: its channel,
+         * when `clientId` is the current owner, the job has not ended, and that callback is outstanding: its channel,
          * a copy of the job's targets as they are now (a `presetChain` pick included), and an unwatch
          * for `onSettled`, which runs once when the callback settles. Else `null`.
          */
@@ -2259,8 +2682,8 @@ export function createGenerationJobs(options: {
             callbackId: string,
             onSettled: () => void,
         ): { channel: JobChannel; targets: CallbackTargets; unwatch: () => void; endJob: () => void } | null {
-            const job = ownJob(jobId, clientId);
-            if (!job || job.ended) {
+            const job = jobs.get(jobId);
+            if (!job || job.ownerClientId !== clientId || job.ended) {
                 return null;
             }
             const unwatch = job.channelLink.watchCallback(callbackId, onSettled);
@@ -2276,45 +2699,57 @@ export function createGenerationJobs(options: {
         },
 
         /**
-         * The owner's job, or its kept outcome once the job was collected (`kept`, of the current
-         * epoch, not expired). Null for an unknown job or another client's.
+         * A participant's job, also readable by a valid ticket or pending takeover holder. Kept
+         * outcomes retain the creator and final owner; disk receipts remain creator-only.
          */
         status(jobId: string, clientId: string | undefined): GenerationStatus | null {
-            const job = ownJob(jobId, clientId);
+            keptOutcomes();
+            const job = jobs.get(jobId);
             if (job) {
-                return status(job);
-            }
-            if (jobs.has(jobId)) {
-                return null;
+                expireTicket(job);
+                if (
+                    !clientId ||
+                    (!participantJob(jobId, clientId) &&
+                        job.ticket?.clientId !== clientId &&
+                        job.pendingTakeover?.clientId !== clientId)
+                )
+                    return null;
+                return projectStatus(status(job), job, clientId);
             }
             expireOutcomes(clock());
             const outcome = kept.get(jobId);
             if (outcome) {
-                return outcome.clientId === clientId ? outcome.status : null;
+                return outcome.clientId === clientId || outcome.ownerClientId === clientId
+                    ? projectStatus(outcome.status, outcome, clientId)
+                    : null;
             }
             const receipt = receipts?.read(jobId);
             return receipt && receipt.clientId === clientId && receipt.epoch === store.epoch() ? receipt.status : null;
         },
 
         /**
-         * The owner reports the cancelled callback `callbackId` of its job drained (`ChannelDrainedBody`):
+         * The dispatched client reports its cancelled callback drained, including after a handoff:
          * the client's lane it kept is free (`server/src/jobs/channel.ts` createChannelHub). Also for
          * an ended job still in the registry, not a collected outcome; false when the callback holds
-         * no lane. Null: no such job, or another client's.
+         * no lane. Null: no such job, or a non-participant without that dispatched hold.
          */
         callbackDrained(jobId: string, clientId: string | undefined, callbackId: string): boolean | null {
-            const job = ownJob(jobId, clientId);
-            return job ? job.channelLink.drained(callbackId) : null;
+            const job = jobs.get(jobId);
+            if (!job || !clientId) return null;
+            const drained = job.channelLink.drained(callbackId, clientId);
+            return drained || participantJob(jobId, clientId) ? drained : null;
         },
 
-        /** Aborts the owner's job (the text so far is persisted by the runner). Null: no such job. */
+        /** A participant stops its job; the first stopper determines the other participant's terminal. */
         abort(jobId: string, clientId: string | undefined): boolean | null {
-            const job = ownJob(jobId, clientId);
-            return job ? abort(job, "aborted") : null;
+            const job = participantJob(jobId, clientId);
+            if (!job) return null;
+            if (!job.ended && !job.abortReason) job.stoppedBy = clientId;
+            return abort(job, "aborted");
         },
 
         /**
-         * The owner's stop of the job's registered initial memory run `runId`: the run stops after the
+         * A participant's stop of the job's registered initial memory run `runId`: the run stops after the
          * summary in progress, the job goes on. 412 for another epoch, 404 for an unknown job or
          * another client's, 409 for an ended job (`jobEnded`), no registered run (`noMemoryRun`), or
          * another run (`otherMemoryRun`). Asking again while the run is registered succeeds again.
@@ -2328,7 +2763,7 @@ export function createGenerationJobs(options: {
             if (epoch !== store.epoch()) {
                 return { ok: false, status: 412, body: { error: "EpochMismatch", epoch: store.epoch() } };
             }
-            const job = ownJob(jobId, clientId);
+            const job = participantJob(jobId, clientId);
             if (!job) {
                 return { ok: false, status: 404, body: { error: "Generation not found" } };
             }
@@ -2358,7 +2793,7 @@ export function createGenerationJobs(options: {
                 receipts?.prune(now);
                 for (const [id, job] of jobs) {
                     if (job.ended && now - job.endedAt >= JOB_DONE_GRACE_MS) {
-                        for (const ws of job.sockets) {
+                        for (const ws of allSockets(job)) {
                             ws.close();
                         }
                         keepOutcome(job, now);
@@ -2403,7 +2838,10 @@ export function createGenerationJobs(options: {
         dispose() {
             disposed = true;
             for (const job of jobs.values()) {
-                for (const ws of job.sockets) {
+                clearHandoff(job);
+                for (const ws of allSockets(job)) {
+                    const live = liveness.get(ws);
+                    if (live?.timer) clearTimeout(live.timer);
                     ws.close();
                 }
             }
@@ -2412,5 +2850,8 @@ export function createGenerationJobs(options: {
     };
 }
 
-/** Registry capabilities; job-id access is owner-scoped, while current/stop and request-id cancel cross owners. */
+/**
+ * Registry capabilities: job-id controls are participant-scoped; current/stop and request-id cancel
+ * cross owners.
+ */
 export type GenerationJobs = ReturnType<typeof createGenerationJobs>;

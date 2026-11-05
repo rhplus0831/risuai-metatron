@@ -17,6 +17,17 @@ import {
     type TestServerOptions,
 } from "./testSupport.ts";
 
+/** A promise with its settle functions (`Promise.withResolvers` is newer than the server's `lib`). */
+function withResolvers<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+        resolve = done;
+        reject = fail;
+    });
+    return { promise, resolve, reject };
+}
+
 // The live-update socket (`/api/events/ws`, `server/src/routes/events.ts`) on a real listening
 // server: JWT-only authentication, `hello` with the epoch and the memory task snapshot, every
 // committed change delivered to every socket, close (1001) on shutdown and refusal afterwards, the
@@ -149,6 +160,105 @@ describe("the live-update socket on the server", () => {
     const epochOf = async () =>
         ((await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing).epoch;
 
+    it("publishes handoff offers at admission and request, lists them in hello, and closes them at takeover or job end", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const entered = withResolvers<import("../jobs/generationJobs.ts").RunningJob>();
+        await listen({
+            generationRunner: async (job) => {
+                entered.resolve(job);
+                await new Promise<void>((resolve) =>
+                    job.signal.addEventListener("abort", () => resolve(), { once: true }),
+                );
+            },
+        });
+        const epoch = await epochOf();
+        const first = async (kind: string) =>
+            ((await (await request(`/api/resources/${kind}/main`)).json()) as { data: { id: string }[] }).data[0].id;
+        const bound = {
+            presetId: await first("presets"),
+            modelPresetId: await first("modelPresets"),
+            personaId: await first("personas"),
+        };
+        const post = (url: string, body: unknown) => request(url, json(body, { "x-resource-epoch": epoch }));
+        expect(
+            (
+                await post("/api/resources/batch", {
+                    ops: [{ kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId: "k",
+                            baseRevision: null,
+                            ops: [
+                                {
+                                    op: "create",
+                                    chat: {
+                                        id: "k",
+                                        name: "K",
+                                        message: [],
+                                        modelPresetId: bound.modelPresetId,
+                                        promptPresetId: bound.presetId,
+                                        bindedPersona: bound.personaId,
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                })
+            ).status,
+        ).toBe(200);
+        const feed = await open();
+        expect(await frameAt(feed, 0)).toMatchObject({ type: "hello", handoffs: [] });
+        const read = await post("/api/resources/read", { chats: [{ characterId: "c", id: "k" }] });
+        const chatRevision = ((await read.json()) as { chats: { revision: string }[] }).chats[0].revision;
+        const created = await post("/api/generations", {
+            kind: "send",
+            clientId: "creator",
+            handoff: "prefer",
+            context: { ...bound, characterId: "c", chatId: "k", mode: "normal", input: "", chatRevision },
+        });
+        expect(created.status).toBe(200);
+        const { jobId } = (await created.json()) as { jobId: string };
+        const job = await entered.promise;
+        await delivered(feed);
+        const preferred = {
+            type: "handoff",
+            epoch,
+            jobId,
+            characterId: "c",
+            chatId: "k",
+            state: "open",
+            reason: "preferred",
+        };
+        expect(feed.frames.filter((frame) => frame.type === "handoff")).toEqual([preferred]);
+        const later = await open();
+        const { type: _type, ...offer } = preferred;
+        expect(await frameAt(later, 0)).toMatchObject({ type: "hello", handoffs: [offer] });
+        expect(
+            (await post(`/api/generations/${jobId}/handoff`, { clientId: "creator", target: "worker" })).status,
+        ).toBe(200);
+        await delivered(feed);
+        const requested = { ...preferred, reason: "requested", target: "worker" };
+        expect(feed.frames.filter((frame) => frame.type === "handoff").slice(-2)).toEqual([
+            { ...preferred, state: "closed" },
+            requested,
+        ]);
+        expect((await post(`/api/generations/${jobId}/takeover`, { clientId: "worker" })).status).toBe(200);
+        await delivered(feed);
+        expect(feed.frames.at(-1)).toEqual({ ...requested, state: "closed" });
+        await vi.advanceTimersByTimeAsync(10_000);
+        await delivered(feed);
+        expect(feed.frames.filter((frame) => frame.type === "handoff").at(-1)).toEqual(requested);
+        job.emit({ type: "done", revision: chatRevision });
+        await delivered(feed);
+        expect(feed.frames.filter((frame) => frame.type === "handoff").at(-1)).toEqual({
+            ...requested,
+            state: "closed",
+        });
+        const ended = await open();
+        expect(await frameAt(ended, 0)).toMatchObject({ type: "hello", handoffs: [] });
+    });
+
     it("admits a JWT in the query or the header and sends `hello` with the epoch and the (empty) memory task snapshot", async () => {
         await listen();
         const epoch = await epochOf();
@@ -160,6 +270,7 @@ describe("the live-update socket on the server", () => {
             epoch,
             streaming: [],
             memoryTasks: [],
+            handoffs: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
         });
         const byHeader = await open("", { "risu-auth": await signer.jwt() });
@@ -170,6 +281,7 @@ describe("the live-update socket on the server", () => {
             epoch,
             streaming: [],
             memoryTasks: [],
+            handoffs: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
         });
         expect(server.context.eventSockets.size()).toBe(2);
@@ -218,6 +330,7 @@ describe("the live-update socket on the server", () => {
             epoch: before.epoch,
             streaming: [],
             memoryTasks: [],
+            handoffs: [],
             digest: revisionDigest(listing),
         });
         expect(revisionDigest(listing)).not.toBe(revisionDigest(before));

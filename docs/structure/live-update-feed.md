@@ -22,8 +22,8 @@
   [frame admission](#frame-admission) (`send`, `MAX_BUFFERED_BYTES`). WS upgrade `/api/events/ws` (`EVENT_FEED_PATH`),
   dispatched by `attachWebSocket` in `server/src/app.ts` outside the HTTP app, so no HTTP limiter; JWT in the
   `risu-auth` query or header, never the password.
-- `shared/events.ts`: the frames (`EventFeedFrame`: `hello`, `change`, `memoryTask`, `epoch`, `ping`), `ChatStreaming`,
-  `ChatStreamingSnapshot`, `MemoryTaskEntry`.
+- `shared/events.ts`: the frames (`EventFeedFrame`: `hello`, `change`, `memoryTask`, `handoff`, `epoch`, `ping`),
+  `ChatStreaming`, `ChatStreamingSnapshot`, `MemoryTaskEntry`.
 - `shared/resources.ts`: what a `change` frame carries (`ChangeSet`, `ChatDeltaBody`, `ChatMetaFields`) and its caps
   (`MAX_FEED_PATCH_BYTES`, `MAX_FEED_PUBLICATION_PATCH_BYTES`).
 - `server/src/data/chatStore.ts`, feed parts: a by-id group's entry, built in `applyGroup` (`ChatFeedPayloads`,
@@ -37,11 +37,11 @@
 ### Live-update hello
 
 The `hello` (`createEventSockets`) samples the epoch, the generation locks (`streaming`), the memory task statuses
-(`memoryTasks`), and the optional `digest` (`revisionDigest(resources.listRevisions())`, wired in `server/src/app.ts`)
-in one synchronous step before the socket is registered; a failed digest omits only that field, any other failed
-snapshot closes the socket. Nothing is replayed: a client whose seeded advertised map has the loaded epoch and the
-matching digest reconciles from that map, otherwise it reads `/api/resources/revisions`
-([feed connection](live-updates.md#feed-connection)).
+(`memoryTasks`), the open handoff offers (`handoffs`), and the optional `digest`
+(`revisionDigest(resources.listRevisions())`, wired in `server/src/app.ts`) in one synchronous step before the socket is
+registered; a failed digest omits only that field, any other failed snapshot closes the socket. Nothing is replayed: a
+client whose seeded advertised map has the loaded epoch and the matching digest reconciles from that map, otherwise it
+reads `/api/resources/revisions` ([feed connection](live-updates.md#feed-connection)).
 
 ### Frame admission
 

@@ -5,6 +5,7 @@ import {
     EVENT_FEED_PATH,
     type ChatStreamingSnapshot,
     type EventFeedFrame,
+    type HandoffOffer,
     type MemoryTaskEntry,
 } from "../../../shared/events.ts";
 import type { ChangeFeed, ChangeFeedEvent } from "../data/changeFeed.ts";
@@ -28,9 +29,10 @@ export type EventSockets = ReturnType<typeof createEventSockets>;
  * publishes goes to every connected client as refs and revisions (`shared/events.ts`). The handshake
  * needs a JWT (`risu-auth` query or header), never the raw password. On connect the socket sends
  * `hello` with the epoch, current generation locks (`streaming`), and every chat's memory task
- * status (`memoryTasks`), plus an optional revision-listing `digest`, all read in the same synchronous
- * step before the socket is registered and the hello sent. Nothing is replayed: a client reconciles
- * from its advertised map when the digest matches, otherwise from a fetched revision listing.
+ * status (`memoryTasks`), open handoff offers (`handoffs`), and an optional revision-listing `digest`,
+ * all read in the same synchronous step before the socket is registered and the hello sent.
+ * Nothing is replayed: a client reconciles from its advertised map when the digest matches,
+ * otherwise from a fetched revision listing.
  * A failed `digest` logs only the error name (or the type of a non-Error throw) and omits only that
  * field; failure of any other hello snapshot closes the socket with 1011.
  * Every published event goes to every socket in publication order, also one published
@@ -49,6 +51,8 @@ export function createEventSockets(options: {
     memoryTasks: () => MemoryTaskEntry[];
     /** Digest of the revision listing, sampled synchronously with the other hello snapshots. */
     digest?: () => string;
+    /** Open handoff offers, sampled with the other hello snapshots. */
+    handoffs?: () => HandoffOffer[];
 }) {
     const { feed, epoch, authorize, streaming, memoryTasks, digest } = options;
     const wsServer = new WebSocketServer({ noServer: true });
@@ -95,6 +99,8 @@ export function createEventSockets(options: {
                     chatId: event.chatId,
                     status: event.status,
                 };
+            case "handoff":
+                return { ...event };
             case "epoch":
                 return { type: "epoch", epoch: event.epoch };
         }
@@ -141,6 +147,7 @@ export function createEventSockets(options: {
                 epoch: epoch(),
                 streaming: streaming(),
                 memoryTasks: memoryTasks(),
+                ...(options.handoffs ? { handoffs: options.handoffs() } : {}),
             };
             try {
                 if (digest) frame.digest = digest();
