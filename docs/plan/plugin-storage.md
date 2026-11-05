@@ -1,6 +1,6 @@
 # Plugin Storage and Data API Plan
 
-Status: drafted 2026-11-05; landed: 0 (c140f2db7), 1 (d5c824f99), 2 (b3e3417a8), 4 (c81a3fab7), 5 (2b778c365), 9 (e6e02d2ba), 3 (86ac8b272). Decisions D1–D12 are recommendations for the owner; the **Open
+Status: drafted 2026-11-05; landed: 0 (c140f2db7), 1 (d5c824f99), 2 (b3e3417a8), 4 (c81a3fab7), 5 (2b778c365), 9 (e6e02d2ba), 3 (86ac8b272), 6 (d7e305392). Decisions D1–D12 are recommendations for the owner; the **Open
 questions** Q1–Q5 were answered by the owner on 2026-11-05 (the recommended option each time). Code anchors checked at `7f0024197` on `dev`; verify them again before editing
 (STRUCTURE.md protocol step 5).
 
