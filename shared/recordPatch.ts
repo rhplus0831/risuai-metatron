@@ -2,9 +2,9 @@ import type { RecordItemFieldPatch } from "./resources.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
 /**
- * The record patch helpers the store and the client share (`RecordFieldPatch`, `RecordItemPatch` in
- * `shared/resources.ts`): the item-id rule of an array record, the item patch's shape check and
- * application, and the JSON diffs a change-feed patch is built from.
+ * The record patch helpers the store and the client share (`RecordPatch`, `RecordWritePatch` in
+ * `shared/resources.ts`): write-patch validation and application, item identity rules, and the
+ * top-level/id-keyed JSON diffs a change-feed patch is built from.
  */
 
 /** A record patch that cannot apply: a malformed patch, or a base it does not fit. */
@@ -17,9 +17,10 @@ export class RecordPatchError extends Error {
 
 /**
  * The ids of an item list, in order, when every element is a plain object with an own non-empty
- * string `id` and no id repeats; null otherwise (such a record is written whole).
+ * string key (`id` by default, optionally `name`) and no key repeats; null otherwise (such a record
+ * is written whole). The key is selected by the patch, never inferred from the stored list.
  */
-export function itemIds(list: unknown): string[] | null {
+export function itemIds(list: unknown, key: "id" | "name" = "id"): string[] | null {
     if (!Array.isArray(list)) {
         return null;
     }
@@ -27,10 +28,10 @@ export function itemIds(list: unknown): string[] | null {
     const seen = new Set<string>();
     for (let index = 0; index < list.length; index += 1) {
         const item: unknown = list[index];
-        if (!isPlainObject(item) || !Object.hasOwn(item, "id")) {
+        if (!isPlainObject(item) || !Object.hasOwn(item, key)) {
             return null;
         }
-        const id = item.id;
+        const id = item[key];
         if (typeof id !== "string" || id === "" || seen.has(id)) {
             return null;
         }
@@ -50,15 +51,89 @@ export type CheckedItemPatch = {
     order: string[] | null;
 };
 
+/** The optional write-patch forms a kind accepts; an omitted item key still means `id`. */
+export type RecordWritePatchOptions = { readonly nestedFields?: readonly string[]; readonly itemKey?: "name" };
+
+/** Checked outer fields and entry patches for the declared dictionaries. */
+export type CheckedFieldPatch = CheckedFields & { nested: [string, CheckedFields][] };
+
+/** A checked batch write patch. The feed continues to use top-level fields and item ids. */
+export type CheckedRecordWritePatch =
+    ({ type: "fields" } & CheckedFieldPatch) | ({ type: "items"; itemKey: "id" | "name" } & CheckedItemPatch);
+
+function checkMembers(patch: Record<string, unknown>, allowed: readonly string[], what: string) {
+    const unknown = Object.keys(patch).find((key) => !allowed.includes(key));
+    if (unknown !== undefined) {
+        throw new RecordPatchError(`${what} has an unknown member ${JSON.stringify(unknown)}`);
+    }
+}
+
+/**
+ * Checks a complete write patch, including kind-specific nested fields and an explicit alternative
+ * item key. Field and item forms cannot mix. Each nested patch is non-empty, names a declared field
+ * once, and may not overlap an outer set/remove; an outer field patch alone must also be non-empty.
+ */
+export function checkRecordWritePatch(patch: unknown, options: RecordWritePatchOptions = {}): CheckedRecordWritePatch {
+    if (!isPlainObject(patch)) {
+        throw new RecordPatchError("a patch is { set?, remove? } or { items?, changes?, order? }");
+    }
+    const itemForm = ["items", "changes", "order", "itemKey"].some((field) => Object.hasOwn(patch, field));
+    if (itemForm) {
+        if (["set", "remove", "nested"].some((field) => Object.hasOwn(patch, field))) {
+            throw new RecordPatchError("a patch is either a field patch or an item patch");
+        }
+        checkMembers(patch, ["items", "changes", "order", "itemKey"], "an item patch");
+        let itemKey: "id" | "name" = "id";
+        if (Object.hasOwn(patch, "itemKey")) {
+            if (patch.itemKey !== "name" || options.itemKey !== "name") {
+                throw new RecordPatchError("the kind does not allow this itemKey");
+            }
+            itemKey = "name";
+        }
+        return { type: "items", itemKey, ...checkItemPatch(patch, itemKey) };
+    }
+    checkMembers(patch, ["set", "remove", "nested"], "a field patch");
+    const nested: [string, CheckedFields][] = [];
+    if (Object.hasOwn(patch, "nested")) {
+        if (!options.nestedFields?.length) {
+            throw new RecordPatchError("the kind takes no nested patch");
+        }
+        if (!isPlainObject(patch.nested) || Object.keys(patch.nested).length === 0) {
+            throw new RecordPatchError("a nested patch must name a dictionary");
+        }
+        for (const [field, entry] of Object.entries(patch.nested)) {
+            if (!options.nestedFields.includes(field) || field === "__proto__") {
+                throw new RecordPatchError(`the kind takes no nested patch for ${JSON.stringify(field)}`);
+            }
+            const what = `nested[${JSON.stringify(field)}]`;
+            if (!isPlainObject(entry)) {
+                throw new RecordPatchError(`${what} is { set?: object, remove?: string[] }`);
+            }
+            checkMembers(entry, ["set", "remove"], what);
+            nested.push([field, checkFields(entry.set, entry.remove, what)]);
+        }
+    }
+    const fields = checkFields(
+        patch.set,
+        patch.remove,
+        "a patch",
+        nested.map(([field]) => field),
+        nested.length > 0,
+    );
+    return { type: "fields", ...fields, nested };
+}
+
 /**
  * Checks one field patch's `set` and `remove` (`what` names it in the message). `forbidden` fields may
- * not be named (an item's `id`). Refuses an empty patch, a field named twice, and `__proto__`.
+ * not be named (an item's key). Refuses an empty patch unless explicitly allowed for the outer
+ * fields of a nested patch; always refuses a field named twice and `__proto__`.
  */
 export function checkFields(
     set: unknown,
     remove: unknown,
     what: string,
     forbidden: readonly string[] = [],
+    allowEmpty = false,
 ): CheckedFields {
     const fieldsSet = set ?? {};
     const fieldsRemoved = remove ?? [];
@@ -71,7 +146,7 @@ export function checkFields(
     }
     const entries = Object.entries(fieldsSet);
     const fields = [...entries.map(([field]) => field), ...(fieldsRemoved as string[])];
-    if (fields.length === 0) {
+    if (fields.length === 0 && !allowEmpty) {
         throw new RecordPatchError(`${what} names no field`);
     }
     if (new Set(fields).size !== fields.length || fields.includes("__proto__")) {
@@ -86,11 +161,11 @@ export function checkFields(
 
 /**
  * Checks an item patch (`{ items?, changes?, order? }`): `items` are plain objects with an own
- * non-empty string `id`; `changes` are `{ id, set?, remove? }` field patches that do not name `id`; no
- * id appears in both or twice; `order` is absent or a list of distinct strings. A patch that changes
- * nothing and has no `order` is refused.
+ * non-empty string key (`id` by default); `changes` use `id` to carry that key's value and may not
+ * set or remove the key field; no key value appears in both or twice. `order` is absent or a list of
+ * distinct strings. A patch that changes nothing and has no `order` is refused.
  */
-export function checkItemPatch(patch: Record<string, unknown>): CheckedItemPatch {
+export function checkItemPatch(patch: Record<string, unknown>, key: "id" | "name" = "id"): CheckedItemPatch {
     const items = patch.items ?? [];
     const changes = patch.changes ?? [];
     const order = patch.order;
@@ -109,10 +184,10 @@ export function checkItemPatch(patch: Record<string, unknown>): CheckedItemPatch
         return id;
     };
     const checkedItems = items.map((item, index) => {
-        if (!isPlainObject(item) || !Object.hasOwn(item, "id")) {
-            throw new RecordPatchError(`items[${index}] is not an object with an id`);
+        if (!isPlainObject(item) || !Object.hasOwn(item, key)) {
+            throw new RecordPatchError(`items[${index}] is not an object with ${key === "id" ? "an id" : "a name"}`);
         }
-        claim(item.id, `items[${index}]`);
+        claim(item[key], `items[${index}]`);
         return item;
     });
     const checkedChanges = changes.map((change, index) => {
@@ -121,7 +196,7 @@ export function checkItemPatch(patch: Record<string, unknown>): CheckedItemPatch
             throw new RecordPatchError(`${what} is { id, set?, remove? }`);
         }
         const id = claim(change.id, what);
-        return { id, ...checkFields(change.set, change.remove, what, ["id"]) };
+        return { id, ...checkFields(change.set, change.remove, what, [key]) };
     });
     let checkedOrder: string[] | null = null;
     if (order !== undefined) {
@@ -156,12 +231,34 @@ export function withFields(
 }
 
 /**
- * Applies a checked item patch to the base list: refuses a base without unique item ids
- * (`itemIds`), a change of an id the base lacks, an item that is not in the base when there is no
- * `order`, and an `order` that leaves out a patched item or names an id nothing resolves.
+ * Applies checked outer fields and nested entries, copying the root and each changed dictionary.
+ * A nested target must already be an own object dictionary; it is never created or coerced here.
  */
-export function applyItemPatch(base: unknown, patch: CheckedItemPatch): Record<string, unknown>[] {
-    const ids = itemIds(base);
+export function applyFieldPatch(base: unknown, patch: CheckedFieldPatch): Record<string, unknown> {
+    if (!isPlainObject(base)) {
+        throw new RecordPatchError("a field patch needs an object record");
+    }
+    const next = withFields(base, patch.set, patch.remove);
+    for (const [field, entries] of patch.nested) {
+        if (!Object.hasOwn(base, field) || !isPlainObject(base[field])) {
+            throw new RecordPatchError(`nested[${JSON.stringify(field)}] needs an own object dictionary`);
+        }
+        next[field] = withFields(base[field], entries.set, entries.remove);
+    }
+    return next;
+}
+
+/**
+ * Applies a checked item patch using the same key as its validation (`id` by default): refuses a
+ * base without unique keys (`itemIds`), a change of a key the base lacks, an item that is not in the
+ * base when there is no `order`, and an `order` that omits a patched item or names an unknown key.
+ */
+export function applyItemPatch(
+    base: unknown,
+    patch: CheckedItemPatch,
+    key: "id" | "name" = "id",
+): Record<string, unknown>[] {
+    const ids = itemIds(base, key);
     if (!ids) {
         throw new RecordPatchError("the record's items have no unique ids");
     }
@@ -169,7 +266,7 @@ export function applyItemPatch(base: unknown, patch: CheckedItemPatch): Record<s
     const byId = new Map(ids.map((id, index) => [id, list[index]]));
     const resolved = new Map(byId);
     for (const item of patch.items) {
-        const id = item.id as string;
+        const id = item[key] as string;
         if (patch.order === null && !byId.has(id)) {
             throw new RecordPatchError(`the item ${JSON.stringify(id)} is not in the record`);
         }
@@ -186,7 +283,7 @@ export function applyItemPatch(base: unknown, patch: CheckedItemPatch): Record<s
         return ids.map((id) => resolved.get(id)!);
     }
     const ordered = new Set(patch.order);
-    for (const id of [...patch.items.map((item) => item.id as string), ...patch.changes.map((change) => change.id)]) {
+    for (const id of [...patch.items.map((item) => item[key] as string), ...patch.changes.map((change) => change.id)]) {
         if (!ordered.has(id)) {
             throw new RecordPatchError(`the patched item ${JSON.stringify(id)} is not in the order`);
         }

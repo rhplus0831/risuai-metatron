@@ -67,7 +67,8 @@ import {
 } from "../../../shared/llmSecrets.ts";
 import { alertError, alertNormal, alertReloadNotice, alertTerminal, reloadNotice } from "../alert";
 import { assignsInherited, CHARACTER_FIXED_FIELDS } from "./mutationValidation";
-import { PLUGIN_STORAGE_KEY, SAFE_LOCAL_PLUGIN_STORAGE_KEY } from "./pluginStorageStore.svelte";
+import { PLUGIN_STORAGE_KEY } from "./pluginStorageStore.svelte";
+import { PLUGIN_STORAGE_DICTIONARIES } from "../../../shared/pluginStorage.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { applyItemPatch, checkFields, checkItemPatch, itemIds, withFields } from "../../../shared/recordPatch.ts";
 import { CHARACTER_SHAPE_FIELDS, normalizeCharacter } from "../../../shared/characters.ts";
@@ -214,16 +215,21 @@ import {
 type ListCollection = "presets" | "modules" | "plugins" | "pluginStorage";
 type Collection = ListCollection | SectionKind | CollectionKind;
 
-/** A top-level field of a record's text: its name, and where its value's JSON text is in that text. */
+/** An object field or dictionary entry: its name and the span of its value's JSON text. */
 type FieldSpan = [key: string, start: number, end: number];
 /**
- * A record's JSON text in parts, what a save diffs to send a patch: an object's top-level fields,
- * or an array's items by id (each item's span and fields), as spans of `source`, the text they
- * were built with (a projection's own text, so the parts hold no copy of it).
+ * A record's JSON text in parts, what a save diffs to send a patch: an object's top-level fields
+ * (and declared dictionaries' entries), or an array's items by its selected key (each item's span
+ * and fields), as spans of `source`, the text they were built with. Parts hold no copy of that text.
  */
 type RecordParts =
-    | { type: "fields"; source: string; fields: FieldSpan[] }
-    | { type: "items"; source: string; items: { id: string; start: number; end: number; fields: FieldSpan[] }[] };
+    | { type: "fields"; source: string; fields: FieldSpan[]; nested?: Map<string, FieldSpan[]> }
+    | {
+          type: "items";
+          itemKey: "id" | "name";
+          source: string;
+          items: { id: string; start: number; end: number; fields: FieldSpan[] }[];
+      };
 /** A record's text with its parts (null: it has none, it is saved whole). */
 type Projection = { text: string; parts: RecordParts | null };
 /**
@@ -1818,27 +1824,62 @@ function objectSpans(writer: JsonWriter, fields: readonly [string, string][]): F
 }
 
 /**
- * An object record's text and its top-level field parts; built from the parts, the text is
- * `JSON.stringify(record)`. One with a `toJSON` hook is its plain text without parts.
+ * An object record's text and its field parts, including entries of the declared dictionaries. The
+ * writer walks the live object's keys directly, preserving proxy order and own `__proto__` keys.
+ * A JSON hook at the root or a field disables parts; one at an entry disables that dictionary's
+ * entry spans, so its field is serialized whole with the hook's normal key.
  */
-function objectProjection(record: Record<string, unknown>): Projection {
-    const fields = fieldTexts(record);
-    if (!fields) {
+function objectProjection(record: Record<string, unknown>, nestedFields: readonly string[] = []): Projection {
+    if (hasJsonHook(record)) {
         return { text: JSON.stringify(record), parts: null };
     }
     const writer: JsonWriter = { pieces: [], length: 0 };
-    const spans = objectSpans(writer, fields);
+    const spans: FieldSpan[] = [];
+    const nested = new Map<string, FieldSpan[]>();
+    write(writer, "{");
+    for (const key of Object.keys(record)) {
+        const value = record[key];
+        if (hasJsonHook(value)) {
+            return { text: JSON.stringify(record), parts: null };
+        }
+        // Only ordinary dictionaries can be rebuilt from entries (a Date, for example, cannot).
+        const entries =
+            nestedFields.includes(key) &&
+            isPlainObject(value) &&
+            (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
+                ? fieldTexts(value)
+                : null;
+        const text = entries ? undefined : JSON.stringify(value);
+        if (!entries && text === undefined) {
+            continue;
+        }
+        write(writer, `${spans.length > 0 ? "," : ""}${JSON.stringify(key)}:`);
+        const start = writer.length;
+        if (entries) {
+            nested.set(key, objectSpans(writer, entries));
+        } else {
+            write(writer, text!);
+        }
+        spans.push([key, start, writer.length]);
+    }
+    write(writer, "}");
     const text = writer.pieces.join("");
-    return { text, parts: { type: "fields", source: text, fields: spans } };
+    return { text, parts: { type: "fields", source: text, fields: spans, ...(nested.size ? { nested } : {}) } };
 }
 
 /**
- * An item list's text and its parts by item id (`itemIds`: plain-object items with unique non-empty
- * string ids); built from the parts, the text is `JSON.stringify(list)`. Any other list, or one with a
- * `toJSON` hook on it, an item, or an item's value, is its plain text without parts.
+ * An item list's text and parts by item key (`itemIds`: plain-object items with unique non-empty
+ * string keys). Prefer ids; only plugins may fall back to names. Built from the parts, the text is
+ * `JSON.stringify(list)`. Any other list, or one with a `toJSON` hook on it, an item, or an item's
+ * value, is its plain text without parts.
  */
-function itemProjection(list: unknown): Projection {
-    const ids = itemIds(list);
+function itemProjection(list: unknown, kind?: string): Projection {
+    let ids = itemIds(list);
+    let itemKey: "id" | "name" = "id";
+    if (!ids && kind === RESOURCE_KIND.plugins) {
+        ids = itemIds(list, "name");
+        itemKey = "name";
+    }
     const items = list as Record<string, unknown>[];
     const texts = ids && !hasJsonHook(list) ? items.map(fieldTexts) : null;
     if (!ids || !texts || texts.some((fields) => fields === null)) {
@@ -1856,7 +1897,7 @@ function itemProjection(list: unknown): Projection {
     });
     write(writer, "]");
     const text = writer.pieces.join("");
-    return { text, parts: { type: "items", source: text, items: parts } };
+    return { text, parts: { type: "items", itemKey, source: text, items: parts } };
 }
 
 /** A dirty collection's text and parts; only modules reuse the field-text cache. */
@@ -1878,7 +1919,9 @@ function collectionProjection(collection: Collection): Projection | undefined {
         );
         return objectProjection(ordered);
     }
-    return isPlainObject(record) ? objectProjection(record) : itemProjection(record);
+    return isPlainObject(record)
+        ? objectProjection(record, collection === RESOURCE_KIND.pluginStorage ? PLUGIN_STORAGE_DICTIONARIES : [])
+        : itemProjection(record, collection);
 }
 
 /**
@@ -1939,7 +1982,9 @@ function moduleProjection(list: unknown): Projection {
     const ids = itemIds(list);
     return {
         text,
-        parts: ids ? { type: "items", source: text, items: spans.map((span, i) => ({ id: ids[i], ...span })) } : null,
+        parts: ids
+            ? { type: "items", itemKey: "id", source: text, items: spans.map((span, i) => ({ id: ids[i], ...span })) }
+            : null,
     };
 }
 
@@ -2402,7 +2447,8 @@ function pendingOp(op: Omit<PendingOp, "part" | "bytes">, patch?: string): Pendi
 
 /**
  * The parts of a held record's text (`RecordParts`), computed once from the text and cached on the
- * entry; null when it has none (`llmSecrets`, a list without unique item ids, a `toJSON` hook). Parts
+ * entry; null when it has none (`llmSecrets`, a list without unique item keys, a `toJSON` hook). The
+ * kind selects nested dictionaries and allows plugins' name fallback, just as for live parts. Parts
  * rebuilt from a parse are spans of the held text when the rebuilt text equals it, else of the rebuilt
  * text: a parse may order nested integer keys differently from the live
  * record, and such a field only reads as changed and is sent again, never the reverse.
@@ -2415,7 +2461,9 @@ function baseParts(kind: string, entry: Persisted): RecordParts | null {
     try {
         const data: unknown = JSON.parse(entry.text);
         if (kind !== SECTION_KIND.llmSecrets) {
-            projection = isPlainObject(data) ? objectProjection(data) : itemProjection(data);
+            projection = isPlainObject(data)
+                ? objectProjection(data, kind === RESOURCE_KIND.pluginStorage ? PLUGIN_STORAGE_DICTIONARIES : [])
+                : itemProjection(data, kind);
         }
     } catch {}
     const parts = projection?.parts ?? null;
@@ -2462,9 +2510,32 @@ function fieldPatchText(set: readonly [string, string][], remove: readonly strin
 }
 
 /**
- * The JSON of the record patch from `base` to `local` (`RecordFieldPatch` or `RecordItemPatch`
- * without its revision), `""` when nothing differs but key order, or null when a whole write is
- * needed (a changed `__proto__` field of an object record).
+ * Whether `withFields` can reproduce a dictionary's local key order: retained keys keep their
+ * positions and additions append in local order. Array-index keys sort canonically in plain objects,
+ * so their positions in a live proxy do not matter here.
+ */
+function nestedOrderMatches(base: readonly FieldSpan[], local: readonly FieldSpan[]): boolean {
+    const orderedKeys = (fields: readonly FieldSpan[]) =>
+        fields
+            .map(([key]) => key)
+            .filter((key) => {
+                const index = Number(key);
+                return !(Number.isInteger(index) && index >= 0 && index < 2 ** 32 - 1 && String(index) === key);
+            });
+    const before = orderedKeys(base);
+    const after = orderedKeys(local);
+    const kept = new Set(after);
+    const existing = new Set(before);
+    const applied = [...before.filter((key) => kept.has(key)), ...after.filter((key) => !existing.has(key))];
+    return applied.length === after.length && applied.every((key, index) => key === after[index]);
+}
+
+/**
+ * The JSON of a write patch (`RecordWritePatch`) from parts: outer fields, nested dictionary
+ * entries, or items addressed by the parts' key. A changed dictionary goes as an outer set when
+ * either side lacks entry spans, `__proto__` changed, or nested operations cannot reproduce its
+ * non-integer key order. A changed top-level `__proto__` or different item keys needs a whole write
+ * (null); no changed values or meaningful dictionary order yields "".
  */
 function recordPatchText(base: RecordParts, local: RecordParts): string | null {
     if (base.type === "fields" && local.type === "fields") {
@@ -2472,11 +2543,26 @@ function recordPatchText(base: RecordParts, local: RecordParts): string | null {
         if (!fields) {
             return null;
         }
-        return fields.set.length === 0 && fields.remove.length === 0
+        const set: [string, string][] = [];
+        const nested: string[] = [];
+        for (const [key, text] of fields.set) {
+            const before = base.nested?.get(key);
+            const after = local.nested?.get(key);
+            const entries =
+                before && after && nestedOrderMatches(before, after)
+                    ? diffFieldSpans(base.source, before, local.source, after)
+                    : null;
+            if (!entries) {
+                set.push([key, text]);
+            } else if (entries.set.length > 0 || entries.remove.length > 0) {
+                nested.push(`${JSON.stringify(key)}:{${fieldPatchText(entries.set, entries.remove)}}`);
+            }
+        }
+        return set.length === 0 && fields.remove.length === 0 && nested.length === 0
             ? ""
-            : `{${fieldPatchText(fields.set, fields.remove)}}`;
+            : `{${fieldPatchText(set, fields.remove)}${nested.length ? `,"nested":{${nested.join(",")}}` : ""}}`;
     }
-    if (base.type !== "items" || local.type !== "items") {
+    if (base.type !== "items" || local.type !== "items" || base.itemKey !== local.itemKey) {
         return null;
     }
     const before = new Map(base.items.map((item) => [item.id, item.fields]));
@@ -2498,17 +2584,20 @@ function recordPatchText(base: RecordParts, local: RecordParts): string | null {
         return "";
     }
     const order = reordered ? `,"order":${JSON.stringify(local.items.map((item) => item.id))}` : "";
-    return `{"items":[${items.join(",")}],"changes":[${changes.join(",")}]${order}}`;
+    const itemKey = local.itemKey === "name" ? ',"itemKey":"name"' : "";
+    return `{"items":[${items.join(",")}],"changes":[${changes.join(",")}]${order}${itemKey}}`;
 }
 
 /**
  * The save of a held record whose text changed: a record patch against the saved base when both have
- * parts (an object's changed fields, an array's changed items), unless it is not smaller in UTF-8
+ * parts (outer fields, entries in reserved plugin storage dictionaries, or an array's changed items
+ * by id or plugins' explicit name fallback), unless it is not smaller in UTF-8
  * bytes than the whole data; otherwise the whole record. Null when only key order differs: the local
  * text is held as the saved one (the same JSON values at the same revision), and nothing is sent.
  * Creates and records without parts go whole; `llmSecrets` never has patch parts. A changed own
- * `__proto__` forces the object record, or the affected item, whole. Hooks detected by `hasJsonHook`
- * at a serialization boundary also disable parts; `Date.prototype.toJSON` is excluded.
+ * `__proto__` forces the object record, affected dictionary field, or affected item whole. Dictionary
+ * shape/order fallbacks and item-key changes are handled by `recordPatchText`. Hooks detected by
+ * `hasJsonHook` at a serialization boundary disable those parts; `Date.prototype.toJSON` is excluded.
  */
 function updateOperation(
     key: string,
@@ -3591,7 +3680,7 @@ function benignChanges(
 }
 
 /** The reserved `pluginStorage` dictionaries (`pluginStorageStore.svelte.ts`), merged key by key. */
-const PLUGIN_STORAGE_NAMESPACES = new Set([PLUGIN_STORAGE_KEY, SAFE_LOCAL_PLUGIN_STORAGE_KEY]);
+const PLUGIN_STORAGE_NAMESPACES = new Set<string>(PLUGIN_STORAGE_DICTIONARIES);
 const CONFLICT = Symbol("conflict");
 
 /** An own data property, so an inherited name (`__proto__`, `constructor`) stays an ordinary key. */

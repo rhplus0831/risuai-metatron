@@ -380,6 +380,24 @@ export type RecordItemPatch = {
 export type RecordPatch = RecordFieldPatch | RecordItemPatch;
 
 /**
+ * A batch write patch, separate from the change-feed contract (`RecordPatch`). Object records may
+ * patch entries one level down in the kind's declared `nested` dictionaries. Array records address
+ * items by `id` unless the patch explicitly selects the kind's allowed alternative `itemKey`.
+ */
+export type RecordWritePatch =
+    | {
+          set?: Record<string, unknown>;
+          remove?: string[];
+          nested?: Record<string, { set?: Record<string, unknown>; remove?: string[] }>;
+      }
+    | {
+          itemKey?: "name";
+          items?: Record<string, unknown>[];
+          changes?: { id: string; set?: Record<string, unknown>; remove?: string[] }[];
+          order?: string[];
+      };
+
+/**
  * A chat's stored changes from `baseRevision` to the containing entry's revision. `messages` holds
  * new or changed rows once each, in final stored order, with the preceding row's id (`after`, null
  * at the start). `removed` names deleted ids; `meta`, when present, replaces all chat fields except

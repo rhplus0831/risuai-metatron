@@ -7,13 +7,12 @@ import {
 } from "../../../../shared/llmSecrets.ts";
 import {
     applyItemPatch,
-    checkFields,
-    checkItemPatch,
+    applyFieldPatch,
+    checkRecordWritePatch,
     RecordPatchError,
-    withFields,
 } from "../../../../shared/recordPatch.ts";
+import { PLUGIN_STORAGE_DICTIONARIES } from "../../../../shared/pluginStorage.ts";
 import { RESOURCE_EPOCH_HEADER, type ResourceConflict } from "../../../../shared/resources.ts";
-import { isPlainObject } from "../../../../shared/valueKinds.ts";
 
 /**
  * An in-memory stand-in for the server's `/api/resources` routes, with the same contract the client
@@ -22,9 +21,9 @@ import { isPlainObject } from "../../../../shared/valueKinds.ts";
  * record follows the server's contract too: it is stored as plaintext (what a test puts in it, or
  * what `/api/llm-secrets/*` writes) and answered masked on every read; a plain write may carry no
  * credential path (400) and keeps the stored credentials. A batch op may be a record patch: a field
- * patch `{ set?, remove? }` of an object record or an item patch `{ items?, changes?, order? }` of
- * a list with unique item ids, applied with the shared helpers (`shared/recordPatch.ts`) to the
- * record at its base revision and refused (400 naming the op) as the store refuses it; the fake has
+ * patch of outer fields and declared nested dictionaries, or an item patch of a list with unique
+ * item ids (optionally names for plugins), applied with the shared helpers (`shared/recordPatch.ts`)
+ * to the record at its base revision and refused (400 naming the op) as the store refuses it; the fake has
  * no normalizers, so the patch's result is stored as it is. Tests plug it in as `authFetch` and use
  * the hooks to hold a batch, drop a response after it was applied, or fail requests.
  */
@@ -119,7 +118,7 @@ export class FakeResourceServer {
 
     /**
      * A patch op's result over the stored record (the store's `preparePatch` + `writePatch`, without
-     * a normalizer): a field patch of an object record, or an item patch of a list with unique ids;
+     * a normalizer): outer/nested fields, or items addressed by id or an explicitly allowed name;
      * never for `llmSecrets` (a kind with `project`/`prepareWrite`), never mixed with `data`/`delete`.
      */
     private applyPatch(op: { kind: string; id: string; patch?: unknown; data?: unknown; delete?: unknown }): unknown {
@@ -130,22 +129,15 @@ export class FakeResourceServer {
             throw new FakeValidationError(`${op.kind} takes no patch`);
         }
         const patch = op.patch;
-        if (!isPlainObject(patch)) {
-            throw new FakeValidationError("a patch is { set?, remove? } or { items?, changes?, order? }");
-        }
         const old: unknown = JSON.parse(JSON.stringify(this.data(op.kind, op.id)));
         try {
-            if (["items", "changes", "order"].some((field) => Object.hasOwn(patch, field))) {
-                if (Object.hasOwn(patch, "set") || Object.hasOwn(patch, "remove")) {
-                    throw new RecordPatchError("a patch is either a field patch or an item patch");
-                }
-                return applyItemPatch(old, checkItemPatch(patch));
-            }
-            const fields = checkFields(patch.set, patch.remove, "a patch");
-            if (!isPlainObject(old)) {
-                throw new RecordPatchError("a field patch needs an object record");
-            }
-            return withFields(old, fields.set, fields.remove);
+            const checked = checkRecordWritePatch(patch, {
+                nestedFields: op.kind === "pluginStorage" ? PLUGIN_STORAGE_DICTIONARIES : undefined,
+                itemKey: op.kind === "plugins" ? "name" : undefined,
+            });
+            return checked.type === "fields"
+                ? applyFieldPatch(old, checked)
+                : applyItemPatch(old, checked, checked.itemKey);
         } catch (error) {
             if (error instanceof RecordPatchError) {
                 throw new FakeValidationError(error.message);
