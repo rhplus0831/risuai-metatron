@@ -204,16 +204,6 @@ export function registerMessageSearchRoutes(
     const limitBody = limitedBody(MAX_SEARCH_BODY_BYTES);
 
     app.post(MESSAGE_SEARCH_PATH, noStore, limiter, authenticated, limitBody, async (c) => {
-        let size: number;
-        try {
-            size = (await c.req.arrayBuffer()).byteLength;
-        } catch {
-            return c.json({ error: "Invalid JSON body" }, 400);
-        }
-        // The limiter trusts a declared length; measure the bytes that arrived.
-        if (size > MAX_SEARCH_BODY_BYTES) {
-            return c.json({ error: "Request body too large" }, 413);
-        }
         const read = await readJsonBody(c);
         if (!read.ok) {
             return read.response;

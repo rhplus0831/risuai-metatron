@@ -153,10 +153,6 @@ export function registerRequestHistoryRoutes(
         } catch {
             return c.json({ error: "Could not read the request body" }, 400);
         }
-        // The limiter trusts a declared length; the body read is measured again.
-        if (Buffer.byteLength(text, "utf8") > SHARE_BODY_BYTES) {
-            return c.json({ error: "Request body too large" }, 413);
-        }
         const body = parseShareBody(text);
         if (!body) {
             return c.json({ error: "Expected { jobId | requestId, shared }" }, 400);

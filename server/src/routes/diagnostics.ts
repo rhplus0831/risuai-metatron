@@ -53,10 +53,6 @@ export function registerDiagnosticsRoutes(
         } catch {
             return c.json({ error: "Could not read the report" }, 400);
         }
-        // The limiter trusts a declared length; the body read is measured again.
-        if (Buffer.byteLength(text, "utf8") > MAX_DIAGNOSTIC_REPORT_BYTES) {
-            return c.json({ error: "Request body too large" }, 413);
-        }
         const report = canonicalDiagnosticReport(text);
         if (report === null) {
             return c.json({ error: "Not a diagnostic report" }, 400);

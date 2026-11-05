@@ -803,7 +803,7 @@ describe("POST /api/resources/boot body cap and authentication", () => {
         expect(streamed.status).toBe(413);
         expect(await streamed.json()).toEqual({ error: "Request body too large" });
 
-        // A declared length: the limiter trusts it, so the route measures what it read.
+        // A declared length under the cap with more bytes behind it: the limiter counts what arrives.
         expect((await post(s, atCap, { "content-length": "1" })).status).toBe(200);
         const declared = await post(s, over, { "content-length": "1" });
         expect(declared.status).toBe(413);

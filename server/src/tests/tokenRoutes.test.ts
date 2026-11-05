@@ -191,6 +191,7 @@ describe("token routes", () => {
             expect(await accepted.json()).toEqual(expected);
             const refused = await context.app.request(route, { ...init, body: " " + atLimit });
             expect(refused.status).toBe(413);
+            expect(await refused.json()).toEqual({ error: "Request body too large" });
         }
     });
 

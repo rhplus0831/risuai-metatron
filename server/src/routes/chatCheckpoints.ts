@@ -1,11 +1,11 @@
 import type { Handler, Hono, MiddlewareHandler } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import type { CheckpointService } from "../data/checkpointService.ts";
 import type { MaintenanceGate } from "../data/snapshots.ts";
 import { readJsonBody } from "../http/body.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { limitedBody } from "./limitedBody.ts";
 import { storeErrorResponse } from "./resources.ts";
 
 export const CHAT_CHECKPOINTS_PATH = "/api/chat-checkpoints";
@@ -41,24 +41,7 @@ export function registerChatCheckpointRoutes(
         }
         await next();
     };
-    const limitBody = bodyLimit({
-        maxSize: MAX_CHECKPOINT_BODY_BYTES,
-        onError: (c) => c.json({ error: "Request body too large" }, 413),
-    });
-    const limitedBody: MiddlewareHandler<AppEnv> = async (c, next) => {
-        let downstream = false;
-        try {
-            return await limitBody(c, async () => {
-                downstream = true;
-                await next();
-            });
-        } catch (error) {
-            if (downstream) {
-                throw error;
-            }
-            return c.json({ error: "Invalid JSON body" }, 400);
-        }
-    };
+    const limitBody = limitedBody(MAX_CHECKPOINT_BODY_BYTES);
 
     /** GET ?characterId=&chatId= → { epoch, checkpoints }, newest first; 400 invalid ids, 404 missing chat. */
     app.get(CHAT_CHECKPOINTS_PATH, limiter, authenticated, (c) => {
@@ -73,16 +56,6 @@ export function registerChatCheckpointRoutes(
 
     function mutationHandler(method: "save" | "rename" | "remove" | "load" | "writePolicy"): Handler<AppEnv> {
         return async (c) => {
-            let size: number;
-            try {
-                size = (await c.req.arrayBuffer()).byteLength;
-            } catch {
-                return c.json({ error: "Invalid JSON body" }, 400);
-            }
-            // The limiter trusts a declared length; also check the actual bytes received.
-            if (size > MAX_CHECKPOINT_BODY_BYTES) {
-                return c.json({ error: "Request body too large" }, 413);
-            }
             const parsed = await readJsonBody(c);
             if (!parsed.ok) {
                 return parsed.response;
@@ -111,9 +84,9 @@ export function registerChatCheckpointRoutes(
          * load adds { id, chatBaseRevision } → { epoch, chatRevision, safety }, atomic replacement,
          * 409 with current revision or reason: "generating" (`data/checkpointService.ts` load).
          */
-        app.post(`${CHAT_CHECKPOINTS_PATH}/${path}`, limiter, authenticated, limitedBody, mutationHandler(method));
+        app.post(`${CHAT_CHECKPOINTS_PATH}/${path}`, limiter, authenticated, limitBody, mutationHandler(method));
     }
     /** PUT { characterId, chatId, autoEvery, autoKeep } or { characterId, chatId, off: true },
      * with x-resource-epoch → { epoch, policy: { autoEvery, autoKeep } | null }. */
-    app.put(`${CHAT_CHECKPOINTS_PATH}/policy`, limiter, authenticated, limitedBody, mutationHandler("writePolicy"));
+    app.put(`${CHAT_CHECKPOINTS_PATH}/policy`, limiter, authenticated, limitBody, mutationHandler("writePolicy"));
 }

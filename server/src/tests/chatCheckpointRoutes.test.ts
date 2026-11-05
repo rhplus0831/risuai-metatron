@@ -98,6 +98,35 @@ function storeFixture() {
 }
 
 describe("chat checkpoint routes", () => {
+    it.each([
+        { method: "POST", operation: "save", body: { ...ref, name: "Fork" } },
+        { method: "PUT", operation: "policy", body: { ...ref, autoEvery: 2, autoKeep: 3 } },
+    ])(
+        "refuses a streamed body over 16 KiB on $method $operation without writing",
+        async ({ method, operation, body }) => {
+            const s = await server();
+            const encoded = Buffer.from(JSON.stringify(body));
+            const response = await s.request(`${path}/${operation}`, {
+                method,
+                headers: { "content-type": "application/json" },
+                body: new ReadableStream<Uint8Array>({
+                    start(controller) {
+                        controller.enqueue(encoded);
+                        controller.enqueue(Buffer.alloc(16 * 1024 + 1 - encoded.byteLength, " "));
+                        controller.close();
+                    },
+                }),
+                duplex: "half",
+            } as RequestInit);
+            expect(await answer(response, 413)).toEqual({ error: "Request body too large" });
+            expect(await list(s)).toEqual([]);
+            expect(await answer(await s.request(`${path}/policy?${new URLSearchParams(ref)}`), 200)).toEqual({
+                epoch: s.epoch,
+                policy: null,
+            });
+        },
+    );
+
     it("authenticates every route and fences mutations by epoch and maintenance, with uncached answers", async () => {
         const s = await server();
         const checkpoint = await save(s);

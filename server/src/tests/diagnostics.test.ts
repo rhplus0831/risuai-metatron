@@ -1679,7 +1679,7 @@ describe("the report route", () => {
             },
         });
         await tooLarge(await post(s, stream, { duplex: "half" } as RequestInit));
-        // A declared length the limiter trusts, with more bytes behind it: the body read is measured again.
+        // A declared length under the cap with more bytes behind it: the limiter counts what arrives.
         await tooLarge(await post(s, over, { headers: { "content-length": "1" } }));
         // Under the limit in characters, over it in bytes.
         await tooLarge(

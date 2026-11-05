@@ -183,8 +183,7 @@ deletes past-grace candidates; its batches and synchronous turn are `sweep`'s co
 in its own `limitedBody(<cap>)`, as `server/src/routes/auth.ts` and `server/src/routes/push.ts` do, and is added to
 `ownLimit` in `server/src/app.ts` (and the cap list in the comment above it), which skips the global cap. Cap owners:
 [resources](server-resources.md#files), [generation](server-generation.md#files), [storage](#storage-routes),
-[auth](#auth-routes), [push](#push-routes), and [diagnostics](#request-history-and-diagnostics-routes); chat checkpoints
-keep a separate `hono/body-limit` wrapper after auth.
+[auth](#auth-routes), [push](#push-routes), and [diagnostics](#request-history-and-diagnostics-routes).
 
 - A route that never reads its body (the snapshot restore) refuses an over-cap one only by its declared length.
 - A route must finish reading before it exposes a streamed response, as every capped route does: a later overflow cannot
