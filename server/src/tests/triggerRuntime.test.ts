@@ -306,6 +306,52 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
+describe("trigger stage chat copies", () => {
+    it("returns null without copying the chat when the character and modules have no triggers", async () => {
+        const h = harness({ triggers: [] });
+        const clone = vi.spyOn(globalThis, "structuredClone");
+
+        for (const mode of ["start", "input", "output", "manual"] as const) {
+            clone.mockClear();
+            const result = await h.runtime.runTrigger(h.stored, mode, { chat: h.live });
+
+            expect(result, mode).toBeNull();
+            expect(
+                clone.mock.calls.filter(([value]) => value === h.live),
+                mode,
+            ).toHaveLength(0);
+        }
+    });
+
+    it("keeps a working chat copy and a non-null result when a character or module trigger exists, even for another stage", async () => {
+        for (const source of ["character", "module"] as const) {
+            const trigger = trig([]);
+            const h = harness({
+                triggers: source === "character" ? [trigger] : [],
+                moduleTriggers: source === "module" ? [trigger] : [],
+            });
+            const clone = vi.spyOn(globalThis, "structuredClone");
+            try {
+                for (const mode of ["start", "input", "output", "manual"] as const) {
+                    clone.mockClear();
+                    const result = await h.runtime.runTrigger(h.stored, mode, { chat: h.live, manualName: "go" });
+                    const label = `${source} trigger, ${mode} stage`;
+
+                    expect(result, label).toMatchObject({ chat: h.live });
+                    expect(
+                        clone.mock.calls.filter(([value]) => value === h.live),
+                        label,
+                    ).toHaveLength(1);
+                    expect(result?.chat, label).not.toBe(h.live);
+                    expect(result?.chat.message[0], label).not.toBe(h.live.message[0]);
+                }
+            } finally {
+                clone.mockRestore();
+            }
+        }
+    });
+});
+
 describe("variables", () => {
     it("applies every operator on the working copy's scriptstate, hands the store one key per change, and CBS reads the write", async () => {
         const h = harness({

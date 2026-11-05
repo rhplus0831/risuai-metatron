@@ -364,6 +364,11 @@ export function createTriggerRuntime(host: TriggerHost) {
         return result.value as T;
     };
 
+    /** Whether the character or the job's modules have any triggers, regardless of mode. */
+    function hasTriggers(char: character): boolean {
+        return (char.triggerscript?.length ?? 0) > 0 || host.moduleTriggers().length > 0;
+    }
+
     async function runTrigger(
         sourceChar: character,
         mode: TriggerMode,
@@ -436,16 +441,16 @@ export function createTriggerRuntime(host: TriggerHost) {
         const defaultVariables = parseKeyValue(char.defaultVariables).concat(
             parseKeyValue(host.templateDefaultVariables),
         );
+        if (!triggers || triggers.length === 0) {
+            return null;
+        }
+
         // The trigger's working copy. A display run copies only the chat and its message list (it runs
         // for every rendered message); its effects replace messages instead of editing them in place.
         // Never edit nested metadata in place in a display run: the live scope keeps its objects across refreshes.
         let chat = (
             arg.displayMode ? { ...arg.chat, message: [...arg.chat.message] } : structuredClone(arg.chat)
         ) as Chat;
-
-        if (!triggers || triggers.length === 0) {
-            return null;
-        }
 
         // The run owns the map (a nested run shares it) and returns it.
         arg.tempVars ??= {};
@@ -2038,5 +2043,5 @@ export function createTriggerRuntime(host: TriggerHost) {
         };
     }
 
-    return { runTrigger };
+    return { runTrigger, hasTriggers };
 }

@@ -255,6 +255,7 @@ export type RunSetup = {
     /**
      * `captureChatBaseline`, `runTrigger(char, mode, { chat })`, and `applyChatResult` on the chat as
      * stored now (the history view during assembly); a removed reroll carrier returns noReply;
+     * no character or module triggers returns null without copying;
      * the result (or undefined when the chat is gone or the trigger returned nothing).
      */
     runOnCopy(
@@ -377,6 +378,9 @@ export function createRunSetup(
         services.fence(nativeCtx);
         if (!refreshChat(store, scope)) {
             return undefined;
+        }
+        if (!runtime.hasTriggers(char)) {
+            return null;
         }
         const baseline = { chat: structuredClone(scopeHistoryChat(scope)!) as Chat, revision: scope.chatRevision };
         let result: TriggerResult | null | undefined;

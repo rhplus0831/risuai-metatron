@@ -12,6 +12,10 @@ import { completionNotificationTag } from "../../../shared/notifications.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import * as resourceStores from "../data/resourceStore.ts";
 import type { ChatGroup, ChatOp } from "../../../shared/chats.ts";
+import type { triggerscript } from "../../../shared/triggers.ts";
+import type { RunningJob } from "../jobs/generationJobs.ts";
+import { loadJobScope, scopeHistoryChat } from "../jobs/jobScope.ts";
+import { createJobRunState, createRunSetup } from "../jobs/runSetup.ts";
 import * as localModels from "../prompt/transformers.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
@@ -135,6 +139,7 @@ const provider = http.createServer(async (req, res) => {
 
 let runnerStore: resourceStores.ResourceStore;
 let runnerFeed: ChangeFeed;
+let runnerStoreOptions: Parameters<typeof resourceStores.createResourceStore>[0];
 let rootDir = "";
 let server: ReturnType<typeof createTestServer>;
 let transformers: localModels.TransformersService;
@@ -517,6 +522,7 @@ beforeAll(async () => {
         });
         transformers = createdModels.mock.results[0].value;
         runnerStore = createdStore.mock.results[0].value;
+        runnerStoreOptions = createdStore.mock.calls[0][0];
         runnerFeed = createdStore.mock.calls[0][0].feed!;
     } finally {
         createdModels.mockRestore();
@@ -608,6 +614,120 @@ afterAll(async () => {
     provider.close();
     rmSync(rootDir, { recursive: true, force: true });
     vi.restoreAllMocks();
+});
+
+describe("trigger stage chat copies", () => {
+    it("runOnCopy returns null without chat copies only when neither the character nor its modules have triggers", async () => {
+        const unusedModelService = () => {
+            throw new Error("A trigger without effects must not use model services");
+        };
+        for (const source of ["none", "character", "module"] as const) {
+            const trigger = trig("manual", []) as triggerscript;
+            const chaId = await seedCharacter({
+                name: "Ann",
+                triggerscript: source === "character" ? [trigger] : [],
+                messages: [
+                    { role: "char", data: "hello", chatId: "c1" },
+                    { role: "user", data: "hi", chatId: "u1" },
+                ],
+            });
+            const runJob: RunningJob = {
+                id: `trigger-copies-${chaId}`,
+                kind: "send",
+                context: {
+                    characterId: chaId,
+                    chatId: "k",
+                    presetId,
+                    modelPresetId,
+                    personaId,
+                    mode: "send",
+                    input: "",
+                    chatRevision: runnerStore.chatRevision(chaId, "k")!,
+                },
+                command: null,
+                hooks: NO_GENERATION_HOOKS,
+                epoch,
+                signal: new AbortController().signal,
+                ownerAttached: () => false,
+                channel: {
+                    notice() {},
+                    ask: async () => ({ outcome: "aborted" }),
+                    callback: async () => ({ outcome: "refused", refusal: "unregistered", error: "none" }),
+                },
+                emit() {},
+                emitRecords: () => [],
+                onClientMessage: () => () => {},
+                write() {
+                    throw new Error("A trigger without effects must not write");
+                },
+            };
+            const scope = loadJobScope(runnerStore, runnerStoreOptions.kinds, runJob.context);
+            if (source === "module") {
+                scope.db.modules = [
+                    { id: "trigger-module", name: "Trigger module", description: "", trigger: [trigger] },
+                ];
+                scope.db.enabledModules = ["trigger-module"];
+            }
+            const char = scope.db.characters.find((entry) => entry.chaId === chaId);
+            if (!char || char.type === "group") throw new Error("Expected the seeded character");
+            const setup = createRunSetup(
+                runJob,
+                {
+                    store: runnerStore,
+                    kinds: runnerStoreOptions.kinds,
+                    lock: runnerStoreOptions.guard!,
+                    rootDir,
+                    savePath: server.savePath,
+                    scriptWorkers: server.context.scriptWorkers,
+                    llm: server.context.llmRequests,
+                    tokens: { count: unusedModelService, encode: unusedModelService },
+                    embeddings: { forJob: unusedModelService },
+                    transformers,
+                },
+                createJobRunState(runJob),
+                scope,
+                { runCharacterId: chaId, engineCharacterId: chaId },
+            );
+            const chat = scopeHistoryChat(scope)!;
+            const clone = vi.spyOn(globalThis, "structuredClone");
+            try {
+                for (const mode of ["start", "input", "output", "manual"] as const) {
+                    clone.mockClear();
+                    const result = await setup.runOnCopy(char, mode, { manualName: "manual" });
+                    const label = `${source} triggers, ${mode} stage`;
+                    if (source === "none") {
+                        expect(result, label).toBeNull();
+                        expect(
+                            clone.mock.calls.filter(
+                                ([value]) =>
+                                    typeof value === "object" &&
+                                    value !== null &&
+                                    "id" in value &&
+                                    value.id === chat.id &&
+                                    "message" in value &&
+                                    Array.isArray(value.message),
+                            ),
+                            label,
+                        ).toHaveLength(0);
+                    } else {
+                        expect(result, label).toMatchObject({ chat });
+                        const baselines = clone.mock.calls.flatMap(([value], index) =>
+                            value === chat ? [clone.mock.results[index].value as typeof chat] : [],
+                        );
+                        expect(baselines, label).toHaveLength(1);
+                        expect(
+                            clone.mock.calls.filter(([value]) => value === baselines[0]),
+                            label,
+                        ).toHaveLength(1);
+                        expect(result?.chat, label).not.toBe(baselines[0]);
+                        expect(result?.chat.message[0], label).not.toBe(baselines[0].message[0]);
+                    }
+                }
+            } finally {
+                clone.mockRestore();
+            }
+        }
+    });
 });
 
 describe("a send", () => {
