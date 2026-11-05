@@ -265,8 +265,8 @@ settings sections and collections, no `root` record; tables as in version 2).
 - `changes` (`cursor` autoincrement, `kind`, `characterId`, `id`, `revision`): transactional refs/tombstones; order ids
   are character ids. Created at open beside `openChatSchema`, outside `STORE_TABLES_SQL` and the layout check; no
   version bump. Open-time writes bypass it.
-- The log prunes to 20,000 rows (a few MB with typical ids; deletion does not shrink the file). `replaceAll` truncates
-  it without resetting the sequence. Whole-file snapshots and backups contain it; restore ignores it.
+- The log prunes to 20,000 rows by cursor range (cursors are contiguous); deletes do not shrink the file. `replaceAll`
+  empties it, keeping the sequence. Whole-file snapshots and backups contain it; restore ignores it.
 - `chatGroups` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `groupId`, `revision`,
   `result` JSON, unique `(chatSeq, groupId)`), created when missing at open, outside the layout check: never restored, a
   restore leaves it empty (deleting the chats cascades).

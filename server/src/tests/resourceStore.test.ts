@@ -245,6 +245,100 @@ describe("bounded revision replay", () => {
         expect(store.listChanges(2, 6, store.epoch())).toEqual({ epoch: store.epoch(), cursor: 6, expired: true });
     });
 
+    it("prunes one row at a full default window with a primary-key range delete and no retained-row scan", async () => {
+        const prepare = DatabaseSync.prototype.prepare;
+        let deleteSql = "";
+        const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
+            this: DatabaseSync,
+            sql: string,
+        ) {
+            if (/^\s*DELETE\s+FROM\s+changes\b/i.test(sql)) deleteSql = sql;
+            return prepare.call(this, sql);
+        });
+        let store: ResourceStore;
+        try {
+            store = open();
+        } finally {
+            spy.mockRestore();
+        }
+        const limit = 20_000;
+        store.applyChanges({
+            ops: Array.from({ length: limit }, (_, i) => ({ kind: root, id: String(i), baseRevision: null, data: i })),
+        });
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-log-prune-"));
+        dirs.push(dir);
+        for (const [name, oldest, newest] of [
+            ["full", 1, limit],
+            ["pruned", 2, limit + 1],
+        ] as const) {
+            if (name === "pruned") store.put(root, "next", null, null);
+            expect(store.cursor()).toBe(newest);
+            const file = path.join(dir, `${name}.sqlite`);
+            await store.backupTo(file);
+            const db = new DatabaseSync(file);
+            try {
+                expect(
+                    db.prepare("SELECT COUNT(*) AS n, MIN(cursor) AS oldest, MAX(cursor) AS newest FROM changes").get(),
+                ).toEqual({ n: limit, oldest, newest });
+                if (name === "full") {
+                    expect(deleteSql).not.toBe("");
+                    const plan = db
+                        .prepare(`EXPLAIN QUERY PLAN ${deleteSql}`)
+                        .all(1)
+                        .map((row) => row.detail)
+                        .join("\n");
+                    expect(plan).not.toMatch(/\bSCAN changes\b/i);
+                    expect(plan).toMatch(/\bSEARCH changes USING INTEGER PRIMARY KEY \(rowid<\?\)/i);
+                }
+            } finally {
+                db.close();
+            }
+        }
+    });
+
+    it("prunes multi-row commits to exactly the newest rows and keeps none with zero retention", async () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-log-batch-"));
+        dirs.push(dir);
+        for (const limit of [0, 3]) {
+            const store = open(limit);
+            const batch = store.applyChanges({
+                ops: Array.from({ length: 5 }, (_, i) => ({ kind: root, id: String(i), baseRevision: null, data: i })),
+            });
+            async function check(high: number, resources: ChangeSet["resources"]) {
+                expect(store.cursor()).toBe(high);
+                const file = path.join(dir, `${limit}.sqlite`);
+                await store.backupTo(file);
+                const db = new DatabaseSync(file);
+                try {
+                    expect(db.prepare("SELECT cursor, id FROM changes ORDER BY cursor").all()).toEqual(
+                        resources.map(({ id }, i) => ({ cursor: high - resources.length + i + 1, id })),
+                    );
+                } finally {
+                    db.close();
+                }
+                const floor = high - resources.length;
+                replay(store, floor, high, { ...empty, resources });
+                expect(store.listChanges(floor - 1, high, store.epoch())).toEqual({
+                    epoch: store.epoch(),
+                    cursor: high,
+                    expired: true,
+                });
+            }
+            const retained =
+                limit === 0 ? [] : batch.results.slice(2).map(({ id, revision }) => ({ kind: "root", id, revision }));
+            await check(5, retained);
+
+            const committed = store.transaction(() =>
+                [5, 6, 7].map((i) => ({
+                    kind: "root",
+                    id: String(i),
+                    revision: store.put(root, String(i), i, null).revision,
+                })),
+            );
+            await check(8, limit === 0 ? [] : committed);
+        }
+    });
+
     it("opens a current-version file without a log, normalizes without logging, and keeps later cursors across reopen", () => {
         const dir = mkdtempSync(path.join(os.tmpdir(), "risu-log-open-"));
         dirs.push(dir);

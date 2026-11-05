@@ -1068,9 +1068,9 @@ export function createResourceStore(options: {
         throw error;
     }
     const insertChange = db.prepare("INSERT INTO changes (kind, characterId, id, revision) VALUES (?, ?, ?, ?)");
-    const pruneChanges = db.prepare(
-        "DELETE FROM changes WHERE cursor <= (SELECT cursor FROM changes ORDER BY cursor DESC LIMIT 1 OFFSET ?)",
-    );
+    // AUTOINCREMENT inserts and their sequence allocations roll back together; deletes remove only a prefix or all rows.
+    // Retained cursors stay contiguous, so the newest cursor minus the limit is the retention cutoff.
+    const pruneChanges = db.prepare("DELETE FROM changes WHERE cursor <= ?");
     const selectCursor = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'changes'");
     const selectChangeFloor = db.prepare("SELECT MIN(cursor) AS oldest FROM changes");
     const selectChanges = db.prepare(
@@ -1162,7 +1162,7 @@ export function createResourceStore(options: {
         for (const { kind, characterId, id, revision } of transactionChanges?.values() ?? []) {
             newestCursor = Number(insertChange.run(kind, characterId, id, revision).lastInsertRowid);
         }
-        if (newestCursor !== undefined) pruneChanges.run(changeLogLimit);
+        if (newestCursor !== undefined) pruneChanges.run(newestCursor - changeLogLimit);
         db.exec("COMMIT");
         chatTables.commitTransaction();
         if (newestCursor !== undefined && publishingScope) {
