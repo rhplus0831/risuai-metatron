@@ -16,6 +16,7 @@
 // Coverage uses each named function's FIRST range count with callCount:true and detailed:true:
 // its invocation count, excluding async resumptions, verified with a standalone inspector probe
 // (an async function with three awaits called twice counts two; a sync call counts one).
+// CSS preparations per distinct sheet use the cssTools.parse coverage count, including 'absent'.
 // Coverage starts before app navigation so functions compile with block coverage; boot and Away
 // warmup counts are discarded before the Render open. Profile and screenshot never enable it.
 // Source declarations distinguish an uncalled/lazily compiled function (0) from an absent function.
@@ -1284,7 +1285,7 @@ try {
                     await cdp.send("Profiler.disable");
                     if (switches) await cdp.send("Debugger.disable");
                     result.coverageInventory = await coverage.finish();
-                    if (result.coverage) result.cssPreparationsPerSheet = result.coverage.functions.decodeStyleContent;
+                    if (result.coverage) result.cssPreparationsPerSheet = result.coverage.functions["cssTools.parse"];
                 }
                 await cdp.detach();
                 result.wallTimeMs = Date.now() - scenarioStart;
