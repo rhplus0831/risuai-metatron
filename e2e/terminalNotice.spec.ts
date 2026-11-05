@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page } from "./fixtures";
 import { openApp } from "../util/playwright/stack.mjs";
+import { chatBindingFixture } from "../util/playwright/modelProfiles.mjs";
 
 // The restore notice as the terminal notice (`live-updates.md` "Restore halt", `global-api.md`
 // `alertTerminal` and `TerminalNotice.svelte`), in the real app against the isolated stack of
@@ -15,6 +16,8 @@ import { openApp } from "../util/playwright/stack.mjs";
 // - Enter typed into the composer before it opened goes to the notice's OK, not the composer: no send.
 // The server is not restored (no other spec's data changes): the 412 is the transport's real answer
 // to a routed request, or the epoch listener the transports call for one.
+// Seeded chats bind to the existing model preset, prompt preset, and persona so the composer is editable;
+// no provider is needed: the notice takes the Enter, so nothing is sent.
 
 const NOTICE = "The server data was restored from a backup. The app will reload.";
 
@@ -72,10 +75,13 @@ async function session(context: BrowserContext, baseURL: string): Promise<Sessio
     return { page, errors, navigations, generations, api };
 }
 
-/** Seeds a character with one chat (a greeting and two messages), then reopens the app. */
+/** Seeds a character with one bound chat (a greeting and two messages), then reopens the app. */
 async function seed(s: Session, baseURL: string): Promise<{ chaId: string; chatId: string }> {
-    const ui = (await s.api("/api/resources/ui/main")).body;
-    const order = (await s.api("/api/resources/characterOrder/main")).body;
+    const [ui, order, modelPresets, presets, personas] = await Promise.all(
+        ["ui", "characterOrder", "modelPresets", "presets", "personas"].map(
+            async (kind) => (await s.api(`/api/resources/${kind}/main`)).body,
+        ),
+    );
     const chaId = randomUUID();
     const chatId = randomUUID();
     const character = {
@@ -130,6 +136,7 @@ async function seed(s: Session, baseURL: string): Promise<{ chaId: string; chatI
                             chat: {
                                 id: chatId,
                                 name: "notice chat",
+                                ...chatBindingFixture(modelPresets, presets, personas),
                                 message: [
                                     { role: "user", data: "First user message", chatId: "n-user" },
                                     { role: "char", data: "First char reply", chatId: "n-char" },

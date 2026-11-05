@@ -8,7 +8,7 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 // others 20 each) among 50 characters, and a character "Stream" whose chat a local mock provider
 // streams into (the server's generation job, CHUNKS chunks CHUNK_MS ms apart):
 // - the boot: a fresh page until the sidebar shows "Many" (3 runs), and the JS heap after a forced
-//   garbage collection;
+//   garbage collection; each load clears safe boot's unsettled-attempt counter;
 // - switching Many's chats from its chat list (alternating "Long" and a 20-message chat, both
 //   loaded after the first switch; each switch opens the chat from the list, after an untimed Go Back
 //   has closed the one before, so these timings are not comparable with builds before the
@@ -23,7 +23,8 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 //   the initial sample loads 30 -> 45 rows, and later checkpoints summarize the intervening steps;
 // - a second streamed reply into Long, after scrolling to the bottom with its loaded rows still
 //   mounted, with the same frame-interval and long-task reports as Stream, the trim task and retained heap;
-// - a residual stream while scrolled up with up to 600 rows already mounted (no eligible trim);
+// - a residual stream after wheel input scrolls up and releases the bottom anchor, with up to 600
+//   rows already mounted (no eligible trim);
 // - opening the chat list (the list entries of 30 chats).
 // Timed as in `measureCharacters.mjs` (task latency, paint; 3 warm-up and 10 measured runs). Compare
 // with a baseline build (`RISU_DIST=<dist of an earlier commit>`). The checks: both streamed replies
@@ -47,7 +48,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, isolateContext, repoRoot, unexpectedEgress } from "./stack.mjs";
+import { chromePath, clearSafeBootAttempts, isolateContext, repoRoot, unexpectedEgress } from "./stack.mjs";
 
 const WARMUP = 3;
 const RUNS = 10;
@@ -134,6 +135,7 @@ const browser = await chromium.launch({ executablePath: chromePath, headless: tr
 try {
     await waitForServer();
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    await clearSafeBootAttempts(context);
     const blocked = await isolateContext(context);
     const pageErrors = [];
     let auth = null;
@@ -422,11 +424,18 @@ try {
         const input = page.locator("textarea.input-text").first();
         await input.fill("Stream please");
         if (scrolledUp) {
-            await page.evaluate(() => {
-                const scroller = document.querySelector(".default-chat-screen");
-                scroller.scrollTop = -(scroller.scrollHeight - scroller.clientHeight) + 200;
-                return window.__time(performance.now());
-            });
+            const scroller = page.locator(".default-chat-screen");
+            const bounds = await scroller.boundingBox();
+            if (!bounds) throw new Error("the chat scroller is not visible");
+            await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+            // column-reverse: a negative wheel delta moves away from scrollTop 0 (the bottom).
+            // Real input also releases Chats' anchor; setting scrollTop alone leaves it following.
+            await page.mouse.wheel(0, -600);
+            await page.waitForFunction(() => document.querySelector(".default-chat-screen").scrollTop < -4);
+            check(
+                "Long: the viewport is scrolled up before streaming",
+                await scroller.evaluate((element) => element.scrollTop < -4),
+            );
         }
         await page.evaluate(() => {
             window.__streamStart = performance.now();
@@ -533,6 +542,7 @@ try {
                     observer.disconnect();
                     resolve(rows);
                 });
+                // Set the load-more threshold directly so timing begins at the scroll write.
                 // flex-col-reverse: 0 is the bottom; 50 px from the top triggers onscroll's < 100 check.
                 const scroll = () => {
                     scroller.scrollTop = -(scroller.scrollHeight - scroller.clientHeight) + 50;
@@ -590,6 +600,7 @@ try {
     });
 
     // 3c. Stream into the same Long chat without closing it or resetting its loaded row window.
+    // This positions the viewport at the bottom; it need not release the bottom anchor.
     await page.evaluate(() => {
         document.querySelector(".default-chat-screen").scrollTop = 0;
         return window.__time(performance.now());

@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain, refJ, refK, warmMutationGraph } from "./mutationStoresHarness";
@@ -45,17 +43,6 @@ vi.mock("../../process/files/inlays", () => ({
     writeInlayImage: vi.fn(),
 }));
 vi.mock("../../tokenizer", () => ({ tokenize: vi.fn(async (text: string) => text.length) }));
-vi.mock("../../rpack/rpack_js", () => {
-    const map = new Uint8Array(readFileSync(path.resolve(__dirname, "../../rpack/rpack_map.bin")));
-    const apply = (table: Uint8Array) => async (data: Uint8Array) => {
-        const result = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) {
-            result[i] = table[data[i]];
-        }
-        return result;
-    };
-    return { encodeRPack: apply(map.slice(0, 256)), decodeRPack: apply(map.slice(256, 512)) };
-});
 
 /**
  * Boots the stores with persona `Mina` added (linking `plain` twice, `global`, a namespace text, an

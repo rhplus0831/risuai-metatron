@@ -1,12 +1,10 @@
 import * as fflate from "fflate";
 import { decode as decodeMsgpack } from "msgpackr/index-no-eval";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 // `.risutl` gets the same decoded round trip as `.risup`. `presets.test.ts` mocks the encryption
 // and RPack to identity; this file runs the real codecs (WebCrypto `encryptBuffer` and
-// `decryptBuffer`, the RPack byte map from disk, `fflate`, msgpack) and decodes the file the way
+// `decryptBuffer`, the shared RPack codec, `fflate`, msgpack) and decodes the file the way
 // `decodeTranslatorPresetFile` does, to pin the on-disk contract: the container
 // `{ translatorPresetVersion: 1 | 2, type: "translator-preset", preset }` and a preset payload of
 // exactly `name`, `prompt`, and `maxResponse` (version 1, the container from before steps) or
@@ -29,21 +27,6 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-
-// The real RPack loads its byte map with `fetch` of a Vite `?url` asset; here the map comes from disk.
-vi.mock("src/ts/rpack/rpack_js.js", () => {
-    const map = new Uint8Array(readFileSync(path.resolve(__dirname, "../rpack/rpack_map.bin")));
-    const encodeMap = map.slice(0, 256);
-    const decodeMap = map.slice(256, 512);
-    const apply = (table: Uint8Array) => async (data: Uint8Array) => {
-        const result = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) {
-            result[i] = table[data[i]];
-        }
-        return result;
-    };
-    return { encodeRPack: apply(encodeMap), decodeRPack: apply(decodeMap) };
-});
 
 import { decodeRPack } from "src/ts/rpack/rpack_js.js";
 import { decryptBuffer } from "src/ts/util";

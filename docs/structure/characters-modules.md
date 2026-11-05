@@ -356,7 +356,7 @@ and the prompt preset's `moduleIntergration` namespaces. The server's `jobModule
   `e2e/personaBinding.spec.ts`, `e2e/chatBinding.spec.ts`, and `e2e/welcomeAndChatSettings.spec.ts`.
 - Import harnesses: `StoreBackedServer` connects the client save adapter and server store; `createResourceTestClient`
   exercises real import routes with lowered limits. `importFixtures.ts` supplies PNG, CharX, and V2/V3 cards;
-  `importRealm.test.ts` uses a local Realm stand-in. Some module tests mock the ignored `rpack_map.bin` payload.
+  `importRealm.test.ts` uses a local Realm stand-in. Tests run the real RPack codec.
 - Lore editor tests use real records/chat drafts; `LoreBookList` uses a fake SortableJS instance.
 - Not tested: the `charxJpeg` export variant, the performance cost of lorebook drag sorting, and its recovery after the
   lorebook filter clears (`onEnd`).

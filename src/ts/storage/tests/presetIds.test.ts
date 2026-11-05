@@ -44,22 +44,6 @@ vi.mock("../../parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
 }));
 
-// The real RPack loads its byte map with `fetch` of a Vite `?url` asset; here the map comes from
-// disk, so the fixtures are decoded with the real map (the codec itself is a byte substitution).
-vi.mock("../../rpack/rpack_js", () => {
-    const map = new Uint8Array(readFileSync(path.resolve(__dirname, "../../rpack/rpack_map.bin")));
-    const encodeMap = map.slice(0, 256);
-    const decodeMap = map.slice(256, 512);
-    const apply = (table: Uint8Array) => async (data: Uint8Array) => {
-        const result = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) {
-            result[i] = table[data[i]];
-        }
-        return result;
-    };
-    return { encodeRPack: apply(encodeMap), decodeRPack: apply(decodeMap) };
-});
-
 import { alertError, alertNormal } from "../../alert";
 import { decodeRPack, encodeRPack } from "../../rpack/rpack_js";
 import { decryptBuffer } from "../../util";

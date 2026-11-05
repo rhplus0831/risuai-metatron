@@ -311,22 +311,12 @@ describe("provider permission", () => {
     });
 });
 
-/**
- * Unloads every running plugin. `loadV3Plugins` maps over the live instance list while each
- * unload splices it, so one pass can skip entries (pre-existing; recorded in `plugin-sandbox.md`).
- */
-async function unloadAll() {
-    for (let attempt = 0; attempt < 10 && getV3PluginInstance(`perm-test-${counter}`); attempt += 1) {
-        await loadV3Plugins([]);
-    }
-}
-
 describe("unload", () => {
     it("drops the cached answers when the plugin is unloaded, so a reload asks again", async () => {
         const { api, plugin } = await makeApi("script-e");
         expect(await api.requestPluginPermission("sendChat")).toBe(true);
         expect(confirm).toHaveBeenCalledTimes(1);
-        await unloadAll();
+        await loadV3Plugins([]);
         expect(getV3PluginInstance(plugin.name)).toBeUndefined();
         await executePluginV3(plugin as any);
         const reloaded = captured.api!;
@@ -346,7 +336,7 @@ describe("periodic permissions", () => {
         expect(await api.getDatabase()).not.toBeNull();
         expect(confirm).not.toHaveBeenCalled();
 
-        await unloadAll();
+        await loadV3Plugins([]);
         await executePluginV3(plugin as any);
         const later = captured.api!;
         times.set(`${plugin.name}_db_lastGrantTime`, Date.now() - 4 * 24 * 60 * 60 * 1000);

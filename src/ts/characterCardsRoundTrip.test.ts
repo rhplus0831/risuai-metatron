@@ -1,7 +1,5 @@
 import crc32 from "crc/crc32";
 import * as fflate from "fflate";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cardV2, cardV3, charx } from "./storage/tests/importFixtures";
 import { bootMutations, warmMutationGraph } from "./storage/tests/mutationStoresHarness";
@@ -55,17 +53,6 @@ vi.mock("./process/files/inlays", () => ({
     writeInlayImage: vi.fn(),
 }));
 vi.mock("./tokenizer", () => ({ tokenize: vi.fn(async () => 0) }));
-vi.mock("./rpack/rpack_js", () => {
-    const map = new Uint8Array(readFileSync(path.resolve(__dirname, "./rpack/rpack_map.bin")));
-    const apply = (table: Uint8Array) => async (data: Uint8Array) => {
-        const result = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) {
-            result[i] = table[data[i]];
-        }
-        return result;
-    };
-    return { encodeRPack: apply(map.slice(0, 256)), decodeRPack: apply(map.slice(256, 512)) };
-});
 
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 const GIF = new Uint8Array([71, 73, 70, 56, 57, 97]);

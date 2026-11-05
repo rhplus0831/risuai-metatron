@@ -7,6 +7,7 @@ vi.mock("src/ts/util", () => ({
     decryptBuffer: async (data: Uint8Array) => data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
 }));
 
+// Identity RPack lets these assertions inspect and construct the unencoded msgpack containers.
 vi.mock("src/ts/rpack/rpack_js.js", () => ({
     encodeRPack: async (data: Uint8Array) => data,
     decodeRPack: async (data: Uint8Array) => data,
