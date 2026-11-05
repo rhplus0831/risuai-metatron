@@ -231,8 +231,8 @@
   settlement keeps it as a plain draft, but a reload before that settlement cannot tell it from the send's text placed
   back after a failure: `composerDrafts.svelte.ts` `restore` finds the message landed and deletes the draft, so the
   retyped text is lost. Keeping it would bring already-sent text back after every uncertain end that landed
-  ([JR1](../manual-audit/archive/cross-plan-2026-10-29.md#jr1--a-landed-send-deletes-an-identical-drafts-journal-row), remaining
-  case).
+  ([JR1](../manual-audit/archive/cross-plan-2026-10-29.md#jr1--a-landed-send-deletes-an-identical-drafts-journal-row),
+  remaining case).
 - `updateComposerRequest` reports one `journalSkipped` event with `entries: 1` even when both of the chat's rows are
   unreadable and skipped; both rows stay untouched.
 

@@ -21,8 +21,8 @@ code or plan text was changed by this audit.
 written against the code or loses data; P2 a contradiction inside the plan, a wrong claim that changes a
 decision, or a narrower flaw; P3 a stale anchor, wording, or an unacknowledged file overlap.
 
-| Plan                       | P1  | P2  | P3  | Report                                                                                      |
-| -------------------------- | --- | --- | --- | ------------------------------------------------------------------------------------------- |
+| Plan                       | P1  | P2  | P3  | Report                                                                                         |
+| -------------------------- | --- | --- | --- | ---------------------------------------------------------------------------------------------- |
 | Job Handoff                | 4   | 10  | 4   | [job-handoff.md](../plan-design-audit-2026-11-04/job-handoff.md)                               |
 | Asset Lifecycle            | 5   | 8   | 1   | [asset-lifecycle.md](../plan-design-audit-2026-11-04/asset-lifecycle.md)                       |
 | Reroll Candidates          | 7   | 11  | 6   | [reroll-candidates.md](../plan-design-audit-2026-11-04/reroll-candidates.md)                   |
@@ -219,8 +219,8 @@ EXISTS` at open, as `chatGroups` and `memory_*` do, outside the snapshot table l
 
 From every slice's Files paragraph (the cross-plan report has the full table):
 
-| File                                                         | Slices                                 | Plans' own statement                                           |
-| ------------------------------------------------------------ | -------------------------------------- | -------------------------------------------------------------- |
+| File                                                                  | Slices                                 | Plans' own statement                                           |
+| --------------------------------------------------------------------- | -------------------------------------- | -------------------------------------------------------------- |
 | `../../../server/src/jobs/generationJobs.ts`, `shared/jobs.ts`        | JH1, RC1, TR2                          | JH names only the retired plugin runtime plan; RC omits TR2    |
 | `../../../server/src/routes/events.ts`, `src/ts/network/eventFeed.ts` | JH1, JH3, TR2, TR3; JH2, JH3, TR2, TR3 | TR line 291 omits TR2 against JH3 and JH2                      |
 | `../../../src/ts/network/generationJobs.ts`                           | JH2, TR2 (same URL line)               | none                                                           |

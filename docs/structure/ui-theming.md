@@ -304,10 +304,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   uncontained; do not apply `content-visibility` to every row or to the transcript ancestor. Decision: `src/styles.css`,
   `.chat-message-container.far`.
 - `src/lib/Others/PopupEditor.svelte` keeps only the text across its Monaco toggle: the textarea or the Monaco model is
-  recreated, so the selection moves to the end and the undo history is gone. Keeping one model across the switch is a
-  larger editor-lifetime change. Observed by the
-  [cross-plan review](../manual-audit/cross-plan-2026-10-29.md#noted-not-recommended-to-fix). Decision: text-only toggle
-  contract kept, commit `634bc14c7`.
+  recreated, so selection and undo history are lost. One model across the switch is a larger editor-lifetime change.
+  Observed by the [cross-plan review](../manual-audit/archive/cross-plan-2026-10-29.md#noted-not-recommended-to-fix).
+  Decision: text-only toggle contract kept, commit `634bc14c7`.
 - Older rows do not rerender merely because the chat length changes. Length-dependent CBS updates when that row next
   renders (edit, reload, remount, etc.). Decision: `docs/research/risunest-ideas.md`.
 
