@@ -69,7 +69,7 @@ codes; the entries name the role and the identifiers to look up.
 - `util/playwright/stack.mjs`: `startStack` (server in a temporary working directory plus Vite, `restartServer`;
   `deniedEgress` lists what the server's `fetch` tripwire refused, and a `serverEnv.NODE_OPTIONS` of the check's own
   replaces that tripwire), `isolateContext`, `unexpectedEgress`, `openApp`, `openCharacterChat`,
-  `clearSafeBootAttempts(contextOrPage)`.
+  `clearSafeBootAttempts(contextOrPage)`, `pluginFixtureOp` (a v3 plugin installed by seed).
 - `util/playwright/offline.sh` (prefix a check's command): a check with loopback only (`unshare -rn`), the boundary that
   keeps the stack, the browser, and the mocks off public services.
 - `util/playwright/modelProfiles.mjs` and `util/playwright/modelProfiles.browser.mjs`: model and chat-binding fixtures
@@ -79,26 +79,22 @@ codes; the entries name the role and the identifiers to look up.
 
 ### Check and measurement scripts
 
-None is in the gate.
+None is in the gate; all are in `util/playwright/`.
 
-- Against the dev stack: `util/playwright/checkLiveUpdates.mjs`, `util/playwright/checkCredentialTraffic.mjs`,
-  `util/playwright/checkLlmTransport.mjs`, `util/playwright/checkStreamingModes.mjs`,
-  `util/playwright/checkServerTransform.mjs`, `util/playwright/checkMcpFixes.mjs`,
-  `util/playwright/checkDurableDrafts.mjs`, `util/playwright/checkSidebarChatStatus.mjs`,
-  `util/playwright/checkBootCache.mjs`, and `util/playwright/checkJobProtocol.mjs` (a real v3 plugin provider; run it
-  under `offline.sh`).
+- Against the dev stack: `checkLiveUpdates.mjs`, `checkCredentialTraffic.mjs`, `checkLlmTransport.mjs`,
+  `checkStreamingModes.mjs`, `checkServerTransform.mjs`, `checkMcpFixes.mjs`, `checkDurableDrafts.mjs`,
+  `checkSidebarChatStatus.mjs`, `checkBootCache.mjs`, and, with real v3 plugins under `offline.sh`,
+  `checkJobProtocol.mjs` (a plugin provider) and `checkJobHandoff.mjs` (two tabs hand a job off).
 - Against a running production server, normally the Docker image on a fresh volume (`--base`, `--password`,
-  `--provider-host`): `util/playwright/checkRecordsSmoke.mjs`, `util/playwright/checkLazyChatsSmoke.mjs`,
-  `util/playwright/checkTwoClientSmoke.mjs`, `util/playwright/checkServerSend.mjs`,
-  `util/playwright/checkServerButton.mjs`, `util/playwright/checkServerTrigger.mjs`,
-  `util/playwright/checkServerJobMatrix.mjs`; the last four start a dev stack without `--base`.
-- Measurements of a production build in headless Chrome: `util/playwright/measureRecords.mjs`,
-  `util/playwright/measureCharacters.mjs`, `util/playwright/measureChats.mjs`, `util/playwright/measureHeap.mjs`,
-  `util/playwright/measureBoot.mjs` (also the fixture builder `buildBootFixture`/`seedBootFixture`), and
-  `util/playwright/measureFileSources.mjs`. `util/playwright/measureTransformLua.mjs` runs the server in process;
-  `util/playwright/probeDirectAssets.mjs` probes the direct asset mechanics on its own server, not the app.
-- `util/playwright/measureRenderWork.mjs` (dev stack, under `offline.sh`, Linux): render work of a styled,
-  auto-translated chat when it opens and after a switch away, its mount trace, its screenshot's peak memory
+  `--provider-host`): `checkRecordsSmoke.mjs`, `checkLazyChatsSmoke.mjs`, `checkTwoClientSmoke.mjs`,
+  `checkServerSend.mjs`, `checkServerButton.mjs`, `checkServerTrigger.mjs`, `checkServerJobMatrix.mjs`; the last four
+  start a dev stack without `--base`.
+- Measurements of a production build in headless Chrome: `measureRecords.mjs`, `measureCharacters.mjs`,
+  `measureChats.mjs`, `measureHeap.mjs`, `measureBoot.mjs` (also the fixture builder
+  `buildBootFixture`/`seedBootFixture`), and `measureFileSources.mjs`. `measureTransformLua.mjs` runs the server in
+  process; `probeDirectAssets.mjs` probes the direct asset mechanics on its own server, not the app.
+- `measureRenderWork.mjs` (dev stack, under `offline.sh`, Linux): render work of a styled, auto-translated chat when it
+  opens and after a switch away, its mount trace, its screenshot's peak memory
   ([results](../audit/render-work-budget-2026-11-05.md)).
 - Call counts by name: CDP `Profiler.startPreciseCoverage({ callCount: true, detailed: true })` before navigation,
   `takePreciseCoverage` (it resets) per phase; a function's first range is its call count (without `detailed`, also each

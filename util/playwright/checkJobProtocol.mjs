@@ -25,6 +25,7 @@ import {
     isolateContext,
     openApp,
     openCharacterChat,
+    pluginFixtureOp,
     repoRoot,
     startStack,
     unexpectedEgress,
@@ -246,24 +247,7 @@ globalThis.fetch = async (input, init) => {
                 baseRevision: records.providers.revision,
                 data: { ...records.providers.data, useStreaming: true, requestRetrys: 0 },
             },
-            // The same persisted shape importPlugin writes; boot loads it into the v3 sandbox.
-            {
-                kind: "plugins",
-                id: "main",
-                baseRevision: records.plugins.revision,
-                data: [
-                    {
-                        name: pluginName,
-                        script: pluginScript,
-                        version: "3.0",
-                        enabled: true,
-                        arguments: {},
-                        realArg: {},
-                        customLink: [],
-                        argMeta: {},
-                    },
-                ],
-            },
+            pluginFixtureOp(pluginName, pluginScript, records.plugins),
         ],
     });
     assert.equal(seeded.status, 200, JSON.stringify(seeded));

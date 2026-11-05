@@ -6,11 +6,24 @@ import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import webPush from "web-push";
+import { WebSocket as WsClient } from "ws";
+import { CALLBACK_TIMEOUT_MS } from "../jobs/channel.ts";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { completionNotificationTag } from "../../../shared/notifications.ts";
 import type { PushTransport } from "../push/pushService.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
+
+/** A promise with its settle functions (`Promise.withResolvers` is newer than the server's `lib`). */
+function withResolvers<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+        resolve = done;
+        reject = fail;
+    });
+    return { promise, resolve, reject };
+}
 
 // The tail of a reply inside a send job (`server/src/prompt/runner.ts` `runSpeaker` and `runSend`,
 // `server/src/prompt/postProcess.ts`, `server/src/prompt/scripts.ts` `editoutput`), end to end on a
@@ -1380,5 +1393,259 @@ describe("the emotion modes", () => {
         expect(notNames.status).toBe(400);
         const notAMap = await job("send", chaId, {}, { emotions: ["happy"] as unknown as Record<string, string[]> });
         expect(notAMap.status).toBe(400);
+    });
+});
+
+describe("reply hooks during an ownership handoff", () => {
+    async function tail(hooks: typeof NO_GENERATION_HOOKS) {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        await patchSettings({ ...DEFAULT_SETTINGS, useStreaming: false });
+        const chaId = await seedCharacter({ name: "Handoff" });
+        const creatorId = `creator-${chaId}`;
+        const workerId = `worker-${chaId}`;
+        answers = [{ chunks: ["Original reply"] }];
+        socketOpen = Promise.resolve();
+        const release = withResolvers<void>();
+        providerGate = release.promise;
+        const chat = await readChat(chaId);
+        const created = await api(
+            "/api/generations",
+            json({
+                kind: "send",
+                clientId: creatorId,
+                hooks,
+                context: {
+                    characterId: chaId,
+                    chatId: "k",
+                    presetId,
+                    modelPresetId,
+                    personaId,
+                    mode: "normal",
+                    input: "",
+                    chatRevision: chat.revision,
+                },
+            }),
+        );
+        expect(created.status).toBe(200);
+        const id = created.body.jobId as string;
+        const sockets: { ws: WsClient; closed: Promise<void>; peerClosed: Promise<void> }[] = [];
+        async function follow(clientId = creatorId, ticket?: string) {
+            const sends = vi.spyOn(WsClient.prototype, "send");
+            const ws = new WsClient(
+                `${base.replace("http", "ws")}/api/generations/${id}/ws?clientId=${clientId}&risu-auth=${encodeURIComponent(await signer.jwt())}${ticket ? `&ticket=${ticket}` : ""}`,
+            );
+            const events: any[] = [];
+            const waiters = new Set<() => void>();
+            ws.on("message", (raw) => {
+                events.push(JSON.parse(String(raw)));
+                for (const notify of waiters) notify();
+            });
+            const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()));
+            await new Promise<void>((resolve, reject) => {
+                ws.once("open", resolve);
+                ws.once("error", reject);
+            });
+            const peer = sends.mock.contexts.find((socket) => socket !== ws) as WsClient;
+            sends.mockRestore();
+            const peerClosed = new Promise<void>((resolve) => peer.once("close", () => resolve()));
+            sockets.push({ ws, closed, peerClosed });
+            const until = async (predicate: (events: any[]) => boolean) => {
+                if (predicate(events)) return;
+                await new Promise<void>((resolve) => {
+                    const notify = () => {
+                        if (predicate(events)) {
+                            waiters.delete(notify);
+                            resolve();
+                        }
+                    };
+                    waiters.add(notify);
+                });
+            };
+            const fence = async () => {
+                const pong = new Promise<void>((resolve) => ws.once("pong", () => resolve()));
+                ws.ping();
+                await pong;
+            };
+            return {
+                ws,
+                events,
+                until,
+                fence,
+                close: async () => {
+                    ws.close();
+                    await Promise.all([closed, peerClosed]);
+                },
+            };
+        }
+        const owner = await follow();
+        const take = async () => {
+            expect((await api(`/api/generations/${id}/handoff`, json({ clientId: creatorId }))).status).toBe(200);
+            const result = await api(`/api/generations/${id}/takeover`, json({ clientId: workerId }));
+            expect(result.status).toBe(200);
+            const worker = await follow(workerId, result.body.ticket);
+            await worker.fence();
+            return worker;
+        };
+        return {
+            id,
+            chaId,
+            creatorId,
+            workerId,
+            owner,
+            follow,
+            take,
+            release,
+            async close() {
+                release.resolve();
+                await api(`/api/generations/${id}?clientId=${creatorId}`, { method: "DELETE" });
+                for (const socket of sockets) socket.ws.close();
+                await Promise.all(sockets.flatMap((socket) => [socket.closed, socket.peerClosed]));
+                await server.context.generationJobs.drain();
+                providerGate = Promise.resolve();
+                vi.useRealTimers();
+                await patchSettings(DEFAULT_SETTINGS);
+            },
+        };
+    }
+    const terminal = (events: any[]) => events.find((event) => event.type === "done" || event.type === "error");
+    function nextAbsentCallback() {
+        const waiting = withResolvers<void>();
+        const setTimer = globalThis.setTimeout;
+        const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+            handler: (...args: any[]) => void,
+            ms?: number,
+            ...args: any[]
+        ) => {
+            const timer = setTimer(handler, ms, ...args);
+            // This fixture's existing owner-absence allowance; the production callback allowance stays 60 s.
+            if (ms === 2_500 || ms === CALLBACK_TIMEOUT_MS) waiting.resolve();
+            return timer;
+        }) as typeof setTimeout);
+        return { promise: waiting.promise, restore: () => spy.mockRestore() };
+    }
+
+    it("rescues an undelivered listener on takeover and finishes without skipped hooks", async () => {
+        const h = await tail({ ...NO_GENERATION_HOOKS, chatOutput: true });
+        try {
+            await h.owner.close();
+            const waiting = nextAbsentCallback();
+            h.release.resolve();
+            await waiting.promise;
+            waiting.restore();
+            const worker = await h.take();
+            await worker.until((events) => callbacks(events, "chatOutput").length === 1);
+            const callback = callbacks(worker.events, "chatOutput")[0];
+            expect(callback).not.toHaveProperty("replay");
+            worker.ws.send(JSON.stringify({ type: "answer", id: callback.id, outcome: "answered", value: true }));
+            await worker.until((events) => !!terminal(events));
+            expect(terminal(worker.events)).toMatchObject({ type: "done" });
+            expect(terminal(worker.events)).not.toHaveProperty("skipped");
+            expect(terminal(worker.events)).not.toHaveProperty("missed");
+            expect(texts(await readChat(h.chaId))).toEqual(["user:q", "char:Original reply"]);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("records a delivered disconnected listener as missed in both terminal views", async () => {
+        const h = await tail({ ...NO_GENERATION_HOOKS, chatOutput: true });
+        try {
+            h.release.resolve();
+            await h.owner.until((events) => callbacks(events, "chatOutput").length === 1);
+            const callback = callbacks(h.owner.events, "chatOutput")[0];
+            const worker = await h.take();
+            expect(worker.events[0]).toMatchObject({ type: "handoff", owner: "other", pending: true });
+            await h.owner.close();
+            await vi.advanceTimersByTimeAsync(2_500);
+            await worker.until((events) => !!terminal(events));
+            const creator = await h.follow();
+            await creator.until((events) => !!terminal(events));
+            for (const events of [worker.events, creator.events]) {
+                expect(terminal(events)).toMatchObject({
+                    type: "done",
+                    missed: [{ name: "chatOutput", payload: callback.payload }],
+                });
+                expect(terminal(events)).not.toHaveProperty("skipped");
+            }
+            expect(callbacks(worker.events)).toEqual([]);
+            expect((await api(`/api/generations/${h.id}?clientId=${h.creatorId}`)).body.terminal.missed).toEqual([
+                { name: "chatOutput", payload: callback.payload },
+            ]);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("records an undelivered disconnected listener as skipped without a missed list", async () => {
+        const h = await tail({ ...NO_GENERATION_HOOKS, chatOutput: true });
+        try {
+            await h.owner.close();
+            const waiting = nextAbsentCallback();
+            h.release.resolve();
+            await waiting.promise;
+            waiting.restore();
+            await vi.advanceTimersByTimeAsync(2_500);
+            await server.context.generationJobs.drain();
+            const creator = await h.follow();
+            await creator.until((events) => !!terminal(events));
+            const reply = (await readChat(h.chaId)).data.message.at(-1);
+            expect(terminal(creator.events)).toMatchObject({
+                type: "done",
+                skipped: [{ name: "chatOutput", payload: { messageId: reply.chatId, speakerId: h.chaId } }],
+            });
+            expect(terminal(creator.events)).not.toHaveProperty("missed");
+            expect(callbacks(h.owner.events)).toEqual([]);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("keeps the completed text when the old editoutput disconnects and gives only the following listener to the worker", async () => {
+        const h = await tail({ ...NO_GENERATION_HOOKS, scripts: ["editoutput"], chatOutput: true });
+        try {
+            h.release.resolve();
+            await h.owner.until((events) => callbacks(events, "editoutput").length === 1);
+            const worker = await h.take();
+            expect(worker.events[0]).toMatchObject({ owner: "other", pending: true });
+            await h.owner.close();
+            await vi.advanceTimersByTimeAsync(2_500);
+            await worker.until((events) => callbacks(events, "chatOutput").length === 1);
+            expect(callbacks(worker.events).map((event) => event.name)).toEqual(["chatOutput"]);
+            const callback = callbacks(worker.events)[0];
+            expect(callback).not.toHaveProperty("replay");
+            worker.ws.send(JSON.stringify({ type: "answer", id: callback.id, outcome: "answered", value: true }));
+            await worker.until((events) => !!terminal(events));
+            expect(texts(await readChat(h.chaId))).toEqual(["user:q", "char:Original reply"]);
+            expect(terminal(worker.events)).toMatchObject({ type: "done", skipped: [{ name: "editoutput" }] });
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("ends a disconnected body interceptor before promoting a pending takeover", async () => {
+        const h = await tail({ ...NO_GENERATION_HOOKS, interceptors: true });
+        try {
+            await h.owner.until((events) => callbacks(events, "bodyIntercepter").length === 1);
+            const worker = await h.take();
+            expect(worker.events[0]).toMatchObject({ owner: "other", pending: true });
+            await h.owner.close();
+            await vi.advanceTimersByTimeAsync(2_500);
+            await worker.until((events) => !!terminal(events));
+            await vi.advanceTimersByTimeAsync(1);
+            await worker.fence();
+            expect(terminal(worker.events)).toMatchObject({
+                type: "error",
+                message: expect.stringContaining("disconnected"),
+            });
+            expect(
+                worker.events.filter((event) => event.type === "handoff").every((event) => event.owner === "other"),
+            ).toBe(true);
+            expect(callbacks(worker.events)).toEqual([]);
+            expect((await api(`/api/generations/${h.id}?clientId=${h.creatorId}`)).body).not.toHaveProperty(
+                "handedOff",
+            );
+        } finally {
+            await h.close();
+        }
     });
 });

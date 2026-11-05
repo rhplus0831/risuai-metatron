@@ -8,8 +8,8 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (7)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (8)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (8)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (11)
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
 - [Request history and diagnostics](#request-history-and-diagnostics) (1)
 - [Display transform](#display-transform) (2)
@@ -82,6 +82,13 @@ Identifiers re-checked 2026-11-03 (`setCharacterChatView`, `installRead`, `adopt
 
 **Suggested handling:** confirm with two tabs on `pnpm dev:agent`, then decide whether the remote apply should call the display update functions.
 
+### A retaken handoff job drops its live stream
+
+Found 2026-11-05 in Job Handoff Slice 2. A tab whose takeover was lost (its ticket attach never reached `owner: "self"`) ends that follow through `releaseGenerationJob` (`src/ts/network/generationJobs.ts`), which calls `endServerJob` (`src/ts/storage/chatStore.svelte.ts`). `endServerJob` adds the job's generation ids to `retiredGenerations`, and `applyServerGeneration` / `applyServerGenerationChunk` then drop every later `accepted`/`chunk` for those ids for the rest of the page's life. If that tab later takes the reopened offer for the same job, it shows no live stream for the reply in progress. Chat patches, the final copy, and callbacks still arrive. Slice 2 accepted this as a limitation.
+
+**Why it matters:** today it only affects what the worker displays. It becomes a real problem once anything relies on the worker's stream view.
+**Suggested handling:** add a chat-store "detach without retiring" release that drops the job's entries but leaves its generation ids unretired, and use it for a lost takeover.
+
 ## Server jobs and prompt assembly
 
 ### Tool schemas are outside the assembly token budget
@@ -144,6 +151,27 @@ These client exports have no caller in `src/`, `shared/` or `server/`, while a s
 **Why it matters:** a trigger author's `break` could loop or skip effects in nested loops.
 
 **Suggested handling:** write a nested-loop trigger test first; if it fails, match the break's indent the way the loop jump does.
+
+### A job's current owner can take its own handoff offer
+
+Found 2026-11-05 in Job Handoff Slice 3. `takeover()` in `server/src/jobs/generationJobs.ts` gives a ticket to any client that asks against an open offer, and that includes the job's current `ownerClientId`. Slice 3 only made `handoff()` refuse a request that targets the owner (409 `alreadyOwner`). On the tab side, `takeOffer` in `src/ts/network/handoff.ts` lets a worker take any untargeted offer for a job it did not create. That covers a job it already owns, for example an `absent` offer raised after its own socket went silent. The ticket attach then replaces the owner's own socket. If a callback delivered to the old socket is still outstanding, the attach becomes a pending takeover on a viewer socket, which cannot answer that callback. The callback then runs out as `disconnected` instead of being replayed when the owner reattaches normally.
+
+**Why it matters:** an owner that would have recovered its outstanding callback by reattaching can lose it, and losing a request-side callback ends the job.
+**Suggested handling:** make `takeover()` refuse the current owner, so the tab drops the offer and its running follow reattaches as owner. Check the fix against the creator's own `absent` take-back path.
+
+### The handoff role event never carries the new owner's name
+
+Found 2026-11-05 by the Job Handoff Slice 4 driver (`util/playwright/checkJobHandoff.mjs`, case creator-keeps-watching). `shared/jobs.ts` declares the role event as `{ type: "handoff"; owner; clientName?; pending? }`. `src/ts/process/serverCommands.ts` shows `serverJob.handoff.takenBy` with the name when `clientName` is set. Nothing in `server/src/jobs/generationJobs.ts` or the `server/src/app.ts` wiring ever fills `clientName`, because the registry cannot look up the `register` names kept by `server/src/routes/events.ts`. Plan D2/D5 said the event carries the owner's name "when the server knows one".
+
+**Why it matters:** the creator always sees the generic `takenByOther` text instead of the worker's name.
+**Suggested handling:** give the registry a `clientName(clientId)` dependency, fed from the events route's registrations in `app.ts`, and use it when building every role event. Then tighten the driver's case so it requires the name.
+
+### A cancelled hook can overlap the worker's next callback
+
+Found 2026-11-05 in Job Handoff Slice 1. The owner switch (`switchOwner`, `hasDeliveredRequests` in `server/src/jobs/generationJobs.ts`) waits until no request delivered to the old owner is outstanding, and a server-side cancel or expiry counts as settled. A cancelled callback's hook may still be running on the old tab, and `runCallback` (`src/ts/network/jobChannel.ts`) flushes its resource changes even after a cancel. The old lane's drain hold (`holdDraining`, `server/src/jobs/channel.ts`) keeps only that lane busy, so the worker's lane can start the next callback while the old hook is still running. An old owner's late answer also arrives on a viewer socket and is ignored, so its drain hold ends only through `POST /drained` or the 60 s bound.
+
+**Why it matters:** the plan's guarantee that no callback runs on two tabs holds for a single callback, but a cancelled hook can still write alongside the worker's next one. The plugins guide (Job owner presence) states only the single-callback form.
+**Suggested handling:** ask the owner whether the switch should also wait for the old lane's drain holds, or state the overlap as a limitation in the server-generation guide.
 
 ## Server routes and resource store
 

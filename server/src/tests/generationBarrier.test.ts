@@ -126,6 +126,8 @@ async function setup(patches = true) {
         ws.once("open", resolve);
         ws.once("error", reject);
     });
+    // The owner's role comes first on every attach, before the attach chat.
+    expect(await next()).toEqual({ type: "handoff", epoch: store.epoch(), owner: "self" });
     expect(await next()).toMatchObject({ type: "chatPatch", revision: revision() });
     const receiveCallback = async () => {
         const before: GenerationEvent[] = [];

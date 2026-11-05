@@ -130,13 +130,22 @@ async function setup() {
     const port = (server.address() as { port: number }).port;
     const attach = async () => {
         const events: GenerationEvent[] = [];
+        // The role events are kept apart so `events` holds the job chat deliveries the tests count.
+        const roles: GenerationEvent[] = [];
+        let firstType: string | undefined;
         const ws = new WebSocket(`ws://127.0.0.1:${port}/api/generations/${created.jobId}/ws?clientId=tab`);
         sockets.push(ws);
         ws.on("message", (data) => {
             const event = JSON.parse(String(data)) as GenerationEvent;
-            if (event.type !== "ping") events.push(event);
+            if (event.type === "ping") return;
+            firstType ??= event.type;
+            if (event.type === "handoff") roles.push(event);
+            else events.push(event);
         });
         await waitFor(() => events.length > 0);
+        // Every attach opens with the owner's role, before the attach chat.
+        expect(firstType).toBe("handoff");
+        expect(roles).toEqual([{ type: "handoff", epoch: store.epoch(), owner: "self" }]);
         return {
             ws,
             events,
