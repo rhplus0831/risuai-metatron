@@ -4868,6 +4868,78 @@ describe("structured memory tasks", () => {
         }
     });
 
+    it("warms deferred record texts in 50-text batches without publishing a writer status", async () => {
+        const laneTargets = { pages: 1000, events: 1000, evidence: 0, threads: 0 };
+        const t = structuredHarness({ hypaSettings: { structured: { flowEvents: 0, laneTargets } } });
+        const source = t.chat("k1")!.message[0];
+        // 102 event texts and 101 page texts force both kinds to have misses after a 100-text send.
+        const events = Array.from({ length: 51 }, (_, index) => ({
+            ...event(`event-${index}`, [{ messageId: source.chatId!, index: 0, hash: messageSourceHash(source) }]),
+            summary: `Summary ${index}`,
+            keyLines: [{ speaker: "Cara", text: `Quote ${index}` }],
+        }));
+        const pages = Array.from(
+            { length: 101 },
+            (_, index) => memoryRecords([`page-${index}`], `Archive ${index}`).pages[0],
+        );
+        writeMemory(t.store, "c", "k1", { events, pages });
+        const records = readMemoryRecords(t.store, "c", "k1");
+        const input = writerInput(t);
+        const { host } = createMemoryTaskHost({
+            scope: t.jobScope("k1"),
+            input,
+            deps: t.hostDeps,
+            signal: new AbortController().signal,
+            fence: () => {},
+        });
+        const recordTexts = [
+            ...events.flatMap((_, index) => [`Summary ${index}`, `Quote ${index}`]),
+            ...pages.map((_, index) => `Archive ${index}: Gate\nArchive ${index}`),
+        ];
+        const retrieval = {
+            ...records,
+            entries: [
+                { messageId: source.chatId!, role: "char" as const, text: source.data },
+                { messageId: "query", role: "user" as const, text: "Continue." },
+            ],
+            window: { start: 1, dropped: new Set([0]) },
+            settings: normalizeStructuredMemorySettings({ flowEvents: 0, laneTargets }),
+        };
+        const selected = await retrieveLanes(host, retrieval);
+        const foreground = t.embeddings.bodies
+            .flatMap(({ input }) => input)
+            .filter((text) => recordTexts.includes(text));
+        expect(foreground.length).toBeLessThanOrEqual(100);
+        const remaining = recordTexts.filter((text) => !foreground.includes(text));
+        expect(remaining.length).toBeGreaterThan(50);
+        expect(selected.deferredRecordTexts).toBe(remaining.length);
+        const beforeWarm = t.embeddings.bodies.length;
+        const status = t.service.status(ref("k1"));
+        expect(status).toBeNull();
+
+        t.service.warmVectors(input);
+        // Run the queued service work before drain; the suite controls deadline timers.
+        await turns(1);
+        await t.service.drain();
+        const batches = t.embeddings.bodies.slice(beforeWarm).map(({ input }) => input);
+        expect(batches.flat().sort()).toEqual([...remaining].sort());
+        expect(batches.map((batch) => batch.length)).toEqual(
+            Array.from({ length: Math.ceil(remaining.length / 50) }, (_, index) =>
+                Math.min(50, remaining.length - index * 50),
+            ),
+        );
+        expect(t.events).toEqual([]);
+        expect(t.service.status(ref("k1"))).toEqual(status);
+        expect(t.provider.requests).toEqual([]);
+
+        const afterWarm = t.embeddings.bodies.length;
+        const cached = new HypaProcesser(host.embeddings, host.db.hypaModel);
+        await cached.addText(recordTexts);
+        expect(cached.vectors.map(({ content }) => content).sort()).toEqual([...recordTexts].sort());
+        expect((await retrieveLanes(host, retrieval)).deferredRecordTexts).toBe(0);
+        expect(t.embeddings.bodies).toHaveLength(afterWarm);
+    });
+
     it("keeps only raw window quotes, lists rejected evidence in the receipt, and warms reusable event vectors", async () => {
         const t = structuredHarness();
         t.write("k1", [

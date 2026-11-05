@@ -12,7 +12,13 @@ import {
     memoryThreadEnded,
     type StructuredMemorySettings,
 } from "../../../../../shared/structuredMemory.ts";
-import { cosineSimilarity, HypaProcesser, type memoryVector, type VectorArray } from "../../embeddings.ts";
+import {
+    cosineSimilarity,
+    HypaProcesser,
+    type EmbeddingEnv,
+    type memoryVector,
+    type VectorArray,
+} from "../../embeddings.ts";
 import type { MemoryHost } from "../host.ts";
 import { eventLine, evidenceLine, flattened, flowLine, type PageKnowledge, pageLine, threadLine } from "./card.ts";
 import { type ExcludedItem, itemKey, type Lane, type LaneCandidate, type RawWindow, type ReadEntry } from "./lanes.ts";
@@ -50,6 +56,11 @@ import { sectionVectorText } from "./pages.ts";
  * - Threads: any not ended, so a paused one stays. One naming nobody is listed low, as a thread recorded
  *   before its chat had pages is; one naming someone needs them on stage, which is the scene page's
  *   attendance.
+ * - Selection prepares the placed records, page cast and required offer before embedding, so the card
+ *   can refuse required pages or disable similarity when even its cheapest optional frame cannot fit.
+ * - Every cached eligible event/auto-page text is scored. Cold records share `recordTexts` foreground
+ *   misses per job; unembedded texts score zero until the detached task service warms them. This cold
+ *   compromise is not a similarity failure. Queries use a document-disjoint cache namespace.
  * - A failed embedding never fails the send: the prompt stays valid without it and the answer says why.
  *   The events lane then opens by the reading alone, over events sharing someone with the stage, and the
  *   pages lane goes on without its similarity channel. A cancelled job or a latched failure still
@@ -66,6 +77,8 @@ import { sectionVectorText } from "./pages.ts";
 export const RETRIEVAL_LIMITS = {
     /** The window's newest messages with text that make up the query, and what is read of each. */
     queryMessages: 4,
+    /** Unique missing event/page texts submitted in the foreground across one job. */
+    recordTexts: 100,
     queryChars: 2000,
     /** The similarity that opens the events lane without a past reading. */
     eventOpenSimilarity: 0.6,
@@ -157,6 +170,8 @@ type RetrievedLanes = {
     /** Why `similarity` is `failed`, without the embedding keys. */
     failure?: string;
     eventsOpen: boolean;
+    /** Unique eligible record texts left without vectors; evidence is not included. */
+    deferredRecordTexts: number;
 };
 
 /** An active, unsuppressed event with its sources' entries, newest first; `place` is the first of them. */
@@ -261,35 +276,95 @@ function bestSimilarities(
     return best;
 }
 
+type RecordAllowance = { remaining: number };
+const jobAllowances = new WeakMap<object, RecordAllowance>();
+const environmentAllowances = new WeakMap<EmbeddingEnv, RecordAllowance>();
+
+/** Binds a round's embedding environment to its job's shared foreground record allowance. */
+export function shareRecordEmbeddingAllowance(env: EmbeddingEnv, job: object): void {
+    let allowance = jobAllowances.get(job);
+    if (!allowance) {
+        allowance = { remaining: RETRIEVAL_LIMITS.recordTexts };
+        jobAllowances.set(job, allowance);
+    }
+    environmentAllowances.set(env, allowance);
+}
+
 /**
- * One processor and one read of the query vectors, whichever lanes ask. `best` embeds `texts` and answers
- * their similarities, or null when there is nothing to compare or embedding failed, which ends it for
- * the send.
+ * One processor and cached query vectors for both evidence passes. All cached records are scored;
+ * unique record misses share a bounded allowance, equally between active lanes with unused shares
+ * lent. Missing records left over score zero, without invoking the failed-embedding fallback.
+ * Evidence alone may embed through `best`, under its separate per-pass excerpt bound.
  */
-function sendEmbeddings(host: RetrievalHost, queries: string[]) {
+function sendEmbeddings(host: RetrievalHost, queries: string[], enabled: boolean) {
     let processor: HypaProcesser | undefined;
     let queryVectors: VectorArray[] | undefined;
+    let deferred = 0;
+    const allowance = environmentAllowances.get(host.embeddings) ?? { remaining: RETRIEVAL_LIMITS.recordTexts };
     const state: Pick<RetrievedLanes, "similarity" | "failure"> = { similarity: "off" };
+    const failed = (error: unknown) => {
+        host.fence();
+        host.recoverLocalModelFailure?.();
+        state.similarity = "failed";
+        state.failure = host.embeddings.redact(error instanceof Error ? error.message : String(error));
+    };
     return {
         state,
-        async best(texts: readonly string[]): Promise<ReadonlyMap<string, number> | null> {
-            if (state.similarity === "failed" || queries.length === 0 || texts.length === 0) {
-                return null;
+        get deferred() {
+            return deferred;
+        },
+        async records(lanes: { events: string[]; pages: string[] }): Promise<void> {
+            if (!enabled || queries.length === 0) return;
+            const texts = [...new Set([...lanes.events, ...lanes.pages])];
+            if (texts.length === 0) return;
+            try {
+                host.fence();
+                processor = new HypaProcesser(host.embeddings, host.db.hypaModel);
+                const missing = new Set(processor.loadCachedDocuments(texts));
+                deferred = missing.size;
+                const groups = [lanes.events, lanes.pages].map((lane) => lane.filter((text) => missing.has(text)));
+                const selected = new Set<string>();
+                const active = groups.filter((group) => group.length > 0);
+                const share = Math.floor(allowance.remaining / Math.max(1, active.length));
+                for (const group of active) {
+                    let taken = 0;
+                    for (const text of group) {
+                        if (taken >= share) break;
+                        if (!selected.has(text)) {
+                            selected.add(text);
+                            taken++;
+                        }
+                    }
+                }
+                for (const group of active) {
+                    for (const text of group) {
+                        if (selected.size >= allowance.remaining) break;
+                        selected.add(text);
+                    }
+                }
+                allowance.remaining -= selected.size;
+                await processor.addText([...selected]);
+                host.fence();
+                deferred -= selected.size;
+            } catch (error) {
+                failed(error);
             }
+        },
+        async best(texts: readonly string[], embed = false): Promise<ReadonlyMap<string, number> | null> {
+            if (!enabled || state.similarity === "failed" || queries.length === 0 || texts.length === 0) return null;
             const unique = [...new Set(texts)];
             try {
-                processor ??= new HypaProcesser(host.embeddings, host.db.hypaModel);
-                await processor.addText(unique);
                 host.fence();
-                queryVectors ??= await processor.getEmbeds(queries);
+                processor ??= new HypaProcesser(host.embeddings, host.db.hypaModel);
+                if (embed) await processor.addText(unique);
+                host.fence();
+                if (processor.vectors.length === 0) return new Map();
+                queryVectors ??= await processor.getCachedQueries(queries);
                 host.fence();
                 state.similarity = "used";
                 return bestSimilarities(unique, processor.vectors, queryVectors);
             } catch (error) {
-                host.fence();
-                host.recoverLocalModelFailure?.();
-                state.similarity = "failed";
-                state.failure = host.embeddings.redact(error instanceof Error ? error.message : String(error));
+                failed(error);
                 return null;
             }
         },
@@ -456,7 +531,10 @@ async function evidenceItems(
         ...match,
         excerpt: excerptOf(entries[match.index].text, queryTerms),
     }));
-    const best = await embeddings.best(matches.map(({ excerpt }) => excerpt));
+    const best = await embeddings.best(
+        matches.map(({ excerpt }) => excerpt),
+        true,
+    );
     const older = matches.map(({ index, lexical, excerpt }) =>
         best
             ? item(index, excerpt, {
@@ -573,6 +651,31 @@ function unawareFacts(page: MemoryPage, { facts, titles, stage }: PageReading): 
 /** The sections of `page` that can show: a suppressed one never does, and a blank one has nothing to. */
 const shownSections = ({ sections }: Pick<MemoryPage, "sections">) =>
     sections.filter(({ suppressed, body }) => !suppressed && body.trim() !== "");
+
+/**
+ * Record texts shared by retrieval and background warming. The caller orders events by newest place;
+ * pages prefer on-stage, named and linked pages, then newest sections. No lexical shortlist is used.
+ */
+export function recordVectorTexts(
+    records: { events: readonly MemoryEvent[]; pages: readonly MemoryPage[] },
+    targets: Pick<StructuredMemorySettings["laneTargets"], "events" | "pages">,
+    found: ReadonlyMap<string, PageMatch> = new Map(),
+): { events: string[]; pages: string[] } {
+    const scene = records.pages.find(({ type }) => type === "scene");
+    const sections =
+        targets.pages > 0
+            ? records.pages
+                  .filter((page) => page !== scene && page.contextMode !== "always" && page.contextMode !== "never")
+                  .flatMap((page) => shownSections(page).map((section) => ({ page, section })))
+            : [];
+    const priority = (page: MemoryPage) => PAGE_MATCHES.indexOf(found.get(page.id) ?? "similarity");
+    sections.sort((a, b) => priority(a.page) - priority(b.page) || b.section.updatedAt - a.section.updatedAt);
+    return {
+        events:
+            targets.events > 0 ? [...new Set(records.events.filter(memoryEventCovers).flatMap(eventVectorTexts))] : [],
+        pages: [...new Set(sections.map(({ page, section }) => sectionVectorText(page, section)))],
+    };
+}
 
 /** What the pages lane shows of `page`: all it can, or on a character the lane's slots. */
 function relatedSections(page: MemoryPage): MemorySection[] {
@@ -778,7 +881,7 @@ async function relatedPages(
 }
 
 /**
- * The lanes this send can offer, and every other record they reach, with why it is not offered.
+ * Embedding-free placement and page reading, including the required offer and enabled lane targets.
  * Required pages never also enter the pages lane, so a page has only one item and tag.
  *
  * - Both page lanes filter a character's relationship lines against the same cast: visible pages on
@@ -801,8 +904,8 @@ async function relatedPages(
  * read joins by whitespace-collapsed fact text before caps: learning a secret later must prevent a
  * false denial of it.
  */
-export async function retrieveLanes(host: RetrievalHost, input: RetrievalInput): Promise<RetrievedLanes> {
-    const { events, threads, pages, entries, window, settings } = input;
+export async function prepareRetrieval(input: RetrievalInput) {
+    const { events, pages, entries, window, settings } = input;
     const targets = settings.laneTargets;
     const stage = new Set(input.stage);
     const positions = new Map<string, number>();
@@ -840,15 +943,67 @@ export async function retrieveLanes(host: RetrievalHost, input: RetrievalInput):
         .filter(hasText)
         .slice(-RETRIEVAL_LIMITS.queryMessages)
         .map((entry) => ({ ...entry, text: clampText(entry.text.trim(), RETRIEVAL_LIMITS.queryChars) }));
-    const embeddings = sendEmbeddings(
-        host,
-        query.map(({ text }) => text),
-    );
-
     const eligible = placed.filter(
         ({ event, sources }) =>
             sources.length < event.sources.length ||
             sources.some((index) => index < window.start || !hasText(entries[index])),
+    );
+    const scene = pages.find(({ type }) => type === "scene");
+    const visible = pages.filter((page) => page !== scene && page.contextMode !== "never");
+    const found = await foundPages({ visible, stage }, entries);
+    const reading: PageReading = {
+        pages,
+        scene,
+        visible,
+        titles: new Map(pages.filter(({ contextMode }) => contextMode !== "never").map(({ id, title }) => [id, title])),
+        stage,
+        cast: new Set(
+            visible
+                .filter(({ id, contextMode }) => stage.has(id) || found.has(id) || contextMode === "always")
+                .map(({ id }) => id),
+        ),
+        facts: knownFacts(events, positions),
+    };
+    const required = requiredPages(reading);
+    const lanes: Lane<LaneCandidate>[] = [
+        { lane: "required", target: settings.requiredCap, items: required.items },
+        { lane: "flow", target: settings.flowEvents > 0 ? FLOW_TARGET : 0, items: [] },
+        ...(["pages", "events", "evidence", "threads"] as const).map((lane) => ({
+            lane,
+            target: targets[lane],
+            items: [],
+        })),
+    ];
+    return { input, stage, excluded, leaveOut, placed, query, eligible, reading, found, required, lanes };
+}
+
+/**
+ * Scores a prepared send (or prepares a direct call). With embeddings disabled it does no vector
+ * cache or provider work, including evidence. Direct calls receive their own bounded allowance.
+ */
+export async function retrieveLanes(
+    host: RetrievalHost,
+    input: RetrievalInput,
+    options: { prepared?: Awaited<ReturnType<typeof prepareRetrieval>>; embeddings?: boolean } = {},
+): Promise<RetrievedLanes> {
+    const prepared = options.prepared ?? (await prepareRetrieval(input));
+    const { stage, excluded, leaveOut, placed, query, eligible, reading, found, required } = prepared;
+    const { threads, entries, window, settings } = input;
+    const targets = settings.laneTargets;
+    const embeddings = sendEmbeddings(
+        host,
+        query.map(({ text }) => text),
+        options.embeddings !== false,
+    );
+    await embeddings.records(
+        recordVectorTexts(
+            {
+                events: eligible.toSorted((a, b) => b.place - a.place).map(({ event }) => event),
+                pages: input.pages,
+            },
+            targets,
+            found,
+        ),
     );
     const { open, ranked } = await rankEvents(eligible, query, stage, targets.events, embeddings);
     const relevant = new Set(ranked.map(({ event }) => event.id));
@@ -867,23 +1022,6 @@ export async function retrieveLanes(host: RetrievalHost, input: RetrievalInput):
     const evidenceCandidates = await evidence();
     const openThreads = threadItems(threads, stage, targets.threads);
 
-    const scene = pages.find(({ type }) => type === "scene");
-    const visible = pages.filter((page) => page !== scene && page.contextMode !== "never");
-    const found = await foundPages({ visible, stage }, entries);
-    const reading: PageReading = {
-        pages,
-        scene,
-        visible,
-        titles: new Map(pages.filter(({ contextMode }) => contextMode !== "never").map(({ id, title }) => [id, title])),
-        stage,
-        cast: new Set(
-            visible
-                .filter(({ id, contextMode }) => stage.has(id) || found.has(id) || contextMode === "always")
-                .map(({ id }) => id),
-        ),
-        facts: knownFacts(events, positions),
-    };
-    const required = requiredPages(reading);
     const related = await relatedPages(reading, found, targets.pages, embeddings);
     return {
         lanes: [
@@ -920,5 +1058,6 @@ export async function retrieveLanes(host: RetrievalHost, input: RetrievalInput):
             return embeddings.state.failure;
         },
         eventsOpen: open,
+        deferredRecordTexts: embeddings.deferred,
     };
 }

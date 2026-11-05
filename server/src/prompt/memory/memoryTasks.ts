@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Chat, character, groupChat } from "../../../../shared/database.ts";
 import { greetingText } from "../../../../shared/greetings.ts";
-import { summarizesLocally } from "../../../../shared/hypaV3Presets.ts";
+import { selectedHypaV3Preset, summarizesLocally } from "../../../../shared/hypaV3Presets.ts";
 import type {
     AnyMemoryTaskInput,
     GenerationContext,
@@ -17,7 +17,11 @@ import type {
 import { LLMFormat } from "../../../../shared/llm.ts";
 import type { SerializableHypaV3Data } from "../../../../shared/memory.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
-import { STRUCTURED_MEMORY_ALGORITHM, type StructuredMemoryRebuildMode } from "../../../../shared/structuredMemory.ts";
+import {
+    normalizeStructuredMemorySettings,
+    STRUCTURED_MEMORY_ALGORITHM,
+    type StructuredMemoryRebuildMode,
+} from "../../../../shared/structuredMemory.ts";
 import type { ResourceKindRegistry } from "../../data/kinds.ts";
 import type { MemoryChanges } from "../../data/memoryStore.ts";
 import {
@@ -41,6 +45,9 @@ import { moduleTriggers } from "../../jobs/runSetup.ts";
 import { resolveJobRequestModel } from "../../llm/request.ts";
 import { RequestTargetGoneError } from "../../llm/settings.ts";
 import { hasRequestTriggers } from "../triggers.ts";
+import { HypaProcesser } from "../embeddings.ts";
+import { recordVectorTexts } from "./structured/retrieve.ts";
+import { readMemoryRecords } from "./structured/step.ts";
 import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 import {
     createHypaV3SourceValidator,
@@ -75,8 +82,9 @@ import { chatAdoptionHold, commitWindow, createStructuredWriter, writerHostDeps 
 /**
  * The server's detached memory tasks, one service per server: work a finished job hands off for its
  * chat, run without the job or a tab, of two kinds (`AnyMemoryTaskInput`): HypaV3 summaries ahead of
- * need, and the Structured Memory writer (with a rebuild's runs). `createMemoryTasks`'s doc comment
- * holds the queue, the start checks, the work of each kind, and the ends; `MEMORY_TASK_LIMITS` the
+ * need, and the Structured Memory writer (with a rebuild's runs). Separate cache-only requests warm
+ * deferred Structured Memory records without publishing writer statuses. `createMemoryTasks`'s doc
+ * comment holds the queue, the start checks, the work of each kind, and the ends; `MEMORY_TASK_LIMITS` the
  * caps; the host a task runs on is `memoryTaskHost.ts`. Its registry lives in process memory: a
  * restart loses queued work, which the next send finds again.
  */
@@ -129,7 +137,18 @@ export type MemoryTaskStartResult =
     | { outcome: "running" | "queued"; status: MemoryTaskStatus }
     | { outcome: "pendingManual" };
 
+/** A cache-only request: no writer window, lease, receipt, or published task status. */
+export type MemoryVectorWarmer = { warmVectors(input: MemoryTaskBase): void };
+
 export type MemoryTasks = ReturnType<typeof createMemoryTasks>;
+
+type WarmInput = { input: MemoryTaskBase; size: number };
+type WarmTask = WarmInput & {
+    key: string;
+    controller: AbortController;
+    deadlineAt: number;
+    deadline?: ReturnType<typeof setTimeout>;
+};
 
 /** What a writer's `commit` came to: the memory revision it moved to, or why it wrote nothing. */
 export type StructuredMemoryCommit =
@@ -249,9 +268,18 @@ const statusKind = (input: AnyMemoryTaskInput) =>
  *   fewer than `maxRunning` tasks have unsettled work (an ended task counts until its work, and the
  *   host calls it stopped waiting for, settle). At most `maxPendingChats` chats queue; a hand-off past
  *   it is dropped with a log line.
+ * - Cache warming: `warmVectors` keeps one latest pending input per chat and runs at most one warmer
+ *   server-wide within `maxRunning`. Writers start first and preempt warming at capacity (requeued
+ *   unless a newer warm request waits or retention refuses it); unsettled provider work still counts.
+ *   Pending warmers are separately capped at `maxPendingChats`, share the
+ *   byte cap, and yield retained space to writers. They publish no status and take no writer lease.
+ *   Common scope/freshness checks apply, plus Structured Memory and its settings fingerprint;
+ *   writer model/trigger checks do not. Current records share retrieval's text enumeration; misses are
+ *   saved in batches of 50. Cancellation, maintenance, epoch changes, shutdown, drain and deadlines
+ *   cover warmers too. Ordinary embedding failures log no provider text and end quietly.
  * - Retention: the inputs a running task, a queue, or a chat's latest hand-off keep are capped at
  *   `maxRetainedBytes` (their JSON size); a hand-off evicts idle latest inputs least recently used
- *   first and is dropped when that is not enough. Running and queued inputs are never evicted.
+ *   first and is dropped when that is not enough. Running inputs and queued writer inputs are never evicted.
  * - Manual mark: `start` sets it on the chat's queued input, new or already queued, and so does a
  *   hand-off that satisfies `pendingManual`; the task keeps it. A Structured Memory task then takes
  *   its ceiling from the chat as stored and closes its trailing partial window too. HypaV3 ignores it.
@@ -349,6 +377,8 @@ export function createMemoryTasks(deps: {
     const leases = new Map<string, Set<object>>();
     /** Tasks whose work or tracked host calls have not settled: the capacity and drain count. */
     const alive = new Set<Task>();
+    const warmPending = new Map<string, WarmInput>();
+    const warmAlive = new Set<WarmTask>();
     const listeners = new Set<(event: MemoryTaskEvent) => void>();
     const notifications: MemoryTaskEvent[] = [];
     let dispatching = false;
@@ -383,6 +413,13 @@ export function createMemoryTasks(deps: {
             if (replaced && [...replaced.holders].every((holder) => holder === "pending" || holder === "latest")) {
                 projected -= replaced.size;
             }
+        }
+        // Cache-only requests yield retained space to writer inputs.
+        for (const [key, warm] of warmPending) {
+            if (projected <= limits.maxRetainedBytes) break;
+            warmPending.delete(key);
+            retainedBytes -= warm.size;
+            projected -= warm.size;
         }
         if (projected <= limits.maxRetainedBytes) {
             return true;
@@ -651,7 +688,7 @@ export function createMemoryTasks(deps: {
         alive.delete(task);
         clearTimeout(task.deadline);
         drop(task.retained, task);
-        if (alive.size === 0) {
+        if (alive.size + warmAlive.size === 0) {
             for (const resolve of drainWaiters) {
                 resolve();
             }
@@ -709,8 +746,8 @@ export function createMemoryTasks(deps: {
         store.epoch() === input.epoch &&
         store.chatSourceGeneration(input.chatRef.chaId, input.chatRef.chatId) === input.sourceGeneration;
 
-    /** The start checks (`createMemoryTasks`), on a fresh scope, synchronously. */
-    const startChecks = (input: AnyMemoryTaskInput): { scope: JobScope } | Skip => {
+    /** Start checks shared by writers and cache-only work, on a fresh scope. */
+    const memoryScope = (input: MemoryTaskBase): { scope: JobScope } | Skip => {
         if (store.chatRevision(input.chatRef.chaId, input.chatRef.chatId) === null) {
             return { skip: "chatGone" };
         }
@@ -727,6 +764,16 @@ export function createMemoryTasks(deps: {
         if (!owner?.supaMemory) {
             return { skip: "memoryOff" };
         }
+        return { scope };
+    };
+
+    /** The writer-only checks follow the common chat, freshness, binding and memory checks. */
+    const startChecks = (input: AnyMemoryTaskInput): { scope: JobScope } | Skip => {
+        const loaded = memoryScope(input);
+        if ("skip" in loaded) return loaded;
+        const { scope } = loaded;
+        const db = scope.db;
+        const owner = db.characters.find((entry) => entry?.chaId === input.chatRef.chaId)!;
         const structured = db.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
         if (input.kind === "structuredMemory") {
             if (!structured) {
@@ -1326,14 +1373,104 @@ export function createMemoryTasks(deps: {
         });
     };
 
+    /** Cancels cache work without touching the writer registry or its last status. */
+    const cancelWarm = (key: string, older: (input: MemoryTaskBase) => boolean = () => true): boolean => {
+        let cancelled = false;
+        const pending = warmPending.get(key);
+        if (pending && older(pending.input)) {
+            warmPending.delete(key);
+            retainedBytes -= pending.size;
+            cancelled = true;
+        }
+        for (const task of warmAlive) {
+            if (task.key === key && older(task.input)) {
+                task.controller.abort(new MemoryTaskEnd("cancelled"));
+                cancelled = true;
+            }
+        }
+        return cancelled;
+    };
+
+    async function warmWork(task: WarmTask): Promise<void> {
+        const { input } = task;
+        const { chaId, chatId } = input.chatRef;
+        const fence = () => {
+            if (
+                !task.controller.signal.aborted &&
+                (closed ||
+                    paused ||
+                    gate.active ||
+                    !inputCurrent(input) ||
+                    now() >= task.deadlineAt ||
+                    store.chatRevision(chaId, chatId) === null)
+            )
+                task.controller.abort(new MemoryTaskEnd("cancelled"));
+            task.controller.signal.throwIfAborted();
+        };
+        fence();
+        const loaded = memoryScope(input);
+        if ("skip" in loaded) return;
+        const { scope } = loaded;
+        if (
+            scope.db.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM ||
+            memorySettingsFingerprint(scope) !== input.settingsFingerprint
+        )
+            return;
+        const { host } = createMemoryTaskHost({ scope, input, deps: hostDeps, signal: task.controller.signal, fence });
+        const settings = normalizeStructuredMemorySettings(selectedHypaV3Preset(scope.db)?.settings?.structured);
+        const texts = recordVectorTexts(readMemoryRecords(store, chaId, chatId), settings.laneTargets);
+        try {
+            host.fence();
+            const processor = new HypaProcesser(host.embeddings, host.db.hypaModel);
+            const missing = processor.loadCachedDocuments([...texts.events, ...texts.pages]);
+            for (let index = 0; index < missing.length; index += 50) {
+                host.fence();
+                // Each add saves its batch: a later failure keeps all earlier batches warm.
+                await processor.addText(missing.slice(index, index + 50));
+                host.fence();
+            }
+        } catch (error) {
+            if (host.signal.aborted || error instanceof MemoryHostFailure) throw error;
+            host.recoverLocalModelFailure?.();
+            console.warn("[memory] warming stored record vectors failed");
+        }
+    }
+
+    const startWarm = (key: string, pending: WarmInput) => {
+        warmPending.delete(key);
+        const task: WarmTask = {
+            ...pending,
+            key,
+            controller: new AbortController(),
+            deadlineAt: now() + limits.taskDeadlineMs,
+        };
+        warmAlive.add(task);
+        task.deadline = setTimeout(() => task.controller.abort(new MemoryTaskEnd("cancelled")), limits.taskDeadlineMs);
+        task.deadline.unref?.();
+        void warmWork(task)
+            .catch((error) => {
+                // Abort and fatal host errors escape the embedding recovery path, then end this silent task.
+                if (!task.controller.signal.aborted || error instanceof MemoryHostFailure) {
+                    console.warn("[memory] stored record vector task ended");
+                }
+            })
+            .finally(() => {
+                clearTimeout(task.deadline);
+                warmAlive.delete(task);
+                retainedBytes -= task.size;
+                if (alive.size + warmAlive.size === 0) {
+                    for (const resolve of drainWaiters) resolve();
+                    drainWaiters.clear();
+                }
+                schedulePump();
+            });
+    };
+
     function pump() {
         if (paused || closed) {
             return;
         }
         for (const key of [...queue]) {
-            if (alive.size >= limits.maxRunning) {
-                return;
-            }
             const entry = entries.get(key);
             if (!entry?.pending) {
                 queue.delete(key);
@@ -1342,7 +1479,21 @@ export function createMemoryTasks(deps: {
             if (entry.running || (leases.get(key)?.size ?? 0) > 0) {
                 continue;
             }
+            if (alive.size + warmAlive.size >= limits.maxRunning) {
+                // Writer work has priority even when maxRunning is one. An aborted warmer still
+                // counts until its provider settles; no new warmer can jump ahead of this writer.
+                for (const task of warmAlive) {
+                    if (!task.controller.signal.aborted && !warmPending.has(task.key)) service.warmVectors(task.input);
+                    task.controller.abort(new MemoryTaskEnd("cancelled"));
+                }
+                return;
+            }
             startTask(entry);
+        }
+        // At most one warmer server-wide, sharing the service cap. Queued writers always go first.
+        if (!gate.active && warmAlive.size === 0 && alive.size < limits.maxRunning) {
+            const next = warmPending.entries().next().value;
+            if (next) startWarm(...next);
         }
     }
 
@@ -1360,6 +1511,7 @@ export function createMemoryTasks(deps: {
 
     /** Ends every running and queued task with `reason` (maintenance, shutdown). */
     const endAll = (reason: string) => {
+        for (const key of new Set([...warmPending.keys(), ...[...warmAlive].map((task) => task.key)])) cancelWarm(key);
         for (const entry of [...entries.values()]) {
             endPending(entry, "cancelled", { reason });
             if (entry.running) {
@@ -1436,6 +1588,19 @@ export function createMemoryTasks(deps: {
     // The service
 
     const service = {
+        /** Retains only the latest cache-only request per chat; no status or writer-only start checks. */
+        warmVectors(input: MemoryTaskBase): void {
+            if (closed || paused || gate.active || !inputCurrent(input)) return;
+            const key = keyOf(input.chatRef);
+            if (!warmPending.has(key) && warmPending.size >= limits.maxPendingChats) return;
+            const owned = structuredClone(input);
+            const size = Buffer.byteLength(JSON.stringify(owned));
+            const previous = warmPending.get(key);
+            if (retainedBytes - (previous?.size ?? 0) + size > limits.maxRetainedBytes) return;
+            retainedBytes += size - (previous?.size ?? 0);
+            warmPending.set(key, { input: owned, size });
+            schedulePump();
+        },
         /**
          * Queues the chat's latest input (`enqueue`). Dropped while paused or shutting down, when its
          * epoch or source generation is no longer the chat's, past the pending-chat limit, or when the
@@ -1583,8 +1748,9 @@ export function createMemoryTasks(deps: {
             return { outcome: "pendingManual" };
         },
 
-        /** Cancels the chat's queued and running task and its `pendingManual`; whether anything was cancelled. */
+        /** Cancels writer and warm work; answers whether the writer registry had work to cancel. */
         cancel(chatRef: MemoryChatRef): boolean {
+            cancelWarm(keyOf(chatRef));
             const entry = entries.get(keyOf(chatRef));
             if (!entry) {
                 return false;
@@ -1608,6 +1774,10 @@ export function createMemoryTasks(deps: {
             if (notice.epoch !== registryEpoch) {
                 return;
             }
+            cancelWarm(
+                keyOf({ chaId: notice.characterId, chatId: notice.id }),
+                (input) => input.sourceGeneration < notice.sourceGeneration,
+            );
             const entry = entries.get(keyOf({ chaId: notice.characterId, chatId: notice.id }));
             if (!entry) {
                 return;
@@ -1670,7 +1840,7 @@ export function createMemoryTasks(deps: {
 
         /** Resolves once every task's work and tracked host calls have settled, or after `drainWaitMs`. */
         async drain(): Promise<void> {
-            if (alive.size === 0) {
+            if (alive.size + warmAlive.size === 0) {
                 return;
             }
             let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1692,6 +1862,9 @@ export function createMemoryTasks(deps: {
          * capacity and `drain`; leases stay with their jobs.
          */
         resetEpoch() {
+            const warming = [...warmAlive];
+            for (const pending of warmPending.values()) retainedBytes -= pending.size;
+            warmPending.clear();
             const previous = [...entries.values()];
             entries = new Map();
             queue = new Set();
@@ -1716,11 +1889,12 @@ export function createMemoryTasks(deps: {
             for (const task of running) {
                 endRunning(task, "cancelled", { reason: "epoch" });
             }
+            for (const task of warming) task.controller.abort(new MemoryTaskEnd("cancelled"));
         },
 
         /** For tests: tasks with unsettled work, queued chats, and the retained input bytes. */
-        aliveCount: () => alive.size,
-        queuedCount: () => queue.size,
+        aliveCount: () => alive.size + warmAlive.size,
+        queuedCount: () => queue.size + warmPending.size,
         retainedBytes: () => retainedBytes,
     };
     return service satisfies MemoryTaskService;

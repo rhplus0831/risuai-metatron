@@ -164,7 +164,7 @@ kind is the [Structured Memory writer](structured-memory/writer.md#the-writer-ta
 - Right before a job emits `done`, the runner hands the service the job's `MemoryTaskInput` (`shared/jobs.ts`) when a
   lookahead plan says summaries are due or a manual start waits (`pendingManual`).
 - A task writes through the [persistence rules](chat-store.md#server-memory-writes), then warms the saved summaries'
-  vectors (a failure is `done` with reason `warmingFailed`).
+  vectors (a failure is `done` with reason `warmingFailed`). `warmVectors` silently warms texts a send deferred.
 - A failed start check ends the task `skipped` with a reason (`localSummarization` for a local summarization model,
   `staleInput`, and the rest in `createMemoryTasks`'s doc comment); the modal's task status (`UI`, above) shows it as
   the last notable end.
@@ -332,7 +332,7 @@ it matches a removable entry), so a prompt still over the context with them ends
   two positions cannot share a vector.
 - Use a contextual group from cache only when every member hits; otherwise re-embed the whole group in source order and
   map results by chunk identity. Query vectors (`input_type: "query"`) differ from document vectors. `HypaProcesser`
-  does not cache queries; `testText` caches raw text only.
+  caches queries only in `getCachedQueries`, under pipe-free keys; `testText` caches raw text only.
 - Adding a local model updates `HypaModel`, both local model registries, the Transformers `EmbeddingModel` union, and
   settings/playground options. `TaskRateLimiter` requires `maxConcurrentTasks <= tasksPerMinute`.
 
@@ -409,15 +409,14 @@ it matches a removable entry), so a prompt still over the context with them ends
 - An edit right after a refused final job hydration can still use a stale modal or lore copy: the job fence drops before
   the idle refresh catches up, and a whole-field write can replace the job's data (`chat-store.md`, job hydration and
   idle refresh).
-- Experimental's rate limiter is per execution: successive runs of one chat and simultaneous runs of several chats share
-  no provider-wide allowance.
+- Experimental's rate limiter is per execution: no provider-wide allowance across runs or chats.
 - Ordinary API document batches (`HypaProcesser.embedDocuments`, `HypaProcessorV2`) are capped at 50 texts, a direct
   `getEmbeds` call is not, and none counts tokens before sending; long inputs can exceed provider limits. Contextual
   batches likewise count inputs and chunks, not tokens.
 - The Voyage group hash is a 32-bit hash of the group's texts (joined with `\0`), so two different groups can still
   share a key.
-- A cancelled `TaskRateLimiter` batch leaves an already scheduled rate-window retry timer alive until the window
-  advances (up to 60 seconds); that timer starts no task.
+- A cancelled `TaskRateLimiter` batch leaves its retry timer alive until the window advances (up to 60 s); it starts no
+  task.
 - The custom embedding URL is fetched directly by the server with no local-target restriction.
 - The catalogue's Transformers.js generation models publish no 8-bit `model_quantized.onnx`: they do not load in the
   browser. The server loads their `fp32` weights, so a job can use `opt-350m` and `tiny-random-mistral`;

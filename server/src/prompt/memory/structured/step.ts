@@ -22,7 +22,7 @@ import type { MemoryContents } from "../../../data/memoryStore.ts";
 import type { ResourceStore } from "../../../data/resourceStore.ts";
 import type { MemoryHost, MemoryTokenizer } from "../host.ts";
 import { blankEntry, trimHistoryToContext } from "../hypav3.ts";
-import { buildMemoryCard, type MemoryCard, type RequiredOverLimit } from "./card.ts";
+import { buildMemoryCard, preflightMemoryCard, type MemoryCard, type RequiredOverLimit } from "./card.ts";
 import {
     coveredMessages,
     type ExcludedItem,
@@ -33,12 +33,12 @@ import {
     type ReadEntry,
 } from "./lanes.ts";
 import { reconcileEvents } from "./reconcile.ts";
-import { retrieveLanes } from "./retrieve.ts";
+import { prepareRetrieval, retrieveLanes } from "./retrieve.ts";
 import { chatAdoptionHold, writerPaused } from "./writer.ts";
 
 /**
  * A send's read of Structured Memory: which stored records it sees, what of its history leaves the
- * prompt, and the memory card's entries. Nothing here writes, so a preview runs all of it;
+ * prompt, and the memory card's entries. Nothing here writes memory records, so a preview runs all of it;
  * `structuredMemoryStep` in `assemble.ts` owns what concerns the job, the gap question and the hand-off.
  *
  * - Two sets come from the same events and answer different questions: `coveredMessages` (active and
@@ -56,6 +56,9 @@ import { chatAdoptionHold, writerPaused } from "./writer.ts";
  * - A card with no item adds no entry, so it costs nothing. The volatile part goes into the card's
  *   entry, or under `volatileBeforeLastUser` stays out of the history altogether: there a chat range
  *   could cut it, and a `memory` prompt card would pull it away from the latest user message.
+ * - Budget and required pages are checked before any vector access. If the cheapest enabled optional
+ *   frame exhausts capacity, similarity is off, including both evidence passes. Record misses share
+ *   the job's foreground allowance; the result reports deferred texts for detached warming.
  * - Required pages that do not fit end the send naming them, whatever `inlayErrorResponse` says: only a
  *   person can shorten or demote a page, so no reply may stand in for that.
  */
@@ -124,6 +127,8 @@ export type MemorySelected = {
     excluded: ExcludedItem[];
     lanes: LaneSpend[];
     lanesStage: "filled" | "empty" | "similarityFailed";
+    /** Unique record texts deferred by this selection for detached cache warming. */
+    deferredRecordTexts: number;
 };
 
 /**
@@ -253,7 +258,8 @@ export async function selectMemory(
         covered: coveredMessages(events),
     });
 
-    const retrieved = await retrieveLanes(host, {
+    const { maximum, reduced } = readBudget(settings, maxContextTokens, host.db.maxResponse);
+    const retrievalInput = {
         events,
         threads: records.threads,
         pages: records.pages,
@@ -261,8 +267,8 @@ export async function selectMemory(
         window,
         stage: records.stage,
         settings: structured,
-    });
-    const { maximum, reduced } = readBudget(settings, maxContextTokens, host.db.maxResponse);
+    };
+    const prepared = await prepareRetrieval(retrievalInput);
     const requiredAlert = (card: RequiredOverLimit): MemorySelection => {
         const titles = new Map(records.pages.map(({ id, title }) => [id, title]));
         const pages = card.pages.map(({ id, tokens }) => `${titles.get(id) ?? id} (${tokens})`);
@@ -272,6 +278,10 @@ export async function selectMemory(
             code: "memoryRequiredOverCap",
         };
     };
+    const preflight = await preflightMemoryCard(tokenizer, { maximum, lanes: prepared.lanes });
+    host.fence();
+    if (preflight.type === "requiredOverLimit") return requiredAlert(preflight);
+    const retrieved = await retrieveLanes(host, retrievalInput, { prepared, embeddings: preflight.embeddings });
     let card = await buildMemoryCard(tokenizer, { maximum, lanes: retrieved.lanes });
     if (card.type === "requiredOverLimit") {
         return requiredAlert(card);
@@ -376,6 +386,7 @@ export async function selectMemory(
         items: card.items,
         excluded: [...retrieved.excluded, ...card.excluded],
         lanes: card.spend,
+        deferredRecordTexts: retrieved.deferredRecordTexts,
         lanesStage: similarity === "failed" ? "similarityFailed" : card.items.length > 0 ? "filled" : "empty",
     };
 }

@@ -18,6 +18,7 @@ import type { LlmRequests } from "../llm/requests.ts";
 import { createLuaBindings, type LuaBindings, LuaJobFatalError, type LuaWorkingCopy } from "../lua/bindings.ts";
 import { createCommandExecutor } from "../prompt/commands.ts";
 import type { EmbeddingsService } from "../prompt/embeddings.ts";
+import type { MemoryVectorWarmer } from "../prompt/memory/memoryTasks.ts";
 import type { HypaV3SeparatorLimits } from "../prompt/memory/host.ts";
 import type { TokenCounter } from "../prompt/tokens.ts";
 import type { TransformersService } from "../prompt/transformers.ts";
@@ -75,7 +76,7 @@ export type GenerationRunnerDeps = {
      * every job (blocking); a send's Structured Memory step selects stored records with no hand-off or
      * gap question (Record now runs the writer inside its job).
      */
-    memoryTasks?: MemoryTaskService;
+    memoryTasks?: MemoryTaskService & Partial<MemoryVectorWarmer>;
     /** Web Push for chat completions; without it only the tab is notified. */
     push?: Pick<PushService, "send">;
     /** The diagnostics journal (its caught faults). */

@@ -14,13 +14,20 @@ import {
     type MemorySection,
     type MemoryThread,
 } from "../../../../../shared/structuredMemory.ts";
+import { messageSourceHash } from "../../../data/memoryStore.ts";
 import { createVectorCache } from "../../../data/vectorCache.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { createEmbeddings, HypaProcesser } from "../../embeddings.ts";
 import type { MemoryHost } from "../host.ts";
 import { buildMemoryCard } from "./card.ts";
 import type { ReadEntry } from "./lanes.ts";
-import { eventVectorTexts, readsAsPast, RETRIEVAL_LIMITS, retrieveLanes } from "./retrieve.ts";
+import {
+    eventVectorTexts,
+    readsAsPast,
+    RETRIEVAL_LIMITS,
+    retrieveLanes,
+    shareRecordEmbeddingAllowance,
+} from "./retrieve.ts";
 import { readEntries, selectMemory, type MemorySelectionInput } from "./step.ts";
 
 const event = (id: string, sources = ["old"], fields: Partial<MemoryEvent> = {}): MemoryEvent => ({
@@ -128,6 +135,190 @@ function harness(vector: (text: string) => number[] = () => [1, 0]) {
     };
     return { host, calls, control };
 }
+
+describe("bounded memory embeddings", () => {
+    function selection(host: MemorySelectionInput["host"], messages: Message[]): MemorySelectionInput {
+        const chats: OpenAIChat[] = messages.map(({ chatId, role, data }) => ({
+            role: role === "char" ? "assistant" : "user",
+            content: data,
+            memo: chatId,
+        }));
+        return {
+            host: { ...host, db: { ...host.db, maxResponse: 0 } },
+            settings: createHypaV3Preset("Retrieval", {
+                budgetMode: "tokens",
+                memoryBudgetTokens: 10000,
+                structured: settings({
+                    windowTurns: 1,
+                    laneTargets: { pages: 1000, events: 1000, evidence: 0, threads: 0 },
+                }),
+            }).settings,
+            tokenizer: { tokenizeChat: async ({ content }) => content.length },
+            chats,
+            historyStart: 0,
+            entries: readEntries(chats, messages),
+            messages,
+            currentTokens: chats.reduce((sum, { content }) => sum + content.length, 0),
+            maxContextTokens: 100000,
+            continueMessageId: undefined,
+            tooMuchToken: "TOO_MUCH_TOKEN",
+        };
+    }
+
+    it("shares one job's bounded record embeddings across repeated selections of a cold 1,000-event chat", async () => {
+        const h = harness();
+        const messages: Message[] = Array.from({ length: 1000 }, (_, index) => ({
+            chatId: `old-${index}`,
+            role: "char",
+            data: `Original passage ${index}`,
+        }));
+        const events = messages.map((message, index) =>
+            event(`event-${index}`, [], {
+                summary: `Summary ${index}`,
+                keyLines: [
+                    { speaker: "Ada", text: `Quote ${index}` },
+                    { speaker: "Ada", text: `Summary ${index}` },
+                ],
+                sources: [{ messageId: message.chatId!, index, hash: messageSourceHash(message) }],
+            }),
+        );
+        const pages = [page("Archive"), page("Harbor")];
+        const recordTexts = new Set([
+            ...events.flatMap((_, index) => [`Summary ${index}`, `Quote ${index}`]),
+            "Archive: currentState\nArchive state",
+            "Harbor: currentState\nHarbor state",
+        ]);
+        const queries = ["Continue the journey.", "Ready to depart.", "Open the gate."];
+        messages.push(
+            ...queries.map((data, index): Message => ({
+                chatId: `recent-${index}`,
+                role: index === 1 ? "char" : "user",
+                data,
+            })),
+        );
+        const job = {};
+        shareRecordEmbeddingAllowance(h.host.embeddings, job);
+        const request = selection(h.host, messages);
+        const records = { events, pages, threads: [], stage: [] };
+        const first = await selectMemory(request, records);
+        expect(first.type).toBe("selected");
+        if (first.type !== "selected") throw new Error(JSON.stringify(first));
+        const submitted = h.calls.flat();
+        const foreground = submitted.filter((text) => recordTexts.has(text));
+        expect(foreground.length).toBeGreaterThan(0);
+        expect(foreground.length).toBeLessThanOrEqual(RETRIEVAL_LIMITS.recordTexts);
+        expect(new Set(foreground).size).toBe(foreground.length);
+        expect(submitted.filter((text) => !recordTexts.has(text))).toEqual(queries);
+        expect(first.deferredRecordTexts).toBe(recordTexts.size - foreground.length);
+        expect(first.lanesStage).not.toBe("similarityFailed");
+
+        // Another selection round gets a fresh environment but belongs to the same send job.
+        const nextHost = { ...request.host, embeddings: { ...request.host.embeddings } };
+        shareRecordEmbeddingAllowance(nextHost.embeddings, job);
+        const beforeRepeat = h.calls.length;
+        const second = await selectMemory({ ...request, host: nextHost }, records);
+        expect(second.type).toBe("selected");
+        if (second.type !== "selected") throw new Error(JSON.stringify(second));
+        expect(
+            h.calls
+                .slice(beforeRepeat)
+                .flat()
+                .filter((text) => queries.includes(text)),
+        ).toEqual([]);
+        const allForeground = h.calls.flat().filter((text) => recordTexts.has(text));
+        expect(allForeground.length).toBeLessThanOrEqual(RETRIEVAL_LIMITS.recordTexts);
+        expect(new Set(allForeground).size).toBe(allForeground.length);
+        expect(second.deferredRecordTexts).toBe(recordTexts.size - allForeground.length);
+    });
+
+    it("scores cached old events and pages beyond the foreground record allowance", async () => {
+        const query = "Continue.";
+        const h = harness((text) => {
+            if (text === query || text === "The hidden signal" || text === "Page 0: Clue\nOld beacon") return [1, 0];
+            if (text === "Summary 1") return [0.8, 0.6];
+            return [0, 1];
+        });
+        const events = Array.from({ length: 101 }, (_, index) =>
+            event(`event-${index}`, [`old-${index}`], {
+                summary: `Summary ${index}`,
+                keyLines: index === 0 ? [{ speaker: "Ada", text: "The hidden signal" }] : [],
+            }),
+        );
+        const pages = Array.from({ length: 101 }, (_, index) =>
+            page(`page-${index}`, {
+                title: `Page ${index}`,
+                sections: [section("Clue", index === 0 ? "Old beacon" : `Noise ${index}`, index)],
+            }),
+        );
+        await new HypaProcesser(h.host.embeddings, h.host.db.hypaModel).addText([
+            ...events.map((_, index) => `Summary ${index}`),
+            "The hidden signal",
+            ...pages.map((_, index) => `Page ${index}: Clue\n${index === 0 ? "Old beacon" : `Noise ${index}`}`),
+        ]);
+        h.calls.length = 0;
+        const result = await retrieveLanes(
+            h.host,
+            input({
+                events,
+                pages,
+                entries: [...events.map((_, index) => entry(`old-${index}`)), entry("query", query, "user")],
+                window: { start: events.length, dropped: new Set() },
+                settings: settings({ laneTargets: { pages: 1000, events: 1000, evidence: 0, threads: 0 } }),
+            }),
+        );
+        expect(result.similarity).toBe("used");
+        expect(result.deferredRecordTexts).toBe(0);
+        expect(items(result, "events").map(({ id }) => id)).toEqual(["event-0", "event-1"]);
+        expect(items(result, "pages").map(({ id }) => id)).toEqual(["page-0"]);
+        expect(h.calls).toEqual([[query]]);
+    });
+
+    it("embeds nothing when the smallest memory frame fills the budget", async () => {
+        const h = harness();
+        const messages: Message[] = [
+            { chatId: "old", role: "char", data: "The vault holds a key." },
+            { chatId: "query", role: "user", data: "Remember the key?" },
+        ];
+        const request = selection(h.host, messages);
+        request.settings.memoryBudgetTokens = 2;
+        request.settings.structured.laneTargets.evidence = 1000;
+        // The stable header and optional part each cost one token, leaving no room for a record.
+        request.tokenizer = { tokenizeChat: async () => 1 };
+        request.currentTokens = messages.length;
+        const result = await selectMemory(request, {
+            events: [
+                event("memory", [], {
+                    sources: [{ messageId: "old", index: 0, hash: messageSourceHash(messages[0]) }],
+                }),
+            ],
+            pages: [page("Archive")],
+            threads: [],
+            stage: [],
+        });
+        expect(result).toMatchObject({ type: "selected", budget: { maximum: 2 }, items: [] });
+        expect(h.calls).toEqual([]);
+    });
+
+    it("caches queries separately from identical and namespace-like document texts", async () => {
+        const query = "Continue.";
+        let warmingDocuments = true;
+        const h = harness((text) => (!warmingDocuments || text === "A hidden signal" ? [1, 0] : [0, 1]));
+        const documents = [query, `structured-query-v1:${query}`, "A hidden signal"];
+        await new HypaProcesser(h.host.embeddings, h.host.db.hypaModel).addText(documents);
+        warmingDocuments = false;
+        h.calls.length = 0;
+        const request = input({
+            events: documents.map((summary, index) => event(`event-${index}`, ["old"], { summary })),
+            entries: [entry("old"), entry("query", query, "user")],
+        });
+        const first = await retrieveLanes(h.host, request);
+        expect(items(first, "events").map(({ id }) => id)).toEqual(["event-2"]);
+        expect(h.calls).toEqual([[query]]);
+        const second = await retrieveLanes(h.host, request);
+        expect(items(second, "events")).toEqual(items(first, "events"));
+        expect(h.calls).toEqual([[query]]);
+    });
+});
 
 describe("selectMemory evidence from trimmed history", () => {
     const answer = "The bronze key code is 4712.";

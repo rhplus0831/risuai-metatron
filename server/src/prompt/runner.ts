@@ -102,6 +102,7 @@ import {
 import { type EmbeddingEnv, postJson } from "./embeddings.ts";
 import type { MemoryHost } from "./memory/host.ts";
 import { recordGapInJob } from "./memory/structured/recordJob.ts";
+import { shareRecordEmbeddingAllowance } from "./memory/structured/retrieve.ts";
 import { readMemoryRecords } from "./memory/structured/step.ts";
 import { runEmotionMode, runInlayScreen } from "./postProcess.ts";
 import { createScriptProcessor } from "./scripts.ts";
@@ -576,6 +577,7 @@ async function runSend(
     let last: { messageId: string } | null = null;
     /** The memory task of the last completed speaker or round (its memory step's input), or none. */
     let memoryTask: MemoryTaskHandOff | undefined;
+    let memoryVectorWarm: MemoryTaskBase | undefined;
     /** Every reply the job wrote (an auto-continue extends one; a resend or a group speaker adds one). */
     const replyIds = new Set<string>();
     let stopped = false;
@@ -623,10 +625,12 @@ async function runSend(
                 // The reply is gone: nothing of this turn to continue. Its round completed: its memory
                 // input stands.
                 memoryTask = result.memoryTask;
+                memoryVectorWarm = result.memoryVectorWarm ?? memoryVectorWarm;
                 break;
             }
             replyIds.add(result.messageId);
             memoryTask = result.memoryTask;
+            memoryVectorWarm = result.memoryVectorWarm ?? memoryVectorWarm;
             // The reply of the last round is the one the job reports.
             last = {
                 messageId: result.messageId,
@@ -655,7 +659,7 @@ async function runSend(
     }
     flushChatMetadata(job);
     handOffTranslations(job, deps, [...replyIds, ...(sentUserMessageId ? [sentUserMessageId] : [])]);
-    handOffMemory(job, deps, memoryTask);
+    handOffMemory(job, deps, memoryTask, memoryVectorWarm);
     return {
         type: "reply",
         revision: store.chatRevision(characterId, chatId),
@@ -704,27 +708,36 @@ type MemoryTaskHandOff = { input: AnyMemoryTaskInput; due: boolean };
  * Structured Memory window) or a manual start waits for it (`pendingManual`). Nothing without a
  * service, for an aborted or non-input job, or when the input's epoch or source generation is no
  * longer the chat's (a whole-chat replace or a delete since the history was read): the next send's
- * input is used. Never fails the send.
+ * input is used. Deferred record vectors use a separate, optional cache-only request under those same
+ * freshness checks, even when no writer window is due. Never fails the send.
  */
-function handOffMemory(job: RunningJob, deps: GenerationRunnerDeps, memoryTask: MemoryTaskHandOff | undefined) {
+function handOffMemory(
+    job: RunningJob,
+    deps: GenerationRunnerDeps,
+    memoryTask: MemoryTaskHandOff | undefined,
+    memoryVectorWarm: MemoryTaskBase | undefined,
+) {
     const tasks = deps.memoryTasks;
-    if (!tasks || !memoryTask || job.signal.aborted || !INPUT_KINDS.has(job.kind)) {
-        return;
-    }
-    const { input } = memoryTask;
+    if (!tasks || job.signal.aborted || !INPUT_KINDS.has(job.kind)) return;
+    const current = (input: MemoryTaskBase) =>
+        deps.store.epoch() === input.epoch &&
+        deps.store.chatSourceGeneration(input.chatRef.chaId, input.chatRef.chatId) === input.sourceGeneration;
     try {
         if (
-            deps.store.epoch() !== input.epoch ||
-            deps.store.chatSourceGeneration(input.chatRef.chaId, input.chatRef.chatId) !== input.sourceGeneration
+            memoryTask &&
+            current(memoryTask.input) &&
+            (memoryTask.due || tasks.pendingManual(memoryTask.input.chatRef))
         ) {
-            return;
-        }
-        if (memoryTask.due || tasks.pendingManual(input.chatRef)) {
-            tasks.handOff(input);
+            tasks.handOff(memoryTask.input);
         }
     } catch (error) {
         // Memory never fails the send it follows.
         console.error("[memory] hand-off failed:", error instanceof Error ? error.name : typeof error);
+    }
+    try {
+        if (memoryVectorWarm && current(memoryVectorWarm)) tasks.warmVectors?.(memoryVectorWarm);
+    } catch (error) {
+        console.warn("[memory] vector warming hand-off failed");
     }
 }
 
@@ -953,6 +966,7 @@ type SpeakerResult =
           messageId: string;
           /** The round's memory task input (only with a memory task service and an input job). */
           memoryTask?: MemoryTaskHandOff;
+          memoryVectorWarm?: MemoryTaskBase;
           /**
            * The next round of this speaker: a continue of this reply (auto-continue, with the tokens
            * counted so far), or a fresh send (a trigger's `sendAIprompt`). None: the reply is done.
@@ -961,7 +975,7 @@ type SpeakerResult =
       }
     | { type: "preview"; result: unknown }
     /** The output trigger removed the reply: this speaker's turn ends with the removal. */
-    | { type: "removed"; memoryTask?: MemoryTaskHandOff }
+    | { type: "removed"; memoryTask?: MemoryTaskHandOff; memoryVectorWarm?: MemoryTaskBase }
     /** The send ended for this speaker (an error shown, stopped by a trigger, nothing to continue). */
     | { type: "stop"; messageId?: string };
 
@@ -1008,6 +1022,7 @@ async function runSpeaker(arg: {
     let continuingStream = false;
     let generationInfo: MessageGenerationInfo | undefined;
     let memoryTask: MemoryTaskHandOff | undefined;
+    let memoryVectorWarm: MemoryTaskBase | undefined;
     const reroll = arg.rerollMessageId;
     let previousCandidate: MessageCandidate | undefined;
     let newCandidateId: string | undefined;
@@ -1522,6 +1537,8 @@ async function runSpeaker(arg: {
             }
         }
         const embeddingEnv = services.embeddings(nativeCtx);
+        // Environments are per round; the RunningJob identity spans all group speakers and continues.
+        shareRecordEmbeddingAllowance(embeddingEnv, job);
         const embeddingTransformers = embeddingEnv.transformers;
         embeddingEnv.transformers = {
             ...embeddingTransformers,
@@ -1552,6 +1569,7 @@ async function runSpeaker(arg: {
         // The memory steps' side of the job: its kind, the task service, the gap question, the writer
         // lease, the `memoryProgress` runs, the chat's sources, and Structured Memory's records and gap run.
         const memoryJob: AssemblyMemoryJob = {
+            vectorInput: memoryTaskBase,
             preview: job.kind === "preview" || job.kind === "previewPrompt",
             input: INPUT_KINDS.has(job.kind),
             tasks: !!deps.memoryTasks,
@@ -1736,6 +1754,7 @@ async function runSpeaker(arg: {
         const { formated, biases, promptInfo } = assembled;
         generationInfo = assembled.generationInfo;
         memoryTask = assembled.memoryTask;
+        memoryVectorWarm = assembled.memoryVectorWarm;
         if (job.kind === "preview") {
             const result: GenerationPreviewResult = { messages: formated, context: generationInfo.context };
             return { type: "preview", result };
@@ -2033,7 +2052,11 @@ async function runSpeaker(arg: {
             if (!outputMessage) {
                 // The trigger removed the reply: the turn ends with the removal.
                 generation!.final = true;
-                return { type: "removed", ...(memoryTask ? { memoryTask } : {}) };
+                return {
+                    type: "removed",
+                    ...(memoryTask ? { memoryTask } : {}),
+                    ...(memoryVectorWarm ? { memoryVectorWarm } : {}),
+                };
             }
             const inlay = runInlayScreen(currentChar, outputMessage.data);
             writeReplyText(inlay.text);
@@ -2141,7 +2164,11 @@ async function runSpeaker(arg: {
             if (noReply) return { type: "stop" };
             if (!storedReply()) {
                 generation!.final = true;
-                return { type: "removed", ...(memoryTask ? { memoryTask } : {}) };
+                return {
+                    type: "removed",
+                    ...(memoryTask ? { memoryTask } : {}),
+                    ...(memoryVectorWarm ? { memoryVectorWarm } : {}),
+                };
             }
             await runChatOutputListeners(outputMessageId);
         }
@@ -2179,6 +2206,7 @@ async function runSpeaker(arg: {
                 type: "reply",
                 messageId: replyId,
                 ...(memoryTask ? { memoryTask } : {}),
+                ...(memoryVectorWarm ? { memoryVectorWarm } : {}),
                 next: { type: "continue", usedContinueTokens: resultTokens },
             };
         }
@@ -2241,6 +2269,7 @@ async function runSpeaker(arg: {
             type: "reply",
             messageId: replyId!,
             ...(memoryTask ? { memoryTask } : {}),
+            ...(memoryVectorWarm ? { memoryVectorWarm } : {}),
             ...(next ? { next } : {}),
         });
 

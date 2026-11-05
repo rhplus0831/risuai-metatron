@@ -33,6 +33,7 @@ import type {
     MemoryBlockingReason,
     MemoryGapChoice,
     MemoryTaskInput,
+    MemoryTaskBase,
     StructuredMemoryTaskInput,
     SummaryWriterLease,
 } from "../../../shared/jobs.ts";
@@ -219,6 +220,8 @@ export type AssemblyMemoryJob = {
     tasks: boolean;
     /** The source generation of the chat snapshot `chat()` returned last, read with it. */
     sourceGeneration(): number | undefined;
+    /** Captures a cache-only input without needing a writer window or confirmation ceiling. */
+    vectorInput?(sourceGeneration: number): MemoryTaskBase;
     /**
      * The chat as stored now with its owner's stored greeting (a source validation's read), or null
      * when the chat or the owner is gone. Synchronous.
@@ -287,6 +290,8 @@ export type AssembledPrompt =
            * an input job with a memory task service.
            */
           memoryTask?: { input: AnyMemoryTaskInput; due: boolean };
+          /** A selection deferred record texts; independent of writer due-ness. */
+          memoryVectorWarm?: MemoryTaskBase;
       }
     /** The `start` trigger's `stopSending`: the send ends quietly. */
     | { type: "stopped" }
@@ -540,6 +545,7 @@ type StructuredMemoryStepResult =
           selected: MemorySelected;
           manifest: MemorySendManifest;
           memoryTask?: { input: StructuredMemoryTaskInput; due: boolean };
+          memoryVectorWarm?: MemoryTaskBase;
           receipt?: MemoryReceipt;
       };
 
@@ -562,10 +568,11 @@ type StructuredMemoryStepResult =
  * recording, which runs in a job of its own or on the gap's yes. An event an edit marked for a re-record
  * counts as due (`automaticRerecords`), or a send with nothing else due would never hand it off; the gap
  * asks about the history a send lost, so its count and its run take no marks.
- * With no eligible user message there is no ceiling and no writer task input.
+ * With no eligible user message there is no ceiling and no writer task input. Deferred record texts
+ * request cache warming separately, including when no writer window is due or no ceiling exists.
  *
  * A chat that waits for a person to adopt or decline its HypaV3 summaries (`adoptionHeld`) gets neither
- * the gap's question, which a yes could not answer, nor a hand-off, not even a not-due one, which would
+ * the gap's question, which a yes could not answer, nor a writer hand-off, not even a not-due one, which would
  * spend a waiting manual start on a run that records nothing. Its reply's receipt says why.
  *
  * `messages` and `sourceGeneration` are the snapshot the job's history was built from, and `ms` the
@@ -617,6 +624,8 @@ async function structuredMemoryStep(
         job.input && ceiling !== null && sourceGeneration !== undefined
             ? writer.taskInput(sourceGeneration, ceiling)
             : null;
+    const vectorInput =
+        job.tasks && job.input && sourceGeneration !== undefined ? job.vectorInput?.(sourceGeneration) : undefined;
     const cadence = writerCadence(host.db);
 
     let records = writer.records();
@@ -624,6 +633,7 @@ async function structuredMemoryStep(
     if (selected.type !== "selected") {
         return selected;
     }
+    let deferredRecords = selected.deferredRecordTexts > 0;
     let gap: string | undefined = selected.gapTokens > 0 ? "unasked" : undefined;
     if (
         input &&
@@ -653,6 +663,7 @@ async function structuredMemoryStep(
                 if (selected.type !== "selected") {
                     return selected;
                 }
+                deferredRecords ||= selected.deferredRecordTexts > 0;
                 gap = recordedWindows > 0 ? "generated" : "continued";
             }
         }
@@ -686,6 +697,7 @@ async function structuredMemoryStep(
             ...(handsOff ? { writerStage: notice?.reason ?? (memoryTask?.due ? "due" : "notDue") } : {}),
         }),
         ...(memoryTask ? { memoryTask } : {}),
+        ...(deferredRecords && vectorInput ? { memoryVectorWarm: vectorInput } : {}),
         ...(handsOff && notice ? { receipt: notice } : {}),
     };
 }
@@ -1909,6 +1921,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
      */
     const protectedEntries = new Set<OpenAIChat>();
     let memoryTask: { input: AnyMemoryTaskInput; due: boolean } | undefined;
+    let memoryVectorWarm: MemoryTaskBase | undefined;
     /** What the Structured Memory step has to say on the reply (`generationInfo.memory`). */
     let memoryReceipt: MemoryReceipt | undefined;
     /** The card's volatile part that the prompt takes apart from the history, placed once it is formatted. */
@@ -1957,6 +1970,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                     }
                     memoryVolatile = selected.volatile;
                     memoryTask = step.memoryTask;
+                    memoryVectorWarm = step.memoryVectorWarm;
                     memoryReceipt = step.receipt;
                     memoryRun = {
                         kind: "structuredMemory",
@@ -2575,6 +2589,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         promptInfo,
         maxContextTokens,
         ...(memoryTask ? { memoryTask } : {}),
+        ...(memoryVectorWarm ? { memoryVectorWarm } : {}),
     };
 }
 

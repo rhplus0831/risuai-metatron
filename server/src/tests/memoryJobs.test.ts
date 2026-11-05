@@ -3076,7 +3076,7 @@ describe("structured memory job hand-offs", () => {
             expect(summaries()).toEqual([]);
         });
 
-        it("reports required memory overflow with its own status after recovering from a local embedding refusal", async () => {
+        it("reports required memory overflow with its own status before any embedding", async () => {
             const presetRecord = (await single("hypaV3Presets")).data;
             const priorSettings = presetRecord.items.find(
                 (item: { id: string }) => item.id === presetRecord.selectedId,
@@ -3105,7 +3105,9 @@ describe("structured memory job hand-offs", () => {
                 ]) {
                     embeddings.mockClear().mockRejectedValue(refusal);
                     const result = await job("send", chaId);
-                    expect(embeddings).toHaveBeenCalled();
+                    // The required pages are refused before retrieval embeds anything, so a refusing
+                    // local model is never reached and cannot turn the refusal into its own error.
+                    expect(embeddings).not.toHaveBeenCalled();
                     expect(result.terminal).toMatchObject({
                         type: "error",
                         code: "memoryRequiredOverCap",

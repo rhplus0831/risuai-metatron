@@ -80,8 +80,9 @@ no memory report.
    evidence also searches its uncovered messages, in a rebuilt card that keeps them out, dropped if it fails a fitting
    send. `selectMemory`'s comment holds the empty-card gap rule: only `gapTokens` drives the writer's question and gap
    stage.
-4. Required pages over the cap make the card refuse and the step return `alert`; assembly raises `SendError` naming
-   pages and tokens, ending previews and the gap run's second selection, with no `inlayErrorResponse` reply.
+4. Before any embedding, required pages over the cap make the card refuse and the step return `alert`, and a budget the
+   card's smallest frame fills embeds nothing. Assembly raises `SendError` naming pages and tokens, ending previews and
+   the gap run's second selection, with no `inlayErrorResponse` reply.
 
 Both page lanes keep character relationship lines naming another visible on-stage, named, linked, or `always` page, or
 no visible page. Titles and aliases match case-insensitive substrings with collapsed whitespace; `never` names do not
@@ -359,9 +360,8 @@ preview's included; a `done` terminal with a `messageId` clears only that chat's
   The stage is the scene page's `participants`, so a named thread waits for them.
 - A report stored on every reply grows with `items` and `excluded`, up to a few kilobytes a message. D5's
   `memory_manifests` table is the way out if that matters.
-- A send's retrieval embeds every eligible event's texts and every shown section of each `auto` page. Warm, `addText`
-  still compares every text with every vector synchronously, so the cost grows with the square of those texts. Cold (a
-  model change, a cleared cache), it is one provider call per 50 texts, in sequence, inside the send.
+- A job embeds at most `recordTexts` uncached record texts; the rest score 0 until the task service's silent
+  `warmVectors` caches them, so a cold cache (a model change, an import) loses semantic matches for a send.
 - `readMemoryRecords` parses every page whole on every send, up to 60 history entries each that the prompt never reads.
   The store has no read without them.
 - Name matching ignores `loreSettings.fullWordMatching`, so a short alias such as "Al" also finds "also": an extra

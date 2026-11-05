@@ -152,7 +152,7 @@ function renderParts(lines: ReadonlyMap<MemoryManifestLane, readonly string[]>):
 }
 
 /** Within a lane the card lists items by `order`, which is chat order for events and rank for pages. */
-function linesOf(items: readonly LaneItem[]): Map<MemoryManifestLane, string[]> {
+function linesOf(items: readonly Pick<LaneItem, "lane" | "line" | "order">[]): Map<MemoryManifestLane, string[]> {
     const lines = new Map<MemoryManifestLane, string[]>();
     for (const { lane, line } of items.toSorted((a, b) => a.order - b.order)) {
         const listed = lines.get(lane);
@@ -163,6 +163,39 @@ function linesOf(items: readonly LaneItem[]): Map<MemoryManifestLane, string[]> 
         }
     }
     return lines;
+}
+
+/** The real frame, including required lines and each nonempty part's own system message. */
+async function frameTokens(
+    tokenizer: MemoryTokenizer,
+    reserved: readonly LaneCandidate[],
+    headings: readonly MemoryManifestLane[],
+): Promise<number> {
+    const lines = linesOf(reserved);
+    for (const lane of headings) lines.set(lane, []);
+    const { stable, volatile } = renderParts(lines);
+    const count = (content: string) => tokenizer.tokenizeChat({ role: "system", content });
+    return (await count(stable)) + (volatile === "" ? 0 : await count(volatile));
+}
+
+/**
+ * Checks both required-page refusal rules through the card builder before retrieval embeds anything.
+ * Even the cheapest enabled optional lane needs its heading and the required frame. If that frame
+ * exhausts the budget, no optional item can enter. This is sufficient, not an exact item-fit test.
+ */
+export async function preflightMemoryCard(
+    tokenizer: MemoryTokenizer,
+    { maximum, lanes }: { maximum: number; lanes: readonly Lane<LaneCandidate>[] },
+): Promise<RequiredOverLimit | { type: "ready"; embeddings: boolean }> {
+    const required = lanes.filter(({ lane }) => lane === "required");
+    const card = await buildMemoryCard(tokenizer, { maximum, lanes: required });
+    if (card.type === "requiredOverLimit") return card;
+    const frames = await Promise.all(
+        lanes
+            .filter(({ lane, target }) => lane !== "required" && target > 0)
+            .map(({ lane }) => frameTokens(tokenizer, required[0]?.items ?? [], [lane])),
+    );
+    return { type: "ready", embeddings: maximum > Math.min(...frames) };
 }
 
 /**
@@ -215,13 +248,11 @@ export async function buildMemoryCard(
     }
 
     const spending = counted.filter((lane) => lane !== required);
-    const frameLines = new Map<MemoryManifestLane, readonly string[]>(reservedLines);
-    for (const { lane, target, items } of spending) {
-        if (target > 0 && items.length > 0) {
-            frameLines.set(lane, []);
-        }
-    }
-    const frame = await partTokens(renderParts(frameLines));
+    const frame = await frameTokens(
+        tokenizer,
+        reserved,
+        spending.filter(({ target, items }) => target > 0 && items.length > 0).map(({ lane }) => lane),
+    );
 
     const { included: admitted, excluded, spend } = spendLanes({ maximum: maximum - frame, lanes: spending });
     const included = [...reserved, ...admitted];

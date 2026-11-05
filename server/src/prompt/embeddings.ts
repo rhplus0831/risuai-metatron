@@ -1,4 +1,5 @@
 import os from "node:os";
+import { createHash } from "node:crypto";
 import type { Database } from "../../../shared/database.ts";
 import {
     type HypaModel,
@@ -474,7 +475,8 @@ async function voyageEmbeds(
 
 /**
  * The tab's `HypaProcesser` on an `EmbeddingEnv`: stored texts' vectors (`addText`, cached in the
- * `VectorCache` under the client's keys) and a dot-product search; queries are not cached.
+ * `VectorCache` under the client's keys) and a dot-product search. Queries are uncached unless
+ * the caller explicitly uses `getCachedQueries` (Structured Memory's disjoint query namespace).
  */
 export class HypaProcesser {
     oaikey: string | undefined;
@@ -555,6 +557,58 @@ export class HypaProcesser {
         }
 
         return checkVectors<number[]>(result, Array.isArray(input) ? input.length : 1);
+    }
+
+    /** Loads cached documents into this processor without embedding; returns unique missing texts. */
+    loadCachedDocuments(texts: readonly string[]): string[] {
+        checkAborted(this.env);
+        const suffix =
+            this.model === "custom" && this.env.db.hypaCustomSettings?.model?.trim()
+                ? `-${this.env.db.hypaCustomSettings.model.trim()}`
+                : "";
+        const loaded = new Set(this.vectors.map(({ content }) => content));
+        const missing: string[] = [];
+        for (const text of new Set(texts)) {
+            if (loaded.has(text)) continue;
+            const vector = loadVector(this.env, `${text}|${this.model}${suffix}`, text);
+            if (vector) {
+                this.vectors.push({ ...vector, alreadySaved: true });
+            } else {
+                missing.push(text);
+            }
+        }
+        return missing;
+    }
+
+    /**
+     * Cached query vectors in input order, embedding only unique misses with query input type.
+     * Keys contain no pipe, so no document or HypaProcessorV2 key can equal one. The discriminator
+     * matches document keys' custom model choice; neither endpoint identity nor credentials enter it.
+     */
+    async getCachedQueries(texts: readonly string[]): Promise<VectorArray[]> {
+        checkAborted(this.env);
+        const discriminator = this.model === "custom" ? this.env.db.hypaCustomSettings?.model?.trim() || "" : "";
+        const key = (text: string) =>
+            "structured-query-v1:" +
+            createHash("sha256")
+                .update(JSON.stringify([this.model, discriminator, text]))
+                .digest("hex");
+        const vectors = new Map<string, VectorArray>();
+        const missing: string[] = [];
+        for (const text of new Set(texts)) {
+            const cached = loadVector(this.env, key(text), text);
+            if (cached) vectors.set(text, cached.embedding);
+            else missing.push(text);
+        }
+        if (missing.length > 0) {
+            const embedded = await this.getEmbeds(missing, "query");
+            checkAborted(this.env);
+            missing.forEach((text, index) => {
+                vectors.set(text, embedded[index]);
+                saveVector(this.env, key(text), embedded[index]);
+            });
+        }
+        return texts.map((text) => vectors.get(text)!);
     }
 
     async addText(texts: string[]) {
