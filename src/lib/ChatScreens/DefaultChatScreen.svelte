@@ -1158,38 +1158,42 @@
                     : 'relative mt-2 mb-2'} chat-screen-content-width flex flex-col w-full"
                 style={settings.ui.fixedChatTextarea ? "z-index:29;" : ""}
             >
-                {#if displayedChat}
-                    {#key chatKey}
-                        <ContextMeter
-                            chatRef={displayedChat}
-                            group={currentCharacter.type === "group"}
-                            height={inputHeight}
-                            draft={composer.input}
-                            generating={stoppable ||
-                                isLocalSend(displayedChat, $localSends) ||
-                                generatingChatKeys().has(chatStatusKey(displayedChat))}
-                        />
-                    {/key}
-                {/if}
-                {#if displayedChat && memoryHealth}
-                    <!-- The memory health badge: a line of its own above the composer row, shown with the meter off too. -->
-                    <div class="mb-1 ml-4 flex min-w-0">
-                        <button
-                            type="button"
-                            class="flex max-w-full min-w-0 items-center hover:underline"
-                            title={memoryHealthText(memoryHealth)}
-                            onclick={() => ($hypaV3ModalOpen = true)}
-                            data-memory-health-badge={memoryHealth}
-                        >
-                            <ChatStatusBadge
-                                status="health"
-                                health={memoryHealth}
-                                inline
-                                label={memoryHealthText(memoryHealth)}
+                <!-- One line above the composer row: the health badge on the left, the meter on the right.
+                     Too narrow for both, the meter wraps above the badge. -->
+                <div class="flex min-w-0 flex-wrap-reverse items-center">
+                    {#if displayedChat && memoryHealth}
+                        <!-- The memory health badge, left of the meter's chip; shown with the meter off too. -->
+                        <div class="mb-1 ml-4 flex min-w-0">
+                            <button
+                                type="button"
+                                class="flex max-w-full min-w-0 items-center hover:underline"
+                                title={memoryHealthText(memoryHealth)}
+                                onclick={() => ($hypaV3ModalOpen = true)}
+                                data-memory-health-badge={memoryHealth}
+                            >
+                                <ChatStatusBadge
+                                    status="health"
+                                    health={memoryHealth}
+                                    inline
+                                    label={memoryHealthText(memoryHealth)}
+                                />
+                            </button>
+                        </div>
+                    {/if}
+                    {#if displayedChat}
+                        {#key chatKey}
+                            <ContextMeter
+                                chatRef={displayedChat}
+                                group={currentCharacter.type === "group"}
+                                height={inputHeight}
+                                draft={composer.input}
+                                generating={stoppable ||
+                                    isLocalSend(displayedChat, $localSends) ||
+                                    generatingChatKeys().has(chatStatusKey(displayedChat))}
                             />
-                        </button>
-                    </div>
-                {/if}
+                        {/key}
+                    {/if}
+                </div>
                 <div class="relative flex items-stretch w-full">
                     {#if settings.ui.useChatSticker && currentCharacter.type !== "group"}
                         <div

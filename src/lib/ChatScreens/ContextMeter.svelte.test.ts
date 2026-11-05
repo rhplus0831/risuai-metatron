@@ -1141,8 +1141,40 @@ describe("the popover", () => {
     });
 });
 
+/** The chip's text with a live task's mark after the memory word, just before the percentage that ends `plain`. */
+const withTask = (plain: string, word: string) => {
+    const at = plain.lastIndexOf(" · ");
+    return at < 0 ? `${word} · ${plain}` : `${plain.slice(0, at)} · ${word}${plain.slice(at)}`;
+};
+
 describe("the background summary task", () => {
     const hypaReport = () => trimmed({ memory: { kind: "hypaV3", tokens: 300, coverage: "gap" } });
+
+    it("puts a running writer in place of a pending or recorded memory word, and after any other word", () => {
+        install([reply("m1", { context: report() })]);
+        render();
+        const s = language.contextUsage;
+        const tokens = s.tokens("137");
+        const running = s.writerTask.running(4, 23);
+        taskFrame({ ...live("running", 4, 23), kind: "structuredMemory" });
+        for (const state of ["recorded", "pending", "failed", "paused", "notAutomatic"] as const) {
+            patchMessage(ref, "m1", {
+                generationInfo: {
+                    context: report({
+                        memory: { kind: "structuredMemory", tokens: 137, coverage: "covered", writer: { state } },
+                    }),
+                },
+            });
+            flushSync();
+            const word = language.structuredMemory.meter.status[state];
+            expect(chipText(), state).toBe(
+                state === "recorded" || state === "pending"
+                    ? `3 turns · ${tokens} · ${running} · 75%`
+                    : `3 turns · ${tokens} · ${word} · ${running} · 75%`,
+            );
+            expect(chip()!.getAttribute("aria-label"), state).toContain(word);
+        }
+    });
 
     it("words a writer task's chip, label, and popover as recording", async () => {
         install([reply("m1", { context: hypaReport() })]);
@@ -1175,7 +1207,7 @@ describe("the background summary task", () => {
             [live("running", 3, 8), writer.running(3, 8), s.taskRunning(3, 8)],
         ] as const) {
             taskFrame({ ...status, kind: "structuredMemory" });
-            expect(chipText()).toBe(`${word} · ${plain}`);
+            expect(chipText()).toBe(withTask(plain!, word));
             expect(chip()!.getAttribute("aria-label")).toContain(s.taskSummary(word));
             expect(chip()!.getAttribute("aria-label")).not.toContain(s.taskSummary(summaryWord));
             if (!panel()) await openPanel();
@@ -1199,14 +1231,14 @@ describe("the background summary task", () => {
         expect(target.querySelector("[data-context-meter-task-mark]")).toBeNull();
 
         taskFrame(live("queued"));
-        expect(chipText()).toBe(`${language.contextUsage.taskQueued} · ${plain}`);
+        expect(chipText()).toBe(withTask(plain!, language.contextUsage.taskQueued));
         expect(chip()!.getAttribute("aria-label")).toContain(
             `; ${language.contextUsage.taskSummary(language.contextUsage.taskQueued)}`,
         );
         taskFrame(live("running"));
-        expect(chipText()).toBe(`${language.contextUsage.taskRunningUnknown} · ${plain}`);
+        expect(chipText()).toBe(withTask(plain!, language.contextUsage.taskRunningUnknown));
         taskFrame(live("running", 3, 8));
-        expect(chipText()).toBe(`${language.contextUsage.taskRunning(3, 8)} · ${plain}`);
+        expect(chipText()).toBe(withTask(plain!, language.contextUsage.taskRunning(3, 8)));
         expect(chip()!.getAttribute("aria-label")).toContain(
             language.contextUsage.taskSummary(language.contextUsage.taskRunning(3, 8)),
         );

@@ -422,25 +422,33 @@
         return language.structuredMemory.meter.status[word];
     }
 
-    const chip = $derived.by(() => {
+    /**
+     * The line's parts, the percentage always the first after the memory word. `superseded` marks a
+     * Structured Memory word a live writer task replaces: the task says more than "pending" or "recorded".
+     */
+    type Chip = { parts: string[]; summary: string; superseded?: boolean };
+
+    const chip: (Chip & { percentAt: number }) | null = $derived.by(() => {
         if (!source) {
             return null;
         }
         if (source.kind === "legacy") {
             const percent = percentOf(source.input, source.maxContext);
-            return { parts: [`${percent}%`], summary: language.contextUsage.legacySummary(percent) };
+            return { parts: [`${percent}%`], summary: language.contextUsage.legacySummary(percent), percentAt: 0 };
         }
         const r = source.report;
         const kept = turnCount(r, unit).kept;
         const keptText = unit === "user" ? language.contextUsage.turns(kept) : language.contextUsage.messages(kept);
         const percent = percentOf(r.input, promptBudget);
-        let result: { parts: string[]; summary: string };
+        let result: Chip;
         if (r.memory?.kind === "structuredMemory") {
             const tokens = language.contextUsage.tokens(fmt(r.memory.tokens));
             const status = memoryStatusText(r.memory);
+            const word = memoryStatusWord(r.memory);
             result = {
                 parts: [keptText, tokens, status, `${percent}%`],
                 summary: language.contextUsage.memorySummary(keptText, memoryName, `${tokens}, ${status}`),
+                superseded: word === "pending" || word === "recorded",
             };
         } else if (r.memory) {
             // "covered" only says nothing left out is unsummarized: with nothing left out, no summary is behind it.
@@ -460,6 +468,7 @@
         } else {
             result = { parts: [keptText, `${percent}%`], summary: language.contextUsage.trimmedSummary(keptText) };
         }
+        const percentAt = result.parts.length - 1;
         if (fixedOver) {
             result.parts.push(language.contextUsage.fixedPart(Math.round(fixed)));
             result.summary += `; ${language.contextUsage.fixedWarnSummary}`;
@@ -470,7 +479,24 @@
         if (budgetReduced.length > 0) {
             result.summary += `; ${language.contextUsage.memoryReducedSummary}`;
         }
-        return result;
+        return { ...result, percentAt };
+    });
+
+    /**
+     * The line split around a live task's mark, which sits where the memory word ends: in place of a
+     * superseded word, else after it, so the line still opens with what the last reply kept.
+     */
+    const chipLine = $derived.by(() => {
+        if (!chip) {
+            return null;
+        }
+        const liveText = taskView?.tone === "live" ? (taskView.text ?? null) : null;
+        const leadEnd = liveText !== null && chip.superseded ? chip.percentAt - 1 : chip.percentAt;
+        return {
+            lead: chip.parts.slice(0, leadEnd).join(" · "),
+            task: liveText,
+            tail: chip.parts.slice(chip.percentAt).join(" · "),
+        };
     });
 
     const chipTitle = $derived(
@@ -735,8 +761,8 @@
 />
 
 {#if chip}
-    <!-- A line of its own above the composer row, right-aligned with the menu button. -->
-    <div class="mr-2 mb-1 ml-4 flex min-w-0 justify-end context-meter">
+    <!-- Right-aligned with the menu button, on the line above the composer row it shares with the health badge. -->
+    <div class="mr-2 mb-1 ml-4 flex min-w-0 grow justify-end context-meter">
         <button
             type="button"
             bind:this={trigger}
@@ -764,20 +790,24 @@
             {:else}
                 <span class="shrink-0" aria-hidden="true"><GaugeIcon size={13} /></span>
             {/if}
-            {#if taskView?.tone === "live"}
-                <span class="flex shrink-0 items-center gap-0.5 text-secondary-500" data-context-meter-task-mark>
-                    <LoaderCircleIcon size={11} class="animate-spin motion-reduce:animate-none" aria-hidden="true" />
-                    <span class="tabular-nums">{taskView.text}</span>
-                </span>
-                <span class="shrink-0" aria-hidden="true">·</span>
-            {/if}
             {#if budgetReduced.length > 0}
                 <span class="shrink-0 text-danger-500" data-context-meter-memory-reduced
                     >{language.contextUsage.memoryReduced}</span
                 >
                 <span class="shrink-0" aria-hidden="true">·</span>
             {/if}
-            <span class="min-w-0 truncate">{chip.parts.join(" · ")}</span>
+            {#if chipLine?.lead}
+                <span class="min-w-0 truncate">{chipLine.lead}</span>
+                <span class="shrink-0" aria-hidden="true">·</span>
+            {/if}
+            {#if chipLine?.task}
+                <span class="flex shrink-0 items-center gap-0.5 text-secondary-500" data-context-meter-task-mark>
+                    <LoaderCircleIcon size={11} class="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    <span class="tabular-nums">{chipLine.task}</span>
+                </span>
+                <span class="shrink-0" aria-hidden="true">·</span>
+            {/if}
+            <span class="shrink-0">{chipLine?.tail}</span>
             {#if estimate?.suffix}
                 <span class="shrink-0">· {language.contextUsage.estimateLead}</span>
                 <span class="shrink-0 tabular-nums" data-context-meter-estimate>{estimate.suffix}</span>
