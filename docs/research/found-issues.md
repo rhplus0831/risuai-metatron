@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (22)
+- [Client and plugins](#client-and-plugins) (20)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
@@ -387,22 +387,6 @@ Three helpers misbehave on inputs no current caller is known to pass. Probed by 
 **Why it matters:** an image rendered from such a URL is broken until a reload.
 
 **Suggested handling:** reproduce with a lost controller and a cached entry, then check `navigator.serviceWorker.controller` before returning a `/sw/img` URL.
-
-### Image compression passes quality 75
-
-`src/ts/media/compressImage/lossyCompression.ts` `doLossyCompression` calls `canvas.toDataURL("image/webp", 75)` and the JPEG fallback with `75` (~37, ~41). The canvas API takes 0–1, so the browser ignores the value and uses its default (about 0.92), which compresses less than the likely intended 0.75. The source comment now states the literal. Found in the Guides To Source run (2026-11-05). Owner: media-aux.
-
-**Why it matters:** card and module export images are larger than intended when `db.imageCompression` is on.
-
-**Suggested handling:** change to `0.75` with a test only if the owner wants the intended compression, since it changes exported bytes.
-
-### The inlay explorer leaks a pending preview URL
-
-`src/lib/Playground/PlaygroundInlayExplorer.svelte` `getPreviewURL` (~34) awaits the blob, then creates and caches an object URL unconditionally; `onDestroy` (~145) and deletion revoke only URLs already in `previewURLs`. A preview still loading when the component is destroyed or the inlay deleted leaks one object URL (probe: one created, none revoked). Found in the Guides To Source run (2026-11-05); the component contract now states it. Owner: media-aux; related to the asset-scale `mediaObjectUrls` leftovers.
-
-**Why it matters:** a small leak per abandoned preview, felt only in long sessions browsing many inlays.
-
-**Suggested handling:** check a destroyed or deleted flag after the await and revoke instead of caching.
 
 ### MCP full login stores an undefined refresh token
 
