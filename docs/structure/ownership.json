@@ -357,7 +357,7 @@
       "guide": "server-resources"
     },
     { "match": "server/src/data/{databaseProjection,recordPatchText}.ts", "guide": "server-resources" },
-    { "match": "server/src/data/{normalize,restore}/**", "guide": "server-resources" },
+    { "match": "server/src/data/{exportScrub,normalize,restore}/**", "guide": "server-resources" },
     { "match": "server/src/http/{spool,fileImport,contentAsset,recordStream}.ts", "guide": "server-resources" },
     {
       "match": "server/src/routes/{resources,resourceBoot,llmSecrets,messageSearch,chatCheckpoints}.ts",

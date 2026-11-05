@@ -507,6 +507,53 @@ describe("maintenance", () => {
 });
 
 describe("POST /api/backups/export", () => {
+    it("exports a readable partial archive without running VACUUM on the serving thread", async () => {
+        const s = await defaultServer();
+        await s.create("characters", "alice", character("alice", { image: "assets/alice.png" }));
+        await writeAsset(s, "assets/alice.png", "ALICE");
+        await writeAsset(s, "assets/unreferenced.png", "UNREFERENCED");
+        // Worker threads have their own DatabaseSync prototype; these call-through spies observe the serving thread.
+        const exec = vi.spyOn(DatabaseSync.prototype, "exec");
+        const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+
+        const records = parseArchive(await exportArchive(s, { partial: true }));
+        const statements = [...exec.mock.calls, ...prepare.mock.calls].map(([sql]) => sql);
+        expect(statements.filter((sql) => /\bVACUUM\b/i.test(sql))).toEqual([]);
+        expect(records.map((r) => r.name)).toEqual(["manifest.json", "resources.sqlite", "assets/alice.png"]);
+        expect(JSON.parse(records[0].data.toString("utf-8"))).toMatchObject({
+            version: 2,
+            partial: true,
+            assets: ["assets/alice.png"],
+            missing: [],
+        });
+        expect(records[2].data).toEqual(Buffer.from("ALICE"));
+        const extracted = path.join(s.rootDir, "partial.sqlite");
+        writeFileSync(extracted, records[1].data);
+        const alice = reader.readSnapshot(extracted).rows.find((r) => r.kind === "characters" && r.id === "alice")!;
+        expect(JSON.parse(alice.text).image).toBe("assets/alice.png");
+    });
+
+    it("preflights the staging copy and vacuum output before creating an export directory", async () => {
+        let free = Number.MAX_SAFE_INTEGER;
+        const s = await defaultServer({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+        await s.create("characters", "alice", character("alice"));
+        const needed = diskNeeded(2 * liveBytes(s.savePath));
+        const mkdir = vi.spyOn(fs, "mkdir");
+        free = 0;
+
+        const response = await s.json("/api/backups/export", {});
+        expect(response.status).toBe(507);
+        expect(await response.json()).toEqual({ error: "Insufficient Storage", needed, free: 0 });
+        // Cleanup could hide an allocation; the call history also catches a directory created and then removed.
+        expect(
+            mkdir.mock.calls.filter(
+                ([target]) =>
+                    path.dirname(String(target)) === tmpDir(s) && path.basename(String(target)).startsWith("export-"),
+            ),
+        ).toEqual([]);
+        expect(readdirSync(tmpDir(s))).toEqual([]);
+    });
+
     it("streams the manifest, a fresh snapshot, and every asset of the assets namespace under its logical key", async () => {
         const s = await defaultServer();
         await s.create("characters", "a", character("a"));

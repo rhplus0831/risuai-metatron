@@ -39,8 +39,8 @@ headers and method comments.
 
 - `server/src/data/restore/` validates a restore's database in a worker and writes its staged store
   ([Validation](#validation)); `server/src/data/upstream/` reads and writes RisuAI-compatible `.bin` saves in workers
-  (`importRunner.ts`, `importStage.ts`, `exportRunner.ts`, `exportStage.ts` here; `risuSave.ts`, the codec, and the
-  converters are [backup-sync-hub](backup-sync-hub.md)'s).
+  (`{import,export}{Runner,Stage}.ts` here; `risuSave.ts`, the codec, and the converters are
+  [backup-sync-hub](backup-sync-hub.md)'s).
 - `server/src/http/spool.ts`, `server/src/http/fileImport.ts` (`serveFileImport`, `serveStagedImport`,
   `createImportSlot`), `server/src/http/contentAsset.ts`, and `server/src/http/recordStream.ts` handle archive and card
   file transfer for the routes below.
@@ -191,9 +191,10 @@ absence as absence (upstream reads it as now).
 
 ### Archive export and import
 
-The version-2 export and import contracts are the comments above their routes in `routes/backups.ts`: the export's
-database omits `llmSecrets`; the import validates the whole archive, its database in a restore queue turn, then installs
-under maintenance by the [content-name rule](#backup-and-import-internals).
+The version-2 export and import contracts are the comments above their routes in `routes/backups.ts`: a
+`data/exportScrub/` worker removes `llmSecrets` from the export's copy; the import validates the whole archive, its
+database in a restore queue turn, then installs under maintenance by the
+[content-name rule](#backup-and-import-internals).
 
 ### Validation
 

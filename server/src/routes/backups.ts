@@ -2,9 +2,7 @@ import type { Dirent } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import { DatabaseSync } from "node:sqlite";
-import { type BackupArchiveManifest, RESOURCE_EPOCH_HEADER, RESOURCE_KIND } from "../../../shared/resources.ts";
-import { selectPartialBackupAssets } from "../../../shared/backups.ts";
+import { type BackupArchiveManifest, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     ArchiveFormatError,
     ArchiveRejectedError,
@@ -16,6 +14,7 @@ import {
     readRecord,
 } from "../data/archive.ts";
 import { mkdirDurable, syncDir, syncFile } from "../data/durableWrite.ts";
+import { runExportScrubWorker } from "../data/exportScrub/runner.ts";
 import { ResourceEpochError, type ResourceStore, ResourceValidationError } from "../data/resourceStore.ts";
 import { type StagedFileReport, verifyStagedFile } from "../data/restore/stageValidatedSnapshot.ts";
 import type { RestoreRunner } from "../data/restore/validateRunner.ts";
@@ -276,8 +275,9 @@ export function registerBackupRoutes(
 
     /**
      * POST { partial?: true | string[] } streams a version-2 archive, no epoch required: a fresh
-     * resources.sqlite snapshot followed by asset records, preceded by manifest.json. The exported
-     * copy omits llmSecrets and is vacuumed so deleted credential bytes cannot remain in its pages.
+     * resources.sqlite snapshot followed by asset records, preceded by manifest.json. A worker removes
+     * credentials and rewrites the copy with VACUUM INTO so no deleted credential bytes remain.
+     * A disk preflight returns 507 before staging if the copy plus vacuum output cannot fit.
      * partial: true selects profile assets from that exact snapshot; a list selects explicit keys;
      * absent partial selects all assets. 400 invalid input or over 100,000 partial assets, 413 when
      * the database or asset count cannot fit the format. Authenticated before reading the body.
@@ -321,46 +321,30 @@ export function registerBackupRoutes(
         const missing: string[] = [];
         let assetHold: ExportHold | undefined;
         const prepare = async () => {
+            await ensureFreeSpace(savePath, 2 * (await liveDatabaseBytes(savePath)), { statfs: arg.statfs });
             staging = await makeStaging(tmpPath, "export");
             if (signal.aborted) {
                 return;
             }
+            const copyFile = path.join(staging, "copy.sqlite");
             databaseFile = path.join(staging, "resources.sqlite");
             // Resources first, then assets: a blob is written before the metadata that names it, so
             // every asset the snapshot references already exists when the assets are listed.
             await snapshots.exclusive(() => {
                 assetHold = exportHolds.hold();
-                return store.backupTo(databaseFile);
+                return store.backupTo(copyFile);
             });
             if (signal.aborted) {
                 return;
             }
-            // A downloaded archive carries no LLM credentials: the staged copy loses its `llmSecrets`
-            // row, and `VACUUM` rewrites the file so no page keeps the deleted row (or an older
-            // version of it). Snapshots on the server keep the record.
-            const staged = new DatabaseSync(databaseFile);
-            let selectedKeys: string[] = [];
-            try {
-                staged.prepare("DELETE FROM resources WHERE kind = ?").run(RESOURCE_KIND.llmSecrets);
-                staged.exec("VACUUM");
-                if (partial === true) {
-                    // Select from the exact copy being archived, without reading or normalizing chats.
-                    const rows = staged
-                        .prepare("SELECT kind, id, data FROM resources WHERE kind IN (?, ?, ?, ?, ?)")
-                        .all(
-                            RESOURCE_KIND.characters,
-                            RESOURCE_KIND.personas,
-                            RESOURCE_KIND.ui,
-                            RESOURCE_KIND.characterOrder,
-                            RESOURCE_KIND.presets,
-                        );
-                    selectedKeys = selectPartialBackupAssets(
-                        rows.map((row) => ({ kind: row.kind as string, data: JSON.parse(row.data as string) })),
-                    ).map((asset) => asset.key);
-                }
-            } finally {
-                staged.close();
-            }
+            // The worker removes llmSecrets and uses VACUUM INTO to write only live rows to the archive
+            // database, leaving no deleted credential bytes in its pages. Server snapshots keep the record.
+            const { selectedKeys } = await runExportScrubWorker({
+                source: copyFile,
+                output: databaseFile,
+                partial: partial === true,
+            });
+            await fs.rm(copyFile);
             if ((await fs.stat(databaseFile)).size > MAX_ARCHIVE_RECORD_BYTES) {
                 throw new ArchiveRejectedError("The resource database is too large for the archive format");
             }
