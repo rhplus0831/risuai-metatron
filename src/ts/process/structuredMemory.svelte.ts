@@ -19,6 +19,8 @@ import {
     MEMORY_RESTORE_BODY_BYTES,
     memoryEventCovers,
     memoryScreenReason,
+    memorySourceHashVersion,
+    memorySourceSpeaker,
     rawWindow,
     reconcileMemoryEvents,
     sealedHypaV3DataIntact,
@@ -1535,35 +1537,44 @@ type CoverageFacts = {
 };
 
 /** What the tab hashes of a message. */
-type HashedMessage = DeepReadonly<Pick<Message, "chatId" | "role" | "data">>;
+type HashedMessage = DeepReadonly<Pick<Message, "chatId" | "role" | "data" | "saying">>;
 
 /**
- * The hash a source keeps of `message`, exactly as `messageSourceHash` takes it on the server. It is pure
- * JavaScript because `crypto.subtle` is absent outside a secure context, and JSON leaves no lone
- * surrogate for the UTF-8 encoding to replace.
+ * The hash a source keeps of `message`, exactly as `messageSourceHash` takes it on the server: new
+ * hashes cover role, `data`, and the normalized group speaker with a `v2:` prefix; a stored `like`
+ * retains its version, including bare role/data hashes. Generation metadata and receipts stay outside.
+ * Pure JavaScript works without a secure context, and JSON preserves field boundaries and lone surrogates.
  */
-export function memoryMessageHash({ role, data }: Pick<HashedMessage, "role" | "data">): string {
+export function memoryMessageHash(message: Pick<HashedMessage, "role" | "data" | "saying">, like?: string): string {
+    const version = memorySourceHashVersion(like);
+    const fields =
+        version === 1 ? [message.role, message.data] : [message.role, message.data, memorySourceSpeaker(message)];
     const hash = new Sha256();
-    hash.update(JSON.stringify([role, data]));
-    return Array.from(hash.digestSync(), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    hash.update(JSON.stringify(fields));
+    const hex = Array.from(hash.digestSync(), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    return version === 1 ? hex : `v2:${hex}`;
 }
 
 /**
- * A `memoryMessageHash` that hashes a message again only when its `role` or `data` changed, for a tab to
- * hold while it lives: the rows follow every change of the held messages, and most of them change
- * nothing an event cites.
+ * A `memoryMessageHash` that hashes again only when role, `data`, normalized group speaker, or the
+ * requested hash version changed, for a tab to hold while it lives: most row changes affect no evidence.
  */
-export function memoryMessageHasher(): (message: HashedMessage) => string {
-    const memo = new Map<string, { role: Message["role"]; data: string; hash: string }>();
-    return (message) => {
+export function memoryMessageHasher(): (message: HashedMessage, like?: string) => string {
+    const memo = new Map<
+        string,
+        { role: Message["role"]; data: string; speaker: string | null; version: 1 | 2; hash: string }
+    >();
+    return (message, like) => {
         const { chatId, role, data } = message;
+        const speaker = memorySourceSpeaker(message);
+        const version = memorySourceHashVersion(like);
         const held = chatId === undefined ? undefined : memo.get(chatId);
-        if (held?.role === role && held.data === data) {
+        if (held?.role === role && held.data === data && held.speaker === speaker && held.version === version) {
             return held.hash;
         }
-        const hash = memoryMessageHash(message);
+        const hash = memoryMessageHash(message, like);
         if (chatId !== undefined) {
-            memo.set(chatId, { role, data, hash });
+            memo.set(chatId, { role, data, speaker, version, hash });
         }
         return hash;
     };
@@ -1579,7 +1590,7 @@ export function memoryMessageHasher(): (message: HashedMessage) => string {
 export function reconcileMemoryCoverage(
     facts: StructuredMemoryCoverage,
     messages: readonly HashedMessage[],
-    hashOf: (message: HashedMessage) => string,
+    hashOf: (message: HashedMessage, like?: string) => string,
 ): StructuredMemoryCoverage {
     return { ...facts, events: reconcileMemoryEvents(facts.events, messages, hashOf) };
 }

@@ -3472,6 +3472,45 @@ describe("structured memory tasks", () => {
         expect((await terminal).status).toMatchObject({ state: "done", done: 1, total: 1 });
     });
 
+    it("automatically re-records a confirmed group turn after a speaker-only patch", async () => {
+        const calls: WriterCall[] = [];
+        const t = structuredHarness({
+            owner: {
+                type: "group",
+                characters: ["member-a", "member-b"],
+                characterTalks: [1, 1],
+                characterActive: [true, true],
+            },
+            structuredWriter: async (call) => {
+                calls.push(call);
+                return record(t, call);
+            },
+        });
+        t.store.onMessagesChanged((notice) => reconcileMessageChanges(t.store, notice));
+        t.write("k1", [{ op: "patchMessage", id: "m2", set: { saying: "member-a" } }]);
+        const original = t.chat("k1")!.message.slice(0, 2);
+        const sources = original.map((message, index) => ({
+            messageId: message.chatId!,
+            index,
+            hash: messageSourceHash(message),
+        }));
+        writeMemory(t.store, "c", "k1", { events: [event("old", sources)] });
+        t.write("k1", [{ op: "patchMessage", id: "m2", set: { saying: "member-b" } }]);
+        const terminal = t.nextTerminal("k1");
+        t.service.handOff(writerInput(t, "m3"));
+
+        expect((await terminal).status).toMatchObject({ state: "done", done: 1, total: 1 });
+        await t.service.drain();
+        expect(calls).toHaveLength(1);
+        expect(calls[0].window.rerecords).toBe("old");
+        expect(calls[0].window.messages).toEqual([original[0], { ...original[1], saying: "member-b" }]);
+        expect(contents(t).events.map(({ id, status }) => ({ id, status }))).toEqual([
+            { id: "old", status: "retracted" },
+            { id: "m2", status: "active" },
+        ]);
+        expect(eventRecord(t).sources[1].hash).not.toBe(sources[1].hash);
+    });
+
     it("spends no automatic writer call on manual cadence, restored text, or missing sources, and keeps their marks", async () => {
         for (const condition of ["manual", "restored", "missing"] as const) {
             const calls: WriterCall[] = [];
@@ -4559,7 +4598,7 @@ describe("structured memory tasks", () => {
         for (const outcome of ["recorded", "failed"] as const) {
             const t = structuredHarness({ hypaSettings: { structured: { cadence: "everyK", cadenceTurns: 2 } } });
             const before = t.chat("k1")!.message;
-            const hashes = before.map(messageSourceHash);
+            const hashes = before.map((message) => messageSourceHash(message));
             const { request, terminal } = await beginAnalysis(t, writerInput(t, "m5"));
             // An edit during inference must survive the receipt's by-id patch.
             for (const id of ["m2", "m4"]) {
@@ -4580,7 +4619,7 @@ describe("structured memory tasks", () => {
             await t.service.drain();
             expect(status.state).toBe(outcome === "recorded" ? "done" : "failed");
             const stored = t.chat("k1")!.message;
-            expect(stored.map(messageSourceHash)).toEqual(hashes);
+            expect(stored.map((message) => messageSourceHash(message))).toEqual(hashes);
             const receipt = runRecord(t).receipt!;
             expect(receipt).toMatchObject(
                 outcome === "recorded"

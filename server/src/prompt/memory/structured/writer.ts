@@ -19,7 +19,12 @@ import {
     structuredMemoryWriterLanguage,
     writerPaused,
 } from "../../../../../shared/structuredMemory.ts";
-import type { MemoryChanges, MemoryContents, MemoryEventWrite } from "../../../data/memoryStore.ts";
+import {
+    messageSourceHash,
+    type MemoryChanges,
+    type MemoryContents,
+    type MemoryEventWrite,
+} from "../../../data/memoryStore.ts";
 import { ResourceBatchConflictError, ResourceConflictError, type ResourceStore } from "../../../data/resourceStore.ts";
 import { jobModuleLorebooks } from "../../../jobs/cbsHost.ts";
 import { JobWriteConflictError } from "../../../jobs/generationJobs.ts";
@@ -224,8 +229,13 @@ function highlightRule({ host, input, scope }: WriterArg): HighlightRule {
     };
 }
 
-const sameWindow = (a: readonly MemoryAnchoredSource[], b: readonly MemoryAnchoredSource[]) =>
-    a.length === b.length && a.every(({ messageId, hash }, i) => messageId === b[i].messageId && hash === b[i].hash);
+/** A saved run's window compared with fresh messages under each saved source's hash version. */
+const sameWindow = (sources: readonly MemoryAnchoredSource[], window: WriterWindow) =>
+    sources.length === window.sources.length &&
+    sources.every(
+        ({ messageId, hash }, i) =>
+            messageId === window.sources[i].messageId && messageSourceHash(window.messages[i], hash) === hash,
+    );
 
 /** A stored input as messages; null for one a run could not have written. */
 function parsedInput(text: string): OpenAIChat[] | null {
@@ -325,7 +335,7 @@ function replayedInput(
         !run?.input ||
         run.settingsFingerprint !== arg.input.settingsFingerprint ||
         Boolean(run.customPrompt) !== writerSettings(arg.host).fineTuning ||
-        !sameWindow(run.window, arg.window.sources)
+        !sameWindow(run.window, arg.window)
     ) {
         return null;
     }

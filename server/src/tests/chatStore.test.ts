@@ -17,6 +17,7 @@ import {
     createResourceStore,
     nextRevision,
     ResourceBatchConflictError,
+    type MessagesChanged,
     type ResourceStore,
     type WrittenChanges,
     ResourceValidationError,
@@ -608,6 +609,55 @@ describe("revision rules", () => {
         expect(conflictsOf(() => store.applyChanges({ chatOrders: [order(committed, ["k2", "k"])] }))).toEqual([
             { kind: "chatOrder", characterId: "c", revision: bumped(committed, 1) },
         ]);
+    });
+});
+
+describe("memory evidence changes", () => {
+    function setup(message: Message) {
+        const store = memoryStore();
+        store.applyChanges({
+            ops: [
+                createCharacter("c", {
+                    type: "group",
+                    characters: ["member-a", "member-b"],
+                    characterTalks: [1, 1],
+                    characterActive: [true, true],
+                }),
+            ],
+            chats: [group("k", null, [{ op: "create", chat: { name: "Group", message: [message] } } as ChatOp])],
+        });
+        const notices: MessagesChanged[] = [];
+        store.onMessagesChanged((notice) => notices.push(notice));
+        return { store, notices };
+    }
+
+    it("reports speaker-only setMessage and patchMessage writes by a person as rewrites", () => {
+        for (const op of ["setMessage", "patchMessage"] as const) {
+            const original = { ...m("b", "B", "char"), saying: "member-a" };
+            const { store, notices } = setup(original);
+            const changed = { ...original, saying: "member-b" };
+            const edit: ChatOp =
+                op === "setMessage" ? { op, message: changed } : { op, id: "b", set: { saying: "member-b" } };
+            store.applyChanges({ chats: [group("k", chat(store, "k")!.revision, [edit])] });
+
+            expect(chat(store, "k")!.data.message, op).toEqual([changed]);
+            expect(notices, op).toEqual([
+                { epoch: store.epoch(), characterId: "c", id: "k", rewritten: ["b"], retracted: [] },
+            ]);
+        }
+    });
+
+    it("emits no rewrite notice when setMessage or patchMessage changes an absent speaker to empty", () => {
+        for (const op of ["setMessage", "patchMessage"] as const) {
+            const original = m("b", "B", "char");
+            const { store, notices } = setup(original);
+            const changed = { ...original, saying: "" };
+            const edit: ChatOp = op === "setMessage" ? { op, message: changed } : { op, id: "b", set: { saying: "" } };
+            store.applyChanges({ chats: [group("k", chat(store, "k")!.revision, [edit])] });
+
+            expect(chat(store, "k")!.data.message, op).toEqual([changed]);
+            expect(notices, op).toEqual([]);
+        }
     });
 });
 

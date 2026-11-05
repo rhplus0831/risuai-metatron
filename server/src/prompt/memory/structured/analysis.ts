@@ -487,7 +487,7 @@ function repeatsEvent(
             return true;
         }
         const message = stored.get(source.messageId);
-        return message !== undefined && messageSourceHash(message) === source.hash;
+        return message !== undefined && messageSourceHash(message, source.hash) === source.hash;
     });
 }
 

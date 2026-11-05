@@ -12,7 +12,7 @@ import { sealHypaV3Data } from "../../../shared/structuredMemory.ts";
 import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
-import { messageSourceHash, type MemoryChanges } from "../data/memoryStore.ts";
+import { messageSourceHash, projectChatMemory, type MemoryChanges } from "../data/memoryStore.ts";
 import {
     createResourceStore,
     ResourceConflictError,
@@ -555,18 +555,17 @@ it.each(["with memory tables", "without memory tables"])(
     },
 );
 
-it("hashes only role and data with SHA-256 and preserves the boundary between fields", () => {
+it("hashes role, data and speaker with SHA-256 under version 2, keeps a stored version 1, and preserves field boundaries", () => {
     const message: Message = {
         role: "user",
         data: "The gate opens.",
         generationInfo: { model: "first", outputTokens: 1 },
     };
+    const sha = (fields: unknown[]) => createHash("sha256").update(JSON.stringify(fields), "utf8").digest("hex");
     const hash = messageSourceHash(message);
-    expect(hash).toBe(
-        createHash("sha256")
-            .update(JSON.stringify([message.role, message.data]), "utf8")
-            .digest("hex"),
-    );
+    expect(hash).toBe(`v2:${sha([message.role, message.data, null])}`);
+    const v1 = sha([message.role, message.data]);
+    expect(messageSourceHash(message, v1)).toBe(v1);
     expect(messageSourceHash({ ...message, generationInfo: { model: "second", outputTokens: 99 } } as Message)).toBe(
         hash,
     );
@@ -577,6 +576,76 @@ it("hashes only role and data with SHA-256 and preserves the boundary between fi
     const right = { role: "use", data: "rtext" } as unknown as Pick<Message, "role" | "data">;
     expect(left.role + left.data).toBe(right.role + right.data);
     expect(messageSourceHash(left)).not.toBe(messageSourceHash(right));
+});
+
+it("keeps stored version 1 sources and their accepted source state active during reconciliation", () => {
+    const { store } = fileStore();
+    seed(store);
+    const legacyHash = (data: string) =>
+        createHash("sha256")
+            .update(JSON.stringify([chat.message[0].role, data]), "utf8")
+            .digest("hex");
+    const currentHash = legacyHash(chat.message[0].data);
+    const [unchanged, kept] = records(["unchanged", "kept"]).events;
+    unchanged.sources = [{ messageId: "m", index: 0, hash: currentHash }];
+    kept.sources = [{ messageId: "m", index: 0, hash: legacyHash("The gate was shut.") }];
+    // A version 1 keep stores the current role/data hash even though its source cites older text.
+    kept.keptState = JSON.stringify([["m", currentHash, 0]]);
+    write(store, contents(store).revision, { events: [unchanged, kept] });
+    const saved = ["unchanged", "kept"].map((id) => store.memory.readRecord("c", "k", "events", id)!.data);
+    const messages = (store.readChatSource("c", "k").data as Chat).message;
+
+    expect(reconcileEvents(saved, messages)).toEqual(saved);
+    expect(projectChatMemory(saved, messages).summaries).toEqual(
+        saved.map(({ summary }) => ({ text: summary, chatMemos: ["m"], isImportant: false })),
+    );
+});
+
+it("makes a version 2 event stale when only its source speaker changes", () => {
+    const { store } = fileStore();
+    seed(store);
+    const original: Message = { ...chat.message[0], role: "char", saying: "member-a" };
+    store.applyChanges({
+        chats: [group(store.chatRevision("c", "k"), [{ op: "setMessage", message: original }])],
+    });
+    write(store, contents(store).revision, {
+        events: [
+            {
+                ...records(["cited"]).events[0],
+                sources: [{ messageId: "m", index: 0, hash: messageSourceHash(original) }],
+            },
+        ],
+    });
+    const saved = store.memory.readRecord("c", "k", "events", "cited")!.data;
+    expect(reconcileEvents([saved], [original])).toEqual([saved]);
+    store.applyChanges({
+        chats: [group(store.chatRevision("c", "k"), [{ op: "patchMessage", id: "m", set: { saying: "member-b" } }])],
+    });
+    const messages = (store.readChatSource("c", "k").data as Chat).message;
+
+    expect(messages).toEqual([{ ...original, saying: "member-b" }]);
+    expect(reconcileEvents([saved], messages)).toEqual([{ ...saved, status: "stale", staleReason: "changed" }]);
+    expect(projectChatMemory([saved], messages).summaries).toEqual([]);
+});
+
+it("hashes absent and empty speakers alike and excludes generation metadata and receipts in both versions", () => {
+    const message = chat.message[0];
+    const legacy = createHash("sha256")
+        .update(JSON.stringify([message.role, message.data]), "utf8")
+        .digest("hex");
+    const receipted: Message = {
+        ...message,
+        generationInfo: {
+            model: "new-model",
+            outputTokens: 99,
+            memory: { state: "recorded", runId: "run", pages: [], refused: [], unverified: [], warnings: [] },
+        },
+    };
+    for (const like of [undefined, legacy]) {
+        const hash = messageSourceHash(message, like);
+        expect(messageSourceHash({ ...message, saying: "" }, like)).toBe(hash);
+        expect(messageSourceHash(receipted, like)).toBe(hash);
+    }
 });
 
 it("validates the final scene set atomically while allowing rewrites and replacement", () => {

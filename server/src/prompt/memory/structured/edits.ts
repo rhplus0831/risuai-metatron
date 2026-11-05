@@ -227,11 +227,11 @@ export function applyThreadEdit(thread: MemoryThread, { state }: ThreadEdit): Me
  * message has no new anchor. An already-active reconciled event needs no keep and returns null, even
  * with a `rerecord` mark; only a keep that writes a repair clears that mark and `staleReason`.
  */
-export function applyEventRepair<M extends Pick<Message, "chatId" | "role" | "disabled">>(
+export function applyEventRepair<M extends Pick<Message, "chatId" | "role" | "saying" | "disabled">>(
     event: MemoryEvent,
     edit: EventEdit,
     messages: readonly M[],
-    hashOf: (message: M) => string,
+    hashOf: (message: M, like?: string) => string,
 ): MemoryEvent | null {
     const { staleReason, rerecord, ...settled } = event;
     if (edit.repair === "retract") {

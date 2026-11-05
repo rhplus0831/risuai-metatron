@@ -667,10 +667,11 @@ it("compares page history only with the next entry of its heading or the live se
 });
 
 it("hashes role and Unicode text exactly like server source anchors including a lone surrogate", () => {
-    // Fixed server messageSourceHash value; no server imports in the Node client test.
-    expect(memoryMessageHash({ role: "char", data: '문 😀\ud800\nquote: "' })).toBe(
-        "db8d581f5fb0f0005aa6337e8568fca94baa45dc48b0a9ec2a01cbda9197f8b5",
-    );
+    // Fixed server messageSourceHash values; no server imports in the Node client test.
+    const message = { role: "char", data: '문 😀\ud800\nquote: "' } as const;
+    const v1 = "db8d581f5fb0f0005aa6337e8568fca94baa45dc48b0a9ec2a01cbda9197f8b5";
+    expect(memoryMessageHash(message)).toBe("v2:fb3ad95bd266b99de71f60e1303e8a2f65c85f886e4bf8960ba96330341313b5");
+    expect(memoryMessageHash(message, v1)).toBe(v1);
 });
 
 it("joins reconciled held messages as stale with no leaving coverage or request and restores them immediately", () => {

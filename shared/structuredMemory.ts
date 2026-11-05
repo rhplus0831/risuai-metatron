@@ -1329,6 +1329,16 @@ export function rawWindow(
     return { start, dropped };
 }
 
+/** The group member attributed to a memory source; an absent or empty `saying` names no member. */
+export function memorySourceSpeaker(message: { saying?: unknown }): string | null {
+    return typeof message.saying === "string" && message.saying !== "" ? message.saying : null;
+}
+
+/** New hashes use version 2; stored strings without its recognized prefix retain version 1. */
+export function memorySourceHashVersion(hash?: string): 1 | 2 {
+    return typeof hash !== "string" || hash.startsWith("v2:") ? 2 : 1;
+}
+
 /**
  * A stored source list as sources, because the store does not check a record's shape. What is not an
  * object with a string `messageId` is no source, as the coverage route reads it, and a source without
@@ -1353,13 +1363,13 @@ export function storedMemorySources(stored: unknown): MemorySource[] {
 type MessageAnchors<M> = {
     messages: readonly M[];
     positions: ReadonlyMap<string, number>;
-    hashOf: (message: M) => string;
+    hashOf: (message: M, like?: string) => string;
 };
 
 /** Built once for a list of events, so a long chat's lookups stay cheap. */
 function messageAnchors<M extends Pick<Message, "chatId">>(
     messages: readonly M[],
-    hashOf: (message: M) => string,
+    hashOf: (message: M, like?: string) => string,
 ): MessageAnchors<M> {
     const positions = new Map<string, number>();
     messages.forEach(({ chatId }, index) => {
@@ -1395,7 +1405,7 @@ function staleReasonOf<M>(
     if (anchored.length < sources.length || anchored.some(({ messageId }) => !positions.has(messageId))) {
         return "missing";
     }
-    if (anchored.some(({ messageId, hash }) => hashOf(messages[positions.get(messageId)!]) !== hash)) {
+    if (anchored.some(({ messageId, hash }) => hashOf(messages[positions.get(messageId)!], hash) !== hash)) {
         return "changed";
     }
     const seen = new Set<string>();
@@ -1422,27 +1432,28 @@ function staleReasonOf<M>(
 
 function anchorStateOf<M>(sources: readonly MemorySource[], anchors: MessageAnchors<M>): string {
     let first: number | undefined;
-    const parts = sources.map(({ messageId }) => {
+    const parts = sources.map(({ messageId, hash }) => {
         const position = anchors.positions.get(messageId);
         if (position === undefined) {
             return [messageId];
         }
         first ??= position;
-        return [messageId, anchors.hashOf(anchors.messages[position]), position - first];
+        return [messageId, anchors.hashOf(anchors.messages[position], hash ?? undefined), position - first];
     });
     return JSON.stringify(parts);
 }
 
 /**
  * What a person looks at when they keep an event, as one string: for each source in order, its id, its
- * message's hash when the message is there, and its position relative to the first source present.
+ * message's hash under its stored source's version when there, and its position relative to the first
+ * source present. An unanchored source uses the current hash version.
  * Hashes never read `generationInfo` and the position is relative, so a receipt or a shift of the whole
  * event leaves it alone.
  */
 export function memoryAnchorState<M extends Pick<Message, "chatId">>(
     sources: unknown,
     messages: readonly M[],
-    hashOf: (message: M) => string,
+    hashOf: (message: M, like?: string) => string,
 ): string {
     return anchorStateOf(storedMemorySources(sources), messageAnchors(messages, hashOf));
 }
@@ -1456,7 +1467,7 @@ export function memoryAnchorState<M extends Pick<Message, "chatId">>(
 export function reconcileMemoryEvents<
     E extends Pick<MemoryEvent, "status" | "sources" | "keptState">,
     M extends Pick<Message, "chatId">,
->(events: readonly E[], messages: readonly M[], hashOf: (message: M) => string): E[] {
+>(events: readonly E[], messages: readonly M[], hashOf: (message: M, like?: string) => string): E[] {
     const anchors = messageAnchors(messages, hashOf);
     return events.map((event) => {
         if (event.status !== "active") {

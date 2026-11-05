@@ -39,8 +39,8 @@
     `StructuredMemoryInheritAnswer`, `StructuredMemoryRestoreAnswer`, `StructuredMemoryAdoptAnswer`,
     `StructuredMemoryDeclineAnswer`, `StructuredMemoryResetAnswer`, `StructuredMemoryAdoption`.
 - `server/src/data/memoryStore.ts`: synchronous record storage; `createMemoryTables`, `MemoryChanges`, `MemoryContents`,
-  `MemoryRowTexts`, `readContents`, `readRecord`, `write`, `checkMemoryRow`; `messageSourceHash` supplies
-  `MemoryAnchoredSource.hash`. The projection's part: [projection](projection.md#files).
+  `MemoryRowTexts`, `readContents`, `readRecord`, `write`, `checkMemoryRow`; `messageSourceHash` supplies source hashes.
+  The projection's part: [projection](projection.md#files).
 - `server/src/data/chatStore.ts`: table declarations; `MEMORY_TABLES_SQL`, `CHAT_OPEN_SCHEMA_SQL`.
 - `server/src/data/resourceStore.ts`: transaction and epoch boundary; `store.memory`, `readContents`, `readRecord`,
   `write`. Other parts: [projection](projection.md#files), [checkpoints](lifecycle.md#files).
@@ -225,8 +225,8 @@ group: no walk reads them.
 - Event status is `active`, `retracted`, or `stale`. Unfinished recording lives on the run and the receipt: a failed
   first recording commits no event, and a failed re-record leaves the committed event in place until its replacement
   succeeds.
-- A `MemoryAnchoredSource` hash is the SHA-256 of the stored message's role and `data`, never `generationInfo`, so a
-  receipt write keeps the hash.
+- A `MemoryAnchoredSource` hash reads role, `data` and `saying`, never `generationInfo`; a stored hash compares under
+  its own version (`messageSourceHash`).
 - A `MemoryUnanchoredSource` means the anchor was never known: an adopted summary whose message was already gone. It
   forces its event `stale` until a person keeps it. A source whose message disappears later keeps its original hash and
   index. A run's window holds only anchored sources.

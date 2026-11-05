@@ -32,7 +32,7 @@ import {
     SMALL_FEED_PATCH_BYTES,
     RESOURCE_KIND,
 } from "../../../shared/resources.ts";
-import { isSealedHypaV3Data } from "../../../shared/structuredMemory.ts";
+import { isSealedHypaV3Data, memorySourceSpeaker } from "../../../shared/structuredMemory.ts";
 import { chatTranslationSummary } from "../../../shared/translation/chatSettings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
@@ -382,10 +382,10 @@ type PreparedOp =
 type PreparedMessage = { id: string; text: string };
 
 /**
- * What a by-id group did to the text of a chat's messages, once it commits: `retracted`, the messages a
- * `remove` with `retract` deleted, and `rewritten`, those a person's write gave another `role` or `data`,
- * which is what a memory source's hash reads. A write of a job or a generation reports nothing, nor
- * does a change of any other field, nor an id the group inserted or removed.
+ * What a by-id group did to the evidence in a chat's messages, once it commits: `retracted`, the messages
+ * a `remove` with `retract` deleted, and `rewritten`, those a person's write gave another `role`, `data`,
+ * or normalized group speaker (`saying`), which a current memory source's hash reads. A write of a job
+ * or a generation reports nothing, nor does a change of any other field, nor an id the group inserted or removed.
  */
 export type ChatMessageChanges = { characterId: string; id: string; retracted: string[]; rewritten: string[] };
 
@@ -2130,7 +2130,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         const removedIds = new Set<string>();
         /** The messages a `remove` with `retract` deleted. */
         const retractedIds = new Set<string>();
-        /** The messages a person's write gave another `role` or `data` (`ChatMessageChanges`). */
+        /** The messages a person's write gave another role, data, or normalized speaker (`ChatMessageChanges`). */
         const rewrittenIds = new Set<string>();
         let reappended = false;
         let metaChanged = false;
@@ -2393,7 +2393,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         closeFence(chatSeq, id, existing!);
                     }
                     let text: string;
-                    /** Whether the op changes what a memory source's hash reads of the message. */
+                    /** Whether the op changes role, data, or normalized speaker in the message's memory evidence. */
                     let rewrites: boolean;
                     if (op.op === "setMessage") {
                         // The whole row, also on a stale revision: fields the sender has not seen are
@@ -2402,7 +2402,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         // older copy, or none) never replaces or removes it.
                         const stored = JSON.parse(existing!.data) as Record<string, unknown>;
                         const message = JSON.parse(op.message.text) as Record<string, unknown>;
-                        rewrites = message.role !== stored.role || message.data !== stored.data;
+                        rewrites =
+                            message.role !== stored.role ||
+                            message.data !== stored.data ||
+                            memorySourceSpeaker(message) !== memorySourceSpeaker(stored);
                         if (Object.hasOwn(message, "translation") || Object.hasOwn(stored, "translation")) {
                             delete message.translation;
                             if (Object.hasOwn(stored, "translation")) {
@@ -2417,13 +2420,15 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         // wrote, the stored translation) stay. Checked again as a whole message.
                         const message = JSON.parse(existing!.data) as Record<string, unknown>;
                         const { role, data } = message;
+                        const speaker = memorySourceSpeaker(message);
                         for (const key of op.unset) {
                             delete message[key];
                         }
                         for (const key of Object.keys(op.set)) {
                             message[key] = op.set[key];
                         }
-                        rewrites = message.role !== role || message.data !== data;
+                        rewrites =
+                            message.role !== role || message.data !== data || memorySourceSpeaker(message) !== speaker;
                         text = serialize(normalizeMessage(message, true)).text;
                     } else {
                         const message = JSON.parse(existing!.data) as Record<string, unknown>;

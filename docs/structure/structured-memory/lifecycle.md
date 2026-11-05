@@ -80,7 +80,7 @@ Loading a checkpoint starts no work: a restored `rerecord` mark [waits for a pre
 A chat write reaches memory through a post-commit notice:
 
 1. `server/src/data/chatStore.ts`'s `applyGroup` reports `ChatMessageChanges`: a marked `remove` supplies `retracted`
-   ids; a person's change of `role` or `data` supplies `rewritten` ids. Read those entrypoints for excluded writes.
+   ids; a person's change of `role`, `data` or `saying` supplies `rewritten` ids. Read those for excluded writes.
 2. `onMessagesChanged` delivers after commit through the `onChatInvalidated` queue, never for rollback.
    `server/src/app.ts` subscribes `reconcileMessageChanges` with or without a task service. At the read revision, the
    reaction retracts events citing `retracted` ids through `applyEventRepair`, or marks rewritten evidence for
