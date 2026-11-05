@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (6)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (16)
+- [Structured Memory](#structured-memory) (14)
 
 ## Chat store, sync, and change feeds
 
@@ -349,13 +349,6 @@ Untagged gate tests that depend on real wall-clock or scheduler time (invariant 
 
 Moved from the Structured Memory plan run on 2026-11-03. Each entry was re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here. The last two entries came from the Guides To Source run on 2026-11-05.
 
-### Memory task wording still says summaries
-
-The memory task service has a `structuredMemory` kind since slice 2b, yet comments still describe every task as HypaV3: `shared/events.ts` (~21), `src/ts/network/eventFeed.ts` (~38), `server/src/jobs/runSetup.ts` (~64), `server/src/app.ts` (~451, ~1007), `src/lib/SideBars/chatStatus.ts` (~15). `summarizingChats` in `src/ts/process/memoryTasks.svelte.ts` counts a writer task as summarizing, and `src/lib/ChatScreens/ContextMeter.svelte`'s task block shows "Background summary", "the new summaries are stored", and "summarizing 0/1" for the writer (seen in a browser 2026-11-02). The HypaV3 modal's status helper keeps HypaV3 wording, but Structured Memory chats open their own panel.
-
-**Why it matters:** an agent reads a task as HypaV3, and a user who cannot verify memory is told the wrong activity.
-**Suggested handling:** read `MemoryTaskStatus.kind` in the meter's task block and chip, and widen the comments.
-
 ### Record now in a job is seen by one tab
 
 `server/src/prompt/memory/structured/recordJob.ts`: the blocking in-job path opens job-scoped progress only and sets no memory task status or `memoryTaskFenced` fence, so another tab's panel stays editable while it runs (the queued path does publish). `MemoryReceiptLine.svelte` `press` also shows "Recording requested" after any `done`, including one sent after the in-job run already finished, and a window that ends `skipped` puts its raw reason code into the English job error (`runWindows`). Slice 2d.
@@ -471,11 +464,3 @@ Found by lookup trials and challengers of the Guides To Source run (2026-11-05),
 **Why it matters:** each sends a reader to the wrong section or guide, or lets them take the page as the owner.
 
 **Suggested handling:** retarget the anchor, say "a message edit", move `testRun` from writer's Scope `Paths` to read's, and add the `Owner:` markers (or a shared-part rule) at the next edit of each page.
-
-### Two memory comments blur their scope
-
-`server/src/prompt/memory/structured/pages.ts:52` (module header, page tools) says "A merge moves every reference to the source onto the target in the same change set", but the route adapter (`server/src/routes/structuredMemory.ts` ~1032) passes only `contents.pages` as `records.pages()`, so a page already in the trash keeps its link to the merged source; the `mergedPages` comment and pages.md were corrected, the header left. `server/src/data/resourceStore.ts:2162` (`store.memory.rebuild.rebuilding`: "the chat holds a run under this algorithm") does not say `structuredMemorySelected()` reads the one global `memoryAlgorithmType`, so a switch releases every chat's run lock at once; a trial read it as per chat. Found in the Guides To Source run (2026-11-05). Owners: structured-memory (the writer page held the header that day), and server-resources.
-
-**Why it matters:** a reader of the comment alone gets the scope wrong.
-
-**Suggested handling:** say "live pages" in the header and "the global algorithm setting" in the `rebuilding` comment at the next edit of each file.
