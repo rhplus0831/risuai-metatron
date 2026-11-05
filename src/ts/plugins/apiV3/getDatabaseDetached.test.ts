@@ -497,6 +497,111 @@ it("reuses unchanged unloaded chats on a current feed and returns the same datab
     for (const target of [held, other, ref("d", "d")]) expect(b.chat.findChat(target)).toBeUndefined();
 });
 
+it.each(["setDatabase", "setDatabaseLite"] as const)(
+    "%s skips unchanged loaded and cached chats while applying character fields and chatPage",
+    async (setter) => {
+        boundary.liveFeedCurrent.mockReturnValue(true);
+        const b = await boot(await fixture());
+        await b.chat.ensureChatLoaded(held);
+        const storedChats = [
+            b.fake.chat("c", "held")!.data,
+            b.fake.chat("c", "other")!.data,
+            b.fake.chat("d", "d")!.data,
+        ];
+        // The iframe receives its own copy, separate from the host's detached cache.
+        const incoming = structuredClone(await b.api.getDatabase(["characters"]));
+        returnedCharacter(incoming, "c").name = "Renamed by plugin";
+        returnedCharacter(incoming, "c").chatPage = 1;
+        expect(b.chat.findChat(held)).toBeDefined();
+        expect(b.chat.findChat(other)).toBeUndefined();
+        expect(b.chat.findChat(ref("d", "d"))).toBeUndefined();
+        b.fake.requests.length = 0;
+
+        await b.api[setter](incoming);
+        await b.sync.flushResources();
+
+        expect([b.fake.chat("c", "held")!.data, b.fake.chat("c", "other")!.data, b.fake.chat("d", "d")!.data]).toEqual(
+            storedChats,
+        );
+        expect(requestedChats(b.fake)).toEqual([]);
+        expect(b.chat.findChat(other)).toBeUndefined();
+        expect(b.chat.findChat(ref("d", "d"))).toBeUndefined();
+        expect(b.fake.record("characters", "c")!.data.name).toBe("Renamed by plugin");
+        expect(await b.api.getDatabase(["characters"])).toEqual(incoming);
+        expect(resourceReads(b.fake)).toEqual([]);
+    },
+);
+
+it("loads the whole unloaded character and saves a changed chat", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const b = await boot(await fixture());
+    const incoming = structuredClone(await b.api.getDatabase(["characters"]));
+    returnedCharacter(incoming, "c").chats[0].message[0].data = "Changed by plugin";
+    expect(b.chat.chatsLoaded("c")).toBe(false);
+    b.fake.requests.length = 0;
+
+    await b.api.setDatabase(incoming);
+    await b.sync.flushResources();
+
+    expect(requestedChats(b.fake)).toEqual([
+        { characterId: "c", id: "held" },
+        { characterId: "c", id: "other" },
+    ]);
+    expect(b.chat.chatsLoaded("c")).toBe(true);
+    expect(b.fake.texts("c", "held")).toEqual(["Changed by plugin"]);
+    expect(b.fake.chat("c", "other")!.data).toEqual(returnedCharacter(incoming, "c").chats[1]);
+    expect(await b.api.getDatabase(["characters"])).toEqual(incoming);
+});
+
+it("loads the whole unloaded character and deletes a chat omitted by the plugin", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const b = await boot(await fixture());
+    const incoming = structuredClone(await b.api.getDatabase(["characters"]));
+    returnedCharacter(incoming, "c").chats.pop();
+    expect(b.chat.chatsLoaded("c")).toBe(false);
+    b.fake.requests.length = 0;
+
+    await b.api.setDatabase(incoming);
+    await b.sync.flushResources();
+
+    expect(requestedChats(b.fake)).toEqual([
+        { characterId: "c", id: "held" },
+        { characterId: "c", id: "other" },
+    ]);
+    expect(b.chat.chatsLoaded("c")).toBe(true);
+    expect(b.fake.chat("c", "other")).toBeNull();
+    expect(b.fake.chat("c", "held")!.data).toEqual(returnedCharacter(incoming, "c").chats[0]);
+    expect(b.fake.order("c")!.ids).toEqual(["held"]);
+    expect(await b.api.getDatabase(["characters"])).toEqual(incoming);
+});
+
+it("loads the whole unloaded character and creates a chat added by the plugin", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const b = await boot(await fixture());
+    const incoming = structuredClone(await b.api.getDatabase(["characters"]));
+    returnedCharacter(incoming, "c").chats.push(chatData("new"));
+    expect(b.chat.chatsLoaded("c")).toBe(false);
+    b.fake.requests.length = 0;
+
+    await b.api.setDatabase(incoming);
+    await b.sync.flushResources();
+
+    expect(requestedChats(b.fake)).toEqual([
+        { characterId: "c", id: "held" },
+        { characterId: "c", id: "other" },
+    ]);
+    expect(b.chat.chatsLoaded("c")).toBe(true);
+    expect(b.fake.chat("c", "new")?.data).toMatchObject(chatData("new"));
+    expect(b.fake.chat("c", "held")!.data).toEqual(returnedCharacter(incoming, "c").chats[0]);
+    expect(b.fake.chat("c", "other")!.data).toEqual(returnedCharacter(incoming, "c").chats[1]);
+    expect(b.fake.order("c")!.ids).toEqual(["held", "other", "new"]);
+    expect(returnedCharacter(await b.api.getDatabase(["characters"]), "c").chats).toMatchObject([
+        chatData("held"),
+        chatData("other"),
+        chatData("new"),
+    ]);
+});
+
 it.each(["revision move", "notice"] as const)("re-reads a cached chat after a %s", async (change) => {
     boundary.liveFeedCurrent.mockReturnValue(true);
     const b = await boot(await fixture({ c: [chatData("other")], d: [chatData("d")] }));

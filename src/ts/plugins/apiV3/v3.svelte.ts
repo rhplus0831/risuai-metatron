@@ -1164,6 +1164,16 @@ function needsChatSnapshot(value: unknown): boolean {
     );
 }
 
+/** Detached server copies omit sealed projections outside structured memory, without changing the cache. */
+function detachedPluginChat(chat: Chat): Chat {
+    if (settings.ui.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM && isSealedHypaV3Data(chat.hypaV3Data)) {
+        const copy = { ...chat };
+        delete copy.hypaV3Data;
+        return copy;
+    }
+    return chat;
+}
+
 /**
  * Reads unloaded members together after saving queued work, keeping server copies outside the chat
  * store. Loaded members stay pinned and are copied in `run`'s synchronous pass. Characters whose
@@ -1320,15 +1330,9 @@ async function withDetachedDatabaseChats<T>(
                         }
                     }
                     if (retry) return undefined;
-                    if (settings.ui.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM) {
-                        for (const copies of detached.values()) {
-                            for (const [id, chat] of copies) {
-                                if (isSealedHypaV3Data(chat.hypaV3Data)) {
-                                    const copy = { ...chat };
-                                    delete copy.hypaV3Data;
-                                    copies.set(id, copy);
-                                }
-                            }
+                    for (const copies of detached.values()) {
+                        for (const [id, chat] of copies) {
+                            copies.set(id, detachedPluginChat(chat));
                         }
                     }
                     return { value: run(detached) };
@@ -1415,11 +1419,13 @@ function warnRefused(what: string, write: () => void) {
  * Applies a whole character a plugin hands back (last writer wins). The same `chaId` as the
  * character at `index`: its own fields replace the character's (`replaceCharacterFields`), and its
  * chats are reconciled by id through the chat module (changed chats diffed, new ones created,
- * missing ones deleted, the order and a given `chatPage` followed). Another `chaId` (or none):
+ * missing ones deleted, the order and a given `chatPage` followed). Database setters can mark
+ * chats unchanged after checking the whole list: only a numeric `chatPage` is then applied.
+ * Another `chaId` (or none):
  * the character replaces the one at the index (`replaceCharacterAt`), unless that one is generating
  * a reply or the `chaId` is already another character's. A refusal is warned about.
  */
-function applyPluginCharacter(index: number, char: any) {
+function applyPluginCharacter(index: number, char: any, unchangedChats: ReadonlySet<string> = new Set()) {
     warnRefused("a character", () => {
         const current = characterList()[index];
         if (!current || !char || typeof char !== "object" || char.chaId !== current.chaId) {
@@ -1455,7 +1461,7 @@ function applyPluginCharacter(index: number, char: any) {
         }
         replaceCharacterFields(fields);
         const { chats, chatPage } = char;
-        if (Array.isArray(chats)) {
+        if (Array.isArray(chats) && !unchangedChats.has(current.chaId)) {
             reconcileCharacterChats(current.chaId, chats, typeof chatPage === "number" ? chatPage : undefined);
         } else if (typeof chatPage === "number") {
             selectChat(current.chaId, chatPage);
@@ -1470,9 +1476,14 @@ function applyPluginCharacter(index: number, char: any) {
  * `chaId` go through `applyPluginCharacter`, new ones are appended (prepared by `prepareNewCharacter`
  * before the list changes, their chats saved with them), and missing ones removed
  * (`removeCharacter`), except a character that is generating a reply: it stays (with a console
- * warning). The mirror keeps its order.
+ * warning). The mirror keeps its order. Entries marked as having unchanged chats still pass all
+ * validation and apply their character fields and numeric `chatPage`, without reconciling chats.
  */
-function applyPluginCharacters(incoming: unknown, vanished: ReadonlySet<string> = new Set()) {
+function applyPluginCharacters(
+    incoming: unknown,
+    vanished: ReadonlySet<string> = new Set(),
+    unchangedChats: ReadonlySet<string> = new Set(),
+) {
     requireArray("characters", incoming);
     const checked = Array.from(incoming, (char, i) => {
         checkCharacterInput(char, `characters[${i}]`);
@@ -1510,6 +1521,7 @@ function applyPluginCharacters(incoming: unknown, vanished: ReadonlySet<string> 
             applyPluginCharacter(
                 characterList().findIndex((entry) => entry?.chaId === char.chaId),
                 char,
+                unchangedChats,
             );
         }
     }
@@ -1627,10 +1639,11 @@ function applyPluginKey(
     value: unknown,
     context: PluginCallContext | undefined,
     vanished: ReadonlySet<string> = new Set(),
+    unchangedChats: ReadonlySet<string> = new Set(),
 ) {
     switch (key) {
         case "characters":
-            return applyPluginCharacters(value, vanished);
+            return applyPluginCharacters(value, vanished, unchangedChats);
         case "personas":
             return setPersonas(value);
         case "modules":
@@ -1670,6 +1683,7 @@ function applyPluginDatabase(
     newDb: Record<string, unknown>,
     context: PluginCallContext | undefined,
     vanished: ReadonlySet<string> = new Set(),
+    unchangedChats: ReadonlySet<string> = new Set(),
 ) {
     if (context) {
         const missing = missingPresetTarget(
@@ -1683,12 +1697,14 @@ function applyPluginDatabase(
     // One queued write per settings record the call changed (`records.svelte.ts`).
     batchRecordWrites(() => {
         for (const key of pluginKeyOrder(newDb)) {
-            warnRefused(`the database key ${key}`, () => applyPluginKey(key, newDb[key], context, vanished));
+            warnRefused(`the database key ${key}`, () =>
+                applyPluginKey(key, newDb[key], context, vanished, unchangedChats),
+            );
         }
     });
 }
 
-/** The existing characters whose chats a plugin's `characters` reconciles (loaded first). */
+/** The existing characters targeted by a plugin's `characters` list. */
 function charactersReconciled(newDb: Record<string, unknown>): string[] {
     const incoming = newDb && typeof newDb === "object" ? newDb.characters : undefined;
     if (!Array.isArray(incoming)) {
@@ -1707,21 +1723,115 @@ function vanishedOf(targets: readonly string[]): Set<string> {
 }
 
 /**
+ * Exact ordered JSON equality with held chats or still-valid detached copies; failures require loading.
+ * Rechecks reuse earlier equality for immutable cached copies, but always compare loaded chats again.
+ */
+function pluginChatsMatch(
+    chaId: string,
+    incoming: unknown,
+    hits: Map<string, DetachedChatCacheHit>,
+    recheck = false,
+): boolean {
+    try {
+        const members = chatList(chaId);
+        if (!Array.isArray(incoming) || incoming.length !== members.length) return false;
+        for (let i = 0; i < members.length; i++) {
+            const { id } = members[i];
+            if (incoming[i]?.id !== id) return false;
+            const ref = { chaId, chatId: id };
+            let held = findChat(ref);
+            if (held) {
+                // Reconciliation snapshots drop own __proto__ keys, so raw equality is not enough.
+                if (needsChatSnapshot(held)) return false;
+            } else {
+                if (chatHasUnackedWork(ref) || chatHydrationHold(ref) !== "none" || isChatBehind(ref)) return false;
+                const remembered = hits.get(id);
+                const hit = remembered ?? cachedDetachedChat(ref);
+                if (!hit || !detachedChatCacheHitCurrent(ref, hit)) return false;
+                // Neither this cached copy nor the host's incoming clone changed since their comparison.
+                if (recheck && remembered) continue;
+                hits.set(id, hit);
+                held = detachedPluginChat(hit.entry.data);
+            }
+            if (JSON.stringify(incoming[i]) !== JSON.stringify(held)) return false;
+        }
+        return true;
+    } catch {
+        // Cycles, BigInts, and other values that cannot be compared still take the ordinary path.
+        return false;
+    }
+}
+
+/**
+ * Both database setters skip loading and reconciling exact chat round trips. Loaded matches stay
+ * pinned while other characters load; all matches and original owners are checked synchronously
+ * before applying. A changed match falls back once to loading every target before any key applies.
+ */
+async function applyPluginDatabaseWithChats(newDb: Record<string, unknown>, context: PluginCallContext | undefined) {
+    const targets = charactersReconciled(newDb);
+    const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+    const matches = new Map<string, { chats: unknown; hits: Map<string, DetachedChatCacheHit> }>();
+    for (const char of Array.isArray(newDb?.characters) ? newDb.characters : []) {
+        if (!char || !owners.has(char.chaId)) continue;
+        const hits = new Map<string, DetachedChatCacheHit>();
+        if (pluginChatsMatch(char.chaId, char.chats, hits)) {
+            matches.set(char.chaId, { chats: char.chats, hits });
+        } else {
+            matches.delete(char.chaId);
+        }
+    }
+    const loading = targets.filter((chaId) => !matches.has(chaId));
+    const releases = [...matches.keys()].flatMap((chaId) =>
+        chatList(chaId).flatMap(({ id }) => {
+            const ref = { chaId, chatId: id };
+            return findChat(ref) ? [pinChat(ref)] : [];
+        }),
+    );
+    const checkOwners = () => {
+        for (const character of characterList()) {
+            if (owners.has(character.chaId) && chatOwnerToken(character.chaId) !== owners.get(character.chaId)) {
+                throw new PluginTargetGoneError("character");
+            }
+        }
+    };
+    try {
+        const applied = await withChatsLoaded(loading, () => {
+            checkOwners();
+            const vanished = vanishedOf(targets);
+            for (const [chaId, { chats, hits }] of matches) {
+                if (!vanished.has(chaId) && !pluginChatsMatch(chaId, chats, hits, true)) return false;
+            }
+            applyPluginDatabase(newDb, context, vanished, new Set(matches.keys()));
+            return true;
+        });
+        if (!applied) {
+            await withChatsLoaded(targets, () => {
+                checkOwners();
+                applyPluginDatabase(newDb, context, vanishedOf(targets));
+            });
+        }
+    } finally {
+        for (const release of releases) release();
+    }
+}
+
+/**
  * Plugin installation needs the full setter's consent flow, so this setter drops `plugins`.
- * Reconciled chats load first so a snapshot never applies against unloaded chats.
+ * Exact chat round trips skip loading and reconciliation; other targets load before applying.
+ * Character fields and a numeric `chatPage` still apply for unchanged chats.
  */
 const setPluginDatabaseLite = async (newDb: any, context: PluginCallContext | undefined) => {
     if (newDb && typeof newDb === "object" && Object.hasOwn(newDb, "plugins")) {
         newDb = { ...newDb };
         delete newDb.plugins;
     }
-    const targets = charactersReconciled(newDb);
-    await withChatsLoaded(targets, () => applyPluginDatabase(newDb, context, vanishedOf(targets)));
+    await applyPluginDatabaseWithChats(newDb, context);
 };
 
 /**
  * Preflights every supplied plugin and awaits all installation prompts before assigning any key,
- * then loads the reconciled characters' chats and applies keys synchronously. Preset fields target
+ * then loads chats except for exact round trips and applies keys synchronously. Unchanged chats
+ * skip reconciliation while character fields and a numeric `chatPage` still apply. Preset fields target
  * the hook's captured ids; without context they resolve through the settings views after all waits
  * (`src/ts/storage/collectionStore.svelte.ts:updateSettings`), including any selection repair then.
  */
@@ -1742,8 +1852,7 @@ const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefi
         newDb = { ...newDb, plugins: await handlePluginInstallViaPlugin(plugins) };
     }
     // After chats load, no await: preset fields use the hook's ids, else the current settings views.
-    const targets = charactersReconciled(newDb);
-    await withChatsLoaded(targets, () => applyPluginDatabase(newDb, context, vanishedOf(targets)));
+    await applyPluginDatabaseWithChats(newDb, context);
 };
 
 const readAssetImage = (path: string) => {

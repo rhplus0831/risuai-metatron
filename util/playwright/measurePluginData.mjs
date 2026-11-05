@@ -2,7 +2,8 @@
 // Reuses measureBoot's audit fixture: 300 characters, 3,000 chats, 20 modules, 50 presets,
 // ten disabled ~100 KiB plugins and ~2 MiB plugin history, plus one enabled measurement plugin.
 // Order: fresh load, getDatabase() cold/second; fresh load, getDatabase(["characters"])
-// cold/second; small pluginStorage write; UI-equivalent plugin toggle; developer recorder check.
+// cold/second; small pluginStorage write; UI-equivalent plugin toggle; fresh load, unchanged
+// getDatabase(["characters"]) -> setDatabase round trip; developer recorder check.
 // Cold means the first database call after boot, with the real db permission pre-granted.
 // Each read reports guest wall time, POST /api/resources/read counts and body bytes, CDP
 // loadingFinished encoded response bytes (including headers), and dataReceived decoded bytes.
@@ -10,6 +11,7 @@
 // sampled about every 50 ms, with collectGarbage before each baseline. An OOPIF is sampled on
 // its own target; an in-process iframe shares the page heap. Sampling can miss short peaks.
 // Writes count every POST /api/resources/... except read/boot from invocation through flushResources.
+// The round trip measures only setDatabase: guest wall time, read POSTs/decoded bytes, and save POSTs.
 // Output is Markdown tables and one JSON line; failures exit nonzero. All data is temporary.
 // SERVER_PORT=6266 VITE_PORT=5366 (must be free); RISU_CHROME=/usr/bin/google-chrome;
 // DEBUG=1 prints server/Vite output. Only one dev stack may run on the machine at a time.
@@ -53,6 +55,11 @@ globalThis.__pluginDataMeasurement = {
         };
     },
     write() { return risuai.pluginStorage.setItem('${storageKey}', 1); },
+    async writeDatabase() {
+        const start = performance.now();
+        await risuai.setDatabase(this.result);
+        return performance.now() - start;
+    },
     async recordAccess() {
         const result = await risuai.getDatabase(['characters']);
         void result.characters[0].chats;
@@ -493,6 +500,30 @@ try {
     );
     console.log("PASS writes read back from server (small storage key, retained history, enabled toggle)");
 
+    stage = "unchanged database round trip";
+    frame = await reload();
+    await frame.evaluate(() => globalThis.__pluginDataMeasurement.read(["characters"]));
+    assert.deepEqual(await frame.evaluate(() => globalThis.__pluginDataMeasurement.check()), expected);
+    await flush();
+    traffic.begin();
+    const wallMs = await frame.evaluate(() => globalThis.__pluginDataMeasurement.writeDatabase());
+    await flush();
+    const roundTripRequests = await traffic.end();
+    const roundTripReads = roundTripRequests.filter(({ route }) => route === "/api/resources/read");
+    const roundTrip = {
+        call: "setDatabase(result)",
+        wallMs,
+        readRequests: roundTripReads.length,
+        decodedResponseBytes: sum(roundTripReads, "decodedResponseBytes"),
+        saveRequests: roundTripRequests.filter(({ route }) => writeRoute(route)).length,
+    };
+    await frame.evaluate(() => globalThis.__pluginDataMeasurement.read(["characters"]));
+    assert.deepEqual(
+        await frame.evaluate(() => globalThis.__pluginDataMeasurement.check()),
+        expected,
+        "Round trip changed characters/chats/messages",
+    );
+
     stage = "developer recorder";
     await page.evaluate(async () => {
         const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
@@ -521,7 +552,7 @@ try {
         `PASS page errors and egress (${blocked.length} expected browser requests blocked, ${denied.length} expected server attempts denied)`,
     );
     console.log(
-        'Order: fresh load → getDatabase() cold → second; fresh load → getDatabase(["characters"]) cold → second; storage write; toggle; recorder. GC before every heap baseline.',
+        'Order: fresh load → getDatabase() cold → second; fresh load → getDatabase(["characters"]) cold → second; storage write; toggle; fresh load → getDatabase(["characters"]) → setDatabase(result); recorder. GC before every heap baseline.',
     );
     console.log(
         "Bytes are integers; encoded response bytes include headers; heap is sampled usedSize, not allocation totals.",
@@ -543,9 +574,16 @@ try {
             `| ${write.call} | ${write.requests.length} | ${[...new Set(write.requests.map(({ route }) => route))].join(", ")} | ${write.requestBytes} |`,
         );
     console.log(
+        "\n| Call | Run | Guest ms | Read POSTs | Response decoded bytes | Save POSTs |\n| --- | --- | ---: | ---: | ---: | ---: |",
+    );
+    console.log(
+        `| ${roundTrip.call} | unchanged round trip | ${roundTrip.wallMs.toFixed(2)} | ${roundTrip.readRequests} | ${roundTrip.decodedResponseBytes} | ${roundTrip.saveRequests} |`,
+    );
+    console.log(
         JSON.stringify({
             reads,
             writes,
+            roundTrip,
             recorder: lines,
             checks: { seed: true, messages: true, writes: true, pageErrors: errors, unexpectedEgress: [] },
         }),
