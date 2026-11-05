@@ -14,8 +14,8 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (3)
-- [Client and plugins](#client-and-plugins) (8)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (12)
+- [Client and plugins](#client-and-plugins) (6)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (10)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (16)
@@ -182,20 +182,6 @@ After the paged export (`src/lib/ChatScreens/screenshotExport.ts`), the Render W
 
 ## Client and plugins
 
-### Plugin tests cite a skip no guide records
-
-`src/ts/plugins/apiV3/pluginContext.test.ts:1285` and `src/ts/plugins/apiV3/permissions.test.ts:314` say the skipped-instance bug of `loadV3Plugins` is recorded in `plugins-mcp.md`. The guide did not record it even before Guide Budgets slice 5b, and `src/ts/plugins/apiV3/v3.svelte.ts:2412` now unloads a snapshot of the instances.
-
-**Why it matters:** the comments send a reader to a hazard that does not exist and may justify a repeat-until-gone test workaround that is no longer needed.
-**Suggested handling:** confirm the snapshot makes the skip impossible, then drop the citation and the workaround.
-
-### RPack mocks rest on a byte map fetch that is gone
-
-About 11 test files mock `src/ts/rpack/rpack_js.js` with a comment that the real RPack fetches its byte map as a Vite asset (`src/ts/translator/presetsCodec.test.ts:33`, `src/ts/characterCardsImport.test.ts:59`, `src/ts/storage/tests/presetIds.test.ts:46`). `rpack_js.js` now re-exports `shared/rpack.ts`, whose map is inlined and which is synchronous. Found by Guide Budgets slice 5b.
-
-**Why it matters:** the mocks look like unneeded boundary mocks (V7), and the tests could run the real codec.
-**Suggested handling:** drop the mocks where the real codec works, or fix the comments.
-
 ### plugins.md omits two parsed headers
 
 `plugins.md` documents neither `//@allowed-ipc` nor `//@risu-arg`, though `importPlugin` in `src/ts/plugins/plugins.svelte.ts` parses both and the runtime's IPC warnings tell authors to use `//@allowed-ipc`. Found by Guide Budgets slice 5b.
@@ -260,13 +246,6 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 **Why it matters:** with auto suggestions on, the first return to a chat after new suggestions downloads and re-runs what the tab already holds.
 **Suggested handling:** decide whether a non-render chat field such as `suggestMessages` should move the transform key at all; the chat revision is also the key's fence against mixed-revision results, so this needs its own design.
 
-### terminalNotice.spec.ts's composer case fails on an unseeded chat
-
-`e2e/terminalNotice.spec.ts:279` ("Enter in the composer once the notice opened goes to its OK") fails since `81e5eda9e` locked the composers while a chat needs its setup: `input.fill` at `:312` times out on a readonly textarea with placeholder "Setup required", because the spec's `seed` sets no `promptPresetId`, `modelPresetId` or `bindedPersona` (`e2e/chatBinding.spec.ts` was updated for the lock, this spec was not). Reproduced 2026-10-31 at `e338911fc` on a clean worktree, and red in every Server Byte Budgets slice run.
-
-**Why it matters:** a red spec unrelated to the change under test reads like a regression of that change, and the terminal notice's Enter handling is no longer guarded.
-**Suggested handling:** seed the chat with its three bindings the way `chatBinding.spec.ts` does and check the spec passes.
-
 ### Delegate profile test policy names the old guide
 
 `.claude/delegate-implementation.local.md:11` (untracked, main checkout) points the `<test policy>` slot at `docs/structure/build-test-platforms.md`. Guide Budgets slice 4 moved `### Test rules` to `docs/structure/test-harness.md`.
@@ -323,14 +302,6 @@ Found in the Guides To Source run (2026-11-04/05); owner build-test-platforms.
 **Why it matters:** the first two cost lookups and can skip the guide-edit rules; the last two would skew a later audit's rows and untouched lists.
 
 **Suggested handling:** strip backticks from the query and prefer `docs/structure/README.md` for `README.md` (with node tests, updating `guideOfArgument`); for an audit rerun, note the bogus rows and count title queries first, or cover every heading when the resolved section is level 1.
-
-### measureChats.mjs trips safe boot and fakes its scrolled-up input
-
-`util/playwright/measureChats.mjs` as committed cannot finish: its boot loop waits `page.waitForTimeout(2000)` between three fresh boots (~317), below `SAFE_BOOT_SETTLE_MS` (10 s, `src/ts/safeBoot.ts`), so automatic safe boot opens its alert and the `Go Back` click in `chatRow` times out. Its `streamReply({ scrolledUp: true })` only sets `scrollTop`, while `Chats` releases its anchor on wheel, touch, pointer or key input, so "Long: scrolled-up streaming keeps the loaded window" fails (600 → 150 rows) as harness input, not a product change. Already described in `docs/research/rendering-performance-investigation.md`; seen again by Incremental Chat Transport Slice 0 (2026-11-05), which measured with a scratch copy.
-
-**Why it matters:** every measureChats-based slice needs a temporary settled copy until the driver is fixed.
-
-**Suggested handling:** wait 11 s after the seed check and between boots (or clear the safe-boot attempts as `util/playwright/stack.mjs` offers), and drive the scrolled-up case with real wheel input.
 
 ### checkServerSend once hit an alert after its mid-stream reload
 
