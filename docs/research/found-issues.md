@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (19)
+- [Client and plugins](#client-and-plugins) (17)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
@@ -351,22 +351,6 @@ Search plan slice 2c (2026-10-20, `src/lib/SideBars/LoreBook/LoreBookList.svelte
 
 **Why it matters:** an entry added under a filter seems to vanish, and an opened detail can close under the user.
 **Suggested handling:** clear the query on add, or show the new entry regardless; keep a filter-opened folder open while it has an open detail.
-
-### The card export dialog's backdrop calls window.close
-
-The `cardexport` branch of `src/lib/Others/AlertComp.svelte` (~942) has a backdrop `onclick={close}` with no local `close`, so the handler is the global `window.close`, which Svelte's delegated click calls with the element as receiver: Chromium throws `TypeError: Illegal invocation` and the dialog stays until its X button or Escape. Other dialogs' backdrops answer through `alertStore.answer(...)`; a cancel (`{ type: "cancel", type2 }`) was likely meant. Probed by a reviewer in the Guides To Source run (2026-11-05). Owner: global-api.
-
-**Why it matters:** low: the waiting caller still settles through X or Escape, but every backdrop click throws.
-
-**Suggested handling:** answer a cancel from the backdrop, with a test in `src/ts/alertCardExport.test.ts`.
-
-### PopupButton menus take two clicks to reopen
-
-The document click listener `close` in `src/lib/UI/PopupList.svelte` (~33) clears only `popupStore.children` and leaves `popupStore.openId` at the button's id, so the next click of the same button in `src/lib/UI/PopupButton.svelte` (~22) sees `openId === buttonId` and only clears it; the menu opens on the second click. Read in code in the Guides To Source run (2026-11-04); not reproduced in a browser. Owner: ui-theming (Dialogs, popovers, and portals).
-
-**Why it matters:** a visible glitch on every `PopupButton` menu (character and chat menus) after an outside-click close.
-
-**Suggested handling:** confirm in `pnpm dev:agent`, then reset `openId` in `close` (or compare against `children` too).
 
 ### util and globalApi helper gaps
 
