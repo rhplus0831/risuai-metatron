@@ -809,7 +809,7 @@ make stale: `server/src/tests/generations.test.ts`, `generationReceipts.test.ts`
     string under `ko` (D4); a named checkpoint whose page holds a malformed candidate field loads without it
     (D3); a write group that rolls back leaves the attempt ledger as it was (D13).
 
-### Slice 2: the switch op and the tab's candidate controls (D10, D12, D14; needs 1; merges with or after Transport Slice 4)
+### Slice 2: the switch op and the tab's candidate controls (D10, D12, D14; needs 1, and 3 for one test; merges with or after Transport Slice 4)
 
 Files: `shared/chats.ts` (the `selectCandidate` op), `server/src/data/chatStore.ts` (applying it from the
 stored row, the `candidatesRevision` and missing-`candidateId` refusals as an answer the tab sees, the
@@ -832,6 +832,7 @@ store guide (the `selectCandidate` op).
 - Tests (`server/src/tests/chatStore.test.ts`, `server/src/tests/promptRunner.test.ts`,
   `src/ts/process/rerollCandidates.test.ts`, `src/ts/process/serverGeneration.test.ts`,
   `src/ts/network/eventFeed.test.ts`, `src/lib/ChatScreens/Chat.controls.test.ts`,
+  `server/src/tests/memoryJobs.test.ts` for the test moved from Slice 3,
   `src/ts/process/rerollHistory.test.ts` unchanged after Slice 1 removed its `addRerolls` cases):
   - the op: `selectCandidate` swaps `data`, `generationInfo`, `promptInfo` and a fresh translation from the
     stored candidate with `candidateId`, clears a stale one, and refreshes the slot it leaves from an edited
@@ -844,7 +845,8 @@ store guide (the `selectCandidate` op).
     unchanged), and an op naming a dropped candidate's `id` is refused too (the stale switch); a variable
     another tab set after the switching tab's read keeps its value while the other keys move to the target's
     (the switch after a newer variable edit); the op is refused on a message that is not the newest reply and
-    on a locked carrier;
+    on a locked carrier; a "record now" press on a reply with candidates, then a `selectCandidate` switch,
+    marks the event `rerecord` (moved from Slice 3, which landed before the op existed);
   - the tab: a switch queues exactly one `selectCandidate` with the target's `candidateId` and `expect` from
     the mirror; a switch on a locked carrier or a busy chat throws and queues nothing; a refused switch
     re-reads, shows the current list and queues nothing more; `reroll` with `selected` at the last candidate
@@ -870,7 +872,7 @@ the memory guide (Memory writes: the commit boundary).
   `upstreamExport.test.ts`, `upstreamImportCharacters.test.ts`, `upstreamImportReport.test.ts`): a reroll
   job's writer windows and HypaV3 input hold no candidate text and no carrier text; after the next send,
   the window holds the selected candidate's text and none of the others; a "record now" press on a reply
-  with candidates records the selected text, and a later switch marks the event `rerecord`; the export of
+  with candidates records the selected text (the later switch marking it `rerecord` is Slice 2's); the export of
   a chat with candidates writes the selected text as `data`, no candidate field, and the report entry
   with the count; the import of a PocketRisu `.bin` with `swipes` and `swipeId` gives `candidates` with
   the right `selected`, of a RisuBard `.bin` gives the newest reply's checkpoint and per-candidate `after`
