@@ -136,16 +136,18 @@ export type ContextReport = {
         droppedTokens: number;
     };
     /**
-     * No-memory trim ledger, when queued messages survive formatting, for the displacement estimate:
+     * No-memory trim ledger, when non-blank queued messages survive formatting, for the displacement estimate:
      * present only when no memory step ran (`contextTrim` in `server/src/prompt/assemble.ts`).
      */
     trim?: {
-        /** maxContext − currentTokens after the trim loop. */
+        /** maxContext − currentTokens after the trim loop, plus the token counts of leading blank entries. */
         headroom: number;
         /**
-         * The entries the next send's trim loop would drop first, in order, at most 8: examples, the
-         * new-chat marker, then messages (the greeting is a message). Each is the count the loop
-         * subtracts for it, its per-message overhead included.
+         * The non-blank entries the next send's trim loop would drop first, in order, at most 8:
+         * examples, the new-chat marker, then messages (the greeting is a message). Each is the count
+         * the loop subtracts for it plus any blank history immediately following it, including after
+         * the eighth entry, with all per-message overhead included. Blank entries free tokens without
+         * displacing a message, so those before the first entry instead increase headroom.
          */
         queue: readonly ContextTrimEntry[];
         /** On a continue: the continued message's count already in the ledger (overhead included). */

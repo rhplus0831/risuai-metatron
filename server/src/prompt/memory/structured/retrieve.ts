@@ -129,7 +129,7 @@ const CJK_RUN = /[\p{sc=Hangul}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Han}\u30fc]+/
 /** A letter's marks count with it: scripts that write vowels as marks would otherwise have no runs. */
 const WORD_RUN = /[\p{L}\p{M}\p{N}]{2,}/gu;
 
-type RetrievalHost = Pick<MemoryHost, "db" | "embeddings" | "fence">;
+type RetrievalHost = Pick<MemoryHost, "db" | "embeddings" | "fence" | "recoverLocalModelFailure">;
 
 type RetrievalInput = {
     events: readonly MemoryEvent[];
@@ -279,6 +279,7 @@ function sendEmbeddings(host: RetrievalHost, queries: string[]) {
                 return bestSimilarities(unique, processor.vectors, queryVectors);
             } catch (error) {
                 host.fence();
+                host.recoverLocalModelFailure?.();
                 state.similarity = "failed";
                 state.failure = host.embeddings.redact(error instanceof Error ? error.message : String(error));
                 return null;

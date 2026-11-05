@@ -26,7 +26,7 @@ Read each module's header or component contract, then read the named export's co
 - `server/src/prompt/memory/structured/card.ts`: card rendering and reservation; `buildMemoryCard`, `RequiredOverLimit`,
   `pageLine`, `itemTag`.
 - `server/src/prompt/memory/structured/step.ts`: a send's read selection; `readMemoryRecords`, `MemoryRecords`,
-  `readEntries`, `blankEntry`, `selectMemory`, `writerState`, `sendManifest`.
+  `readEntries`, `selectMemory`, `writerState`, `sendManifest`.
 - `shared/contextReport.ts`: report contract; `ContextReport.memory`, `reportedMemoryExclusions`,
   `CONTEXT_MEMORY_EXCLUDED`.
 - `src/ts/process/index.svelte.ts`: preview entrypoint; `previewChatReport`. `shared/jobs.ts`: preview result contract;

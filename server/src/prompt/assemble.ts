@@ -60,6 +60,7 @@ import type { MemoryHost, MemoryTokenizer } from "./memory/host.ts";
 import { hypaMemoryV2 } from "./memory/hypav2.ts";
 import {
     appliedHypaV3Summaries,
+    blankEntry,
     createHypaV3SourceValidator,
     emptyHypaV3Execution,
     executeHypaV3Plan,
@@ -84,7 +85,6 @@ import { MEMORY_TASK_LIMITS } from "./memory/memoryTasks.ts";
 import { itemTag } from "./memory/structured/card.ts";
 import { automaticRerecords } from "./memory/structured/reconcile.ts";
 import {
-    blankEntry,
     type MemoryRecords,
     type MemorySelected,
     type MemorySendManifest,
@@ -461,7 +461,7 @@ type HypaV3StepResult =
           protectedEntries: OpenAIChat[];
           /**
            * Whether the summaries cover the history the step left out: "gap" when a trimmed selection
-           * dropped uncovered history, "unknown" when the stored summaries end past the history.
+           * dropped non-blank uncovered history, "unknown" when the stored summaries end past the history.
            */
           coverage: "covered" | "gap" | "unknown";
           /** The preset's thresholds the step applied (`HypaV3Prepared.budget`): the memory budget and the reductions. */
@@ -2108,7 +2108,16 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         }
         // The first kept message's memo, or none (a stale one would outlive the trim).
         host.setLastMemory(chats[0]?.memo);
-        trimLedger = { headroom: maxContextTokens - currentTokens, next: chats.slice(0, TRIM_QUEUE_LENGTH) };
+        // Blank entries fold into the preceding slot (or headroom), including those after the last slot.
+        let end = 0;
+        let queued = 0;
+        for (const chat of chats) {
+            if (!sourceOf.get(chat)?.empty && ++queued > TRIM_QUEUE_LENGTH) {
+                break;
+            }
+            end++;
+        }
+        trimLedger = { headroom: maxContextTokens - currentTokens, next: chats.slice(0, end) };
     }
     /** The sources of the history-side entries the memory step or the trim left (before formatting). */
     const assembledSources = new Set<ContextSource>();
@@ -3038,17 +3047,37 @@ function memoryManifestFields(
 /**
  * The trim ledger of the report: the next entries' counts as the loop subtracts them. The marker's
  * count is its recheck count while it reached the prompt unchanged; without one there is no ledger.
- * A queued message already absent from the prompt cannot be displaced again, so omit that ledger.
+ * Blank history folds into the preceding queue entry, or headroom before the first one, since it
+ * frees tokens without displacing a message. A non-blank queued message absent from the prompt, or
+ * a blank continue target (whose count the meter expects in the last slot), makes the ledger unusable.
  */
 function contextTrim(
     arg: Parameters<typeof buildContextReport>[0],
     ledger: { headroom: number; next: readonly OpenAIChat[] },
     kept: ReadonlySet<ContextSource>,
 ): ContextReport["trim"] | null {
+    const continued =
+        arg.input.continueMessageId !== undefined ? arg.messageSourceById.get(arg.input.continueMessageId) : undefined;
+    if (continued?.empty) {
+        return null;
+    }
+    let headroom = ledger.headroom;
     const queue: ContextTrimEntry[] = [];
     for (const chat of ledger.next) {
         const source = arg.sourceOf.get(chat);
-        if (!source || ((source.kind === "greeting" || source.kind === "message") && !kept.has(source))) {
+        if (!source) {
+            return null;
+        }
+        if (source.empty) {
+            const previous = queue.at(-1);
+            if (previous) {
+                previous.tokens += source.tokens;
+            } else {
+                headroom += source.tokens;
+            }
+            continue;
+        }
+        if ((source.kind === "greeting" || source.kind === "message") && !kept.has(source)) {
             return null;
         }
         if (source.kind === "marker") {
@@ -3065,10 +3094,8 @@ function contextTrim(
             });
         }
     }
-    const continued =
-        arg.input.continueMessageId !== undefined ? arg.messageSourceById.get(arg.input.continueMessageId) : undefined;
     return {
-        headroom: ledger.headroom,
+        headroom,
         queue,
         ...(continued && arg.assembledSources.has(continued)
             ? { replyPrefix: { messageId: arg.input.continueMessageId!, tokens: continued.tokens } }

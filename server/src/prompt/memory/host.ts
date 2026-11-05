@@ -49,6 +49,8 @@ export type MemoryHost = {
     summarizer(text: string): Promise<string>;
     /** The job's embeddings, for `new HypaProcesser(...)` and `new HypaProcessorV2(...)`. */
     embeddings: EmbeddingEnv;
+    /** Discards a tracked local-model refusal when the algorithm recovers from the failure and continues. */
+    recoverLocalModelFailure?(): void;
     /** A user regex on a script worker, under a per-task deadline and the run's abort signal. */
     regex(op: RegexOp, opts?: { deadlineMs?: number }): Promise<RegexOpResult>;
     /** HypaV3's summary separator limits; absent, the production ones (tests lengthen them). */

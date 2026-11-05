@@ -126,8 +126,8 @@ production calls the parts. Source validation before a summary save is described
   `memory` slot resolves to `LLMFormat.Plugin` (`pluginModel`; the tab must stay connected) or the owner has an
   applicable `request` trigger (`requestTrigger`), as the runner's `jobMemoryBlockingReason` decides.
 - Any other input job selects only: the stored summaries, then the uncovered history trimmed behind the protected tail.
-- A gap (the trimmed history's `tokenizeChat` total) over the preset's `gapConfirmTokens` asks `memoryGap` with the
-  planned call count. The answer serves the job's later speakers and rounds.
+- A gap (the trimmed non-blank history's `tokenizeChat` total) over the preset's `gapConfirmTokens` asks `memoryGap`
+  with the planned call count. The answer serves the job's later speakers and rounds.
 - `generate` runs an initial summarization: a fresh prepare and plan on the memory stored now, windows one at a time
   with the stop control, then a trimmed selection.
 

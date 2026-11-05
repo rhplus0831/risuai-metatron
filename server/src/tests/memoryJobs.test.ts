@@ -26,6 +26,7 @@ import type { Message } from "../../../shared/database.ts";
 import { readRecordSet, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
 import { confirmedWindows, writerCadence, writerCeiling } from "../prompt/memory/structured/window.ts";
 import { memoryRecords, writeMemory } from "./memoryFixtures.ts";
+import * as localModels from "../prompt/transformers.ts";
 import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // Memory on the server, end to end. A send (and a preview) as a server job on a real listening
@@ -2752,6 +2753,7 @@ describe("HypaV3 with the server's memory task service", () => {
 describe("structured memory job hand-offs", () => {
     const fake = createFakeMemoryTasks();
     let stack: Stack;
+    let transformers: localModels.TransformersService;
     const messages = [
         { chatId: "u1", role: "user", data: "First user" },
         { chatId: "a1", role: "char", data: "First reply" },
@@ -2759,7 +2761,14 @@ describe("structured memory job hand-offs", () => {
         { chatId: "a2", role: "char", data: "Second reply" },
     ];
     beforeAll(async () => {
-        stack = await startStack({ memoryTasks: fake.service });
+        // Capture the real service so refusals can be injected at the local-model process boundary.
+        const createdModels = vi.spyOn(localModels, "createTransformers");
+        try {
+            stack = await startStack({ memoryTasks: fake.service });
+            transformers = createdModels.mock.results[0].value;
+        } finally {
+            createdModels.mockRestore();
+        }
         await patchPreset("modelProfiles", { maxContext: 5000 });
     });
     beforeEach(async () => {
@@ -2898,6 +2907,72 @@ describe("structured memory job hand-offs", () => {
                 file: path.join(rootDir, "save", "data", "resources.sqlite"),
                 kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
             });
+
+        it("trimming only blank history leaves coverage intact and asks no memory gap question", async () => {
+            const chaId = await seedCharacter({
+                extra: { firstMessage: "" },
+                // Per-message overhead alone exceeds the 900-token context. The nonblank history
+                // fits, so the trim can free enough tokens without losing any of its four messages.
+                messages: [
+                    ...Array.from({ length: 300 }, (_, i) => ({ chatId: `blank-${i}`, role: "user", data: "" })),
+                    ...messages,
+                ],
+            });
+            // Answer an unexpected question as well, so a regression fails an assertion, not a timeout.
+            const result = await job("send", chaId, {}, { answer: () => "continue" });
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            const reply = (await readChat(chaId)).data.message.at(-1);
+            const report = parseContextReport(reply.generationInfo.context);
+            expect(report?.memory).toMatchObject({ kind: "structuredMemory", coverage: "covered", gapTokens: 0 });
+            expect(report?.history).toMatchObject({ total: 4, kept: 4, droppedTokens: 0 });
+            expect(questions(result.events)).toEqual([]);
+            expect(summaries()).toEqual([]);
+        });
+
+        it("reports required memory overflow with its own status after recovering from a local embedding refusal", async () => {
+            const presetRecord = (await single("hypaV3Presets")).data;
+            const priorSettings = presetRecord.items.find(
+                (item: { id: string }) => item.id === presetRecord.selectedId,
+            ).settings;
+            await patchSettings({ hypaModel: "MiniLM" });
+            await patchHypaV3({
+                budgetMode: "tokens",
+                memoryBudgetTokens: 100,
+                structured: {
+                    cadence: "manual",
+                    requiredCap: 1,
+                    laneTargets: { pages: 500, events: 0, evidence: 0, threads: 0 },
+                },
+            });
+            const chaId = await seedCharacter({ messages });
+            const store = openStore();
+            const embeddings = vi.spyOn(transformers, "runEmbedding");
+            try {
+                const [scene, ada] = memoryRecords(["scene", "ada"]).pages;
+                Object.assign(scene, { type: "scene", title: "Gate scene", participants: ["ada"] });
+                Object.assign(ada, { type: "character", title: "Ada" });
+                writeMemory(store, chaId, "k", { pages: [scene, ada] });
+                for (const refusal of [
+                    new localModels.TransformersQueueFullError(),
+                    new localModels.TransformersQueueWaitError(),
+                ]) {
+                    embeddings.mockClear().mockRejectedValue(refusal);
+                    const result = await job("send", chaId);
+                    expect(embeddings).toHaveBeenCalled();
+                    expect(result.terminal).toMatchObject({
+                        type: "error",
+                        code: "memoryRequiredOverCap",
+                        status: 500,
+                        message: expect.stringContaining("required memory pages"),
+                    });
+                    expect(upstream).toEqual([]);
+                }
+            } finally {
+                embeddings.mockRestore();
+                store.close();
+                await patchHypaV3(priorSettings);
+            }
+        });
 
         it("required overflow ends send and preview jobs without a chat write or provider request under inlay errors", async () => {
             const presetRecord = (await single("hypaV3Presets")).data;

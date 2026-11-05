@@ -1426,8 +1426,9 @@ export interface HypaV3SelectOptions {
 /** What the trimming of a selection with `trimUncovered` dropped and kept. */
 export interface HypaV3Trim {
     /**
-     * The dropped history (the greeting and messages; examples and the new-chat marker are dropped
-     * without counting): their `tokenizeChat` total, count, and memos (the greeting's is `undefined`).
+     * The dropped non-blank history (the greeting and messages; blanks, examples and the new-chat
+     * marker are dropped without counting): their `tokenizeChat` total, count, and memos (the
+     * greeting's is `undefined`).
      */
     readonly gap: {
         readonly tokens: number;
@@ -1486,6 +1487,11 @@ export function appliedHypaV3Summaries(prepared: HypaV3Prepared, execution: Hypa
     return execution.data.summaries.slice(0, prepared.appliedSummaries + added);
 }
 
+/** A history entry with nothing to send: blank text and no media. Formatting drops it. */
+export function blankEntry({ content, multimodals }: Pick<OpenAIChat, "content" | "multimodals">): boolean {
+    return content.trim() === "" && !(multimodals && multimodals.length > 0);
+}
+
 /** Whether a prompt entry is chat history: not an example message nor a new-chat marker. */
 function isHistoryEntry(chat: OpenAIChat): boolean {
     return !(
@@ -1499,8 +1505,8 @@ function isHistoryEntry(chat: OpenAIChat): boolean {
 /**
  * Uncovered history dropped oldest first, from `currentTokens`: entries of `raw` before `protectedStart`
  * go while the count is over `maxContextTokens`. `pinned` entries before it are never dropped and do not
- * stop the scan. `fits` is false when the count is still over with nothing left to drop. Only history
- * counts toward `gap`: examples and the new-chat marker go without counting.
+ * stop the scan. `fits` is false when the count is still over with nothing left to drop. Only non-blank
+ * history counts toward `gap`: blanks, examples and the new-chat marker still free their tokens.
  */
 export async function trimHistoryToContext(arg: {
     raw: readonly OpenAIChat[];
@@ -1523,7 +1529,7 @@ export async function trimHistoryToContext(arg: {
         }
         const entryTokens = await tokenizer.tokenizeChat(entry);
         currentTokens -= entryTokens;
-        if (isHistoryEntry(entry)) {
+        if (isHistoryEntry(entry) && !blankEntry(entry)) {
             gapTokens += entryTokens;
             gapMemos.push(entry.memo);
         }

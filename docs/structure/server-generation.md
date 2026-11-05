@@ -95,8 +95,8 @@ answers in full.
 ### Local model refusals
 
 `server/src/prompt/transformers.ts` `localModelRefusal` keeps its status: a full queue answers 429, an expired queue
-wait answers 503. Prompt jobs and manual trigger commands both use that mapping; server translations preserve the
-refusal status carried by a failed WebLLM request.
+wait 503. Prompt jobs and manual trigger commands use it; server translations keep a failed WebLLM request's status. A
+refusal the memory step recovered from or outlived replaces no later error.
 
 ### Generation admission
 

@@ -687,6 +687,7 @@ async function warmRecords(host: MemoryHost, event: MemoryEventWrite, sectionTex
         if (host.signal.aborted || error instanceof MemoryHostFailure) {
             throw error;
         }
+        host.recoverLocalModelFailure?.();
         console.warn("[memory] warming the new records failed");
         return host.redact(error instanceof Error ? error.message : String(error));
     }

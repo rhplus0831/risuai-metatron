@@ -8,6 +8,7 @@ import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "
 import {
     CONTEXT_MEMORY_EXCLUDED,
     type ContextReport,
+    displacement,
     historyDigest,
     parseContextReport,
 } from "../../../shared/contextReport.ts";
@@ -2326,6 +2327,65 @@ describe("the context report", () => {
         const { report } = await run();
         expect(report.history).toMatchObject({ total: 3, kept: 0 });
         expect(report.memory!.summarized).toBe(1);
+    });
+
+    it("folds blank history into headroom and the preceding trim entry without using a queue slot", async () => {
+        const nonblank: Entry[] = Array.from({ length: 9 }, (_, i) => ({
+            chatId: `m${i + 1}`,
+            data: "x",
+            role: i % 2 ? "char" : "user",
+        }));
+        const { run, host } = contextAssembly({
+            greeting: "ERASE",
+            messages: [
+                { chatId: "leading", data: "ERASE" },
+                nonblank[0],
+                { chatId: "middle", data: "ERASE", role: "char" },
+                ...nonblank.slice(1, 8),
+                { chatId: "after-eighth", data: "ERASE" },
+                nonblank[8],
+            ],
+        });
+        host.scripts.process = async (_char, data, mode) => ({
+            data: mode === "editprocess" && data === "ERASE" ? "" : data,
+            emoChanged: false,
+        });
+        const { report, formated } = await run();
+        expect(formated.map(({ memo }) => memo)).toEqual(nonblank.map(({ chatId }) => chatId));
+        // 400 - (10 response + 50 allowance + 9 * 4 nonblank + 4 * 3 blank) = 292.
+        // The blank greeting and leading message free another 6 before any message is displaced.
+        expect(report.trim).toEqual({
+            headroom: 298,
+            queue: [
+                { tokens: 7, kind: "message", user: true },
+                ...Array.from({ length: 6 }, (_, i) => ({ tokens: 4, kind: "message", user: i % 2 === 1 })),
+                { tokens: 7, kind: "message", user: false },
+            ],
+            perMessage: 3,
+        });
+        expect(displacement(report, 298)).toEqual({ messages: 0, userMessages: 0 });
+        // Removing m1 also frees the following blank's 3 tokens; it displaces only m1.
+        expect(displacement(report, 305)).toEqual({ messages: 1, userMessages: 1 });
+        // The blank immediately after m8 still belongs to m8, even at the queue limit.
+        expect(displacement(report, 336)).toEqual({ messages: 8, userMessages: 4 });
+        expect(displacement(report, 337)).toBe("beyondQueue");
+    });
+
+    it("omits the trim ledger when editprocess leaves the continued message blank", async () => {
+        const { run, host } = contextAssembly({
+            messages: [
+                { chatId: "u1", data: "hello" },
+                { chatId: "c1", data: "ERASE", role: "char" },
+            ],
+        });
+        host.scripts.process = async (_char, data, mode) => ({
+            data: mode === "editprocess" && data === "ERASE" ? "" : data,
+            emoChanged: false,
+        });
+        const { report, formated } = await run({ continue: true, continueMessageId: "c1" });
+        expect(formated.map(({ memo }) => memo)).not.toContain("c1");
+        expect(report.trim).toBeUndefined();
+        expect(displacement(report, 400)).toBe("unavailable");
     });
 
     it("history left blank by its scripts is not counted as left out unsummarized", async () => {

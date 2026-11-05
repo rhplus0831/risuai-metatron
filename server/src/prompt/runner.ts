@@ -775,7 +775,8 @@ export function jobMemoryBlockingReason(scope: JobScope): MemoryBlockingReason |
 /**
  * The memory algorithms' services of one run of a job (`memory-on-server`): the job's settings, its own
  * requests and embeddings, its chat's CBS, and its abort. `track` wraps the local summarizer's calls,
- * and `onProgress` hears each `progress` notice.
+ * `recoverLocalModelFailure` discards a refusal the algorithm survived, and `onProgress` hears each
+ * `progress` notice.
  */
 export function createJobMemoryHost(arg: {
     deps: GenerationRunnerDeps;
@@ -783,6 +784,7 @@ export function createJobMemoryHost(arg: {
     chatRef: MemoryChatRef;
     embeddingEnv: EmbeddingEnv;
     track?: <T>(call: () => Promise<T>) => Promise<T>;
+    recoverLocalModelFailure?: () => void;
     onProgress?: (open: boolean) => void;
 }): MemoryHost {
     const { deps, setup, chatRef, embeddingEnv } = arg;
@@ -838,6 +840,7 @@ export function createJobMemoryHost(arg: {
                 }
             }),
         embeddings: embeddingEnv,
+        recoverLocalModelFailure: arg.recoverLocalModelFailure,
         regex: (op, opts) => untilAborted(deps.scriptWorkers.regex(op, opts), nativeCtx.signal),
         ...(deps.hypaV3SeparatorLimits ? { separatorLimits: deps.hypaV3SeparatorLimits } : {}),
         parseChatML: (text) => parseChatML(text, (part) => services.parse(part, undefined)),
@@ -1503,12 +1506,15 @@ async function runSpeaker(arg: {
         const stageTimings = { stage1Duration: 0, stage2Duration: 0 };
         // The memory algorithms' services of this run (`memory-on-server`): the job's settings, its
         // own requests and embeddings, its chat's CBS, and its abort.
-        // Memory algorithms can replace an error's text; keep the latest local outcome for this assembly.
+        // Memory algorithms can replace an error's text; keep a refusal until its failure is recovered.
         const localModelOutcome = { refusal: null as ReturnType<typeof localModelRefusal> };
+        const recoverLocalModelFailure = () => {
+            localModelOutcome.refusal = null;
+        };
         async function trackLocalModel<T>(call: () => Promise<T>): Promise<T> {
             try {
                 const result = await call();
-                localModelOutcome.refusal = null;
+                recoverLocalModelFailure();
                 return result;
             } catch (error) {
                 localModelOutcome.refusal = localModelRefusal(error);
@@ -1528,6 +1534,7 @@ async function runSpeaker(arg: {
             chatRef,
             embeddingEnv,
             track: trackLocalModel,
+            recoverLocalModelFailure,
             onProgress: (open) => {
                 memoryProgressOpen = open;
             },
@@ -1675,7 +1682,12 @@ async function runSpeaker(arg: {
                         });
                     }
                 },
-                stage: (stage) => reportStage(job, stage),
+                stage: (stage) => {
+                    if (stage === "preparing") {
+                        recoverLocalModelFailure();
+                    }
+                    reportStage(job, stage);
+                },
                 captionImage: (dataUrl) =>
                     trackLocalModel(async () => {
                         setup.check();

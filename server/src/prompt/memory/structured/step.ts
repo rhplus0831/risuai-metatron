@@ -21,7 +21,7 @@ import {
 import type { MemoryContents } from "../../../data/memoryStore.ts";
 import type { ResourceStore } from "../../../data/resourceStore.ts";
 import type { MemoryHost, MemoryTokenizer } from "../host.ts";
-import { trimHistoryToContext } from "../hypav3.ts";
+import { blankEntry, trimHistoryToContext } from "../hypav3.ts";
 import { buildMemoryCard, type MemoryCard } from "./card.ts";
 import {
     coveredMessages,
@@ -139,7 +139,7 @@ export type MemorySendManifest = {
     excluded: readonly ContextMemoryExcluded[];
     excludedTotal: number;
     lanes: readonly LaneSpend[];
-    /** The tokens of the history the trim dropped: what the badge's gap state reads. */
+    /** The tokens of non-blank history the trim dropped: what the badge's gap state reads. */
     gapTokens: number;
     confirmedThrough?: string;
     writer: ContextMemoryWriter;
@@ -190,11 +190,6 @@ export function readEntries(history: readonly OpenAIChat[], messages: readonly M
     });
 }
 
-/** A history entry with nothing to send: blank text and no media. Formatting drops it. */
-export function blankEntry({ content, multimodals }: Pick<OpenAIChat, "content" | "multimodals">): boolean {
-    return content.trim() === "" && !(multimodals && multimodals.length > 0);
-}
-
 /** `rawWindow` without the entry at `continued` among what leaves the prompt. */
 function sendWindow(
     entries: readonly ReadEntry[],
@@ -230,7 +225,7 @@ function cardEntries(
  * `input` and `records` are not changed, and every entry `chats` keeps is the same object, so a second
  * pass after the records changed starts over from it, and reconciles what it is given again.
  *
- * `coverage` is `gap` when the trim dropped history, or when covered history with something to send
+ * `coverage` is `gap` when the trim dropped non-blank history, or when covered history with something to send
  * left and the card that stands in for it is empty: the events cover it, but the model does not see
  * them. Only `gapTokens` drives the gap question, so that second case asks nothing.
  * `budget.reduced` reports only memory: headroom and extra belong to the summarizer, not this read.
