@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run) and the ninth (the Incremental Chat Transport run) on 2026-11-05; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run) and the tenth (the Plugin Storage and Data API run) on 2026-11-05; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -8,15 +8,15 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (8)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (10)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (11)
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (7)
-- [Client and plugins](#client-and-plugins) (25)
+- [Client and plugins](#client-and-plugins) (27)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
-- [Guides](#guides) (5)
+- [Guides](#guides) (6)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (19)
 
@@ -88,6 +88,20 @@ Found 2026-11-05 in Job Handoff Slice 2. A tab whose takeover was lost (its tick
 
 **Why it matters:** today it only affects what the worker displays. It becomes a real problem once anything relies on the worker's stream view.
 **Suggested handling:** add a chat-store "detach without retiring" release that drops the job's entries but leaves its generation ids unretired, and use it for a lost takeover.
+
+### pluginStorage writes still reach other tabs whole
+
+The Plugin Storage and Data API run (2026-11-05, slice 2) made the upload of a `pluginStorage` write a nested entry patch and a plugin toggle a name-keyed `plugins` patch, but the server's change feed is still top-level and id-keyed. `feedPatch` in `server/src/data/resourceStore.ts` and `diffRecordText` in `server/src/data/recordPatchText.ts` (`diffItems` keys by `id`) publish a one-key `_pluginStorage` or `_ownedPluginStorage` write as `set` of the whole dictionary (a ref once over the feed cap, so every other tab reads the whole record), and a toggle on id-less plugins as a bare ref. The client feed applier `patchedRecord` in `src/ts/storage/resourceSync.svelte.ts` knows neither `nested` nor `itemKey`.
+
+**Why it matters:** the 1–2 MB per write the run removed from the upload is still paid once per other open tab on download.
+**Suggested handling:** extend the feed `RecordPatch` with the same nested and item-key forms the write patch has (`checkRecordWritePatch` in `shared/recordPatch.ts`) and teach `patchedRecord`; both sides must change together.
+
+### flushResources resolves after a restore halt
+
+`flushResources` in `src/ts/storage/resourceSync.svelte.ts` checks `halted` only inside its `while (pending() ...)` loop, so with nothing pending it resolves normally after `haltForRestore`. `readRefs` (`src/ts/storage/resourceClient.ts`) is not gated by mutation admission, and the detached reads (`readChatRefsDetached` in `src/ts/storage/chatEdits.ts`) use their own deadline controller outside the save adapter's halt-aborted `readControllers`, so a late answer from the old epoch can still land. Found in the Plugin Storage and Data API run (2026-11-05, slice 5); the detached chat cache guards itself with `assertSaveAdmission` and the terminal notice.
+
+**Why it matters:** a caller that treats a resolved flush as "the server copy matches this tab" (plugin `getDatabase`, exports through `readChatsDetached`) keeps going while the restore notice is open; small today, since the page reloads after the notice.
+**Suggested handling:** if a later change relies on `flushResources` refusing after a halt, add `assertSaveAdmission()` before its first return.
 
 ## Server jobs and prompt assembly
 
@@ -512,6 +526,20 @@ In `src/ts/characterCards.ts` `importCharacterProcess`, the JSON branch calls `i
 
 **Suggested handling:** ask the owner; if the decline should end the import, make `importCharacterCardSpec` tell a decline apart from "not a V2/V3 card" and return before the off-spec path.
 
+### Reset permissions leaves a running plugin's capabilities
+
+`resetPluginPermissions` in `src/ts/plugins/apiV3/v3.svelte.ts` revokes the plugin's grants and drops its cached answers, but a running plugin keeps what it obtained before the reset: a `SafeDocument` from `getRootDocument` (`mainDom`) and its registered replacers stay live until the plugin unloads. Found in the Plugin Storage and Data API run (2026-11-05, slice 1).
+
+**Why it matters:** a user may read "Reset permissions" as withdrawing access now; the next permission ask comes only on a new call.
+**Suggested handling:** reload that plugin after a reset, or tear down each capability on revoke.
+
+### A multi-tab plugin removal can bring its deleted data back
+
+`src/lib/Setting/Pages/PluginSettings.svelte`'s remove button awaits `loadPlugins()` and then calls `deleteOwnedPluginStorage(name)` when "also delete its stored data" is checked, so this tab's `onUnload` cannot write the data back. Another open tab still runs the plugin until its deferred reload (`queueDeferredCheck` in `src/ts/plugins/plugins.svelte.ts`); its `onUnload` or a late `setItem` writes `_ownedPluginStorage["<name>\u0000…"]` again, and the record merge keeps it key by key. Found in the Plugin Storage and Data API run (2026-11-05, slice 6). Related: the plugin reload deferral leftovers.
+
+**Why it matters:** the user asked for the data to be deleted, and some keys come back after a removal with the plugin open in another tab.
+**Suggested handling:** raise with the owner; a fix needs a tombstone or a removed-plugin refusal in `setOwnedPluginStorageItem`.
+
 ## Build, drivers, and e2e
 
 ### checkJobProtocol's first run after a source change fails its SIGKILL case
@@ -663,6 +691,13 @@ Lookup trials of the Guides To Source run (2026-11-04/05) hesitated or guessed a
 **Why it matters:** an agent routed by `docs:owner` reads the persistence guide and finds nothing about the report, scan, and sweep client.
 
 **Suggested handling:** add `assetLifecycleClient` to the assets rules in `docs/structure/ownership.json` beside `src/ts/storage/{assetClient,assetQueue}.ts` and their tests rule, then run `pnpm check:docs`.
+
+### The global-api guide misses the checkbox confirm
+
+`docs/structure/global-api.md` says `AlertComp.svelte` "answers with `alertStore.answer(msg)`", and its `src/ts/alert.ts` helper list omits `alertConfirmWithCheckbox`. Since the Plugin Storage and Data API run (2026-11-05, slice 6) the `ask`/`pluginconfirm` buttons and the Enter path in `src/ts/hotkey.ts` answer through `alertStore.answerConfirm(confirmed, shown)` (`src/ts/alertQueue.ts`), which answers `{ confirmed, checked }` when the dialog has a `confirmCheckbox`; `setConfirmChecked` updates the box without queuing a dialog.
+
+**Why it matters:** a reader adding a confirm variant follows the guide and misses the checkbox path.
+**Suggested handling:** fix on the next global-api guide edit, paid for with a trim (the guide tree is at its byte ratchet).
 
 ## Test timing
 
