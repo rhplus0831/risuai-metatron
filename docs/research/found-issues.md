@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) on 2026-11-06; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -8,17 +8,17 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
-- [Server routes and resource store](#server-routes-and-resource-store) (1)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (9)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
+- [Server routes and resource store](#server-routes-and-resource-store) (2)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
-- [Display transform](#display-transform) (3)
-- [Chat screen and input](#chat-screen-and-input) (4)
-- [Client and plugins](#client-and-plugins) (10)
+- [Display transform](#display-transform) (7)
+- [Chat screen and input](#chat-screen-and-input) (5)
+- [Client and plugins](#client-and-plugins) (12)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (10)
+- [Structured Memory](#structured-memory) (13)
 
 ## Chat store, sync, and change feeds
 
@@ -54,17 +54,17 @@ Identifiers re-checked 2026-11-03 (`setCharacterChatView`, `installRead`, `adopt
 
 ### A retaken handoff job drops its live stream
 
-Found 2026-11-05 in Job Handoff Slice 2. A tab whose takeover was lost (its ticket attach never reached `owner: "self"`) ends that follow through `releaseGenerationJob` (`src/ts/network/generationJobs.ts`), which calls `endServerJob` (`src/ts/storage/chatStore.svelte.ts`). `endServerJob` adds the job's generation ids to `retiredGenerations`, and `applyServerGeneration` / `applyServerGenerationChunk` then drop every later `accepted`/`chunk` for those ids for the rest of the page's life. If that tab later takes the reopened offer for the same job, it shows no live stream for the reply in progress. Chat patches, the final copy, and callbacks still arrive. Slice 2 accepted this as a limitation.
+Found 2026-11-05 in Job Handoff Slice 2; narrowed 2026-11-06. The Implementation Audit Fixes run's H3 (6d317482d) made a lost takeover and a demoted non-creator end their follow through `detachGenerationJob` (`src/ts/network/generationJobs.ts` ~1381, `detachServerJob` in `src/ts/storage/chatStore.svelte.ts`), which leaves the job's generation ids unretired. What is left: `followJobToEnd` in `src/ts/process/serverCommands.ts` still ends an exhausted `"lost"` follow (server out of reach, ~433–436) and a `"gone"` one (~384–388) through `releaseGenerationJob` → `endServerJob`, which adds the ids to `retiredGenerations`; `applyServerGeneration` / `applyServerGenerationChunk` then drop every later `accepted`/`chunk` for them for the rest of the page's life. A worker whose server was briefly unreachable and that later takes the reopened offer for the same job in the same page shows no live stream and resyncs every compact checkpoint. Chat patches, the final copy, and callbacks still arrive. Unreachable is not proof the generation ended; H3 kept the `"lost"` reporting as it was.
 
-**Why it matters:** today it only affects what the worker displays. It becomes a real problem once anything relies on the worker's stream view.
-**Suggested handling:** add a chat-store "detach without retiring" release that drops the job's entries but leaves its generation ids unretired, and use it for a lost takeover.
+**Why it matters:** today it only affects what the worker displays and costs extra checkpoint reads; it becomes a real problem once anything relies on the worker's stream view.
+**Suggested handling:** split reporting from retirement on the lost path too: release a `"lost"` follow with the detach release and keep its notices.
 
 ### pluginStorage writes still reach other tabs whole
 
-The Plugin Storage and Data API run (2026-11-05, slice 2) made the upload of a `pluginStorage` write a nested entry patch and a plugin toggle a name-keyed `plugins` patch, but the server's change feed is still top-level and id-keyed. `feedPatch` in `server/src/data/resourceStore.ts` and `diffRecordText` in `server/src/data/recordPatchText.ts` (`diffItems` keys by `id`) publish a one-key `_pluginStorage` or `_ownedPluginStorage` write as `set` of the whole dictionary (a ref once over the feed cap, so every other tab reads the whole record), and a toggle on id-less plugins as a bare ref. The client feed applier `patchedRecord` in `src/ts/storage/resourceSync.svelte.ts` knows neither `nested` nor `itemKey`.
+The Plugin Storage and Data API run (2026-11-05, slice 2) made the upload of a `pluginStorage` write a nested entry patch; the Implementation Audit Fixes run's P2 (b71dbe54e, 2026-11-06) made the server store and publish it by entry (`entryPatch`, with `nested` and `itemKey: "name"` forms), so other tabs no longer read the record whole. What is left is client-side JSON work per update in `src/ts/storage/resourceSync.svelte.ts`: `canApplyRemote` projects the local record (`projectRecord`, a whole stringify) to compare with the held text, `patchedRecord` (~5102) `JSON.parse`s the whole held text (a 2 MiB history included), `applyCollectionPatch` → `applyToMirror` installs the whole record, and `applyRemotePatch` (~4979) re-projects it (`projectEntry`) to update `persisted`. Found after P2.
 
-**Why it matters:** the 1–2 MB per write the run removed from the upload is still paid once per other open tab on download.
-**Suggested handling:** extend the feed `RecordPatch` with the same nested and item-key forms the write patch has (`checkRecordWritePatch` in `shared/recordPatch.ts`) and teach `patchedRecord`; both sides must change together.
+**Why it matters:** the server no longer runs 2 MiB passes for a one-key counter write, but each observing tab still pays about one parse and one or more stringifies of the whole record per write: the client twin of the server fix.
+**Suggested handling:** if pluginStorage feed cost comes up again, keep the held text cut by entry on the client (like the server's patch base) instead of reparsing the record.
 
 ### flushResources resolves after a restore halt
 
@@ -72,6 +72,27 @@ The Plugin Storage and Data API run (2026-11-05, slice 2) made the upload of a `
 
 **Why it matters:** a caller that treats a resolved flush as "the server copy matches this tab" (plugin `getDatabase`, exports through `readChatsDetached`) keeps going while the restore notice is open; small today, since the page reloads after the notice.
 **Suggested handling:** if a later change relies on `flushResources` refusing after a halt, add `assertSaveAdmission()` before its first return.
+
+### Append checkpoint cleanup depends on coalescing and group order
+
+The server's append checkpoint cleanup (`server/src/data/chatStore.ts`, `case "append"` ~2369, the `selectCheckpointRows` loop ~2404) skips only the group's last fresh non-comment id. Two end appends coalesce on the client (`coalesce` in `src/ts/storage/chatStore.svelte.ts` ~1828), so a non-comment append followed by a checkpoint-bearing comment keeps the comment's checkpoint when sent as two ops and loses it when coalesced into one, depending on save timing. Also, a group holding an `append` and then a `setMessage` of an older reply cloned before the cleanup (both queued before the flush) cleans and then restores that reply's snapshots in the same group; mirror and server agree (`candidateRows` reports no `cleared`), but the snapshots stay until the next append, since `adoptCandidateRows` (~5860) strips only ops still queued after the acknowledgement. Found in the Implementation Audit Fixes run (2026-11-06, slice C2).
+
+**Why it matters:** retention and save-timing-dependent results on an ordinary send path; not a divergence, so low priority.
+**Suggested handling:** if append cleanup is touched again, strip inherited snapshots from later ops of the same group at `takeChatWork`, and make the comment rule independent of coalescing.
+
+### Feed row text diffs check the held length, not the prefix
+
+`stagedRowDiffs` in `src/ts/storage/chatStore.svelte.ts` (~2900, text branch ~2946) rebuilds a row's text as `held.data.slice(0, keep) + text` and checks only `keep <= held.data.length`. Stream updates write `message.data` without moving the stored revision, so a path that leaves streamed text in the mirror after the job stops feeding it turns the next feed text diff into wrong text with no error (a probe: stored 6,000 "A", shown 6,000 "B", the server appends "!", the client shows "B…B!"). Today every such path marks the chat stale or restores the proven stored text first (`endServerJob`, `detachServerJob`), so it is latent. Found in the Implementation Audit Fixes run (2026-11-05, slice H3).
+
+**Why it matters:** a future caller that skips that restore corrupts a message silently instead of failing into a fenced read.
+**Suggested handling:** when touching `stagedRowDiffs` or the feed row-diff format, carry a base text hash (or length plus a sample) in `rowDiffs` so a wrong base is a `mismatch`.
+
+### A foreign Stop mark lingers for lockless jobs
+
+`watchChatVisibility` in `src/ts/process/chatStatus.svelte.ts` (~287, the lock effect ~311–319) clears a `foreignJobs` mark when a chat goes from locked to unlocked, which covers reply jobs. A command job holds no lock, so a mark noted for it (`noteForeignJob`, e.g. a detached former worker or a pending worker's follow) stays until a new send or follow, or a Stop lookup (`stopChatJob` reads `/current`), clears it; the chat screen shows the foreign Stop button meanwhile (it does not block sending). Found in the Implementation Audit Fixes run (2026-11-05, slice H3).
+
+**Why it matters:** a stale Stop button that answers "idle" when pressed; confusing but harmless.
+**Suggested handling:** if `chatStatus` is touched, reconcile marks for lockless jobs with a bounded `/current` check while the chat is visible, clearing by the expected job id.
 
 ## Server jobs and prompt assembly
 
@@ -96,6 +117,34 @@ The no-memory trim question (aad461e63, 2026-10-11; `server/src/prompt/runner.ts
 **Why it matters:** the user is asked to turn memory on to protect history that nothing would lose.
 **Suggested handling:** ask only when a non-blank history entry is among the dropped ones.
 
+### An untargeted handoff offer blocks the creator's rescue
+
+`armOffer` in `server/src/jobs/generationJobs.ts` (~1157) replaces only a targeted `requested` offer with `absent` once the owner is gone. An untargeted `requested` offer, or the `preferred` offer opened at admission (`handoff: "prefer"`), stays as it is. Foreign workers with acceptance on can still claim it, but the creator takes its own job only through `absent` or a self-targeted offer (`evaluateOffers` in `src/ts/network/handoff.ts`, ~274–287; `handoff.test.ts` pins that own requested and preferred offers are left alone). Found in the Implementation Audit Fixes run (2026-11-05, slice H1), which kept it out of scope because it broadens the ownership policy on both sides.
+
+**Why it matters:** with no accepting worker online, an owner absence under a preferred or untargeted offer has no automatic creator rescue.
+**Suggested handling:** owner decision; either fall back untargeted offers to `absent` on absence too, or let the creator take its own untargeted offer while the owner is absent.
+
+### Slash commands address stored positions during a reroll
+
+`server/src/prompt/commands.ts` (~218–262: `comment`, `cut`, `del`) resolves indexes and "the last message" against the unfiltered stored chat in `services.writeChat`. During reroll assembly (`scope.rerollHistoryMessageId` set) the Lua getters and indexed setters address the history view with the carrier hidden (`scopeHistoryMessages` in `server/src/lua/bindings.ts`), so a trigger's `v2Command` (`server/src/prompt/triggers.ts`) running `/cut 2` can target a different message than a script reading the view, and `/comment` hits the hidden carrier as "last" and is refused by the lock. Found in the Implementation Audit Fixes run (2026-11-05, slice C1).
+
+**Why it matters:** the same read/write address mismatch C1 fixed for Lua, on a rarer path (slash commands from triggers during a reroll).
+**Suggested handling:** resolve these commands through the same history-view helper the Lua bindings use.
+
+### runTrigger copies the character before seeing no triggers
+
+`runTrigger` in `server/src/prompt/triggers.ts` (~372) calls `triggerCopy(sourceChar)` (~384, a `structuredClone` of every character field except the shared asset lists and chats) and registers a patch observer before `run()` checks for an empty trigger list (~444). The display transform (`head` in `server/src/prompt/transform.ts`, ~668–680) runs a `display` trigger per rendered message, so a character with no character or module triggers still pays one character deep copy per row render. Found in the Implementation Audit Fixes run (2026-11-06, slice C7), which skipped the two chat copies but not this one.
+
+**Why it matters:** per-row render cost on long chats; perf only, low priority.
+**Suggested handling:** check `hasTriggers(sourceChar)` (already on the runtime) before `triggerCopy`, keeping the `yieldTurn` and the fence.
+
+### HypaV3 summary chunks find their vectors by scan
+
+`HypaProcesserEx.addSummaryChunks` in `server/src/prompt/memory/hypav3.ts` (~2676, the non-contextual path ~2687) calls `this.vectors.find((v) => v.content === chunk.text)` once per chunk after `addText`, so N chunks cost about N²/2 content comparisons: the shape of the admission scan the Implementation Audit Fixes run's M10 removed from `HypaProcesser.addText`. Found in that run (2026-11-06), outside the slice's files.
+
+**Why it matters:** long HypaV3 chats re-add every summary chunk per send.
+**Suggested handling:** build a map by content once after `addText`.
+
 ## Server routes and resource store
 
 ### The change log's bound is a row count, not 4 MB
@@ -105,6 +154,13 @@ The `changes` table in `resources.sqlite` (Incremental Chat Transport D5, `serve
 **Why it matters:** with typical UUID ids the log is a few MB, but the Asset Lifecycle snapshot budget counts 40 copies of it at a byte size the code does not bound.
 
 **Suggested handling:** size snapshot storage as rows × id length; add a VACUUM or a byte bound if a real store comes near it.
+
+### Lua image shortcuts reuse an asset key without a claim
+
+`isImageInlay` in `server/src/lua/bindings.ts` (~774, used by `usableImage` for `getCharacterImageMain` / `getPersonaImageMain`) checks the inlay's media with `storageFileExists` (an unlocked `lstat`), and the existing-image shortcut then hands out the marker. The Invariants of `docs/structure/self-host-server.md` say every server reuse of an asset key goes through `claimAssetKey`. Low risk today: an existing inlay record keeps its asset in the sweep's re-mark, and A1 (inlay-id claims) protects the record itself, so the file cannot be a deletion candidate while the record exists. Found in the Implementation Audit Fixes run (2026-11-05, slice A1).
+
+**Why it matters:** a guide invariant with one known exception; a later sweep change could make it a real race.
+**Suggested handling:** if `isImageInlay` is touched again, use `claimAssetKey(savePath, meta.asset, { verify })` and keep the post-await fence.
 
 ## Request history and diagnostics
 
@@ -156,6 +212,34 @@ The Render Work Budget comparison run ([audit](../audit/render-work-budget-2026-
 **Why it matters:** escaped text can become live markup on the rendered translation path.
 **Suggested handling:** confirm the sanitizer order in `ChatBody`, then use `textContent` like the other branch.
 
+### An aborted first transform call can leave its snapshot counted
+
+`src/ts/parser/transformClient.ts` `postOnce` (~521) and `releaseChunkSnapshot` (~682), the per-tab two-call admission: when whole-chunk cancellation aborts the first `/api/transform` fetch before its response headers arrive, `snapshotGone` keeps its initial `true`, so the chunk releases its permit at once. If the server had already stored the snapshot and was sending the answer (its abort link is cut once `transform` returns, `server/src/prompt/transform.ts` ~900), that snapshot stays until its 30 s TTL and still counts toward `MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT` (4), so the next admitted chunk can evict a live one (`SnapshotExpired`, a raw row, one retry round). Accepted as an edge by the Implementation Audit Fixes run's R4 (2026-11-06) to avoid holding a permit 30 s on every ordinary scroll-away abort; server memory-pressure eviction and the global snapshot cap across tabs are not covered either (noted in the module header).
+
+**Why it matters:** heavy scrolling with plugin handlers can show raw rows and a retry round.
+**Suggested handling:** if `SnapshotExpired` shows up under heavy scrolling, drop an unclaimed snapshot on the server when its request signal aborted after return, or release by a client-chosen snapshot id.
+
+### The experimental Google translator does not check the status
+
+`translateMain` in `src/ts/translator/translator.ts`, the `useExperimentalGoogleTranslator` branch (~500–523, a `globalFetch` of `translate.google.com/m`): it parses `d.data` and returns the `.result-container` text without checking `d.ok`, and any error falls through to the direct adapter silently. The direct Google adapter rejects HTTP and shape errors as transient since the Implementation Audit Fixes run's R1 (2026-11-06), but an error page that still carries a `.result-container` would be cached as a pair by `translate`. Found in that run (slice R1). Owner: translation.
+
+**Why it matters:** the same cache-poisoning class as the direct adapter's fixed 429 case, reachable only with the experimental toggle on.
+**Suggested handling:** check `d.ok` before parsing when touching that branch.
+
+### The pair cache evicts a pair with the same translation
+
+`writeMemoryCache` in `src/ts/translator/translator.ts` (~83) drops the existing pair when a different source produces the same translation (`memoryCacheByTrans`). Two paragraphs that translate to identical text evict each other, so a later render (e.g. `ChatBody`'s retry) requests one of them again. Found by the R2 challenger of the Implementation Audit Fixes run (2026-11-06) with a deferred-fetch probe; it predates R2. Owner: translation.
+
+**Why it matters:** repeated short lines ("Yes.", "...") in rendered translation cost extra provider requests per render.
+**Suggested handling:** reverse lookups need the by-translation map, so a fix must first decide which origin a reverse lookup returns.
+
+### A provider switch during a translation caches a mixed result
+
+`translateShared` in `src/ts/translator/translator.ts` (~226) keys a producer by `memoryTranslationContext().key`, but `runTranslator` (~329) and `translateMain` (~399) reread `settings.memoryTranslateMedia` (provider type, the DeepLX URL after its wait) for each `translateProtectingLines` chunk. Switching DeepL → DeepLX → DeepL during one multi-chunk producer passes the final key guard, so the mixed result enters the pair cache and every joiner gets it. Switching through `llm` mid-run also bypasses the `failure` object (passed to `translateMain` only on the exclude-thoughts path), so an LLM failure can still be cached. Found by the R1 challenger of the Implementation Audit Fixes run (2026-11-06); pre-existing, now shared with joiners. Owner: translation.
+
+**Why it matters:** needs a settings change during one in-flight request, an edge class the run excluded.
+**Suggested handling:** if `runTranslator` is reworked, capture the provider settings once per producer and use them for the key and every chunk.
+
 ## Chat screen and input
 
 ### Latest-message start scroll untested in DefaultChatScreen
@@ -185,6 +269,13 @@ After the paged export (`src/lib/ChatScreens/screenshotExport.ts`), the Render W
 
 **Why it matters:** every use of the documented example sends stray quotes in the first and last messages.
 **Suggested handling:** strip one pair of surrounding quotes from a command argument on client and server, and update the pinned test.
+
+### Repeated screenshot exports grow the live stylesheet
+
+The Implementation Audit Fixes run's R6 (d94380fa5, 2026-11-06) prepares the font CSS once per export (`prepareScreenshotCapture` in `src/lib/ChatScreens/screenshotCapture.ts`, ~12–26, `getFontEmbedCSS` on the rows' common ancestor). html-to-image still re-expands a surviving `@import` into the live stylesheet once per call, so one export adds no duplicates but each later export adds one more copy of those rules; library behavior. Also unmeasured: the driver fixture (`util/playwright/measureRenderWork.mjs`) has no `@import` webfont, so R6's measurement does not show the per-row cost it removed for such fonts. Found by R6.
+
+**Why it matters:** a session that exports many times keeps growing the document's rules for an `@import`ed font.
+**Suggested handling:** if it matters, inline or drop the `@import` rules before calling `getFontEmbedCSS`, or remove the added copies after each export; add an `@import` webfont to the fixture before measuring.
 
 ## Client and plugins
 
@@ -264,6 +355,20 @@ The Found Issues Sweep's D2 re-applies the display only for remote `ui` records 
 **Why it matters:** STRUCTURE.md U2; non-English users see English there.
 **Suggested handling:** move both to `language.playground` keys; `PlaygroundInlayExplorer.test.ts` finds the button by the text "Delete", so update that lookup.
 
+### JSON and V3 card imports keep base64 text until the save ends
+
+`saveAssets` (`src/ts/storage/assetQueue.ts` ~268) keeps every canonical item's `load` until its final presence pass. The Implementation Audit Fixes run's A4 (de86f0225, 2026-11-06) made PNG cards from a Blob replay byte ranges, but two import paths in `src/ts/characterCards.ts` still capture the encoded string in that closure: `saveEmbeddedAssets` (~1106, `Buffer.from(value, "base64")`, JSON cards with embedded assets) and V3 `data:` URI assets (~1271, `Buffer.from(b64, "base64")`). Found while landing A4. Owner: assets.
+
+**Why it matters:** a large JSON card keeps all of its assets' base64 text (about 4/3 of the decoded bytes) alive until the whole save finishes.
+**Suggested handling:** raise on a JSON or V3 card import memory complaint; the text is a JSON string in hand with no byte range to reread, so a fix drops references from the card object or decodes up front under the queue's byte cap. The PNG stream path keeps the same retention by owner decision (`assets.md` Known Hazards).
+
+### Bulk plugin character adds stay quadratic
+
+`addPreparedCharacter` in `src/ts/storage/characterStore.svelte.ts` (~232) runs `indexOf` (~73, a `findIndex` over the list), then `insertCharacterRecord` → `requireNewId` (`src/ts/storage/records.svelte.ts` ~3079, `list.some`), then `checkCharOrder()`, once per added character. The Implementation Audit Fixes run's P4 (2026-11-06) made `applyPluginCharacters` (`src/ts/plugins/apiV3/v3.svelte.ts` ~1704) index existing characters once, so a round trip with no new characters is linear, but a `setDatabase` that appends N characters still costs N × list inside these helpers. Also in `v3.svelte.ts`: `getChatFromIndex` (~2597) and `setChatToIndex` (~2708) resolve one id with `chatList(chaId)[chatIndex]?.id`, building every member's list entry for one lookup, where `chatMemberPage(chaId, i, i + 1)` would not. Found during P4.
+
+**Why it matters:** bulk character imports through the plugin API, and per-index chat accessors on characters with many chats.
+**Suggested handling:** take it when the character add path or those two accessors are next touched.
+
 ## Build, drivers, and e2e
 
 ### checkJobProtocol's first run after a source change fails its SIGKILL case
@@ -336,7 +441,7 @@ Untagged gate tests that depend on real wall-clock or scheduler time (invariant 
 
 ## Structured Memory
 
-Moved from the Structured Memory plan run on 2026-11-03. Each entry was re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here. The last two entries came from the Guides To Source run on 2026-11-05.
+Moved from the Structured Memory plan run on 2026-11-03. Each entry was re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here. The last three entries came from the Implementation Audit Fixes run (2026-11-05/06).
 
 ### Record now in a job is seen by one tab
 
@@ -419,3 +524,24 @@ Measured by slice 8 on scripted fixtures (`docs/audit/structured-memory-2026-11-
 
 **Why it matters:** cost previews people pay by, and stalls on long chats.
 **Suggested handling:** take each as a proposal when Structured Memory is next touched, and re-run `node util/memoryEval.mjs` after a read-path change.
+
+### The final token recheck drops history evidence never sees
+
+The "token rechecking" step of `server/src/prompt/assemble.ts` (~2501–2538, after scripts and `editRequest`) can remove further removable raw history entries when the formatted prompt is over `maxContextTokens - maxResponse`. Structured Memory's evidence lane widens its pool only to what `selectMemory` (`server/src/prompt/memory/structured/step.ts` ~308–363) itself trimmed, so an uncovered message the later recheck drops leaves with no excerpt, and its gap is not in `gapTokens`. Found by the M5 challenger of the Implementation Audit Fixes run (2026-11-06); not reproduced on a real send. Related: the late removable-message cleanup in "No-memory trim question gaps".
+
+**Why it matters:** a silent loss of the kind M5 fixed, on a later path; it needs scripts or `editRequest` to grow the prompt past what selection measured.
+**Suggested handling:** raise when the recheck or the read path is next touched; the recheck could hand its removals back to the evidence lane or count them as a gap.
+
+### Thread provenance after a re-record or a repeat
+
+Two gaps beside thread reconciliation on retraction (`withReconciledThreads` in `server/src/prompt/memory/structured/reconcile.ts` ~150). `retireRerecorded` (~262) skips thread reconciliation by design, but also does not re-point `openedBy`/`closedBy` from the retired event to its replacement, so the Threads tab shows "Opened by"/"Closed by" a retracted event and a later retraction of the replacement cannot find the thread through those fields. A repeated event (the `repeatsEvent` path in `analysis.ts`, ~593–630) names thread moves (`closedBy` is the repeated id) but keeps the original event's `openThreads`, so the replay cannot explain the stored state and leaves such a thread untouched when that event is retracted. Found in the Implementation Audit Fixes run (2026-11-05) while landing thread reconciliation on retraction.
+
+**Why it matters:** thread provenance points at evidence that no longer supports it; low frequency.
+**Suggested handling:** re-point the fields in `retireRerecorded`, and record a repeat's thread moves on the event.
+
+### Pre-version-2 run windows never confirm in a test run
+
+`windowStillConfirmed` in `server/src/prompt/memory/structured/window.ts` (~390, the comparison at ~403) compares `messageSourceHash(message) === source.hash` without the version-aware `like` argument. Its caller in `testRun.ts` (~116) passes the newest stored run's `window` sources, which keep version-1 (bare hex) hashes for runs recorded before source-hash version 2, so the check is always false for them and the prompt test run takes the cadence window instead of the newest run's window. It heals after the chat's next run; the `writer.ts` call (~413) uses fresh windows and is unaffected. Found in the Implementation Audit Fixes run (2026-11-06) while landing source-hash version 2, which could not touch `window.ts`.
+
+**Why it matters:** a test run on an older chat previews a different window than the writer recorded, until the next run.
+**Suggested handling:** compare `messageSourceHash(message, source.hash) === source.hash`.
