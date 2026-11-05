@@ -3,7 +3,7 @@
 Status: drafted 2026-11-03, revised 2026-11-04 after the design audit and again after its adversarial challenge
 ([plan design audit](../audit/plan-design-audit-2026-11-04.md), items AL1–AL5, X7, X8, and the same day's
 independent cross-audit of the sweep's check-to-unlink gap; the challenge's findings are cited as "challenge
-F1"–"F6"); landed: 1 (`b7095d591`), 2 (`dd35ebc52`), 3 (`0c3e7d2d0`). Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q3
+F1"–"F6"); landed: 1 (`b7095d591`), 2 (`dd35ebc52`), 3 (`0c3e7d2d0`), 4 (`967cc5be1`). Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q3
 were answered by the owner on 2026-11-03 (the recommended option each time; Q1's minimum is superseded by D4's
 3-day floor). Code anchors re-checked at `1550ebdd3`; verify them again before editing (STRUCTURE.md protocol
 step 5).
@@ -753,6 +753,14 @@ i18n guide (Declarative pages: the section; Tests), the global API guide (Files:
   deleting orphan inlay records confirms with their count and sends their ids; the snapshot actions call the
   client with the right ids; Pin on the 21st shows the server's refusal; the section mounts through the
   records without a write (the e2e page sweep).
+- Landed as `967cc5be1` with these deviations (approved by the orchestrator during the run):
+  - The client's Files entry is in `docs/structure/assets.md`, where the asset client is documented, not the
+    global API guide.
+  - The snapshot list reads `listBackups()` live and joins `heldBytes` from the report by id (the report's
+    list is as of the last scan); the panel says held sizes are as of the last scan.
+  - The snapshot actions are disabled while a scan or a sweep runs, since a snapshot taken or restored mid-scan
+    makes that run incomplete. An unreadable snapshot is matched to its row through the reason text
+    (`snapshot <id>`); the report has no field for it.
 
 ### Slice 5: the browser check and the final guide pass (needs 4)
 
