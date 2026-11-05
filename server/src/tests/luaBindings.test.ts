@@ -1,19 +1,25 @@
 // @vitest-environment node
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Chat, character, loreBook } from "../../../shared/database.ts";
-import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import { NO_GENERATION_HOOKS, type GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import { createAssetLifecycle } from "../data/assetLifecycle.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import { createResourceStore } from "../data/resourceStore.ts";
+import { createSnapshotManager } from "../data/snapshots.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
-import type { JobScope } from "../jobs/jobScope.ts";
+import { loadJobScope, type JobScope } from "../jobs/jobScope.ts";
 import { createLuaBindings } from "../lua/bindings.ts";
+import { resolveStorageKey } from "../routes/storage.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
 import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
+import { seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 
 // A Lua button as a server `command` job, end to end on a real listening server
 // with the default runner (`server/src/jobs/commandRunner.ts`), the real worker pool and prelude,
@@ -558,6 +564,167 @@ describe("the lore reader binding", () => {
         }
     });
 });
+
+it.each(["getCharacterImageMain", "getPersonaImageMain", "generateImageMain"] as const)(
+    "%s protects a reused inlay during its file check and until the message is written",
+    async (method) => {
+        vi.useFakeTimers({ toFake: ["Date", "performance"] });
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-lua-inlay-"));
+        const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+        const kind = (name: string) => kinds.get(name)!;
+        const store = createResourceStore({ file: path.join(dir, "data", "resources.sqlite"), kinds });
+        const snapshots = createSnapshotManager({ store, dir: path.join(dir, "backups") });
+        const clock = sweepClock();
+        const lifecycle = createAssetLifecycle({
+            savePath: dir,
+            store,
+            snapshots,
+            inlaysKind: kind("inlays"),
+            ...clock.options,
+        });
+        const id = `reused-by-${method}`;
+        const asset = `assets/${id}.png`;
+        const file = seedSweepAsset({ savePath: dir }, asset);
+        const put = (name: string, key: string, data: unknown) =>
+            store.put(kind(name), key, data, store.get(kind(name), key)?.revision ?? null);
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => (release = resolve));
+        let entered!: () => void;
+        const checking = new Promise<void>((resolve) => (entered = resolve));
+        let result: Promise<unknown> | undefined;
+        let holdCheck = false;
+        const lstat = fs.lstat;
+        const check = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+            if (holdCheck && String(args[0]) === file) {
+                holdCheck = false;
+                entered();
+                await pending;
+            }
+            return lstat(...args);
+        });
+        try {
+            put("presets", "main", [{ id: "p", name: "P" }]);
+            put("modelPresets", "main", [{ id: "m", name: "M" }]);
+            put("personas", "main", [{ id: "u", name: "U", icon: id }]);
+            put("characters", "c", { chaId: "c", type: "character", name: "C", image: id });
+            put("inlays", id, { asset, type: "image", name: id, ext: "png" });
+            store.applyChanges({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: null,
+                        ops: [
+                            {
+                                op: "create",
+                                chat: {
+                                    message: [],
+                                    promptPresetId: "p",
+                                    modelPresetId: "m",
+                                    bindedPersona: "u",
+                                },
+                            },
+                        ],
+                    },
+                ],
+            });
+            expect((await lifecycle.scan()).complete).toBe(true);
+            clock.advanceWall();
+            expect((await lifecycle.scan()).complete).toBe(true);
+            const record = store.get(kind("inlays"), id)!;
+            const context = {
+                characterId: "c",
+                chatId: "k",
+                presetId: "p",
+                modelPresetId: "m",
+                personaId: "u",
+                mode: "button" as const,
+                input: "",
+                chatRevision: store.chatRevision("c", "k")!,
+            };
+            const signal = new AbortController().signal;
+            const callback = vi.fn(async () => ({ outcome: "answered" as const, value: { id } }));
+            const job: RunningJob = {
+                id: "job",
+                kind: "command",
+                context,
+                command: { type: "button", data: "" },
+                hooks: NO_GENERATION_HOOKS,
+                epoch: store.epoch(),
+                signal,
+                channel: { notice() {}, ask: async () => ({ outcome: "aborted" }), callback },
+                ownerAttached: () => true,
+                emit() {},
+                emitRecords: () => [],
+                onClientMessage: () => () => {},
+                write: (build) => store.applyChanges(build() as never, { epoch: store.epoch(), changes: true }),
+            };
+            const bindings = createLuaBindings({
+                job,
+                scope: loadJobScope(store, kinds, context),
+                store,
+                kinds,
+                rootDir: REPO_ROOT,
+                savePath: dir,
+                llm: {} as never,
+                tokens: {} as never,
+                runCharacterId: "c",
+                engineCharacterId: "c",
+            });
+            const ctx: HostContext = {
+                identity: { characterId: "c", chatId: "k", presetId: "p", personaId: "u" },
+                access: "lowLevel",
+                signal,
+                regex: async () => ({ value: false }),
+            };
+            holdCheck = true;
+            result = Promise.resolve(bindings.host.async![method](["id", "prompt", "", "{}"], ctx));
+            await checking;
+            // No marker is stored yet, and the binding is still awaiting the file check.
+            expect(await lifecycle.sweep({ dryRun: false, keys: [], inlays: [id] })).toMatchObject({
+                removedInlays: [],
+                skippedInlays: [{ id, reason: "leased" }],
+            });
+            release();
+            const marker = await result;
+            expect(marker).toBe(`{{${method === "generateImageMain" ? "inlay" : "inlayed"}::${id}}}`);
+            expect(callback).toHaveBeenCalledTimes(method === "generateImageMain" ? 1 : 0);
+            expect(store.get(kind("inlays"), id)).toEqual(record);
+            expect(await lifecycle.sweep({ dryRun: false, keys: [], inlays: [id] })).toMatchObject({
+                removedInlays: [],
+                skippedInlays: [{ id, reason: "leased" }],
+            });
+            store.applyChanges({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: store.chatRevision("c", "k"),
+                        ops: [
+                            {
+                                op: "append",
+                                anchor: { end: true },
+                                messages: [{ role: "char", data: marker as string, chatId: "image-message" }],
+                            },
+                        ],
+                    },
+                ],
+            });
+            expect((await lifecycle.scan()).orphanInlays.records).toEqual([]);
+            expect(store.get(kind("inlays"), id)).toEqual(record);
+            expect(await fs.readFile(resolveStorageKey(dir, asset)!)).toEqual(Buffer.from("old bytes"));
+        } finally {
+            release();
+            await result?.catch(() => {});
+            check.mockRestore();
+            await lifecycle.close();
+            await snapshots.stop();
+            store.close();
+            rmSync(dir, { recursive: true, force: true });
+            vi.useRealTimers();
+        }
+    },
+);
 
 describe("the host-function contract through the real worker", () => {
     it("includes the requested image orientation in the callback and omits it when options are absent", async () => {

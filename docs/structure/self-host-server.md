@@ -24,8 +24,7 @@
 
 The server is TypeScript run directly by Node's type stripping: `pnpm run server` runs `node server/src/main.ts` on Node
 `>=24`; there is no server build step. `server/tsconfig.json` strictly checks the server and its imports from `shared/`.
-Routes, data, HTTP helpers, jobs, prompt processing, and tests live under `server/src/`. A module's contract is its doc
-comments; an entry names its path, role, and identifiers.
+A module's contract is its doc comments; an entry names its path, role, and identifiers.
 
 ### Entrypoints and configuration
 
@@ -326,7 +325,8 @@ and the jobs' parts are in [store state](server-resources.md#process-memory) and
   cache answers any same-origin request of that URL without reaching the server, including a plugin's `nativeFetch`; the
   service worker passes a request whose destination it does not sign through unsigned instead of answering 401 itself.
   Do not reopen this without a new finding.
-- Every server publish or reuse of an asset key goes through `claimAssetKey`.
+- Every server publish or reuse of an asset key goes through `claimAssetKey`; a handout of an existing inlay id first
+  takes `claimInlayId`.
 - File publication flushes staged file data before rename and syncs its directory where supported. Preserve atomic
   replacement and the ordering of durable writes; `EINVAL` and `EPERM` from directory sync are tolerated.
 - A push or auth state change is one operation on the ordered writer: read, derive, write durably, install, never a file

@@ -13,6 +13,7 @@ import { createAssetLifecycle, type AssetLifecycleOptions } from "../data/assetL
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager } from "../data/snapshots.ts";
+import { claimInlayId } from "../http/assetLeases.ts";
 import { freeBytes } from "../http/diskSpace.ts";
 import { parseAssetClockOffset } from "../listenConfig.ts";
 import { createExportHolds } from "../routes/backupsUpstreamExport.ts";
@@ -745,6 +746,97 @@ it("previews the same narrowed deletion and inlay decisions without changing fil
     const next = await f.lifecycle.scan();
     expect(next.unreferenced.candidates.map((x) => x.key)).toEqual(["assets/unselected"]);
     expect(f.ledger().assets).toContainEqual({ key: "assets/orphan", since: NOW + 7 * DAY, bytes: 5 });
+});
+
+it("keeps rewritten orphan metadata until a full grace after its next complete scan", async () => {
+    const f = fixture({ graceMs: 7 * DAY });
+    const id = "rewritten-orphan-before-message";
+    const data = { asset: `assets/${id}`, type: "image", name: id, ext: "png" };
+    f.asset(data.asset);
+    f.put("inlays", id, data);
+    await mature(f);
+    const scanned = f.store.get(kinds.get("inlays")!, id)!;
+
+    // The script reuses the id, but its referencing message has not been written yet.
+    f.put("inlays", id, data);
+    const rewritten = f.store.get(kinds.get("inlays")!, id)!;
+    expect(rewritten.revision).not.toBe(scanned.revision);
+    for (const dryRun of [true, false]) {
+        expect(await f.lifecycle.sweep({ dryRun, keys: [], inlays: [id] })).toMatchObject({
+            removedInlays: [],
+            skippedInlays: [{ id, reason: "replaced" }],
+        });
+        expect(f.store.get(kinds.get("inlays")!, id)).toEqual(rewritten);
+        expect(f.ledger().inlays).toEqual(dryRun ? [{ id, since: NOW }] : []);
+    }
+
+    f.setNow(NOW + 8 * DAY);
+    expect((await f.lifecycle.scan()).complete).toBe(true);
+    expect(f.ledger().inlays).toEqual([{ id, since: NOW + 8 * DAY }]);
+    f.setNow(NOW + 15 * DAY - 1);
+    expect((await f.lifecycle.scan()).complete).toBe(true);
+    expect(await f.lifecycle.sweep({ dryRun: false, keys: [], inlays: [id] })).toMatchObject({
+        removedInlays: [],
+        skippedInlays: [{ id, reason: "not an orphan past the grace" }],
+    });
+    f.setNow(NOW + 15 * DAY);
+    expect((await f.lifecycle.scan()).complete).toBe(true);
+    expect(await f.lifecycle.sweep({ dryRun: true, keys: [], inlays: [id] })).toMatchObject({
+        removedInlays: [id],
+        skippedInlays: [],
+    });
+
+    f.chat({}, [{ role: "char", data: `{{inlay::${id}}}` }]);
+    expect(await f.lifecycle.sweep({ dryRun: false, keys: [], inlays: [id] })).toMatchObject({
+        removedInlays: [],
+        skippedInlays: [{ id, reason: "referenced" }],
+    });
+    expect(f.store.get(kinds.get("inlays")!, id)).toEqual(rewritten);
+    expect(readFileSync(resolveStorageKey(f.dir, data.asset)!)).toEqual(Buffer.from("A"));
+});
+
+it("keeps a claimed orphan while its referencing message is pending", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "performance"] });
+    const f = fixture({ graceMs: 7 * DAY });
+    const id = "claimed-orphan-before-message";
+    f.asset(`assets/${id}`);
+    f.put("inlays", id, { asset: `assets/${id}`, type: "image", name: id, ext: "png" });
+    await mature(f);
+    const record = f.store.get(kinds.get("inlays")!, id)!;
+    claimInlayId(id);
+    expect(await f.lifecycle.sweep({ dryRun: false, keys: [], inlays: [id] })).toMatchObject({
+        removedInlays: [],
+        skippedInlays: [{ id, reason: "leased" }],
+    });
+    expect(f.store.get(kinds.get("inlays")!, id)).toEqual(record);
+
+    f.chat({}, [{ role: "char", data: `{{inlayed::${id}}}` }]);
+    expect((await f.lifecycle.scan()).orphanInlays.records).toEqual([]);
+    expect(f.store.get(kinds.get("inlays")!, id)).toEqual(record);
+    expect(readFileSync(resolveStorageKey(f.dir, `assets/${id}`)!)).toEqual(Buffer.from("A"));
+});
+
+it("restarts orphan maturity when a day-three rewrite is first scanned on day seven", async () => {
+    const f = fixture({ graceMs: 7 * DAY });
+    const id = "rewritten-orphan-between-scans";
+    const data = { asset: `assets/${id}`, type: "image", name: id, ext: "png" };
+    f.asset(data.asset);
+    f.put("inlays", id, data);
+    expect((await f.lifecycle.scan()).complete).toBe(true);
+    expect(f.ledger().inlays).toEqual([{ id, since: NOW }]);
+    f.setNow(NOW + 3 * DAY);
+    f.put("inlays", id, data);
+    const rewritten = f.store.get(kinds.get("inlays")!, id)!;
+    f.setNow(NOW + 7 * DAY);
+    expect((await f.lifecycle.scan()).complete).toBe(true);
+    expect(await f.lifecycle.sweep({ dryRun: false, keys: [], inlays: [id] })).toMatchObject({
+        removedInlays: [],
+        skippedInlays: [{ id, reason: "not an orphan past the grace" }],
+    });
+    expect(f.ledger().inlays).toEqual([{ id, since: NOW + 7 * DAY }]);
+    f.chat({}, [{ role: "char", data: `{{inlay::${id}}}` }]);
+    expect((await f.lifecycle.scan()).orphanInlays.records).toEqual([]);
+    expect(f.store.get(kinds.get("inlays")!, id)).toEqual(rewritten);
 });
 
 it("skips a republished file and a filesystem error while deleting the other candidate", async () => {

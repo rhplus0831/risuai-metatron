@@ -146,15 +146,16 @@ describe("setInlayAsset", () => {
         expect(assets.get(meta.asset!)).toEqual(new TextEncoder().encode("hello"));
     });
 
-    test("writes the same bytes once for two ids and skips the metadata write when nothing changed", async () => {
+    test("writes the same bytes once for two ids and rewrites unchanged metadata on reuse", async () => {
         await I.setInlayAsset("one", image(blobOf("same")));
         await I.setInlayAsset("two", image(blobOf("same")));
         expect(assets.size).toBe(1);
         const revision = fake.get("inlays", "one")!.revision;
         const puts = fake.requests.filter((r) => r.method === "PUT").length;
         await I.setInlayAsset("one", image(blobOf("same")));
-        expect(fake.get("inlays", "one")!.revision).toBe(revision);
-        expect(fake.requests.filter((r) => r.method === "PUT").length).toBe(puts);
+        expect(assets.size).toBe(1);
+        expect(fake.get("inlays", "one")!.revision).not.toBe(revision);
+        expect(fake.requests.filter((r) => r.method === "PUT").length).toBe(puts + 1);
     });
 
     test("stores a signature's JSON in the metadata, without an asset", async () => {

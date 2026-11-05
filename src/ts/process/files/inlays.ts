@@ -26,6 +26,7 @@ import { missingAssets, readAsset, writeAsset } from "../../storage/assetClient"
  * bytes in the `assets` namespace under a content-hash name, so writing the same bytes twice (Lua
  * `getCharacterImageMain` on every call) stores one file. Blobs are deleted by the server sweep only
  * once unreferenced past the grace period, never here. A cache hit must claim server presence again.
+ * Every media write also rewrites metadata, even if unchanged, so reuse advances the revision checked by sweep.
  */
 
 export type InlayAsset = {
@@ -346,10 +347,6 @@ async function writeMedia(
     check?.();
     const asset = await storeMedia(bytes, meta.ext, meta, check);
     const data: InlayResource = { ...meta, asset, size: bytes.byteLength };
-    const current = metaCache.get(id)?.data;
-    if (current && JSON.stringify(current) === JSON.stringify(data)) {
-        return;
-    }
     await putMeta(id, data, check);
 }
 

@@ -17,7 +17,7 @@ import type { BackupSnapshotInfo } from "../../../shared/resources.ts";
 import { MEMORY_RECORD_KINDS } from "../../../shared/structuredMemory.ts";
 import { UPSTREAM_EXPORT_STAGED_TTL_MS } from "../../../shared/upstreamExportReport.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
-import { assetLeased, withAssetLocks } from "../http/assetLeases.ts";
+import { assetLeased, inlayClaimed, withAssetLocks } from "../http/assetLeases.ts";
 import { assetVerification } from "../http/assetVerification.ts";
 import { resolveStorageKey } from "../routes/storage.ts";
 import type { ResourceKind } from "./kinds.ts";
@@ -33,6 +33,7 @@ import { collectUpstreamAssetReferences } from "./upstream/assetReferences.ts";
  * Retention graph and user-started fail-closed sweep: live resource text, chat metadata/messages, all memory records, pages
  * named by checkpoints (including memory manifests/chunks), every retained snapshot, export holds,
  * recent-use leases, and young files. Inlay records retain their assets even when no root's text names their ids.
+ * Inlay-id claims protect metadata handed out for reuse; a changed revision disqualifies a deletion candidate.
  *
  * The recognizer walks decoded JSON strings and keys, or scalar text. It keeps bounded UTF-8 tails
  * after assets/, and after valid UTF-8 prefixes of either-case hex /api/asset/ and /sw/img/ URLs.
@@ -43,10 +44,12 @@ import { collectUpstreamAssetReferences } from "./upstream/assetReferences.ts";
  *
  * Missing live tables, invalid snapshot schema groups, unreadable roots or selected JSON, missing or
  * malformed memory pages, unsettled exports, an epoch change, and aborts make a run incomplete.
- * The separate WAL ledger holds unreferenced(key,since,bytes), orphanInlays(id,since), snapshotIndexed,
+ * The separate WAL ledger holds unreferenced(key,since,bytes), orphanInlays(id,since,revision), snapshotIndexed,
  * snapshotRefs, snapshotInlays, and bounded runs. Only complete runs update since stamps: insert once,
- * update bytes, and remove stamps for referenced or vanished records/files. Snapshot indexes persist
- * independently of completeness; failed indexes are retried, and rotated snapshots lose their index.
+ * restart orphan maturity on a changed or unknown revision, update bytes, and remove stamps for referenced
+ * or vanished records/files. A replacement found during sweep loses its stamp until the next complete scan.
+ * Snapshot indexes persist independently of completeness; failed indexes are retried, and rotated snapshots
+ * lose their index.
  * The in-memory { runId, epoch, writeCount } records the process-local identity at run start.
  *
  * Each small keyset chunk reads committed state on a per-run read-only connection, without a
@@ -191,12 +194,17 @@ function normalizedKey(key: string): string {
     return Buffer.from(key, "utf8").toString("utf8");
 }
 
+/** ResourceStore's full token: rowid is resources.seq, so recreation cannot reuse a scanned revision. */
+function scannedResourceRevision(epoch: string, seq: number, revision: number): string {
+    return `${epoch}:${seq}:${revision}`;
+}
+
 type Owner = { kind: AssetOwnerKind; id: string; name: string; keys: Set<string> };
 type Roots = {
     tails: Set<string>;
     ids: Set<string>;
     owners: Map<string, Owner>;
-    inlays: Map<string, string | null>;
+    inlays: Map<string, { asset: string | null; revision: string }>;
     inlayCharacters: Map<string, Set<string>>;
 };
 function roots(): Roots {
@@ -310,11 +318,19 @@ export function createAssetLifecycle(
     const ledger = new DatabaseSync(path.join(savePath, "data", "asset-lifecycle.sqlite"));
     ledger.exec(`PRAGMA journal_mode = WAL;
         CREATE TABLE IF NOT EXISTS unreferenced (key TEXT PRIMARY KEY, since REAL NOT NULL, bytes INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS orphanInlays (id TEXT PRIMARY KEY, since REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS orphanInlays (id TEXT PRIMARY KEY, since REAL NOT NULL, revision TEXT);
         CREATE TABLE IF NOT EXISTS snapshotIndexed (snapshotId TEXT PRIMARY KEY, indexedAt REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS snapshotRefs (snapshotId TEXT NOT NULL, tail TEXT NOT NULL, PRIMARY KEY (snapshotId, tail));
         CREATE TABLE IF NOT EXISTS snapshotInlays (snapshotId TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (snapshotId, id));
         CREATE TABLE IF NOT EXISTS runs (startedAt REAL NOT NULL, complete INTEGER NOT NULL, reasons TEXT NOT NULL, counts TEXT NOT NULL);`);
+    if (
+        !ledger
+            .prepare("PRAGMA table_info(orphanInlays)")
+            .all()
+            .some((column) => column.name === "revision")
+    ) {
+        ledger.exec("ALTER TABLE orphanInlays ADD COLUMN revision TEXT");
+    }
     const selectSnapshotReferences = ledger.prepare("SELECT tail FROM snapshotRefs WHERE snapshotId = ?");
     const selectSnapshotInlays = ledger.prepare("SELECT id FROM snapshotInlays WHERE snapshotId = ?");
     const selectSnapshotIndex = ledger.prepare("SELECT 1 FROM snapshotIndexed WHERE snapshotId = ?");
@@ -330,7 +346,10 @@ export function createAssetLifecycle(
     const deleteUnreferenced = ledger.prepare("DELETE FROM unreferenced WHERE key = ?");
     const selectOrphanIds = ledger.prepare("SELECT id FROM orphanInlays");
     const selectOrphanSince = ledger.prepare("SELECT id, since FROM orphanInlays");
-    const insertOrphanInlay = ledger.prepare("INSERT OR IGNORE INTO orphanInlays (id, since) VALUES (?, ?)");
+    const insertOrphanInlay = ledger.prepare(`
+        INSERT INTO orphanInlays (id, since, revision) VALUES (?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET since = excluded.since, revision = excluded.revision
+        WHERE orphanInlays.revision IS NOT excluded.revision`);
     const deleteOrphanInlay = ledger.prepare("DELETE FROM orphanInlays WHERE id = ?");
     const insertRun = ledger.prepare("INSERT INTO runs (startedAt, complete, reasons, counts) VALUES (?, ?, ?, ?)");
     const deleteSnapshotIndex = [
@@ -368,7 +387,7 @@ export function createAssetLifecycle(
     let completedMono = 0;
     let liveSelectedRows = 0;
     let candidates = new Map<string, { key: string; bytes: number; since: number }>();
-    let orphanCandidates = new Map<string, { since: number; bytes: number }>();
+    let orphanCandidates = new Map<string, { since: number; bytes: number; revision: string }>();
 
     function transaction(body: () => void) {
         ledger.exec("BEGIN");
@@ -414,6 +433,7 @@ export function createAssetLifecycle(
         stats: AssetScanMetrics,
     ): Promise<Roots> {
         const root = roots();
+        const epoch = store.epoch();
         const label = snapshotId ? `snapshot ${snapshotId}` : "live";
         signal.throwIfAborted();
         const db = new DatabaseSync(file, { readOnly: true });
@@ -506,19 +526,27 @@ export function createAssetLifecycle(
             await rows("chats", "seq, characterId", "1", (row) =>
                 chatCharacters.set(Number(row.seq), String(row.characterId)),
             );
-            await rows("resources", "kind, id, data", `kind = 'inlays' OR ${contentFilter("data")}`, (row) => {
-                const value = parse("resources", row.scanRowid, row.data);
-                walkJson(value, sink());
-                if (!snapshotId) {
-                    attribute(root, String(row.kind), String(row.id), value);
-                    if (row.kind === "inlays") {
-                        root.inlays.set(
-                            String(row.id),
-                            isPlainObject(value) && typeof value.asset === "string" ? normalizedKey(value.asset) : null,
-                        );
+            await rows(
+                "resources",
+                snapshotId ? "kind, id, data" : "kind, id, data, revision",
+                `kind = 'inlays' OR ${contentFilter("data")}`,
+                (row) => {
+                    const value = parse("resources", row.scanRowid, row.data);
+                    walkJson(value, sink());
+                    if (!snapshotId) {
+                        attribute(root, String(row.kind), String(row.id), value);
+                        if (row.kind === "inlays") {
+                            root.inlays.set(String(row.id), {
+                                asset:
+                                    isPlainObject(value) && typeof value.asset === "string"
+                                        ? normalizedKey(value.asset)
+                                        : null,
+                                revision: scannedResourceRevision(epoch, Number(row.scanRowid), Number(row.revision)),
+                            });
+                        }
                     }
-                }
-            });
+                },
+            );
             await rows("chats", "seq, meta", contentFilter("meta"), (row) =>
                 walkJson(parse("chats", row.scanRowid, row.meta), sink(chatCharacters.get(Number(row.seq)))),
             );
@@ -754,8 +782,8 @@ export function createAssetLifecycle(
                     deleteOrphanInlay.run(row.id);
                 }
             }
-            for (const [id] of orphan) {
-                insertOrphanInlay.run(id, now);
+            for (const [id, { revision }] of orphan) {
+                insertOrphanInlay.run(id, now, revision);
             }
         }
         const since = new Map(selectUnreferencedSince.all().map((row) => [String(row.key), Number(row.since)]));
@@ -763,7 +791,7 @@ export function createAssetLifecycle(
         const classifiedCandidates = unreferenced
             .filter((file) => since.has(file.key) && since.get(file.key)! + grace <= now && file.mtimeMs <= now - grace)
             .map((file) => ({ key: file.key, bytes: file.bytes, since: since.get(file.key)! }));
-        for (const [id, asset] of root.inlays) {
+        for (const [id, { asset }] of root.inlays) {
             if (asset === null) {
                 continue;
             }
@@ -803,7 +831,7 @@ export function createAssetLifecycle(
                 logicalBytes += bytes;
             }
         }
-        const orphanRecords = orphan.map(([id, asset]) => ({
+        const orphanRecords = orphan.map(([id, { asset }]) => ({
             id,
             asset,
             bytes: asset === null ? 0 : (sizes.get(asset) ?? 0),
@@ -814,7 +842,10 @@ export function createAssetLifecycle(
             orphanCandidates = new Map(
                 orphanRecords
                     .filter((item) => item.since !== null && item.since + grace <= now)
-                    .map((item) => [item.id, { since: item.since!, bytes: item.bytes }]),
+                    .map((item) => [
+                        item.id,
+                        { since: item.since!, bytes: item.bytes, revision: root.inlays.get(item.id)!.revision },
+                    ]),
             );
         }
         return {
@@ -1091,8 +1122,10 @@ export function createAssetLifecycle(
 
     /**
      * User-started deletion, never maintenance: each batch holds exclusive, refreshes snapshot/export
-     * roots, then takes sorted key locks. Re-mark, lease/mtime checks, and unlink/store.delete have no
-     * await between them. Full results certify later batches; a narrowed result never advances baseline.
+     * roots, then takes sorted key locks. Re-mark, lease/mtime checks, inlay-id claim and revision checks,
+     * and unlink/store.delete have no await between them. Replaced inlays lose their candidate and ledger
+     * stamp so the next complete scan restarts maturity; dry runs leave these untouched.
+     * Full results certify later batches; a narrowed result never advances baseline.
      */
     function sweep(request: AssetSweepRequest & { signal?: AbortSignal }): Promise<AssetSweepResult> {
         const refuse = (message: string): never => {
@@ -1174,6 +1207,7 @@ export function createAssetLifecycle(
                 }
                 const deleted: { key: string; fullPath: string; bytes: number }[] = [];
                 const removed: string[] = [];
+                const replaced: string[] = [];
                 await withAssetLocks(
                     keys.flatMap((key) => {
                         const file = resolveStorageKey(savePath, key);
@@ -1251,7 +1285,12 @@ export function createAssetLifecycle(
                                         for (const id of eligible) {
                                             const record = store.get(options.inlaysKind!, id);
                                             if (!record) result.skippedInlays.push({ id, reason: "gone" });
-                                            else {
+                                            else if (inlayClaimed(id))
+                                                result.skippedInlays.push({ id, reason: "leased" });
+                                            else if (record.revision !== orphanCandidates.get(id)!.revision) {
+                                                result.skippedInlays.push({ id, reason: "replaced" });
+                                                replaced.push(id);
+                                            } else {
                                                 if (!request.dryRun)
                                                     store.delete(options.inlaysKind!, id, record.revision);
                                                 committed.push(id);
@@ -1276,7 +1315,7 @@ export function createAssetLifecycle(
                 result.freedBytes += deleted.reduce((sum, item) => sum + item.bytes, 0);
                 result.removedInlays.push(...removed);
                 if (request.dryRun) return;
-                // Only completed deletions reach cleanup. Cleanup failures cannot recast an unlink as a skip.
+                // Only completed file deletions reach cleanup. Cleanup failures cannot recast an unlink as a skip.
                 for (const { key, fullPath } of deleted) {
                     assetVerification.forgetVerification(fullPath);
                     const candidate = candidates.get(key)!;
@@ -1295,7 +1334,7 @@ export function createAssetLifecycle(
                         console.error("[Server] Asset thumbnail cleanup failed:", error);
                     }
                 }
-                for (const id of removed) {
+                for (const id of [...removed, ...replaced]) {
                     deleteOrphanInlay.run(id);
                     const bytes = orphanCandidates.get(id)!.bytes;
                     orphanCandidates.delete(id);

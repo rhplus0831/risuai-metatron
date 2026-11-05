@@ -27,6 +27,7 @@ import { type InlayResource, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../
 import { itemIds } from "../../../shared/recordPatch.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
+import { claimInlayId } from "../http/assetLeases.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
 import { createJobCbsHost, jobModuleLorebooks, serverCbsLimits, type ServerCbsTimeLimits } from "../jobs/cbsHost.ts";
 import type { JobChannel } from "../jobs/channel.ts";
@@ -777,8 +778,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         }
         return await storageFileExists(deps.savePath, meta.asset);
     };
-    /** `isImageInlay`, then the call's fence: an abort during the file check stops what follows. */
+    /** Claim before the metadata read, then check the image and fence against an abort during file I/O. */
     const usableImage = async (id: string, ctx: HostContext) => {
+        claimInlayId(id);
         const usable = await isImageInlay(id);
         fence(ctx);
         return usable;
@@ -799,6 +801,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     /** An inlay record written by the job (a new one, or replacing the one with `id`). */
     const writeInlay = (id: string, data: InlayResource, ctx: HostContext) => {
         fence(ctx);
+        claimInlayId(id);
         try {
             job.write(() => ({
                 ops: [{ kind: inlaysKind, id, baseRevision: store.get(inlaysKind, id)?.revision ?? null, data }],
