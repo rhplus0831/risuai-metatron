@@ -1,6 +1,6 @@
 # Implementation Audit Fixes Plan
 
-Status: drafted 2026-11-05; no slice landed. The owner confirmed the recommendation of all three questions on
+Status: drafted 2026-11-05; landed: T1 (4ddbedc0b). The owner confirmed the recommendation of all three questions on
 2026-11-05.
 
 Sources: the seven implementation audits of 2026-11-05 under `docs/manual-audit/`, all made against `dev` at
