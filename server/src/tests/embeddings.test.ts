@@ -17,7 +17,7 @@ import type { TransformersService } from "../prompt/transformers.ts";
 
 // The server embeddings (`server/src/prompt/embeddings.ts`) over a fake `fetch`, a fake model
 // process, and a real vector cache in a temporary file. The providers: the custom URL (`/embeddings`
-// appended unless present, the settings' model and trimmed key, the `-<model>` key suffix), OpenAI
+// appended unless present, the settings' model and trimmed key, the `-<model>` key suffix and the endpoint), OpenAI
 // (the stored memory key, or the processor's own), Voyage contextual (document groups and queries,
 // the `|voyageContext3` and `|ctx:` suffixes, the missing-key error; Context 4 under its own model
 // and suffix), Voyage `/v1/embeddings` (`input_type`, the `|query` key of a V2 query), a local model (the model process,
@@ -150,7 +150,8 @@ describe("HypaProcesser over the providers", () => {
         // The duplicate is sent as the client sends it (both copies), and both land in `vectors`.
         expect(calls[0].body).toEqual({ input: ["near", "far", "near"], model: "emb-model" });
         expect(first.vectors.map((v) => v.content)).toEqual(["near", "far", "near"]);
-        expect(shared.get("near|custom-emb-model")).toEqual(vector("near"));
+        // The key carries the custom model and the requested endpoint, never the API key.
+        expect(shared.get("near|custom-emb-model|endpoint-v1:http://embed.test/v1/embeddings")).toEqual(vector("near"));
         expect(shared.get("near|custom")).toBeNull();
         expect(shared.stats().rows).toBe(2);
         // The query is sent as a string, and the ranking follows the dot product.
@@ -184,7 +185,7 @@ describe("HypaProcesser over the providers", () => {
         // No key, no model: neither is sent; the key suffix is absent.
         expect(calls[0].headers).toEqual({ "Content-Type": "application/json" });
         expect(calls[0].body).toEqual({ input: ["t"] });
-        expect(e.cache.get("t|custom")).toEqual(vector("t"));
+        expect(e.cache.get("t|custom|endpoint-v1:http://embed.test/x/embeddings")).toEqual(vector("t"));
         const empty = env({ fetch: fakeFetch({ calls }), db: { hypaCustomSettings: { url: "", key: "", model: "" } } });
         await expect(new HypaProcesser(empty).addText(["t2"])).rejects.toThrow(
             "Custom model requires a Custom Server URL",
@@ -285,6 +286,246 @@ describe("HypaProcesser over the providers", () => {
     it("refuses a model without a provider", async () => {
         const e = env({ db: { hypaModel: "nothing" as never } });
         await expect(new HypaProcesser(e).addText(["t"])).rejects.toThrow("Unsupported model: nothing");
+    });
+});
+
+describe("custom embedding spaces and cache admission", () => {
+    it("refreshes documents after a custom endpoint switch and reuses the original space and key rotations", async () => {
+        const calls: Call[] = [];
+        const shared = cache();
+        const endpointA = "http://embed.test/a/embeddings";
+        const endpointB = "http://embed.test/b/embeddings";
+        const fetchImpl = fakeFetch({
+            calls,
+            answer: (call) => {
+                const inputs: string[] = Array.isArray(call.body.input) ? call.body.input : [call.body.input];
+                const vectors: Record<string, number[]> =
+                    call.url === endpointA
+                        ? { left: [1, 0], right: [0, 1], query: [1, 0] }
+                        : { left: [0, 1], right: [1, 0], query: [1, 0] };
+                return { body: { data: inputs.map((text) => ({ embedding: vectors[text] })) } };
+            },
+        });
+        const job = (url: string, key = CUSTOM_KEY) =>
+            env({ cache: shared, fetch: fetchImpl, db: { hypaCustomSettings: { url, key, model: "same-model" } } });
+        const texts = ["left", "right"];
+        await new HypaProcesser(job(endpointA)).addText(texts);
+        expect(calls.map(({ url, body }) => [url, body])).toEqual([[endpointA, { input: texts, model: "same-model" }]]);
+
+        const switchedJob = job(endpointB);
+        const switched = new HypaProcesser(switchedJob);
+        expect(switched.loadCachedDocuments(texts)).toEqual(texts);
+        expect(switched.vectors).toEqual([]);
+        await switched.addText(texts);
+        expect(calls).toHaveLength(2);
+        expect(calls[1]).toMatchObject({ url: endpointB, body: { input: texts, model: "same-model" } });
+        expect(switched.vectors.map(({ embedding }) => embedding)).toEqual([
+            [0, 1],
+            [1, 0],
+        ]);
+        expect(await switched.similaritySearch("query")).toEqual(["right", "left"]);
+        expect(calls[2]).toMatchObject({ url: endpointB, body: { input: "query", model: "same-model" } });
+
+        // An explicit URL overrides the settings when returning to the warmed original endpoint.
+        const returned = new HypaProcesser(switchedJob, "custom", endpointA);
+        expect(returned.loadCachedDocuments(texts)).toEqual([]);
+        await returned.addText(texts);
+        expect(returned.vectors.map(({ embedding }) => embedding)).toEqual([
+            [1, 0],
+            [0, 1],
+        ]);
+        const rotated = new HypaProcesser(job(endpointB, "rotated-key"));
+        await rotated.addText(texts);
+        expect(rotated.vectors.map(({ embedding }) => embedding)).toEqual([
+            [0, 1],
+            [1, 0],
+        ]);
+        expect(calls).toHaveLength(3);
+    });
+
+    it("keeps Structured Memory query vectors in their custom endpoint's space across switches and key rotations", async () => {
+        const calls: Call[] = [];
+        const shared = cache();
+        const endpointA = "http://embed.test/a/embeddings";
+        const endpointB = "http://embed.test/b/embeddings";
+        const fetchImpl = fakeFetch({
+            calls,
+            answer: (call) => ({
+                body: { data: call.body.input.map(() => ({ embedding: call.url === endpointA ? [1, 0] : [0, 1] })) },
+            }),
+        });
+        const job = (url: string, key = CUSTOM_KEY) =>
+            env({ cache: shared, fetch: fetchImpl, db: { hypaCustomSettings: { url, key, model: "same-model" } } });
+        const queries = ["question", "question"];
+        expect(await new HypaProcesser(job(endpointA)).getCachedQueries(queries)).toEqual([
+            [1, 0],
+            [1, 0],
+        ]);
+        expect(await new HypaProcesser(job(endpointB)).getCachedQueries(queries)).toEqual([
+            [0, 1],
+            [0, 1],
+        ]);
+        expect(calls.map(({ url, body }) => [url, body])).toEqual([
+            [endpointA, { input: ["question"], model: "same-model" }],
+            [endpointB, { input: ["question"], model: "same-model" }],
+        ]);
+        const returned = new HypaProcesser(job(endpointB), "custom", endpointA);
+        expect(await returned.getCachedQueries(queries)).toEqual([
+            [1, 0],
+            [1, 0],
+        ]);
+        expect(await new HypaProcesser(job(endpointB, "rotated-key")).getCachedQueries(queries)).toEqual([
+            [0, 1],
+            [0, 1],
+        ]);
+        expect(calls).toHaveLength(2);
+    });
+
+    it("refreshes V2 documents and queries for an explicit custom endpoint and reuses them through settings and key rotations", async () => {
+        const calls: Call[] = [];
+        const shared = cache();
+        const endpointA = "http://embed.test/v1/embeddings";
+        const endpointB = "http://other-embed.test/v1/embeddings";
+        const fetchImpl = fakeFetch({
+            calls,
+            answer: (call) => {
+                const vectors: Record<string, number[]> =
+                    call.url === endpointA
+                        ? { left: [1, 0], right: [0, 1], query: [1, 0] }
+                        : { left: [1, 1], right: [0, 2], query: [0, 1] };
+                return { body: { data: call.body.input.map((text: string) => ({ embedding: vectors[text] })) } };
+            },
+        });
+        const job = (url: string, key = CUSTOM_KEY) =>
+            env({ cache: shared, fetch: fetchImpl, db: { hypaCustomSettings: { url, key, model: "same-model" } } });
+        const items = [
+            { id: "left", content: "left" },
+            { id: "right", content: "right" },
+        ];
+        const first = new HypaProcessorV2(job(endpointA));
+        await first.addTexts(items);
+        expect((await first.similaritySearchScored("query")).map(([item]) => item.content)).toEqual(["left", "right"]);
+        const switched = new HypaProcessorV2(job(endpointA), { customEmbeddingUrl: endpointB });
+        await switched.addTexts(items);
+        expect(Array.from(switched.vectors.values(), ({ embedding }) => embedding)).toEqual([
+            [1, 1],
+            [0, 2],
+        ]);
+        const ranked = await switched.similaritySearchScored("query");
+        expect(ranked.map(([item]) => item.content)).toEqual(["right", "left"]);
+        expect(calls.map(({ url, body }) => [url, body])).toEqual([
+            [endpointA, { input: ["left", "right"], model: "same-model" }],
+            [endpointA, { input: ["query"], model: "same-model" }],
+            [endpointB, { input: ["left", "right"], model: "same-model" }],
+            [endpointB, { input: ["query"], model: "same-model" }],
+        ]);
+
+        for (const [url, key, expected] of [
+            [endpointA, CUSTOM_KEY, ["left", "right"]],
+            [endpointB, CUSTOM_KEY, ["right", "left"]],
+            [endpointB, "rotated-key", ["right", "left"]],
+        ] as const) {
+            const warm = new HypaProcessorV2(job(url, key));
+            await warm.addTexts(items);
+            expect((await warm.similaritySearchScored("query")).map(([item]) => item.content)).toEqual(expected);
+        }
+        expect(calls).toHaveLength(4);
+    });
+
+    it("shares custom vectors across URL credentials and key changes without putting credentials in cache keys", async () => {
+        const calls: Call[] = [];
+        const shared = cache();
+        const gets = vi.spyOn(shared, "get");
+        const sets = vi.spyOn(shared, "set");
+        const fetchImpl = fakeFetch({ calls });
+        const job = (url: string, key: string) =>
+            env({ cache: shared, fetch: fetchImpl, db: { hypaCustomSettings: { url, key, model: "same-model" } } });
+        const urls = [
+            "http://embed.test/v1/embeddings",
+            "http://url-user-secret:url-password-secret@embed.test/v1/embeddings",
+            "http://embed.test/v1/embeddings?key=url-query-secret",
+            "http://embed.test/v1/embeddings#url-fragment-secret",
+            "http://url-user-secret:url-password-secret@embed.test/v1/embeddings?key=url-query-secret#url-fragment-secret",
+        ];
+        const items = [{ id: "v2-document", content: "v2 document" }];
+        const firstJob = job(urls[0], "api-key-secret");
+        await new HypaProcesser(firstJob).addText(["document"]);
+        await new HypaProcesser(firstJob).getCachedQueries(["question"]);
+        const firstV2 = new HypaProcessorV2(firstJob);
+        await firstV2.addTexts(items);
+        await firstV2.similaritySearchScored("v2 query");
+        expect(calls).toHaveLength(4);
+
+        for (const url of urls) {
+            calls.length = 0;
+            const nextJob = job(url, "rotated-api-key-secret");
+            const documents = new HypaProcesser(nextJob);
+            await documents.addText(["document"]);
+            expect(documents.vectors.map(({ embedding }) => embedding)).toEqual([vector("document")]);
+            const loaded = new HypaProcesser(nextJob);
+            expect(loaded.loadCachedDocuments(["document"]), url).toEqual([]);
+            expect(await new HypaProcesser(nextJob).getCachedQueries(["question"])).toEqual([vector("question")]);
+            const nextV2 = new HypaProcessorV2(nextJob);
+            await nextV2.addTexts(items);
+            expect((await nextV2.similaritySearchScored("v2 query"))[0][0].content).toBe("v2 document");
+            expect(calls, url).toHaveLength(0);
+        }
+        const keys = [...gets.mock.calls, ...sets.mock.calls].map(([key]) => key).join("\n");
+        for (const secret of [
+            "url-user-secret",
+            "url-password-secret",
+            "url-query-secret",
+            "url-fragment-secret",
+            "api-key-secret",
+            "rotated-api-key-secret",
+        ]) {
+            expect(keys).not.toContain(secret);
+        }
+    });
+
+    it("loads 2,000 warm texts with linear work and no repeated admission while preserving cold duplicates", async () => {
+        const calls: Call[] = [];
+        const shared = cache();
+        const e = env({ cache: shared, fetch: fakeFetch({ calls }) });
+        const texts = Array.from({ length: 2_000 }, (_, i) => `t${i}`);
+        const cold = new HypaProcesser(e);
+        await cold.addText([texts[0], ...texts]);
+        expect(calls.flatMap(({ body }) => body.input)).toEqual([texts[0], ...texts]);
+        expect(cold.vectors.map(({ content }) => content)).toEqual([texts[0], ...texts]);
+
+        calls.length = 0;
+        const lookups = vi.spyOn(shared, "get");
+        const warm = new HypaProcesser(e);
+        let contentReads = 0;
+        // Instrument entries as they are admitted, so a scan during the first warm call is counted too.
+        warm.vectors = new Proxy(warm.vectors, {
+            set(target, property, value, receiver) {
+                if (typeof property === "string" && /^\d+$/.test(property)) {
+                    const content = value.content;
+                    value = {
+                        ...value,
+                        get content() {
+                            contentReads++;
+                            return content;
+                        },
+                    };
+                }
+                return Reflect.set(target, property, value, receiver);
+            },
+        });
+        await warm.addText(texts);
+        expect(contentReads).toBeLessThanOrEqual(3 * texts.length);
+        expect(lookups).toHaveBeenCalledTimes(texts.length);
+        expect(warm.vectors.map(({ content }) => content)).toEqual(texts);
+        expect(calls).toHaveLength(0);
+
+        contentReads = 0;
+        lookups.mockClear();
+        await warm.addText(texts);
+        expect(warm.vectors).toHaveLength(texts.length);
+        expect(contentReads).toBeLessThanOrEqual(3 * texts.length);
+        expect(lookups.mock.calls.length).toBeLessThanOrEqual(3 * texts.length);
+        expect(calls).toHaveLength(0);
     });
 });
 
@@ -474,7 +715,9 @@ describe("HypaProcessorV2", () => {
             embedding: vector("text 3"),
             metadata: { group: "g" },
         });
-        expect(shared.get("text 3|custom-emb-model")).toEqual(vector("text 3"));
+        expect(shared.get("text 3|custom-emb-model|endpoint-v1:http://embed.test/v1/embeddings")).toEqual(
+            vector("text 3"),
+        );
         // A hit of another processor: the cached object with the new metadata, and no `id` of its own.
         const warm = new HypaProcessorV2<Meta>(e);
         await warm.addTexts([{ id: "other", content: "text 3", metadata: { group: "h" } }]);

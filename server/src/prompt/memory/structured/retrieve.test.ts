@@ -303,7 +303,7 @@ describe("bounded memory embeddings", () => {
         const query = "Continue.";
         let warmingDocuments = true;
         const h = harness((text) => (!warmingDocuments || text === "A hidden signal" ? [1, 0] : [0, 1]));
-        const documents = [query, `structured-query-v1:${query}`, "A hidden signal"];
+        const documents = [query, `structured-query-v2:${query}`, "A hidden signal"];
         await new HypaProcesser(h.host.embeddings, h.host.db.hypaModel).addText(documents);
         warmingDocuments = false;
         h.calls.length = 0;

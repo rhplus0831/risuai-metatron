@@ -327,9 +327,10 @@ it matches a removable entry), so a prompt still over the context with them ends
 
 ### Embedding cache keys and limits
 
-- Vector-cache identifiers are separate from credentials. Include model identity; contextual Voyage keys also include
-  group identity. The server's `contextualChunkCacheKey` adds key version and 0-based chunk position, so equal text at
-  two positions cannot share a vector.
+- Vector-cache identifiers are separate from credentials. Include model identity; custom keys include the normalized
+  endpoint (no userinfo, query, or fragment); contextual Voyage keys also include group identity. The server's
+  `contextualChunkCacheKey` adds key version and 0-based chunk position, so equal text at two positions cannot share a
+  vector.
 - Use a contextual group from cache only when every member hits; otherwise re-embed the whole group in source order and
   map results by chunk identity. Query vectors (`input_type: "query"`) differ from document vectors. `HypaProcesser`
   caches queries only in `getCachedQueries`, under pipe-free keys; `testText` caches raw text only.
@@ -436,8 +437,6 @@ it matches a removable entry), so a prompt still over the context with them ends
   Memory, "Modes of the V3 step" and D10, [archive](../archived-plan/README.md).
 - `voyageApiKey` and `hypaCustomSettings.key` are in the client-readable `secrets` section: the tab reads them, and the
   job's settings projection holds them. Only `supaMemoryKey` is write-only. Decision: `shared/sections.ts` `secrets`.
-- The embedding cache key names the model, not the endpoint: a custom server changed under the same model name reuses
-  the old vectors. Decision: `server/src/prompt/embeddings.ts` header.
 - The server and the tab do not share vectors or model files, and their local models can differ in weights revision and
   kernels: a ranking near a tie can differ between the two paths. Decision: `server/src/prompt/embeddings.ts` header.
 - The Transformers.js child process has no memory limit of its own. The queue bounds admitted task count and queued

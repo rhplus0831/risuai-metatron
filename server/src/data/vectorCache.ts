@@ -14,9 +14,9 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
  * an emptying has not succeeded, nothing is served and nothing is stored (it is tried again, at most
  * once a second).
  *
- * A row is one vector under the SHA-256 of the client's cache key (the text, the model, and the
- * model's suffix; hashed as UTF-16, so two JavaScript strings never share a row unless they are
- * equal), so a key is bounded whatever the text. Only vectors are stored: no provider body,
+ * A row is one vector under the SHA-256 of an embedding-space cache key (including the normalized
+ * endpoint for custom models; hashed as UTF-16, so two JavaScript strings never share a row unless
+ * they are equal), so a key is bounded whatever the text. Only vectors are stored: no provider body,
  * no header, no setting. A local model's `Float32Array` comes back as one; an API vector (JSON
  * numbers) is stored as float64 and comes back as a `number[]`, so a dot product is the one the
  * provider's numbers give.

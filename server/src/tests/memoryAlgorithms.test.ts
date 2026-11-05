@@ -191,8 +191,11 @@ describe("the server ports against the browser fixture", () => {
     });
 
     // The server's contextual document keys add the key version and the chunk's position in its group;
-    // the tab's keys, which the fixture records, do not (query keys are alike). The rest of these
+    // the tab's keys, which the fixture records, do not (query keys are alike). The server's custom-model
+    // keys also name the endpoint the world's settings request; the tab's do not. The rest of these
     // outcomes is the browser's.
+    const serverCustomKey = (key: string) =>
+        key.endsWith("|custom-em") ? `${key}|endpoint-v1:http://embed.test/v1/embeddings` : key;
     const serverCacheKeys: Record<string, string[]> = {
         "v3-voyage-similar-full": [
             "Gravel underfoot.|voyageContext3|ctx:wbf3zz|chunk-cache-v2|index:1",
@@ -229,8 +232,8 @@ describe("the server ports against the browser fixture", () => {
     for (const scenario of scenarios) {
         it(`${scenario.name}: the port's outcome is the browser's`, async () => {
             const browser = fixture.cases[scenario.name];
-            const keys = serverCacheKeys[scenario.name];
-            if (keys) {
+            const keys = serverCacheKeys[scenario.name] ?? browser.cacheKeys?.map(serverCustomKey);
+            if (serverCacheKeys[scenario.name]) {
                 // Without the version and position, the keys are the tab's.
                 expect(keys.map((key) => key.replace(/\|chunk-cache-v2\|index:\d+$/, ""))).toEqual(browser.cacheKeys);
             }

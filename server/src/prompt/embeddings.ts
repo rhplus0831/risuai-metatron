@@ -22,9 +22,10 @@ import type { TransformersService } from "./transformers.ts";
  *
  * What differs from the tab, on purpose:
  * - The vectors are in the server's `VectorCache`, not LocalForage. The cache keys keep the client's
- *   bases (text, model, custom-model and Voyage suffixes); grouped contextual document keys also
- *   add the chunk position and key version, so they differ from the tab's. The cache holds vectors
- *   only: a hit is rebuilt with the text it was asked for, which is what the client stored with it.
+ *   bases (text, model, custom-model and Voyage suffixes); custom keys add a versioned normalized
+ *   endpoint, and grouped contextual document keys add the chunk position and key version. The cache
+ *   holds vectors only: a hit is rebuilt with the text it was asked for, which is what the client
+ *   stored with it.
  * - The providers are called from the server: OpenAI with the stored memory key (`supaMemoryKey`, a
  *   write-only credential), Voyage and the custom URL with the keys the settings hold. The custom
  *   URL is fetched as the settings name it (the hazard recorded for provider URLs).
@@ -410,16 +411,36 @@ class VoyageContextProvider implements ContextualEmbeddingProvider {
     }
 }
 
+function resolveCustomEmbeddingUrl(customEmbeddingUrl: string): string {
+    return customEmbeddingUrl.endsWith("/embeddings")
+        ? customEmbeddingUrl
+        : appendLastPath(customEmbeddingUrl, "embeddings");
+}
+
+/** The embedding space shared by document and query keys; credentials never enter it. */
+function embeddingSpaceKey(env: EmbeddingEnv, model: HypaModel, customEmbeddingUrl: string): string {
+    if (model !== "custom") return model;
+    const customModel = env.db.hypaCustomSettings?.model?.trim();
+    const suffix = customModel ? `-${customModel}` : "";
+    let endpoint = "invalid-url";
+    try {
+        const url = new URL(resolveCustomEmbeddingUrl(customEmbeddingUrl));
+        // Userinfo, query and fragment may carry credentials. Endpoints differing only by query
+        // deliberately share a space; path, host and protocol distinguish the others.
+        endpoint = `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, "")}`;
+    } catch {
+        // An invalid URL cannot produce vectors; never put its raw, possibly credentialed text in a key.
+    }
+    return `${model}${suffix}|endpoint-v1:${endpoint}`;
+}
+
 /** The custom embedding server's request (`hypaCustomSettings`), shared by both processors. */
 async function customEmbeds(env: EmbeddingEnv, customEmbeddingUrl: string, input: string[] | string) {
     if (!customEmbeddingUrl) {
         throw new Error("Custom model requires a Custom Server URL");
     }
-    const replaceUrl = customEmbeddingUrl.endsWith("/embeddings")
-        ? customEmbeddingUrl
-        : appendLastPath(customEmbeddingUrl, "embeddings");
     const settings = env.db.hypaCustomSettings;
-    return await postJson(env, replaceUrl, {
+    return await postJson(env, resolveCustomEmbeddingUrl(customEmbeddingUrl), {
         headers: {
             ...(settings?.key?.trim() ? { Authorization: "Bearer " + settings.key.trim() } : {}),
         },
@@ -475,7 +496,7 @@ async function voyageEmbeds(
 
 /**
  * The tab's `HypaProcesser` on an `EmbeddingEnv`: stored texts' vectors (`addText`, cached in the
- * `VectorCache` under the client's keys) and a dot-product search. Queries are uncached unless
+ * `VectorCache` under embedding-space keys) and a dot-product search. Queries are uncached unless
  * the caller explicitly uses `getCachedQueries` (Structured Memory's disjoint query namespace).
  */
 export class HypaProcesser {
@@ -562,15 +583,12 @@ export class HypaProcesser {
     /** Loads cached documents into this processor without embedding; returns unique missing texts. */
     loadCachedDocuments(texts: readonly string[]): string[] {
         checkAborted(this.env);
-        const suffix =
-            this.model === "custom" && this.env.db.hypaCustomSettings?.model?.trim()
-                ? `-${this.env.db.hypaCustomSettings.model.trim()}`
-                : "";
+        const space = embeddingSpaceKey(this.env, this.model, this.customEmbeddingUrl);
         const loaded = new Set(this.vectors.map(({ content }) => content));
         const missing: string[] = [];
         for (const text of new Set(texts)) {
             if (loaded.has(text)) continue;
-            const vector = loadVector(this.env, `${text}|${this.model}${suffix}`, text);
+            const vector = loadVector(this.env, `${text}|${space}`, text);
             if (vector) {
                 this.vectors.push({ ...vector, alreadySaved: true });
             } else {
@@ -583,15 +601,15 @@ export class HypaProcesser {
     /**
      * Cached query vectors in input order, embedding only unique misses with query input type.
      * Keys contain no pipe, so no document or HypaProcessorV2 key can equal one. The discriminator
-     * matches document keys' custom model choice; neither endpoint identity nor credentials enter it.
+     * matches document keys' embedding space, including the normalized custom endpoint, without credentials.
      */
     async getCachedQueries(texts: readonly string[]): Promise<VectorArray[]> {
         checkAborted(this.env);
-        const discriminator = this.model === "custom" ? this.env.db.hypaCustomSettings?.model?.trim() || "" : "";
+        const space = embeddingSpaceKey(this.env, this.model, this.customEmbeddingUrl);
         const key = (text: string) =>
-            "structured-query-v1:" +
+            "structured-query-v2:" +
             createHash("sha256")
-                .update(JSON.stringify([this.model, discriminator, text]))
+                .update(JSON.stringify([space, text]))
                 .digest("hex");
         const vectors = new Map<string, VectorArray>();
         const missing: string[] = [];
@@ -612,28 +630,23 @@ export class HypaProcesser {
     }
 
     async addText(texts: string[]) {
-        const db = this.env.db;
-        const suffix =
-            this.model === "custom" && db.hypaCustomSettings?.model?.trim()
-                ? `-${db.hypaCustomSettings.model.trim()}`
-                : "";
-
-        for (let i = 0; i < texts.length; i++) {
-            const itm = loadVector(this.env, texts[i] + "|" + this.model + suffix, texts[i]);
+        const space = embeddingSpaceKey(this.env, this.model, this.customEmbeddingUrl);
+        // Callers also mutate `vectors` directly, so rebuild membership for each admission.
+        const loaded = new Set(this.vectors.map(({ content }) => content));
+        const missing: string[] = [];
+        for (const text of texts) {
+            if (loaded.has(text)) continue;
+            const itm = loadVector(this.env, `${text}|${space}`, text);
             if (itm) {
                 itm.alreadySaved = true;
                 this.vectors.push(itm);
+                loaded.add(text);
+            } else {
+                // Keep cold duplicates: the client embeds and stores both copies.
+                missing.push(text);
             }
         }
-
-        texts = texts.filter((v) => {
-            for (let i = 0; i < this.vectors.length; i++) {
-                if (this.vectors[i].content === v) {
-                    return false;
-                }
-            }
-            return true;
-        });
+        texts = missing;
 
         if (texts.length === 0) {
             return;
@@ -648,7 +661,7 @@ export class HypaProcesser {
         for (let i = 0; i < memoryVectors.length; i++) {
             const vec = memoryVectors[i];
             if (!vec.alreadySaved) {
-                saveVector(this.env, texts[i] + "|" + this.model + suffix, vec.embedding);
+                saveVector(this.env, `${texts[i]}|${space}`, vec.embedding);
             }
         }
 
@@ -1083,7 +1096,7 @@ export class HypaProcessorV2<TMetadata> {
     }
 
     /**
-     * The vector's cache key: the text and the model (with the custom model, or the contextual group).
+     * The vector's cache key: the text and embedding space, plus any contextual group.
      * Contextual documents also carry their position in the group and the chunk cache version.
      * A Voyage `/v1/embeddings` model embeds queries and documents differently (`input_type`), so its
      * query vectors are kept under their own key.
@@ -1094,11 +1107,7 @@ export class HypaProcessorV2<TMetadata> {
         inputType: "query" | "document" = "document",
         chunkIndex?: number,
     ): string {
-        const db = this.env.db;
-        const suffix =
-            this.options.model === "custom" && db.hypaCustomSettings?.model?.trim()
-                ? `-${db.hypaCustomSettings.model.trim()}`
-                : "";
+        const space = embeddingSpaceKey(this.env, this.options.model, this.options.customEmbeddingUrl);
 
         const ctxProvider = isContextModel(this.options.model)
             ? getContextProvider(this.env, this.options.model)
@@ -1110,7 +1119,7 @@ export class HypaProcessorV2<TMetadata> {
                 ? "|query"
                 : "";
 
-        const baseKey = `${content}|${this.options.model}${suffix}${ctxSuffix}${querySuffix}`;
+        const baseKey = `${content}|${space}${ctxSuffix}${querySuffix}`;
         return ctxProvider && inputType === "document" ? contextualChunkCacheKey(baseKey, chunkIndex!) : baseKey;
     }
 
