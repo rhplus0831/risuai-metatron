@@ -246,7 +246,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - Focused:
   `pnpm --silent test:agent src/ts/plugins src/ts/storage/tests/{pluginStorageStore,collectionStore}.test.ts src/ts/network/generationJobsPluginWork.test.ts`.
   The MCP clients and tool dispatch: [mcp](mcp.md#tests).
-- `slow`: none. `e2e`: `e2e/transformGolden.spec.ts` (edit hooks), `e2e/settingsPages.spec.ts` (the page).
+- `slow`: none. `e2e`: `e2e/transformGolden.spec.ts` (edit hooks), `e2e/settingsPages.spec.ts` (the page),
+  `e2e/pluginSandbox.spec.ts` (sandbox tokens, opaque origin, message source, a host call, detached `getDatabase`).
 - `SandboxHost` stub (`vi.mock` of `./factory`, most of `apiV3/`): the real API object is driven directly.
 - `guestBridge.test.ts`: the srcdoc's guest half over a fake window; it still logs its property initialization.
 - `sandboxActivity.test.ts`: a real `SandboxHost`, the guest simulated by window messages.
@@ -277,10 +278,9 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   element from the page keeps it (and the element), a `once` listener that fired stays in the teardown list, and a
   wrapper queried again for the same node does not know the id.
 - A plugin's whole-chat setter (`setChatToIndex`, and a character setter's `chats`) diffs the plugin's copy against the
-  chat at call time: `captureChatBaseline` runs right before `applyChatResult`, not when the plugin read the chat. So a
-  change another writer made after the plugin's read is overwritten: a changed message field or chat field is set back
-  to the copy's value (a `CHAT_META_MERGE_KEYS` map only in the entries that differ), and a message added meanwhile is
-  removed.
+  chat at call time (`captureChatBaseline` right before `applyChatResult`), not as the plugin read it. So a change
+  another writer made after the plugin's read is overwritten: a changed message field or chat field is set back to the
+  copy's value (a `CHAT_META_MERGE_KEYS` map only in the entries that differ), and a message added meanwhile is removed.
 - `unloadV3Plugin` waits up to one second after the unload callbacks before `SandboxHost.terminate`; a plugin's pending
   async work can still register a hook in that window. The post-unload reset removes providers registered then; other
   hooks still have this hazard.
@@ -293,26 +293,26 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   a local `loadPlugins` runs: a top-level script that never settles, a hook or guest callback that never answers, a
   stream bridged either way never finished (a host stream the guest never pulls expires at 60 s), or a job this tab
   never releases. Work that starts while a reload unloads the old sandboxes is not fenced: a job created then lists the
-  hooks registered at that time. Decision: RisuNest Small Wins D4, [archive](../archived-plan/README.md).
+  hooks registered at that time. Decision: RisuNest Small Wins D4, archive.
 - A cancelled hook that never settles keeps plugin `sendChat` refused (`channelCallbacksRunning`), and after the
   server's `CANCELLED_CALLBACK_DRAIN_MS` (60 s) a later job's root callbacks are refused on this tab, both until the
   page reloads; admitting another root while the cancelled hook can still write would let it overlap later work.
-  Decision: Per-Chat Send D8, [archive](../archived-plan/README.md).
+  Decision: Per-Chat Send D8, archive.
 - A plugin's timers and UI callbacks share the instance's ambient `PluginCallContext`, so they may inherit an in-flight
   hook's context. Exact per-call attribution needs an RPC correlation id. Decision:
   [`pluginContext.ts`](../../src/ts/plugins/apiV3/pluginContext.ts).
 - Aux calls (`runLLMModel`, `imggen` prompt requests) made through `channelCall` end with their hook callback; calls
   without that context do not. The send guard accepts its job ids only while the callback runs uncancelled and checks a
-  stale context against the chat binding. Decision: Per-Chat Send D8, [archive](../archived-plan/README.md).
+  stale context against the chat binding. Decision: Per-Chat Send D8, archive.
 - A plugin's ambient context carries its hook callback, but body interceptors have no context, a provider's context ends
   when it returns its stream, and tab `internal:aiaccess` captures chat context without `channelCall`; requests from
-  those paths are not ended with the callback. Decision: Per-Chat Send D8, [archive](../archived-plan/README.md).
+  those paths are not ended with the callback. Decision: Per-Chat Send D8, archive.
 - A plugin setter's non-null section value is not normalized on the writing tab: the server normalizes its copy, but the
   batch answer carries revisions only, so the tab keeps the value until reread or a live update. Decision: accepted
   mirror-normalization limit in [persistence](persistence.md#known-hazards).
 - A plugin call that adds a character and also passes `characterOrder` without the new id: the order is written after
-  the add and overwrites the add's repair, so the id is missing from the order until the next `checkCharOrder`
-  (`pluginKeyOrder` in `v3.svelte.ts`). Decision: [`pluginKeyOrder`](../../src/ts/plugins/apiV3/v3.svelte.ts).
+  the add and overwrites the add's repair, so the id is missing from the order until the next `checkCharOrder`.
+  Decision: [`pluginKeyOrder`](../../src/ts/plugins/apiV3/v3.svelte.ts).
 
 ### Gotchas
 
