@@ -589,7 +589,9 @@ export async function serverProcessScript(
     cbsConditions: CbsConditions,
     captured: CapturedTransform,
     kind: TransformTargetKind,
+    signal?: AbortSignal,
 ): Promise<{ data: string; emoChanged: boolean }> {
+    signal?.throwIfAborted();
     if (captured.locked) {
         return { data, emoChanged: false };
     }

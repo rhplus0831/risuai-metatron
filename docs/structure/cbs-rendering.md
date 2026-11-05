@@ -70,12 +70,10 @@ and video have two modes:
 
 - Direct (`src/ts/globalApi.svelte.ts` `getDirectAssetSrc` answers a URL: worker use enabled, the `directAssets`
   capability, and a controlling worker at the call): `/api/asset/<hex(utf-8 key)>`, the URL `getFileSrc` gives, served
-  with the `Content-Type` of `shared/assetMime.ts` `assetMimeType` (`audio/flac` and `video/x-matroska` included). No
-  bytes are read; a missing file shows as the element's 404.
+  with the `Content-Type` of `shared/assetMime.ts` `assetMimeType` (`audio/flac` and `video/x-matroska` included).
 - Fallback (`getDirectAssetSrc` answers `null`): the typed object URL of `src/ts/process/files/inlays.ts`
-  `getInlayObjectUrl`, kept for the page; its Blobs take their type from the same table (`application/octet-stream` for
-  unknown media, `application/json` for signatures).
-- HTML rendered before a page loses its controller keeps its direct URLs; later inlays take the fallback.
+  `getInlayObjectUrl`; its Blobs take their type from the same table (`application/octet-stream` for unknown media,
+  `application/json` for signatures).
 
 ### Script transform client
 
@@ -137,7 +135,8 @@ and video have two modes:
    `risuChatParserForDisplay` with `rmVar` and `visualize`).
 2. `src/lib/ChatScreens/ChatBody.svelte` `markParsing` captures the transform context and calls `ParseMarkdown` in
    `notrim` mode for the body (`pretranslate` for translation inputs); its steps are the `ParseMarkdown` comment. Only
-   the `editdisplay` step leaves the browser: [Display transform](#display-transform).
+   the `editdisplay` step leaves the browser: [Display transform](#display-transform). Reads a failed render retries:
+   `src/ts/parser/renderErrors.ts`.
 3. `ChatBody`'s `shownBody` sanitizes the result (`addMetadataToElement(pruneEmptyBilingualPairs(trimMarkdown(...)))`).
    Under the chat screen (`DefaultChatScreen` provides a `ChatStyleRegistry`), a body that holds a `<style>` or
    `<risu-style>` goes through `trimMarkdownSharingStyles` instead: [Shared styles](#shared-styles).
@@ -252,6 +251,7 @@ and video have two modes:
 
 - `ParseMarkdown` output must go through `trimMarkdown` before `{@html}`. `mode:'notrim'` is an intermediate result, not
   a final one.
+- An aborted render still meets `ChatBody`'s run guards and the `isCurrent` fences.
 - Keep the DOMPurify hooks intact: class prefixing, the href policy, the YouTube iframe allowlist, and blob `src`
   retention.
 - `trimMarkdown`'s config (`trimPurifyConfig`) keeps the chat's script attributes `risu-btn`, `risu-trigger`, `risu-id`,

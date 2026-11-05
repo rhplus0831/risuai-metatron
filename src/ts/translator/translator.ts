@@ -28,6 +28,7 @@ import { applyMarkdownToNode, risuChatParser, type simpleCharacterArgument } fro
 import { getModuleRegexScripts } from "../process/modules";
 import { getNodetextToSentence, sleep } from "../util";
 import { type CapturedTransform, captureTransform, serverProcessScript } from "../parser/transformClient";
+import { markTransient } from "../parser/renderErrors";
 import localforage from "localforage";
 import sendSound from "../../etc/send.mp3";
 
@@ -379,10 +380,15 @@ async function translateMain(
         `https://${arg.host}/translate_a/single?client=gtx&dt=t&sl=${settings.memoryTranslateMedia.translatorInputLanguage}&tl=${arg.to}&q=` +
         encodeURIComponent(text);
 
-    const f = await fetch(url, {
-        signal: arg.signal,
-        method: "GET",
-    });
+    let f: Response;
+    try {
+        f = await fetch(url, {
+            signal: arg.signal,
+            method: "GET",
+        });
+    } catch (error) {
+        throw markTransient(error, arg.signal);
+    }
 
     const res = await f.json();
 
@@ -442,6 +448,9 @@ export function isExpTranslator() {
  * Both DOM dispatch modes share result application: combined paragraph jobs may rerun editdisplay
  * through `src/ts/parser/transformClient.ts`, then Markdown, before the final edittrans pass. The
  * LLM path goes straight to edittrans. A missing transform skips the server display-script stage.
+ * The signal is checked before dispatch, before a worker takes a job or chunk (a DeepLX batch), before each
+ * job's display-script step and before serialization. The LLM path passes it to `translateLLM` and checks it
+ * after the cache read and answer. A request already sent runs to its answer: `translate` takes no signal.
  */
 export async function translateHTML(
     html: string,
@@ -453,7 +462,9 @@ export async function translateHTML(
      * A render's previously captured transform (`ChatBody`); null skips the script stage for lack of context.
      */
     capturedTransform?: CapturedTransform | null,
+    signal?: AbortSignal,
 ): Promise<string> {
+    signal?.throwIfAborted();
     if (!html) {
         return html;
     }
@@ -479,13 +490,20 @@ export async function translateHTML(
     const llmContext = settings.memoryTranslateMedia.translatorType === "llm" ? llmTranslationContext() : null;
     let cached: string | null = null;
     if (get(anyLocalSend) && isExpTranslator()) {
+        signal?.throwIfAborted();
         cached = llmContext ? await readLLMCacheEntry(llmCacheKeyPrefix(llmContext) + html) : null;
+        signal?.throwIfAborted();
         if (cached === null) {
             return html;
         }
     }
     if (llmContext) {
-        const r = cached !== null && !regenerate ? cached : await translateLLM(html, llmContext, regenerate);
+        signal?.throwIfAborted();
+        const r =
+            cached !== null && !regenerate
+                ? cached
+                : await translateLLM(html, llmContext, regenerate, undefined, signal);
+        signal?.throwIfAborted();
         if (settings.memoryTranslateMedia.playMessageOnTranslateEnd) {
             const audio = new Audio(sendSound);
             audio.play().catch(() => {});
@@ -564,12 +582,14 @@ export async function translateHTML(
 
     collectNode(dom.body);
 
+    signal?.throwIfAborted();
     const results: string[] = new Array(jobs.length);
     if (needSuperChunkedTranslate()) {
         // Keep each node intact; an oversized job forms a batch of its own.
         let batch: number[] = [];
         let batchLength = 0;
         async function translateBatch() {
+            signal?.throwIfAborted();
             if (batch.length === 0) return;
             // The separator on its own line keeps each node's asset lines protected (`runTranslator`).
             const translated = await translate(batch.map((i) => jobs[i].text).join("\n■\n"), reverse);
@@ -577,6 +597,7 @@ export async function translateHTML(
             if (split.length !== batch.length) {
                 // A provider can remove or add separators. Only use the individual results then.
                 for (const i of batch) {
+                    signal?.throwIfAborted();
                     results[i] = await translate(jobs[i].text, reverse);
                 }
             } else {
@@ -603,9 +624,11 @@ export async function translateHTML(
         let nextJob = 0;
         async function translateJobs() {
             while (nextJob < jobs.length) {
+                signal?.throwIfAborted();
                 const i = nextJob++;
                 const chunks: string[] = [];
                 for (const chunk of jobs[i].text.split(/\n\n+/g)) {
+                    signal?.throwIfAborted();
                     chunks.push(await translate(chunk, reverse));
                 }
                 results[i] = chunks.join("\n\n");
@@ -616,6 +639,7 @@ export async function translateHTML(
 
     // Every provider uses the same display-script and Markdown application path.
     for (let i = 0; i < jobs.length; i++) {
+        signal?.throwIfAborted();
         const { node, reprocessDisplayScript } = jobs[i];
         const translated = results[i];
         if (!reprocessDisplayScript) {
@@ -633,6 +657,7 @@ export async function translateHTML(
                   "translation",
               )
             : { data: translated };
+        signal?.throwIfAborted();
         if (translated === processedTranslated) {
             node.textContent = processedTranslated;
             applyMarkdownToNode(node);
@@ -644,6 +669,7 @@ export async function translateHTML(
         }
     }
     // Serialize the DOM back to HTML
+    signal?.throwIfAborted();
     const serializer = new XMLSerializer();
     let translatedHTML = serializer.serializeToString(dom);
     // Remove the outer <html|body|head> tags
@@ -765,7 +791,11 @@ export function llmTranslationCacheKey(text: string): string {
 
 /** Reads a full captured cache key; null is a miss, while an empty string is a cached translation. */
 export async function readLLMCacheEntry(key: string): Promise<string | null> {
-    return await LLMCacheStorage.getItem<string>(key);
+    try {
+        return await LLMCacheStorage.getItem<string>(key);
+    } catch (error) {
+        throw markTransient(error);
+    }
 }
 
 /** Writes the full key captured by an editor, without resolving the current preset or languages again. */
