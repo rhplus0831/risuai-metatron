@@ -137,20 +137,20 @@ Realm bodies capped at 4 KiB).
 bytes (`readResponseBytes`, default `MAX_READ_RESPONSE_BYTES` in `shared/resources.ts`, 16 MiB) and names what it left
 out in `unanswered`; without it the answer is whole, so an older tab that takes an absent entry for a deleted one never
 meets `unanswered`. The budget is soft: an answer's first group is served whatever its size, so an entry that outgrew it
-stays readable, and a chat or a collection is never split. The groups, their order, and the charge (stored SQL bytes,
-not wire bytes; a [projection](structured-memory/projection.md#the-hypav3-projection) read, asked by the routes and done
-under structured memory, `overlaysMemoryProjection`, adds the chats' `memory_events`) are `readRefsWithinBudget`'s
-comment. A `chatRows` entry (one group, charged its rows and stored metadata) answers its rows and named fields as
-stored (no projection) at exactly its revision, else `moved` with the current one (null: gone), never `unanswered`.
+stays readable, and a chat or a collection is never split. The groups, their order, and the charge (a
+[projection](structured-memory/projection.md#the-hypav3-projection) read, asked by the routes and done under structured
+memory, `overlaysMemoryProjection`, adds the chats' `memory_events`) are `readRefsWithinBudget`'s comment. A `chatRows`
+entry (one group, charged its rows and stored metadata) answers its rows and named fields as stored (no projection) at
+exactly its revision, else `moved` with the current one (null: gone), never `unanswered`.
 
 ### Chat summaries
 
-- `server/src/data/chatStore.ts` `chatSummary`, over the stored `chatSummaries.text`, is what the full summary listing,
-  collection summary reads, and single-chat binding reads answer, and a feed chat entry's `summary` carries the same
-  fields (`summaryWithTime`); a fresh projection is read without `meta` ([Summary projection](#summary-projection)).
+- `chatSummary` (`chatStore.ts`), over the stored `chatSummaries.text`, answers the full summary listing, collection
+  summary reads, and single-chat binding reads; a feed chat entry's `summary` has the same fields (`summaryWithTime`); a
+  fresh projection is read without `meta` ([Summary projection](#summary-projection)).
 - Summaries include optional `lastMessageAt`: the finite numeric `time` of the last message by position, absent for an
-  empty chat or an undated final message. Its memo, the writes that invalidate it, and the transaction rule are the
-  comment on `lastMessageTimes` in `createChatTables`.
+  empty chat or an undated final message. Its memo, invalidating writes, and transaction rule are the comment on
+  `lastMessageTimes` in `createChatTables`.
 
 ### Chat activity
 
@@ -159,8 +159,8 @@ revision; explicit character effects (memory enable, triggers, Lua setters) stil
 the continued message's time in its existing final write; non-streamed continue sets its time when writing the reply.
 Preview and previewPrompt change neither activity nor character revision. The stored `lastInteraction` remains a frozen
 legacy fallback; the client derives last-chatted ordering from chats ([chat store](chat-store.md#last-chatted)).
-Upstream export keeps its independent cold-storage rule: raise a numeric legacy value to the newest chat `lastDate`, but
-leave absence as absence (upstream reads it as now).
+Upstream export keeps its own cold-storage rule: raise a numeric legacy value to the newest chat `lastDate`, but leave
+absence as absence (upstream reads it as now).
 
 ### Chat writes and checkpoints
 
@@ -177,6 +177,7 @@ leave absence as absence (upstream reads it as now).
   retained memory-task input (`onChatInvalidated`).
 - Automatic checkpoints (`autoSave`) run only after a job ends with a final `done`, when the chat policy's user-turn
   threshold is met (`countUserTurns`, no message row read).
+- By-id writes read touched rows by id (`TOUCHED_ROWS_SQL`) and counts from the `messageCounts` memo, not `COUNT(*)`.
 
 ### Snapshots and restore
 
@@ -431,14 +432,14 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
   (`shared/upstreamExportReport.ts`). An asset of 4 GiB or more cannot fit an archive record
   (`server/src/data/archive.ts`) and is reported as missing. Decision: Upstream .bin Compatibility S7, archive.
 - `GET /api/resources?kinds=…` (the boot-cache miss path and the boot fallback) and `GET /api/resources/:kind` answer
-  whole kinds, and the read budget does not apply to them: no budget, no `unanswered`, and their cost grows with the
-  data. One read must stay one committed state for the boot; a paged form needs the read budget's `unanswered` contract,
-  and has no design yet.
+  whole kinds, and the read budget does not apply to them (no `unanswered`); their cost grows with the data. One read
+  must stay one committed state for the boot; a paged form needs the read budget's `unanswered` contract, and has no
+  design yet.
 - The [read budget](#read-budget) is soft: a chat or a collection past 16 MiB answers whole (append groups grow a chat
   with no lifetime ceiling; the 100 MiB cap is per request), a client without `continue` is answered whole, and the
   budget charges stored bytes, not wire bytes or heap. Nothing bounds how many large answers are in flight, and
-  `readRefs` and `JSON.stringify` still run on the serving thread for what is served. Decision: Server Byte Budgets D2,
-  D3, and Q3, archive.
+  `readRefs` and `JSON.stringify` still run on the serving thread. Decision: Server Byte Budgets D2, D3, and Q3,
+  archive.
 
 ### Gotchas
 

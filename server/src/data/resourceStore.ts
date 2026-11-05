@@ -3173,7 +3173,7 @@ export function createResourceStore(options: {
             chatTables.dropRerollAttempts();
             writeCount += 1;
             patchBases.clear();
-            chatTables.forgetLastMessageTimes();
+            chatTables.forgetChatMemos();
             sourceGenerations.clear();
             lastSourceGeneration += 1;
             baseSourceGeneration = lastSourceGeneration;

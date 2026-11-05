@@ -96,6 +96,15 @@ export const CHAT_TABLES_SQL = `
     ) STRICT;
 `;
 
+/** CROSS JOIN keeps the requested ids driving point lookups before sorting the selected rows. */
+export const TOUCHED_ROWS_SQL = `
+    SELECT m.id, m.data,
+        (SELECT p.id FROM messages p WHERE p.chatSeq = m.chatSeq AND p.position < m.position
+            ORDER BY p.position DESC LIMIT 1) AS after
+    FROM json_each(?) r CROSS JOIN messages m ON m.chatSeq = ? AND m.id = r.value
+    ORDER BY m.position
+`;
+
 /** Column names of the chat tables, in `PRAGMA table_info` order (snapshot layout check). */
 export const CHAT_TABLE_COLUMNS: Record<string, readonly string[]> = {
     chats: ["seq", "characterId", "id", "revision", "schemaVersion", "meta"],
@@ -1360,6 +1369,15 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
      * reading and filling this memo, so a rollback cannot leave uncommitted activity cached.
      */
     const lastMessageTimes = new Map<number, number | undefined>();
+    /**
+     * Counts keyed by chat incarnation. Creation/replacement seed zero, inserts/removals adjust
+     * known counts, and chat/character deletion evicts them. Hooked transactions stage reads and
+     * changes (undefined marks eviction), merge only after commit, and discard on rollback.
+     * Without hooks, membership writes invalidate committed entries; raw transactions read COUNT
+     * without consulting or filling the memo. replaceAll clears it only after commit.
+     */
+    const messageCounts = new Map<number, number>();
+    let stagedMessageCounts: Map<number, number | undefined> | null = null;
     const maxPosition = db.prepare("SELECT MAX(position) AS position FROM messages WHERE chatSeq = ?");
     const shiftAfter = db.prepare("UPDATE messages SET position = position + ? WHERE chatSeq = ? AND position > ?");
     const insertMessage = db.prepare("INSERT INTO messages (chatSeq, id, position, data) VALUES (?, ?, ?, ?)");
@@ -1410,11 +1428,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             SELECT 1 FROM json_tree(messages.data, '$.candidates') WHERE key = 'scriptstateAfter'))`);
     const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");
     const countUserTurns = db.prepare(COUNT_USER_TURNS_SQL);
-    const selectPatchMessages = db.prepare(
-        "SELECT m.id, m.data, (SELECT p.id FROM messages p WHERE p.chatSeq = m.chatSeq AND p.position < m.position " +
-            "ORDER BY p.position DESC LIMIT 1) AS after FROM messages m " +
-            "WHERE m.chatSeq = ? AND m.id IN (SELECT value FROM json_each(?)) ORDER BY m.position",
-    );
+    const selectPatchMessages = db.prepare(TOUCHED_ROWS_SQL);
     const selectCharacterChats = db.prepare(
         "SELECT seq, id, revision, meta FROM chats WHERE characterId = ? ORDER BY seq",
     );
@@ -1489,6 +1503,31 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         return value;
     }
 
+    function cachedMessageCount(chatSeq: number): number | undefined {
+        return stagedMessageCounts?.has(chatSeq) ? stagedMessageCounts.get(chatSeq) : messageCounts.get(chatSeq);
+    }
+
+    function messageCount(chatSeq: number): number {
+        if (stagedMessageCounts || !db.isTransaction) {
+            const cached = cachedMessageCount(chatSeq);
+            if (cached !== undefined) return cached;
+        }
+        const { count } = countMessages.get(chatSeq) as { count: number };
+        if (stagedMessageCounts) stagedMessageCounts.set(chatSeq, count);
+        else if (!db.isTransaction) messageCounts.set(chatSeq, count);
+        return count;
+    }
+
+    function setMessageCount(chatSeq: number, count: number | undefined) {
+        if (stagedMessageCounts) stagedMessageCounts.set(chatSeq, count);
+        else messageCounts.delete(chatSeq);
+    }
+
+    function changeMessageCount(chatSeq: number, delta: number) {
+        const count = cachedMessageCount(chatSeq);
+        setMessageCount(chatSeq, count === undefined ? undefined : count + delta);
+    }
+
     /**
      * The one writer of `chats.meta` on a live write: the only caller of the statements that write it.
      * Stores the metadata and its projection together in the caller's transaction, so no write leaves
@@ -1501,6 +1540,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         let revision = 0;
         if (write.kind === "create") {
             seq = Number(insertChat.run(write.characterId, write.id, CHAT_SCHEMA_VERSION, write.meta).lastInsertRowid);
+            setMessageCount(seq, 0);
         } else {
             setChatMeta.run(write.meta, CHAT_SCHEMA_VERSION, write.seq);
             ({ seq, revision } = write);
@@ -1583,6 +1623,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         shiftAfter.run(messages.length, chatSeq, after);
         messages.forEach((message, index) => {
             insertMessage.run(chatSeq, message.id, after + 1 + index, message.text);
+            changeMessageCount(chatSeq, 1);
         });
     }
 
@@ -1671,7 +1712,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
      * Lazy: nothing is read before the first row is asked for, and a caller that stops early ends the read.
      */
     function* touchedRows(chatSeq: number, touched: ReadonlySet<string>): Generator<ChatWriteChange["rows"][number]> {
-        for (const stored of selectPatchMessages.iterate(chatSeq, JSON.stringify([...touched]))) {
+        for (const stored of selectPatchMessages.iterate(JSON.stringify([...touched]), chatSeq)) {
             const row = stored as ChatWriteChange["rows"][number];
             yield { ...row, data: JSON.stringify(readMessage(row.data)) };
         }
@@ -1832,7 +1873,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     }
 
     /**
-     * A by-id group's change as stored now (`ChatWriteChange`), uncapped: one count and one read of
+     * A by-id group's change as stored now (`ChatWriteChange`), uncapped: the count and one read of
      * the touched rows, with the metadata as its stored string.
      */
     function chatWriteChange(
@@ -1844,7 +1885,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         insertedHere: ReadonlySet<string>,
         metaChanged: boolean,
     ): ChatWriteChange {
-        const { count } = countMessages.get(row.seq) as { count: number };
+        const count = messageCount(row.seq);
         const change: ChatWriteChange = {
             baseRevision,
             revision,
@@ -2115,6 +2156,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 case "delete": {
                     (stagedAttempts ?? attempts).delete(attemptKey(characterId, chatId));
                     deleteChat.run(chatSeq);
+                    setMessageCount(chatSeq, undefined);
                     const order = readOrder(characterId);
                     if (order) {
                         writeOrder(
@@ -2146,6 +2188,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     );
                     writeChatMeta({ kind: "update", seq: chatSeq, revision: row!.revision, meta: op.meta }, op.summary);
                     deleteMessages.run(chatSeq);
+                    setMessageCount(chatSeq, 0);
                     insertAt(
                         chatSeq,
                         -1,
@@ -2367,7 +2410,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     // stale client view.
                     let removed = 0;
                     for (const id of op.ids) {
-                        if (deleteMessage.run(chatSeq, id).changes > 0) {
+                        const { changes } = deleteMessage.run(chatSeq, id);
+                        if (changes > 0) {
+                            changeMessageCount(chatSeq, -Number(changes));
                             removedIds.add(id);
                             if (op.retract) {
                                 retractedIds.add(id);
@@ -2610,7 +2655,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     );
                 } else {
                     // Without a change to build, the rows are read only while a form of the feed's change still fits.
-                    const { count } = countMessages.get(row!.seq) as { count: number };
+                    const count = messageCount(row!.seq);
                     feed = chatFeedChange(
                         patchBase,
                         count,
@@ -2687,17 +2732,24 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return !!guard && messageIds.some((id) => guard.holder(characterId, chatId, id) !== null);
         },
 
-        /** Stage provenance alongside SQLite, including every later callback in the transaction. */
+        /** Stage provenance and counts alongside SQLite, including later callbacks in the transaction. */
         beginTransaction() {
             for (const attempt of attempts.values()) liveAttempt(attempt.characterId, attempt.chatId);
             stagedAttempts = structuredClone(attempts);
+            stagedMessageCounts = new Map();
         },
         commitTransaction() {
             if (stagedAttempts) attempts = stagedAttempts;
             stagedAttempts = null;
+            for (const [chatSeq, count] of stagedMessageCounts ?? []) {
+                if (count === undefined) messageCounts.delete(chatSeq);
+                else messageCounts.set(chatSeq, count);
+            }
+            stagedMessageCounts = null;
         },
         rollbackTransaction() {
             stagedAttempts = null;
+            stagedMessageCounts = null;
         },
         dropRerollAttempts(token?: string) {
             const map = stagedAttempts ?? attempts;
@@ -2923,6 +2975,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             const chatIds = rows.map((row) => row.id);
             for (const row of rows) {
                 lastMessageTimes.delete(row.seq);
+                setMessageCount(row.seq, undefined);
             }
             const order = readOrder(characterId) !== null;
             deleteCharacterChats.run(characterId);
@@ -3209,9 +3262,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return order.bytes + (sumCharacterSummaryBytes.get(characterId) as { bytes: number }).bytes;
         },
 
-        /** Drops the last-message memo: an install's commit gave every chat a new seq. */
-        forgetLastMessageTimes() {
+        /** Drops the chat memos: an install's commit gave every chat a new seq. */
+        forgetChatMemos() {
             lastMessageTimes.clear();
+            messageCounts.clear();
         },
     };
 }

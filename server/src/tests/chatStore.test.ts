@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp, ChatRecord } from "../../../shared/chats.ts";
 import type { Message, MessageTranslation } from "../../../shared/database.ts";
-import type { BatchConflict } from "../../../shared/resources.ts";
+import { MAX_FEED_PATCH_BYTES, type BatchConflict } from "../../../shared/resources.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
@@ -1368,6 +1368,75 @@ describe("revision counters", () => {
 });
 
 describe("snapshots", () => {
+    it("reports the stored message count after membership changes, rollback, recreation and snapshot restore", async () => {
+        const dir = tempDir();
+        const feed = createChangeFeed();
+        const events: Extract<ChangeFeedEvent, { type: "change" }>[] = [];
+        feed.subscribe((event) => {
+            if (event.type === "change") events.push(event);
+        });
+        const store = fileStore(dir, "live.sqlite", feed);
+        seed(store);
+        const snapshot = path.join(dir, "snapshot.sqlite");
+        await store.backupTo(snapshot);
+        const write = (ops: ChatOp[]) => store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), ops)] });
+        let edit = 0;
+        const check = (ops: ChatOp[], expectedIds: string[]) => {
+            for (const changes of [true, false]) {
+                let written: WrittenChanges | undefined;
+                store.applyChanges(
+                    {
+                        chats: [
+                            group("k", store.chatRevision("c", "k"), [
+                                ...(changes ? ops : []),
+                                // Replacing the whole text keeps the feed on its row-manifest path.
+                                {
+                                    op: "setText",
+                                    id: expectedIds[0],
+                                    text: String(++edit % 2).repeat(MAX_FEED_PATCH_BYTES + 1),
+                                },
+                            ]),
+                        ],
+                    },
+                    {
+                        changes,
+                        committed: (_applied, change) => {
+                            written = change;
+                            return [];
+                        },
+                    },
+                );
+                expect(messageIds(store, "k")).toEqual(expectedIds);
+                if (changes) expect(written?.chats[0]?.count).toBe(expectedIds.length);
+                expect(events.at(-1)?.changes.chats[0].rows?.count).toBe(expectedIds.length);
+            }
+        };
+
+        check([], ["a", "b", "c"]);
+        check([{ op: "append", anchor: { end: true }, messages: [m("d")] }], ["a", "b", "c", "d"]);
+        check([{ op: "append", anchor: { after: "a" }, messages: [m("x")] }], ["a", "x", "b", "c", "d"]);
+        check([{ op: "remove", ids: ["b", "c"] }], ["a", "x", "d"]);
+        expect(() =>
+            store.applyChanges({
+                chats: [
+                    group("k", store.chatRevision("c", "k"), [
+                        { op: "append", anchor: { end: true }, messages: [m("rolled-back")] },
+                    ]),
+                    group("missing", store.chatRevision("c", "k"), [{ op: "delete" }]),
+                ],
+            }),
+        ).toThrow(ResourceBatchConflictError);
+        check([], ["a", "x", "d"]);
+        write([{ op: "replace", chat: { message: [m("z")] } as never }]);
+        check([], ["z"]);
+        write([{ op: "delete" }]);
+        expect(chat(store, "k")).toBeNull();
+        write([{ op: "create", chat: { message: [m("r"), m("s")] } as never }]);
+        check([], ["r", "s"]);
+        await installSnapshot(store, snapshot, kinds);
+        check([], ["a", "b", "c"]);
+    });
+
     /** A live store with a character, two chats (one fenced), and a second character; returns a snapshot path. */
     async function snapshotOf(dir: string, store: ResourceStore, name = "snapshot.sqlite") {
         const file = path.join(dir, name);

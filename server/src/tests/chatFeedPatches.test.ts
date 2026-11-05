@@ -6,7 +6,7 @@ import type { ChatGroup, ChatOp } from "../../../shared/chats.ts";
 import { MAX_FEED_PATCH_BYTES, SMALL_FEED_PATCH_BYTES, type ResourceBatchResult } from "../../../shared/resources.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
-import type { ChatWriteChange } from "../data/chatStore.ts";
+import { CHAT_TABLES_SQL, TOUCHED_ROWS_SQL, type ChatWriteChange } from "../data/chatStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
     createResourceStore,
@@ -1007,12 +1007,104 @@ describe("a writer's own chat changes", () => {
         }
     });
 
+    it("looks up requested message ids in a large chat and returns position-ordered rows with predecessor anchors", () => {
+        const messages = Array.from({ length: 10_000 }, (_, index) => m(`m${index}`, `Message ${index}`));
+        const db = new DatabaseSync(":memory:");
+        try {
+            db.exec(CHAT_TABLES_SQL);
+            db.prepare(
+                "INSERT INTO chats (seq, characterId, id, revision, schemaVersion, meta) VALUES (1, 'c', 'k', 1, 1, '{}')",
+            ).run();
+            const insert = db.prepare("INSERT INTO messages (chatSeq, id, position, data) VALUES (1, ?, ?, ?)");
+            db.exec("BEGIN");
+            messages.forEach((message, index) => insert.run(message.chatId!, index, JSON.stringify(message)));
+            db.exec("COMMIT");
+            const plan = db.prepare(`EXPLAIN QUERY PLAN ${TOUCHED_ROWS_SQL}`).all(JSON.stringify(["m9999"]), 1);
+            const details = plan.map((row) => String(row.detail));
+            expect(details).toContain("SEARCH m USING INDEX sqlite_autoindex_messages_1 (chatSeq=? AND id=?)");
+            // The predecessor subquery may use the position index; the outer message lookup must use the id.
+            expect(details).not.toContain("SEARCH m USING INDEX messages_position (chatSeq=?)");
+            expect(details).not.toContain("SCAN m USING INDEX messages_position");
+        } finally {
+            db.close();
+        }
+
+        const b = setup({ ...initial, message: messages });
+        const readRows = (messageIds: string[]) =>
+            b.store.readRefs([], {
+                chatRows: [
+                    { characterId: "c", id: "k", revision: b.store.chatRevision("c", "k")!, messageIds, meta: [] },
+                ],
+            }).chatRows![0];
+        expect(readRows(["m9999"])).toMatchObject({
+            rows: [{ id: "m9999", after: "m9998", message: m("m9999", "Message 9999") }],
+        });
+        expect(readRows(["m9999", "m10", "m2", "m0"])).toMatchObject({
+            rows: [
+                { id: "m0", after: null, message: m("m0", "Message 0") },
+                { id: "m2", after: "m1", message: m("m2", "Message 2") },
+                { id: "m10", after: "m9", message: m("m10", "Message 10") },
+                { id: "m9999", after: "m9998", message: m("m9999", "Message 9999") },
+            ],
+        });
+        const committed = commitSpy();
+        b.store.applyChanges(
+            { chats: [group(b.store.chatRevision("c", "k"), [{ op: "setText", id: "m9999", text: "Last edited" }])] },
+            { changes: true, committed },
+        );
+        expect(committed.mock.calls[0][1]?.chats[0]).toMatchObject({
+            count: 10_000,
+            rows: [{ id: "m9999", after: "m9998", data: JSON.stringify(m("m9999", "Last edited")) }],
+        });
+    });
+
+    it("edits existing message text without recounting a chat whose count is known", () => {
+        let counts = 0;
+        let countStatement: ReturnType<DatabaseSync["prepare"]> | undefined;
+        const prepare = DatabaseSync.prototype.prepare;
+        vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql) {
+            const statement = prepare.call(this, sql);
+            if (/SELECT COUNT\(\*\).*FROM messages WHERE chatSeq = \?\s*$/i.test(sql)) {
+                countStatement = statement;
+                const { get } = statement;
+                statement.get = function (...args) {
+                    counts++;
+                    return Reflect.apply(get, this, args);
+                };
+            }
+            return statement;
+        });
+        const b = setup();
+        // Execute the real prepared statement once to prove the counter observes executions, not prepares.
+        expect(countStatement).toBeDefined();
+        countStatement!.get(-1);
+        expect(counts).toBe(1);
+        b.write([{ op: "setText", id: "b", text: "Warm" }]);
+        for (const changes of [false, true]) {
+            const edits: ChatOp[] = [
+                { op: "setText", id: "b", text: `setText ${changes}` },
+                { op: "patchMessage", id: "b", set: { data: `patchMessage ${changes}` }, unset: [] },
+            ];
+            for (const edit of edits) {
+                counts = 0;
+                const committed = commitSpy();
+                b.store.applyChanges(
+                    { chats: [group(b.store.chatRevision("c", "k"), [edit])] },
+                    { changes, committed },
+                );
+                expect(counts, `${edit.op}, changes=${changes}`).toBe(0);
+                expect(b.read().data.message).toHaveLength(3);
+                if (changes) expect(committed.mock.calls[0][1]?.chats[0]?.count).toBe(3);
+            }
+        }
+    });
+
     it("stops touched-row reads at the feed byte cap when changes are not requested", () => {
         const reads = { rows: 0, iterate: 0, all: 0 };
         const prepare = DatabaseSync.prototype.prepare;
         vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql) {
             const statement = prepare.call(this, sql);
-            if (sql.includes("FROM messages m") && sql.includes("AS after") && sql.includes("json_each")) {
+            if (sql === TOUCHED_ROWS_SQL) {
                 const { iterate, all } = statement;
                 statement.iterate = function* (...args) {
                     reads.iterate++;
