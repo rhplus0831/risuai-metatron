@@ -6,7 +6,7 @@ historical paths/commits, retrieval commands, and pending manual follow-ups. Rer
 below was revised on 2026-11-04 after the
 [plan design audit](../manual-audit/plan-design-audit-2026-11-04.md), as were Job Handoff, Asset Lifecycle and
 Incremental Chat Transport (all since landed and archived); Job Handoff, Asset Lifecycle and Reroll
-Candidates were then challenged again and revised a second time the same day. Plugin Storage and Data API was drafted on 2026-11-05.
+Candidates were then challenged again and revised a second time the same day.
 
 - [Reroll Candidates](reroll-candidates.md): the alternatives of the newest reply persist on the
   message as `candidates` with stable ids, a list revision and the selected index under a per-message size
@@ -21,19 +21,6 @@ Candidates were then challenged again and revised a second time the same day. Pl
   input; the tab takes the in-place path only when the server's `hello` advertises it; Slice 2 merges with or
   after Incremental Chat Transport Slice 4 (a traffic dependency, not a code one: separate branches are fine,
   the merge runs the listed integration checks); D1–D14 recommended, Q1–Q4 answered, Slices 1 and 3 landed.
-- [Plugin Storage and Data API](plugin-storage.md): plugin data becomes visible, owned, and cheap to move: a plugin
-  data page lists and deletes what every storage namespace holds and permission grants become revocable (a reset per
-  plugin, revoked on removal); a `pluginStorage` write sends the changed key as a nested patch one level down and a
-  plugin toggle sends that plugin by name; `pluginStorage` gets an owner (the plugin's name) in a new reserved
-  dictionary with legacy read-through, claim-on-write and a per-owner `clear()`, while `safeLocalStorage` and
-  `getLocalPluginStorage()` stay the documented shared channels; a `pluginCustomStorage` write keeps reserved
-  dictionaries it leaves out; `getDatabase` with characters reads unloaded chats by ref in batches as detached copies
-  after this tab's saves settle (never installed, pinned or evicted; hooks and doubtful characters keep the current
-  path; an equality test against the old path is the acceptance check) and reuses copies whose held revision has not
-  moved, `setDatabase` loads only characters whose chats changed, new plugins get a summaries option and a paged chat
-  read, and a browser spec checks the sandbox; drafted 2026-11-05, D1–D12 recommended, Q1–Q5 answered;
-  landed: 0 (c140f2db7), 1 (d5c824f99), 2 (b3e3417a8), 4 (c81a3fab7), 5 (2b778c365), 9 (e6e02d2ba),
-  3 (86ac8b272), 6 (d7e305392), 7 (aab3052ef), 8 (142c3920e), 10 (aa6687b96).
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
