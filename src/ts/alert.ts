@@ -63,6 +63,8 @@ export interface alertData {
     stackTrace?: string;
     /** `input`: the field's initial value. */
     defaultValue?: string;
+    /** `ask`: optional checkbox; changed through the queue, never through store set/update. */
+    confirmCheckbox?: { label: string; checked: boolean };
     /** `error`: a server job's failure (`alertJobError`): "Copy debug info" and "Open in request history". */
     jobFailure?: JobFailureInfo;
     /** `requestlogs`: the job the request history opens filtered to. */
@@ -376,6 +378,17 @@ export async function alertConfirm(msg: string) {
     });
 
     return result === "yes";
+}
+
+/** One confirmation returning both the answer and its checkbox state, including on cancellation. */
+export async function alertConfirmWithCheckbox(
+    msg: string,
+    label: string,
+    checked = true,
+): Promise<{ confirmed: boolean; checked: boolean }> {
+    const checkbox = { label, checked };
+    const result = await openDialog({ type: "ask", msg, confirmCheckbox: checkbox });
+    return result.startsWith("{") ? JSON.parse(result) : { confirmed: false, checked: checkbox.checked };
 }
 
 export async function alertPluginConfirm(msg: string) {

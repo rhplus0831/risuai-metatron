@@ -230,6 +230,23 @@ const EMITTED_KINDS: ResourceKindName[] = [
 const CREATED_KINDS: ResourceKindName[] = [RESOURCE_KIND.modules, RESOURCE_KIND.plugins, RESOURCE_KIND.pluginStorage];
 
 describe("convertUpstreamDatabase: records", () => {
+    it("does not fold an owned dictionary into legacy storage when the legacy dictionary is absent", () => {
+        const out = convertUpstreamDatabase(
+            {
+                pluginCustomStorage: {
+                    legacy: "upstream value",
+                    _ownedPluginStorage: { "plug\u0000key": "owned", plug: { legacyHidden: true } },
+                },
+            },
+            { now: 2_000_000_000_000 },
+        );
+        expect(record(out, RESOURCE_KIND.pluginStorage)).toEqual({
+            legacy: "upstream value",
+            _pluginStorage: { legacy: "upstream value" },
+            _ownedPluginStorage: { "plug\u0000key": "owned", plug: { legacyHidden: true } },
+        });
+    });
+
     it("maps blocked Realm creators to ui and reports each invalid entry at its original index", () => {
         const out = convertUpstreamDatabase({
             blockedRealmCreators: [

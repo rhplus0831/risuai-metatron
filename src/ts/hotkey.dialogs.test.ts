@@ -8,6 +8,7 @@ vi.mock("src/ts/process/serverCommands", async () =>
 );
 
 import { initHotkey } from "./hotkey";
+import { alertConfirmWithCheckbox, openAlertDialog } from "./alert";
 import { installFlatDatabaseWithChats } from "./storage/tests/installFlatDatabase";
 import { alertStore, settingsOpen } from "./stores.svelte";
 
@@ -86,6 +87,23 @@ it("blocks stored plain and modifier hotkeys while a dialog is visible or queued
     expect(get(settingsOpen)).toBe(true);
     stroke(document, "q");
     expect(get(settingsOpen)).toBe(false);
+});
+
+it("Enter accepts a checkbox confirmation with its current state while the checkbox is focused", async () => {
+    const field = document.createElement("input");
+    field.type = "checkbox";
+    const dialogElement = document.createElement("div");
+    dialogElement.setAttribute("data-alert-dialog", "");
+    dialogElement.append(field);
+    document.body.append(dialogElement);
+    const question = openAlertDialog(() => alertConfirmWithCheckbox("Remove plug?", "Also delete its stored data"));
+    dialogs.push(question.dialog!);
+    alertStore.setConfirmChecked(false, get(alertStore));
+    field.focus();
+    stroke(field, "Enter");
+    // Check closure before awaiting so a broken hotkey fails without a timeout.
+    expect(alertStore.dialogVisible()).toBe(false);
+    await expect(question.value).resolves.toEqual({ confirmed: true, checked: false });
 });
 
 it.each(["input", "textarea"] as const)(

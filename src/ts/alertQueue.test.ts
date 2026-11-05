@@ -27,6 +27,7 @@ import {
     alertChatOptions,
     alertClear,
     alertConfirm,
+    alertConfirmWithCheckbox,
     alertError,
     alertErrorWait,
     alertInput,
@@ -471,6 +472,26 @@ describe("alert helpers over the queue", () => {
         await expect(normal).resolves.toBeUndefined();
         await expect(error).resolves.toBeUndefined();
         expect(current()).toEqual(none);
+    });
+
+    it("returns each checkbox confirmation's current state through the button answer path", async () => {
+        const first = alertConfirmWithCheckbox("Remove plug?", "Also delete its stored data");
+        const second = alertConfirmWithCheckbox("Remove other?", "Also delete its stored data");
+        expect(current()).toMatchObject({
+            type: "ask",
+            msg: "Remove plug?",
+            confirmCheckbox: { label: "Also delete its stored data", checked: true },
+        });
+        holder.queue.setConfirmChecked(false, current());
+        holder.queue.answerConfirm(true, current());
+        await expect(first).resolves.toEqual({ confirmed: true, checked: false });
+        expect(await settled(second)).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(current()).toMatchObject({ msg: "Remove other?", confirmCheckbox: { checked: true } });
+        holder.queue.answerConfirm(false, current());
+        await expect(second).resolves.toEqual({ confirmed: false, checked: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(holder.queue.hasDialogs()).toBe(false);
     });
 
     it("keeps a shown confirm unanswered through a status writer's wait and alertClear", async () => {

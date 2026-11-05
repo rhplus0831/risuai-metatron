@@ -204,10 +204,13 @@ const test = base.extend<{ sandbox: Sandbox }>({
 });
 
 const hostStorage = (page: Page, key: string) =>
-    page.evaluate(async (key) => {
-        const { getPluginStorageValue } = await import("/src/ts/storage/pluginStorageStore.svelte.ts");
-        return getPluginStorageValue(key);
-    }, key);
+    page.evaluate(
+        async ([owner, key]) => {
+            const { getOwnedPluginStorageValue } = await import("/src/ts/storage/pluginStorageStore.svelte.ts");
+            return getOwnedPluginStorageValue(owner, key);
+        },
+        [pluginName, key],
+    );
 
 test("the plugin iframe has exactly the allowed sandbox tokens and an opaque origin", async ({ sandbox }) => {
     const element = await sandbox.frame.frameElement();
@@ -270,7 +273,9 @@ test("other windows cannot write plugin storage or get an RPC answer, while the 
     ).toEqual(value);
     expect(await hostStorage(page, key)).toEqual(value);
     await settle(page);
-    expect((await api("/api/resources/pluginStorage/main")).data._pluginStorage[key]).toEqual(value);
+    expect(
+        (await api("/api/resources/pluginStorage/main")).data._ownedPluginStorage[`${pluginName}\u0000${key}`],
+    ).toEqual(value);
 });
 
 test("getDatabase outside a hook returns messages from an unloaded member chat without installing it", async ({

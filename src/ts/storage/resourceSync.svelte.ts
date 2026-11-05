@@ -67,7 +67,7 @@ import {
 } from "../../../shared/llmSecrets.ts";
 import { alertError, alertNormal, alertReloadNotice, alertTerminal, reloadNotice } from "../alert";
 import { assignsInherited, CHARACTER_FIXED_FIELDS } from "./mutationValidation";
-import { PLUGIN_STORAGE_KEY } from "./pluginStorageStore.svelte";
+import { OWNED_PLUGIN_STORAGE_KEY, PLUGIN_STORAGE_KEY } from "./pluginStorageStore.svelte";
 import { PLUGIN_STORAGE_DICTIONARIES } from "../../../shared/pluginStorage.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { applyItemPatch, checkFields, checkItemPatch, itemIds, withFields } from "../../../shared/recordPatch.ts";
@@ -399,13 +399,19 @@ const deferredHydrations = new Map<string, HydrationRecord>();
 type RemoteChangeListener = (kind: string, id: string) => void;
 const remoteChangeListeners = new Set<RemoteChangeListener>();
 /**
- * What a conflict discarded of this client's unsaved `pluginStorage` edits: the keys of the two
+ * What a conflict discarded of this client's unsaved `pluginStorage` edits: the keys of the
  * reserved dictionaries whose local value the server copy replaced, and whether any other top-level
  * value (a `setDatabase` custom key, a reserved name replaced by a value that is no dictionary, or a
  * reserved dictionary this client created, removed, or turned from a list into an object) was
- * replaced too. Custom key names are not listed: reading them takes the plugin `db` permission.
+ * replaced too. Owned keys include raw owner prefixes and markers, mapped by the v3 host per plugin.
+ * Custom key names are not listed: reading them takes the plugin `db` permission.
  */
-export type PluginStorageDiscard = { pluginStorage: string[]; localPluginStorage: string[]; customStorage: boolean };
+export type PluginStorageDiscard = {
+    pluginStorage: string[];
+    ownedPluginStorage: string[];
+    localPluginStorage: string[];
+    customStorage: boolean;
+};
 type PluginStorageDiscardListener = (lost: PluginStorageDiscard) => void;
 const pluginStorageDiscardListeners = new Set<PluginStorageDiscardListener>();
 /**
@@ -3604,6 +3610,7 @@ function acceptRemote(item: RemoteItem, removeAbsentSingleton = false) {
                 listener({
                     ...lost,
                     pluginStorage: [...lost.pluginStorage],
+                    ownedPluginStorage: [...lost.ownedPluginStorage],
                     localPluginStorage: [...lost.localPluginStorage],
                 });
             } catch (error) {
@@ -3760,7 +3767,7 @@ function mergePluginNamespace(field: string, base: unknown, theirs: unknown, our
 /**
  * The `pluginStorage` record merged from a conflict, or null when it cannot be: every key the server
  * changed against the saved base must be one this client did not touch, inside each reserved
- * dictionary (`_pluginStorage`, `_safeLocalPluginStorage`) and at the top level (the `setDatabase`
+ * dictionary in `PLUGIN_STORAGE_DICTIONARIES` and at the top level (the `setDatabase`
  * custom keys, each compared whole). A key both sides changed to different values conflicts.
  */
 function mergePluginStorage(saved: unknown, remote: unknown, local: unknown): Record<string, unknown> | null {
@@ -3804,7 +3811,12 @@ function pluginStorageLosses(key: string, item: RemoteItem): PluginStorageDiscar
         return null;
     }
     const [base, theirs, ours] = records.map((record) => (isPlainObject(record) ? record : {}));
-    const lost: PluginStorageDiscard = { pluginStorage: [], localPluginStorage: [], customStorage: false };
+    const lost: PluginStorageDiscard = {
+        pluginStorage: [],
+        ownedPluginStorage: [],
+        localPluginStorage: [],
+        customStorage: false,
+    };
     for (const field of lostKeys(base, theirs, ours)) {
         if (!PLUGIN_STORAGE_NAMESPACES.has(field)) {
             lost.customStorage = true;
@@ -3819,13 +3831,20 @@ function pluginStorageLosses(key: string, item: RemoteItem): PluginStorageDiscar
         if (t === null || o === null || (ourShape !== baseShape && ourShape !== theirShape)) {
             lost.customStorage = true;
         }
-        lost[field === PLUGIN_STORAGE_KEY ? "pluginStorage" : "localPluginStorage"] = lostKeys(
-            b ?? {},
-            t ?? {},
-            o ?? {},
-        );
+        lost[
+            field === PLUGIN_STORAGE_KEY
+                ? "pluginStorage"
+                : field === OWNED_PLUGIN_STORAGE_KEY
+                  ? "ownedPluginStorage"
+                  : "localPluginStorage"
+        ] = lostKeys(b ?? {}, t ?? {}, o ?? {});
     }
-    return lost.pluginStorage.length > 0 || lost.localPluginStorage.length > 0 || lost.customStorage ? lost : null;
+    return lost.pluginStorage.length > 0 ||
+        lost.ownedPluginStorage.length > 0 ||
+        lost.localPluginStorage.length > 0 ||
+        lost.customStorage
+        ? lost
+        : null;
 }
 
 /**

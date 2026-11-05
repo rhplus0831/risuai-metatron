@@ -444,17 +444,27 @@
             {/if}
 
             {#if $alertStore.type === "ask" || $alertStore.type === "pluginconfirm"}
+                {#if shown.confirmCheckbox}
+                    <label class="mt-4 flex items-center gap-2 text-textcolor">
+                        <input
+                            type="checkbox"
+                            checked={shown.confirmCheckbox.checked}
+                            onchange={(event) => alertStore.setConfirmChecked(event.currentTarget.checked, shown)}
+                        />
+                        <span>{shown.confirmCheckbox.label}</span>
+                    </label>
+                {/if}
                 <div class="flex gap-2 w-full">
                     <Button
                         className="mt-4 grow"
                         onclick={() => {
-                            alertStore.answer("yes");
+                            alertStore.answerConfirm(true, shown);
                         }}>YES</Button
                     >
                     <Button
                         className="mt-4 grow"
                         onclick={() => {
-                            alertStore.answer("no");
+                            alertStore.answerConfirm(false, shown);
                         }}>NO</Button
                     >
                 </div>

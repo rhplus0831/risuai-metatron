@@ -318,7 +318,7 @@ describe("script handlers in transform continuations", () => {
             expect(await result).toMatchObject({ data: "input handled" });
             await b.sync.flushResources();
             expect(b.record("characters", "c")).toEqual(before);
-            expect(b.record("pluginStorage")._pluginStorage.private).toEqual({ count: 1 });
+            expect(b.record("pluginStorage")._ownedPluginStorage["plug\u0000private"]).toEqual({ count: 1 });
             expect(b.record("plugins").find((plugin: any) => plugin.name === "plug").realArg).toMatchObject({
                 a: "own argument",
                 legacy: "own legacy argument",

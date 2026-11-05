@@ -178,9 +178,9 @@ and whole-record fallbacks. `llmSecrets` never has parts: the server refuses its
   [whole-record acceptance](#conflicts).
 - For module lists accepted by `itemIds`, a fresh-id addition merges with independent remote changes and rebases without
   a discard.
-- `pluginStorage` merges by key, one level down in `_pluginStorage` and `_safeLocalPluginStorage`, other top-level keys
-  whole (`mergePluginStorage`). Conflicting reserved values that cannot merge as dictionaries fail; unchanged or equal
-  values still converge. `onPluginStorageDiscarded` hears replaced keys after acceptance settles the record.
+- `pluginStorage` merges by key, one level down in each `PLUGIN_STORAGE_DICTIONARIES` entry, other top-level keys whole
+  (`mergePluginStorage`). Conflicting reserved values that cannot merge as dictionaries fail; unchanged or equal values
+  still converge. `onPluginStorageDiscarded` hears replaced keys after acceptance settles the record.
 - `statics` counts are best effort: server counts plus local increments (`benignChanges`). `llmSecrets` sibling-body
   rules live on `adoptSecretSiblings`, shared by save conflicts, credential replies and live updates; masked status
   comes from the server.

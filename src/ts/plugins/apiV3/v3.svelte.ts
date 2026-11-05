@@ -42,13 +42,14 @@ import {
 } from "src/ts/storage/collectionStore.svelte";
 import { MutationValidationError, requireArray } from "src/ts/storage/mutationValidation";
 import {
-    clearPluginStorage,
-    getPluginStorageValue,
-    pluginStorageKeys,
-    removePluginStorageItem,
+    clearOwnedPluginStorage,
+    getOwnedPluginStorageValue,
+    hasOwnedPluginStorageItem,
+    ownedPluginStorageKeys,
+    removeOwnedPluginStorageItem,
     replacePluginCustomStorage,
     setPluginCustomValue,
-    setPluginStorageItem,
+    setOwnedPluginStorageItem,
 } from "src/ts/storage/pluginStorageStore.svelte";
 import { flushResources, onPluginStorageDiscarded } from "src/ts/storage/resourceSync.svelte";
 import { selectPersona, selectedIndex } from "src/ts/storage/selection.svelte";
@@ -2603,9 +2604,22 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
          */
         onStorageDiscarded: (callback: (event: StorageDiscardedEvent) => unknown) => {
             const unsubscribe = onPluginStorageDiscarded((lost) => {
+                const keys = new Set(lost.pluginStorage);
+                if (!identity.name.includes("\u0000")) {
+                    const prefix = `${identity.name}\u0000`;
+                    for (const key of lost.ownedPluginStorage) {
+                        if (key.startsWith(prefix)) keys.add(key.slice(prefix.length));
+                    }
+                    if (lost.ownedPluginStorage.includes(identity.name)) {
+                        // A rolled-back clear can expose legacy keys again in the now-settled store.
+                        for (const key of ownedPluginStorageKeys(identity.name)) {
+                            if (!hasOwnedPluginStorageItem(identity.name, key)) keys.add(key);
+                        }
+                    }
+                }
                 const event: StorageDiscardedEvent = {
                     type: "storageDiscarded",
-                    pluginStorage: lost.pluginStorage,
+                    pluginStorage: [...keys],
                     localPluginStorage: lost.localPluginStorage,
                     customStorage: lost.customStorage,
                 };
@@ -2672,30 +2686,29 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
 
             return v;
         },
-        //v3 pluginStorage lives under its own key in db.pluginCustomStorage,
-        //apart from the custom properties setDatabase/setDatabaseLite store at its top level
+        // The mutation boundary scopes v3 storage to the loaded plugin's identity.
         _getPluginStorage: async (key: string) => {
-            return getPluginStorageValue(String(key));
+            return getOwnedPluginStorageValue(identity.name, String(key));
         },
         _setPluginStorage: async (key: string, value: any) => {
             //JSON round trip rejects values the save file cannot hold, e.g. BigInt
             const json = JSON.stringify(value);
-            setPluginStorageItem(String(key), json === undefined ? null : JSON.parse(json));
+            setOwnedPluginStorageItem(identity.name, String(key), json === undefined ? null : JSON.parse(json));
         },
         _removePluginStorage: async (key: string) => {
-            removePluginStorageItem(String(key));
+            removeOwnedPluginStorageItem(identity.name, String(key));
         },
         _clearPluginStorage: async () => {
-            clearPluginStorage();
+            clearOwnedPluginStorage(identity.name);
         },
         _keyPluginStorage: async (index: number) => {
-            return pluginStorageKeys()[index] ?? null;
+            return ownedPluginStorageKeys(identity.name)[index] ?? null;
         },
         _keysPluginStorage: async () => {
-            return pluginStorageKeys();
+            return ownedPluginStorageKeys(identity.name);
         },
         _lengthPluginStorage: async () => {
-            return pluginStorageKeys().length;
+            return ownedPluginStorageKeys(identity.name).length;
         },
         _getSafeLocalStorage: (key: string) => safeLocalStorage.getItem(key),
         _setSafeLocalStorage: (key: string, value: string) => safeLocalStorage.setItem(key, value),

@@ -1032,7 +1032,7 @@ interface SafeMutationObserver {
  */
 interface StorageDiscardedEvent {
     type: "storageDiscarded";
-    /** Keys of `risuai.pluginStorage` */
+    /** This plugin's lost keys without owner prefixes, plus legacy lost keys or keys exposed by a discarded clear(). */
     pluginStorage: string[];
     /** Keys of `getLocalPluginStorage()` */
     localPluginStorage: string[];
@@ -1041,7 +1041,9 @@ interface StorageDiscardedEvent {
 }
 
 /**
- * Plugin-specific storage that syncs with save files
+ * Storage owned by the plugin's internal name that syncs with save files. Two plugins' same key stays separate.
+ * Legacy values remain readable until claimed on write; clear() stops reading them without deleting them for others.
+ * Names containing U+0000 retain shared legacy storage.
  *
  * **All methods return Promises** due to iframe message passing.
  *
@@ -1067,7 +1069,7 @@ interface PluginStorage {
     getItem(key: string): Promise<any | null>;
 
     /**
-     * Sets an item in storage
+     * Sets an owned item, moving a visible legacy value under this key into this plugin's storage
      * @param key - Storage key
      * @param value - Value to store (any JSON-serializable value)
      * @returns Promise that resolves when the write is queued for background saving, not when it is saved (see `onStorageDiscarded`)
@@ -1075,14 +1077,14 @@ interface PluginStorage {
     setItem(key: string, value: any): Promise<void>;
 
     /**
-     * Removes an item from storage
+     * Removes this plugin's item and any visible legacy value under this key
      * @param key - Storage key
      * @returns Promise that resolves when the removal is queued for background saving, not when it is saved (see `onStorageDiscarded`)
      */
     removeItem(key: string): Promise<void>;
 
     /**
-     * Clears all items from storage
+     * Clears only this plugin's items and stops reading legacy values; other plugins' data stays
      * @returns Promise that resolves when the clear is queued for background saving, not when it is saved (see `onStorageDiscarded`)
      */
     clear(): Promise<void>;
@@ -2119,7 +2121,8 @@ interface RisuaiPluginAPI {
      * another tab or device saved a different value under the same key first, this browser's
      * unsaved values are replaced by the saved ones, and every listener is called once with the
      * keys whose value was lost. Writes of different keys from two tabs are both kept and raise
-     * nothing. The storage is shared by all plugins, so the keys may be another plugin's.
+     * nothing. All plugins share one record for merging, but pluginStorage lists only this plugin's
+     * own lost keys (without owner prefixes) and legacy lost keys, plus legacy keys exposed by a discarded clear().
      * The listener is removed when the plugin unloads.
      *
      * @example

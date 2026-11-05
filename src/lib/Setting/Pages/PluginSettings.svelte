@@ -2,7 +2,7 @@
     import { activeMainProfile, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { PlusIcon, TrashIcon, LinkIcon, CodeXmlIcon, PowerIcon, PowerOffIcon } from "@lucide/svelte";
     import { language } from "src/lang";
-    import { alertConfirm, alertError, alertSelect } from "src/ts/alert";
+    import { alertConfirm, alertConfirmWithCheckbox, alertError, alertSelect } from "src/ts/alert";
 
     import { hotReloading } from "src/ts/stores.svelte";
     import {
@@ -22,6 +22,7 @@
     import { safeBootOff } from "src/ts/safeBoot";
     import { resetPluginPermissions } from "src/ts/plugins/apiV3/v3.svelte";
     import PluginDataSettings from "./PluginDataSettings.svelte";
+    import { deleteOwnedPluginStorage } from "src/ts/storage/pluginStorageStore.svelte";
 
     /**
      * Edits the persisted plugin list and arguments. Legacy entries stay visible with the
@@ -175,7 +176,11 @@
                         const { name } = plugin;
                         changingPermissions = true;
                         try {
-                            if (!(await alertConfirm(language.removeConfirm + (plugin.displayName ?? name)))) return;
+                            const removal = await alertConfirmWithCheckbox(
+                                language.removeConfirm + (plugin.displayName ?? name),
+                                language.pluginRemoveStoredData,
+                            );
+                            if (!removal.confirmed) return;
                             const plugins = settings.plugins ?? [];
                             const index = plugins.findIndex((entry) => entry.name === name);
                             if (index === -1) return;
@@ -187,8 +192,14 @@
                             settings.plugins = plugins;
                             // Capture the loaded script before reload can unload it. Removal persists even if revocation fails.
                             const revocation = resetPluginPermissions(name, script);
-                            loadPlugins();
-                            await revocation;
+                            await Promise.all([
+                                revocation,
+                                (async () => {
+                                    await loadPlugins();
+                                    // onUnload can still write; delete only after the local sandbox is gone.
+                                    if (removal.checked) deleteOwnedPluginStorage(name);
+                                })(),
+                            ]);
                         } catch (error) {
                             alertError(language.pluginPermissionResetError.replace("{error}", String(error)));
                         } finally {

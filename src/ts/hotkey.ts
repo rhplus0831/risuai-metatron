@@ -99,11 +99,18 @@ export function initHotkey() {
             ev.target.closest("[data-alert-dialog]")
                 ? ev.target
                 : null;
+        const alertCheckbox =
+            alertStore.dialogVisible() &&
+            get(alertStore).type === "ask" &&
+            get(alertStore).confirmCheckbox !== undefined &&
+            ev.target instanceof HTMLInputElement &&
+            ev.target.type === "checkbox" &&
+            ev.target.closest("[data-alert-dialog]");
         const plainKey = !ev.ctrlKey && !ev.altKey && !ev.shiftKey;
         if (
             (plainKey || (hasDialogs && ev.shiftKey && ev.key === "Enter")) &&
             isTextEntry(document.activeElement) &&
-            !(alertInput && (ev.key === "Enter" || ev.key === "Escape"))
+            !((alertInput || alertCheckbox) && (ev.key === "Enter" || ev.key === "Escape"))
         ) {
             return;
         }
@@ -359,7 +366,8 @@ export function initHotkey() {
             ev.preventDefault();
         }
         if (ev.key === "Enter" && alertStore.dialogVisible()) {
-            const alertType = get(alertStore).type;
+            const shown = get(alertStore);
+            const alertType = shown.type;
             if (ev.target instanceof Element && ev.target.closest("[data-alert-dialog] button")) {
                 // A new stroke activates the chosen button; a rejected one cannot click it natively.
                 if (!dialogKeys.accepts(ev)) {
@@ -367,7 +375,11 @@ export function initHotkey() {
                 }
             } else if (alertInput || alertType === "ask" || alertType === "normal" || alertType === "error") {
                 if (dialogKeys.accepts(ev)) {
-                    alertStore.answer(alertInput ? alertInput.value : "yes");
+                    if (alertType === "ask") {
+                        alertStore.answerConfirm(true, shown);
+                    } else {
+                        alertStore.answer(alertInput ? alertInput.value : "yes", shown);
+                    }
                 }
                 ev.preventDefault();
             }

@@ -210,9 +210,9 @@ them up, and a backup does not carry them.
 - Shared `character`/`groupChat` shapes retain `chats` and `chatPage` for server job projections, cards, and plugin
   snapshots; `ClientCharacter`/`ClientGroup` omit them, so records hold no chats. A group has `type: 'group'` and member
   ids in `characters`.
-- `pluginCustomStorage` holds at its top level the custom DB properties the plugin `setDatabase`/`setDatabaseLite` APIs
-  route there (keys outside `allowedDbKeys`). Reserved: `_pluginStorage` (plugin `pluginStorage`, JSON-normalized on
-  write) and `_safeLocalPluginStorage` (`getLocalPluginStorage()`, JSON values only).
+- `pluginCustomStorage` holds at its top level the custom DB properties plugin `setDatabase`/`setDatabaseLite` route
+  there (keys outside `allowedDbKeys`). Reserved: `_ownedPluginStorage`/legacy `_pluginStorage` (plugin `pluginStorage`,
+  JSON-normalized on write) and `_safeLocalPluginStorage` (`getLocalPluginStorage()`, JSON only).
 
 ### Chat fields
 

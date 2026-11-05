@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Cold storage was removed. v3 `pluginStorage` used to keep its values in cold
 // storage behind a `pluginCustomStorage._coldplugin` key -> uuid map; it now keeps
-// them inline under the reserved `pluginCustomStorage._pluginStorage` sub-object.
+// them inline under the reserved `pluginCustomStorage._ownedPluginStorage` sub-object,
+// keyed `<plugin name>\u0000<key>`.
 // These tests pin the replacement contract:
 // - values are isolated from the top level of `pluginCustomStorage`, where the
 //   `setDatabase`/`setDatabaseLite` APIs route custom (non-`allowedDbKeys`)
@@ -54,10 +55,15 @@ import { executePluginV3 } from "./v3.svelte";
 /** The `pluginStorage` record (the legacy `pluginCustomStorage`), through its view. */
 const stored = () => settings.pluginStorage as Record<string, any> | undefined;
 
+/** The loaded plugin's name, the owner of its `pluginStorage` keys. */
+let pluginName = "";
+const ownKey = (key: string) => `${pluginName}\u0000${key}`;
+
 async function makeApi(): Promise<CapturedApi> {
     captured.api = null;
+    pluginName = `pluginStorage-test-${Math.random().toString(36).slice(2)}`;
     await executePluginV3({
-        name: `pluginStorage-test-${Math.random().toString(36).slice(2)}`,
+        name: pluginName,
         script: "",
         version: "3.0",
     } as any);
@@ -72,7 +78,7 @@ describe("v3 pluginStorage without cold storage", () => {
         installFlatDatabase({ pluginCustomStorage: undefined });
     });
 
-    it("stores values inline under pluginCustomStorage._pluginStorage and reads them back", async () => {
+    it("stores values inline under pluginCustomStorage._ownedPluginStorage, keyed by the plugin, and reads them back", async () => {
         const api = await makeApi();
 
         await api._setPluginStorage("theme", "dark");
@@ -80,10 +86,10 @@ describe("v3 pluginStorage without cold storage", () => {
         await api._setPluginStorage("prefs", { nested: { list: [1, "two", null] } });
 
         expect(stored()).toEqual({
-            _pluginStorage: {
-                theme: "dark",
-                count: 3,
-                prefs: { nested: { list: [1, "two", null] } },
+            _ownedPluginStorage: {
+                [ownKey("theme")]: "dark",
+                [ownKey("count")]: 3,
+                [ownKey("prefs")]: { nested: { list: [1, "two", null] } },
             },
         });
         expect(stored()!._coldplugin).toBeUndefined();
@@ -129,7 +135,7 @@ describe("v3 pluginStorage without cold storage", () => {
 
         expect(stored()!.settings).toBe("legacy");
         expect(stored()!.characters).toBe("legacy-list");
-        expect(Object.keys(stored()!).sort()).toEqual(["_pluginStorage", "characters", "settings"]);
+        expect(Object.keys(stored()!).sort()).toEqual(["_ownedPluginStorage", "characters", "settings"]);
         expect(await api._keysPluginStorage()).toEqual(["settings", "characters"]);
 
         await api._removePluginStorage("settings");
@@ -140,7 +146,7 @@ describe("v3 pluginStorage without cold storage", () => {
         expect(stored()).toEqual({
             settings: "legacy",
             characters: "legacy-list",
-            _pluginStorage: {},
+            _ownedPluginStorage: { [pluginName]: { legacyHidden: true } },
         });
         expect(await api._lengthPluginStorage()).toBe(0);
     });
@@ -155,7 +161,7 @@ describe("v3 pluginStorage without cold storage", () => {
         expect(await api._getPluginStorage("undef")).toBeNull();
         expect(await api._getPluginStorage("fn")).toBeNull();
         expect(await api._getPluginStorage("holes")).toEqual({ keep: 1, when: "1970-01-01T00:00:00.000Z" });
-        expect("drop" in stored()!._pluginStorage.holes).toBe(false);
+        expect("drop" in stored()!._ownedPluginStorage[ownKey("holes")]).toBe(false);
     });
 
     it("rejects a BigInt before touching the database so saving cannot break", async () => {
@@ -166,7 +172,7 @@ describe("v3 pluginStorage without cold storage", () => {
 
         await api._setPluginStorage("ok", 1);
         await expect(api._setPluginStorage("counter", { big: 2n })).rejects.toThrow(TypeError);
-        expect(stored()).toEqual({ _pluginStorage: { ok: 1 } });
+        expect(stored()).toEqual({ _ownedPluginStorage: { [ownKey("ok")]: 1 } });
         expect(() => JSON.stringify(stored())).not.toThrow();
     });
 
@@ -178,6 +184,6 @@ describe("v3 pluginStorage without cold storage", () => {
         read.a = 2;
         read.injected = true;
 
-        expect(stored()!._pluginStorage.prefs).toEqual({ a: 1 });
+        expect(stored()!._ownedPluginStorage[ownKey("prefs")]).toEqual({ a: 1 });
     });
 });

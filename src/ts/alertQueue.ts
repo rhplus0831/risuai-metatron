@@ -35,6 +35,10 @@ export interface AlertQueue extends Readable<alertData> {
     open(value: alertData): AlertDialog;
     /** Closes the shown dialog with `msg`, only while `expected` (when given) is the one shown. */
     answer(msg: string, expected?: alertData): void;
+    /** Updates the shown confirmation in place without queuing a second dialog. */
+    setConfirmChecked(checked: boolean, expected: alertData): void;
+    /** Answers a confirmation, carrying its checkbox state when present. */
+    answerConfirm(confirmed: boolean, expected?: alertData): void;
     /** Clears the status slot, only while `expected` (when given) is the status. A dialog stays. */
     clearStatus(expected?: alertData): void;
     /** The status slot (`wait`, `progress`, `toast`), shown or held behind a dialog, or null. */
@@ -185,6 +189,20 @@ export function createAlertQueue(initial: alertData, options: { gapMs?: number }
         update: (change) => set(change(current)),
         open,
         answer,
+        setConfirmChecked(checked, expected) {
+            if (!headVisible || dialogs[0].data !== expected || !expected.confirmCheckbox) return;
+            expected.confirmCheckbox.checked = checked;
+            // Keep the dialog identity: keyboard gating must not treat this as a newly shown dialog.
+            store.set(current);
+        },
+        answerConfirm(confirmed, expected) {
+            if (!headVisible || (expected !== undefined && dialogs[0].data !== expected)) return;
+            const checkbox = dialogs[0].data.confirmCheckbox;
+            answer(
+                checkbox ? JSON.stringify({ confirmed, checked: checkbox.checked }) : confirmed ? "yes" : "no",
+                expected,
+            );
+        },
         clearStatus(expected?: alertData) {
             if (expected !== undefined && status !== expected) {
                 return;

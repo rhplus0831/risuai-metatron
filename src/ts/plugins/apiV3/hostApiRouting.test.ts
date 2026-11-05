@@ -861,16 +861,15 @@ describe("reserved storage namespaces a plugin replaced", () => {
         expect(await api._keyPluginStorage(1)).toBe("1");
         expect(await api._lengthPluginStorage()).toBe(2);
 
+        // A new key goes to the plugin's own storage; the legacy list keeps every entry.
         await api._setPluginStorage("2", "next");
-        expect(plain(settings.pluginStorage._pluginStorage)).toEqual({
-            "0": "saved",
-            "1": { deep: true },
-            "2": "next",
-        });
+        expect(plain(settings.pluginStorage._pluginStorage)).toEqual(["saved", { deep: true }]);
+        expect(await api._getPluginStorage("2")).toBe("next");
         expect(await api._getPluginStorage("0")).toBe("saved");
 
         await api._removePluginStorage("1");
-        expect(await api._keysPluginStorage()).toEqual(["0", "2"]);
+        expect(plain(settings.pluginStorage._pluginStorage)).toEqual({ "0": "saved" });
+        expect(await api._keysPluginStorage()).toEqual(["2", "0"]);
         expect(console.warn).not.toHaveBeenCalled();
     });
 

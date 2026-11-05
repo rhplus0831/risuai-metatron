@@ -463,9 +463,17 @@ try {
         globalThis.__pluginDataMeasurement.result = null;
     });
     await measureWrite("pluginStorage.setItem", () => frame.evaluate(() => globalThis.__pluginDataMeasurement.write()));
-    const storage = (await single("pluginStorage")).data._pluginStorage;
-    assert.equal(storage[storageKey], 1, "setItem did not reach the server");
-    assert.deepEqual(storage.history, fixture.pluginStorage._pluginStorage.history, "setItem lost history");
+    const storage = (await single("pluginStorage")).data;
+    assert.equal(
+        storage._ownedPluginStorage[`${pluginName}\u0000${storageKey}`],
+        1,
+        "setItem did not reach the server",
+    );
+    assert.deepEqual(
+        storage._pluginStorage.history,
+        fixture.pluginStorage._pluginStorage.history,
+        "setItem lost history",
+    );
     await measureWrite("plugin enabled toggle", () =>
         page.evaluate(async () => {
             const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");

@@ -71,7 +71,12 @@ describe("plugin storage inventory", () => {
         const { settings } = await import("../settingsViews.svelte");
 
         expect(settings.pluginStorage).toBeUndefined();
-        expect(ps.pluginStorageInventory()).toEqual({ custom: [], pluginStorage: [], safeLocalPluginStorage: [] });
+        expect(ps.pluginStorageInventory()).toEqual({
+            custom: [],
+            pluginStorage: [],
+            ownedPluginStorage: {},
+            safeLocalPluginStorage: [],
+        });
         expect(ps.getPluginCustomValue("missing")).toBeNull();
         expect(settings.pluginStorage).toBeUndefined();
     });
@@ -82,6 +87,8 @@ describe("plugin storage inventory", () => {
             custom: { text: "한🙂" },
             _pluginStorage: ["é", null],
             _safeLocalPluginStorage: { flag: false, quoted: '"\n' },
+            // Owned keys are grouped by owner; a clear marker lists its owner with no keys.
+            _ownedPluginStorage: { "plug\u0000k": 1, other: { legacyHidden: true } },
         };
         ps.replacePluginCustomStorage(stored);
         await sync.flushResources();
@@ -93,6 +100,7 @@ describe("plugin storage inventory", () => {
                 { key: "0", bytes: 4 },
                 { key: "1", bytes: 4 },
             ],
+            ownedPluginStorage: { plug: [{ key: "k", bytes: 1 }], other: [] },
             safeLocalPluginStorage: [
                 { key: "flag", bytes: 5 },
                 { key: "quoted", bytes: 6 },
@@ -108,6 +116,7 @@ describe("plugin storage inventory", () => {
         expect(ps.pluginStorageInventory()).toEqual({
             custom: [],
             pluginStorage: [{ key: "count", bytes: 2 }],
+            ownedPluginStorage: { plug: [{ key: "k", bytes: 1 }], other: [] },
             safeLocalPluginStorage: [{ key: "0", bytes: 6 }],
         });
 
@@ -118,6 +127,7 @@ describe("plugin storage inventory", () => {
                 { key: "_safeLocalPluginStorage", bytes: 5 },
             ],
             pluginStorage: [],
+            ownedPluginStorage: { plug: [{ key: "k", bytes: 1 }], other: [] },
             safeLocalPluginStorage: [],
         });
         expect(ps.getPluginCustomValue("_safeLocalPluginStorage")).toBe("한");
@@ -257,6 +267,51 @@ describe("the safe local dictionary and the custom keys", () => {
             top: 1,
             _safeLocalPluginStorage: { s: true },
             _pluginStorage: { k: { v: 2 } },
+        });
+    });
+});
+
+describe("owned storage administration", () => {
+    it("keeps owned entries and clear markers when a custom-storage replacement omits the dictionary", async () => {
+        const { sync, pluginStorageStore: ps, record } = await boot();
+        ps.replacePluginCustomStorage({
+            obsolete: true,
+            _ownedPluginStorage: { "plug\u0000key": { value: 1 }, other: { legacyHidden: true } },
+        });
+        await sync.flushResources();
+        ps.replacePluginCustomStorage({ custom: "replacement" });
+        await sync.flushResources();
+        expect(record("pluginStorage")).toEqual({
+            custom: "replacement",
+            _ownedPluginStorage: { "plug\u0000key": { value: 1 }, other: { legacyHidden: true } },
+        });
+    });
+
+    it("moves a legacy entry to an installed owner and deletes only that owner's data and marker", async () => {
+        const { sync, pluginStorageStore: ps, record } = await boot();
+        // The harness installs the plugin named plug; it has previously hidden legacy reads.
+        ps.replacePluginCustomStorage({
+            _pluginStorage: { assign: { value: 1 }, keep: "legacy" },
+            _ownedPluginStorage: { plug: { legacyHidden: true }, "other\u0000assign": "other value" },
+        });
+        await sync.flushResources();
+        expect(ps.assignLegacyPluginStorageItem("plug", "assign")).toBe(true);
+        await sync.flushResources();
+        expect(record("pluginStorage")).toEqual({
+            _pluginStorage: { keep: "legacy" },
+            _ownedPluginStorage: {
+                plug: { legacyHidden: true },
+                "other\u0000assign": "other value",
+                "plug\u0000assign": { value: 1 },
+            },
+        });
+        expect(ps.getOwnedPluginStorageValue("plug", "assign")).toEqual({ value: 1 });
+
+        ps.deleteOwnedPluginStorage("plug");
+        await sync.flushResources();
+        expect(record("pluginStorage")).toEqual({
+            _pluginStorage: { keep: "legacy" },
+            _ownedPluginStorage: { "other\u0000assign": "other value" },
         });
     });
 });

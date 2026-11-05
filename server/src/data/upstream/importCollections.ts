@@ -14,9 +14,10 @@ import { kindOf, normalizeRecord, ownCopy, PendingReport, setOwn, storedValue, t
  * never costs the others.
  */
 
-/** Where metatron keeps the v3 `pluginStorage` values (`src/ts/storage/pluginStorageStore.svelte.ts`). */
+/** Where upstream v3 values become unowned legacy storage (`src/ts/storage/pluginStorageStore.svelte.ts`). */
 const PLUGIN_STORAGE_KEY = "_pluginStorage";
 const SAFE_LOCAL_PLUGIN_STORAGE_KEY = "_safeLocalPluginStorage";
+const OWNED_PLUGIN_STORAGE_KEY = "_ownedPluginStorage";
 /** Upstream's map of v3 `pluginStorage` keys to cold-storage keys (U `plugins/apiV3/v3.svelte.ts`). */
 const COLD_PLUGIN_KEY = "_coldplugin";
 const COLD_PLUGIN_INDEX_KEY = "_coldpluginIndex";
@@ -360,6 +361,7 @@ export function convertPluginStorage(
             if (
                 key === PLUGIN_STORAGE_KEY ||
                 key === SAFE_LOCAL_PLUGIN_STORAGE_KEY ||
+                key === OWNED_PLUGIN_STORAGE_KEY ||
                 (!hasIndex && Object.hasOwn(v3, key))
             ) {
                 continue;

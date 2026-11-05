@@ -147,18 +147,18 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 - `db.plugins: RisuPlugin[]`, saved as the `plugins` resource.
 - Plugin storage:
-  - `pluginStorage` is saved data in `db.pluginCustomStorage` (the `pluginStorage` resource), a settings record: each
-    write queues its save once. It uses the reserved `_pluginStorage` sub-object, and `setItem` JSON-normalizes values
-    (throws on BigInt). The top level holds the non-`allowedDbKeys` keys of `setDatabase`/`setDatabaseLite`; a
-    `pluginCustomStorage` write replaces it but keeps a reserved dictionary it omits.
-  - Every plugin shares the one record. The storage writes resolve when queued, not when saved. A conflict with another
-    tab's or device's write is [merged key by key](resource-sync.md#record-merge), and `onStorageDiscarded` tells every
-    listening plugin which keys lost a value.
-  - `getLocalPluginStorage()` (`SafeLocalPluginStorage`) is saved too, under the reserved `_safeLocalPluginStorage`
-    sub-object (legacy browser-local values are imported at boot). Values must be plain JSON (`isJsonValue`); anything
-    else throws `TypeError` and changes nothing.
-  - Any string is a `_safeLocalPluginStorage` key, `__proto__` included (the module rebuilds the dictionary for it; the
-    save adapter serializes `pluginStorage` from the proxy, so the key reaches the server).
+  - `pluginStorage` is in `db.pluginCustomStorage` (the `pluginStorage` settings record); each write queues one save.
+    `_ownedPluginStorage` keys use the plugin name as owner; `_pluginStorage` holds legacy values, read until claimed on
+    write or hidden by that owner's `clear()`. `setItem` JSON-normalizes values (BigInt throws). Shared top-level custom
+    keys are non-`allowedDbKeys` keys of `setDatabase`/`setDatabaseLite`; a `pluginCustomStorage` write replaces them
+    but keeps omitted reserved dictionaries.
+  - Plugins share one record. Writes resolve when queued. Concurrent tab/device writes are
+    [merged key by key](resource-sync.md#record-merge); `onStorageDiscarded` reports each listener's own lost keys and
+    legacy keys.
+  - Shared `getLocalPluginStorage()` (`SafeLocalPluginStorage`) is saved under `_safeLocalPluginStorage`; boot imports
+    legacy browser-local values. Values must be plain JSON (`isJsonValue`); otherwise `TypeError` leaves data unchanged.
+  - Any string is a `_safeLocalPluginStorage` key, including `__proto__`: the module rebuilds its dictionary; the save
+    adapter serializes the proxy, preserving the key on the server.
   - `safeLocalStorage` (`SafeLocalStorage`) stays device-local (`localStorage` `safe_plugin_*`).
 - v3 permission grants live in the server-owned `pluginPermissions` resource (`permissionStore.ts`), outside the
   settings records: `grants` keyed by `<sha256 of the script>_<permission>`, `lastGrantTime` by plugin name and
@@ -169,7 +169,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
     permission for the page load (cleared on unload).
   - Only the settings page revokes (`resetPluginPermissions`, `removeOrphanPluginPermissionGrants`); a revoked grant
     drops its cached answer in every tab.
-- `PluginDataSettings.svelte` (component contract): every namespace by size, deleted through the mutations above.
+- `PluginDataSettings.svelte` (component contract): namespaces by size, owned keys by owner; legacy keys assigned or
+  deleted through the mutations above.
 
 ## Coupling
 

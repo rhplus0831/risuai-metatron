@@ -672,7 +672,11 @@ await Risuai.setArgument("max_retries", 5);
 
 ### Plugin Storage (Recommended)
 
-`pluginStorage` is **save-file specific** and **syncs between devices**:
+`pluginStorage` is **per plugin**, **save-file specific**, and **syncs between devices**. Two plugins can use the
+same key without overwriting each other. The owner is the plugin's internal `name`; renaming it creates a new owner.
+Values stored before per-plugin storage are still readable until claimed: writing one moves it into that plugin's
+storage. `clear()` removes only this plugin's values and stops reading legacy values, leaving them for other plugins.
+Plugin names containing U+0000 retain the shared legacy behavior.
 
 ```javascript
 // Every call returns a Promise (iframe message passing)
@@ -684,7 +688,7 @@ const allKeys = await Risuai.pluginStorage.keys();
 const count = await Risuai.pluginStorage.length();
 
 await Risuai.pluginStorage.removeItem("last_sync");
-await Risuai.pluginStorage.clear(); // Remove all items
+await Risuai.pluginStorage.clear(); // Remove this plugin's items and hide legacy values
 ```
 
 **Use `pluginStorage` when:**
@@ -715,8 +719,8 @@ await Risuai.onStorageDiscarded(async (event) => {
 });
 ```
 
-The event says which keys lost a value, not which plugin wrote them (the keys may be another plugin's).
-The listener is removed when the plugin unloads.
+The event lists this plugin's own lost keys without an owner prefix, plus lost legacy keys. If a discarded `clear()`
+makes legacy keys visible again, those keys are included too. The listener is removed when the plugin unloads.
 
 ### Safe Local Storage
 
@@ -797,7 +801,7 @@ Outside those continuations, `setDatabase`/`setDatabaseLite` apply what you hand
 - Each key is applied on its own. A key whose value is not valid is refused with a console warning (`[Plugin] Refused ...` or `[Settings] Refused ...; the previous value was kept`) and keeps its old value; the other keys still apply. Invalid means, for example, data that is not plain JSON, a value of the wrong kind for a preset setting (a string for `temperature`), or `null` for a setting that cannot be cleared.
 - `characters`: characters you changed are updated, new ones are added at the end, and characters you left out are removed (not while one is generating a reply). The list order you hand back does not reorder the characters; use `characterOrder` for the sidebar order.
 - `plugins`: `setDatabase` asks the user to confirm each plugin that is new or changed and installs the confirmed ones; plugins you left out stay installed. `setDatabaseLite` ignores `plugins` and leaves the installed list as it is.
-- `pluginCustomStorage`: replaces the custom keys; a custom key you left out is removed. The `pluginStorage` and `getLocalPluginStorage()` values (the `_pluginStorage` and `_safeLocalPluginStorage` keys) are kept when your object leaves those keys out, so a fresh object does not erase them; a key your object has replaces the stored values with yours.
+- `pluginCustomStorage`: replaces the shared custom keys; a custom key you left out is removed. The `pluginStorage` and `getLocalPluginStorage()` values (the `_pluginStorage`, `_ownedPluginStorage`, and `_safeLocalPluginStorage` keys) are kept when your object leaves those keys out, so a fresh object does not erase them; a key your object has replaces the stored values with yours.
 - `characterOrder` and `selectedPersona` are applied after the other keys, whatever order they have in your object.
 - Prompt settings (`temperature`, `maxResponse`, `frequencyPenalty`, `PresensePenalty`, ...) belong to the selected prompt preset. Model roots use the selected model preset and its profiles (the `modelProfiles` records, shown in the app as connections under Model > Connections) as described below. Inside a hook both use the presets captured when the hook's run started (see Character Operations).
 
