@@ -2,7 +2,7 @@
  * Decodes input using a PNG data-URI label regardless of its actual type, then caps
  * the longer side at 3000 px while preserving aspect ratio. Encodes WebP, falling
  * back to JPEG when the canvas result lacks the WebP prefix. Both `toDataURL` calls
- * pass literal 75 as quality (outside the canvas API's 0-1 range, so not 75%).
+ * pass quality 0.75.
  */
 export async function doLossyCompression(imageData: Uint8Array): Promise<Buffer> {
     return new Promise((resolve) => {
@@ -34,11 +34,11 @@ export async function doLossyCompression(imageData: Uint8Array): Promise<Buffer>
             context.drawImage(image, 0, 0, width, height);
 
             // Try to convert to WebP
-            let base64 = canvas.toDataURL("image/webp", 75);
+            let base64 = canvas.toDataURL("image/webp", 0.75);
 
             // If WebP is not supported, convert to JPEG
             if (base64.indexOf("data:image/webp") != 0) {
-                base64 = canvas.toDataURL("image/jpeg", 75);
+                base64 = canvas.toDataURL("image/jpeg", 0.75);
             }
 
             const array = Buffer.from(base64.split(",")[1], "base64");
