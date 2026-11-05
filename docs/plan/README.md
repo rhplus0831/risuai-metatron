@@ -68,8 +68,8 @@ Candidates were then challenged again and revised a second time the same day. Pl
   after this tab's saves settle (never installed, pinned or evicted; hooks and doubtful characters keep the current
   path; an equality test against the old path is the acceptance check) and reuses copies whose held revision has not
   moved, `setDatabase` loads only characters whose chats changed, new plugins get a summaries option and a paged chat
-  read, and a browser spec checks the sandbox; drafted 2026-11-05, D1–D12 recommended, Q1–Q5 answered, no
-  slice scheduled.
+  read, and a browser spec checks the sandbox; drafted 2026-11-05, D1–D12 recommended, Q1–Q5 answered;
+  landed: 0 (c140f2db7).
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
