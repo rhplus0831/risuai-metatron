@@ -173,3 +173,27 @@ it("checks custom slots after CBS and fills quoted data without evaluating it ag
         });
     }
 });
+
+it("compacts knowledge and relationships by their slot rules while keeping other slots factual", () => {
+    const rules = (heading: string) =>
+        compactSlots({
+            language: "English",
+            target: {
+                page: { id: "Ada", type: "character", title: "Ada" },
+                heading,
+                body: "Long text",
+            },
+        }).rules;
+    const knowledge = rules("knowledge");
+    expect(knowledge).toContain("at most 1000 characters");
+    expect(knowledge).toContain("each fact remains on the timeline");
+    expect(knowledge).not.toContain("Keep every fact that is still true");
+    const relationships = rules("relationships");
+    expect(relationships).toContain("at most 1200 characters");
+    expect(relationships).toContain("one line per other character");
+    expect(relationships).not.toContain("Keep every fact that is still true");
+    const goals = rules("goals");
+    expect(goals).toContain("at most 1600 characters");
+    expect(goals).toContain("Keep every fact that is still true");
+    expect(goals).not.toContain("one line per other character");
+});

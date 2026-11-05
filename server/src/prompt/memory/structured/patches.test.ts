@@ -55,7 +55,6 @@ it.each([
     ["non-slot heading", "notASlot"],
     ["too many sections", "tooManySections"],
     ["blank body", "emptyBody"],
-    ["oversized body", "sectionTooLong"],
     ["empty page", "emptiesPage"],
 ] as const)("refuses every patch for %s while applying other pages", (fault, reason) => {
     const bad = page();
@@ -76,13 +75,6 @@ it.each([
         patches[1] = patch("Overflow");
     }
     if (fault === "blank body") patches[1].body = " \n\t";
-    if (fault === "oversized body") {
-        const parsed = parsePatches(
-            JSON.stringify({ patches: [patch("Hearth", { body: "x".repeat(LIMITS.sectionBodyChars + 1) })] }),
-        );
-        if (!parsed.ok) throw new Error(parsed.error);
-        patches[1] = parsed.patches[0];
-    }
     if (fault === "empty page") patches = [patch("Gate", { op: "delete" }), patch("Hearth", { op: "delete" })];
     patches.push(patch("Gate", { pageId: "good", body: "Allowed" }));
     const before = structuredClone(bad);
@@ -435,4 +427,52 @@ it("replaces corrections with a forced highlight and a marked snapshot but keeps
         expect(locked.warnings).toContainEqual(expect.objectContaining({ kind: "lockedSection" }));
         expect(locked.pages.some(({ id }) => id === "bad")).toBe(false);
     }
+});
+
+it("refuses an oversized patch alone while applying the page's other patch", () => {
+    const before = page();
+    const parsed = parsePatches(
+        JSON.stringify({
+            patches: [
+                patch("Gate", { body: "x".repeat(LIMITS.sectionBodyChars + 1) }),
+                patch("Hearth", { body: "Lit" }),
+            ],
+        }),
+    );
+    if (!parsed.ok) throw new Error(parsed.error);
+    const changes: PageChanges = new Map();
+    const warnings = applyPatches({
+        pages: new Map([[before.id, before]]),
+        changes,
+        patches: parsed.patches,
+        seen: shown([before]),
+        stamp: stamp(),
+    });
+    expect(warnings).toEqual([expect.objectContaining({ kind: "sectionTooLong", heading: "Gate" })]);
+    expect(changes.get(before.id)?.page.sections).toEqual([
+        before.sections[0],
+        expect.objectContaining({ heading: "Hearth", body: "Lit" }),
+    ]);
+});
+
+it("refuses remaining edits that would empty the page after an oversized creation is dropped", () => {
+    const before = page();
+    const changes: PageChanges = new Map();
+    const warnings = applyPatches({
+        pages: new Map([[before.id, before]]),
+        changes,
+        patches: [
+            patch("New", { body: "x".repeat(LIMITS.sectionBodyChars + 1) }),
+            patch("Gate", { op: "delete" }),
+            patch("Hearth", { op: "delete" }),
+        ],
+        seen: shown([before]),
+        stamp: stamp(),
+    });
+    expect(changes.size).toBe(0);
+    expect(warnings.map(({ kind, heading }) => ({ kind, heading }))).toEqual([
+        { kind: "sectionTooLong", heading: "New" },
+        { kind: "emptiesPage", heading: "Gate" },
+        { kind: "emptiesPage", heading: "Hearth" },
+    ]);
 });

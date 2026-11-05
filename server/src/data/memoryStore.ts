@@ -5,6 +5,7 @@ import type { Message } from "../../../shared/database.ts";
 import type { SerializableHypaV3Data } from "../../../shared/memory.ts";
 import { MAX_READ_RESPONSE_BYTES } from "../../../shared/resources.ts";
 import {
+    MEMORY_CHARACTER_SLOT_BUDGETS,
     MEMORY_EVENT_STATUSES,
     MEMORY_PAGE_TYPES,
     MEMORY_RECORD_KINDS,
@@ -593,7 +594,7 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
     // The health facts, with no record parsed in JavaScript and no body leaving SQLite: the runs' results
     // in order, counts over the events' status column and their `rerecord` field, and one pass over the
     // sections of the pages out of the trash for their `unsupported` flags and the bodies past their
-    // type's budget (`MEMORY_SECTION_BUDGETS`). SQLite's `length` counts code points where
+    // type and slot's budget (`memorySectionBudget`). SQLite's `length` counts code points where
     // `memorySectionOverBudget` counts UTF-16 units, so only a body with astral characters near its budget
     // can read differently here; the badge this feeds is advisory. The live pages' stored bytes bound what
     // one health request scans.
@@ -607,8 +608,15 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
         `SELECT COUNT(*) AS count FROM ${MEMORY_TABLES.events.table} ` +
             "WHERE chatSeq = ? AND status != 'retracted' AND json_extract(data, '$.rerecord') = 1",
     );
+    const slotBudgetCases = Object.entries(MEMORY_CHARACTER_SLOT_BUDGETS)
+        .map(([heading, budget]) => `WHEN '${heading}' THEN ${budget}`)
+        .join(" ");
     const budgetCases = Object.entries(MEMORY_SECTION_BUDGETS)
-        .map(([type, budget]) => `WHEN '${type}' THEN ${budget}`)
+        .map(([type, budget]) =>
+            type === "character"
+                ? `WHEN '${type}' THEN CASE s.value ->> '$.heading' ${slotBudgetCases} ELSE ${budget} END`
+                : `WHEN '${type}' THEN ${budget}`,
+        )
         .join(" ");
     const countSectionFlags = db.prepare(
         "SELECT COALESCE(SUM(s.value ->> '$.unsupported' = 1), 0) AS unsupported, " +

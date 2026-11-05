@@ -20,7 +20,7 @@ import {
  * what that makes of the pages as they stand at the commit. Only page sections are compacted, never an
  * event.
  *
- * - A section gets a call when a commit really changed it and left it past its page type's budget. One
+ * - A section gets a call when a commit really changed it and left it past its type and slot's budget. One
  *   past its budget that the commit did not change gets none, so a section that cannot shrink is not
  *   asked again every window. Scene fields are rewritten directly, so nothing compacts the scene page.
  * - A compaction never overrides a person. A locked section gets no call, and neither does a
@@ -77,7 +77,7 @@ export function compactionTargets(
         const { id, type, title } = page;
         for (const heading of new Set(sections.filter(reallyChanged).map((row) => row.heading))) {
             const section = page.sections.find((entry) => entry.heading === heading);
-            if (!section || section.locked || !memorySectionOverBudget(type, section.body)) {
+            if (!section || section.locked || !memorySectionOverBudget(type, heading, section.body)) {
                 continue;
             }
             if (mayCompact(section)) {

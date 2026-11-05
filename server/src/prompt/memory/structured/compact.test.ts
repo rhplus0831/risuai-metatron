@@ -109,3 +109,25 @@ it("drops a compaction when the fresh attempt no longer changes or permits its s
         expect(result.vectorTexts, reason).toEqual(withoutCompaction.vectorTexts);
     }
 });
+
+it("targets character knowledge over 1000 characters but leaves goals of the same length alone", () => {
+    const page = memoryRecords(["Ada"], "Ada").pages[0];
+    page.type = "character";
+    page.sections = ["knowledge", "goals"].map((heading) => ({
+        ...page.sections[0],
+        heading,
+        body: "x".repeat(1100),
+    }));
+    const result = compactionTargets(
+        [page],
+        [
+            {
+                pageId: page.id,
+                created: false,
+                sections: page.sections.map(({ heading }) => ({ heading, beforeHash: "old", afterHash: "new" })),
+            },
+        ],
+    );
+    expect(result.targets.map(({ heading }) => heading)).toEqual(["knowledge"]);
+    expect(result.warnings).toEqual([]);
+});

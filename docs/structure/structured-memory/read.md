@@ -83,6 +83,10 @@ no memory report.
    `SendError` naming pages and tokens. This ends previews and the gap run's second selection too, without an
    `inlayErrorResponse` reply.
 
+Both page lanes keep character relationship lines naming another visible on-stage, named, linked, or `always` page, or
+no visible page. Titles and aliases match case-insensitive substrings with collapsed whitespace; `never` names do not
+match. Single nonblank lines stay whole.
+
 After scripts, `editRequest`, and recheck, `buildContextReport` writes `ContextReport.memory`, kind `structuredMemory`.
 It verifies included `items` by `itemTag` anywhere in the final prompt; a lost tag makes `coverage` unknown.
 `shared/structuredMemory.ts` owns the shared tag. `reportedMemoryExclusions` keeps at most `CONTEXT_MEMORY_EXCLUDED`

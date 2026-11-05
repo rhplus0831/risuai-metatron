@@ -3018,3 +3018,14 @@ it("screens rebuild, backfill and record cost previews against current preset li
     s.store.put(kind, "main", data, latest.revision);
     expect(await answer(await s.request(`${base}/cost?mode=rebuild&turns=1`))).toMatchObject({ calls: 1, messages: 2 });
 });
+
+it("counts character knowledge by its slot budget in health reads", async () => {
+    const s = await server();
+    const p = page("Ada", "x".repeat(1100));
+    p.type = "character";
+    p.sections = ["knowledge", "goals"].map((heading) => ({ ...p.sections[0], heading }));
+    s.write({ pages: [p] });
+    const result = await answer(await s.json("/api/memory/structured/health", { chats: [{ characterId, chatId }] }));
+    expect(result.health[0].overBudgetSections).toBe(1);
+    expect((await answer(await s.request(base))).health.overBudgetSections).toBe(1);
+});

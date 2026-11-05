@@ -25,13 +25,15 @@ import { sectionVectorText } from "./pages.ts";
  *   no place, so neither flow nor the events lane lists it. That is not staleness: a source can simply
  *   be disabled in this send.
  * - Required is the scene page unless `never`, then the `always` pages in stored order, each with every
- *   nonblank, unsuppressed section. The scene also says who is present, which no section holds. In this lane and
- *   the next, a page with nothing to show gives no item.
+ *   nonblank, unsuppressed section, with character relationships filtered by the send's cast. The scene
+ *   also says who is present, which no section holds. In this lane and the next, a page with nothing to
+ *   show gives no item.
  * - Pages are found by four channels, in rank order: on stage, named in the last `pageNameMessages`
  *   messages by lore's matching, linked from either of those by one hop, and near the query by a
  *   section's similarity, which is a channel of its own and leads to no links. An `always` page finds
  *   others like any page but stays out of the lane, being required. Within a channel the newest section
- *   leads, then similarity. A character offers only its `currentState` and `relationships`, whole.
+ *   leads, then similarity. A character offers its whole `currentState` and the `relationships` lines
+ *   naming another page in the send's cast or no visible page; a single-line body stays whole.
  * - Flow is the story's recent order, not retrieval: the last `flowEvents` events by place, never by
  *   storage order, since a backfill stores out of order, and whether or not they are inside the window.
  *   Flow has no token target; `Number.MAX_SAFE_INTEGER` is the sentinel passed to spending.
@@ -175,6 +177,8 @@ type PageReading = {
     /** What a line may name, by page id: no page `never` hides is here. */
     titles: ReadonlyMap<string, string>;
     stage: ReadonlySet<string>;
+    /** Visible pages on stage, found by name or link, or always required; similarity alone adds none. */
+    cast: ReadonlySet<string>;
     facts: readonly KnownFact[];
 };
 
@@ -570,6 +574,43 @@ function relatedSections(page: MemoryPage): MemorySection[] {
     return page.type === "character" ? sections.filter(({ heading }) => RELATED_SLOTS.has(heading)) : sections;
 }
 
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+const CJK_CHAR = /[\p{sc=Hangul}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Han}]/u;
+/** Whether `char` continues a word of a script that separates words with spaces. */
+const joinsWord = (char: string | undefined) => char !== undefined && WORD_CHAR.test(char) && !CJK_CHAR.test(char);
+
+/**
+ * Whether `text` names `key`, both lowercased and whitespace-collapsed: as a substring, but not inside a
+ * longer word of a space-separated script ("eve" in "even"), while a particle after a Hangul, Kana, or
+ * Han name still matches.
+ */
+function namesKey(text: string, key: string): boolean {
+    for (let at = text.indexOf(key); at !== -1; at = text.indexOf(key, at + 1)) {
+        if (!joinsWord(text[at - 1]) && !joinsWord(text[at + key.length])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Relationship lines keep their text; only matching strips bullets, collapses whitespace, and ignores case. */
+function relationshipBody(body: string, page: MemoryPage, { visible, cast }: PageReading): string {
+    const lines = body.split("\n").filter((line) => line.trim() !== "");
+    if (lines.length < 2) return body;
+    return lines
+        .filter((line) => {
+            const text = flattened(line.trim().replace(/^[-*] /, "")).toLowerCase();
+            const named = visible.filter(({ title, aliases }) =>
+                [title, ...aliases].some((name) => {
+                    const key = flattened(name).toLowerCase();
+                    return key !== "" && namesKey(text, key);
+                }),
+            );
+            return named.length === 0 || named.some(({ id }) => id !== page.id && cast.has(id));
+        })
+        .join("\n");
+}
+
 /** The line of `page` showing `sections` and, on stage, what it knows; null when it would say nothing. */
 function shownLine(
     reading: PageReading,
@@ -577,6 +618,13 @@ function shownLine(
     sections: readonly MemorySection[],
     present: readonly string[] = [],
 ): string | null {
+    if (page.type === "character") {
+        sections = sections.flatMap((section) => {
+            if (section.heading !== "relationships") return [section];
+            const body = relationshipBody(section.body, page, reading);
+            return body.trim() === "" ? [] : [{ ...section, body }];
+        });
+    }
     const onStage = reading.stage.has(page.id);
     const knowledge = onStage ? pageKnowledge(page, reading) : [];
     const unaware = onStage && page.type === "character" ? unawareFacts(page, reading) : [];
@@ -615,7 +663,7 @@ function requiredPages(reading: PageReading): LaneOffer {
 
 /** The pages found on stage or by name, and those one link from them, by id. */
 async function foundPages(
-    { visible, stage }: PageReading,
+    { visible, stage }: Pick<PageReading, "visible" | "stage">,
     entries: readonly ReadEntry[],
 ): Promise<Map<string, PageMatch>> {
     // Keep the last pageNameMessages rows; `searchMatch` scans them all with their count as its depth.
@@ -667,7 +715,7 @@ async function foundPages(
  */
 async function relatedPages(
     reading: PageReading,
-    entries: readonly ReadEntry[],
+    found: ReadonlyMap<string, PageMatch>,
     target: number,
     embeddings: SendEmbeddings,
 ): Promise<LaneOffer> {
@@ -683,7 +731,6 @@ async function relatedPages(
         return { items: [], excluded: [...excluded, ...auto.map((page) => leaveOut(page, "not-relevant"))] };
     }
 
-    const found = await foundPages(reading, entries);
     const best = await embeddings.best(
         auto.flatMap((page) => shownSections(page).map((section) => sectionVectorText(page, section))),
     );
@@ -728,6 +775,9 @@ async function relatedPages(
  * The lanes this send can offer, and every other record they reach, with why it is not offered.
  * Required pages never also enter the pages lane, so a page has only one item and tag.
  *
+ * - Both page lanes filter a character's relationship lines against the same cast: visible pages on
+ *   stage, found by name or one link, and `always` pages. A line naming another cast page or no visible
+ *   page stays; other lines go. Bodies with fewer than two nonblank lines stay whole.
  * - Knowledge is stored on events, so what a page knows comes from every event that covers its messages,
  *   before any cap. Facts are one by their text with whitespace collapsed. A fact's knowers are every
  *   record's page and `knowers` list, and a fact that any record states without `knowers` is no secret,
@@ -736,8 +786,8 @@ async function relatedPages(
  *   know, those held on stage first, the holder not having to be on stage. Both belong to the page's one
  *   line, so an `always` page counts them against the required cap.
  * - `never` hides a page everywhere: it has no item, its title is in no attendance or private label, its
- *   links are not followed, and a secret only it holds reaches nobody's line. A `never` scene still gives
- *   the stage.
+ *   links are not followed, its names never match relationship lines, and a secret only it holds reaches
+ *   nobody's line. A `never` scene still gives the stage.
  *
  * `MemoryKnowledge.pageId` is the learner; no field identifies the subject of a fact. Presence of
  * `knowers`, including an empty list, makes that record private. The writer in
@@ -811,16 +861,23 @@ export async function retrieveLanes(host: RetrievalHost, input: RetrievalInput):
     const openThreads = threadItems(threads, stage, targets.threads);
 
     const scene = pages.find(({ type }) => type === "scene");
+    const visible = pages.filter((page) => page !== scene && page.contextMode !== "never");
+    const found = await foundPages({ visible, stage }, entries);
     const reading: PageReading = {
         pages,
         scene,
-        visible: pages.filter((page) => page !== scene && page.contextMode !== "never"),
+        visible,
         titles: new Map(pages.filter(({ contextMode }) => contextMode !== "never").map(({ id, title }) => [id, title])),
         stage,
+        cast: new Set(
+            visible
+                .filter(({ id, contextMode }) => stage.has(id) || found.has(id) || contextMode === "always")
+                .map(({ id }) => id),
+        ),
         facts: knownFacts(events, positions),
     };
     const required = requiredPages(reading);
-    const related = await relatedPages(reading, entries, targets.pages, embeddings);
+    const related = await relatedPages(reading, found, targets.pages, embeddings);
     return {
         lanes: [
             { lane: "required", target: settings.requiredCap, items: required.items },

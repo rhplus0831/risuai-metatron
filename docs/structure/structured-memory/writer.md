@@ -224,15 +224,19 @@ from analysis.
 
 ### Compaction
 
-`MEMORY_SECTION_BUDGETS` in `shared/structuredMemory.ts` gives each page type its `body.length` budget below the hard
-`sectionBodyChars` limit. After patches, the writer uses a dry `commitPages` result to ask `compactionTargets` for
-changed, over-budget non-scene sections. Its comments own target exclusions; `readCompaction` and `applyCompactions` own
-shorter-body validation and the warning codes. The closing write recomputes changes rather than committing the dry
-result; planned new-page ids and `sceneId` stay stable across attempts. Events never enter compaction.
+`MEMORY_SECTION_BUDGETS` in `shared/structuredMemory.ts` sets each type's `body.length` budget below `sectionBodyChars`.
+`MEMORY_CHARACTER_SLOT_BUDGETS` sets character `knowledge` to 1000 and `relationships` to 1200; other slots keep 1600.
+After patches, the writer uses a dry `commitPages` result to ask `compactionTargets` for changed, over-budget non-scene
+sections. Its comments own target exclusions; `readCompaction` and `applyCompactions` own shorter-body validation and
+the warning codes. The closing write recomputes changes rather than committing the dry result; planned new-page ids and
+`sceneId` stay stable across attempts. Events never enter compaction.
 
 Each target gets one call through `assembleCompactPrompt`, whose slot filling keeps section text out of CBS; there are
-no messages, and fine-tuning keeps this default frame. The run stores neither its prompt nor its answer. Returned
-failures warn without failing the run; `MemoryHostFailure` and other throws propagate as for the patch call.
+no messages, and fine-tuning keeps this default frame. Knowledge keeps secrets, facts unknown to others, and facts
+affecting future action, one per line; past and implied details stay on the timeline. Relationships keep one
+current-standing line per other character, without history or `(was: ...)`. Other sections keep every true fact; all add
+nothing. The run stores neither its prompt nor its answer. Returned failures warn without failing the run;
+`MemoryHostFailure` and other throws propagate as for the patch call.
 
 `applyCompactions` runs inside `commitPages` after patches, through `changeSection` with kind `compact`. A patch and its
 compaction thus leave two history entries and two receipt rows in one commit, with the long body as the second `before`,
@@ -333,8 +337,8 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
 - Section evidence keeps the newest `sectionEvidence`, so a section can read `unsupported` while an older dropped event
   still supports it. Decision: Structured Memory slice 4a, archive.
 - A section whose `userCorrected` stands is never compacted, and can grow by disputed joins until `sectionTooLong`
-  refuses its page's patches. The person trims it. A section a failed or discarded compaction left long waits for its
-  next change. Decision: Structured Memory D13, archive.
+  refuses only that section's patch; the page's other edits can still apply. The person trims it. A section a failed or
+  discarded compaction left long waits for its next change. Decision: Structured Memory D13, archive.
 - `takenBack` is advice: code compares a patch with it nowhere, so a model can write the text again. Only a scene field
   is held. Decision: Structured Memory slice 7b, archive.
 - Budgets are per section in characters, so they do not keep the required lane under `requiredCap`. Compaction runs

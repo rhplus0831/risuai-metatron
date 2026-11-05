@@ -35,8 +35,9 @@ import {
  * The patch call's rules, without any I/O: what it shows of its pages, what is kept of its answer, and
  * what that makes of the pages as they stand at the commit.
  *
- * - A page applies whole or not at all, so a fact moved between two sections cannot lose one half of the
- *   move. The refused patch's warning names the cause and the rest of its group read `pageRefused`.
+ * - A refusal other than `sectionTooLong` cancels the page's group, so a fact moved between two sections
+ *   cannot lose one half of the move. Its warning names the cause and valid patches read `pageRefused`.
+ *   An oversized section refuses only its patch, so the page's other sections can keep updating.
  *   Other pages still apply and the event commits: one page's refusal is no failure of the run.
  * - What the call showed is compared with the fresh page, by existence as well as by body, for every
  *   heading a patch names: a section deleted during the call cannot come back as new, and one added
@@ -224,7 +225,7 @@ function resolveGroup(
 ): (SectionEdit | string)[] {
     const slots: readonly string[] = CHARACTER_SECTION_SLOTS;
     const handled = new Set<string>();
-    // A whole group applies, so what it deletes makes room for what it adds, in any order.
+    // Deletes make room for additions in any order; oversized additions consume no room.
     let sections = page.sections.length - group.filter(({ op }) => op === "delete").length;
     return group.map((patch) => {
         const { heading, op } = patch;
@@ -245,7 +246,7 @@ function resolveGroup(
         if (!section && page.type === "character" && !slots.includes(heading)) {
             return "notASlot";
         }
-        if (!section && ++sections > LIMITS.sectionsPerPage) {
+        if (!section && sections + 1 > LIMITS.sectionsPerPage) {
             return "tooManySections";
         }
         const body = patch.body ?? "";
@@ -255,6 +256,7 @@ function resolveGroup(
         if (body.length > LIMITS.sectionBodyChars) {
             return "sectionTooLong";
         }
+        if (!section) sections++;
         return section ? upsertOver(section, patch, body) : { heading, body, kind: "create" };
     });
 }
@@ -283,8 +285,9 @@ function emptiesPage(page: MemoryPage, edits: readonly SectionEdit[]): boolean {
  * - `emptyBody`: an upsert is blank.
  * - `sectionTooLong`: the answered or joined body exceeds `sectionBodyChars`; nothing is cut to fit.
  *
- * A refusal cancels its page's whole group; otherwise valid patches read `pageRefused`. A group that
- * would empty a page that had sections reads `emptiesPage`. Other pages and the event still commit.
+ * `sectionTooLong` refuses only its patch. Every other refusal cancels its page's whole group; otherwise
+ * valid patches read `pageRefused`. If the remaining edits would empty a page that had sections, those
+ * edits read `emptiesPage`. Other pages and the event still commit.
  * An upsert of existing text is `change`, or `contradiction` for that conflict. At or above
  * `contradictionConfidence` it replaces; below it, missing confidence counting as zero, it joins
  * `<old>\n[disputed] <new>`, sets `disputed` and warns. A replacing upsert appends `(was: ...)` for
@@ -313,16 +316,23 @@ export function applyPatches(arg: {
         }
         const outcomes = resolveGroup(page, group, shown);
         const edits = outcomes.filter((outcome) => typeof outcome !== "string");
-        if (edits.length < group.length) {
+        if (outcomes.some((outcome) => typeof outcome === "string" && outcome !== "sectionTooLong")) {
             warnings.push(
                 ...group.map(({ heading }, index) => {
                     const outcome = outcomes[index];
                     return sectionWarning(typeof outcome === "string" ? outcome : "pageRefused", page, heading);
                 }),
             );
-        } else if (emptiesPage(page, edits)) {
-            warnings.push(...group.map(({ heading }) => sectionWarning("emptiesPage", page, heading)));
         } else {
+            outcomes.forEach((outcome, index) => {
+                if (typeof outcome === "string") {
+                    warnings.push(sectionWarning(outcome, page, group[index].heading));
+                }
+            });
+            if (emptiesPage(page, edits)) {
+                warnings.push(...edits.map(({ heading }) => sectionWarning("emptiesPage", page, heading)));
+                continue;
+            }
             for (const edit of edits) {
                 changeSection(changes, changes.get(pageId)?.page ?? page, edit, stamp);
                 if (edit.disputed) {

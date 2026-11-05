@@ -213,7 +213,7 @@ export const STRUCTURED_MEMORY_LIMITS = {
 } as const;
 
 /**
- * How long a section may grow by page type, in `body.length`, before a change that leaves it longer gets
+ * How long a section may grow by default for its page type, in `body.length`, before a change gets
  * the writer's compaction call. These are starting values, with no setting. A scene field is rewritten
  * whole and clamped, so its budget is that clamp and nothing compacts it.
  */
@@ -227,9 +227,23 @@ export const MEMORY_SECTION_BUDGETS = {
     note: 1600,
 } as const satisfies Record<MemoryPageType, number>;
 
-/** Whether `body`, a section of a page of `type`, is past its budget. */
-export function memorySectionOverBudget(type: MemoryPageType, body: string): boolean {
-    return body.length > MEMORY_SECTION_BUDGETS[type];
+/** Character slots with tighter compaction budgets than their page type, in `body.length`. */
+export const MEMORY_CHARACTER_SLOT_BUDGETS = {
+    knowledge: 1000,
+    relationships: 1200,
+} as const satisfies Partial<Record<CharacterSectionSlot, number>>;
+
+/** The slot's budget on a character page, or the page type's budget for every other section. */
+export function memorySectionBudget(type: MemoryPageType, heading: string): number {
+    if (type === "character" && Object.hasOwn(MEMORY_CHARACTER_SLOT_BUDGETS, heading)) {
+        return MEMORY_CHARACTER_SLOT_BUDGETS[heading as keyof typeof MEMORY_CHARACTER_SLOT_BUDGETS];
+    }
+    return MEMORY_SECTION_BUDGETS[type];
+}
+
+/** Whether `body`, a section of a page of `type` with `heading`, is past its budget. */
+export function memorySectionOverBudget(type: MemoryPageType, heading: string, body: string): boolean {
+    return body.length > memorySectionBudget(type, heading);
 }
 
 /** A message a record cites, as it was when the record was written. */

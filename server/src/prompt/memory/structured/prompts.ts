@@ -7,10 +7,10 @@ import {
     MEMORY_PAGE_TYPES,
     MEMORY_PATCH_CONFLICTS,
     MEMORY_PATCH_OPS,
-    MEMORY_SECTION_BUDGETS,
     MEMORY_THREAD_STATES,
     type MemoryPage,
     type MemoryThread,
+    memorySectionBudget,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     type StructuredMemoryDefaultPromptsAnswer,
 } from "../../../../../shared/structuredMemory.ts";
@@ -150,6 +150,8 @@ const PATCH_RULES = `Rules:
 - An upsert replaces the section's whole text, so repeat what stays true in it.
 - Never patch a section marked locked or listed under notShown, and never leave a page with no text.
 - A character page uses only the headings it lists, and a heading marked empty has no text yet.
+- knowledge holds only facts the character will act on later, one short line each, and need not repeat the event's knowledge items, which are already recorded.
+- relationships is one line per other character, - <name>: <current standing>, and a change replaces that character's line instead of adding another.
 - A section marked userCorrected holds a person's words: change it only when the event contradicts them.
 - A person undid what a page lists under takenBack: do not write that text again, and do not delete a section marked deleted there.
 - "conflict" is "change" when the story moved on from the old value, and "contradiction" when both cannot be true and the story does not say why, with "confidence" from 0 to 1 that the new value is right.`;
@@ -157,11 +159,20 @@ const PATCH_RULES = `Rules:
 const COMPACT_FORMAT = `Answer with one JSON object and nothing else:
 { "body": "the section's whole shorter text" }`;
 
-/** The compaction call's rules for a section whose budget is `budget`. */
-const compactRules = (budget: number) => `Rules:
-- Keep every fact that is still true and each current value, and add nothing.
-- Drop repetition and superseded "(was: ...)" lines first.
-- Aim for at most ${budget} characters.`;
+/** The compaction call's rules for a slot whose budget is `budget`; other headings keep every true fact. */
+function compactRules(heading: string, budget: number): string {
+    const rules =
+        heading === "knowledge"
+            ? `- Keep secrets, facts other characters do not know, and facts that still change what the character will do, and add nothing.
+- Drop facts the story has moved past and details a broader fact already implies; each fact remains on the timeline.
+- Keep one fact per line.`
+            : heading === "relationships"
+              ? `- Keep one line per other character in the form - <name>: <current standing>.
+- Keep only the current standing, dropping how it changed and why (the timeline keeps that) and every "(was: ...)" line, and add nothing.`
+              : `- Keep every fact that is still true and each current value, and add nothing.
+- Drop repetition and superseded "(was: ...)" lines first.`;
+    return `Rules:\n${rules}\n- Aim for at most ${budget} characters.`;
+}
 
 /** The default frame, with the preset's text after the fixed instructions. */
 function analysisFrame(instructions: string): string {
@@ -330,7 +341,7 @@ export function compactSlots({ language, target }: CompactInput): CompactSlots {
     const { type, title } = page;
     return {
         format: COMPACT_FORMAT,
-        rules: compactRules(MEMORY_SECTION_BUDGETS[type]),
+        rules: compactRules(heading, memorySectionBudget(type, heading)),
         language: clampText(language, LIMITS.labelChars),
         page: JSON.stringify({ type, title, heading }),
         section: body,

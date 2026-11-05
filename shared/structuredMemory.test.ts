@@ -4,6 +4,8 @@ import {
     type MemoryEvent,
     type MemoryManifestItem,
     memoryGrade,
+    memorySectionBudget,
+    memorySectionOverBudget,
     sealHypaV3Data,
     isSealedHypaV3Data,
     sealedHypaV3DataIntact,
@@ -249,4 +251,16 @@ it("seals the memory revision so a whole-read baseline cannot be retagged", () =
     expect(sealedHypaV3DataIntact({ ...value, structuredMemoryRevision: revision.replace(/3$/, "4") })).toBe(false);
     const { structuredMemoryRevision: _revision, ...stripped } = value;
     expect(sealedHypaV3DataIntact(stripped)).toBe(false);
+});
+
+it("uses character slot budgets and keeps the page budget for other headings and types", () => {
+    expect(memorySectionBudget("character", "knowledge")).toBe(1000);
+    expect(memorySectionBudget("character", "relationships")).toBe(1200);
+    expect(memorySectionBudget("character", "goals")).toBe(1600);
+    expect(memorySectionBudget("location", "knowledge")).toBe(1200);
+    expect(memorySectionBudget("character", "toString")).toBe(1600);
+    expect(memorySectionOverBudget("character", "knowledge", "x".repeat(1000))).toBe(false);
+    expect(memorySectionOverBudget("character", "knowledge", "x".repeat(1001))).toBe(true);
+    expect(memorySectionOverBudget("character", "relationships", "x".repeat(1201))).toBe(true);
+    expect(memorySectionOverBudget("character", "goals", "x".repeat(1001))).toBe(false);
 });

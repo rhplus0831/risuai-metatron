@@ -741,3 +741,136 @@ describe("structured memory retrieval", () => {
         }
     });
 });
+
+it.each(["required", "pages"] as const)(
+    "filters relationship lines by the send's cast in the %s lane",
+    async (lane) => {
+        const h = harness();
+        const ada = page("Ada", {
+            type: "character",
+            contextMode: lane === "required" ? "always" : "auto",
+            sections: [
+                section(
+                    "relationships",
+                    [
+                        "* CAPTAIN  VALE: trusted",
+                        "- Cara: friendly",
+                        "- Dara: wary",
+                        "- Eve: loyal",
+                        "- Rowan: distant",
+                        "- Rowan and Cara: rivals",
+                        "- Ada: self",
+                        "- A stranger: owes a favor",
+                    ].join("\n"),
+                ),
+            ],
+        });
+        const result = await retrieveLanes(
+            h.host,
+            input({
+                events: [],
+                settings:
+                    lane === "required"
+                        ? settings({ laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 } })
+                        : pageSettings(),
+                entries: [entry("query", "Cara is here", "user")],
+                stage: ["Ada", "Ben"],
+                pages: [
+                    ada,
+                    page("Ben", { aliases: ["Captain\tVale"] }),
+                    page("Cara", { links: ["Dara"] }),
+                    page("Dara"),
+                    page("Eve", { contextMode: "always" }),
+                    page("Rowan"),
+                ],
+            }),
+        );
+        const line = items(result, lane).find(({ id }) => id === "Ada")!.line;
+        expect(line).toContain("* CAPTAIN VALE: trusted");
+        expect(line).toContain("- Cara: friendly");
+        expect(line).toContain("- Dara: wary");
+        expect(line).toContain("- Eve: loyal");
+        expect(line).toContain("- Rowan and Cara: rivals");
+        expect(line).toContain("- A stranger: owes a favor");
+        expect(line).not.toContain("- Rowan: distant");
+        expect(line).not.toContain("- Ada: self");
+        expect(ada.sections[0].body).toContain("- Rowan: distant");
+    },
+);
+
+it("keeps unknown relationship names, matches names at word edges only, and never matches a never page", async () => {
+    const h = harness();
+    const result = await retrieveLanes(
+        h.host,
+        input({
+            events: [],
+            settings: pageSettings(),
+            stage: ["Ada", "Veiled"],
+            pages: [
+                page("Ada", {
+                    type: "character",
+                    sections: [
+                        section(
+                            "relationships",
+                            [
+                                "- A stranger: helpful",
+                                "- Hidden name: trusted",
+                                "- Rowan: distant",
+                                "- Someone: even-tempered",
+                                "- 카라는 적",
+                            ].join("\n"),
+                        ),
+                    ],
+                }),
+                page("Veiled", { aliases: ["Hidden name"], contextMode: "never", links: ["Rowan"] }),
+                page("Rowan"),
+                page("Eve"),
+                page("카라"),
+            ],
+        }),
+    );
+    const line = items(result, "pages").find(({ id }) => id === "Ada")!.line;
+    expect(line).toContain("- A stranger: helpful");
+    expect(line).toContain("- Hidden name: trusted");
+    expect(line).toContain("- Someone: even-tempered");
+    expect(line).not.toContain("- Rowan: distant");
+    expect(line).not.toContain("- 카라는 적");
+});
+
+it("sends a single relationship line whole even when it names an off-cast page", async () => {
+    const h = harness();
+    const result = await retrieveLanes(
+        h.host,
+        input({
+            events: [],
+            settings: pageSettings(),
+            stage: ["Ada"],
+            pages: [
+                page("Ada", { type: "character", sections: [section("relationships", "- Rowan: distant")] }),
+                page("Rowan"),
+            ],
+        }),
+    );
+    expect(items(result, "pages").find(({ id }) => id === "Ada")!.line).toContain("relationships: - Rowan: distant");
+});
+
+it("omits a character page when filtering leaves no relationship lines or other content", async () => {
+    const h = harness();
+    const result = await retrieveLanes(
+        h.host,
+        input({
+            events: [],
+            settings: pageSettings(),
+            stage: ["Ada"],
+            pages: [
+                page("Ada", {
+                    type: "character",
+                    sections: [section("relationships", "- Rowan: distant\n* Rowan: wary")],
+                }),
+                page("Rowan"),
+            ],
+        }),
+    );
+    expect(items(result, "pages").some(({ id }) => id === "Ada")).toBe(false);
+    expect(result.excluded).toContainEqual({ id: "Ada", kind: "page", lane: "pages", reason: "not-relevant" });
+});

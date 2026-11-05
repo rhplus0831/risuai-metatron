@@ -28,8 +28,8 @@
   - Writer and send shapes: `MemoryEventDraft`, `MemoryAnalysisResult`, `MemoryPageCandidate`, `MemoryManifest`,
     `MemoryManifestItem`; `memoryGrade`, `memoryThreadEnded`, `writerPaused`.
   - Limits and window: `STRUCTURED_MEMORY_ALGORITHM`, `ADOPTED_WRITER_RUN`, `STRUCTURED_MEMORY_LIMITS`,
-    `CHARACTER_SECTION_SLOTS`, `MEMORY_SECTION_BUDGETS`, `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`,
-    `memoryEventCovers`.
+    `CHARACTER_SECTION_SLOTS`, `MEMORY_SECTION_BUDGETS`, `MEMORY_CHARACTER_SLOT_BUDGETS`, `memorySectionBudget`,
+    `memorySectionOverBudget`, `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`, `memoryEventCovers`.
   - Read contracts: `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`,
     `StructuredMemoryContentsAnswer`, `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`,
     `StructuredMemoryCoverageRound`, `StructuredMemoryRunsRound`, `StructuredMemoryThreadsRound`,
