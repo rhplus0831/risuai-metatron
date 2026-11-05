@@ -312,7 +312,7 @@ Runtime limits of other subsystems live with their owners: [chat-pipeline](chat-
   settles, so traffic scales with callbacks × chat size ([measured](../audit/server-measurements-2026-11-01.md)).
   Decision: Per-Event Server Work D4, archive.
 - An owner behind a `streamed` row's `seq` (after missed chunks) reads the job chat whole once (`resync`); `proto` is
-  only logged to the console, never enforced. Decision: Incremental Chat Transport D3, D4, plan.
+  only logged to the console, never enforced. Decision: Incremental Chat Transport D3, D4, archive.
 - Restart ends a running job as `shutdown`; reply text since its last checkpoint (3 s target, `CHECKPOINT_INTERVAL_MS`)
   is lost, and its message fence stays open until an ordinary write. Decision: Job Protocol D1, D8, and Q3, archive.
 - If receipt storage degrades, outcomes stay in memory and are lost on restart; without a persisted receipt, request

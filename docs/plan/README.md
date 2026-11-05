@@ -2,9 +2,10 @@
 
 Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) records completed plans,
-historical paths/commits, retrieval commands, and pending manual follow-ups. The two feature
-plans below were revised on 2026-11-04 after the
-[plan design audit](../manual-audit/plan-design-audit-2026-11-04.md); Job Handoff, Asset Lifecycle (both since landed and archived), and Reroll
+historical paths/commits, retrieval commands, and pending manual follow-ups. Reroll Candidates
+below was revised on 2026-11-04 after the
+[plan design audit](../manual-audit/plan-design-audit-2026-11-04.md), as were Job Handoff, Asset Lifecycle and
+Incremental Chat Transport (all since landed and archived); Job Handoff, Asset Lifecycle and Reroll
 Candidates were then challenged again and revised a second time the same day. Plugin Storage and Data API was drafted on 2026-11-05.
 
 - [Reroll Candidates](reroll-candidates.md): the alternatives of the newest reply persist on the
@@ -20,14 +21,6 @@ Candidates were then challenged again and revised a second time the same day. Pl
   input; the tab takes the in-place path only when the server's `hello` advertises it; Slice 2 merges with or
   after Incremental Chat Transport Slice 4 (a traffic dependency, not a code one: separate branches are fine,
   the merge runs the listed integration checks); D1–D14 recommended, Q1–Q4 answered, Slices 1 and 3 landed.
-- [Incremental Chat Transport](incremental-chat-transport.md): every by-id message lookup in the chat
-  store goes through one validated per-chat position index, a feed entry past 8 KiB carries a per-row field
-  diff with the text as a delta instead of the whole row, the owner's job `chatPatch` names a byte-equal
-  streamed row by its stream sequence instead of carrying it, a reconnect after an away-time change replays a
-  bounded epoch-scoped change log (one row per committed ref, written before `COMMIT`, the table created at
-  open) against a map frozen at `hello` with the whole listing as the fallback, both sockets carry `proto=1`,
-  and an over-cap change of a loaded chat reads its rows by id (Slice 4, no longer gated: Reroll Candidates
-  Slice 2 merges with or after it); D1–D10 recommended, Q1–Q4 answered (Q2 and Q4 superseded), every slice landed.
 - [Plugin Storage and Data API](plugin-storage.md): plugin data becomes visible, owned, and cheap to move: a plugin
   data page lists and deletes what every storage namespace holds and permission grants become revocable (a reset per
   plugin, revoked on removal); a `pluginStorage` write sends the changed key as a nested patch one level down and a

@@ -102,7 +102,7 @@ This is a development-module measurement with synthetic back-to-back calls, not 
 
 **Acceptance evidence.** A deterministic test should count message visits for updates to the tail of short and long histories, including multiple updates before a frame and a chat replacement between updates. A production trace should then compare equal incoming update rates at 2,000 and 10,000 messages with the same visible window.
 
-**After (2026-11-05).** The [Incremental Chat Transport plan](../plan/incremental-chat-transport.md) D1 landed: by-id lookups in the chat store, `heldMessage` and `activeStreamingIndex` go through `positionOf`, a lazily built per-chat position map that validates each hit by row id and is dropped on structural changes. `src/ts/storage/tests/chatStore.test.ts` ("message positions") counts index builds through `messagePositionStats`. The same F1 evaluate body, before (base code) and after, on one machine (Chrome 156, development modules):
+**After (2026-11-05).** The [Incremental Chat Transport plan](../archived-plan/README.md) D1 landed: by-id lookups in the chat store, `heldMessage` and `activeStreamingIndex` go through `positionOf`, a lazily built per-chat position map that validates each hit by row id and is dropped on structural changes. `src/ts/storage/tests/chatStore.test.ts` ("message positions") counts index builds through `messagePositionStats`. The same F1 evaluate body, before (base code) and after, on one machine (Chrome 156, development modules):
 
 | Loaded messages | Before: median per 200 updates (min–max) | After: median per 200 updates (min–max) |
 | --------------: | ---------------------------------------: | --------------------------------------: |

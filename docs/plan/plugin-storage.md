@@ -34,7 +34,7 @@ exports); [server resources](../structure/server-resources.md) (the server half 
 `_pluginStorage`); [test harness](../structure/test-harness.md) (the measurement driver, the sandbox browser spec).
 
 Relation to other work: no active plan edits `src/ts/plugins/`, `src/ts/storage/pluginStorageStore.svelte.ts` or
-`src/lib/Setting/Pages/PluginSettings.svelte`. The [Incremental Chat Transport plan](incremental-chat-transport.md)
+`src/lib/Setting/Pages/PluginSettings.svelte`. The [Incremental Chat Transport plan](../archived-plan/README.md)
 Slice 0 owns the per-chat position index in `chatStore.svelte.ts`; this plan reads the chat store through its
 exports (`heldChatRefs`, `chatsLoaded`, the summaries) and adds at most one read-only export there, so a rebase, not
 a conflict. The [Asset Lifecycle plan](../archived-plan/README.md) marks assets from every text column of the live store, the

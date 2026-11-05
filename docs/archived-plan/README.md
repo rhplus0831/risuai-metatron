@@ -57,6 +57,7 @@ git show 78dbb078f:docs/plan/server-plugin-runtime.md
 git show 786dfc3d3:docs/plan/guides-to-source.md
 git show c34f69365:docs/plan/job-handoff.md
 git show 72830e9f6:docs/plan/asset-lifecycle.md
+git show c249c3a21:docs/plan/incremental-chat-transport.md
 git show a72c5f736:docs/plan/render-work-budget.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
@@ -118,6 +119,7 @@ it is not a current architecture guide.
 | Guides To Source                         | `786dfc3d3`: `docs/plan/guides-to-source.md`                              | [STRUCTURE](../../STRUCTURE.md) (Doc Maintenance, `ownership.json`), [build/test platforms](../structure/build-test-platforms.md) (`util/docsBudget.mjs`, `util/docsLedger.mjs`, `util/guideReads.mjs`)                                                                                                                                                                                                                                                                                     |
 | Job Handoff                              | `c34f69365`: `docs/plan/job-handoff.md`                                   | [server](../structure/server-generation.md) (Job handoff, Limitations), [live-update feed](../structure/live-update-feed.md), [network and jobs](../structure/network-jobs.md), [chat pipeline](../structure/chat-pipeline.md), [plugins](../structure/plugin-sandbox.md) (Job owner presence), [test harness](../structure/test-harness.md) (`checkJobHandoff.mjs`)                                                                                                                        |
 | Asset Lifecycle                          | `72830e9f6`: `docs/plan/asset-lifecycle.md`                               | [self-host server](../structure/self-host-server.md) (Asset mark, Storage routes, Limitations), [server resources](../structure/server-resources.md) (Snapshots and restore, pins), [assets](../structure/assets.md) (Asset client, Asset queues), [settings and i18n](../structure/settings-i18n.md) (Storage section), [test harness](../structure/test-harness.md) (`checkAssetLifecycle.mjs`)                                                                                           |
+| Incremental Chat Transport               | `c249c3a21`: `docs/plan/incremental-chat-transport.md`                    | [live updates](../structure/live-updates.md) (Feed connection, Chat live updates), [live-update feed](../structure/live-update-feed.md) (hello `cursor`, feed chat entries), [server resources](../structure/server-resources.md) (change log, `chatRows`), [server generation](../structure/server-generation.md) (streamed rows, `proto`), [chat store](../structure/chat-store.md) (By-id ops)                                                                                           |
 | Render Work Budget                       | `a72c5f736`: `docs/plan/render-work-budget.md`                            | [CBS and rendering](../structure/cbs-rendering.md), [UI and theming](../structure/ui-theming.md), [translation](../structure/translation.md), [test harness](../structure/test-harness.md) (`measureRenderWork.mjs`)                                                                                                                                                                                                                                                                        |
 
 The archived Web Push file still says “planned”; the implementation shipped in
@@ -1118,6 +1120,21 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     tick logging once and skipping); a clicked-through check of the Storage panel beyond the driver.
   - Found by the run: 2 entries in `docs/research/found-issues.md` (a declined lowLevelAccess on a JSON card
     falling through to the off-spec import, `docs:owner` sending the asset lifecycle client to persistence).
+- Incremental Chat Transport:
+  - All six slices landed on 2026-11-05 (plan-runner, on `dev`): `f033d69ce` (Slice 0, the validated message position
+    index: 200 updates at 10,000 messages 1,290.9 → 0.5 ms), `ca5a5cb8e` and `78fa91b3c` (Slice 3, the change log and
+    the `?since=` replay: resume-away 88,727 → 536 wire bytes), `917273384` (Slice 1, feed `rowDelta`: about 1,700
+    bytes per long-reply checkpoint, 0 observer whole reads instead of 4), `2272abf6e` (Slice 4, the `rows` manifest
+    and `chatRows` read: 967,029 → 394,652 bytes for the mixed fixture's over-cap entries), `f906c864e` (Slice 2,
+    streamed rows and `proto=1`: the owner's patch 33,265 → 498 bytes per checkpoint), `054ad8130` (Slice 5, the
+    browser runs and after lines), with `dev` merged in at `feb379e86`. D6 was amended during the run (`b234d14ff`):
+    the manifest names the changed metadata fields, since the server cannot rebuild a metadata diff at read time.
+  - Owner-visible behavior: a tab older than the deploy takes a notice and one whole read for every entry past 8 KiB
+    until it reloads (D8); while a Job Handoff viewer is attached, the owner gets its streamed rows whole.
+  - Still open: Firefox, Safari and mobile runs of the reconnect and the feed; the two-device check of a long reply
+    watched from a second device; an owner reloading mid-stream on a real device (`streamed` rows and the resync).
+  - Found by the run: 4 entries in `docs/research/found-issues.md` (the change log's row-count bound, `proto` absent
+    from Diagnostics, `measureChats.mjs` and safe boot, a `checkServerSend` alert after its reload).
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.

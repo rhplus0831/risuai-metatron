@@ -6,7 +6,7 @@ Audited the five active plans listed in [docs/plan/README.md](../plan/README.md)
 (all drafted 2026-11-03, no slice landed): [Job Handoff](../plan/job-handoff.md),
 [Asset Lifecycle](../archived-plan/README.md) (archived), [Reroll Candidates](../plan/reroll-candidates.md),
 [Render Work Budget](../archived-plan/README.md) (archived) and
-[Incremental Chat Transport](../plan/incremental-chat-transport.md). The question was whether each plan's
+[Incremental Chat Transport](../archived-plan/README.md) (archived). The question was whether each plan's
 decisions work against the code as it is, whether the plans contradict themselves, and whether they
 contradict each other.
 

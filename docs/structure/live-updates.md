@@ -172,4 +172,4 @@ Identifiers the flows below name are not repeated here.
 - Two tabs editing one record converge only through the 409 path: live updates skip a record with an unsent change.
   Decision: Durable Drafts D11, D8, archive.
 - A loaded chat noticed without a body or an applicable `rows` manifest is read whole when idle: a manifest past 64 KiB,
-  a second over-cap write before the row read, or a `moved` answer. Decision: Incremental Chat Transport D6, plan.
+  a second over-cap write before the row read, or a `moved` answer. Decision: Incremental Chat Transport D6, archive.

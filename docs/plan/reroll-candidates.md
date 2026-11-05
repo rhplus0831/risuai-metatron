@@ -63,7 +63,7 @@ The Deep Audit Fixes (done) made a trigger's result merge `scriptstate` by key (
 plan](../archived-plan/README.md), written in parallel, scans the strings of a message's JSON at any depth, so the
 inlay references inside non-selected candidates (`candidates[].data`) are covered by construction; that plan
 adds a test for it, and this plan names the field (D4). The [Incremental Chat Transport
-plan](incremental-chat-transport.md) carries the rows this plan makes larger: its D2's delta forms keep a
+plan](../archived-plan/README.md) (archived) carries the rows this plan makes larger: its D2's delta forms keep a
 text-only checkpoint small, and its Slice 4 (the over-cap row manifest and the by-id row read, with that
 plan's D6 amended so the read also carries the chat's changed metadata fields) is a merge-time dependency of
 this plan's Slice 2 (D4): no code here calls what it adds, so the two may be built on separate branches, but
