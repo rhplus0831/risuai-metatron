@@ -580,6 +580,11 @@ count recipe and the `VmHWM` peak recipe), `util/agentE2e.mjs` untouched (the dr
   beside the audit document for F3 and F6. The acceptance after Slices 1–4: zero obsolete parser and translation
   invocations after a switch (transform targets: zero sent after the switch, in-flight ones at most one chunk),
   one preparation per distinct sheet, a screenshot peak under one page's RGBA plus the largest row.
+- Split into two slices, each its own commit (owner, 2026-11-05):
+  - **Slice 5a: the driver and the baseline** (needs nothing; before Slices 1–4): the driver, the test harness
+    guide's recipes, and the audit document with the baseline table.
+  - **Slice 5b: the comparison** (needs 0–4 and 5a): the driver run again after Slices 1–4, the after table and
+    the acceptance verdicts in the same audit document, and driver fixes the new code needs.
 
 ### Slice 6: the guide pass (needs 0–5)
 
@@ -590,7 +595,7 @@ left as history with one line at its top pointing at the audit document (Slice 0
 
 ## Recommended order
 
-5 (baseline) → 0 → 1 → 2, with 3 and 4 in parallel worktrees beside 1 → 5 (comparison) → 6. Slice 1 alone
+5a (baseline) → 0 → 1 → 2, with 3 and 4 in parallel worktrees beside 1 → 5b (comparison) → 6. Slice 1 alone
 removes the four-fold retry and the obsolete parses; 2 needs its signal; 3 and 4 depend on nothing and can land
 first if the baseline run shows the CSS or screenshot numbers to be the worst.
 
