@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (0)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (11)
+- [Structured Memory](#structured-memory) (10)
 
 ## Chat store, sync, and change feeds
 
@@ -307,13 +307,6 @@ In `src/ts/process/structuredMemory.svelte.ts` and `StructuredMemoryPanel.svelte
 
 **Why it matters:** an extra prompt row, never a wrong record; the writer and the read path disagree on "named".
 **Suggested handling:** use `searchMatch` in `castSlice`.
-
-### Hand-written resourceSync mocks
-
-`src/lib/ChatScreens/Chat.test.ts` keeps a hand-written `vi.mock` of `src/ts/storage/resourceSync.svelte`, and other files mock it too, though `src/ts/tests/bootMocks.ts` has a typed factory. Slice 5c met three tests failing at run time on a missing `beginMutationScope`.
-
-**Why it matters:** STRUCTURE.md V7: a new export should break the type check, not a run.
-**Suggested handling:** move those mocks onto the shared factory.
 
 ### Projection refresh leftovers
 

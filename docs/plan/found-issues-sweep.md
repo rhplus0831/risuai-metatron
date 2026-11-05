@@ -1,7 +1,7 @@
 # Found Issues Sweep Plan
 
 Status: drafted 2026-11-05; the owner accepted every open question's recommendation the same day; landed:
-A1 (5d20f1e28), D2 (ba8849a05), F2 (4edfb27ab), C1 (c34f52416), B1 (fc21926be), J1 (406e15d19), E2 (6555c82e2), C2 (69370bec5), H2 (ded072314), E3 (3849a272f), C4 (35e64b332), D1 (dbee2cde6), H1 (5c2bef411), G1 (24b817a55), E1 (5cd2b42f9), B2 (189efd11a), C3 (bb237d142), I3 (f848dad03), F1 (7c5895359), K1 (41bf2072a), L1 (20b12907f), I2 (ff391d00c), M2 (8cd3b8e2d), I1 (9440f4ccd), M1 (23ef46377). Source: the 104 entries of [found-issues](../research/found-issues.md) as of `cc1fc4008`, each
+A1 (5d20f1e28), D2 (ba8849a05), F2 (4edfb27ab), C1 (c34f52416), B1 (fc21926be), J1 (406e15d19), E2 (6555c82e2), C2 (69370bec5), H2 (ded072314), E3 (3849a272f), C4 (35e64b332), D1 (dbee2cde6), H1 (5c2bef411), G1 (24b817a55), E1 (5cd2b42f9), B2 (189efd11a), C3 (bb237d142), I3 (f848dad03), F1 (7c5895359), K1 (41bf2072a), L1 (20b12907f), I2 (ff391d00c), M2 (8cd3b8e2d), I1 (9440f4ccd), M1 (23ef46377), K2 (144e0ddbe). Source: the 104 entries of [found-issues](../research/found-issues.md) as of `cc1fc4008`, each
 re-checked against that tree the same day by eleven read-only workers whose file and line evidence was
 spot-checked. Every entry has a disposition in the **Index**: a slice here, an **Open question** for the
 owner, **Deferred** work for a later plan, or **Stays** (an accepted trade-off or a note that is reference
