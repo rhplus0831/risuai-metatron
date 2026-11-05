@@ -60,6 +60,7 @@ git show 72830e9f6:docs/plan/asset-lifecycle.md
 git show c249c3a21:docs/plan/incremental-chat-transport.md
 git show a72c5f736:docs/plan/render-work-budget.md
 git show f521f3d63:docs/plan/plugin-storage.md
+git show 7a4e8d113:docs/plan/reroll-candidates.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -123,6 +124,7 @@ it is not a current architecture guide.
 | Incremental Chat Transport               | `c249c3a21`: `docs/plan/incremental-chat-transport.md`                    | [live updates](../structure/live-updates.md) (Feed connection, Chat live updates), [live-update feed](../structure/live-update-feed.md) (hello `cursor`, feed chat entries), [server resources](../structure/server-resources.md) (change log, `chatRows`), [server generation](../structure/server-generation.md) (streamed rows, `proto`), [chat store](../structure/chat-store.md) (By-id ops)                                                                                           |
 | Render Work Budget                       | `a72c5f736`: `docs/plan/render-work-budget.md`                            | [CBS and rendering](../structure/cbs-rendering.md), [UI and theming](../structure/ui-theming.md), [translation](../structure/translation.md), [test harness](../structure/test-harness.md) (`measureRenderWork.mjs`)                                                                                                                                                                                                                                                                        |
 | Plugin Storage and Data API              | `f521f3d63`: `docs/plan/plugin-storage.md`                                | [plugins](../structure/plugin-sandbox.md) (State, Gotchas, Tests), [resource sync](../structure/resource-sync.md) (Record patches), [server resources](../structure/server-resources.md) (kinds, resource routes), [chat store](../structure/chat-store.md) (detached reads, `chatSummaryList`), [backup sync hub](../structure/backup-sync-hub.md) (Upstream database export), [test harness](../structure/test-harness.md) (`measurePluginData.mjs`), `plugins.md`                        |
+| Reroll Candidates                        | `7a4e8d113`: `docs/plan/reroll-candidates.md`                             | [chat pipeline](../structure/chat-pipeline.md) (Reroll), [chat store](../structure/chat-store.md) (`selectCandidate`), [server generation](../structure/server-generation.md) (in-place reroll job), [memory](../structure/memory.md) (commit boundary), [backup sync hub](../structure/backup-sync-hub.md) (candidates on export and import)                                                                                                                                               |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1161,6 +1163,20 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - Found by the run: 5 entries in `docs/research/found-issues.md` (the feed still sending `pluginStorage` and plugin
     toggles whole, `flushResources` after a restore halt, Reset permissions leaving a running plugin's capabilities, a
     multi-tab removal bringing deleted data back, the global-api guide's checkbox confirm).
+- Reroll Candidates:
+  - All 4 slices landed on 2026-11-05 (plan-runner, on `dev`): `30bec41a4` (Slice 1, the `candidates` schema and the
+    in-place reroll job), `4976a15f0` (Slice 3, the memory commit boundary and the RisuAI-compatible export and import
+    mapping), `080ea1184` (Slice 2, the `selectCandidate` op and the tab's candidate controls, landed after
+    Incremental Chat Transport with its merge tests), `807b980de` (Slice 4, `e2e/rerollCandidates.spec.ts` and the
+    guide pass), with `dev` merged in at `037f93f6b` and `6a4ab93f9`. Q1–Q4 were answered as recommended.
+  - Still open: the phone swipe on the owner's server (the `n/m` counter, the arrows, kept across a reload), and a
+    server process death or an abort past the grace mid-reroll (D8: the previous reply stays selected, no partial
+    text), which only a manual kill shows.
+  - Not planned (the plan's Later list): a single-candidate delete control, a boot sweep writing back the previous
+    candidate after a process death, bundle candidates for multi-reply tails, PocketRisu `swipes` in the `.bin`
+    export, and pruning older messages' candidates at the commit boundary.
+  - Found by the run: 2 entries in `docs/research/found-issues.md` (the dead `dyna-icon` reroll variant, the
+    Structured Memory decision pointers that still say "plan").
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.
