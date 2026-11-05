@@ -46,8 +46,8 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 - `src/ts/characters.ts`: character and group CRUD (`createNewCharacter`, `createNewGroup`, `addCharacter`,
   `changeChar`, `removeChar`, `restoreChar`), the chat file import/export (`importChat`, `exportChat`), and images
   (`makeGroupImage`, `addCharEmotion`, `changeCharImage`).
-- Recent ordering on home and mobile reads `characterLastChattedAt` (`src/ts/storage/chatStore.svelte.ts`), which falls
-  back to the stored `lastInteraction` ([State](#state)).
+- Recent ordering on home and mobile reads `characterLastChattedAt` (`src/ts/storage/chatStore.svelte.ts`,
+  [State](#state)).
 
 ### Modules
 
@@ -113,8 +113,7 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 - `src/lib/Setting/Pages/Module/ModuleSettings.svelte` (edit and create modes, the share button,
   `clearStaleExportWait`), `src/lib/Setting/Pages/Module/ModuleMenu.svelte` (the module editor), and
-  `src/lib/Setting/Pages/Module/ModuleChatMenu.svelte` (the chat's and character's module toggles). The dialog's file
-  import is `importModule` ([module import](#module-import)).
+  `src/lib/Setting/Pages/Module/ModuleChatMenu.svelte` (the chat's and character's module toggles).
 
 ### Asset pickers and lists
 
@@ -303,8 +302,7 @@ and the prompt preset's `moduleIntergration` namespaces. The server's `jobModule
   [lore draft's fence](chat-store.md#whole-chat-writers): while this tab's send (`isLocalSend`) or a job this tab knows
   of (`generatingChatKeys()`) runs in the chat, they refuse with `chatGenerating` and write nothing; the import checks
   at its write, after the file dialog.
-- `exportLoreBook("local")` while the selected chat loads refuses with `localLoreExportNotLoaded`. Add and folder
-  actions accept character (0) or chat (1) targets; other values write nothing.
+- `exportLoreBook("local")` while the selected chat loads refuses with `localLoreExportNotLoaded`.
 
 ### Characters and chats
 
@@ -360,7 +358,8 @@ and the prompt preset's `moduleIntergration` namespaces. The server's `jobModule
   exercises real import routes with lowered limits. `importFixtures.ts` supplies PNG, CharX, and V2/V3 cards;
   `importRealm.test.ts` uses a local Realm stand-in. Some module tests mock the ignored `rpack_map.bin` payload.
 - Lore editor tests use real records/chat drafts; `LoreBookList` uses a fake SortableJS instance.
-- Not tested: the `charxJpeg` export variant and the performance cost of lorebook drag sorting.
+- Not tested: the `charxJpeg` export variant, the performance cost of lorebook drag sorting, and its recovery after the
+  lorebook filter clears (`onEnd`).
 
 ## Known Hazards
 
@@ -394,6 +393,8 @@ and the prompt preset's `moduleIntergration` namespaces. The server's `jobModule
 - Pinning a duplicate-id original assigns it a fresh id. This can detach another chat's `child` link or make another
   chat's override match a different entry; the previously ambiguous link is not migrated. Decision: Chat Lore Override
   States, duplicate owner ids out of scope, [archive](../archived-plan/README.md).
+- The lorebook filter's query resets only on an owner change: a module's list keeps it when a remote replacement
+  retargets `ModuleMenu`'s module wrapper while the menu stays mounted.
 
 ### Gotchas
 

@@ -18,14 +18,17 @@
      * The entries a query shows: an entry on its `comment`, `key` and `secondkey` (a
      * chat's `child` link also on the entry it links, whose name it shows), a folder on its name.
      * A folder whose name matches shows all of its entries; a shown entry shows its folders.
+     * Entries appended at or after `addedFrom` also count as their own matches.
      */
     function filterMatches(
         list: readonly loreBook[],
         query: PreparedQuery,
         linked: (id: string) => loreBook | undefined,
+        addedFrom: number,
     ): Set<loreBook> {
         const fields = (book: loreBook) => [book.comment, book.key, book.secondkey];
-        const ownMatch = (book: loreBook) => {
+        const ownMatch = (book: loreBook, index: number) => {
+            if (index >= addedFrom) return true;
             if (book.mode === "folder") return matchesAny([book.comment], query);
             if (matchesAny(fields(book), query)) return true;
             const parent = book.mode === "child" && book.id ? linked(book.id) : undefined;
@@ -36,7 +39,7 @@
             if (book.mode === "folder" && !folders.has(book.key)) folders.set(book.key, book);
         }
         const shown = new Set<loreBook>();
-        for (const book of list) {
+        for (const [index, book] of list.entries()) {
             const chain: loreBook[] = [];
             let named = false;
             for (let key = book.folder; key;) {
@@ -47,7 +50,7 @@
                 named ||= matchesAny([parent.comment], query);
                 key = parent.folder;
             }
-            if (named || ownMatch(book)) {
+            if (named || ownMatch(book, index)) {
                 shown.add(book);
                 for (const parent of chain) shown.add(parent);
             }
@@ -83,10 +86,12 @@
      * Filter: the outermost list owns the query and the match set; folder lists read them through the `LORE_FILTER`
      * context. The query resets when the owner changes (the character, the chat, or the tab between them). Matches
      * (`filterMatches`) are computed once at the root from a tracked copy of the list, reading fields untracked, so a
-     * row renamed under the filter stays shown until the query or the membership changes. Hidden rows stay mounted,
-     * keeping their open details; a shown folder opens through `forceOpen` without writing `openedRefs`. Every
-     * SortableJS instance is disabled while the query is non-empty, and a drop that ends while filtering writes
-     * nothing.
+     * row renamed under the filter stays shown until the query or the membership changes. Entries appended while a
+     * query stands, and their folder chains, stay shown until the query changes, including across chat draft resyncs.
+     * Hidden rows stay mounted, keeping their open details; a shown folder opens through `forceOpen` without writing
+     * `openedRefs` until a member opens inside it, which records its folder chain as open so those details stay
+     * mounted across query changes. Every SortableJS instance is disabled while the query is non-empty, and a drop
+     * that ends while filtering writes nothing.
      */
 
     const currentCharacter = $derived(selectedCharacter());
@@ -98,9 +103,10 @@
         lorePlus?: boolean;
         externalLoreBooks?: loreBook[];
         showFolder?: string;
+        onMemberOpen?: () => void;
     }
 
-    let { submenu = 0, lorePlus = false, externalLoreBooks = null, showFolder = "" }: Props = $props();
+    let { submenu = 0, lorePlus = false, externalLoreBooks = null, showFolder = "", onMemberOpen }: Props = $props();
     let stb: Sortable = null;
     let destroyed = false;
     // The `disabled` option `stb` has now (set while the filter is non-empty).
@@ -127,21 +133,34 @@
         return "";
     });
     const preparedQuery = $derived(isRootList ? prepareQuery(query) : null);
+    // A position survives chat draft resyncs, which replace every entry with a JSON copy.
+    let additionsQuery: PreparedQuery | null | undefined;
+    let addedFrom = 0;
     // Matched once for the whole list (nested lists show the same array). The entries are read as a
     // tracked copy, so any membership change matches again; their fields are read untracked, so a
     // row renamed under the filter stays shown while it is edited.
     const rootMatches = $derived.by(() => {
         const prepared = preparedQuery;
-        if (!prepared) return null;
         try {
             const list = shownList();
             const books = list ? [...list] : [];
+            if (prepared !== additionsQuery) {
+                additionsQuery = prepared;
+                addedFrom = books.length;
+            }
+            addedFrom = Math.min(addedFrom, books.length);
+            if (!prepared) return null;
             return untrack(() =>
-                filterMatches(books, prepared, (id) => selectedCharacter()?.globalLore.find((e) => e.id === id)),
+                filterMatches(
+                    books,
+                    prepared,
+                    (id) => selectedCharacter()?.globalLore.find((e) => e.id === id),
+                    addedFrom,
+                ),
             );
         } catch (error) {
             // The list can belong to a removed record (for example a deleted module).
-            if (error instanceof DetachedWrapperError) return new Set<loreBook>();
+            if (error instanceof DetachedWrapperError) return prepared ? new Set<loreBook>() : null;
             throw error;
         }
     });
@@ -589,6 +608,7 @@
         if (bookRef) {
             openedRefs.add(bookRef);
             openedRefs = new Set(openedRefs); // Trigger reactivity
+            onMemberOpen?.();
         }
     };
     const onClose = (isDetail: boolean, bookRef: loreBook) => {

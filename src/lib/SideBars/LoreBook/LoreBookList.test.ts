@@ -667,6 +667,71 @@ describe("LoreBookList filter", () => {
         expect(detail(folderRow())).toBeNull();
     });
 
+    it("shows host additions and an entry added inside a filter-expanded folder until the query changes", () => {
+        const props = renderExternal();
+        expect(detail(folderRow())).toBeNull();
+
+        search("beta");
+        const expanded = detail(folderRow())!;
+        expect(visibleLabels()).toEqual(["Folder", "Beta"]);
+
+        props.externalLoreBooks.push(entry("Lantern"), folder("Archive", "archive"));
+        flushSync();
+        expect(visibleLabels()).toEqual(["Folder", "Beta", "Lantern", "Archive"]);
+
+        expanded.querySelector<HTMLButtonElement>(":scope > div.mt-2 > button")!.click();
+        flushSync();
+        expect(props.externalLoreBooks.at(-1)).toMatchObject({ mode: "normal", folder: "fkey" });
+        expect(detail(folderRow())).toBe(expanded);
+        expect(nestedRows(folderRow()).map((row) => [label(row), shown(row)])).toEqual([
+            ["Beta", true],
+            ["Gamma", false],
+            ["Unnamed Lore", true],
+        ]);
+        expect(visibleLabels()).toEqual(["Folder", "Beta", "Unnamed Lore", "Lantern", "Archive"]);
+
+        search("gamma");
+        expect(visibleLabels()).toEqual(["Folder", "Gamma"]);
+        expect(nestedRows(folderRow()).map((row) => [label(row), shown(row)])).toEqual([
+            ["Beta", false],
+            ["Gamma", true],
+            ["Unnamed Lore", false],
+        ]);
+
+        search("lantern");
+        expect(visibleLabels()).toEqual(["Lantern"]);
+
+        search("archive");
+        expect(visibleLabels()).toEqual(["Archive"]);
+    });
+
+    it("keeps a detail opened inside a filter-expanded folder mounted across query changes", () => {
+        renderExternal();
+        const folder = folderRow();
+        expect(detail(folder)).toBeNull();
+
+        search("beta");
+        const expanded = detail(folder)!;
+        const beta = nestedRows(folder)[0];
+        const betaDetail = open(beta);
+        expect(visibleLabels()).toEqual(["Folder", "Beta"]);
+        expect(betaDetail).not.toBeNull();
+
+        search("excal");
+        expect(visibleLabels()).toEqual(["Sword"]);
+        expect(shown(folder)).toBe(false);
+        expect(detail(folder)).toBe(expanded);
+        expect(detail(beta)).toBe(betaDetail);
+        expect(betaDetail.isConnected).toBe(true);
+
+        search("beta");
+        expect(visibleLabels()).toEqual(["Folder", "Beta"]);
+        expect(shown(beta)).toBe(true);
+        expect(detail(folder)).toBe(expanded);
+        expect(detail(beta)).toBe(betaDetail);
+        expect(betaDetail.isConnected).toBe(true);
+    });
+
     it("shows every entry of a folder whose name matches", () => {
         renderExternal();
 
@@ -715,7 +780,8 @@ describe("LoreBookList filter", () => {
             [false, true, true],
         ]);
 
-        // An instance created while filtered by closing a detail (nested and root) is disabled too.
+        // An instance created while filtered by closing a detail (nested and root) is disabled too. Opening Beta
+        // keeps its folder open, so the nested list stays mounted (hidden) after the query moves on.
         const beta = nestedRows(folderRow())[0];
         open(beta);
         beta.querySelector("button")!.click();
@@ -723,17 +789,26 @@ describe("LoreBookList filter", () => {
         search("excal");
         const sword = rows()[0];
         open(sword);
-        expect(live()).toEqual([]);
+        const nested = live();
+        expect(
+            nested.map((sortable) => [sortable === root, sortable.createdDisabled, sortable.options.disabled]),
+        ).toEqual([[false, true, true]]);
         sword.querySelector("button")!.click();
         flushSync();
-        expect(live().map((sortable) => [sortable.createdDisabled, sortable.options.disabled])).toEqual([[true, true]]);
+        expect(
+            live().map((sortable) => [sortable === nested[0], sortable.createdDisabled, sortable.options.disabled]),
+        ).toEqual([
+            [true, true, true],
+            [false, true, true],
+        ]);
         expect(sortables.filter((sortable) => sortable.createdDisabled)).toHaveLength(3);
 
         search("");
         expect(live().map((sortable) => [sortable.createdDisabled, sortable.options.disabled])).toEqual([
             [true, false],
+            [true, false],
         ]);
-        expect(visibleLabels()).toEqual(["Sword", "Shield", "Helm", "해적선", "Folder"]);
+        expect(visibleLabels()).toEqual(["Sword", "Shield", "Helm", "해적선", "Folder", "Beta", "Gamma"]);
     });
 
     it("keeps hidden rows mounted with their open details, and an entry renamed under the filter stays shown", () => {
