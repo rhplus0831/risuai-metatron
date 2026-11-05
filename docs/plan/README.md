@@ -49,7 +49,7 @@ Candidates were then challenged again and revised a second time the same day. Pl
   cache write, identical post-CBS CSS is scoped once in a bounded cache, and the screenshot export sizes its
   output once, releases each source, pages large exports and downloads a Blob; Slice 0 carries two small items
   (the message index belongs to Incremental Chat Transport); D1–D9 recommended, Q1–Q4 answered (Q3 narrowed),
-  Slice 5 split into 5a and 5b, slices landed: 5a, 0, 3, 4.
+  Slice 5 split into 5a and 5b, slices landed: 5a, 0, 1, 3, 4.
 - [Incremental Chat Transport](incremental-chat-transport.md): every by-id message lookup in the chat
   store goes through one validated per-chat position index, a feed entry past 8 KiB carries a per-row field
   diff with the text as a delta instead of the whole row, the owner's job `chatPatch` names a byte-equal
