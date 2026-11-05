@@ -289,13 +289,22 @@ export function isRerollCarrier(
     chat: { readonly message: readonly Pick<Message, "chatId" | "role" | "isComment">[] },
     id: string,
 ): boolean {
-    const messages = chat.message.filter((message) => !message.isComment);
-    const last = messages.at(-1);
-    if (last?.chatId !== id || last.role !== "char") return false;
-    return messages.length === 1 || messages.at(-2)?.role === "user";
+    let foundReply = false;
+    for (let index = chat.message.length - 1; index >= 0; index--) {
+        const message = chat.message[index];
+        if (message.isComment) continue;
+        if (foundReply) return message.role === "user";
+        if (message.chatId !== id || message.role !== "char") return false;
+        foundReply = true;
+    }
+    return foundReply;
 }
 
 /** Whether a later non-comment message has committed the reply's variable state. */
 export function isLatestReply(chat: Chat, id: string): boolean {
-    return chat.message.filter((message) => !message.isComment).at(-1)?.chatId === id;
+    for (let index = chat.message.length - 1; index >= 0; index--) {
+        const message = chat.message[index];
+        if (!message.isComment) return message.chatId === id;
+    }
+    return false;
 }

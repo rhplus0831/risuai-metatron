@@ -258,9 +258,9 @@ settings sections and collections, no `root` record; tables as in version 2).
   `(characterId, seq)` index: the layout check reads only tables, by name.
 - `messages` (`chatSeq`, message `id`, integer `position`, `data` JSON, and the generation fence: `generationId`,
   `generationSeq`, `generationFinal`, `generationHistory` of up to 8 earlier ids).
-- The index `messages_role` on `(chatSeq, json_extract(data, '$.role'))` counts a chat's user turns without reading a
-  row; `openChatSchema` creates it when missing, parsing every message row once on an older file's first open; it makes
-  SQLite refuse a non-JSON `data`.
+- `openChatSchema` adds, when missing, `messages_role` on `(chatSeq, json_extract(data, '$.role'))`, which counts user
+  turns reading no row and refuses a non-JSON `data`, and `messages_checkpoints`, partial on the checkpoint keys' text,
+  so append cleanup reads only rows holding one. An older file's first open reads every row once.
 - `chatOrders` (`characterId`, `seq`, `revision`, `ids` JSON).
 - `changes` (`cursor` autoincrement, `kind`, `characterId`, `id`, `revision`): transactional refs/tombstones; order ids
   are character ids. Created at open beside `openChatSchema`, outside `STORE_TABLES_SQL` and the layout check; no
@@ -268,9 +268,8 @@ settings sections and collections, no `root` record; tables as in version 2).
 - The log prunes to 20,000 rows (a few MB with typical ids; deletion does not shrink the file). `replaceAll` truncates
   it without resetting the sequence. Whole-file snapshots and backups contain it; restore ignores it.
 - `chatGroups` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `groupId`, `revision`,
-  `result` JSON, unique `(chatSeq, groupId)`), which `openChatSchema` creates when missing, with no version change. It
-  is outside the layout check, a snapshot's copy is not restored, and a restore leaves it empty (deleting the chats
-  cascades).
+  `result` JSON, unique `(chatSeq, groupId)`), created when missing at open, outside the layout check: never restored, a
+  restore leaves it empty (deleting the chats cascades).
 - The `memory_*` tables are created the same way, but a restore carries them as an optional group, like the
   [checkpoint tables](#checkpoint-tables) ([structured memory](structured-memory/records.md#memory-tables)).
 

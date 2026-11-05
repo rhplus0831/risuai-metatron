@@ -299,10 +299,26 @@ const MESSAGE_ROLE_SQL = "json_extract(data, '$.role')";
 const MESSAGE_ROLE_INDEX_SQL = `CREATE INDEX IF NOT EXISTS messages_role ON messages (chatSeq, ${MESSAGE_ROLE_SQL});`;
 
 /**
+ * Checkpoint keys in the server's canonical `JSON.stringify` text: whole-row preparation and snapshot
+ * staging reserialize messages, so keys have this exact spelling and quotes inside string values are
+ * escaped. A byte scan avoids parsing candidate arrays; the cleanup query repeats this exact predicate
+ * so SQLite can use the partial index. Keys nested elsewhere are harmless false positives: the append
+ * loop rechecks them with `withoutCandidateCheckpoints` and skips unchanged serialized text.
+ */
+const MESSAGE_CHECKPOINT_PREDICATE_SQL = `(instr(data, '"scriptstateCheckpoint":') > 0 OR instr(data, '"scriptstateAfter":') > 0)`;
+
+/**
+ * Messages that may need candidate checkpoint cleanup, indexed by chat without pruning candidate
+ * history. Created when missing (`openChatSchema`), outside the snapshot layout (`CHAT_TABLE_COLUMNS`);
+ * SQLite maintains it on every write of a message's `data`, including staged imports and restores.
+ */
+const MESSAGE_CHECKPOINT_INDEX_SQL = `CREATE INDEX IF NOT EXISTS messages_checkpoints ON messages (chatSeq) WHERE ${MESSAGE_CHECKPOINT_PREDICATE_SQL};`;
+
+/**
  * What `openChatSchema` adds to `CHAT_TABLES_SQL`, each created when missing, and a staged store's
  * writer too, so a staged file has the live schema.
  */
-export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MEMORY_REBUILD_TABLES_SQL}${MESSAGE_ROLE_INDEX_SQL}`;
+export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MEMORY_REBUILD_TABLES_SQL}${MESSAGE_ROLE_INDEX_SQL}${MESSAGE_CHECKPOINT_INDEX_SQL}`;
 
 /** A chat's user messages, answered from `messages_role` alone: no message row is read. */
 export const COUNT_USER_TURNS_SQL = `SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ? AND ${MESSAGE_ROLE_SQL} = 'user'`;
@@ -1180,8 +1196,9 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
 /**
  * The chat schema past the tables `initialize` creates, in its own transaction, before any statement
  * of `createChatTables` is prepared: creates `chatGroups`, `chatSummaries`, the memory and rebuild tables,
- * and the `messages_role` index when missing (on a fresh and an existing file alike; building the index parses
- * every message row once), adds `memory_state`'s decline column to a table from before it, where every
+ * and the `messages_role` and `messages_checkpoints` indexes when missing (on fresh and existing files alike;
+ * building the role index parses each message once, while the checkpoint index scans its text), adds
+ * `memory_state`'s decline column to a table from before it, where every
  * existing row reads as not declined, and rebuilds the stored projections. `BEGIN IMMEDIATE` holds the
  * look at that column and its `ALTER` together, so a second start, at once or later, finds the column
  * and adds nothing. Every chat's projections when the `meta` table's
@@ -1357,7 +1374,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     );
     const selectCarrierMessages = db.prepare(
         "SELECT id AS chatId, json_extract(data, '$.role') AS role, json_extract(data, '$.isComment') AS isComment " +
-            "FROM messages WHERE chatSeq = ? ORDER BY position",
+            "FROM messages WHERE chatSeq = ? ORDER BY position DESC",
     );
     const selectLastMessage = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position DESC LIMIT 1");
     /**
@@ -1422,12 +1439,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const selectCandidateRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND (
         json_type(data, '$.candidates') IS NOT NULL OR json_type(data, '$.selected') IS NOT NULL OR
         json_type(data, '$.candidatesRevision') IS NOT NULL)`);
-    // Appending reads only rows needing cleanup. The append path's guard check skips rows a live job owns;
-    // an open generation fence with no live owner is cleaned.
+    // The partial index finds possible checkpoints without traversing historical candidate arrays.
+    // The append loop skips unchanged false positives and rows a live job owns; an open generation
+    // fence with no live owner is cleaned.
     const selectCheckpointRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND id != ?
-        AND (
-        json_type(data, '$.scriptstateCheckpoint') IS NOT NULL OR EXISTS (
-            SELECT 1 FROM json_tree(messages.data, '$.candidates') WHERE key = 'scriptstateAfter'))`);
+        AND ${MESSAGE_CHECKPOINT_PREDICATE_SQL}`);
     const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");
     const countUserTurns = db.prepare(COUNT_USER_TURNS_SQL);
     const selectPatchMessages = db.prepare(TOUCHED_ROWS_SQL);
@@ -2454,13 +2470,19 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     const existing = selectMessage.get(chatSeq, op.messageId) as MessageRow | undefined;
                     const stored = existing ? (JSON.parse(existing.data) as Message) : undefined;
                     const current = JSON.parse(row!.meta) as Chat;
-                    const carrierChat = {
-                        message: selectCarrierMessages.all(chatSeq).map((row) => ({
+                    const carrierMessages: Pick<Message, "chatId" | "role" | "isComment">[] = [];
+                    // Walk backward through comments, stopping at the two rows the carrier check needs.
+                    for (const row of selectCarrierMessages.iterate(chatSeq)) {
+                        const message = {
                             chatId: row.chatId as string,
                             role: row.role as Message["role"],
                             isComment: !!row.isComment,
-                        })),
-                    };
+                        };
+                        if (message.isComment) continue;
+                        carrierMessages.push(message);
+                        if (carrierMessages.length === 2) break;
+                    }
+                    const carrierChat = { message: carrierMessages.reverse() };
                     const change =
                         stored &&
                         isRerollCarrier(carrierChat, op.messageId) &&

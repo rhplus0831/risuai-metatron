@@ -3177,6 +3177,256 @@ describe("persisted reply candidates", () => {
         expect: { candidatesRevision },
     });
 
+    /** Observe real SQLite reads, including how far a lazy iterator is consumed. */
+    function watchCandidateReads() {
+        const carrier = { calls: 0, ids: [] as string[] };
+        const cleanup = { calls: 0, ids: [] as string[], plans: [] as string[][], indexRows: [] as number[] };
+        const prepare = DatabaseSync.prototype.prepare;
+        const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql) {
+            const statement = prepare.call(this, sql);
+            const isCarrier = /FROM messages\b/.test(sql) && /AS role\b/.test(sql) && /AS isComment\b/.test(sql);
+            const isCleanup = /^SELECT id, data FROM messages\b/.test(sql) && sql.includes("scriptstateCheckpoint");
+            if (!isCarrier && !isCleanup) return statement;
+            const reads = isCarrier ? carrier : cleanup;
+            const start = (args: unknown[]) => {
+                reads.calls++;
+                if (isCleanup) {
+                    const explain = prepare.call(this, `EXPLAIN QUERY PLAN ${sql}`);
+                    const plan = Reflect.apply(explain.all, explain, args) as ReturnType<typeof explain.all>;
+                    cleanup.plans.push(plan.map((row) => String(row.detail)));
+                    const index = prepare
+                        .call(
+                            this,
+                            "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'messages_checkpoints'",
+                        )
+                        .get();
+                    const predicate = String(index?.sql).split(/\bWHERE\b/i)[1];
+                    // Count the actual partial index entries, independently of the cleanup filter.
+                    // An empty index plus its query plan proves that SQLite reads no message row.
+                    const count = predicate
+                        ? prepare
+                              .call(
+                                  this,
+                                  `SELECT COUNT(*) AS n FROM messages INDEXED BY messages_checkpoints
+                            WHERE chatSeq = ? AND (${predicate})`,
+                              )
+                              .get(Number(args[0]))!.n
+                        : -1;
+                    cleanup.indexRows.push(Number(count));
+                }
+            };
+            const record = (row: ReturnType<typeof statement.get>) => {
+                if (row) reads.ids.push(String(isCarrier ? row.chatId : row.id));
+            };
+            const { all, get, iterate } = statement;
+            statement.all = function (...args) {
+                start(args);
+                const rows = Reflect.apply(all, this, args) as ReturnType<typeof all>;
+                rows.forEach(record);
+                return rows;
+            };
+            statement.get = function (...args) {
+                start(args);
+                const row = Reflect.apply(get, this, args) as ReturnType<typeof get>;
+                record(row);
+                return row;
+            };
+            statement.iterate = function* (...args) {
+                start(args);
+                for (const row of Reflect.apply(iterate, this, args) as ReturnType<typeof iterate>) {
+                    record(row);
+                    yield row;
+                }
+                return undefined;
+            };
+            return statement;
+        });
+        return { carrier, cleanup, restore: () => spy.mockRestore() };
+    }
+
+    const expectIndexedCleanup = ({ plans }: ReturnType<typeof watchCandidateReads>["cleanup"]) => {
+        expect(plans.length).toBeGreaterThan(0);
+        for (const plan of plans) {
+            // One indexed search, with no correlated json_tree/json_each candidate traversal. When
+            // it returns no rows below, the empty checkpoint index needs no message-row reads.
+            expect(plan).toEqual([expect.stringMatching(/SEARCH messages USING INDEX messages_checkpoints\b/)]);
+        }
+    };
+
+    it.each([0, 500])(
+        "reads two carrier rows and no cleanup rows or candidate arrays in a 1,000-message chat with %i candidate lists",
+        (candidateLists) => {
+            const observed = watchCandidateReads();
+            try {
+                const store = memoryStore();
+                const texts = [
+                    { id: "first", data: "First" },
+                    { id: "second", data: "Second" },
+                ];
+                const messages = Array.from({ length: 1_000 }, (_, index) => ({
+                    ...m(`m${index}`, index % 2 ? "Second" : "Question", index % 2 ? "char" : "user"),
+                    ...(candidateLists && index % 2 ? { candidates: texts, selected: 1 } : {}),
+                }));
+                store.applyChanges({
+                    ops: [createCharacter("c")],
+                    chats: [
+                        group("k", null, [
+                            { op: "create", chat: { name: "K", note: "", localLore: [], message: messages } },
+                        ]),
+                    ],
+                });
+                const selected = write(store, [select("first", candidateLists ? 1 : 0, "m999")]);
+                expect(selected.chats[0].selections).toEqual([candidateLists ? "applied" : "refused"]);
+                expect(observed.carrier.calls).toBe(1);
+                expect(observed.carrier.ids).toHaveLength(2);
+                expect(observed.carrier.ids).toEqual(["m999", "m998"]);
+
+                write(store, [{ op: "append", anchor: { end: true }, messages: [m("next", "Next question")] }]);
+                expect(observed.cleanup.calls).toBe(1);
+                expectIndexedCleanup(observed.cleanup);
+                expect(observed.cleanup.ids).toEqual([]);
+                expect(observed.cleanup.indexRows).toEqual([0]);
+                const saved = chat(store, "k")!.data.message;
+                expect(saved).toHaveLength(1_001);
+                expect(saved[999].data).toBe(candidateLists ? "First" : "Second");
+                const history = saved.filter((message) => message.candidates);
+                expect(history).toHaveLength(candidateLists);
+                for (const message of history) expect(message.candidates).toEqual(texts);
+            } finally {
+                observed.restore();
+            }
+        },
+    );
+
+    it("selects only a trailing char carrier after skipping comments and checking its predecessor", () => {
+        const scenarios: { prefix: Message[]; tail: Message[]; role: Message["role"]; outcome: string }[] = [
+            { prefix: [], tail: [], role: "char", outcome: "applied" },
+            { prefix: [m("u")], tail: [], role: "char", outcome: "applied" },
+            { prefix: [m("older", "Older reply", "char")], tail: [], role: "char", outcome: "refused" },
+            { prefix: [m("u")], tail: [m("later", "Later reply", "char")], role: "char", outcome: "refused" },
+            { prefix: [], tail: [], role: "user", outcome: "refused" },
+        ];
+        for (const { prefix, tail, role, outcome } of scenarios) {
+            const store = memoryStore();
+            store.applyChanges({
+                ops: [createCharacter("c")],
+                chats: [
+                    group("k", null, [
+                        {
+                            op: "create",
+                            chat: {
+                                name: "K",
+                                note: "",
+                                localLore: [],
+                                message: [
+                                    ...prefix,
+                                    { ...m("between", "Comment", "char"), isComment: true },
+                                    { ...reply(), role },
+                                    ...tail,
+                                    { ...m("trailing", "Comment", "user"), isComment: true },
+                                ],
+                            },
+                        },
+                    ]),
+                ],
+            });
+            const before = chat(store, "k")!;
+            expect(write(store, [select("first", 1)]).chats[0].selections).toEqual([outcome]);
+            if (outcome === "refused") expect(chat(store, "k")).toEqual(before);
+            else expect(row(store)).toMatchObject({ data: "First", selected: 0 });
+        }
+    });
+
+    it.each(["whole-chat import", "snapshot restore", "opening a file without the index"])(
+        "cleans both checkpoint locations after %s, keeps candidate texts, and leaves no cleanup rows",
+        async (source) => {
+            const dir = tempDir();
+            const observed = watchCandidateReads();
+            try {
+                let store = fileStore(dir);
+                const texts = [
+                    { id: "first", data: "First" },
+                    { id: "second", data: "Second" },
+                ];
+                // Whole-chat create is the resource store's import boundary. Separate rows ensure that
+                // both the message checkpoint and a candidate-only snapshot reach the partial index.
+                store.applyChanges({
+                    ops: [createCharacter("c")],
+                    chats: [
+                        group("k", null, [
+                            {
+                                op: "create",
+                                chat: {
+                                    name: "K",
+                                    note: "",
+                                    localLore: [],
+                                    message: [
+                                        { ...reply(), candidates: texts },
+                                        { ...m("snapshots", "Second", "char"), candidates, selected: 1 },
+                                    ],
+                                },
+                            },
+                        ]),
+                    ],
+                });
+                if (source === "snapshot restore") {
+                    const snapshot = path.join(dir, "snapshot.sqlite");
+                    await store.backupTo(snapshot);
+                    const db = new DatabaseSync(snapshot);
+                    try {
+                        // Snapshots can predate the index and contain non-canonical JSON spacing.
+                        db.exec("DROP INDEX IF EXISTS messages_checkpoints");
+                        for (const row of db.prepare("SELECT id, data FROM messages").all()) {
+                            db.prepare("UPDATE messages SET data = ? WHERE id = ?").run(
+                                JSON.stringify(JSON.parse(String(row.data)), null, 2),
+                                row.id,
+                            );
+                        }
+                    } finally {
+                        db.close();
+                    }
+                    write(store, [{ op: "delete" }]);
+                    await installSnapshot(store, snapshot, kinds);
+                }
+                if (source === "opening a file without the index") {
+                    store.close();
+                    const db = new DatabaseSync(path.join(dir, "live.sqlite"));
+                    try {
+                        db.exec("DROP INDEX IF EXISTS messages_checkpoints");
+                        expect(
+                            db.prepare("SELECT name FROM sqlite_schema WHERE name = 'messages_checkpoints'").get(),
+                        ).toBeUndefined();
+                    } finally {
+                        db.close();
+                    }
+                    store = fileStore(dir);
+                }
+                observed.cleanup.calls = 0;
+                observed.cleanup.ids.length = 0;
+                observed.cleanup.plans.length = 0;
+                observed.cleanup.indexRows.length = 0;
+                expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+                expect(chat(store, "k")!.data.message[1].candidates).toEqual(candidates);
+                write(store, [{ op: "append", anchor: { end: true }, messages: [m("next")] }]);
+                const saved = chat(store, "k")!.data.message;
+                expect(saved).toHaveLength(3);
+                expect(saved[0]).not.toHaveProperty("scriptstateCheckpoint");
+                expect(saved[0].candidates).toEqual(texts);
+                expect(saved[1].candidates).toEqual(texts);
+                expect(observed.cleanup.ids.sort()).toEqual(["r", "snapshots"]);
+
+                observed.cleanup.ids.length = 0;
+                write(store, [{ op: "append", anchor: { end: true }, messages: [m("next-again")] }]);
+                expect(observed.cleanup.calls).toBe(2);
+                expectIndexedCleanup(observed.cleanup);
+                expect(observed.cleanup.ids).toEqual([]);
+                expect(observed.cleanup.indexRows).toEqual([2, 0]);
+            } finally {
+                observed.restore();
+            }
+        },
+    );
+
     it("switches stored fields and unchanged variables by candidate id, preserving edits and the turn baseline", () => {
         const store = memoryStore();
         init(store);
