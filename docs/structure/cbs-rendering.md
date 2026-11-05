@@ -187,6 +187,7 @@ and video have two modes:
 
 - `trimMarkdownSharingStyles` and the `src/ts/parser/chatStyles.ts` header have the placeholder, ordering, and
   retained-sheet rules; `ChatBody` prunes bilingual pairs before the styles are taken out.
+- Equal CSS after CBS is scoped once ([Caches](#caches)) and reaches the registry as one `css` string.
 - Retained layer and scope sheets keep the first declaration order of layers and the parent of implicit scopes. Their
   order against a newer row's shared sheet can reverse, which matters only for conflicts the layer and scope-proximity
   steps do not already decide.
@@ -203,10 +204,10 @@ and video have two modes:
 
 ### Caches
 
-- Parser and page caches: the parser's file-source (`fileSrcCache`) and encoded-metadata maps, the fallback's media
-  object URLs in `files/inlays.ts` (`mediaObjectUrls`), the scoped evaluators (`scopedEvaluators`), the asset maps
-  (reset by `resetAssetsCache` and by `syncAssetsCache` in an `$effect.root` and at the start of an asset parse), and
-  global `CSS.highlights`.
+- Parser and page caches: the parser's file-source (`fileSrcCache`), encoded-metadata and CSS scope (`scopeCss`: by the
+  CSS after CBS, 256 entries / 4 MiB) maps, the fallback's media object URLs in `files/inlays.ts` (`mediaObjectUrls`),
+  the scoped evaluators (`scopedEvaluators`), the asset maps (reset by `resetAssetsCache` and by `syncAssetsCache` in an
+  `$effect.root` and at the start of an asset parse), and global `CSS.highlights`.
 - Server transform (`server/src/prompt/transformCache.ts`): an LRU of text and emotions, 512 entries / 16 MiB, at most
   512 KiB per entry.
   - `transform.ts` keys both modes by epoch, mode, captured context, handler set, viewport and browser language, the

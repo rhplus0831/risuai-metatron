@@ -70,7 +70,7 @@ import cssSelectorParser from "postcss-selector-parser";
  *   last-created scopes kept, in creation order: a hit does not renew one). Each evaluator has its own budget.
  * - A parse that reaches its budget throws `CbsLimitError` to its caller. `risuChatParserForDisplay` turns it into
  *   the limit message; style restoration (`decodeStyleContent`) turns it, like any failure of a style's CBS or CSS
- *   parse, into its CSS error fallback.
+ *   parse, into its CSS error fallback. Successful CSS scoping is cached by the exact text after CBS evaluation.
  * - `ParseMarkdown` renders a message body; `trimMarkdown` (and `trimMarkdownSharingStyles` for a chat row whose
  *   styles are shared, `chatStyles.ts`) sanitizes it. A bare lowercase `<style>...</style>` with a body (no
  *   attributes: `styleRegex`) travels hex-encoded as `<risu-style>` through Markdown and the sanitizer, and only
@@ -1116,6 +1116,7 @@ const trimPurifyConfig = {
  * raw value starts with `data:` emptied (a quoted or `url(...)` data import is kept). A style whose CBS or CSS
  * parse fails (a `CbsLimitError` included) becomes text: `CSS ERROR: ...` with `returnCSSError`, else nothing.
  * The CSS is set as the element's text, not fed back to the HTML parser during restoration.
+ * Successful scoping reuses a bounded cache keyed by the exact CSS after CBS evaluation.
  */
 export function trimMarkdown(data: string) {
     if (!data) {
@@ -1352,30 +1353,56 @@ function decodeStyleRule(rule: CssAtRuleAST) {
     return rule;
 }
 
+const SCOPED_CSS_MAX_ENTRIES = 256;
+const SCOPED_CSS_MAX_BYTES = 4 * 1024 * 1024;
+const scopedCssCache = new Map<string, string>();
+let scopedCssCacheBytes = 0;
+
+/** Scopes post-CBS CSS; successful strings use an LRU bounded by entries and UTF-16 key/value bytes. */
+function scopeCss(text: string): string {
+    // Anything decodeStyleRule or the stringify reads must join this exact post-CBS key.
+    const cached = scopedCssCache.get(text);
+    if (cached !== undefined) {
+        scopedCssCache.delete(text);
+        scopedCssCache.set(text, cached);
+        return cached;
+    }
+
+    const ast = css.parse(text);
+    const rules = ast?.stylesheet?.rules;
+    if (rules) {
+        for (let i = 0; i < rules.length; i++) {
+            rules[i] = decodeStyleRule(rules[i]);
+        }
+        ast.stylesheet.rules = rules;
+    }
+    const scoped = css.stringify(ast, {
+        indent: "",
+        compress: true,
+    });
+    const size = (text.length + scoped.length) * 2;
+    if (size > SCOPED_CSS_MAX_BYTES) return scoped;
+
+    while (scopedCssCache.size >= SCOPED_CSS_MAX_ENTRIES || scopedCssCacheBytes + size > SCOPED_CSS_MAX_BYTES) {
+        const oldest = scopedCssCache.keys().next().value!;
+        scopedCssCacheBytes -= (oldest.length + scopedCssCache.get(oldest)!.length) * 2;
+        scopedCssCache.delete(oldest);
+    }
+    scopedCssCache.set(text, scoped);
+    scopedCssCacheBytes += size;
+    return scoped;
+}
+
 /**
- * Decodes one <risu-style> body into scoped CSS. Returns the CSS on its own so
- * the caller can put it into a real <style> element instead of a markup string.
- * On a CSS parse error the style is dropped and `fallback` holds the text that
- * takes its place.
+ * Decodes one <risu-style> body, evaluates CBS for the selected chat, then reuses scoped CSS by that result.
+ * Returns the CSS on its own so the caller can put it into a real <style> element instead of a markup string.
+ * On a CBS or CSS error the style is dropped and `fallback` holds the text that takes its place.
  */
 function decodeStyleContent(hexText: string): { css?: string; fallback?: string } {
     try {
         let text = Buffer.from(hexText, "hex").toString("utf-8");
         text = risuChatParser(text);
-        const ast = css.parse(text);
-        const rules = ast?.stylesheet?.rules;
-        if (rules) {
-            for (let i = 0; i < rules.length; i++) {
-                rules[i] = decodeStyleRule(rules[i]);
-            }
-            ast.stylesheet.rules = rules;
-        }
-        return {
-            css: css.stringify(ast, {
-                indent: "",
-                compress: true,
-            }),
-        };
+        return { css: scopeCss(text) };
     } catch (error) {
         if (settings.ui.returnCSSError) {
             return { fallback: `CSS ERROR: ${error}` };
