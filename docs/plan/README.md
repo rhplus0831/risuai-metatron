@@ -9,7 +9,7 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   given a disposition; 26 small file-cluster slices fix the confirmed defects, dead code, stale contract
   comments, test workarounds and guide corrections, the eleven open questions are answered (every
   recommendation accepted 2026-11-05), the design-sized items are grouped for later plans, and accepted
-  notes stay in the inbox. Landed: A1.
+  notes stay in the inbox. Landed: A1, D2.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.

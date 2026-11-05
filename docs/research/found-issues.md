@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (10)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (9)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (11)
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -73,14 +73,6 @@ Identifiers re-checked 2026-11-03 (`setCharacterChatView`, `installRead`, `adopt
 **Why it matters:** a client applying the patch removes an id its base never held; harmless if unknown ids are ignored, a spurious mismatch or wasted bytes otherwise.
 
 **Suggested handling:** check the client's patch apply, then either filter `insertedHere` for the feed too or document the asymmetry on `ChatFeedPayloads`.
-
-### A remote settings record does not re-apply the theme
-
-`src/ts/gui/colorscheme.ts` `updateColorScheme` writes the scheme's CSS variables and the root's `color-scheme`; boot (`src/ts/bootstrap.ts` ~134), the display settings, and the plugin API call it, but the remote record apply (`src/ts/storage/resourceSync.svelte.ts` → `src/ts/storage/records.svelte.ts`) replaces the settings without calling it, and the bootstrap remote-record listener handles only inlay invalidation and character order. `updateTextThemeAndCSS`, `updateAnimationSpeed` and `updateGuisize` likely behave the same. Found by a static read in the Guides To Source run (2026-11-04); unconfirmed in a browser. Owners: ui-theming (Theme), with resource-sync for the apply path.
-
-**Why it matters:** a theme change in one tab or device leaves another showing the old colors while its settings say otherwise, until a reload.
-
-**Suggested handling:** confirm with two tabs on `pnpm dev:agent`, then decide whether the remote apply should call the display update functions.
 
 ### A retaken handoff job drops its live stream
 
