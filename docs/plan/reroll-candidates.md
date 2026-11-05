@@ -672,13 +672,16 @@ All four were answered on 2026-11-03 with the recommended option; they are kept 
 Each slice lands alone with the gates in **Verification** and updates the guides it changes. Files shared with
 the other active plans: Slice 1 edits `shared/jobs.ts`, `server/src/routes/generations.ts`,
 `server/src/routes/events.ts` and `shared/events.ts`, and the `followOnce` callback that `followJobToEnd` runs
-in `src/ts/process/serverCommands.ts` (D9's consumer moved into it), so it does not run in parallel with Job
-Handoff Slice 1 (`shared/jobs.ts`, `routes/generations.ts`) or Slice 2 (`followJobToEnd`), nor with
-Incremental Chat Transport Slice 2 (`shared/jobs.ts`) or Slice 3 (`routes/events.ts`; that plan says so too).
-Slice 1 also edits `server/src/data/chatStore.ts` (the op-write refusal, the tolerant reads,
-`candidatesRevision`, the attempt ledger), which Transport Slices 1 and 4 edit, and its
-`server/src/routes/events.ts` and `shared/events.ts` are Job Handoff Slice 3's too, so it does not run in
-parallel with those three slices either. Slice 2 edits `src/ts/storage/chatStore.svelte.ts`,
+in `src/ts/process/serverCommands.ts` (D9's consumer moved into it), which Job Handoff Slice 1
+(`shared/jobs.ts`, `routes/generations.ts`) and Slice 2 (`followJobToEnd`) and Incremental Chat Transport
+Slice 2 (`shared/jobs.ts`) and Slice 3 (`routes/events.ts`) also edit. Slice 1 also edits
+`server/src/data/chatStore.ts` (the op-write refusal, the tolerant reads, `candidatesRevision`, the attempt
+ledger), which Transport Slices 1 and 4 edit, and its `server/src/routes/events.ts` and `shared/events.ts` are
+Job Handoff Slice 3's too. The overlaps are files, not dependencies, so since 2026-11-05 (the owner's
+decision) Slice 1 may be built on its own branch beside those seven slices; whichever reaches `dev` second
+merges `dev` in, resolves the overlaps by hand (`server/src/prompt/runner.ts`,
+`server/src/jobs/generationJobs.ts`, `server/src/data/chatStore.ts`, `shared/jobs.ts` and the `hello` frame
+above all) and runs the merge checks under **Verification**. Slice 2 edits `src/ts/storage/chatStore.svelte.ts`,
 `src/ts/network/eventFeed.ts`, `DefaultChatScreen.svelte` and `Chats.svelte`, which Transport Slices 0–4, Job
 Handoff Slices 2 and 3 and Render Work Budget Slice 4 also edit; its `server/src/data/chatStore.ts` (the op)
 is Transport Slices 1 and 4's too; it reaches `dev` in the same merge as Transport Slice 4 with that plan's D6
@@ -891,6 +894,14 @@ the owner asked for; 3 settles the export and the memory proofs; 4 is the browse
     matches the stored row at the end;
   - `hello` carries `rerollInPlace` beside the transport's `cursor`, and after a reconnect (`retire`, then a
     new `hello`) the capability is set again from the new `hello`.
+- The merge of Slice 1 with a Job Handoff Slice 1–3 or Transport Slice 1–4 built beside it: V1 and
+  `pnpm check:docs` after the merge, plus both sides' focused tests (this plan's server files above and the
+  other slice's own list), and these cases checked in the merged code: the job's `done` and sequence events
+  carry neither `alternatives` nor a field the other slice dropped, with the other slice's new job fields
+  intact; `hello` carries `rerollInPlace` beside every field the other slice added; a reroll's begin group,
+  final write and write-back still pass through the other slice's job write path with the attempt ledger
+  option, and the feed entries it publishes for them (row diffs or manifests) carry `candidates` and
+  `candidatesRevision`.
 - Not covered by any gate: the phone swipe on the owner's server, and a server process death mid-reroll or an
   abort past the grace (D8's partial text), which only a manual kill shows.
 
