@@ -49,8 +49,9 @@ import type { EditStamp } from "./edits.ts";
  *   revision, and the write. A trashed page keeps everything and only leaves the lists. A merge and a split
  *   leave a `merge` or `split` entry on every heading they touch, with no event, so no older entry of that
  *   heading can be reverted over the arrangement, and mark the page `reshaped`, which a rebuild seeds whole
- *   and a branch does not rewind. A merge moves every reference to the source onto the target in the same
- *   change set; a split leaves events on the old page, since nothing says which half they meant.
+ *   and a branch does not rewind. A merge remaps references to the source onto the target in events,
+ *   threads, and live pages in the same change set; pages already in the trash keep their links to the
+ *   source. A split leaves events on the old page, since nothing says which half they meant.
  */
 
 /** A writer warning as retained by the receipt. */

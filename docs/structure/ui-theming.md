@@ -101,14 +101,15 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 - `src/lib/ChatScreens/ContextMeter.svelte`: the composer's context line and popover (header), over
   `generationInfo.context` (`shared/contextReport.ts`, [chat pipeline](chat-pipeline.md)); `estimateBasis`,
-  `displacement`, `position`, `loreBudgetWarnOff`. HypaV3 task outcomes and forecasts are owned by [memory](memory.md).
+  `displacement`, `position`, `loreBudgetWarnOff`. Task wording follows `MemoryTaskStatus.kind`; [memory](memory.md)
+  owns outcomes and forecasts.
 
 ### Sidebar
 
 - `src/lib/SideBars/Sidebar.svelte`: the character rail and folders (`characterOrder`, `RISU_*` MIME types,
   `checkCharOrder`) and the settings pane (`SideChatList` | `OpenChatPanel` | `CharConfig` | `DevTool`); the
   `--sidebar-gutter` rule for self-scrolling children. Status badges: `statusSets`, `characterStatuses`,
-  `pinnedStatuses`, `memoryCountOf`. The `memory` badge and its count come from HypaV3 tasks (`summarizingChats`,
+  `pinnedStatuses`, `memoryCountOf`. The `memory` badge and its count come from memory tasks (`summarizingChats`,
   `src/ts/process/memoryTasks.svelte.ts`); the `health` badge from Structured Memory (`memoryHealthStates()`,
   [the health badge](structured-memory/read.md#the-health-badge)).
 - `src/lib/SideBars/chatStatus.ts`: badge priority (`CHAT_STATUS_PRIORITY`), `refusedChatKeys`, `folderStatus`,
@@ -264,7 +265,7 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   `e2e/welcomeAndChatSettings.spec.ts` (catalog and home icons, chat screen settings).
 - `installFlatDatabase.ts` ([persistence](persistence.md#tests)) gives most component tests their records.
 - `Chats.rows.svelte.test.ts` stands in for `IntersectionObserver` with its own `Observer` class and fakes
-  `requestAnimationFrame` where a case needs the frames.
+  `requestAnimationFrame`.
 - `ContextMeter.svelte.test.ts` stubs the chip's rectangle (happy-dom has no layout) and the count route: each count is
   one request the test answers when it chooses, so fake timers and deferred answers drive the debounce and the races.
 - `ChatBody.svelte.test.ts` mocks `ParseMarkdown` as deferred parses (`hoisted.parses`) the test settles by text.

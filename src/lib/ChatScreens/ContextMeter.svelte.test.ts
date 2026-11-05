@@ -1144,6 +1144,54 @@ describe("the popover", () => {
 describe("the background summary task", () => {
     const hypaReport = () => trimmed({ memory: { kind: "hypaV3", tokens: 300, coverage: "gap" } });
 
+    it("words a writer task's chip, label, and popover as recording", async () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        const plain = chipText();
+        const s = language.contextUsage;
+        const writer = s.writerTask;
+        const expectWriterBlock = (tone: string, ...notes: string[]) => {
+            const block = taskBlock()!;
+            expect(block.dataset.tone).toBe(tone);
+            for (const text of [writer.title, ...notes]) {
+                expect(block.textContent).toContain(text);
+            }
+            for (const text of [
+                s.taskTitle,
+                s.taskQueued,
+                s.taskRunning(3, 8),
+                s.taskRunningUnknown,
+                s.taskLiveNote,
+                s.taskDone,
+                s.taskFailed,
+            ]) {
+                expect(block.textContent).not.toContain(text);
+            }
+        };
+
+        for (const [status, word, summaryWord] of [
+            [live("queued"), writer.queued, s.taskQueued],
+            [live("running"), writer.runningUnknown, s.taskRunningUnknown],
+            [live("running", 3, 8), writer.running(3, 8), s.taskRunning(3, 8)],
+        ] as const) {
+            taskFrame({ ...status, kind: "structuredMemory" });
+            expect(chipText()).toBe(`${word} · ${plain}`);
+            expect(chip()!.getAttribute("aria-label")).toContain(s.taskSummary(word));
+            expect(chip()!.getAttribute("aria-label")).not.toContain(s.taskSummary(summaryWord));
+            if (!panel()) await openPanel();
+            expectWriterBlock("live", word, writer.liveNote);
+        }
+
+        taskFrame(ended("done", { kind: "structuredMemory", lastCommittedRevision: "r2" }));
+        expect(chipText()).toBe(plain);
+        expectWriterBlock("done", writer.done);
+
+        taskFrame({ ...live("running", 3, 8), kind: "structuredMemory", taskId: "t2" });
+        taskFrame({ ...ended("failed", { kind: "structuredMemory", error: "upstream 429" }), taskId: "t2" });
+        expect(chipText()).toBe(plain);
+        expectWriterBlock("failed", writer.failed);
+    });
+
     it("marks the line while the chat's task is queued or runs, with its count once the total is known", () => {
         install([reply("m1", { context: hypaReport() })]);
         render();

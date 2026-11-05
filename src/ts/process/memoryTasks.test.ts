@@ -743,6 +743,18 @@ describe("memory fences on digest-matched reconnects", () => {
 });
 
 describe("structured memory status frames", () => {
+    it("counts a queued or running writer task with its done/total and removes it when finished", async () => {
+        const { tasks } = await boot();
+        tasks.noteMemoryTaskFrame(entry({ ...live("writer", "queued"), kind: "structuredMemory" }));
+        expect(tasks.summarizingChats()).toEqual(new Map([[keyK, null]]));
+
+        tasks.noteMemoryTaskFrame(entry({ ...live("writer", "running", 2, 5), kind: "structuredMemory" }));
+        expect(tasks.summarizingChats()).toEqual(new Map([[keyK, { done: 2, total: 5 }]]));
+
+        tasks.noteMemoryTaskFrame(entry({ ...terminal("writer", "done", null), kind: "structuredMemory" }));
+        expect(tasks.summarizingChats().size).toBe(0);
+    });
+
     it("preserves the structured kind in queued, running and terminal frames while HypaV3 has no kind", async () => {
         const { tasks, serverRevision } = await boot();
         for (const kind of ["structuredMemory", undefined] as const) {

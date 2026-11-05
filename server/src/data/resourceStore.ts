@@ -2336,8 +2336,9 @@ export function createResourceStore(options: {
                     });
                 },
                 /**
-                 * The generation lock's one read: the chat holds a run under this algorithm, so a person who
-                 * left it is not locked behind a panel that no longer mounts.
+                 * The generation lock's one read: the chat holds a run and `structuredMemorySelected()`
+                 * reads the one global `memoryAlgorithmType` setting. Switching away releases every chat's
+                 * run lock at once, so no chat is locked behind a panel that no longer mounts.
                  */
                 rebuilding(characterId: string, chatId: string): boolean {
                     assertOpen();

@@ -138,13 +138,14 @@
     // The memory's token budget was reduced to fit the last request's max context, as the server reported it.
     const budgetReduced = $derived(report?.memory?.budgetReduced ?? []);
 
-    // The chat's background HypaV3 summary task (`memoryTasks.svelte.ts`), live unlike the report: the
-    // line shows it while it is queued or runs, and the popover says how it ended.
+    // The chat's background memory task (`memoryTasks.svelte.ts`): HypaV3 summaries or the Structured
+    // Memory writer. Unlike the report it is live: the line shows queued or running tasks, and the
+    // popover says how they ended.
     const task = $derived(visible ? memoryTaskStatus(chatRef) : null);
     /** The meter's source as content: a new reply, or a continue that rewrote the report, changes it. */
     const sourceKey = (value: Source | null) =>
         value ? JSON.stringify([value.messageId, value.kind === "report" ? value.report : value.input]) : null;
-    // A task this mount saw run and then commit summaries, with the source it followed: the notice
+    // A memory task this mount saw run and then commit, with the source it followed: the notice
     // holds until the source changes, and ends for good then (deleting the newer reply does not bring
     // it back).
     let landed: { taskId: string; source: string | null } | null = $state(null);
@@ -167,13 +168,27 @@
             landed = null;
         }
     });
-    const taskView: { tone: "live" | "done" | "failed"; text?: string; error?: string } | null = $derived.by(() => {
+    const taskStrings = $derived.by(() => {
         const s = language.contextUsage;
+        return task?.kind === "structuredMemory"
+            ? s.writerTask
+            : {
+                  title: s.taskTitle,
+                  queued: s.taskQueued,
+                  running: s.taskRunning,
+                  runningUnknown: s.taskRunningUnknown,
+                  liveNote: s.taskLiveNote,
+                  done: s.taskDone,
+                  failed: s.taskFailed,
+              };
+    });
+    const taskView: { tone: "live" | "done" | "failed"; text?: string; error?: string } | null = $derived.by(() => {
+        const s = taskStrings;
         if (task?.state === "queued") {
-            return { tone: "live", text: s.taskQueued };
+            return { tone: "live", text: s.queued };
         }
         if (task?.state === "running") {
-            return { tone: "live", text: task.total > 0 ? s.taskRunning(task.done, task.total) : s.taskRunningUnknown };
+            return { tone: "live", text: task.total > 0 ? s.running(task.done, task.total) : s.runningUnknown };
         }
         if (task?.state === "done" && landed?.taskId === task.taskId && landed.source === sourceKey(source)) {
             return { tone: "done" };
@@ -831,17 +846,17 @@
                     data-tone={taskView.tone}
                 >
                     <div class="flex justify-between gap-2">
-                        <span class="font-semibold">{language.contextUsage.taskTitle}</span>
+                        <span class="font-semibold">{taskStrings.title}</span>
                         {#if taskView.text}
                             <span class="text-right text-secondary-500 tabular-nums">{taskView.text}</span>
                         {/if}
                     </div>
                     {#if taskView.tone === "live"}
-                        <span class="text-textcolor2">{language.contextUsage.taskLiveNote}</span>
+                        <span class="text-textcolor2">{taskStrings.liveNote}</span>
                     {:else if taskView.tone === "done"}
-                        <span class="text-secondary-500">{language.contextUsage.taskDone}</span>
+                        <span class="text-secondary-500">{taskStrings.done}</span>
                     {:else}
-                        <span class="text-danger-500">{language.contextUsage.taskFailed}</span>
+                        <span class="text-danger-500">{taskStrings.failed}</span>
                         {#if taskView.error}
                             <span class="break-words text-textcolor2" data-context-meter-task-error
                                 >{taskView.error}</span

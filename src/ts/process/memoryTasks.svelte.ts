@@ -322,7 +322,8 @@ export function memoryTaskRequestPending(ref: ChatRef): boolean {
 }
 
 /**
- * The chats whose task is queued or running, by chat status key, each with its count while it runs
+ * The chats whose memory task is queued or running, by chat status key, for both HypaV3 summaries
+ * and the Structured Memory writer. Each has its count (summaries or writer windows) while it runs
  * with a known total (null otherwise). Reactive.
  */
 export function summarizingChats(): ReadonlyMap<string, MemoryTaskCount | null> {
@@ -423,8 +424,8 @@ async function exclusive(
 }
 
 /**
- * "Summarize now" for a chat: fences before saving the tab's pending changes (a discarded change or
- * a still-refused target chat or order refuses the start, as a send does), then asks the server. The
+ * A manual memory task start for a chat: fences before saving the tab's pending changes (a discarded
+ * change or a still-refused target chat or order refuses the start, as a send does), then asks the server. The
  * answer's status is taken only when no frame or hello of the chat arrived meanwhile; a live answer
  * cannot revive the fence of a known terminal task. A refusal, a `pendingManual` answer, or a save
  * failure puts back the prior fence, including feed updates during the request. A transport failure

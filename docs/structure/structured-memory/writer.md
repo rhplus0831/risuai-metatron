@@ -262,7 +262,7 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
   loads. Upstream has none of this: `METATRON_CHAT_FIELDS` and `METATRON_CHARACTER_FIELDS` strip the overrides, and
   `upstreamHypaV3Presets` leaves `structured` out.
 - `memoryRecord` is a [generation](../server-generation.md) `command` job; `recordJob.ts` shares the runner's job
-  helpers (`createJobMemoryHost`, `jobMemoryTaskBase`, and the like).
+  helpers (`createJobMemoryHost`, `jobMemoryTaskBase`).
 - `analysis.ts` and `patches.ts` share `answerJson`, `readList`, and `readConfidence`; `sectionVectorText` is the text a
   retrieval of sections must embed.
 
@@ -299,18 +299,18 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
   `createHypaV3Preset`, and `normalizeHypaV3Presets`.
 - `memoryTaskHost.test.ts` drives `memorySettingsFingerprint` on a real job scope, and `upstreamExport.test.ts` what the
   upstream export leaves out.
-- `server/src/prompt/memory/structured/window.test.ts` drives the window rules as a table over plain messages with a
-  fake tokenizer, repair windows included. `structured/reconcile.test.ts` drives the swap, and `memoryTasks.test.ts` a
-  repair through the real writer.
+- `structured/window.test.ts` drives the window rules as a table over plain messages with a fake tokenizer, repair
+  windows included. `structured/reconcile.test.ts` drives the swap, and `memoryTasks.test.ts` a repair through the real
+  writer.
 - `server/src/tests/memoryTasks.test.ts` drives the task kind on `createMemoryTasks` over a real store: its windows with
   an injected `structuredWriter`, the writer itself with none, through the scripted provider and read back from
   `store.memory`. `memoryJobs.test.ts` drives the hand-off with `createFakeMemoryTasks`, `assemble.test.ts` the
-  selection, and `src/ts/process/memoryTasks.test.ts` the status's `kind`.
+  selection, `src/ts/process/memoryTasks.test.ts` the status's `kind`, and `ContextMeter.svelte.test.ts` its wording.
 - `structured/analysis.test.ts`, `pages.test.ts`, `patches.test.ts`, `compact.test.ts`, and `prompts.test.ts` drive the
   pure pieces with plain values; `prompts.test.ts` parses with the real CBS evaluator. The one-scene rule is in
   `memoryStore.test.ts` and `restoreStage.test.ts`.
 - Compaction's calls and its one commit: `memoryTasks.test.ts`. `recordJob.ts` runs the same writer, with no test of its
-  own for this.
+  own.
 - Record now: `memoryTasks.test.ts` for the lock refusal and `through`; `memoryJobs.test.ts` for the job's two paths on
   a real stack.
 - Focused command:

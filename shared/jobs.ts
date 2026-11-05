@@ -486,16 +486,16 @@ export type MemoryTrimChoice = "memory" | "once" | "ignore";
 export const MEMORY_TRIM_CHOICES: readonly MemoryTrimChoice[] = ["memory", "once", "ignore"];
 
 /**
- * The answer to `memoryGap`: summarize the gap in this send (with progress and the stop control), or
- * send now with the stored summaries and leave the gap to the background memory task.
+ * The answer to `memoryGap`: generate memory for the gap in this send (HypaV3 summaries or Structured
+ * Memory records), or send now with stored memory and leave the gap to the background memory task.
  */
 export type MemoryGapChoice = "generate" | "continue";
 export const MEMORY_GAP_CHOICES: readonly MemoryGapChoice[] = ["generate", "continue"];
 
 // ---------------------------------------------------------------------------------------------
 // The background memory task: a job hands its chat's memory input to a detached service, which
-// writes the summaries the job left out. Data only: the service rebuilds its host from a fresh
-// scope, never from the job.
+// writes HypaV3 summaries or runs the Structured Memory writer. Data only: the service rebuilds its
+// host from a fresh scope, never from the job.
 
 /**
  * A history entry's source, captured from the snapshot the entry was built from: a chat message

@@ -17,14 +17,14 @@ export const CHAT_STATUS_PRIORITY: readonly ChatStatus[] = [
     "health",
 ];
 
-/** A summarizing chat's progress (`done/total`). */
+/** A chat's memory task progress (`done/total` summaries or writer windows). */
 export type MemoryCount = { done: number; total: number };
 
 export type ChatStatusSets = {
     recovery: ReadonlySet<string> | ReadonlyMap<string, unknown>;
     refused?: ReadonlySet<string>;
     generating: ReadonlySet<string>;
-    /** Chats whose HypaV3 memory task is queued or running (`summarizingChats`); none when absent. */
+    /** Chats with a queued or running memory task of either kind (`summarizingChats`); none when absent. */
     memory?: ReadonlySet<string> | ReadonlyMap<string, unknown>;
     unseen: ReadonlySet<string>;
     /** Chats whose Structured Memory health badge has a state (`memoryHealthStates`); none when absent. */
@@ -72,10 +72,10 @@ export function folderStatus(statuses: ReadonlyMap<string, ChatStatus>, chaIds: 
     return result;
 }
 
-/** Per character id: how many of its chats summarize, and the count of the first one. */
+/** Per character id: how many of its chats have live memory tasks, and the count of the first one. */
 export type MemoryProgress = ReadonlyMap<string, { chats: number; count: MemoryCount | null }>;
 
-/** Groups the summarizing chats (chat status key → count or null) by character. */
+/** Groups the chats with live memory tasks (chat status key → count or null) by character. */
 export function collectMemoryProgress(memory: ReadonlyMap<string, MemoryCount | null>): MemoryProgress {
     const progress = new Map<string, { chats: number; count: MemoryCount | null }>();
     for (const [key, count] of memory) {
@@ -87,9 +87,9 @@ export function collectMemoryProgress(memory: ReadonlyMap<string, MemoryCount | 
 }
 
 /**
- * The count a character's or folder's memory badge shows: the count of its only summarizing chat
- * across `chaIds`, or null when several chats summarize (the status without a count) or the one has
- * no count yet.
+ * The count a character's or folder's memory badge shows: the count of its only chat with a live
+ * memory task across `chaIds`, or null when several chats have live memory tasks (the status without
+ * a count) or the one has no count yet.
  */
 export function groupMemoryCount(progress: MemoryProgress, chaIds: readonly string[]): MemoryCount | null {
     let found: { chats: number; count: MemoryCount | null } | undefined;

@@ -70,9 +70,10 @@ export type GenerationRunnerDeps = {
     /** The translation runner a send hands its messages to. */
     translations?: Pick<TranslationRunner, "handOff">;
     /**
-     * The detached memory task service a send hands its chat's HypaV3 input to. Without it, HypaV3
-     * summarizes inside the job (blocking) for every job kind: no select-only send, gap question,
-     * initial run, or hand-off.
+     * The detached memory task service a send hands its chat's HypaV3 summary or Structured Memory
+     * writer input to when work is due or a manual start waits. Without it, HypaV3 summarizes inside
+     * every job (blocking); a send's Structured Memory step selects stored records with no hand-off or
+     * gap question (Record now runs the writer inside its job).
      */
     memoryTasks?: MemoryTaskService;
     /** Web Push for chat completions; without it only the tab is notified. */

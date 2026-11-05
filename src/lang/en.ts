@@ -1897,6 +1897,15 @@ export const languageEnglish = {
             "Later sends use its summaries as the history needs them; the breakdown below is the last reply's.",
         taskDone: "Finished: the new summaries are stored; later sends use them as the history needs them.",
         taskFailed: "The last background summary failed.",
+        writerTask: {
+            title: "Memory recording",
+            queued: "recording queued",
+            running: (done: number, total: number) => `recording ${done}/${total}`,
+            runningUnknown: "recording",
+            liveNote: "Later sends read its new records; the breakdown below is the last reply's.",
+            done: "Finished: the new records are stored; later sends read them.",
+            failed: "The last memory recording failed.",
+        },
         historyOmitted: (count: number, tokens: string) =>
             `${count === 1 ? "1 message" : `${count} messages`} left out · ${tokens} tokens`,
         omittedSummarized: (count: number) => `summarized into memory: ${count}`,

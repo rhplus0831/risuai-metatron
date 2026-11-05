@@ -29,9 +29,10 @@ export type ChatStreaming = { characterId: string; id: string; streaming: Stream
 export type ChatStreamingSnapshot = ChatStreaming & { revision: string | null };
 
 /**
- * A chat's HypaV3 memory task status on the live-update socket: the running task, else the queued
- * one, else the last terminal (kept 10 minutes). A terminal carries `terminalRevision`, the chat's
- * revision when the task's writes closed (null: the chat is gone).
+ * A chat's memory task status (HypaV3 summaries or the Structured Memory writer) on the live-update
+ * socket: the running task, else the queued one, else the last terminal (kept 10 minutes).
+ * A terminal carries `terminalRevision`, the chat's revision when the task's writes closed (null:
+ * the chat is gone).
  */
 export type MemoryTaskEntry = { characterId: string; chatId: string; status: MemoryTaskStatus };
 
@@ -59,7 +60,7 @@ export type HandoffOffer = {
  *   `streaming` lists the locks of every chat a generation job's write touched, or whose locks the
  *   job's end released (then `changes` may be empty); the optional `cursor` is the newest log row
  *   of its refs, absent from a lock-only frame and on older servers;
- * - `memoryTask`: a chat's memory task status changed (in `epoch`); a task's summary write reaches
+ * - `memoryTask`: a chat's memory task status changed (in `epoch`); a memory task's write reaches
  *   the client as its `change` frame first;
  * - `handoff`: a content-free job handoff offer opened or closed;
  * - `clients`: the whole registered-client list; presence is process-local and has no epoch;

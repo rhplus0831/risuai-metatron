@@ -177,11 +177,13 @@ export type RouteLimits = {
  * times of every job, render, and translation (`serverCbsLimits`; tests lengthen them, the defaults are
  * the production ones).
  * The default runner gets the context's own memory task service (`createMemoryTasks`, returned as
- * `memoryTasks`): HypaV3 then selects stored summaries in a send and hands its chat to the service,
- * and the manual start and cancel routes are open. The `memoryTasks` option replaces the runner's
- * service (tests): a fake one, or `"disabled"` for none, where every HypaV3 step summarizes inside its
- * job. With either, the manual routes answer 503 `notEnabled` (nothing hands a chat to the context's
- * service). `memoryTaskOptions` replaces the context's service's clock and limits (tests).
+ * `memoryTasks`) for HypaV3 summaries and the Structured Memory writer. Sends hand off task inputs
+ * when work is due or a manual start waits; the manual start and cancel routes are open.
+ * The `memoryTasks` option replaces the runner's service (tests): a fake one, or
+ * `"disabled"` for none, where every HypaV3 step summarizes inside its job. A send's Structured Memory
+ * step then selects stored records with no hand-off or gap question (Record now runs the writer
+ * inside its job). With either, the manual routes answer 503 `notEnabled` (nothing hands a chat to
+ * the context's service). `memoryTaskOptions` replaces the context's service's clock and limits (tests).
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -497,8 +499,8 @@ export function createServerContext(options: {
         diagnostics,
         writer,
     });
-    // The HypaV3 memory tasks, which write a chat's summaries after a send on the request layer and
-    // the script workers; a context whose resource kinds have no characters (tests) has none.
+    // The memory tasks, which write HypaV3 summaries or Structured Memory records after a send on
+    // the request layer and script workers; a context whose resource kinds have no characters (tests) has none.
     const memoryTasks: MemoryTasks | null = resourceKinds.get(RESOURCE_KIND.characters)
         ? createMemoryTasks({
               store: resources,
@@ -1103,7 +1105,7 @@ export function createServerContext(options: {
         requestHistory,
         translationRunner,
         thumbnails,
-        /** The HypaV3 memory task service (null without a characters kind), the default runner's unless a test replaces it. */
+        /** The memory task service for both kinds (null without a characters kind), the default runner's unless a test replaces it. */
         memoryTasks,
         push,
         eventSockets,

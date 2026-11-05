@@ -64,10 +64,11 @@ import {
  * freeze would otherwise deliver nothing until TCP gives up.
  * `liveFeedCurrent` reports a reconciled, recently heard socket on a visible page with no resume pending.
  *
- * HypaV3 memory task statuses go to `src/ts/process/memoryTasks.svelte.ts`: a `memoryTask` frame of
- * the loaded epoch as it comes, a `hello`'s snapshot as the whole status set, and the fetched or
- * replayed or digest-matched revision listing (before reconciliation) for the chats whose fences
- * wait for it. A mismatching `hello`/`epoch` or read epoch error resets them and the advertised map.
+ * Memory task statuses (HypaV3 summaries or the Structured Memory writer) go to
+ * `src/ts/process/memoryTasks.svelte.ts`: a `memoryTask` frame of the loaded epoch as it comes, a
+ * `hello`'s snapshot as the whole status set, and the fetched, replayed, or digest-matched revision
+ * listing (before reconciliation) for the chats whose fences wait for it. A mismatching `hello`/`epoch`
+ * or read epoch error resets them and the advertised map.
  */
 
 const MAX_BACKOFF_MS = 30_000;
