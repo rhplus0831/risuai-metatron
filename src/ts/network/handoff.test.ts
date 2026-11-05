@@ -151,14 +151,72 @@ it("takes only eligible offers after plugins start, including own absent jobs an
     }
 });
 
-it("drops an unavailable takeover offer without starting a follow or retrying it on opt-in", async () => {
+it("automatically claims a self-targeted offer after a transient lookup failure and one-second backoff", async () => {
+    const { ResourceRequestError } = await import("../storage/resourceClient");
+    stubs.current.mockRejectedValueOnce(new ResourceRequestError(503, "Service unavailable"));
+    const candidate = offer("retry-current", { target: "self" });
+    handoff.receiveHandoffOffer(candidate);
+    await settleOffers();
+    expect(stubs.current).toHaveBeenCalledExactlyOnceWith({ chaId: "character", chatId: "retry-current" });
+    expect(get(handoff.handoffOffers).get(candidate.jobId)).toBe(candidate);
+    expect(get(handoff.acceptHandoffs)).toBe(false);
+    expect(stubs.takeover).not.toHaveBeenCalled();
+    expect(stubs.follow).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(999);
+    await settleOffers();
+    expect(stubs.current).toHaveBeenCalledTimes(1);
+    expect(stubs.takeover).not.toHaveBeenCalled();
+    expect(stubs.follow).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await settleOffers();
+    expect(stubs.current).toHaveBeenCalledTimes(2);
+    expect(stubs.takeover).toHaveBeenCalledExactlyOnceWith("retry-current");
+    expect(stubs.follow).toHaveBeenCalledExactlyOnceWith(
+        "retry-current",
+        { chaId: "character", chatId: "retry-current" },
+        undefined,
+        { ticket: "ticket:retry-current" },
+    );
+});
+
+it("drops an unavailable takeover offer without following or retrying after backoff or opt-in", async () => {
+    // The claim client resolves null for HTTP 404 and 409.
     stubs.takeover.mockResolvedValue(null);
     handoff.receiveHandoffOffer(offer("unavailable", { target: "self" }));
     await settleOffers();
     expect(stubs.takeover).toHaveBeenCalledExactlyOnceWith("unavailable");
     expect(get(handoff.handoffOffers).size).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await settleOffers();
+    expect(stubs.current).toHaveBeenCalledTimes(1);
+    expect(stubs.takeover).toHaveBeenCalledTimes(1);
+    expect(stubs.follow).not.toHaveBeenCalled();
+
     handoff.acceptHandoffs.set(true);
     await settleOffers();
     expect(stubs.takeover).toHaveBeenCalledTimes(1);
     expect(stubs.follow).not.toHaveBeenCalled();
+});
+
+it("cancels a pending retry when a closed offer frame arrives during backoff", async () => {
+    const { ResourceRequestError } = await import("../storage/resourceClient");
+    stubs.current.mockRejectedValueOnce(new ResourceRequestError(503, "Service unavailable"));
+    const candidate = offer("closed-during-backoff", { target: "self" });
+    handoff.receiveHandoffOffer(candidate);
+    await settleOffers();
+    expect(stubs.current).toHaveBeenCalledExactlyOnceWith({ chaId: "character", chatId: "closed-during-backoff" });
+    expect(stubs.takeover).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(500);
+    handoff.receiveHandoffOffer({ ...candidate, state: "closed" });
+    await settleOffers();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await settleOffers();
+    expect(stubs.current).toHaveBeenCalledTimes(1);
+    expect(stubs.takeover).not.toHaveBeenCalled();
+    expect(stubs.follow).not.toHaveBeenCalled();
+    expect(get(handoff.handoffOffers).has(candidate.jobId)).toBe(false);
 });

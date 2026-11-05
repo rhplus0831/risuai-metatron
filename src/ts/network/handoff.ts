@@ -7,7 +7,7 @@ import {
     type HandoffOffer,
 } from "../../../shared/events.ts";
 import { language } from "src/lang";
-import { getResourceEpoch } from "../storage/resourceClient";
+import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 
 /**
  * Device-local worker preferences, connected clients and epoch-scoped offers. No plugin or follow module loads until
@@ -15,8 +15,10 @@ import { getResourceEpoch } from "../storage/resourceClient";
  * bit, since a preferred offer can beat the create response. Take a self-targeted offer, an own
  * absent job, or an untargeted foreign job with acceptance enabled; leave own preferred/requested
  * offers alone, as well as offers addressed to another client. Each offer object is evaluated once
- * per acceptance revision, with at most one claim in flight per job. Plugin work stays held from startup
- * through the claim and the lifecycle's own hold, so deferred reloads cannot empty the registries.
+ * per acceptance revision, except transient /current or claim failures get bounded retries with exponential
+ * backoff while that object, epoch and revision remain current. At most one claim is in flight per job.
+ * Plugin work stays held from startup through the claim and the lifecycle's own hold, so deferred reloads
+ * cannot empty the registries.
  * A successful claim may close its offer before its response arrives: that never cancels its ticket.
  * Manual requests use the same acceptance policy, with one best-effort reminder per job after 10 s
  * if that epoch's requested offer is still open for the same target. This does not track completion.
@@ -156,6 +158,11 @@ const offers = writable<ReadonlyMap<string, HandoffOffer>>(new Map());
 export const handoffOffers = readonly(offers);
 const claiming = new Set<string>();
 const evaluated = new WeakMap<HandoffOffer, number>();
+const retryAttempts = new WeakMap<HandoffOffer, number>();
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const HANDOFF_RETRY_MS = 1_000;
+const HANDOFF_RETRY_MAX_MS = 30_000;
+const HANDOFF_MAX_RETRIES = 5;
 let acceptanceRevision = 0;
 
 export type HandoffWork = { jobId: string; characterName: string; phase: "pending" | "working" };
@@ -174,13 +181,15 @@ export function setHandoffWork(jobId: string, status: Omit<HandoffWork, "jobId">
 
 /** A hello replaces the whole open set; an older server's missing snapshot is empty. */
 export function replaceHandoffOffers(snapshot: readonly HandoffOffer[]): void {
-    offers.set(
-        new Map(
-            snapshot
-                .filter((offer) => offer.state === "open" && offer.epoch === getResourceEpoch())
-                .map((offer) => [offer.jobId, offer]),
-        ),
+    const next = new Map(
+        snapshot
+            .filter((offer) => offer.state === "open" && offer.epoch === getResourceEpoch())
+            .map((offer) => [offer.jobId, offer]),
     );
+    for (const [jobId, offer] of get(offers)) {
+        if (next.get(jobId) !== offer) clearRetry(jobId);
+    }
+    offers.set(next);
     evaluateOffers();
 }
 
@@ -189,8 +198,13 @@ export function receiveHandoffOffer(offer: HandoffOffer): void {
     if (offer.epoch !== getResourceEpoch()) return;
     offers.update((current) => {
         const next = new Map(current);
-        if (offer.state === "open") next.set(offer.jobId, offer);
-        else if (offer.state === "closed") next.delete(offer.jobId);
+        if (offer.state === "open") {
+            if (current.get(offer.jobId) !== offer) clearRetry(offer.jobId);
+            next.set(offer.jobId, offer);
+        } else if (offer.state === "closed") {
+            clearRetry(offer.jobId);
+            next.delete(offer.jobId);
+        }
         return next;
     });
     evaluateOffers();
@@ -198,6 +212,7 @@ export function receiveHandoffOffer(offer: HandoffOffer): void {
 
 function dropOffer(offer: HandoffOffer) {
     if (get(offers).get(offer.jobId) !== offer) return;
+    clearRetry(offer.jobId);
     offers.update((current) => {
         const next = new Map(current);
         next.delete(offer.jobId);
@@ -205,13 +220,38 @@ function dropOffer(offer: HandoffOffer) {
     });
 }
 
+function clearRetry(jobId: string) {
+    clearTimeout(retryTimers.get(jobId));
+    retryTimers.delete(jobId);
+}
+
+function retryOffer(offer: HandoffOffer, revision: number) {
+    const current = () =>
+        get(offers).get(offer.jobId) === offer && offer.epoch === getResourceEpoch() && revision === acceptanceRevision;
+    const attempts = retryAttempts.get(offer) ?? 0;
+    if (!current() || attempts >= HANDOFF_MAX_RETRIES || retryTimers.has(offer.jobId)) return;
+    const timer = setTimeout(
+        () => {
+            if (retryTimers.get(offer.jobId) !== timer) return;
+            retryTimers.delete(offer.jobId);
+            if (!current()) return;
+            retryAttempts.set(offer, attempts + 1);
+            evaluated.delete(offer);
+            evaluateOffers();
+        },
+        Math.min(HANDOFF_RETRY_MS * 2 ** attempts, HANDOFF_RETRY_MAX_MS),
+    );
+    retryTimers.set(offer.jobId, timer);
+}
+
 function evaluateOffers() {
     for (const offer of get(offers).values()) {
         if (claiming.has(offer.jobId) || evaluated.get(offer) === acceptanceRevision) continue;
+        clearRetry(offer.jobId);
         claiming.add(offer.jobId);
         const revision = acceptanceRevision;
         evaluated.set(offer, revision);
-        void takeOffer(offer)
+        void takeOffer(offer, revision)
             .catch((error) => console.warn("[Handoff]", error))
             .finally(() => {
                 claiming.delete(offer.jobId);
@@ -222,14 +262,21 @@ function evaluateOffers() {
     }
 }
 
-async function takeOffer(offer: HandoffOffer): Promise<void> {
+async function takeOffer(offer: HandoffOffer, revision: number): Promise<void> {
+    const failedRequest = (error: unknown): never => {
+        if (error instanceof ResourceRequestError && (error.status === 0 || error.status >= 500))
+            retryOffer(offer, revision);
+        throw error;
+    };
     const jobs = await import("./generationJobs");
     const self = jobs.generationClientId();
     if (offer.target && offer.target !== self) return;
     if (offer.target !== self && offer.reason !== "absent" && !get(acceptHandoffs)) return;
     let own = jobs.savedGenerationJobIds().includes(offer.jobId);
     if (!own) {
-        const current = await jobs.readChatGeneration({ chaId: offer.characterId, chatId: offer.chatId });
+        const current = await jobs
+            .readChatGeneration({ chaId: offer.characterId, chatId: offer.chatId })
+            .catch(failedRequest);
         if (!current || current.jobId !== offer.jobId) {
             dropOffer(offer);
             return;
@@ -247,7 +294,7 @@ async function takeOffer(offer: HandoffOffer): Promise<void> {
         // Load the lifecycle before claiming: the short-lived ticket must reach an attach promptly.
         const { followJobToEnd } = await import("../process/serverCommands");
         if (!current() || !allowed()) return;
-        const ticket = await jobs.takeoverGenerationJob(offer.jobId);
+        const ticket = await jobs.takeoverGenerationJob(offer.jobId).catch(failedRequest);
         if (!ticket) {
             dropOffer(offer);
             return;
