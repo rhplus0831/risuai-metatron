@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (3)
-- [Client and plugins](#client-and-plugins) (9)
+- [Client and plugins](#client-and-plugins) (8)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (12)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
@@ -230,18 +230,6 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 
 **Why it matters:** the capture gap lets a plugin act behind a blocking notice; the pinned URLs grow with assets rendered; the flakes return whenever suites run in parallel.
 **Suggested handling:** mention when working nearby and check the code first; treat the flakes as known unless one fails alone.
-
-### util and globalApi helper gaps
-
-Three helpers misbehave on inputs no current caller is known to pass. Probed by reviewers in the Guides To Source run (2026-11-05); owner global-api.
-
-- `replaceAsync` in `src/ts/util.ts` (~1053) collects replacements with `string.matchAll(regexp)`, which starts at `regexp.lastIndex`, then substitutes with `string.replace(regexp, ...)`, which scans from 0: a `/g` regexp with `lastIndex` 1 turns `"aa"` with replacer `X` into `"Xundefined"`. The comment now states the lastIndex-0 precondition; callers pass fresh literals, so unconfirmed in production.
-- `selectFileByDom` (~144) settles only on `change`, so a native cancel leaves the promise pending forever, and an empty change returns `[]` before removing its `<input>`. `selectSingleFile` (~51) then reads `file.name` of `selectSingleFileHandle`'s null and rejects with a TypeError instead of "no file".
-- `toGetter` in `src/ts/globalApi.svelte.ts` (~1413): the proxy's `set` passes the proxy as receiver to `Reflect.set` (~1448), so writing an ordinary data property leaves the real object unchanged. Unconfirmed whether any caller writes through it.
-
-**Why it matters:** a reused regexp corrupts output silently, a cancelled picker leaves its caller waiting, and a write through a `toGetter` proxy is lost.
-
-**Suggested handling:** reset or clone the regexp inside `replaceAsync`; add a `cancel` listener, remove the input on every settle, and return null from `selectSingleFile`; check `toGetter`'s callers and drop the receiver if writes should forward.
 
 ### loadFileSrc can return /sw/img on an uncontrolled page
 
