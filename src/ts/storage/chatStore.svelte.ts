@@ -2,6 +2,7 @@
 import { onCharacterSelectionChanged, selection } from "./selection.svelte";
 import { setOpenChatBindingSource, settings } from "./settingsViews.svelte";
 import { untrack } from "svelte";
+import { createSubscriber } from "svelte/reactivity";
 import { v4 as uuidv4 } from "uuid";
 import type {
     ChatGroupResult,
@@ -550,8 +551,13 @@ const slot = (id: string) => `#${id}`;
  */
 const held: Record<string, HeldChats> = $state({});
 
-// Positions are validated against unique row ids; invalidation controls rebuild cost, not correctness.
-const messagePositions = new Map<string, Map<string, number>>();
+type MessagePositionIndex = {
+    positions: Map<string, number>;
+    trackMissing: () => void;
+    notifyMissing?: () => void;
+};
+// Misses trust this index: every id/order change must drop it or extend it and notify its miss readers.
+const messagePositions = new Map<string, MessagePositionIndex>();
 let messagePositionBuilds = 0;
 let messagePositionLookups = 0;
 
@@ -1039,34 +1045,50 @@ function heldChat(ref: ChatRef): Chat | undefined {
 }
 
 function dropMessagePositions(key: string) {
+    const index = messagePositions.get(key);
     messagePositions.delete(key);
+    index?.notifyMissing?.();
 }
 
-function buildMessagePositions(key: string, chat: DeepReadonly<Chat>): Map<string, number> {
+function buildMessagePositions(key: string, chat: DeepReadonly<Chat>): MessagePositionIndex {
     const positions = new Map<string, number>();
-    chat.message.forEach((message, position) => positions.set(message.chatId!, position));
-    messagePositions.set(key, positions);
+    // A hit depends only on its row, even when it is the read that builds the index.
+    untrack(() => chat.message.forEach((message, position) => positions.set(message.chatId!, position)));
+    const index: MessagePositionIndex = {
+        positions,
+        trackMissing: createSubscriber((update) => {
+            // Cache invalidation may run within a reactive caller. Notify without reading a signal
+            // into that caller or writing tracked state during a derived/template evaluation.
+            index.notifyMissing = () => untrack(update);
+            return () => {
+                index.notifyMissing = undefined;
+            };
+        }),
+    };
+    dropMessagePositions(key);
+    messagePositions.set(key, index);
     messagePositionBuilds += 1;
-    return positions;
+    return index;
 }
 
-/** A stale or missing position rebuilds once; a newly built map never rebuilds again in this lookup. */
+/** A cached miss subscribes to structural changes; a stale hit rebuilds once and validates again. */
 function positionOf(key: string, chat: DeepReadonly<Chat>, id: string): number {
     messagePositionLookups += 1;
-    let positions = messagePositions.get(key);
-    const built = positions === undefined;
-    positions ??= buildMessagePositions(key, chat);
-    let position = positions.get(id);
+    let index = messagePositions.get(key);
+    const built = index === undefined;
+    index ??= buildMessagePositions(key, chat);
+    let position = index.positions.get(id);
     if (position !== undefined && chat.message[position]?.chatId === id) {
         return position;
     }
-    if (!built) {
-        positions = buildMessagePositions(key, chat);
-        position = positions.get(id);
+    if (position !== undefined && !built) {
+        index = buildMessagePositions(key, chat);
+        position = index.positions.get(id);
         if (position !== undefined && chat.message[position]?.chatId === id) {
             return position;
         }
     }
+    index.trackMissing();
     return -1;
 }
 
@@ -1535,10 +1557,10 @@ function sendChat(chat: Chat): Chat {
  * them: a missing or duplicate id is assigned, and a `translation` that is not a `MessageTranslation`
  * is dropped (`dropInvalidTranslation`), so the mirror holds what the server holds.
  */
-function prepareMessages(messages: Message[], taken: Set<string>) {
+function prepareMessages(messages: Message[], taken: Set<string>, existing?: ReadonlyMap<string, number>) {
     for (const message of messages) {
         dropInvalidTranslation(message);
-        if (!isValidId(message.chatId) || taken.has(message.chatId)) {
+        if (!isValidId(message.chatId) || taken.has(message.chatId) || existing?.has(message.chatId)) {
             message.chatId = uuidv4();
         }
         taken.add(message.chatId);
@@ -2632,10 +2654,11 @@ function applyChatPatch(
     const chat = isLoaded(ref) ? heldChat(ref) : undefined;
     let resolved: ChatPatch | null = null;
     let patched: { start: number; tail: Message[] } | null = null;
+    const ownedRows = new Set<object>();
     try {
         if (fits && chat && !staleChats.has(key)) {
-            resolved = resolveJobChatPatch(chat, patch, job);
-            patched = resolved ? patchedTail(chat.message, resolved) : null;
+            resolved = resolveJobChatPatch(chat, patch, ownedRows, job);
+            patched = resolved ? patchedTail(chat.message, resolved, ownedRows) : null;
         }
     } catch (error) {
         // Anything unexpected in a server copy: read whole instead of failing the event.
@@ -2650,10 +2673,11 @@ function applyChatPatch(
     return "applied";
 }
 
-/** Resolves job-only stream references into detached rows without changing the mirror or its claims. */
+/** New rows for stream references share unchanged held values; `ownedRows` keeps assembly from copying them again. */
 function resolveJobChatPatch(
     chat: Chat,
     patch: JobChatPatch,
+    ownedRows: Set<object>,
     job?: { jobId: string; streaming: readonly StreamingMessage[] },
 ): ChatPatch | null {
     const messages: NonNullable<ChatPatch["messages"]>[number][] = [];
@@ -2686,8 +2710,9 @@ function resolveJobChatPatch(
         ) {
             return null;
         }
-        const message = clone<Message>(row);
+        const message = { ...row };
         message.data = buffer.text;
+        ownedRows.add(message);
         messages.push({ after: entry.after, message });
     }
     return { ...patch, messages };
@@ -2762,10 +2787,11 @@ function stagedMetaFields(chat: Chat, fields: unknown): { remove: string[]; set:
 }
 
 /**
- * A feed body's row diffs, checked and cloned before installation. Every id must be held once in
+ * A feed body's row diffs, checked and prepared before installation. Every id must be held once in
  * the diff list and absent from the body's whole rows and removals. Field changes exclude identity,
  * text, and `__proto__`; text reconstructs from the held UTF-16 prefix at exactly the body's base.
- * The JSON clone preserves own keys on reactive rows, including nested `__proto__` entries.
+ * New row objects own copies of changed values and share unchanged values with the outgoing held
+ * rows. The shallow copy preserves own keys, including `__proto__`, and nested reactive proxies.
  */
 function stagedRowDiffs(
     key: string,
@@ -2824,7 +2850,7 @@ function stagedRowDiffs(
                 return null;
             data = held.data.slice(0, diff.text.keep) + diff.text.text;
         }
-        const message = clone(held);
+        const message = { ...held };
         const target = message as unknown as Record<string, unknown>;
         for (const name of unset) delete target[name];
         for (const [name, value] of set) {
@@ -2994,11 +3020,16 @@ function applyRemoteChatPatch(
  * than the first, a patch row that is not a message,
  * names a removed id, or comes twice, an `after` that is neither a message kept nor an earlier
  * inserted row, a row of an existing message that is not right after its `after`, or a length that
- * is not the patch's `count`. Rows are owned copies of the stored messages; every other message
- * keeps its object. The part before `start` is the held copy at the patch's base, which the patch
- * says is unchanged.
+ * is not the patch's `count`. Incoming rows are copied unless already owned by this patch. Owned
+ * rows have new objects and owned changed fields, but may share unchanged values with outgoing held
+ * rows. Every other message keeps its object. The part before `start` is the held copy at the patch's
+ * base, which the patch says is unchanged.
  */
-function patchedTail(current: readonly Message[], patch: ChatPatch): { start: number; tail: Message[] } | null {
+function patchedTail(
+    current: readonly Message[],
+    patch: ChatPatch,
+    ownedRows?: ReadonlySet<object>,
+): { start: number; tail: Message[] } | null {
     const rows = patch.messages ?? [];
     const removed = new Set(patch.removed ?? []);
     if (rows.length === 0 && removed.size === 0) {
@@ -3028,7 +3059,7 @@ function patchedTail(current: readonly Message[], patch: ChatPatch): { start: nu
     if (!anchorFound) {
         return null;
     }
-    const tail = patchedMessages(current.slice(start), rows, removed);
+    const tail = patchedMessages(current.slice(start), rows, removed, ownedRows);
     return tail && start + tail.length === patch.count ? { start, tail } : null;
 }
 
@@ -3037,6 +3068,7 @@ function patchedMessages(
     current: readonly Message[],
     rows: NonNullable<ChatPatch["messages"]>,
     removed: ReadonlySet<string>,
+    ownedRows?: ReadonlySet<object>,
 ): Message[] | null {
     const seen = new Set<string>();
     const kept: Message[] = [];
@@ -3067,11 +3099,12 @@ function patchedMessages(
             return null;
         }
         placed.add(id);
+        const message = ownedRows?.has(row!) ? row! : clone<Message>(row!);
         if (keptIds.has(id)) {
-            replaced.set(id, { after: entry.after, row: clone<Message>(row!) });
+            replaced.set(id, { after: entry.after, row: message });
         } else {
             const group = inserted.get(entry.after) ?? [];
-            group.push(clone<Message>(row!));
+            group.push(message);
             inserted.set(entry.after, group);
         }
     }
@@ -3539,7 +3572,9 @@ export function appendMessage(
 ): string[] {
     const chat = requireChat(ref);
     const messages = clone<Message[]>(Array.isArray(input) ? input : [input as DeepReadonly<Message>]);
-    prepareMessages(messages, new Set(chat.message.map((message) => message.chatId!)));
+    const key = keyOf(ref.chaId, ref.chatId);
+    const index = messagePositions.get(key) ?? buildMessagePositions(key, chat);
+    prepareMessages(messages, new Set(), index.positions);
     const anchor = ownAnchor(options.anchor ?? { end: true });
     let position: number;
     if ("start" in anchor) {
@@ -3553,9 +3588,15 @@ export function appendMessage(
         }
         position = after + 1;
     }
+    const atEnd = position === chat.message.length;
     chat.message.splice(position, 0, ...messages);
-    dropMessagePositions(keyOf(ref.chaId, ref.chatId));
-    changed(keyOf(ref.chaId, ref.chatId));
+    if (atEnd) {
+        messages.forEach((message, offset) => index.positions.set(message.chatId!, position + offset));
+        index.notifyMissing?.();
+    } else {
+        dropMessagePositions(key);
+    }
+    changed(key);
     enqueueLocalEdit(ref, { op: "append", messages: clone(messages), anchor }, { absent: true });
     return messages.map((message) => message.chatId!);
 }
@@ -3874,9 +3915,14 @@ function applyRemoval(ref: ChatRef, chat: Chat, present: readonly string[], mark
     const removing = new Set(present);
     const positions = [...removing].map((id) => indexOfMessage(ref, chat, id));
     const before = removing.size === 1 ? { value: clone(chat.message[positions[0]]) } : undefined;
-    const removedPositions = new Set(positions);
-    const kept = chat.message.filter((_, position) => !removedPositions.has(position));
-    chat.message.splice(0, chat.message.length, ...kept);
+    const removedPositions = new Set(positions.filter((position) => position >= 0));
+    let first = chat.message.length;
+    for (const position of removedPositions) first = Math.min(first, position);
+    let write = first;
+    for (let read = first; read < chat.message.length; read++) {
+        if (!removedPositions.has(read)) chat.message[write++] = chat.message[read];
+    }
+    chat.message.length = write;
     dropMessagePositions(keyOf(ref.chaId, ref.chatId));
     changed(keyOf(ref.chaId, ref.chatId));
     enqueueLocalEdit(ref, { op: "remove", ids: [...removing], ...mark }, before);
@@ -3910,12 +3956,13 @@ export function restoreUnsentRemoval(
         (op) => op.op === "remove" && op.ids.length === ids.size && op.ids.every((id) => ids.has(id)),
     );
     const anchorIndex = anchor === null ? -1 : indexOfMessage(ref, chat, anchor);
+    const heldIds = new Set(chat.message.map((message) => message.chatId!));
     if (
         index === -1 ||
         index !== entry.ops.length - 1 ||
         (anchor !== null && anchorIndex === -1) ||
         anchorIndex !== chat.message.length - 1 ||
-        messages.some((message) => indexOfMessage(ref, chat, message.chatId!) !== -1)
+        messages.some((message) => heldIds.has(message.chatId!))
     ) {
         return false;
     }
@@ -3923,7 +3970,7 @@ export function restoreUnsentRemoval(
     dirtyChatJournal(key, "pending");
     const restored = clone<Message[]>(messages);
     restored.forEach((message) => dropInvalidTranslation(message));
-    chat.message.push(...restored);
+    for (const message of restored) chat.message.push(message);
     dropMessagePositions(key);
     changed(key);
     staleChats.add(key);
@@ -4365,17 +4412,18 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     prepareChatInput(next, requireCharacter(ref.chaId));
     next.message ??= [];
     const baseMessages = new Map(baseline.chat.message.map((message) => [message.chatId!, message]));
+    const currentIds = new Set(current.message.map((message) => message.chatId!));
     prepareMessages(next.message, new Set());
     for (const message of next.message) {
         // A new message may not reuse an id the chat already has.
-        if (!baseMessages.has(message.chatId!) && indexOfMessage(ref, current, message.chatId!) !== -1) {
+        if (!baseMessages.has(message.chatId!) && currentIds.has(message.chatId!)) {
             message.chatId = uuidv4();
         }
     }
     const resultIds = new Set(next.message.map((message) => message.chatId!));
     const removed = baseline.chat.message
         .map((message) => message.chatId!)
-        .filter((id) => !resultIds.has(id) && indexOfMessage(ref, current, id) !== -1);
+        .filter((id) => !resultIds.has(id) && currentIds.has(id));
     const changedMessages = next.message.filter((message) => {
         const before = baseMessages.get(message.chatId!);
         return before !== undefined && JSON.stringify(before) !== JSON.stringify(message);
@@ -4389,7 +4437,7 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     const patches: { id: string; patch: MessagePatch }[] = [];
     for (const message of changedMessages) {
         const id = message.chatId!;
-        if (indexOfMessage(ref, current, id) === -1) {
+        if (!currentIds.has(id)) {
             continue;
         }
         const beforeFields = baseMessages.get(id)! as unknown as Record<string, unknown>;
@@ -4430,6 +4478,7 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
         // One op for all of them (checked per message above), so removing several keeps needing
         // the current revision.
         applyRemoval(ref, current, removed);
+        for (const id of removed) currentIds.delete(id);
     }
     for (const { id, patch } of patches) {
         const index = indexOfMessage(ref, current, id);
@@ -4442,14 +4491,10 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
         const id = message.chatId!;
         if (!baseMessages.has(id)) {
             const anchor: MessageAnchor =
-                previous === null
-                    ? { start: true }
-                    : indexOfMessage(ref, current, previous) !== -1
-                      ? { after: previous }
-                      : { end: true };
-            appendMessage(ref, message, { anchor });
+                previous === null ? { start: true } : currentIds.has(previous) ? { after: previous } : { end: true };
+            for (const added of appendMessage(ref, message, { anchor })) currentIds.add(added);
         }
-        if (indexOfMessage(ref, current, id) !== -1) {
+        if (currentIds.has(id)) {
             previous = id;
         }
     }

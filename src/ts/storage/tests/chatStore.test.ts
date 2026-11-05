@@ -170,7 +170,7 @@ async function boot(server?: StoreBackedServer) {
     };
 }
 
-beforeAll(() => warmMutationGraph(), 60_000);
+beforeAll(() => warmMutationGraph(() => import("./reactiveProbe.svelte")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();
@@ -2008,6 +2008,127 @@ describe("message positions", () => {
         return { builds: after.builds - before.builds, lookups: after.lookups - before.lookups };
     };
 
+    it("appends a hook's fresh tail messages with one position build and ordered anchors", async () => {
+        const { chat, ref, take } = await boot();
+        const baseline = chat.captureChatBaseline(ref);
+        const added = Array.from({ length: 8 }, (_, index) => m(`new-${index}`, `New ${index}`));
+        const result = clone(baseline.chat);
+        result.message.push(...added);
+        const before = chat.messagePositionStats();
+
+        chat.applyChatResult(baseline, result);
+
+        expect(since(chat, before).builds).toBeLessThanOrEqual(1);
+        expect(chat.findChat(ref)!.message).toEqual([...baseline.chat.message, ...added]);
+        expect(take().groups.map((group) => group.ops)).toEqual([
+            added.map((message, index) => ({
+                op: "append",
+                messages: [message],
+                anchor: { after: index === 0 ? "c" : `new-${index - 1}` },
+            })),
+        ]);
+    });
+
+    it("caches repeated misses and finds ids after append, insertion and rename", async () => {
+        const { chat, ref } = await boot();
+        const before = chat.messagePositionStats();
+        for (let repeat = 0; repeat < 4; repeat++) {
+            expect(chat.messagePositionOf(ref, "new-tail")).toBe(-1);
+            expect(chat.heldMessageById(ref, "new-tail")).toBeUndefined();
+        }
+        expect(since(chat, before).builds).toBeLessThanOrEqual(1);
+
+        chat.appendMessage(ref, m("new-tail", "Tail"));
+        expect(chat.messagePositionOf(ref, "new-tail")).toBe(3);
+        expect(chat.heldMessageById(ref, "new-tail")).toEqual(m("new-tail", "Tail"));
+
+        const cached = chat.messagePositionStats();
+        for (const id of ["inserted", "renamed"]) {
+            for (let repeat = 0; repeat < 4; repeat++) {
+                expect(chat.messagePositionOf(ref, id)).toBe(-1);
+                expect(chat.heldMessageById(ref, id)).toBeUndefined();
+            }
+        }
+        expect(since(chat, cached).builds).toBe(0);
+        chat.appendMessage(ref, m("inserted", "Between A and B"), { anchor: { after: "a" } });
+        expect(chat.messagePositionOf(ref, "inserted")).toBe(1);
+        expect(chat.heldMessageById(ref, "inserted")).toEqual(m("inserted", "Between A and B"));
+        expect(chat.messagePositionOf(ref, "b")).toBe(2);
+        expect(chat.messagePositionOf(ref, "renamed")).toBe(-1);
+
+        const replacement = clone(chat.findChat(ref)!);
+        chat.replaceChat(ref, {
+            ...replacement,
+            message: replacement.message.map((row, index) => (index === 2 ? { ...row, chatId: "renamed" } : row)),
+        });
+        expect(chat.messagePositionOf(ref, "renamed")).toBe(2);
+        expect(chat.heldMessageById(ref, "renamed")).toEqual(m("renamed", "B"));
+        expect(chat.messagePositionOf(ref, "b")).toBe(-1);
+        expect(ids(chat.findChat(ref))).toEqual(["a", "inserted", "renamed", "c", "new-tail"]);
+    });
+
+    it("reactive missing-id reads find an appended row in effects and derived values", async () => {
+        const { chat, ref } = await boot();
+        const { createProbe } = await import("./reactiveProbe.svelte");
+        const { flushSync } = await import("svelte");
+        // Start with a cached index so the reads depend on the miss itself.
+        expect(chat.messagePositionOf(ref, "a")).toBe(0);
+        const position = createProbe(() => chat.messagePositionOf(ref, "later"));
+        const row = createProbe(() => chat.heldMessageById(ref, "later"));
+        try {
+            expect(position.seen).toEqual([-1]);
+            expect(position.derived()).toBe(-1);
+            expect(row.seen).toEqual([undefined]);
+            expect(row.derived()).toBeUndefined();
+
+            chat.appendMessage(ref, m("later", "Now present"));
+            flushSync();
+
+            expect(position.seen).toEqual([-1, 3]);
+            expect(position.derived()).toBe(3);
+            expect(row.seen).toEqual([undefined, m("later", "Now present")]);
+            expect(row.derived()).toEqual(m("later", "Now present"));
+        } finally {
+            position.dispose();
+            row.dispose();
+        }
+    });
+
+    it("removes the tail of a 200,000-row chat and queues its remove op", async () => {
+        const { chat, ref, server, take } = await boot();
+        const record = server.chat("c", "k")!;
+        const count = 200_000;
+        chat.acceptRemoteChat({
+            ...record,
+            data: {
+                ...record.data,
+                message: Array.from({ length: count }, (_, index) => m(`row-${index}`, "")),
+            },
+        });
+
+        chat.removeMessagesUnasked(ref, [`row-${count - 1}`]);
+
+        const survivors = chat.findChat(ref)!.message;
+        expect(survivors).toHaveLength(count - 1);
+        expect(survivors[0].chatId).toBe("row-0");
+        expect(survivors.at(-1)!.chatId).toBe(`row-${count - 2}`);
+        expect(take().groups.map((group) => group.ops)).toEqual([[{ op: "remove", ids: [`row-${count - 1}`] }]]);
+    });
+
+    it("removes discontiguous ids in one op while preserving survivor order", async () => {
+        const { chat, ref, server, take } = await boot();
+        const record = server.chat("c", "k")!;
+        chat.acceptRemoteChat({
+            ...record,
+            data: { ...record.data, message: ["a", "b", "c", "d", "e", "f", "g"].map((id) => m(id, id)) },
+        });
+
+        chat.removeMessagesUnasked(ref, ["f", "b", "d"]);
+
+        expect(chat.findChat(ref)!.message).toEqual([m("a", "a"), m("c", "c"), m("e", "e"), m("g", "g")]);
+        expect(take().groups.map((group) => group.ops)).toEqual([[{ op: "remove", ids: ["f", "b", "d"] }]]);
+    });
+
     it.each([100, 10_000])(
         "shares one lazy index across 200 streamed tail updates in a %i-message chat",
         async (count) => {
@@ -2066,7 +2187,7 @@ describe("message positions", () => {
         },
     );
 
-    it("rebuilds once after append, removal and chat replacement between streaming updates", async () => {
+    it("keeps the index across a tail append and rebuilds once after removal and chat replacement", async () => {
         const { chat, ref } = await boot();
         const stream = (seq: number, text: string, jobId = "J", generationId = "g") =>
             chat.applyServerGeneration(ref, { jobId, generationId, messageId: "c", seq, text });
@@ -2081,7 +2202,7 @@ describe("message positions", () => {
         expect(chat.messagePositionOf(ref, "c")).toBe(2);
         expect(chat.heldMessageById(ref, "c")!.data).toBe("after append");
         expect(chat.findChat(ref)!.message[3].data).toBe("D");
-        expect(since(chat, appended).builds).toBe(1);
+        expect(since(chat, appended).builds).toBe(0);
 
         chat.removeMessagesUnasked(ref, ["a"]);
         const removed = chat.messagePositionStats();
@@ -2092,7 +2213,7 @@ describe("message positions", () => {
         expect(since(chat, removed).builds).toBe(1);
         const missing = chat.messagePositionStats();
         expect(chat.messagePositionOf(ref, "a")).toBe(-1);
-        expect(since(chat, missing)).toEqual({ builds: 1, lookups: 1 });
+        expect(since(chat, missing)).toEqual({ builds: 0, lookups: 1 });
 
         chat.endServerJob("J");
         chat.replaceChat(ref, {

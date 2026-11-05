@@ -352,6 +352,52 @@ describe("feed patches through the tab save adapter", () => {
         },
     );
 
+    it("JSON-clones only a row diff's changed field and detaches it from the feed event", async () => {
+        const carrier: Message = {
+            ...m("b", "B", "char"),
+            candidates: [
+                { id: "previous", data: "x".repeat(190 * 1024) },
+                { id: "current", data: "B" },
+            ],
+            selected: 1,
+            candidatesRevision: 1,
+            saying: "Speaker",
+            generationInfo: { model: "before", outputTokens: 1 },
+        };
+        const b = await boot({ messages: [m("a", "A"), carrier] });
+        const before = JSON.parse(JSON.stringify(mirror(b).message[1])) as Message;
+        const generationInfo = { model: "m".repeat(70), outputTokens: 34 };
+        const fieldBytes = JSON.stringify(generationInfo).length;
+        b.live.paused = true;
+        remote(b, [{ op: "patchMessage", id: "b", set: { generationInfo } }]);
+        const event = b.live.queue[0];
+        if (event.type !== "change") throw new Error("expected a committed change");
+        const delta = event.changes.chats[0].rowDelta!;
+        expect(delta.rowDiffs).toEqual([{ id: "b", fields: { set: { generationInfo }, unset: [] } }]);
+
+        const stringify = vi.spyOn(JSON, "stringify");
+        let serializedBytes: number;
+        try {
+            b.flushFeed();
+            serializedBytes = stringify.mock.results.reduce(
+                (bytes, result) => bytes + (result.type === "return" ? (result.value?.length ?? 0) : 0),
+                0,
+            );
+        } finally {
+            stringify.mockRestore();
+        }
+
+        // The changed field, not the 190 KiB row it sits on.
+        expect(serializedBytes).toBeLessThan(fieldBytes + 1024);
+        const expected = { ...before, generationInfo: { ...generationInfo } };
+        expect(mirror(b).message).toEqual([m("a", "A"), expected]);
+        expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+        (delta.rowDiffs[0].fields!.set.generationInfo as Message["generationInfo"])!.model = "mutated event";
+        expect(mirror(b).message[1]).toEqual(expected);
+        expect(reads(b)).toEqual([]);
+        quiet(b);
+    });
+
     it("diffs candidate checkpoint cleanup and a later edit from the row before the append group", async () => {
         const data = "x".repeat(SMALL_FEED_PATCH_BYTES);
         const candidates = [

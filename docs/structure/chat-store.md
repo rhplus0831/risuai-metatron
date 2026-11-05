@@ -74,20 +74,19 @@ Module headers and export comments hold the contracts; these lists give lookup i
 
 ## Flows
 
-Only sequences crossing a module, process, or tab are here; one inside `chatStore.svelte.ts` is its entrypoint's
-comment.
+Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.ts` is its entrypoint's comment.
 
 ### Chat writes
 
 - Every write updates the mirror, bumps the chat's local version, and queues an op; the save loop
   ([resource sync](resource-sync.md)) sends a chat's unsent ops as one group (`takeChatWork`, `coalesce`: a
   generation-bearing op never coalesces, so every generation fence holds). An op's `before` is the
-  [chat journal's](draft-recovery.md#chat-journal). A direct write of a chat fails `pnpm check` (STRUCTURE D1).
+  [chat journal's](draft-recovery.md#chat-journal). A direct chat write fails `pnpm check` (STRUCTURE D1).
 
 ### By-id ops
 
 - By-id reads and writes share `positionOf`'s index with translation and the transcript (`heldMessageById`,
-  `messagePositionOf`); its comment owns stale lookups, `dropMessagePositions` invalidates it.
+  `messagePositionOf`); its comment owns stale lookups and misses: an id or order change calls `dropMessagePositions`.
 - Which ops apply on a stale revision and which need the current one is the `ChatOp` contract in `shared/chats.ts`,
   enforced by the server ([chat writes](server-resources.md#chat-writes-and-checkpoints)) and the
   [restore floor](#restore-floor). A `remove` may carry `retract`,
@@ -257,7 +256,7 @@ comment.
 - `src/ts/checkpoints/tests/checkpointServer.ts` wraps that store with the real checkpoint service and controls load
   admission, commit, and lost answers; its policy routes use the real service too.
 - `slow`: `src/ts/storage/tests/resourceSyncHydration.test.ts`, patches on a chat longer than a call's argument list.
-- `e2e`: `e2e/lazyChats.spec.ts` (`pnpm test:e2e`), lazy loading in the whole stack.
+- `e2e`: `e2e/lazyChats.spec.ts` (`pnpm test:e2e`), lazy loading end to end.
 - Not tested: the client's two-round gone-anchor repair after a checkpoint load
   (`src/ts/storage/tests/resourceSyncChats.test.ts` exercises it for another cause); checkpoint preparation after a
   conflicting reorder is reported by `markOrderDiscarded`. `src/lib/Others/ChatCheckpointsDialog.test.ts` mocks the

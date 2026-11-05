@@ -125,6 +125,63 @@ async function boot() {
 }
 
 describe("delta replies in the real tab mirror", () => {
+    it("installs a stream reference's buffered text without JSON-cloning unchanged row fields", async () => {
+        const b = await boot();
+        const record = b.fake.chat("c", "k")!;
+        const carrier = {
+            ...m("b", "B"),
+            candidates: [
+                { id: "previous", data: "x".repeat(190 * 1024) },
+                { id: "current", data: "B" },
+            ],
+            selected: 1,
+            candidatesRevision: 1,
+            generationInfo: { model: "unchanged", outputTokens: 12 },
+        };
+        b.chat.acceptRemoteChat({
+            ...record,
+            data: { ...record.data, message: [m("a", "A", "char"), carrier, m("c", "C", "char")] },
+        });
+        b.socket.message(b.accepted("raw"));
+        b.socket.message(b.chunk(0, 3, " buffered"));
+        expect(b.text()).toBe("raw");
+        const event: GenerationEvent = {
+            type: "chatPatch",
+            epoch: b.fake.store.epoch(),
+            characterId: "c",
+            id: "k",
+            baseRevision: record.revision,
+            revision: record.revision,
+            count: 3,
+            messages: [{ after: "a", id: "b", streamed: { generationId: "g", seq: 1 } }],
+            streaming: [{ messageId: "b", generationId: "g", seq: 1 }],
+        };
+        // Encode the wire event before measuring only the client's hydration work.
+        const wire = JSON.stringify(event);
+        const stringify = vi.spyOn(JSON, "stringify");
+        let serializedBytes: number;
+        try {
+            b.socket.onmessage!({ data: wire });
+            serializedBytes = stringify.mock.results.reduce(
+                (bytes, result) => bytes + (result.type === "return" ? (result.value?.length ?? 0) : 0),
+                0,
+            );
+        } finally {
+            stringify.mockRestore();
+        }
+
+        // No unchanged field of the 190 KiB row is copied by JSON.
+        expect(serializedBytes).toBeLessThan(1024);
+        expect(b.chat.findChat(refK)!.message).toEqual([
+            m("a", "A", "char"),
+            { ...carrier, data: "raw buffered" },
+            m("c", "C", "char"),
+        ]);
+        expect(b.socket.sent).toEqual([]);
+        expect(b.fake.requests).toEqual([]);
+        expect(b.chat.hasUnsavedChatWork()).toBe(false);
+    });
+
     it("reconstructs a continued UTF-16 reply and a trim from buffered text while the display lags", async () => {
         const b = await boot();
         b.socket.message(b.accepted("A😀old suffix"));
