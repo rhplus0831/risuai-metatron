@@ -28,6 +28,7 @@ import { fileRecord, iteratorStream } from "../http/recordStream.ts";
 import { makeStaging, spool } from "../http/spool.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { createExportHolds, type ExportHold, type ExportHolds } from "./backupsUpstreamExport.ts";
 import { decodeFileName, resolveStorageKey } from "./storage.ts";
 
 export const BACKUP_IMPORT_PATH = "/api/backups/import";
@@ -89,6 +90,8 @@ export function registerBackupRoutes(
         auth: AuthStore;
         limiter: MiddlewareHandler<AppEnv>;
         maxImportBytes: number;
+        /** Shared roots for exports from their database copy through stream finalization. */
+        exportHolds?: ExportHolds;
         /** The diagnostics journal: a `lifecycle` event after a restore or an import replaced the data. */
         diagnostics?: DiagnosticsRecorder;
         /** The backup import's slot, shared with the upstream import; a slot of its own without one. */
@@ -106,6 +109,7 @@ export function registerBackupRoutes(
         restoreSignal: AbortSignal;
     },
 ) {
+    const exportHolds = arg.exportHolds ?? createExportHolds();
     const { savePath, store, snapshots, auth, limiter, maxImportBytes, diagnostics, maxArchiveRecords } = arg;
     const { restoreRunner, restoreSignal } = arg;
     const tmpPath = path.join(savePath, ".tmp");
@@ -234,6 +238,7 @@ export function registerBackupRoutes(
         let databaseFile = "";
         const assets: { key: string; file: string }[] = [];
         const missing: string[] = [];
+        let assetHold: ExportHold | undefined;
         const prepare = async () => {
             staging = await makeStaging(tmpPath, "export");
             if (signal.aborted) {
@@ -242,7 +247,10 @@ export function registerBackupRoutes(
             databaseFile = path.join(staging, "resources.sqlite");
             // Resources first, then assets: a blob is written before the metadata that names it, so
             // every asset the snapshot references already exists when the assets are listed.
-            await snapshots.exclusive(() => store.backupTo(databaseFile));
+            await snapshots.exclusive(() => {
+                assetHold = exportHolds.hold();
+                return store.backupTo(databaseFile);
+            });
             if (signal.aborted) {
                 return;
             }
@@ -281,6 +289,7 @@ export function registerBackupRoutes(
                     : partial === true
                       ? selectedKeys
                       : [...new Set(partial as string[])];
+            assetHold!.setKeys(keys);
             if (partial !== undefined && keys.length > MAX_PARTIAL_ASSETS) {
                 throw new ResourceValidationError("Too many assets for one partial backup");
             }
@@ -321,6 +330,7 @@ export function registerBackupRoutes(
                 if (staging) {
                     await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
                 }
+                assetHold?.release();
                 release();
             })());
 
@@ -588,6 +598,50 @@ export async function listAssetKeys(assetsPath: string): Promise<string[]> {
         }
     }
     return keys.sort();
+}
+
+/** Regular asset files with codec identities; invalid file names are unmanaged, never candidates. */
+export async function listAssetFiles(
+    assetsPath: string,
+    signal?: AbortSignal,
+): Promise<{
+    files: { key: string; bytes: number; mtimeMs: number }[];
+    unmanaged: { name: string; bytes: number }[];
+}> {
+    signal?.throwIfAborted();
+    const files: { key: string; bytes: number; mtimeMs: number }[] = [];
+    const unmanaged: { name: string; bytes: number }[] = [];
+    let entries: string[];
+    try {
+        entries = await fs.readdir(assetsPath);
+    } catch (error) {
+        signal?.throwIfAborted();
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return { files, unmanaged };
+        }
+        throw error;
+    }
+    signal?.throwIfAborted();
+    for (const entry of entries) {
+        const stat = await fs.lstat(path.join(assetsPath, entry)).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") {
+                return null;
+            }
+            throw error;
+        });
+        signal?.throwIfAborted();
+        if (!stat?.isFile()) {
+            continue;
+        }
+        const name = decodeFileName(entry);
+        if (name === null) {
+            unmanaged.push({ name: entry, bytes: stat.size });
+        } else {
+            files.push({ key: ASSET_PREFIX + name, bytes: stat.size, mtimeMs: stat.mtimeMs });
+        }
+    }
+    files.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    return { files, unmanaged };
 }
 
 /**

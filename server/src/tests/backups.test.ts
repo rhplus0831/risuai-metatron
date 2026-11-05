@@ -34,6 +34,7 @@ import {
 } from "./testSupport.ts";
 import { installSnapshot } from "./stagedRestore.ts";
 import { memoryKinds, memoryRecords, writeMemory } from "./memoryFixtures.ts";
+import { resolveStorageKey } from "../routes/storage.ts";
 
 const servers: ResourceTestClient[] = [];
 
@@ -1905,4 +1906,66 @@ describe("staged restore admission", () => {
         expect((await s.get("characters", "during")).status).toBe(404);
         expect(readdirSync(tmpDir(s))).toEqual([]);
     });
+});
+
+it("retains version-2 export assets from the database copy through the end of its stream", async () => {
+    const now = Date.UTC(2030, 0, 20);
+    const s = await defaultServer({ assetLifecycle: { wallClock: () => now, monoClock: () => 0, exportWaitMs: 4321 } });
+    const revision = await s.create("characters", "a", character("a", { image: "assets/export-only" }));
+    expect(
+        (
+            await s.request("/api/write", {
+                method: "POST",
+                headers: { "file-path": hex("assets/export-only") },
+                body: "export bytes",
+            })
+        ).status,
+    ).toBe(200);
+    await fs.utimes(resolveStorageKey(s.savePath, "assets/export-only")!, 0, 0);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const copied = defer();
+    const resume = defer();
+    const waiting = defer();
+    const stat = fs.stat;
+    vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+        if (String(args[0]).includes(`${path.sep}export-`) && String(args[0]).endsWith("resources.sqlite")) {
+            copied.resolve();
+            await resume.promise;
+        }
+        return stat(...args);
+    });
+    const setTimeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: (...values: unknown[]) => void,
+        delay?: number,
+        ...args: unknown[]
+    ) => {
+        const timer = setTimeout(callback, delay, ...args);
+        if (delay === 4321) waiting.resolve();
+        return timer;
+    }) as unknown as typeof globalThis.setTimeout);
+    const request = s.json("/api/backups/export", { partial: true });
+    let response: Response | undefined;
+    try {
+        await copied.promise;
+        expect((await s.put("characters", "a", { baseRevision: revision, data: character("a") })).status).toBe(200);
+        const scan = s.context.assetLifecycle.scan();
+        expect(await Promise.race([waiting.promise.then(() => "waiting"), scan.then(() => "finished")])).toBe(
+            "waiting",
+        );
+        resume.resolve();
+        response = await request;
+        expect(response.status).toBe(200);
+        expect((await scan).referenced).toMatchObject({ count: 1, dedupedBytes: 12 });
+        const streaming = await s.context.assetLifecycle.scan();
+        expect(streaming.complete, streaming.reasons.join("\n")).toBe(true);
+        expect(streaming.unreferenced.count).toBe(0);
+        const records = parseArchive(new Uint8Array(await response.arrayBuffer()));
+        expect(records.find((record) => record.name === "assets/export-only")?.data.toString()).toBe("export bytes");
+        expect((await s.context.assetLifecycle.scan()).unreferenced).toMatchObject({ count: 1, bytes: 12 });
+    } finally {
+        resume.resolve();
+        response ??= await request;
+        if (!response.bodyUsed) await response.body?.cancel();
+    }
 });

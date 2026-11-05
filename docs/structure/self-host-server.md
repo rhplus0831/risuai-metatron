@@ -32,7 +32,8 @@ comments; an entry names its path, role, and identifiers.
 - `server/src/main.ts` the process entry (HTTP or HTTPS, upgrades, shutdown): `startServer`, `REQUEST_TIMEOUT_MS`,
   `SHUTDOWN_GRACE_MS`, `TRUST_PROXY`.
 - `server/src/listenConfig.ts` bind, storage, and development-auth settings: `readListenConfig`, `ListenConfig` (`PORT`,
-  `RISU_HOST`, `RISU_SAVE_DIR`, `RISU_AGENT_DEV_AUTH_BYPASS`), `isLoopbackHost`, `parsePasswordSeed`.
+  `RISU_HOST`, `RISU_SAVE_DIR`, `RISU_AGENT_DEV_AUTH_BYPASS`), `isLoopbackHost`, `parsePasswordSeed`,
+  `parseAssetClockOffset`.
 - `server/src/app.ts` the assembly of state, routes, and lifecycle: `createServerContext`, `RouteLimits`,
   `attachWebSocket`, `startBackgroundTasks`, `beginShutdown`, `dispose`. It and its route factories consume the
   variables below; a value one of them cannot parse stops the start, with the variable's name.
@@ -60,6 +61,8 @@ comments; an entry names its path, role, and identifiers.
 - `server/src/http/assetVerification.ts` content-name verification: `assetVerification`, `contentNameHash`,
   `verifyFiles`, `holdsVerifiedAsset`. `server/src/http/assetThumbnails.ts` the thumbnail service and cache:
   `createThumbnailService`, `THUMBNAIL_VERSION`, `ThumbnailRequest`, `ENTRY_NAME`.
+- `server/src/data/assetLifecycle.ts` the [asset mark](#asset-mark): `recognize`; `server/src/http/diskSpace.ts`
+  `freeBytes`.
 - `diagnostics/` owns request history, diagnostic journals, reports, and support shares ([diagnostics](diagnostics.md)).
 - Packaging: `server/ssl/` generates local certificates; `Dockerfile`, `.dockerignore`, `server.sh`, and `server.bat`
   define deployment and launch behavior.
@@ -138,6 +141,8 @@ authenticated limiter, `no-store`, bodies capped after authentication (`PUT /api
   `thumbnailRedirect`, `thumbnailFailure`) are the comment above the route.
 - `POST /api/assets/write` and `/api/assets/read` (`shared/assetBatch.ts` framing); `POST /api/assets/missing`
   (`ASSET_MISSING_PATH`, `checkAuth` before the body, `assetVerification.verifyFiles`).
+- `GET /api/assets/report` and `POST /api/assets/scan`: `server/src/routes/assetLifecycle.ts`,
+  `shared/assetLifecycle.ts`.
 - The thumbnail sizes are admitted here (`widths`, `thumbnailSize`) and repeated in `ThumbnailRequest.size` and
   `ENTRY_NAME`: change them together. The browser and the service worker follow the variant's redirect to the original,
   so a page needs no status handling.
@@ -148,13 +153,19 @@ authenticated limiter, `no-store`, bodies capped after authentication (`PUT /api
 
 1. `server/src/main.ts` `startServer`: `readListenConfig`, `createServerContext` (save directory by `mkdirDurableSync`,
    state, routes), `serve()`, `attachWebSocket`, `startBackgroundTasks` (`generationJobs.startGc`, `snapshots.start`,
-   `diagnostics.start`, the thumbnail sweep).
+   `diagnostics.start`, the thumbnail sweep, the [asset mark](#asset-mark)).
 2. SIGINT or SIGTERM: `beginShutdown`, the HTTP drain (`SHUTDOWN_GRACE_MS`), `dispose()`; for a restore or an import see
    [shutdown during a restore](server-resources.md#shutdown-during-a-restore).
 
 `__NODE__` in the flagged `index.html` lets the client mount only when this server is present. Client boot, auth, and
 dev proxy setup are documented in [app-shell](app-shell.md) and [build-test-platforms](build-test-platforms.md). Opening
 the store runs the [normalization pass](server-resources.md#store-open-and-normalization).
+
+### Asset mark
+
+`createAssetLifecycle` (an hour after `startBackgroundTasks`, then daily, or `POST /api/assets/scan`;
+`RISU_ASSET_GRACE_DAYS`, `RISU_AGENT_DEV_ASSET_CLOCK_OFFSET_MS`) sweeps checkpoint pages, reads the live store and each
+new snapshot (`snapshots.pin`), waits for export holds (`createExportHolds`), and writes `data/asset-lifecycle.sqlite`.
 
 ### Login flow
 
@@ -206,7 +217,8 @@ Everything lives under `save/`. `data/`, `backups/`, and `cache/thumbnails/` are
 - `cache/thumbnails/`: the [thumbnail cache](#thumbnail-cache).
 - `data/resources.sqlite` and `backups/`: [the resource store](server-resources.md#state).
 - `data/generation-jobs.sqlite`: [the job receipts](server-generation.md#job-receipts).
-- `data/` also holds the [request history](diagnostics.md) and the [vector cache](memory.md).
+- `data/` also holds the [request history](diagnostics.md), the [vector cache](memory.md), and the
+  [asset ledger](#asset-mark).
 
 ### Auth and push files
 
@@ -246,8 +258,8 @@ Everything lives under `save/`. `data/`, `backups/`, and `cache/thumbnails/` are
 
 A logical key `assets/<name>` lives at `save/assets/<encodeFileName(name)>`, e.g. `assets/<sha>.png` or
 `assets/inlay_<sha256>.png`. The legacy `save/database` and `save/remotes` folders are left in place and never read, and
-files of the flat layout (hex file names and `__password` directly in `save/`) are neither read nor migrated. Retained
-snapshots can keep assets from being deleted ([Issues](server-resources.md#issues)).
+files of the flat layout (hex file names and `__password` directly in `save/`) are neither read nor migrated. Nothing
+deletes an asset ([asset mark](#asset-mark)).
 
 - `encodeFileName` keeps `a-z 0-9 . _ -` readable and writes every other UTF-8 byte (uppercase letters, `/`, `%`,
   spaces, non-ASCII) as `%XX`. It also escapes a trailing dot and the first character of a Windows device name
@@ -286,6 +298,7 @@ store's and the jobs' parts are in [store state](server-resources.md#process-mem
 - Rate-limit counters.
 - The thumbnail service (`thumbnails`): its single flights, generation slots and wait queue, per-key locks, and the
   loaded encoder. A restart loses only work in flight; the disk cache stays.
+- The asset mark's last report, run identity, and export holds.
 
 ## Coupling
 

@@ -453,6 +453,8 @@ export const ROUTE_TEMPLATES = [
     "/api/assets/write",
     "/api/assets/read",
     "/api/assets/missing",
+    "/api/assets/report",
+    "/api/assets/scan",
     "/api/asset/*",
     "/api/chats/search",
     "/api/chat-checkpoints",

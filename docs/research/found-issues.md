@@ -10,7 +10,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (7)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (8)
-- [Server routes and resource store](#server-routes-and-resource-store) (4)
+- [Server routes and resource store](#server-routes-and-resource-store) (3)
 - [Request history and diagnostics](#request-history-and-diagnostics) (1)
 - [Display transform](#display-transform) (1)
 - [Chat screen and input](#chat-screen-and-input) (4)
@@ -160,13 +160,6 @@ Since `limitedBody` counts the bytes that arrive (Server Byte Budgets slice 1, `
 
 **Why it matters:** D1 of the plan says route caps go through the shared helper; two copies drift.
 **Suggested handling:** replace the copy with `limitedBody(MAX_CHECKPOINT_BODY_BYTES)` and remove the guide's note.
-
-### checkpoints.sweep has no product caller
-
-`store.checkpoints.sweep` (`server/src/data/resourceStore.ts` ~1756 on 2026-11-01) is called only by tests; the open-time sweep (~1181) calls the table function directly. Since `prune` and `delete` stopped sweeping the whole `checkpointPages` table (slice 7, `7d55d0189`), the pages a chat or character cascade orphans wait for the next open, so a long-running server keeps them until a restart. The plan accepted the wait; the unused wrapper was noticed in passing.
-
-**Why it matters:** the bytes of a deleted chat's pages stay in the database file and in every snapshot's copy until a restart (a restore drops them).
-**Suggested handling:** if orphan growth ever matters, call the sweep from a maintenance tick or after a chat delete; otherwise the wrapper is test-only and could move.
 
 ### The LLM answer route comment names one 404 and no cap
 

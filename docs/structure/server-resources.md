@@ -240,7 +240,8 @@ maintenance gate. Jobs, transforms, and memory tasks stop for it ([job state](se
 ## State
 
 Paths are under `save/` ([Disk layout](self-host-server.md#disk-layout)). `backups/` holds the resource snapshots
-(`resources-*.sqlite`, single files, newest 20); assets are not in snapshots.
+(`resources-*.sqlite`, single files, newest 20); assets are not in snapshots, and the
+[asset ledger](self-host-server.md#asset-mark) indexes each one's references once.
 
 ### Store tables
 
@@ -389,14 +390,14 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 
 ### Issues
 
-- Snapshots (`save/backups/`) copy `resources.sqlite`, not assets; retained snapshots can keep references to assets that
-  are never deleted, so `save/assets/` can grow.
 - `normalizeCharacterOrder` and `normalizeCustomModels` do not deduplicate entries. The former accepts folder objects
   without validating their fields; the latter requires string `id` and `internalId` and strips retired credential
   fields.
 
 ### Limitations
 
+- Nothing deletes assets and every listed snapshot is an [asset mark](self-host-server.md#asset-mark) root, so
+  `save/assets/` grows. Decision: [Asset Lifecycle](../plan/asset-lifecycle.md) D3.
 - The SQLite resource store assumes one server process and a local filesystem
   ([Invariants](self-host-server.md#invariants)). Network filesystems are unsupported. Decision: Server Byte Budgets Q1,
   archive.

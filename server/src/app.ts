@@ -2,6 +2,12 @@ import type { Credential, Database, ModelProfile } from "../../shared/database.t
 import { credentialSlotOf } from "../../shared/llm/credentialSlots.ts";
 import { resolveModelInfo } from "../../shared/llm/models.ts";
 import type { MemoryTaskService } from "../../shared/jobs.ts";
+import {
+    ASSET_GRACE_DEFAULT_DAYS,
+    ASSET_GRACE_MIN_DAYS,
+    ASSET_REPORT_PATH,
+    ASSET_SCAN_PATH,
+} from "../../shared/assetLifecycle.ts";
 import { resolveCredential } from "./llm/credentials.ts";
 import { readFileSync } from "node:fs";
 import type http from "node:http";
@@ -11,6 +17,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { routePath } from "hono/route";
+import { createAssetLifecycle, type AssetLifecycleOptions } from "./data/assetLifecycle.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "./data/kinds.ts";
 import { createChangeFeed } from "./data/changeFeed.ts";
 import { createCheckpointService } from "./data/checkpointService.ts";
@@ -43,7 +50,7 @@ import { createGenerationJobs, type GenerationRunner } from "./jobs/generationJo
 import { createGenerationLock } from "./jobs/generationLock.ts";
 import { createClaudeObserver } from "./llm/claudeObserver.ts";
 import { createLlmRequests } from "./llm/requests.ts";
-import { parsePasswordSeed } from "./listenConfig.ts";
+import { parseAssetClockOffset, parsePasswordSeed } from "./listenConfig.ts";
 import { loadStoredSecrets, mergeCredentials } from "./llm/settings.ts";
 import { createVertexTokenCache } from "./llm/vertexToken.ts";
 import { createEmbeddings } from "./prompt/embeddings.ts";
@@ -54,6 +61,7 @@ import { createMcpRegistry } from "./mcp/registry.ts";
 import { createTokenizers } from "./prompt/tokenizers/index.ts";
 import { createTokenCounter } from "./prompt/tokens.ts";
 import { createTransformers } from "./prompt/transformers.ts";
+import { registerAssetLifecycleRoutes } from "./routes/assetLifecycle.ts";
 import { createAuthStore, CRYPTO_PATH, LOGIN_PATH, SET_PASSWORD_PATH } from "./routes/auth.ts";
 import { CHAT_CHECKPOINTS_PATH, registerChatCheckpointRoutes } from "./routes/chatCheckpoints.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
@@ -237,7 +245,13 @@ export function createServerContext(options: {
     memoryTaskOptions?: { now?: () => number; limits?: Partial<MemoryTaskLimits> };
     /** The thumbnail encoder loader and generation limits (default 2 running, 32 queued). */
     thumbnailOptions?: ThumbnailOptions;
+    /** Retention scan clocks, grace, chunk yield, disk probe, and timer delays (tests). */
+    assetLifecycle?: AssetLifecycleOptions;
 }) {
+    const graceDays = options.assetLifecycle?.graceDays ?? parseAssetGraceDays(process.env.RISU_ASSET_GRACE_DAYS);
+    const clockOffsetMs =
+        options.assetLifecycle?.clockOffsetMs ??
+        parseAssetClockOffset(process.env.RISU_AGENT_DEV_ASSET_CLOCK_OFFSET_MS, process.env.RISU_HOST);
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
     mkdirDurableSync(savePath);
@@ -406,6 +420,16 @@ export function createServerContext(options: {
         savePath,
         assetsPath: path.join(savePath, "assets"),
     });
+    const assetLifecycle = createAssetLifecycle({
+        ...options.assetLifecycle,
+        savePath,
+        store: resources,
+        snapshots,
+        exportHolds: upstreamExportStaging,
+        graceDays,
+        clockOffsetMs,
+    });
+    let assetOffsetLogged = false;
     const thumbnailSweepController = new AbortController();
     let thumbnailSweep: Promise<void> | undefined;
     const embeddings = createEmbeddings({ cache: vectorCache, transformers });
@@ -581,6 +605,7 @@ export function createServerContext(options: {
         }
         shuttingDown = true;
         thumbnailSweepController.abort();
+        assetLifecycle.beginShutdown();
         diagnostics.record({ kind: "lifecycle", phase: "shutdown" });
         // The memory tasks end `cancelled` (`shutdown`) first, before the jobs' aborts release their
         // writer leases and the request layer fails the tasks' requests; their terminals reach the
@@ -690,6 +715,7 @@ export function createServerContext(options: {
             c.req.path.startsWith(`${REQUEST_HISTORY_PATH}/`) ||
             c.req.path.replace(/\/+$/, "") === DIAGNOSTICS_PATH ||
             c.req.path.startsWith(`${DIAGNOSTICS_PATH}/`);
+        const assetLifecycleRoute = fileImportRoute === ASSET_REPORT_PATH || fileImportRoute === ASSET_SCAN_PATH;
         const tokenRoute = fileImportRoute === TOKEN_COUNT_PATH || fileImportRoute === TOKEN_ENCODE_PATH;
         // The login, the password set, and the subscription writes end in a durable write that dispose
         // must wait for, so they are refused and tracked like resource handlers.
@@ -704,12 +730,15 @@ export function createServerContext(options: {
             c.header("Connection", "close");
         }
         try {
-            if (shuttingDown && (resource || backup || fileImport || history || tokenRoute || stateWrite)) {
+            if (
+                shuttingDown &&
+                (resource || backup || fileImport || history || tokenRoute || stateWrite || assetLifecycleRoute)
+            ) {
                 c.header("Retry-After", "5");
                 c.header("Cache-Control", "no-store");
                 return c.json({ error: "The server is shutting down" }, 503);
             }
-            if (resource || stateWrite) {
+            if (resource || stateWrite || assetLifecycleRoute) {
                 await snapshots.track(next);
             } else {
                 await next();
@@ -718,7 +747,7 @@ export function createServerContext(options: {
             if (shuttingDown) {
                 c.header("Connection", "close");
             }
-            if (history || memoryTask || structuredMemory || tokenRoute || checkpoint) {
+            if (history || memoryTask || structuredMemory || tokenRoute || checkpoint || assetLifecycleRoute) {
                 c.header("Cache-Control", "no-store");
             }
         }
@@ -961,7 +990,9 @@ export function createServerContext(options: {
         process.env.RISU_RESTORE_HEAP_MB,
         DEFAULT_RESTORE_HEAP_MB,
     );
+    registerAssetLifecycleRoutes(app, { auth, limiter: storageRouteLimiter.middleware, lifecycle: assetLifecycle });
     registerBackupRoutes(app, {
+        exportHolds: upstreamExportStaging,
         savePath,
         store: resources,
         snapshots,
@@ -1065,6 +1096,7 @@ export function createServerContext(options: {
         realmStaging,
         upstreamStaging,
         upstreamExportStaging,
+        assetLifecycle,
         /**
          * Installs the one `upgrade` dispatcher: generation jobs, the live-update socket, else the
          * socket is destroyed.
@@ -1086,14 +1118,20 @@ export function createServerContext(options: {
         },
         /**
          * Starts the job garbage collection, the snapshot timer, the diagnostics timers, and the
-         * thumbnail cache sweep (once per context, never after shutdown began; `beginShutdown` aborts
-         * it). `main.ts` calls it after `serve()`, so the sweep runs once the server listens.
+         * thumbnail cache sweep and daily read-only asset scan (once per context, never after shutdown
+         * began; `beginShutdown` aborts both). `main.ts` calls it after `serve()`, so the sweep runs
+         * once the server listens.
          */
         startBackgroundTasks: () => {
             generationJobs.startGc();
             snapshots.start();
             diagnostics.start();
             if (!shuttingDown) {
+                assetLifecycle.start();
+                if (!assetOffsetLogged && clockOffsetMs !== 0) {
+                    assetOffsetLogged = true;
+                    console.log(`[Server] Development asset clock offset: ${clockOffsetMs} ms`);
+                }
                 thumbnailSweep ??= thumbnails.sweep(thumbnailSweepController.signal).catch((error: unknown) => {
                     console.error("Thumbnail cache sweep failed:", error);
                 });
@@ -1102,9 +1140,10 @@ export function createServerContext(options: {
         /**
          * Begins shutdown (every generation job is aborted), waits for the jobs to end (bounded by
          * their abort deadline), disposes the script workers, waits for admitted resource handlers
-         * and backup operations, then closes the store. Once the jobs and the admitted operations
-         * ended, the subscription writes they left are waited for, the diagnostics' timers stop, what
-         * it has queued is written (`finish`, bounded by its own deadline), and its final `state.json`
+         * and backup operations, waits for the asset scan and closes its ledger, then closes the store.
+         * Once the jobs and the admitted operations ended, the subscription writes they left are
+         * waited for, the diagnostics' timers stop, what it has queued is written (`finish`, bounded
+         * by its own deadline), and its final `state.json`
          * is published last, while the stores it reads are open; a failure is a `runtime` event and
          * another state. The HTTP entrypoint drains connections before calling this; in-process callers
          * can use it alone. Calling it again returns the same promise.
@@ -1135,6 +1174,7 @@ export function createServerContext(options: {
                 .then(() => vectorCache.close())
                 .then(() => requestHistory.close())
                 .then(() => generationReceipts.close())
+                .then(() => assetLifecycle.close())
                 .then(() => resources.close())
                 .catch(async (error: unknown) => {
                     diagnostics.record({ kind: "runtime", origin: "dispose", ...errorFields(error) });
@@ -1146,6 +1186,19 @@ export function createServerContext(options: {
             return disposing;
         },
     };
+}
+
+/** Asset retention grace in whole days; blank uses the default and values below the minimum are refused. */
+function parseAssetGraceDays(raw: string | undefined): number {
+    const value = raw?.trim();
+    if (!value) {
+        return ASSET_GRACE_DEFAULT_DAYS;
+    }
+    const days = Number(value);
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(days) || days < ASSET_GRACE_MIN_DAYS) {
+        throw new Error(`Invalid RISU_ASSET_GRACE_DAYS: ${raw}`);
+    }
+    return days;
 }
 
 /** A positive safe integer from the environment variable `name`, else `fallback` when unset or empty. */
