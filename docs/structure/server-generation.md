@@ -214,14 +214,13 @@ Rules: the comments of `participantJob`, `attach`, `switchOwner`, `takeover`, `a
 ### Job receipts
 
 `data/generation-jobs.sqlite` (plus its `-wal` and `-shm` files) holds the generation job receipts
-(`data/generationReceipts.ts` `createGenerationReceipts`). Like the request history it is in no snapshot or archive.
+(`data/generationReceipts.ts` `createGenerationReceipts`; its header holds the schema check and degraded mode). Like the
+request history it is in no snapshot or archive.
 
 - Table `receipts`, one row per job: `job_id` (primary key), `request_id` and `fingerprint` (null for older clients;
   unique `(epoch, request_id)`), `client_id`, `epoch`, `kind`, `character_id`, `chat_id`, `admitted_at`, `ended_at`
   (null while the job runs; indexed), `progress` (the sequence's `{ total, sent }` JSON, otherwise null), and `status`,
   the kept `GenerationStatus` JSON: no `result`, error message cut to 4 KiB, `sequence` intact.
-- `PRAGMA user_version` is 1; a file of another version is left untouched and the store runs degraded. WAL with
-  `synchronous=NORMAL`.
 - A cancelled request uses the same table: `job_id = "cancel:" + requestId`, private `kind = "cancelled"`, empty
   character/chat ids, `admitted_at = ended_at` at cancellation, and null fingerprint/status/progress. It is never served
   by a job-status read and is pruned with compact rows.
@@ -230,22 +229,13 @@ Rules: the comments of `participantJob`, `attach`, `switchOwner`, `takeover`, `a
   completed part boundary before its event.
 - Reads: a status answers from memory first (the live job, then its kept outcome); the disk answers only an id memory
   does not hold, only to the row's `client_id`, and only in the current epoch. Request lookup is shared across clients
-  and returns the identity even when its status payload is gone. Lookup, admission and cancel synchronously delete an
-  expired matching request row before reusing its unique key, never replacing a live identity.
-- At open, rows of another epoch are deleted and every running row is ended as a kept
-  `{ type: "error", reason: "shutdown", status: 503, message: "The server stopped while this job ran" }`, keeping its
-  `progress` and including it as terminal `sequence` when it is a valid object of non-negative integer `total` and
-  `sent`, with `sent <= total`; this runs once per open. Remaining parts are not resumed.
+  and returns the identity even when its status payload is gone (`readByRequest`).
+- At open, rows of another epoch are deleted and running rows end as a kept 503 `shutdown` error
+  (`createGenerationReceipts`).
 - An epoch change (the maintenance end, or the registry noticing it at a status read, an admission, or the GC tick)
   deletes the old epoch's rows in one transaction.
-- Retention, pruned on the 30 s GC tick in bounded transactions: a row's `status` is cleared 24 h after its end
-  (`KEPT_OUTCOME_MS`, also checked at every read, so an expired payload never reads back before the prune) or when it is
-  not among the 500 newest payloads (`MAX_KEPT_OUTCOMES`); the compact row stays 72 h after its end
-  (`GENERATION_RECEIPT_MS`), at most 10,000 rows (`MAX_GENERATION_RECEIPTS`, oldest end first). A running row is never
-  pruned.
-- Degraded mode: a failure to open, write, read, sync or prune closes the connection for the rest of the process. The
-  disk is no longer read or written, jobs are admitted and end as before, the in-memory kept outcomes go on, and the
-  failure is one content-free `runtime` event (origin `generation.receipts`).
+- Retention: the comments of `KEPT_OUTCOME_MS`, `MAX_KEPT_OUTCOMES`, `GENERATION_RECEIPT_MS` and
+  `MAX_GENERATION_RECEIPTS`, pruned on the 30 s GC tick in bounded transactions; reads check the payload age too.
 
 ### Process memory
 
@@ -291,8 +281,7 @@ Rules: the comments of `participantJob`, `attach`, `switchOwner`, `takeover`, `a
 
 The in-process harness and the slow table are in the [shell's Tests](self-host-server.md#tests).
 
-- `util/playwright/checkJobProtocol.mjs` is the real-server browser check for the job protocol
-  ([test-harness](test-harness.md)).
+- Browser checks: `util/playwright/checkJobProtocol.mjs` and `checkJobHandoff.mjs` ([test-harness](test-harness.md)).
 - Jobs:
   `pnpm --silent test:agent server/src/tests/{generationJobs,generationReceipts,generationDeltaChunks,generations,commandSequences,generationBarrier,jobChannel,promptRunner}.test.ts`.
 - Transform and translation: `pnpm --silent test:agent server/src/tests/{transform,transformService,translate}.test.ts`.
@@ -330,6 +319,9 @@ Runtime limits of other subsystems live with their owners: [chat-pipeline](chat-
   shows `serverJob.endedAway` when no outcome receipt remains. Decision: Job Protocol D1, archive.
 - A callback delivered to an owner whose device then sleeps is not handed over; `handoff: "prefer"` only opens an offer.
   Decision: Job Handoff Q4.
+- An `absent` offer leaves a worker 50 s before the job's first undelivered callback expires, but a queued root that
+  another job's expired root settles `disconnected` (the cascade in `createChannelHub`) can end sooner. Decision: Job
+  Handoff D3.
 - Lua stuck in native code cannot reach its abort hook; worker termination waits for abort grace, and queued work waits
   for a replacement. Decision: Server-Owned Data script worker spike, archive; `server/src/lua/runtime.ts`.
 

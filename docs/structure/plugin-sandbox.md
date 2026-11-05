@@ -137,6 +137,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 - Hooks may run on a worker showing another chat: `getRootDocument` finds no message DOM there. Targets remain the
   job's; device-local keys are the worker's. A delivered callback never runs on a second tab, even if its device sleeps.
+- A hidden worker tab answered a hook in 19 ms (`checkJobHandoff.mjs`); Chrome's intensive timer throttling after 5
+  minutes hidden, which can delay a hook that waits on a timer, is unmeasured.
 - MCP excludes silent owners; a live tab answering pings keeps a long provider call alive. Absence failure saves partial
   text and ends the job. Completed-reply transforms keep text; undelivered listeners run late, delivered ones are
   missed.
@@ -249,8 +251,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   controlled. `pluginWorkIdle.test.ts`: a controllable sandbox idle flag, the job channel real.
 - `storeBackedServer.ts`: the real save adapter over the real server store, for saved writes. `FakeResourceServer`:
   `permissionStore.test.ts`.
-- `util/playwright/checkJobProtocol.mjs` (a browser check, not in the gate): a real v3 plugin provider answers job
-  callbacks from the sandbox ([test-harness](test-harness.md)).
+- Browser checks, not in the gate ([test-harness](test-harness.md)): `util/playwright/checkJobProtocol.mjs` (a real v3
+  plugin provider answers job callbacks from the sandbox) and `checkJobHandoff.mjs` (hooks move between two tabs).
 - Not tested: hot reload, and the remaining sandbox RPC surface.
 
 ## Known Hazards

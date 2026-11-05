@@ -11,6 +11,19 @@ import { fileURLToPath } from "node:url";
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const chromePath = process.env.RISU_CHROME ?? "/usr/bin/google-chrome";
 
+/** Install a v3 plugin at boot using the persisted shape written by importPlugin. */
+export function pluginFixtureOp(name, script, plugins) {
+    return {
+        kind: "plugins",
+        id: "main",
+        baseRevision: plugins.revision,
+        data: [
+            ...plugins.data.filter((plugin) => plugin.name !== name),
+            { name, script, version: "3.0", enabled: true, arguments: {}, realArg: {}, customLink: [], argMeta: {} },
+        ],
+    };
+}
+
 /** Hosts a check may reach: the app, its server, and the checks' local mocks. */
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0", "host.docker.internal"]);
 
