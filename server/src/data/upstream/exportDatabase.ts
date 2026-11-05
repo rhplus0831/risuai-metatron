@@ -204,7 +204,7 @@ const METATRON_CHAT_FIELDS = [
 ];
 
 /** Where `pluginCustomStorage` holds what upstream keeps in its device storage (LocalForage). */
-const DEVICE_PLUGIN_STORAGE_KEYS = ["_pluginStorage", "_safeLocalPluginStorage"];
+const DEVICE_PLUGIN_STORAGE_KEYS = ["_pluginStorage", "_safeLocalPluginStorage", "_ownedPluginStorage"];
 
 /** Credentials of the auxiliary services in the `secrets` section: flat fields, then nested leaves. */
 const AUXILIARY_SECRET_FIELDS = [
@@ -899,7 +899,7 @@ function repairCharacterOrder(value: unknown, report: UpstreamExportReport): unk
 
 /**
  * `pluginCustomStorage` without what upstream keeps in its device storage (`_pluginStorage`,
- * `_safeLocalPluginStorage`) or as cold storage (`_coldplugin`); the left-out entries are counted.
+ * `_safeLocalPluginStorage`, `_ownedPluginStorage`) or as cold storage (`_coldplugin`); the left-out entries are counted.
  */
 function upstreamPluginStorage(value: unknown, plugins: readonly Root[], report: UpstreamExportReport): Root {
     const storage: Root = isPlainObject(value) ? { ...value } : {};

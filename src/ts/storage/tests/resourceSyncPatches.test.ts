@@ -1089,6 +1089,185 @@ describe("modules item patches another tab committed", () => {
 // General record patches. Expectations describe the wire contract, not a diff helper.
 const idKinds = ["presets", "modelPresets", "modelProfiles", "personas", "credentials", "plugins"] as const;
 describe("patches of the other mirrored records", () => {
+    it.each(["_pluginStorage", "_safeLocalPluginStorage"])(
+        "saves one changed or removed entry of %s as a nested patch",
+        async (dictionary) => {
+            const keep = "unchanged".repeat(100);
+            const initial = { custom: "kept", [dictionary]: { keep, value: { enabled: false, option: 1 } } };
+            const h = await boot((fake) => fake.set("pluginStorage", "main", initial));
+            const base = h.revision("pluginStorage");
+            const value = { enabled: true, option: 1 };
+            (h.records.trackedRecord("pluginStorage") as any)[dictionary].value.enabled = true;
+            expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+            expect(h.ops()).toEqual([
+                {
+                    kind: "pluginStorage",
+                    id: "main",
+                    baseRevision: base,
+                    patch: { set: {}, remove: [], nested: { [dictionary]: { set: { value }, remove: [] } } },
+                },
+            ]);
+            expect(h.record("pluginStorage")).toEqual({ custom: "kept", [dictionary]: { keep, value } });
+            h.agree("pluginStorage");
+
+            h.fake.requests.length = 0;
+            const saved = h.revision("pluginStorage");
+            delete (h.records.trackedRecord("pluginStorage") as any)[dictionary].value;
+            await h.sync.flushResources();
+            expect(h.ops()).toEqual([
+                {
+                    kind: "pluginStorage",
+                    id: "main",
+                    baseRevision: saved,
+                    patch: { set: {}, remove: [], nested: { [dictionary]: { set: {}, remove: ["value"] } } },
+                },
+            ]);
+            expect(h.record("pluginStorage")).toEqual({ custom: "kept", [dictionary]: { keep } });
+            await h.settle();
+            h.agree("pluginStorage");
+            h.noNotice();
+        },
+    );
+
+    it("sends a reserved dictionary as a top-level field when its shape, prototype entry, or key order needs replacement", async () => {
+        const h = await boot();
+        const keep = "unchanged".repeat(100);
+        const cases: { label: string; before: unknown; after: unknown }[] = [
+            { label: "array to dictionary", before: [1], after: { value: 2 } },
+            { label: "string to dictionary", before: "old", after: { value: 2 } },
+            { label: "absent to dictionary", before: undefined, after: { value: 2 } },
+            { label: "dictionary to array", before: { value: 1 }, after: [2] },
+            { label: "dictionary to string", before: { value: 1 }, after: "new" },
+            {
+                label: "changed own prototype entry",
+                before: JSON.parse('{"__proto__":{"value":1},"keep":true}'),
+                after: JSON.parse('{"__proto__":{"value":2},"keep":true}'),
+            },
+            { label: "retained keys reordered", before: { a: 1, b: 2 }, after: { b: 3, a: 1 } },
+        ];
+        for (const { label, before, after } of cases) {
+            h.fake.set("pluginStorage", "main", {
+                keep,
+                ...(before === undefined ? {} : { _pluginStorage: before }),
+            });
+            await h.settle();
+            h.fake.requests.length = 0;
+            const base = h.revision("pluginStorage");
+            h.records.replaceRecord("pluginStorage", { keep, _pluginStorage: after });
+            expect(await h.sync.flushResources(), label).toEqual({ discarded: [], refused: [] });
+            expect(h.ops(), label).toEqual([
+                {
+                    kind: "pluginStorage",
+                    id: "main",
+                    baseRevision: base,
+                    patch: { set: { _pluginStorage: after }, remove: [] },
+                },
+            ]);
+            expect(JSON.stringify(h.record("pluginStorage")), label).toBe(
+                JSON.stringify({ keep, _pluginStorage: after }),
+            );
+            h.agree("pluginStorage");
+        }
+        h.noNotice();
+    });
+
+    it("toggles plugins without ids by name and uses names for a changed order", async () => {
+        const initial = [
+            { name: "first", enabled: true, script: "first script".repeat(100) },
+            { name: "second", enabled: false, script: "second script".repeat(100) },
+        ];
+        const h = await boot((fake) => fake.set("plugins", "main", initial));
+        const base = h.revision("plugins");
+        (h.records.trackedRecord("plugins") as any)[1].enabled = true;
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(h.ops()).toEqual([
+            {
+                kind: "plugins",
+                id: "main",
+                baseRevision: base,
+                patch: { itemKey: "name", items: [], changes: [{ id: "second", set: { enabled: true }, remove: [] }] },
+            },
+        ]);
+        const enabled = { ...initial[1], enabled: true };
+        expect(h.record("plugins")).toEqual([initial[0], enabled]);
+        h.agree("plugins");
+
+        h.fake.requests.length = 0;
+        const saved = h.revision("plugins");
+        h.records.replaceRecord("plugins", [enabled, initial[0]]);
+        await h.sync.flushResources();
+        expect(h.ops()).toEqual([
+            {
+                kind: "plugins",
+                id: "main",
+                baseRevision: saved,
+                patch: { itemKey: "name", items: [], changes: [], order: ["second", "first"] },
+            },
+        ]);
+        expect(h.record("plugins")).toEqual([enabled, initial[0]]);
+        await h.settle();
+        h.agree("plugins");
+        h.noNotice();
+    });
+
+    it("sends plugins without ids whole when a name is duplicate or empty", async () => {
+        const h = await boot();
+        for (const names of [
+            ["same", "same"],
+            ["", "second"],
+        ]) {
+            const initial = names.map((name) => ({ name, enabled: false, script: "unchanged script".repeat(100) }));
+            h.fake.set("plugins", "main", initial);
+            await h.settle();
+            h.fake.requests.length = 0;
+            const base = h.revision("plugins");
+            (h.records.trackedRecord("plugins") as any)[1].enabled = true;
+            expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+            const expected = [initial[0], { ...initial[1], enabled: true }];
+            expect(h.ops()).toEqual([{ kind: "plugins", id: "main", baseRevision: base, data: expected }]);
+            expect(h.record("plugins")).toEqual(expected);
+            h.agree("plugins");
+        }
+        h.noNotice();
+    });
+
+    it("merges different keys from two tabs in one reserved dictionary after a nested patch conflicts", async () => {
+        const keep = "unchanged".repeat(100);
+        const h = await boot((fake) =>
+            fake.set("pluginStorage", "main", { _pluginStorage: { keep, local: 1, remote: 1 } }),
+        );
+        h.live.paused = true;
+        const base = h.revision("pluginStorage");
+        (h.records.trackedRecord("pluginStorage") as any)._pluginStorage.local = 2;
+        const remote = h.fake.store.applyChanges({
+            ops: [
+                {
+                    kind: h.fake.kind("pluginStorage"),
+                    id: "main",
+                    baseRevision: base,
+                    patch: { nested: { _pluginStorage: { set: { remote: 3 } } } },
+                },
+            ],
+        }).results[0].revision;
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(h.ops()).toEqual(
+            [base, remote].map((baseRevision) => ({
+                kind: "pluginStorage",
+                id: "main",
+                baseRevision,
+                patch: { set: {}, remove: [], nested: { _pluginStorage: { set: { local: 2 }, remove: [] } } },
+            })),
+        );
+        expect(h.record("pluginStorage")).toEqual({ _pluginStorage: { keep, local: 2, remote: 3 } });
+        h.agree("pluginStorage");
+        h.live.paused = false;
+        h.flushFeed();
+        await h.settle();
+        expect(h.fake.batchCount()).toBe(2);
+        h.agree("pluginStorage");
+        h.noNotice();
+    });
+
     it.each(idKinds)("saves and receives %s item patches, including membership and selection changes", async (kind) => {
         const h = await boot((fake) =>
             fake.set(

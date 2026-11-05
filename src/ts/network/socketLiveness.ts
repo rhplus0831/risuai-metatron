@@ -34,6 +34,11 @@ export type SocketWatch = {
 /** The subscribers a pending fold calls (those subscribed when its first trigger came), or null. */
 let folding: Set<() => void> | null = null;
 
+/** Whether a resume trigger is waiting to replace the tab's sockets at the end of its fold. */
+export function resumePending(): boolean {
+    return folding !== null;
+}
+
 /**
  * Watches one connection from its start: `onConnectTimeout` when it has not opened within
  * `CONNECT_TIMEOUT_MS`; once open, `onStale` when it had no frame for `STALE_AFTER_MS`, checked every

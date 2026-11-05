@@ -882,7 +882,9 @@ describe("the pluginStorage record every plugin shares", () => {
         expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: { k: 2 }, custom: 1 });
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         expect(changed).toEqual(["pluginStorage/main"]);
-        expect(discards).toEqual([{ pluginStorage: ["k", "other"], localPluginStorage: ["s"], customStorage: true }]);
+        expect(discards).toEqual([
+            { pluginStorage: ["k", "other"], ownedPluginStorage: [], localPluginStorage: ["s"], customStorage: true },
+        ]);
         expect(seen).toEqual([[2, true, ["k", "other"]]]);
         // Nothing is echoed back, and the next write starts from the reloaded record.
         await idle(fake, sync);
@@ -901,14 +903,21 @@ describe("the pluginStorage record every plugin shares", () => {
         store.setPluginCustomValue("custom", 3);
         expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
         expect(fake.data("pluginStorage", "main").custom).toBe(2);
-        expect(discards).toEqual([{ pluginStorage: [], localPluginStorage: [], customStorage: true }]);
+        expect(discards).toEqual([
+            { pluginStorage: [], ownedPluginStorage: [], localPluginStorage: [], customStorage: true },
+        ]);
 
         remote("pluginStorage", "main", (data) => delete data._pluginStorage.k);
         store.setPluginStorageItem("k", 5);
         expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
         expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: {}, custom: 2 });
         expect(store.getPluginStorageValue("k")).toBeNull();
-        expect(discards[1]).toEqual({ pluginStorage: ["k"], localPluginStorage: [], customStorage: false });
+        expect(discards[1]).toEqual({
+            pluginStorage: ["k"],
+            ownedPluginStorage: [],
+            localPluginStorage: [],
+            customStorage: false,
+        });
     });
 
     it("reads a saved list namespace as its entries when both tabs converted it, and keeps a list the server holds now atomic", async () => {
@@ -929,7 +938,9 @@ describe("the pluginStorage record every plugin shares", () => {
         expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
         expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: [9] });
         expect(store.getPluginStorageValue("0")).toBe(9);
-        expect(discards).toEqual([{ pluginStorage: ["l"], localPluginStorage: [], customStorage: false }]);
+        expect(discards).toEqual([
+            { pluginStorage: ["l"], ownedPluginStorage: [], localPluginStorage: [], customStorage: false },
+        ]);
     });
 
     it("reports a lost namespace shape (a list turned into an object, an empty namespace created here) under customStorage even when no entry differs", async () => {
@@ -942,7 +953,9 @@ describe("the pluginStorage record every plugin shares", () => {
         remote("pluginStorage", "main", (data) => (data._pluginStorage = [2]));
         expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
         expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: [2] });
-        expect(discards).toEqual([{ pluginStorage: [], localPluginStorage: [], customStorage: true }]);
+        expect(discards).toEqual([
+            { pluginStorage: [], ownedPluginStorage: [], localPluginStorage: [], customStorage: true },
+        ]);
 
         // A `clear` of the never-written local namespace creates it empty; it goes with another key's conflict.
         store.setPluginStorageItem("k", 2);
@@ -950,7 +963,12 @@ describe("the pluginStorage record every plugin shares", () => {
         remote("pluginStorage", "main", (data) => (data._pluginStorage = { "0": 2, k: 3 }));
         expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
         expect(fake.data("pluginStorage", "main")).toEqual({ _pluginStorage: { "0": 2, k: 3 } });
-        expect(discards[1]).toEqual({ pluginStorage: ["k"], localPluginStorage: [], customStorage: true });
+        expect(discards[1]).toEqual({
+            pluginStorage: ["k"],
+            ownedPluginStorage: [],
+            localPluginStorage: [],
+            customStorage: true,
+        });
     });
 
     it("keeps inherited names as own keys at both levels: no prototype change, both tabs' keys on the server", async () => {
@@ -1011,8 +1029,12 @@ describe("the pluginStorage record every plugin shares", () => {
         store.setPluginStorageItem("k", 3);
         expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
         expect(errors).toHaveBeenCalled();
-        expect(discards).toEqual([{ pluginStorage: ["k"], localPluginStorage: [], customStorage: false }]);
-        expect(last).toEqual([{ pluginStorage: ["k"], localPluginStorage: [], customStorage: false }]);
+        expect(discards).toEqual([
+            { pluginStorage: ["k"], ownedPluginStorage: [], localPluginStorage: [], customStorage: false },
+        ]);
+        expect(last).toEqual([
+            { pluginStorage: ["k"], ownedPluginStorage: [], localPluginStorage: [], customStorage: false },
+        ]);
     });
 });
 

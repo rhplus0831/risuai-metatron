@@ -1,9 +1,9 @@
 import { untrack } from "svelte";
-import type { character, Database, groupChat } from "../../../shared/database.ts";
+import type { character, Chat, Database, groupChat } from "../../../shared/database.ts";
 import { plainClone } from "../../../shared/presets.ts";
 import { SECTION_FIELDS } from "../../../shared/sections.ts";
 import { characterList } from "./characterStore.svelte";
-import { withChatsCopy } from "./chatStore.svelte";
+import { characterLastChattedAt, chatSummaryList, withChatsCopy } from "./chatStore.svelte";
 import {
     isForwardedPresetRoot,
     isSettingsRootKey,
@@ -44,17 +44,36 @@ export function rootSnapshot(): Record<string, unknown> {
 
 /**
  * The plugin `getDatabase` subset (`allowedDbKeys`, filtered by the caller): `characters` in the
- * legacy shape with their chats (`withChatsCopy`: the caller loads and pins them first, and calls
- * this in the same synchronous pass), `selectedPersona` as the selected persona's index, and every
- * other key as its view reads it. With `scope` (a hook's captured presets, checked by the caller), a
+ * legacy shape with their chats (`withChatsCopy`: the caller pins loaded chats and supplies plain
+ * unloaded copies in `detached`, or loads all chats first, then calls this synchronously).
+ * In summaries mode, characters instead have `chatSummaries` from the tab's held metadata, no
+ * `chats` or `chatPage`, and the same derived activity fallback, without preparing any chats.
+ * `selectedPersona` is the selected persona's index, and every other key is as its view reads it.
+ * With `scope` (a hook's captured presets, checked by the caller), a
  * preset field is its owning preset's of that pair. `pluginCustomStorage`, a user-keyed map, is copied through JSON.
  */
-export function buildDatabaseSubset(keys: readonly string[], scope: PresetScope | null): Record<string, unknown> {
+export function buildDatabaseSubset(
+    keys: readonly string[],
+    scope: PresetScope | null,
+    detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>,
+    chats: "full" | "summaries" = "full",
+): Record<string, unknown> {
     return untrack(() => {
         const subset: Record<string, unknown> = {};
         for (const key of keys) {
             if (key === "characters") {
-                subset[key] = characterList().map((character) => withChatsCopy($state.snapshot(character)));
+                subset[key] = characterList().map((character) => {
+                    const copy = $state.snapshot(character);
+                    if (chats === "summaries") {
+                        const lastChatted = characterLastChattedAt(copy.chaId, copy.lastInteraction);
+                        return {
+                            ...copy,
+                            ...(lastChatted > 0 ? { lastInteraction: lastChatted } : {}),
+                            chatSummaries: chatSummaryList(copy.chaId),
+                        };
+                    }
+                    return withChatsCopy(copy, undefined, detached?.get(character.chaId));
+                });
                 continue;
             }
             if (key === "selectedPersona") {

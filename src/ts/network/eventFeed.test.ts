@@ -95,6 +95,31 @@ async function started() {
 }
 
 describe("the live-update socket client", () => {
+    it("reports the live feed current only after hello reconciliation finishes", async () => {
+        vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+        // The existing socket double delivers events; supply the browser's readyState as well.
+        vi.stubGlobal(
+            "WebSocket",
+            class extends FakeSocket {
+                static OPEN = 1;
+                readyState = 1;
+            },
+        );
+        let finish!: (value: ResourceRevisionListing) => void;
+        mocks.listRevisions.mockReturnValueOnce(new Promise<ResourceRevisionListing>((resolve) => (finish = resolve)));
+        const ws = await started();
+        ws.open();
+        expect(feed.liveFeedCurrent()).toBe(false);
+        ws.frame({ type: "hello", epoch: "E1" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(feed.liveFeedCurrent()).toBe(false);
+
+        finish(listing);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.reconcileRemote).toHaveBeenCalledWith(listing);
+        expect(feed.liveFeedCurrent()).toBe(true);
+    });
+
     it("registers after every same-epoch hello and preference change and replaces the connected-client snapshot", async () => {
         const { acceptHandoffs, clientName, connectedClients } = await import("./handoff");
         const { generationClientId } = await import("./generationJobs");

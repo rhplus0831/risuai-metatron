@@ -1,23 +1,32 @@
+import { PLUGIN_STORAGE_DICTIONARIES } from "../../../shared/pluginStorage.ts";
 import { settings } from "./settingsViews.svelte";
 import { detach, requireJsonData, requireObject, writeEntries } from "./mutationValidation";
 import { batchRecordWrites } from "./records.svelte";
 
 /**
- * The `pluginStorage` mutations. `pluginCustomStorage` holds three things: the custom keys
- * a plugin's `setDatabase` stores at its top level, the v3 `pluginStorage` values under
- * `_pluginStorage`, and the shared `getLocalPluginStorage()` values under `_safeLocalPluginStorage`.
+ * The `pluginStorage` mutations. `pluginCustomStorage` holds shared `setDatabase` custom keys,
+ * legacy `_pluginStorage`, owned v3 `_ownedPluginStorage`, and shared `_safeLocalPluginStorage`.
+ * Owned data keys are `<plugin name>\u0000<key>`; a separator-free owner key holds `{ legacyHidden: true }`
+ * after clear(), leaving the empty user key available. Reads fall through to legacy until clear();
+ * writes claim visible legacy keys. Names containing U+0000 use the shared legacy area for every
+ * storage call because their owner prefix would be ambiguous. Administrative deletion removes the
+ * owner's values and marker; it never claims or deletes legacy keys.
+ * Replacing `pluginCustomStorage` through either database setter removes omitted custom keys but
+ * keeps reserved names absent as own keys of the input, retaining their stored values unchanged.
+ * Supplied reserved names are applied normally, including `undefined` removing the field.
  * This is the runtime mutation boundary; `src/ts/bootstrap.ts:installBootRecords` installs the
  * server's record unchanged before `src/ts/storage/resourceSync.svelte.ts:startResourceSync` marks it.
- * Each function checks its value (JSON data) and writes the record (`records.svelte.ts`), inside
- * one `batchRecordWrites` scope, so the record's write is queued once. Reads return
+ * Each function checks its value (JSON data) and queues the record's write once (`records.svelte.ts`);
+ * mutations with multiple writes use one `batchRecordWrites` scope. Reads return
  * detached copies and never create the record. Any string is a valid key: a key
  * that assigning would not store (`__proto__`, or an inherited name such as `constructor`) gets an
  * own property through a rebuilt dictionary (`writeEntries`).
  * Array-shaped namespaces: `dictionary`.
  */
 
-/** Where the v3 `pluginStorage` values live inside `pluginCustomStorage`. */
+/** Where unowned legacy values live inside `pluginCustomStorage`. */
 export const PLUGIN_STORAGE_KEY = "_pluginStorage";
+export const OWNED_PLUGIN_STORAGE_KEY = "_ownedPluginStorage";
 /** Where the `getLocalPluginStorage()` values live inside `pluginCustomStorage`. */
 export const SAFE_LOCAL_PLUGIN_STORAGE_KEY = "_safeLocalPluginStorage";
 
@@ -78,17 +87,61 @@ function readEntry(name: string, key: string): unknown {
     return values && Object.hasOwn(values, key) ? detach(values[key]) : null;
 }
 
-/** A v3 `pluginStorage` value (a copy), or `null`. */
+export type PluginStorageInventoryEntry = { key: string; bytes: number };
+
+/** A size snapshot of the server namespaces. Owned groups include marker-only owners, without exposing markers. */
+export function pluginStorageInventory(): {
+    custom: PluginStorageInventoryEntry[];
+    pluginStorage: PluginStorageInventoryEntry[];
+    ownedPluginStorage: Record<string, PluginStorageInventoryEntry[]>;
+    safeLocalPluginStorage: PluginStorageInventoryEntry[];
+} {
+    const encoder = new TextEncoder();
+    const entries = (values: Dictionary) =>
+        Object.entries(values).map(([key, value]) => ({
+            key,
+            bytes: encoder.encode(JSON.stringify(value)).byteLength,
+        }));
+    const custom = Object.fromEntries(
+        Object.entries(settings.pluginStorage ?? {}).filter(
+            ([key, value]) =>
+                !PLUGIN_STORAGE_DICTIONARIES.some((name) => name === key) ||
+                typeof value !== "object" ||
+                value === null,
+        ),
+    );
+    const owned = new Map<string, PluginStorageInventoryEntry[]>();
+    for (const entry of entries(dictionary(OWNED_PLUGIN_STORAGE_KEY, false) ?? {})) {
+        const separator = entry.key.indexOf("\u0000");
+        const owner = separator === -1 ? entry.key : entry.key.slice(0, separator);
+        if (!owned.has(owner)) owned.set(owner, []);
+        if (separator !== -1) owned.get(owner)!.push({ ...entry, key: entry.key.slice(separator + 1) });
+    }
+    return {
+        custom: entries(custom),
+        pluginStorage: entries(dictionary(PLUGIN_STORAGE_KEY, false) ?? {}),
+        ownedPluginStorage: Object.fromEntries(owned),
+        safeLocalPluginStorage: entries(dictionary(SAFE_LOCAL_PLUGIN_STORAGE_KEY, false) ?? {}),
+    };
+}
+
+/** A top-level custom value (a detached copy), or `null`. */
+export function getPluginCustomValue(key: string): unknown {
+    const values = settings.pluginStorage;
+    return values && Object.hasOwn(values, key) ? detach(values[key]) : null;
+}
+
+/** A legacy value (a copy), or `null`. */
 export function getPluginStorageValue(key: string): unknown {
     return readEntry(PLUGIN_STORAGE_KEY, key);
 }
 
-/** The v3 `pluginStorage` keys, in insertion order. */
+/** The legacy keys, in insertion order. */
 export function pluginStorageKeys(): string[] {
     return Object.keys(dictionary(PLUGIN_STORAGE_KEY, false) ?? {});
 }
 
-/** Stores a v3 `pluginStorage` value (JSON data). */
+/** Stores a legacy value (JSON data). */
 export function setPluginStorageItem(key: string, value: unknown) {
     requireJsonData(key, value);
     setEntry(PLUGIN_STORAGE_KEY, key, detach(value));
@@ -102,6 +155,91 @@ export function clearPluginStorage() {
     batchRecordWrites(() => {
         storage()[PLUGIN_STORAGE_KEY] = {};
     });
+}
+
+function legacyHidden(owner: string): boolean {
+    const values = dictionary(OWNED_PLUGIN_STORAGE_KEY, false);
+    const marker = values && Object.hasOwn(values, owner) ? values[owner] : null;
+    return typeof marker === "object" && marker !== null && "legacyHidden" in marker && marker.legacyHidden === true;
+}
+
+/** Checks owned presence, including a stored null, without reading through to legacy. */
+export function hasOwnedPluginStorageItem(owner: string, key: string): boolean {
+    if (owner.includes("\u0000")) return false;
+    const values = dictionary(OWNED_PLUGIN_STORAGE_KEY, false);
+    return values !== undefined && Object.hasOwn(values, `${owner}\u0000${key}`);
+}
+
+export function getOwnedPluginStorageValue(owner: string, key: string): unknown {
+    if (owner.includes("\u0000")) return getPluginStorageValue(key);
+    if (hasOwnedPluginStorageItem(owner, key)) return readEntry(OWNED_PLUGIN_STORAGE_KEY, `${owner}\u0000${key}`);
+    return legacyHidden(owner) ? null : getPluginStorageValue(key);
+}
+
+/** Owned keys first, then unshadowed visible legacy keys, each in insertion order. */
+export function ownedPluginStorageKeys(owner: string): string[] {
+    if (owner.includes("\u0000")) return pluginStorageKeys();
+    const prefix = `${owner}\u0000`;
+    const keys = Object.keys(dictionary(OWNED_PLUGIN_STORAGE_KEY, false) ?? {})
+        .filter((key) => key.startsWith(prefix))
+        .map((key) => key.slice(prefix.length));
+    return legacyHidden(owner) ? keys : [...new Set([...keys, ...pluginStorageKeys()])];
+}
+
+export function setOwnedPluginStorageItem(owner: string, key: string, value: unknown) {
+    if (owner.includes("\u0000")) return setPluginStorageItem(key, value);
+    requireJsonData(key, value);
+    const copy = detach(value);
+    batchRecordWrites(() => {
+        setEntry(OWNED_PLUGIN_STORAGE_KEY, `${owner}\u0000${key}`, copy);
+        if (!legacyHidden(owner)) removePluginStorageItem(key);
+    });
+}
+
+export function removeOwnedPluginStorageItem(owner: string, key: string) {
+    if (owner.includes("\u0000")) return removePluginStorageItem(key);
+    batchRecordWrites(() => {
+        deleteOwnedPluginStorageItem(owner, key);
+        if (!legacyHidden(owner)) removePluginStorageItem(key);
+    });
+}
+
+export function clearOwnedPluginStorage(owner: string) {
+    if (owner.includes("\u0000")) return clearPluginStorage();
+    batchRecordWrites(() => {
+        deleteOwnedPluginStorage(owner);
+        setEntry(OWNED_PLUGIN_STORAGE_KEY, owner, { legacyHidden: true });
+    });
+}
+
+/** Administrative deletion touches only the owned entry, even when a legacy value has the same key. */
+export function deleteOwnedPluginStorageItem(owner: string, key: string) {
+    if (!owner.includes("\u0000")) removeEntry(OWNED_PLUGIN_STORAGE_KEY, `${owner}\u0000${key}`);
+}
+
+/** Removes an owner's data and clear marker, including after uninstall. Shared legacy data stays. */
+export function deleteOwnedPluginStorage(owner: string) {
+    if (owner.includes("\u0000")) return;
+    const prefix = `${owner}\u0000`;
+    batchRecordWrites(() => {
+        for (const key of Object.keys(dictionary(OWNED_PLUGIN_STORAGE_KEY, false) ?? {})) {
+            if (key === owner || key.startsWith(prefix)) removeEntry(OWNED_PLUGIN_STORAGE_KEY, key);
+        }
+    });
+}
+
+/** Moves a legacy entry into an owner, even if that owner has hidden legacy reads. */
+export function assignLegacyPluginStorageItem(owner: string, key: string): boolean {
+    if (owner.includes("\u0000")) return false;
+    const legacy = dictionary(PLUGIN_STORAGE_KEY, false);
+    if (!legacy || !Object.hasOwn(legacy, key)) return false;
+    requireJsonData(key, legacy[key]);
+    const value = detach(legacy[key]);
+    batchRecordWrites(() => {
+        setEntry(OWNED_PLUGIN_STORAGE_KEY, `${owner}\u0000${key}`, value);
+        removePluginStorageItem(key);
+    });
+    return true;
 }
 
 /** A `getLocalPluginStorage()` value (a copy), or `null`. */
@@ -138,7 +276,7 @@ export function clearSafeLocalPluginStorage() {
 /**
  * Stores a custom key at the top level of `pluginCustomStorage` (a key outside `allowedDbKeys` in a
  * plugin's `setDatabase`). `undefined` removes it. As before, any key is accepted, including the
- * names of the two dictionaries above (a plugin can replace them this way).
+ * reserved dictionary names (a plugin can replace them this way).
  */
 export function setPluginCustomValue(key: string, value: unknown) {
     requireJsonData(key, value, true);
@@ -157,9 +295,21 @@ export function setPluginCustomValue(key: string, value: unknown) {
     });
 }
 
-/** Replaces the whole `pluginCustomStorage` object (the `pluginCustomStorage` key of a plugin's `setDatabase`). */
+/**
+ * Replaces the top-level custom keys through a plugin's `setDatabase` or `setDatabaseLite`.
+ * Reserved names absent as own keys of `value` keep their stored values unchanged; supplied names
+ * are applied normally, including an own `undefined` removing the field.
+ */
 export function replacePluginCustomStorage(value: unknown) {
     requireObject("pluginCustomStorage", value);
     requireJsonData("pluginCustomStorage", value);
-    settings.pluginStorage = detach(value);
+    const next = detach(value);
+    const current = settings.pluginStorage;
+    for (const name of PLUGIN_STORAGE_DICTIONARIES) {
+        if (!Object.hasOwn(value, name) && current && Object.hasOwn(current, name)) {
+            // Same-record wrappers unwrap to their existing state, preserving dictionary key order.
+            next[name] = current[name];
+        }
+    }
+    settings.pluginStorage = next;
 }

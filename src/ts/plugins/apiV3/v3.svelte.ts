@@ -12,6 +12,16 @@ import {
     type ReplacerFunction,
 } from "../pluginHooks";
 import { SandboxHost } from "./factory";
+import { databaseAccessRecorderScript } from "./developMode";
+import {
+    cachedDetachedChat,
+    detachedChatCacheGeneration,
+    detachedChatCacheHitCurrent,
+    forgetDetachedChat,
+    rememberDetachedChat,
+    touchDetachedChatCache,
+    type DetachedChatCacheHit,
+} from "./detachedChatCache";
 import {
     addPreparedCharacter,
     checkCharacterInput,
@@ -32,15 +42,16 @@ import {
 } from "src/ts/storage/collectionStore.svelte";
 import { MutationValidationError, requireArray } from "src/ts/storage/mutationValidation";
 import {
-    clearPluginStorage,
-    getPluginStorageValue,
-    pluginStorageKeys,
-    removePluginStorageItem,
+    clearOwnedPluginStorage,
+    getOwnedPluginStorageValue,
+    hasOwnedPluginStorageItem,
+    ownedPluginStorageKeys,
+    removeOwnedPluginStorageItem,
     replacePluginCustomStorage,
     setPluginCustomValue,
-    setPluginStorageItem,
+    setOwnedPluginStorageItem,
 } from "src/ts/storage/pluginStorageStore.svelte";
-import { onPluginStorageDiscarded } from "src/ts/storage/resourceSync.svelte";
+import { flushResources, onPluginStorageDiscarded } from "src/ts/storage/resourceSync.svelte";
 import { selectPersona, selectedIndex } from "src/ts/storage/selection.svelte";
 import { batchRecordWrites } from "src/ts/storage/records.svelte";
 import { isForwardedPresetRoot, missingPresetTarget } from "src/ts/storage/settingsViews.svelte";
@@ -57,13 +68,17 @@ import {
     appendMessage,
     applyChatResult,
     captureChatBaseline,
+    chatHasUnackedWork,
+    chatHydrationHold,
     chatList,
     chatOwnerToken,
     chatProjectionState,
     currentChatRef,
     ensureChatLoaded,
     findChat,
+    heldChatRevision,
     installChatProjection,
+    isChatBehind,
     isCharacterGenerating,
     chatsLoaded,
     loadChats,
@@ -75,6 +90,7 @@ import {
     withChatsCopy,
     type ChatRef,
 } from "src/ts/storage/chatStore.svelte";
+import { readChatRefsDetached, type DetachedChatRead } from "src/ts/storage/chatEdits";
 import { readWithDeadline } from "src/ts/storage/readDeadline";
 import { SafeLocalPluginStorage, SafeLocalStorage, tagWhitelist } from "../pluginSafeClass";
 import DOMPurify from "dompurify";
@@ -98,7 +114,13 @@ import { registerMCPModule, registeredCustomPluginMCPs, unregisterMCPModule } fr
 import { getInlayAsset } from "src/ts/process/files/inlays";
 import { getLLMCache, searchLLMCache } from "src/ts/translator/translator";
 import { hasher, risuChatParser, risuChatParserScoped, type CbsConditions } from "src/ts/parser/parser.svelte";
-import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./permissionStore";
+import {
+    getLastGrantTime,
+    hasPermissionGrant,
+    onPermissionGrantsRemoved,
+    recordPermissionGrants,
+    revokePermissionGrants,
+} from "./permissionStore";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat } from "src/ts/process/index.svelte";
 import { isChatBusy } from "src/ts/process/chatStatus.svelte";
@@ -115,8 +137,15 @@ import { getModelInfoForMode } from "src/ts/model/modellist";
 import type { ModelModeExtended } from "src/ts/process/request/shared";
 import type { RegexScriptMode as ScriptMode } from "../../../../shared/scripts/regex.ts";
 import { supaMemoryOnCount } from "../../../../shared/characters.ts";
+import { plainClone } from "../../../../shared/presets.ts";
 import { mergeOwnerLore } from "../../../../shared/lore/overrides.ts";
-import { MEMORY_REVISION_CHATS_MAX, STRUCTURED_MEMORY_ALGORITHM } from "../../../../shared/structuredMemory.ts";
+import {
+    isSealedHypaV3Data,
+    MEMORY_REVISION_CHATS_MAX,
+    STRUCTURED_MEMORY_ALGORITHM,
+} from "../../../../shared/structuredMemory.ts";
+import type { Chat } from "../../../../shared/database.ts";
+import { compareRevision } from "../../../../shared/resources.ts";
 import { requestChatDataMain, withRequestChat } from "src/ts/process/request/request";
 import { getModuleLorebooks } from "src/ts/process/modules";
 import {
@@ -735,7 +764,8 @@ export function onPluginWorkChange(listener: () => void): () => void {
     };
 }
 
-type PluginPermission = "fetchLogs" | "db" | "mainDom" | "replacer" | "provider" | "sendChat" | "inlay";
+const pluginPermissions = ["fetchLogs", "db", "mainDom", "replacer", "provider", "sendChat", "inlay"] as const;
+type PluginPermission = (typeof pluginPermissions)[number];
 
 /** The plugin as it was loaded: the hash of this script, not of the database copy, keys its grants. */
 type PluginIdentity = { readonly name: string; readonly script: string };
@@ -748,9 +778,16 @@ type StorageDiscardedEvent = {
     customStorage: boolean;
 };
 
-/** Answers given this page load, per plugin and permission; cleared when the plugin unloads. */
-const permissionAnswers = new Map<string, boolean>();
+/** Answers given this page load, cleared on unload, reset, or removal of their persisted grant. */
+const permissionAnswers = new Map<string, { granted: boolean; grantKey: string }>();
+const permissionResetGenerations = new Map<string, number>();
 const permissionAnswerKey = (pluginName: string, permission: string) => `${pluginName}\u0000${permission}`;
+
+onPermissionGrantsRemoved((removed) => {
+    for (const [key, answer] of permissionAnswers) {
+        if (answer.granted && removed.has(answer.grantKey)) permissionAnswers.delete(key);
+    }
+});
 
 const forgetPluginPermissions = (pluginName: string) => {
     for (const key of [...permissionAnswers.keys()]) {
@@ -759,6 +796,43 @@ const forgetPluginPermissions = (pluginName: string) => {
         }
     }
 };
+
+const permissionTimeKeys = (name: string) =>
+    pluginPermissions.map((permission) => `${name}_${permission}_lastGrantTime`);
+const scriptHash = (script: string) => hasher(new TextEncoder().encode(script));
+
+/** Resets both the settings script and any still-loaded script, invalidating outstanding consent prompts. */
+export async function resetPluginPermissions(name: string, script: string): Promise<void> {
+    permissionResetGenerations.set(name, (permissionResetGenerations.get(name) ?? 0) + 1);
+    forgetPluginPermissions(name);
+    // Capture before the first await: a reload can unload the old script while hashing runs.
+    const scripts = new Set([script]);
+    for (const instance of v3PluginInstances) {
+        if (instance.name === name) scripts.add(instance.script);
+    }
+    const prefixes = (await Promise.all([...scripts].map(scriptHash))).map((hash) => `${hash}_`);
+    const timeKeys = new Set(permissionTimeKeys(name));
+    try {
+        await revokePermissionGrants(
+            (key) => prefixes.some((prefix) => key.startsWith(prefix)),
+            (key) => timeKeys.has(key),
+        );
+    } finally {
+        forgetPluginPermissions(name);
+    }
+}
+
+/** Keeps grants for installed scripts and scripts still running during a deferred reload. */
+export async function removeOrphanPluginPermissionGrants(): Promise<void> {
+    const identities = [...(settings.plugins ?? []), ...v3PluginInstances];
+    const scripts = new Set(identities.map(({ script }) => script));
+    const timeKeys = new Set(identities.flatMap(({ name }) => permissionTimeKeys(name)));
+    const hashes = new Set(await Promise.all([...scripts].map(scriptHash)));
+    await revokePermissionGrants(
+        (key) => !hashes.has(key.split("_", 1)[0]),
+        (key) => !timeKeys.has(key),
+    );
+}
 
 type PluginV3ProviderOptions = PluginProviderOptions & {
     model?: LLMModel;
@@ -777,10 +851,11 @@ const getPluginPermission = async (
     permissionDesc: PluginPermission,
     reconfirm: boolean | "periodically" = false,
 ) => {
+    const generation = permissionResetGenerations.get(plugin.name) ?? 0;
     const answerKey = permissionAnswerKey(plugin.name, permissionDesc);
     const answered = permissionAnswers.get(answerKey);
     if (answered !== undefined) {
-        return answered;
+        return answered.granted;
     }
 
     let requiresReconfirm = false;
@@ -797,10 +872,11 @@ const getPluginPermission = async (
         requiresReconfirm = true;
     }
 
-    const pluginHash = (await hasher(new TextEncoder().encode(plugin.script))) + `_${permissionDesc}`;
+    const pluginHash = (await scriptHash(plugin.script)) + `_${permissionDesc}`;
+    if (generation !== (permissionResetGenerations.get(plugin.name) ?? 0)) return false;
 
     if (!requiresReconfirm && hasPermissionGrant(pluginHash)) {
-        permissionAnswers.set(answerKey, true);
+        permissionAnswers.set(answerKey, { granted: true, grantKey: pluginHash });
         return true;
     }
 
@@ -825,8 +901,9 @@ const getPluginPermission = async (
         return false;
     }
     const conf = await alertConfirm(alertTitle);
+    if (generation !== (permissionResetGenerations.get(plugin.name) ?? 0)) return false;
     if (conf) {
-        permissionAnswers.set(answerKey, true);
+        permissionAnswers.set(answerKey, { granted: true, grantKey: pluginHash });
         try {
             await recordPermissionGrants({
                 grants: [pluginHash],
@@ -836,9 +913,9 @@ const getPluginPermission = async (
             // The grant still holds for this page load; it is asked again after a reload.
             console.error(`[RisuAI Plugin: ${pluginName}] Could not save the permission grant:`, error);
         }
-        return true;
+        return generation === (permissionResetGenerations.get(plugin.name) ?? 0);
     }
-    permissionAnswers.set(answerKey, false);
+    permissionAnswers.set(answerKey, { granted: false, grantKey: pluginHash });
     return false;
 };
 
@@ -919,14 +996,21 @@ function rotatingWindow<T>(list: readonly T[], size: number, cursor: { at: numbe
     return [first, ...[...rest, ...rest].slice(start, cursor.at)];
 }
 
+type ChatMemberSelector = (chaId: string) => readonly { id: string }[];
+
 /**
- * The chats a read of `chaIds` returns, the chat it is about first: the hook's, else the selected one.
+ * The selected members a read of `chaIds` returns (all by default), the chat it is about first:
+ * the hook's, else the selected one.
  * That order is what `refreshChatProjections` keeps when it has to cut the list.
  */
-function chatsOfRead(chaIds: readonly (string | undefined)[], context: PluginCallContext | undefined): ChatRef[] {
+function chatsOfRead(
+    chaIds: readonly (string | undefined)[],
+    context: PluginCallContext | undefined,
+    members: ChatMemberSelector = chatList,
+): ChatRef[] {
     const about = context?.chatRef ?? currentChatRef();
     const refs = chaIds.flatMap((chaId) =>
-        chaId === undefined ? [] : chatList(chaId).map(({ id }) => ({ chaId, chatId: id })),
+        chaId === undefined ? [] : members(chaId).map(({ id }) => ({ chaId, chatId: id })),
     );
     const first = refs.findIndex(({ chaId, chatId }) => chaId === about?.chaId && chatId === about.chatId);
     return first > 0 ? [refs[first], ...refs.slice(0, first), ...refs.slice(first + 1)] : refs;
@@ -1079,6 +1163,223 @@ async function withChatsLoaded<T>(
     }
 }
 
+/** Whether the held-store snapshot would change this JSON value by dropping an own `__proto__`. */
+function needsChatSnapshot(value: unknown): boolean {
+    return (
+        value !== null &&
+        typeof value === "object" &&
+        (Object.hasOwn(value, "__proto__") || Object.values(value).some(needsChatSnapshot))
+    );
+}
+
+/** Detached server copies omit sealed projections outside structured memory, without changing the cache. */
+function detachedPluginChat(chat: Chat): Chat {
+    if (settings.ui.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM && isSealedHypaV3Data(chat.hypaV3Data)) {
+        const copy = { ...chat };
+        delete copy.hypaV3Data;
+        return copy;
+    }
+    return chat;
+}
+
+/**
+ * Reads unloaded members together after saving queued work, keeping server copies outside the chat
+ * store. Loaded members stay pinned and are copied in `run`'s synchronous pass. Characters whose
+ * copies cannot represent the held state use the ordinary load path; changing membership gets a
+ * few assembly attempts before the whole call uses that path. An optional member selector limits
+ * detached reads and projection refreshes to a page; if its ids move during preparation, retry
+ * before returning so every loaded member of the returned page has been pinned and refreshed.
+ */
+async function withDetachedDatabaseChats<T>(
+    chaIds: readonly (string | undefined)[],
+    run: (detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>) => T,
+    selectMembers?: ChatMemberSelector,
+): Promise<T> {
+    const ids = [...new Set(chaIds.filter((chaId): chaId is string => typeof chaId === "string"))];
+    const owners = new Map(ids.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+    const members = selectMembers ?? chatList;
+    const releases: (() => void)[] = [];
+    const pinned = new Set<string>();
+    const pinLoadedMembers = () => {
+        for (const chaId of ids) {
+            for (const { id } of members(chaId)) {
+                const ref = { chaId, chatId: id };
+                const key = `${chaId}\u0000${id}`;
+                if (!pinned.has(key) && findChat(ref)) {
+                    releases.push(pinChat(ref));
+                    pinned.add(key);
+                }
+            }
+        }
+    };
+    pinLoadedMembers();
+    const checkOwners = () => {
+        for (const character of characterList()) {
+            const owner = owners.get(character.chaId);
+            if (owner !== undefined && chatOwnerToken(character.chaId) !== owner) {
+                throw new PluginTargetGoneError("character");
+            }
+        }
+    };
+    const refreshed = () => chatsOfRead(ids, undefined, members);
+    const loaded = () =>
+        withChatsLoaded(
+            ids,
+            () => {
+                checkOwners();
+                return run();
+            },
+            refreshed,
+        );
+    try {
+        let flushed: Awaited<ReturnType<typeof flushResources>>;
+        try {
+            flushed = await flushResources();
+        } catch {
+            return await loaded();
+        }
+        const fallback = new Set(
+            ids.filter((chaId) =>
+                [...flushed.discarded, ...flushed.refused].some(
+                    (key) =>
+                        key === `characters/${chaId}` || key === `chats/${chaId}` || key.startsWith(`chats/${chaId}/`),
+                ),
+            ),
+        );
+        const reads = new Map<string, Map<string, DetachedChatRead>>();
+        const cacheHits = new Map<string, { ref: ChatRef; hit: DetachedChatCacheHit }>();
+        const discardInvalidHits = () => {
+            let discarded = false;
+            for (const [key, { ref, hit }] of cacheHits) {
+                if (detachedChatCacheHitCurrent(ref, hit)) continue;
+                reads.get(ref.chaId)?.delete(ref.chatId);
+                forgetDetachedChat(ref, hit.entry);
+                cacheHits.delete(key);
+                if (members(ref.chaId).some(({ id }) => id === ref.chatId)) discarded = true;
+            }
+            return discarded;
+        };
+        const needsLoaded = (chaId: string) =>
+            members(chaId).some(({ id }) => {
+                const ref = { chaId, chatId: id };
+                if (isChatBehind(ref)) return true;
+                if (findChat(ref)) return false;
+                if (chatHasUnackedWork(ref) || chatHydrationHold(ref) !== "none") return true;
+                const read = reads.get(chaId)?.get(id);
+                if (read === "gone" || read === "absent") return true;
+                const held = heldChatRevision(ref);
+                return read !== undefined && held !== null && (compareRevision(read.revision, held) ?? -1) < 0;
+            });
+        for (let round = 0; round < 3; round++) {
+            const prepared = selectMembers ? new Map(ids.map((chaId) => [chaId, members(chaId)])) : undefined;
+            pinLoadedMembers();
+            discardInvalidHits();
+            for (const chaId of ids) {
+                if (!fallback.has(chaId) && needsLoaded(chaId)) fallback.add(chaId);
+            }
+            const missing = ids.flatMap((chaId) =>
+                fallback.has(chaId)
+                    ? []
+                    : members(chaId).flatMap(({ id }) => {
+                          const ref = { chaId, chatId: id };
+                          if (findChat(ref) || reads.get(chaId)?.has(id)) return [];
+                          const hit = cachedDetachedChat(ref);
+                          if (!hit) return [ref];
+                          let held = reads.get(chaId);
+                          if (!held) {
+                              held = new Map();
+                              reads.set(chaId, held);
+                          }
+                          held.set(id, hit.entry);
+                          cacheHits.set(`${chaId}\u0000${id}`, { ref, hit });
+                          return [];
+                      }),
+            );
+            if (missing.length > 0) {
+                try {
+                    const generation = detachedChatCacheGeneration();
+                    const structured = settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+                    const read = await readChatRefsDetached(missing);
+                    for (const [chaId, chats] of read) {
+                        let held = reads.get(chaId);
+                        if (!held) {
+                            held = new Map();
+                            reads.set(chaId, held);
+                        }
+                        for (const [id, chat] of chats) {
+                            held.set(id, chat);
+                            // The normal snapshot drops these keys; returning the raw JSON would differ.
+                            if (typeof chat !== "string") {
+                                if (needsChatSnapshot(chat.data)) {
+                                    fallback.add(chaId);
+                                } else {
+                                    rememberDetachedChat({ chaId, chatId: id }, chat, structured, generation);
+                                }
+                            }
+                        }
+                    }
+                } catch {
+                    return await loaded();
+                }
+            }
+            discardInvalidHits();
+            for (const chaId of ids) {
+                if (!fallback.has(chaId) && needsLoaded(chaId)) fallback.add(chaId);
+            }
+            pinLoadedMembers();
+            const assembled = await withChatsLoaded(
+                [...fallback],
+                () => {
+                    checkOwners();
+                    const detached = new Map<string, Map<string, Chat>>();
+                    let retry = discardInvalidHits();
+                    for (const chaId of ids) {
+                        const selected = members(chaId);
+                        const before = prepared?.get(chaId);
+                        if (
+                            before &&
+                            (before.length !== selected.length || before.some(({ id }, i) => id !== selected[i].id))
+                        ) {
+                            retry = true;
+                            continue;
+                        }
+                        if (fallback.has(chaId)) continue;
+                        // This check is after every read, fallback load, and projection refresh await.
+                        if (needsLoaded(chaId)) {
+                            fallback.add(chaId);
+                            retry = true;
+                            continue;
+                        }
+                        const copies = new Map<string, Chat>();
+                        detached.set(chaId, copies);
+                        for (const { id } of selected) {
+                            if (findChat({ chaId, chatId: id })) continue;
+                            const read = reads.get(chaId)?.get(id);
+                            if (read === undefined || typeof read === "string") {
+                                retry = true;
+                            } else {
+                                copies.set(id, read.data);
+                            }
+                        }
+                    }
+                    if (retry) return undefined;
+                    for (const copies of detached.values()) {
+                        for (const [id, chat] of copies) {
+                            copies.set(id, detachedPluginChat(chat));
+                        }
+                    }
+                    return { value: run(detached) };
+                },
+                prepared ? () => chatsOfRead(ids, undefined, (chaId) => prepared.get(chaId) ?? []) : refreshed,
+            );
+            if (assembled) return assembled.value;
+        }
+        return await loaded();
+    } finally {
+        for (const release of releases) release();
+    }
+}
+
 /**
  * The hook's character with a context, else the selected one: a detached copy in the legacy shape,
  * with its chats (`withChatsCopy`). A hook's character reports the hook's chat as its `chatPage`, so
@@ -1151,11 +1452,14 @@ function warnRefused(what: string, write: () => void) {
  * Applies a whole character a plugin hands back (last writer wins). The same `chaId` as the
  * character at `index`: its own fields replace the character's (`replaceCharacterFields`), and its
  * chats are reconciled by id through the chat module (changed chats diffed, new ones created,
- * missing ones deleted, the order and a given `chatPage` followed). Another `chaId` (or none):
+ * missing ones deleted, the order and a given `chatPage` followed). Database setters can mark
+ * chats unchanged after checking the whole list or when chats are omitted: only a numeric
+ * `chatPage` is then applied. Read-only `chatSummaries` never enter a character record.
+ * Another `chaId` (or none):
  * the character replaces the one at the index (`replaceCharacterAt`), unless that one is generating
  * a reply or the `chaId` is already another character's. A refusal is warned about.
  */
-function applyPluginCharacter(index: number, char: any) {
+function applyPluginCharacter(index: number, char: any, unchangedChats: ReadonlySet<string> = new Set()) {
     warnRefused("a character", () => {
         const current = characterList()[index];
         if (!current || !char || typeof char !== "object" || char.chaId !== current.chaId) {
@@ -1172,13 +1476,15 @@ function applyPluginCharacter(index: number, char: any) {
                 console.warn("[Plugin] Skipped a character whose chaId another character already has");
                 return;
             }
-            replaceCharacterAt(index, char);
+            checkCharacterInput(char);
+            const { chatSummaries: _summaries, ...fields } = char;
+            replaceCharacterAt(index, fields);
             return;
         }
         // Turning memory on counts, as the sidebar toggle's (`supaMemoryOnCount`): it voids every
         // chat's "don't ask again" answer to the no-memory trim question. The stored count is kept
         // otherwise: the plugin's copy (stale, missing, or changed) never replaces it.
-        const { supaMemoryOnCount: _theirs, lastInteraction: _derived, ...fields } = char;
+        const { supaMemoryOnCount: _theirs, lastInteraction: _derived, chatSummaries: _summaries, ...fields } = char;
         // Snapshots expose derived chat activity. A same-character round trip keeps the frozen
         // legacy value exactly as stored, including its absence.
         if (Object.hasOwn(current, "lastInteraction")) {
@@ -1191,7 +1497,7 @@ function applyPluginCharacter(index: number, char: any) {
         }
         replaceCharacterFields(fields);
         const { chats, chatPage } = char;
-        if (Array.isArray(chats)) {
+        if (Array.isArray(chats) && !unchangedChats.has(current.chaId)) {
             reconcileCharacterChats(current.chaId, chats, typeof chatPage === "number" ? chatPage : undefined);
         } else if (typeof chatPage === "number") {
             selectChat(current.chaId, chatPage);
@@ -1206,9 +1512,14 @@ function applyPluginCharacter(index: number, char: any) {
  * `chaId` go through `applyPluginCharacter`, new ones are appended (prepared by `prepareNewCharacter`
  * before the list changes, their chats saved with them), and missing ones removed
  * (`removeCharacter`), except a character that is generating a reply: it stays (with a console
- * warning). The mirror keeps its order.
+ * warning). The mirror keeps its order. Entries marked as having unchanged chats still pass all
+ * validation and apply their character fields and numeric `chatPage`, without reconciling chats.
  */
-function applyPluginCharacters(incoming: unknown, vanished: ReadonlySet<string> = new Set()) {
+function applyPluginCharacters(
+    incoming: unknown,
+    vanished: ReadonlySet<string> = new Set(),
+    unchangedChats: ReadonlySet<string> = new Set(),
+) {
     requireArray("characters", incoming);
     const checked = Array.from(incoming, (char, i) => {
         checkCharacterInput(char, `characters[${i}]`);
@@ -1232,11 +1543,11 @@ function applyPluginCharacters(incoming: unknown, vanished: ReadonlySet<string> 
     // Every new character is prepared (checked, normalized, its creation steps done) before the list
     // changes, so an entry refused there leaves the whole list unapplied.
     const prepared = new Map(
-        entries.flatMap((char, i) =>
-            typeof char.chaId === "string" && existing.includes(char.chaId)
-                ? []
-                : [[char, prepareNewCharacter(char, `characters[${i}]`)] as const],
-        ),
+        entries.flatMap((char, i) => {
+            if (typeof char.chaId === "string" && existing.includes(char.chaId)) return [];
+            const { chatSummaries: _summaries, ...fields } = char;
+            return [[char, prepareNewCharacter(fields, `characters[${i}]`)] as const];
+        }),
     );
     for (const char of entries) {
         const ready = prepared.get(char);
@@ -1246,6 +1557,7 @@ function applyPluginCharacters(incoming: unknown, vanished: ReadonlySet<string> 
             applyPluginCharacter(
                 characterList().findIndex((entry) => entry?.chaId === char.chaId),
                 char,
+                unchangedChats,
             );
         }
     }
@@ -1363,10 +1675,11 @@ function applyPluginKey(
     value: unknown,
     context: PluginCallContext | undefined,
     vanished: ReadonlySet<string> = new Set(),
+    unchangedChats: ReadonlySet<string> = new Set(),
 ) {
     switch (key) {
         case "characters":
-            return applyPluginCharacters(value, vanished);
+            return applyPluginCharacters(value, vanished, unchangedChats);
         case "personas":
             return setPersonas(value);
         case "modules":
@@ -1406,6 +1719,7 @@ function applyPluginDatabase(
     newDb: Record<string, unknown>,
     context: PluginCallContext | undefined,
     vanished: ReadonlySet<string> = new Set(),
+    unchangedChats: ReadonlySet<string> = new Set(),
 ) {
     if (context) {
         const missing = missingPresetTarget(
@@ -1419,12 +1733,14 @@ function applyPluginDatabase(
     // One queued write per settings record the call changed (`records.svelte.ts`).
     batchRecordWrites(() => {
         for (const key of pluginKeyOrder(newDb)) {
-            warnRefused(`the database key ${key}`, () => applyPluginKey(key, newDb[key], context, vanished));
+            warnRefused(`the database key ${key}`, () =>
+                applyPluginKey(key, newDb[key], context, vanished, unchangedChats),
+            );
         }
     });
 }
 
-/** The existing characters whose chats a plugin's `characters` reconciles (loaded first). */
+/** The existing characters targeted by a plugin's `characters` list. */
 function charactersReconciled(newDb: Record<string, unknown>): string[] {
     const incoming = newDb && typeof newDb === "object" ? newDb.characters : undefined;
     if (!Array.isArray(incoming)) {
@@ -1443,21 +1759,123 @@ function vanishedOf(targets: readonly string[]): Set<string> {
 }
 
 /**
+ * Exact ordered JSON equality with held chats or still-valid detached copies; failures require loading.
+ * Rechecks reuse earlier equality for immutable cached copies, but always compare loaded chats again.
+ */
+function pluginChatsMatch(
+    chaId: string,
+    incoming: unknown,
+    hits: Map<string, DetachedChatCacheHit>,
+    recheck = false,
+): boolean {
+    try {
+        const members = chatList(chaId);
+        if (!Array.isArray(incoming) || incoming.length !== members.length) return false;
+        for (let i = 0; i < members.length; i++) {
+            const { id } = members[i];
+            if (incoming[i]?.id !== id) return false;
+            const ref = { chaId, chatId: id };
+            let held = findChat(ref);
+            if (held) {
+                // Reconciliation snapshots drop own __proto__ keys, so raw equality is not enough.
+                if (needsChatSnapshot(held)) return false;
+            } else {
+                if (chatHasUnackedWork(ref) || chatHydrationHold(ref) !== "none" || isChatBehind(ref)) return false;
+                const remembered = hits.get(id);
+                const hit = remembered ?? cachedDetachedChat(ref);
+                if (!hit || !detachedChatCacheHitCurrent(ref, hit)) return false;
+                // Neither this cached copy nor the host's incoming clone changed since their comparison.
+                if (recheck && remembered) continue;
+                hits.set(id, hit);
+                held = detachedPluginChat(hit.entry.data);
+            }
+            if (JSON.stringify(incoming[i]) !== JSON.stringify(held)) return false;
+        }
+        return true;
+    } catch {
+        // Cycles, BigInts, and other values that cannot be compared still take the ordinary path.
+        return false;
+    }
+}
+
+/**
+ * Both database setters skip loading and reconciling omitted chats and exact chat round trips. Loaded matches stay
+ * pinned while other characters load; all matches and original owners are checked synchronously
+ * before applying. A changed match falls back once to loading targets that supply chats before any key applies.
+ */
+async function applyPluginDatabaseWithChats(newDb: Record<string, unknown>, context: PluginCallContext | undefined) {
+    const targets = charactersReconciled(newDb);
+    const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+    const matches = new Map<string, { chats: unknown; hits: Map<string, DetachedChatCacheHit> }>();
+    const omitted = new Set<string>();
+    for (const char of Array.isArray(newDb?.characters) ? newDb.characters : []) {
+        if (!char || !owners.has(char.chaId)) continue;
+        if (char.chats === undefined) {
+            omitted.add(char.chaId);
+            matches.delete(char.chaId);
+            continue;
+        }
+        omitted.delete(char.chaId);
+        const hits = new Map<string, DetachedChatCacheHit>();
+        if (pluginChatsMatch(char.chaId, char.chats, hits)) {
+            matches.set(char.chaId, { chats: char.chats, hits });
+        } else {
+            matches.delete(char.chaId);
+        }
+    }
+    const chatTargets = targets.filter((chaId) => !omitted.has(chaId));
+    const loading = chatTargets.filter((chaId) => !matches.has(chaId));
+    const releases = [...matches.keys()].flatMap((chaId) =>
+        chatList(chaId).flatMap(({ id }) => {
+            const ref = { chaId, chatId: id };
+            return findChat(ref) ? [pinChat(ref)] : [];
+        }),
+    );
+    const checkOwners = () => {
+        for (const character of characterList()) {
+            if (owners.has(character.chaId) && chatOwnerToken(character.chaId) !== owners.get(character.chaId)) {
+                throw new PluginTargetGoneError("character");
+            }
+        }
+    };
+    try {
+        const applied = await withChatsLoaded(loading, () => {
+            checkOwners();
+            const vanished = vanishedOf(targets);
+            for (const [chaId, { chats, hits }] of matches) {
+                if (!vanished.has(chaId) && !pluginChatsMatch(chaId, chats, hits, true)) return false;
+            }
+            applyPluginDatabase(newDb, context, vanished, new Set([...omitted, ...matches.keys()]));
+            return true;
+        });
+        if (!applied) {
+            await withChatsLoaded(chatTargets, () => {
+                checkOwners();
+                applyPluginDatabase(newDb, context, vanishedOf(targets), omitted);
+            });
+        }
+    } finally {
+        for (const release of releases) release();
+    }
+}
+
+/**
  * Plugin installation needs the full setter's consent flow, so this setter drops `plugins`.
- * Reconciled chats load first so a snapshot never applies against unloaded chats.
+ * Omitted chats and exact chat round trips skip loading and reconciliation; other targets load before applying.
+ * Character fields and a numeric `chatPage` still apply for unchanged chats.
  */
 const setPluginDatabaseLite = async (newDb: any, context: PluginCallContext | undefined) => {
     if (newDb && typeof newDb === "object" && Object.hasOwn(newDb, "plugins")) {
         newDb = { ...newDb };
         delete newDb.plugins;
     }
-    const targets = charactersReconciled(newDb);
-    await withChatsLoaded(targets, () => applyPluginDatabase(newDb, context, vanishedOf(targets)));
+    await applyPluginDatabaseWithChats(newDb, context);
 };
 
 /**
  * Preflights every supplied plugin and awaits all installation prompts before assigning any key,
- * then loads the reconciled characters' chats and applies keys synchronously. Preset fields target
+ * then loads supplied chats except for exact round trips and applies keys synchronously. Unchanged chats
+ * skip reconciliation while character fields and a numeric `chatPage` still apply. Preset fields target
  * the hook's captured ids; without context they resolve through the settings views after all waits
  * (`src/ts/storage/collectionStore.svelte.ts:updateSettings`), including any selection repair then.
  */
@@ -1478,8 +1896,7 @@ const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefi
         newDb = { ...newDb, plugins: await handlePluginInstallViaPlugin(plugins) };
     }
     // After chats load, no await: preset fields use the hook's ids, else the current settings views.
-    const targets = charactersReconciled(newDb);
-    await withChatsLoaded(targets, () => applyPluginDatabase(newDb, context, vanishedOf(targets)));
+    await applyPluginDatabaseWithChats(newDb, context);
 };
 
 const readAssetImage = (path: string) => {
@@ -1498,13 +1915,12 @@ const readAssetImage = (path: string) => {
  * Creates one instance's API and context owner. Wrapped hooks consume `invokeHook`'s handoff before
  * awaiting and keep it on this owner's stack until settlement; reloading creates a fresh owner.
  */
-const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
+const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity: PluginIdentity) => {
     const safeLocalStorage = new SafeLocalStorage();
-    // Captured now: a plugin with database access could rewrite its own script in the database.
-    const identity: PluginIdentity = { name: plugin.name, script: plugin.script };
     // Keyed by the original callback so removal finds its registered wrapper.
     const hookWrappers = new WeakMap<Function, Function>();
     const contextOwner = {};
+    let hintedFullDatabase = false;
     // Check synchronously at host entry, before validation, permission prompts or chat loading.
     // Refusal must not throw: a failed transform would show raw text and schedule recovery retries.
     const refuseTransformWrite = (api: string): boolean => {
@@ -1753,32 +2169,100 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             if (refuseTransformWrite("saveAsset")) return "";
             return saveAsset(data);
         },
-        //Same functionality, but new implementation
-        getDatabase: async (includeOnly: string[] | "all" = "all") => {
+        /** Full chat snapshots by default; summaries read only this tab's held metadata, even inside hooks. */
+        getDatabase: async (includeOnly: string[] | "all" = "all", options?: { chats?: "full" | "summaries" }) => {
             const context = currentContext(contextOwner);
+            if (options !== undefined && (options === null || typeof options !== "object")) {
+                throw new Error(`Invalid getDatabase options: ${String(options)}`);
+            }
+            if (options?.chats !== undefined && options.chats !== "full" && options.chats !== "summaries") {
+                throw new Error(`Invalid getDatabase chats option: ${String(options.chats)}`);
+            }
             const conf = await getPluginPermission(identity, "db", "periodically");
             if (!conf) {
                 return null;
             }
             const included = (key: string) => includeOnly === "all" || includeOnly.includes(key);
-            // The characters' chats are loaded (and pinned) first; then every key is read in one
-            // synchronous pass, so the snapshot is one state of the tab.
+            // Outside a hook: the chats this tab has loaded as it holds them, and the others as the
+            // server holds them after this tab's queued changes were saved. Keys are assembled synchronously.
             const characterIds = included("characters") ? characterList().map((character) => character?.chaId) : [];
             const keys = allowedDbKeys.filter(included);
-            const liteDB = await withChatsLoaded(
-                characterIds,
-                () => {
-                    // Inside a hook, the forwarded preset keys come from the hook's preset (refused when it
-                    // is gone), so a read-modify-write through setDatabase stays in one preset.
-                    const missing = context ? missingPresetTarget(context, keys) : undefined;
-                    if (missing !== undefined) {
-                        throw new PluginTargetGoneError(missing);
+            const read = (detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>) => {
+                // Inside a hook, the forwarded preset keys come from the hook's preset (refused when it
+                // is gone), so a read-modify-write through setDatabase stays in one preset.
+                const missing = context ? missingPresetTarget(context, keys) : undefined;
+                if (missing !== undefined) {
+                    throw new PluginTargetGoneError(missing);
+                }
+                const result = buildDatabaseSubset(keys, context ?? null, detached, options?.chats);
+                if (
+                    !hintedFullDatabase &&
+                    settings.ui.enableDevTools &&
+                    includeOnly === "all" &&
+                    options?.chats !== "summaries"
+                ) {
+                    const characters = result.characters as { chats: Chat[] }[];
+                    const count = characters.reduce((total, character) => total + character.chats.length, 0);
+                    if (count > 200) {
+                        hintedFullDatabase = true;
+                        console.info(
+                            `[RisuAI Plugin: ${identity.name}] getDatabase() returned ${count} chats. Prefer getDatabase(keys, { chats: "summaries" }), getChats(chaId, { offset, limit }), or getCharacter() to read only what you need.`,
+                        );
                     }
-                    return buildDatabaseSubset(keys, context ?? null);
-                },
-                () => chatsOfRead(characterIds, context),
-            );
-            return liteDB;
+                }
+                return result;
+            };
+            if (options?.chats === "summaries") return read();
+            if (included("characters")) {
+                touchDetachedChatCache();
+                try {
+                    return await (context
+                        ? withChatsLoaded(characterIds, read, () => chatsOfRead(characterIds, context))
+                        : withDetachedDatabaseChats(characterIds, read));
+                } finally {
+                    touchDetachedChatCache();
+                }
+            }
+            return withChatsLoaded(characterIds, read, () => chatsOfRead(characterIds, context));
+        },
+
+        /** A page in current member order, with the same copies and cache as full database reads. */
+        getChats: async (chaId: string, { offset = 0, limit }: { offset?: number; limit?: number } = {}) => {
+            const context = currentContext(contextOwner);
+            if (!Number.isSafeInteger(offset) || offset < 0) {
+                throw new Error(`Invalid getChats offset: ${String(offset)}; expected a non-negative safe integer`);
+            }
+            if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) {
+                throw new Error(`Invalid getChats limit: ${String(limit)}; expected a non-negative safe integer`);
+            }
+            const conf = await getPluginPermission(identity, "db", "periodically");
+            if (!conf) return null;
+            const page = (members: readonly { id: string }[]) =>
+                members.slice(offset, limit === undefined ? undefined : offset + limit);
+            const members: ChatMemberSelector = (id) => page(chatList(id));
+            const read = (detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>) => {
+                // Owner checks deliberately ignore deletions, so resolve the character again here.
+                if (!characterList().some((character) => character.chaId === chaId)) return null;
+                const listed = chatList(chaId);
+                const chats = page(listed).map(({ id }) => {
+                    const held = findChat({ chaId, chatId: id });
+                    if (held) return plainClone($state.snapshot(held)) as Chat;
+                    const copy = detached?.get(chaId)?.get(id);
+                    if (!copy) throw new Error(`The chat ${id} of ${chaId} is not loaded`);
+                    return copy;
+                });
+                return { chats, total: listed.length };
+            };
+            touchDetachedChatCache();
+            try {
+                if (!characterList().some((character) => character.chaId === chaId)) return null;
+                if (members(chaId).length === 0) return read();
+                return await (context
+                    ? withChatsLoaded([chaId], read, () => chatsOfRead([chaId], context, members))
+                    : withDetachedDatabaseChats([chaId], read, members));
+            } finally {
+                touchDetachedChatCache();
+            }
         },
 
         installPlugin: handlePluginInstallViaPlugin,
@@ -2336,9 +2820,22 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
          */
         onStorageDiscarded: (callback: (event: StorageDiscardedEvent) => unknown) => {
             const unsubscribe = onPluginStorageDiscarded((lost) => {
+                const keys = new Set(lost.pluginStorage);
+                if (!identity.name.includes("\u0000")) {
+                    const prefix = `${identity.name}\u0000`;
+                    for (const key of lost.ownedPluginStorage) {
+                        if (key.startsWith(prefix)) keys.add(key.slice(prefix.length));
+                    }
+                    if (lost.ownedPluginStorage.includes(identity.name)) {
+                        // A rolled-back clear can expose legacy keys again in the now-settled store.
+                        for (const key of ownedPluginStorageKeys(identity.name)) {
+                            if (!hasOwnedPluginStorageItem(identity.name, key)) keys.add(key);
+                        }
+                    }
+                }
                 const event: StorageDiscardedEvent = {
                     type: "storageDiscarded",
-                    pluginStorage: lost.pluginStorage,
+                    pluginStorage: [...keys],
                     localPluginStorage: lost.localPluginStorage,
                     customStorage: lost.customStorage,
                 };
@@ -2405,30 +2902,29 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
 
             return v;
         },
-        //v3 pluginStorage lives under its own key in db.pluginCustomStorage,
-        //apart from the custom properties setDatabase/setDatabaseLite store at its top level
+        // The mutation boundary scopes v3 storage to the loaded plugin's identity.
         _getPluginStorage: async (key: string) => {
-            return getPluginStorageValue(String(key));
+            return getOwnedPluginStorageValue(identity.name, String(key));
         },
         _setPluginStorage: async (key: string, value: any) => {
             //JSON round trip rejects values the save file cannot hold, e.g. BigInt
             const json = JSON.stringify(value);
-            setPluginStorageItem(String(key), json === undefined ? null : JSON.parse(json));
+            setOwnedPluginStorageItem(identity.name, String(key), json === undefined ? null : JSON.parse(json));
         },
         _removePluginStorage: async (key: string) => {
-            removePluginStorageItem(String(key));
+            removeOwnedPluginStorageItem(identity.name, String(key));
         },
         _clearPluginStorage: async () => {
-            clearPluginStorage();
+            clearOwnedPluginStorage(identity.name);
         },
         _keyPluginStorage: async (index: number) => {
-            return pluginStorageKeys()[index] ?? null;
+            return ownedPluginStorageKeys(identity.name)[index] ?? null;
         },
         _keysPluginStorage: async () => {
-            return pluginStorageKeys();
+            return ownedPluginStorageKeys(identity.name);
         },
         _lengthPluginStorage: async () => {
-            return pluginStorageKeys().length;
+            return ownedPluginStorageKeys(identity.name).length;
         },
         _getSafeLocalStorage: (key: string) => safeLocalStorage.getItem(key),
         _setSafeLocalStorage: (key: string, value: string) => safeLocalStorage.setItem(key, value),
@@ -2641,8 +3137,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
     };
 };
 
-type V3PluginInstance = {
-    name: string;
+type V3PluginInstance = PluginIdentity & {
     host: SandboxHost;
 };
 
@@ -2688,13 +3183,20 @@ export async function executePluginV3(plugin: RisuPlugin) {
     const iframe = document.createElement("iframe");
     iframe.style.display = "none";
     document.body.appendChild(iframe);
-    const host = new SandboxHost(makeRisuaiAPIV3(iframe, plugin));
+    // Both the API and instance retain the script actually loaded, even if settings change later.
+    const identity: PluginIdentity = { name: plugin.name, script: plugin.script };
+    const host = new SandboxHost(makeRisuaiAPIV3(iframe, plugin, identity));
     host.onActivityChanged?.(notifyPluginWork);
     v3PluginInstances.push({
-        name: plugin.name,
+        ...identity,
         host,
     });
-    host.run(iframe, plugin.script);
+    // Developer diagnostics are selected at load time; changing the setting applies on the next load.
+    host.run(
+        iframe,
+        identity.script,
+        settings.ui.enableDevTools ? { guestPrelude: databaseAccessRecorderScript(plugin.name) } : undefined,
+    );
     console.log(`[RisuAI Plugin: ${plugin.name}] Loaded API V3 plugin.`);
 }
 

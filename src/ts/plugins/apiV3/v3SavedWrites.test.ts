@@ -116,13 +116,13 @@ describe("plugin storage writes sent without the watcher", () => {
         await api._setPluginStorage("k", { list: [1] });
         await api._setPluginStorage("n", null);
         await sync.flushResources();
-        expect(storage()._pluginStorage).toEqual({ k: { list: [1] }, n: null });
+        expect(storage()._ownedPluginStorage).toEqual({ "plug\u0000k": { list: [1] }, "plug\u0000n": null });
         await api._removePluginStorage("k");
         await sync.flushResources();
-        expect(storage()._pluginStorage).toEqual({ n: null });
+        expect(storage()._ownedPluginStorage).toEqual({ "plug\u0000n": null });
         await api._clearPluginStorage();
         await sync.flushResources();
-        expect(storage()._pluginStorage).toEqual({});
+        expect(storage()._ownedPluginStorage).toEqual({ plug: { legacyHidden: true } });
     });
 
     it("getLocalPluginStorage() set, remove, and clear reach the record, undefined stored as null", async () => {
@@ -175,7 +175,10 @@ describe("plugin storage writes sent without the watcher", () => {
         await sync.flushResources();
 
         expect(fake.batchCount()).toBe(batches);
-        expect(storage()).toEqual({ _pluginStorage: { k: { a: 1 } }, _safeLocalPluginStorage: { s: [1] } });
+        expect(storage()).toEqual({
+            _ownedPluginStorage: { "plug\u0000k": { a: 1 } },
+            _safeLocalPluginStorage: { s: [1] },
+        });
         expect(await api._getPluginStorage("k")).toEqual({ a: 1 });
     });
 
@@ -186,12 +189,13 @@ describe("plugin storage writes sent without the watcher", () => {
         await api._setPluginStorage("k", 1);
         await sync.flushResources();
         // Another tab writes `k` too; this client's write of `k` is stale and is discarded.
-        fake.set("pluginStorage", "main", { _pluginStorage: { k: 9, remote: true } });
+        const remote = { _ownedPluginStorage: { "plug\u0000k": 9 }, _pluginStorage: { remote: true } };
+        fake.set("pluginStorage", "main", remote);
         await api._setPluginStorage("k", 2);
         const result = await sync.flushResources();
         await settled();
         expect(result.discarded).toEqual(["pluginStorage/main"]);
-        expect(plain(settings.pluginStorage)).toEqual({ _pluginStorage: { k: 9, remote: true } });
+        expect(plain(settings.pluginStorage)).toEqual(remote);
         expect(await api._getPluginStorage("remote")).toBe(true);
         expect(await api._getPluginStorage("k")).toBe(9);
         expect(alerts.normal).toHaveBeenCalled();
@@ -202,11 +206,11 @@ describe("plugin storage writes sent without the watcher", () => {
         const batches = fake.batchCount();
         await sync.flushResources();
         expect(fake.batchCount()).toBe(batches);
-        expect(storage()).toEqual({ _pluginStorage: { k: 9, remote: true } });
+        expect(storage()).toEqual(remote);
         // The next write starts from the reloaded record.
         await api._setPluginStorage("k", 3);
         await sync.flushResources();
-        expect(storage()).toEqual({ _pluginStorage: { k: 3, remote: true } });
+        expect(storage()).toEqual({ _ownedPluginStorage: { "plug\u0000k": 3 }, _pluginStorage: { remote: true } });
         expect(events).toHaveLength(1);
     });
 
@@ -217,7 +221,8 @@ describe("plugin storage writes sent without the watcher", () => {
         await api._setPluginStorage("k", 1);
         await sync.flushResources();
         fake.set("pluginStorage", "main", {
-            _pluginStorage: { k: 1, remote: true },
+            _ownedPluginStorage: { "plug\u0000k": 1 },
+            _pluginStorage: { remote: true },
             _safeLocalPluginStorage: { s: 1 },
         });
         await api._setPluginStorage("k", 2);
@@ -225,7 +230,8 @@ describe("plugin storage writes sent without the watcher", () => {
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         await settled();
         expect(storage()).toEqual({
-            _pluginStorage: { k: 2, remote: true },
+            _ownedPluginStorage: { "plug\u0000k": 2 },
+            _pluginStorage: { remote: true },
             _safeLocalPluginStorage: { s: 1, mine: "m" },
         });
         expect(await api._getPluginStorage("remote")).toBe(true);
@@ -287,6 +293,229 @@ describe("plugin storage writes sent without the watcher", () => {
             "[RisuAI Plugin: plug] storageDiscarded listener failed",
             expect.anything(),
         );
+    });
+});
+
+describe("owned v3 plugin storage", () => {
+    it("keeps two plugins' same key separate, including a concurrent write by another owner", async () => {
+        const { api, loadPlugin, sync, storage, fake } = await boot();
+        const other = await loadPlugin("other");
+        await api._setPluginStorage("shared", "plug value");
+        await other._setPluginStorage("shared", "other value");
+        await sync.flushResources();
+        expect(storage()).toEqual({
+            _ownedPluginStorage: { "plug\u0000shared": "plug value", "other\u0000shared": "other value" },
+        });
+        expect(await api._getPluginStorage("shared")).toBe("plug value");
+        expect(await other._getPluginStorage("shared")).toBe("other value");
+
+        fake.set("pluginStorage", "main", {
+            _ownedPluginStorage: { "plug\u0000shared": "plug value", "other\u0000shared": "remote value" },
+        });
+        await api._setPluginStorage("shared", "local value");
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(storage()).toEqual({
+            _ownedPluginStorage: { "plug\u0000shared": "local value", "other\u0000shared": "remote value" },
+        });
+        expect(await api._getPluginStorage("shared")).toBe("local value");
+        expect(await other._getPluginStorage("shared")).toBe("remote value");
+    });
+
+    it("reads owned keys before unshadowed legacy keys and removes both copies of a visible key", async () => {
+        const { api, sync, storage } = await boot();
+        await api.setDatabase({
+            pluginCustomStorage: {
+                _pluginStorage: { legacy: "old", shadow: "legacy shadow", tail: false },
+                _ownedPluginStorage: { "plug\u0000own": 1, "plug\u0000shadow": null, "other\u0000private": 2 },
+            },
+        });
+        await sync.flushResources();
+        expect(await api._getPluginStorage("legacy")).toBe("old");
+        expect(await api._getPluginStorage("shadow")).toBeNull();
+        expect(await api._getPluginStorage("private")).toBeNull();
+        expect(await api._keysPluginStorage()).toEqual(["own", "shadow", "legacy", "tail"]);
+        expect(await api._lengthPluginStorage()).toBe(4);
+        for (const [index, key] of ["own", "shadow", "legacy", "tail", null].entries()) {
+            expect(await api._keyPluginStorage(index)).toBe(key);
+        }
+
+        await api._removePluginStorage("shadow");
+        await api._removePluginStorage("legacy");
+        await sync.flushResources();
+        expect(await api._getPluginStorage("shadow")).toBeNull();
+        expect(await api._getPluginStorage("legacy")).toBeNull();
+        expect(storage()).toEqual({
+            _pluginStorage: { tail: false },
+            _ownedPluginStorage: { "plug\u0000own": 1, "other\u0000private": 2 },
+        });
+    });
+
+    it("claims a legacy key with its owned write and legacy removal in one saved record patch", async () => {
+        const { api, sync, storage, fake } = await boot();
+        const keep = "unchanged".repeat(100);
+        await api.setDatabase({
+            pluginCustomStorage: {
+                _pluginStorage: { claim: "legacy", keep },
+                _ownedPluginStorage: { "other\u0000keep": keep },
+            },
+        });
+        await sync.flushResources();
+        fake.requests.length = 0;
+
+        await api._setPluginStorage("claim", { value: "owned" });
+        await sync.flushResources();
+        const batches = fake.batchBodies();
+        expect(batches).toHaveLength(1);
+        expect(batches[0].ops).toHaveLength(1);
+        expect(batches[0].ops[0]).toMatchObject({
+            kind: "pluginStorage",
+            id: "main",
+            patch: {
+                nested: {
+                    _pluginStorage: { set: {}, remove: ["claim"] },
+                    _ownedPluginStorage: { set: { "plug\u0000claim": { value: "owned" } }, remove: [] },
+                },
+            },
+        });
+        expect(storage()).toEqual({
+            _pluginStorage: { keep },
+            _ownedPluginStorage: { "other\u0000keep": keep, "plug\u0000claim": { value: "owned" } },
+        });
+    });
+
+    it("clear hides legacy only for its owner, preserves other data, and leaves the empty key usable", async () => {
+        const { api, loadPlugin, sync, storage } = await boot();
+        const other = await loadPlugin("other");
+        await api.setDatabase({
+            pluginCustomStorage: {
+                _pluginStorage: { shared: "legacy", untouched: "still legacy" },
+                _ownedPluginStorage: { "plug\u0000old": "delete", "other\u0000private": "keep" },
+            },
+        });
+        await sync.flushResources();
+        await api._clearPluginStorage();
+        await sync.flushResources();
+        expect(storage()).toEqual({
+            _pluginStorage: { shared: "legacy", untouched: "still legacy" },
+            _ownedPluginStorage: { "other\u0000private": "keep", plug: { legacyHidden: true } },
+        });
+        expect(await api._getPluginStorage("shared")).toBeNull();
+        expect(await api._keysPluginStorage()).toEqual([]);
+        expect(await api._lengthPluginStorage()).toBe(0);
+        expect(await api._keyPluginStorage(0)).toBeNull();
+        expect(await other._getPluginStorage("shared")).toBe("legacy");
+        expect(await other._getPluginStorage("private")).toBe("keep");
+
+        await api._setPluginStorage("", "empty key");
+        await api._setPluginStorage("shared", "new owned");
+        await sync.flushResources();
+        expect(await api._getPluginStorage("")).toBe("empty key");
+        expect(await api._getPluginStorage("shared")).toBe("new owned");
+        expect(await api._keysPluginStorage()).toEqual(["", "shared"]);
+        expect(storage()._pluginStorage).toEqual({ shared: "legacy", untouched: "still legacy" });
+        await api._removePluginStorage("shared");
+        await sync.flushResources();
+        expect(await api._getPluginStorage("shared")).toBeNull();
+        expect(storage()).toEqual({
+            _pluginStorage: { shared: "legacy", untouched: "still legacy" },
+            _ownedPluginStorage: {
+                "other\u0000private": "keep",
+                plug: { legacyHidden: true },
+                "plug\u0000": "empty key",
+            },
+        });
+    });
+
+    it("reports only each listener's unprefixed owned losses plus legacy losses in the existing event shape", async () => {
+        const { api, loadPlugin, sync, fake } = await boot();
+        const other = await loadPlugin("other");
+        const ownEvents: unknown[] = [];
+        const otherEvents: unknown[] = [];
+        await api.onStorageDiscarded((event: any) =>
+            ownEvents.push({ ...event, pluginStorage: event.pluginStorage.sort() }),
+        );
+        await other.onStorageDiscarded((event: any) =>
+            otherEvents.push({ ...event, pluginStorage: event.pluginStorage.sort() }),
+        );
+        await api.setDatabase({
+            pluginCustomStorage: {
+                _pluginStorage: { legacy: 1 },
+                _ownedPluginStorage: { "plug\u0000mine": 1, "other\u0000private": 1 },
+                _safeLocalPluginStorage: { local: 1 },
+                custom: 1,
+            },
+        });
+        await sync.flushResources();
+        fake.set("pluginStorage", "main", {
+            _pluginStorage: { legacy: 9 },
+            _ownedPluginStorage: { "plug\u0000mine": 9, "other\u0000private": 9 },
+            _safeLocalPluginStorage: { local: 9 },
+            custom: 9,
+        });
+        await api._setPluginStorage("mine", 2);
+        await other._setPluginStorage("private", 2);
+        await api.setDatabase({ pluginCustomStorage: { _pluginStorage: { legacy: 2 }, custom: 2 } });
+        await api.getLocalPluginStorage().setItem("local", 2);
+        expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
+        await settled();
+        expect(ownEvents).toEqual([
+            {
+                type: "storageDiscarded",
+                pluginStorage: ["legacy", "mine"],
+                localPluginStorage: ["local"],
+                customStorage: true,
+            },
+        ]);
+        expect(otherEvents).toEqual([
+            {
+                type: "storageDiscarded",
+                pluginStorage: ["legacy", "private"],
+                localPluginStorage: ["local"],
+                customStorage: true,
+            },
+        ]);
+    });
+
+    it("reports newly visible legacy keys when a conflict rolls back the owner's clear marker", async () => {
+        const { api, sync, fake } = await boot();
+        const events: unknown[] = [];
+        await api.onStorageDiscarded((event: unknown) => events.push(event));
+        const stored = {
+            _pluginStorage: { legacy: "visible again" },
+            _ownedPluginStorage: { "other\u0000private": "keep" },
+            custom: "base",
+        };
+        await api.setDatabase({ pluginCustomStorage: stored });
+        await sync.flushResources();
+        fake.set("pluginStorage", "main", { ...stored, custom: "remote" });
+        await api._clearPluginStorage();
+        await api.setDatabase({ custom: "local" });
+        expect(await api._getPluginStorage("legacy")).toBeNull();
+        expect((await sync.flushResources()).discarded).toEqual(["pluginStorage/main"]);
+        await settled();
+        expect(await api._getPluginStorage("legacy")).toBe("visible again");
+        expect(events).toEqual([
+            {
+                type: "storageDiscarded",
+                pluginStorage: ["legacy"],
+                localPluginStorage: [],
+                customStorage: true,
+            },
+        ]);
+    });
+
+    it("keeps shared legacy storage behavior for a plugin name containing U+0000", async () => {
+        const { api, loadPlugin, sync, storage } = await boot();
+        const legacy = await loadPlugin("old\u0000plugin");
+        await api._setPluginStorage("owned", "keep");
+        await legacy._setPluginStorage("shared", "legacy value");
+        await sync.flushResources();
+        expect(storage()).toEqual({
+            _ownedPluginStorage: { "plug\u0000owned": "keep" },
+            _pluginStorage: { shared: "legacy value" },
+        });
+        expect(await api._getPluginStorage("shared")).toBe("legacy value");
+        expect(await legacy._getPluginStorage("shared")).toBe("legacy value");
     });
 });
 

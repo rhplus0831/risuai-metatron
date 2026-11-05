@@ -51,9 +51,8 @@
 
 ### Boot cache
 
-- `loadBootSnapshot` in `src/ts/storage/bootCache.ts` combines IndexedDB and `resourceClient.ts`'s `readBoot` into the
-  same plain `ResourceReadKindsResult` that installation consumes. Read its module header and `prepareBootRequest`,
-  `expandBootAnswer`, `loadBootSnapshot`, `BootCacheStore` for claims, validation, fallback and write fences.
+- `bootCache.ts` `loadBootSnapshot` combines IndexedDB and `resourceClient.ts`'s `readBoot` for installation; its module
+  header holds cache claims, validation, fallback and write fences.
 - `BOOT_CACHE_ELIGIBILITY` (`shared/resources.ts`) decides per kind; a server `project` vetoes caching regardless of the
   table. A character with a non-empty managed `oaiTTSConfig.apiKey` is excluded; secrets embedded in other cached
   content can remain.
@@ -121,8 +120,12 @@
 
 ### Record patches
 
-`updateOperation`, `baseParts` and `recordPatchText` in `src/ts/storage/resourceSync.svelte.ts` define patch selection
-and whole-record fallbacks. `llmSecrets` never has parts: the server refuses its patches, including readable siblings.
+- `src/ts/storage/resourceSync.svelte.ts`: `updateOperation` (patch or whole record), `baseParts`, `recordPatchText`
+  (dictionary and item-key fallbacks), `itemProjection`. `llmSecrets` never has parts: the server refuses its patches,
+  readable siblings included.
+- Write forms both sides check (`shared/recordPatch.ts`: `checkRecordWritePatch`, `applyFieldPatch`, `itemIds`,
+  `checkItemPatch`, `applyItemPatch`): `pluginStorage` entries one level down in `PLUGIN_STORAGE_DICTIONARIES`
+  (`shared/pluginStorage.ts`); `plugins` items by unique id, else by unique name with `itemKey: "name"`.
 
 ### Lost answers
 
@@ -178,9 +181,9 @@ and whole-record fallbacks. `llmSecrets` never has parts: the server refuses its
   [whole-record acceptance](#conflicts).
 - For module lists accepted by `itemIds`, a fresh-id addition merges with independent remote changes and rebases without
   a discard.
-- `pluginStorage` merges by key, one level down in `_pluginStorage` and `_safeLocalPluginStorage`, other top-level keys
-  whole (`mergePluginStorage`). Conflicting reserved values that cannot merge as dictionaries fail; unchanged or equal
-  values still converge. `onPluginStorageDiscarded` hears replaced keys after acceptance settles the record.
+- `pluginStorage` merges by key, one level down in each `PLUGIN_STORAGE_DICTIONARIES` entry, other top-level keys whole
+  (`mergePluginStorage`). Conflicting reserved values that cannot merge as dictionaries fail; unchanged or equal values
+  still converge. `onPluginStorageDiscarded` hears replaced keys after acceptance settles the record.
 - `statics` counts are best effort: server counts plus local increments (`benignChanges`). `llmSecrets` sibling-body
   rules live on `adoptSecretSiblings`, shared by save conflicts, credential replies and live updates; masked status
   comes from the server.
@@ -236,11 +239,8 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   defines the ten-attempt budget and relevant dependency reads; it does not wait for unrelated background reads.
 - Unanswered pagehide and stalled split-journal dependencies each wait at most 20 s. Timeout rejects without releasing
   the split prefix.
-- The result is `{ discarded, refused }`: discards since the call or `beginMutationScope` (a conservative time window),
-  and `refusedItems` at resolution. Keys are `<kind>/<id>`, `chats/<chaId>/<chatId>` or `chats/<chaId>` for an order. An
-  empty discard list does not guarantee all changes are durable; refused chats/orders are nonblocking. Refused records
-  reject via `quarantineReason`; generation-blocked work throws `GenerationBlockedError` (`generatingNoticeCount` tracks
-  whether the notice showed).
+- The result is `{ discarded, refused }` with `<kind>/<id>`, `chats/<chaId>/<chatId>` or order `chats/<chaId>` keys. Its
+  JSDoc holds time window, durability and refusal rules; `generatingNoticeCount` tracks whether the notice showed.
 - Send admission, `startMemoryTask` and `requestStoredTranslation` check the target chat and order in the refusal
   result. `readChatsDetached` also checks character keys. Refused records reject the flush itself. Backup export reports
   refused changes.

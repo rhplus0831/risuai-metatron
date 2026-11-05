@@ -60,7 +60,7 @@ export type ServerStore = {
     delete(kind: unknown, id: string, baseRevision: string): void;
     readKinds(
         kinds: readonly unknown[],
-        options?: { chats?: boolean; chatSummaries?: boolean },
+        options?: { chats?: boolean; chatSummaries?: boolean; memoryProjection?: boolean },
     ): {
         epoch: string;
         kinds: Record<string, { id: string; revision: string; data: any }[]>;
@@ -75,6 +75,7 @@ export type ServerStore = {
             chatRows?: ResourceReadEntries["chatRows"];
             chatCollections?: readonly string[];
             chatSummaryCollections?: readonly string[];
+            memoryProjection?: boolean;
         },
     ): {
         epoch: string;
@@ -538,6 +539,7 @@ export class StoreBackedServer {
                 {
                     chats: url.searchParams.get("chats") === "1",
                     chatSummaries: url.searchParams.get("chatSummaries") === "1",
+                    memoryProjection: true,
                 },
             );
             for (const name of names) {
@@ -575,6 +577,7 @@ export class StoreBackedServer {
                 chatRows: body.chatRows,
                 chatCollections: [...new Set<string>(body.chatCollections ?? [])],
                 chatSummaryCollections: [...new Set<string>(body.chatSummaryCollections ?? [])],
+                memoryProjection: true,
             };
             const read =
                 body.continue === true && this.readResponseBytes !== undefined

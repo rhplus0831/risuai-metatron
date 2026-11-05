@@ -15,11 +15,13 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     risuUnescape: (s: string) => s,
 }));
 vi.mock("src/ts/process/modules", () => ({ moduleUpdate: vi.fn(), getModules: () => [], getModuleMcps: () => [] }));
-vi.mock("./permissionStore", () => ({
-    hasPermissionGrant: () => true,
-    getLastGrantTime: () => Date.now(),
-    recordPermissionGrants: vi.fn(),
-}));
+vi.mock("./permissionStore", async () =>
+    (await import("./tests/permissionStoreMock")).createPermissionStoreMock({
+        hasPermissionGrant: () => true,
+        getLastGrantTime: () => Date.now(),
+        recordPermissionGrants: vi.fn(),
+    }),
+);
 
 import { fetchNative } from "src/ts/globalApi.svelte";
 import { UNREAD_PLUGIN_STREAM_TIMEOUT_MS } from "./factory";

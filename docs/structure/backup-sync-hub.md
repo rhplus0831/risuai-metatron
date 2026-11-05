@@ -165,9 +165,12 @@ and keeps what spans files.
   `projectCollections`, `forwardSelectedPreset`, `forwardPersonaRoots`, `characterShell`, also used by `loadJobScope`).
   A structured chat's `hypaV3Data` is [the projection](structured-memory/projection.md#the-hypav3-projection) of its
   records, unsealed (`memory-projected`, `memory-unreadable`).
-- The rules upstream's boot forces are in `exportDatabase.ts`: `upstreamCharacters` raises `lastInteraction` against
-  upstream's ten-day cold storage and refreshes old `trashTime`; `placeNamedKeys` and `reportOmittedKeys` place or clear
-  the credentials (`includeSecrets`); `upstreamPreset` and the module header hold the presets and HypaV3 ratios.
+- `exportDatabase.ts` holds boot compatibility (`upstreamCharacters`), credentials (`placeNamedKeys`,
+  `reportOmittedKeys`), presets and HypaV3 ratios (`upstreamPreset`, module header).
+- `upstreamPluginStorage` omits `_pluginStorage`, `_safeLocalPluginStorage`, `_ownedPluginStorage`
+  (`DEVICE_PLUGIN_STORAGE_KEYS`) from `pluginCustomStorage`, counting their entries as excluded `plugin-storage`; it
+  also drops `_coldplugin`. Import still writes legacy `_pluginStorage`, served by owned read-through
+  ([plugin storage](plugin-sandbox.md#state)).
 - Messages drop their reroll candidate fields (`message-candidates`, `upstreamChat`).
 
 ## State

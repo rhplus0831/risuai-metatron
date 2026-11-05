@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { CHAT_TABLES_SQL } from "../data/chatStore.ts";
-import { createKindRegistry, type ResourceKind } from "../data/kinds.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import { createRequestHistory } from "../data/requestHistory.ts";
 import { createVectorCache } from "../data/vectorCache.ts";
 import {
@@ -1360,6 +1360,72 @@ describe("field patches", () => {
         expect(() => store.revisionOf(root, "")).toThrow(ResourceValidationError);
         store.close();
         expect(() => store.revisionOf(root, "a")).toThrow();
+    });
+});
+
+describe("plugin write patches", () => {
+    it("refuses invalid nested targets and disallowed patch forms without writing any operation in the batch", () => {
+        const registry = createKindRegistry([root, ...DEFAULT_RESOURCE_KINDS]);
+        const store = createResourceStore({ file: ":memory:", kinds: registry });
+        stores.push(store);
+        const storage = registry.get("pluginStorage")!;
+        const plugins = registry.get("plugins")!;
+        const nested = { _pluginStorage: { set: { value: 2 } } };
+        const dictionary = { _pluginStorage: { value: 1 } };
+        const cases: { label: string; kind: ResourceKind; data: unknown; patch: unknown }[] = [
+            ...[
+                { label: "array target", data: { _pluginStorage: [1] } },
+                { label: "string target", data: { _pluginStorage: "old" } },
+                { label: "missing target", data: {} },
+            ].map((entry) => ({ ...entry, kind: storage, patch: { nested } })),
+            { label: "nested on another kind", kind: root, data: dictionary, patch: { nested } },
+            {
+                label: "undeclared dictionary",
+                kind: storage,
+                data: { custom: { value: 1 } },
+                patch: { nested: { custom: { set: { value: 2 } } } },
+            },
+            { label: "nested mixed with items", kind: storage, data: dictionary, patch: { nested, order: [] } },
+            {
+                label: "outer set overlaps nested",
+                kind: storage,
+                data: dictionary,
+                patch: { nested, set: { _pluginStorage: {} } },
+            },
+            {
+                label: "outer remove overlaps nested",
+                kind: storage,
+                data: dictionary,
+                patch: { nested, remove: ["_pluginStorage"] },
+            },
+            {
+                label: "itemKey on another kind",
+                kind: root,
+                data: [{ name: "one" }],
+                patch: { itemKey: "name", order: [] },
+            },
+            ...["id", "other"].map((itemKey) => ({
+                label: `unsupported itemKey ${itemKey}`,
+                kind: plugins,
+                data: [{ id: "one", name: "first" }],
+                patch: { itemKey, order: [] },
+            })),
+        ];
+        for (const { label, kind, data, patch } of cases) {
+            const saved = store.put(kind, "main", data, store.revisionOf(kind, "main"));
+            const writes = store.writeCount();
+            expect(
+                () =>
+                    store.applyBatch([
+                        { kind: root, id: "sibling", baseRevision: null, data: { changed: true } },
+                        { kind, id: "main", baseRevision: saved.revision, patch },
+                    ]),
+                label,
+            ).toThrow(ResourceValidationError);
+            expect(store.get(kind, "main"), label).toEqual(saved);
+            expect(store.get(root, "sibling"), label).toBeNull();
+            expect(store.writeCount(), label).toBe(writes);
+        }
     });
 });
 

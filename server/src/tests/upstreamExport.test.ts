@@ -613,6 +613,24 @@ describe("buildUpstreamDatabase: presets and the root", () => {
 });
 
 describe("buildUpstreamDatabase: settings", () => {
+    it("omits owned plugin storage from upstream exports and counts every excluded entry", async () => {
+        const snapshot = await snapshotOf((w) => {
+            w.put(RESOURCE_KIND.pluginStorage, "main", {
+                keep: { custom: true },
+                _pluginStorage: { legacy: 1 },
+                _safeLocalPluginStorage: { local: 2 },
+                _ownedPluginStorage: {
+                    "plug\u0000key": 3,
+                    "other\u0000key": 4,
+                    plug: { legacyHidden: true },
+                },
+            });
+        });
+        const { db, report } = exportOf(snapshot);
+        expect(db.pluginCustomStorage).toEqual({ keep: { custom: true } });
+        expect(excluded(report, "plugin-storage")).toMatchObject({ count: 5 });
+    });
+
     it("writes formatversion 5, keeps upstream shapes, and strips metatron-only settings with a report", async () => {
         const { db, report } = exportOf(await snapshotOf());
         expect(db.formatversion).toBe(5);

@@ -177,5 +177,7 @@ it("control: a concurrent creation of the same key keeps the old policy (the ser
     expect(h.storage.getPluginStorageValue("remoteSetting")).toBe("saved elsewhere");
     expect(h.fake.record("pluginStorage", "main")!.data).toEqual(REMOTE);
     expect(alerts.normal).toHaveBeenCalledWith("reloaded");
-    expect(discards).toEqual([{ pluginStorage: ["remoteSetting"], localPluginStorage: [], customStorage: false }]);
+    expect(discards).toEqual([
+        { pluginStorage: ["remoteSetting"], ownedPluginStorage: [], localPluginStorage: [], customStorage: false },
+    ]);
 });

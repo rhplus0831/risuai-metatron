@@ -30,11 +30,13 @@ import { flushResources } from "./resourceSync.svelte";
  * Google search credentials. Per entry: when the server already holds it, the server copy wins;
  * otherwise the entry is written, read back from the server and compared, and only then deleted
  * locally. A local entry is deleted only when it still holds the value that was imported (another
- * tab may have changed it meanwhile). Anything that fails stays in the browser for the next boot.
+ * tab may have changed it meanwhile). Failed entries stay for the next boot. Permission grants
+ * merge only once per browser; later boots only clean up leftovers so revoked grants stay revoked.
  * A restore meanwhile (412) stops the import.
  */
 
 const LOCAL_PREFIX = "safe_plugin_";
+const PERMISSIONS_IMPORTED_KEY = "risu_legacy_plugin_permissions_imported";
 
 function store(name: string, storeName: string) {
     return localforage.createInstance({ name, storeName });
@@ -170,10 +172,17 @@ async function importSafeLocalPluginStorage() {
     }
 }
 
+/** Imports grants once; a durable device marker prevents leftover legacy entries restoring revocations. */
 async function importPermissions() {
     const legacy = store("plugin_permissions", "plugin_permissions");
     const list = await entries(legacy);
     if (list.length === 0) {
+        return;
+    }
+    if (localStorage.getItem(PERMISSIONS_IMPORTED_KEY)) {
+        for (const [key, value] of list) {
+            await removeIfUnchanged(legacy, key, value);
+        }
         return;
     }
     const grants: string[] = [];
@@ -187,6 +196,7 @@ async function importPermissions() {
     }
     await recordPermissionGrants({ grants, lastGrantTime });
     await loadPluginPermissions();
+    localStorage.setItem(PERMISSIONS_IMPORTED_KEY, "1");
     for (const [key, value] of list) {
         const kept =
             key.endsWith("_lastGrantTime") && typeof value === "number"

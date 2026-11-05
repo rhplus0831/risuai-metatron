@@ -59,11 +59,13 @@ vi.mock("./factory", () => ({
     },
 }));
 // The listener registration asks for the replacer permission: granted, without a prompt.
-vi.mock("./permissionStore", () => ({
-    hasPermissionGrant: () => true,
-    getLastGrantTime: () => Date.now(),
-    recordPermissionGrants: vi.fn(async () => undefined),
-}));
+vi.mock("./permissionStore", async () =>
+    (await import("./tests/permissionStoreMock")).createPermissionStoreMock({
+        hasPermissionGrant: () => true,
+        getLastGrantTime: () => Date.now(),
+        recordPermissionGrants: vi.fn(async () => undefined),
+    }),
+);
 
 /**
  * Boots the harness (a fresh module graph), loads the host API on that graph, captures the API
@@ -316,7 +318,7 @@ describe("script handlers in transform continuations", () => {
             expect(await result).toMatchObject({ data: "input handled" });
             await b.sync.flushResources();
             expect(b.record("characters", "c")).toEqual(before);
-            expect(b.record("pluginStorage")._pluginStorage.private).toEqual({ count: 1 });
+            expect(b.record("pluginStorage")._ownedPluginStorage["plug\u0000private"]).toEqual({ count: 1 });
             expect(b.record("plugins").find((plugin: any) => plugin.name === "plug").realArg).toMatchObject({
                 a: "own argument",
                 legacy: "own legacy argument",

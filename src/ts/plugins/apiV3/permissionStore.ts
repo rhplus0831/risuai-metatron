@@ -11,7 +11,8 @@ import { getResource, putResource, ResourceConflictError } from "../../storage/r
  * v3 plugin permission grants, kept in the server-owned `pluginPermissions` resource. The record is
  * outside the settings records, so no plugin database API, snapshot, or `pluginCustomStorage` write reaches
  * it; only the host's consent flow and the legacy browser-permission import (`browserLocalImport.ts`) call
- * `recordPermissionGrants`. Grants are append-only.
+ * `recordPermissionGrants`. Host settings can revoke grants. Record installs notify listeners of
+ * removed grant keys so cached consent answers also expire after a live update.
  */
 
 type Loaded = { revision: string | null; data: PluginPermissionGrants };
@@ -20,6 +21,22 @@ const MAX_ATTEMPTS = 5;
 
 let current: Loaded = { revision: null, data: emptyGrants() };
 let queue: Promise<unknown> = Promise.resolve();
+const removalListeners = new Set<(keys: ReadonlySet<string>) => void>();
+
+export function onPermissionGrantsRemoved(listener: (keys: ReadonlySet<string>) => void): () => void {
+    removalListeners.add(listener);
+    return () => {
+        removalListeners.delete(listener);
+    };
+}
+
+function installGrants(next: Loaded): void {
+    const removed = new Set(Object.keys(current.data.grants).filter((key) => !Object.hasOwn(next.data.grants, key)));
+    current = next;
+    if (removed.size > 0) {
+        for (const listener of removalListeners) listener(removed);
+    }
+}
 
 function emptyGrants(): PluginPermissionGrants {
     return { grants: Object.create(null), lastGrantTime: Object.create(null) };
@@ -60,7 +77,7 @@ export function seedPluginPermissions(record: ResourceRecord | undefined): void 
 
 /** Reloads grants from the server after the legacy browser-permission migration merges them. */
 export async function loadPluginPermissions(): Promise<void> {
-    current = await fetchGrants();
+    installGrants(await fetchGrants());
 }
 
 export function hasPermissionGrant(key: string): boolean {
@@ -105,13 +122,13 @@ export function recordPermissionGrants(added: {
                     next,
                     current.revision,
                 );
-                current = { revision: saved.revision, data: next };
+                installGrants({ revision: saved.revision, data: next });
                 return;
             } catch (error) {
                 if (!(error instanceof ResourceConflictError)) {
                     throw error;
                 }
-                current = await fetchGrants();
+                installGrants(await fetchGrants());
             }
         }
         throw new Error("Could not save the plugin permission grant");
@@ -121,9 +138,55 @@ export function recordPermissionGrants(added: {
 }
 
 /**
+ * Revokes matching grants and times against a fresh server read, including keys learned on a
+ * conflict retry. Shares the write queue with consent and live updates; an empty match writes nothing.
+ */
+export function revokePermissionGrants(
+    grants: (key: string) => boolean,
+    lastGrantTime: (key: string) => boolean,
+): Promise<void> {
+    const run = queue.then(async () => {
+        installGrants(await fetchGrants());
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+            const next = copyGrants(current.data);
+            let changed = false;
+            for (const key of Object.keys(next.grants)) {
+                if (grants(key)) {
+                    delete next.grants[key];
+                    changed = true;
+                }
+            }
+            for (const key of Object.keys(next.lastGrantTime)) {
+                if (lastGrantTime(key)) {
+                    delete next.lastGrantTime[key];
+                    changed = true;
+                }
+            }
+            if (!changed) return;
+            try {
+                const saved = await putResource(
+                    RESOURCE_KIND.pluginPermissions,
+                    SINGLETON_RESOURCE_ID,
+                    next,
+                    current.revision,
+                );
+                installGrants({ revision: saved.revision, data: next });
+                return;
+            } catch (error) {
+                if (!(error instanceof ResourceConflictError)) throw error;
+                installGrants(await fetchGrants());
+            }
+        }
+        throw new Error("Could not revoke the plugin permission grants");
+    });
+    queue = run.catch(() => {});
+    return run;
+}
+
+/**
  * A live update: another tab or device committed the grants at `revision`. Read again unless this
  * tab already holds that revision or a newer one; the read runs in the same queue as
- * `recordPermissionGrants`, and an answer older than what this tab holds by then is not taken.
+ * grant writes and revocations, and an answer older than what this tab holds by then is not taken.
  */
 export function refreshPluginPermissions(revision: string | null): Promise<void> {
     const run = queue.then(async () => {
@@ -136,7 +199,7 @@ export function refreshPluginPermissions(revision: string | null): Promise<void>
             current.revision === null ||
             (compareRevision(fetched.revision, current.revision) ?? 1) > 0
         ) {
-            current = fetched;
+            installGrants(fetched);
         }
     });
     queue = run.catch(() => {});

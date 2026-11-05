@@ -38,11 +38,13 @@ vi.mock("src/ts/process/modules", () => ({
     getModules: () => [],
     getModuleMcps: () => [...harness.mcps],
 }));
-vi.mock("./permissionStore", () => ({
-    hasPermissionGrant: () => true,
-    getLastGrantTime: () => Date.now(),
-    recordPermissionGrants: vi.fn(),
-}));
+vi.mock("./permissionStore", async () =>
+    (await import("./tests/permissionStoreMock")).createPermissionStoreMock({
+        hasPermissionGrant: () => true,
+        getLastGrantTime: () => Date.now(),
+        recordPermissionGrants: vi.fn(),
+    }),
+);
 
 vi.mock("src/ts/process/mcp/filesystemclient", () => ({
     FileSystemClient: class {

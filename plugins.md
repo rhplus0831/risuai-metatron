@@ -672,7 +672,11 @@ await Risuai.setArgument("max_retries", 5);
 
 ### Plugin Storage (Recommended)
 
-`pluginStorage` is **save-file specific** and **syncs between devices**:
+`pluginStorage` is **per plugin**, **save-file specific**, and **syncs between devices**. Two plugins can use the
+same key without overwriting each other. The owner is the plugin's internal `name`; renaming it creates a new owner.
+Values stored before per-plugin storage are still readable until claimed: writing one moves it into that plugin's
+storage. `clear()` removes only this plugin's values and stops reading legacy values, leaving them for other plugins.
+Plugin names containing U+0000 retain the shared legacy behavior.
 
 ```javascript
 // Every call returns a Promise (iframe message passing)
@@ -684,7 +688,7 @@ const allKeys = await Risuai.pluginStorage.keys();
 const count = await Risuai.pluginStorage.length();
 
 await Risuai.pluginStorage.removeItem("last_sync");
-await Risuai.pluginStorage.clear(); // Remove all items
+await Risuai.pluginStorage.clear(); // Remove this plugin's items and hide legacy values
 ```
 
 **Use `pluginStorage` when:**
@@ -715,8 +719,8 @@ await Risuai.onStorageDiscarded(async (event) => {
 });
 ```
 
-The event says which keys lost a value, not which plugin wrote them (the keys may be another plugin's).
-The listener is removed when the plugin unloads.
+The event lists this plugin's own lost keys without an owner prefix, plus lost legacy keys. If a discarded `clear()`
+makes legacy keys visible again, those keys are included too. The listener is removed when the plugin unloads.
 
 ### Safe Local Storage
 
@@ -764,31 +768,36 @@ Use `safeLocalStorage` for data that must stay on one device.
 
 ### Database Access
 
-Access Risuai's database for characters, personas, and more:
+Request only the data you need. Prefer summaries for character/chat lists, `getChats()` for a page of full chats, and `getCharacter()` for the current character:
 
 ```javascript
-// Get database (remember: async!)
-const db = await Risuai.getDatabase();
+const db = await Risuai.getDatabase(["characters", "personas"], { chats: "summaries" });
+if (db?.characters.length) {
+  const character = db.characters[0];
+  console.log(character.chatSummaries); // [{ id, name, lastMessageAt? }, ...]
+  const page = await Risuai.getChats(character.chaId, { offset: 0, limit: 10 });
+  console.log(page?.chats, page?.total);
 
-// Request only specific keys for better performance
-const db = await Risuai.getDatabase(["characters", "personas"]);
+  character.name = "Updated name";
+  await Risuai.setDatabaseLite(db); // Keeps these characters' chats without loading them
+}
 
-// Access allowed properties
-console.log(db.characters);
-console.log(db.personas);
-console.log(db.modules);
+const currentCharacter = await Risuai.getCharacter();
 
-// Update database
-db.characters.push(newCharacter);
-await Risuai.setDatabase(db); // Full save
-
-// Or use lite version (faster)
-await Risuai.setDatabaseLite(db);
+// Full chats remain available when needed
+const full = await Risuai.getDatabase(["characters"]);
+// Risuai.getDatabase() requests all allowed keys and every full chat
 ```
 
-`getDatabase()` returns `null` if the user has not granted database access consent.
+`getDatabase(includeOnly = "all", options?)` and `getChats(chaId, options?)` require the same database access consent and return `null` when it is not granted.
 
-`getDatabase()` builds a fresh copy each time you call it. When you ask for `characters` (or ask for every key), it first loads every chat of every character from the server and copies them all, so it can take a while and use a lot of memory with many or long chats. Ask only for the keys you need, and prefer `getCharacter()` for the current character. `getCharacter()` and `getChar()` copy one character with all its chats, loading them first. A copy is a snapshot: changing it changes nothing until you hand it back with a setter.
+With `{ chats: "summaries" }`, each returned character has `chatSummaries` instead of `chats` and `chatPage`. There is one `{ id, name, lastMessageAt? }` entry per chat in the character's chat order. Loaded chats supply their current name and final-message time; unloaded chats supply the summary already held by this tab. `lastMessageAt` is absent when no finite time is known. There is no message count. This mode reads, flushes, pins, and loads no chats, inside or outside a hook. All other fields keep their usual behavior, including derived `lastInteraction`, the hook's captured preset settings, and refusal when a required preset is gone. `options` must be an object when supplied; `options.chats` may be `undefined`, `"full"` (the default), or `"summaries"`. Invalid values reject with an `Error` naming the value.
+
+`getChats(chaId, { offset, limit })` returns `{ chats, total }`, with chats in character order and `total` equal to the character's chat count. `offset` defaults to `0` and `limit` to all remaining chats. Both must be non-negative safe integers when supplied; invalid values reject with an `Error`. A zero limit or an offset at/past the end returns an empty page without reading chats. An unknown character, including one deleted during the call, returns `null`. Each chat has the same contents as in a full `getDatabase(["characters"])` result: loaded chats as this tab holds them and unloaded chats as detached server copies through the shared reuse cache. Normally only the page's unloaded chats are read. Inside a hook, or if a detached read cannot safely represent the held state, the character's chats are loaded first.
+
+Without the option (or with `{ chats: "full" }`), `getDatabase()` keeps its existing behavior. It builds a fresh copy each time. When you ask for `characters` (or every key), the copy holds every chat of every character: loaded chats as this tab holds them, and the others as the server holds them after this tab's queued changes were saved. Inside a hook, missing chats are loaded first. Detached reads use a few large requests and share a cache with `getChats()` (up to 64 MiB, cleared after five minutes without a full-chat read). Unchanged copies can be reused according to this tab's live updates. Returning every chat can take a while and use a lot of memory. With Enable Dev Tools on, a full all-keys call returning more than 200 chats logs a hint once per loaded plugin instance recommending scoped reads.
+
+`getCharacter()` and `getChar()` copy one character with all its chats, loading them first. Every result is a snapshot: changing it changes nothing until you hand it back with a setter. Existing characters whose `chats` is absent or `undefined` keep their chats without loading them through `setDatabase`/`setDatabaseLite`; their other fields and any numeric `chatPage` still apply. `chatSummaries` is read-only metadata: character setters ignore it and never save it in a character record. `chats: null` or another non-array value is still invalid.
 
 In a [read-only transform continuation](#read-only-transform-continuations), both setters warn and return `undefined` without applying any keys, including custom keys. Use `pluginStorage` for plugin-private state.
 
@@ -797,6 +806,7 @@ Outside those continuations, `setDatabase`/`setDatabaseLite` apply what you hand
 - Each key is applied on its own. A key whose value is not valid is refused with a console warning (`[Plugin] Refused ...` or `[Settings] Refused ...; the previous value was kept`) and keeps its old value; the other keys still apply. Invalid means, for example, data that is not plain JSON, a value of the wrong kind for a preset setting (a string for `temperature`), or `null` for a setting that cannot be cleared.
 - `characters`: characters you changed are updated, new ones are added at the end, and characters you left out are removed (not while one is generating a reply). The list order you hand back does not reorder the characters; use `characterOrder` for the sidebar order.
 - `plugins`: `setDatabase` asks the user to confirm each plugin that is new or changed and installs the confirmed ones; plugins you left out stay installed. `setDatabaseLite` ignores `plugins` and leaves the installed list as it is.
+- `pluginCustomStorage`: replaces the shared custom keys; a custom key you left out is removed. The `pluginStorage` and `getLocalPluginStorage()` values (the `_pluginStorage`, `_ownedPluginStorage`, and `_safeLocalPluginStorage` keys) are kept when your object leaves those keys out, so a fresh object does not erase them; a key your object has replaces the stored values with yours.
 - `characterOrder` and `selectedPersona` are applied after the other keys, whatever order they have in your object.
 - Prompt settings (`temperature`, `maxResponse`, `frequencyPenalty`, `PresensePenalty`, ...) belong to the selected prompt preset. Model roots use the selected model preset and its profiles (the `modelProfiles` records, shown in the app as connections under Model > Connections) as described below. Inside a hook both use the presets captured when the hook's run started (see Character Operations).
 
@@ -1298,6 +1308,10 @@ if (granted) {
 ```
 
 **Available permissions:** `'fetchLogs'`, `'db'`, `'mainDom'`, `'replacer'`
+
+A grant is not permanent: the user can reset a plugin's permissions in Settings > Plugins, and removing a plugin
+revokes its grants. After a reset, `requestPluginPermission` and the APIs that need consent ask again; a prompt that
+was open during the reset answers `false`.
 
 ### Fetch Logs
 

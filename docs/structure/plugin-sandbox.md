@@ -14,7 +14,7 @@
   - `shared/plugins.ts`
   - `plugins.md` (the plugin author guide, at the repository root)
   - `src/ts/storage/pluginStorageStore.svelte.ts`
-  - `src/lib/Setting/Pages/PluginSettings.svelte`
+  - `src/lib/Setting/Pages/PluginSettings.svelte`, `PluginDataSettings.svelte`
   - `src/lib/Others/PluginDefinedIcon.svelte`
   - `public/plugin_start.7z` (the starter template, binary)
 - Not here:
@@ -44,26 +44,24 @@ entrypoints.
   `src/ts/plugins/pluginSafeClass.ts`: `isJsonValue`, `SafeLocalStorage`, `SafeLocalPluginStorage`.
 - `src/ts/plugins/apiV3/permissionStore.ts`: the `pluginPermissions` grants (module header; [State](#state)).
 - `src/lib/Others/PluginDefinedIcon.svelte`: plugin icons (component contract). `src/ts/plugins/apiV3/developMode.ts`:
-  `hotReloadPluginFiles`. `src/ts/plugins/apiV3/transpiler.ts`: `pluginCodeTranspiler`.
+  `hotReloadPluginFiles`, `databaseAccessRecorderScript` (developer database access diagnostics).
+  `src/ts/plugins/apiV3/transpiler.ts`: `pluginCodeTranspiler`.
 
 ### Sandbox host
 
-- `src/ts/plugins/apiV3/factory.ts`: `SandboxHost` (module header: the iframe sandbox and CSP, `GUEST_BRIDGE_SCRIPT`,
-  the message-source checks, the RPC relay). Lookup: `startup` (`GuestStartup`; safe boot), `isIdle` and
-  `onActivityChanged` (the [deferred reload](#deferred-reload)), `terminate`, `UNREAD_PLUGIN_STREAM_TIMEOUT_MS` (an
-  unread bridged stream expires at 60 s), `deserializeArgs` and `reconstructStreamsFromPorts` (callback rollback).
+- `src/ts/plugins/apiV3/factory.ts`: sandbox RPC (`SandboxHost`, module header); `run`, `GuestStartup`, `startup`,
+  `isIdle`, `onActivityChanged`, `terminate`, `UNREAD_PLUGIN_STREAM_TIMEOUT_MS`, `deserializeArgs`,
+  `reconstructStreamsFromPorts`.
 
 ### Host API
 
-- `src/ts/plugins/apiV3/v3.svelte.ts`: `makeRisuaiAPIV3` implements the `risuai` global; `risuai.d.ts` declares it
-  (`RisuaiPluginAPI`). The module header holds the RPC value rules and hook targeting: a selection-dependent call
-  captures `currentContext` before its first await and acts on the hook's targets, else the tab's selection and settings
-  views.
+- `src/ts/plugins/apiV3/v3.svelte.ts`: host API (`makeRisuaiAPIV3`; module header). `risuai.d.ts` declares the `risuai`
+  global (`RisuaiPluginAPI`).
 - Lookup in `v3.svelte.ts`: `addProvider` (permission per call), `nativeFetch` (its response body is bridged:
   [Sandbox host](#sandbox-host)), `onStorageDiscarded`, `parseRisuChat`, `runLLMModel`, `loadV3Plugins`,
   `unloadV3Plugin`, `pluginWorkIdle`, `onPluginWorkChange`, `customV3ProviderMetaStore`.
-- Database setters: `setPluginDatabase`, `setPluginDatabaseLite`, `applyPluginKey` (each key to the mutation module that
-  owns it), `pluginKeyOrder`, `warnRefused` (`[Plugin] Refused ...`). The model roots go on to `writeModelRoot`
+- Database setters: `setPluginDatabase`, `setPluginDatabaseLite`, `applyPluginDatabaseWithChats` (loading JSDoc),
+  `applyPluginKey`, `pluginKeyOrder`, `warnRefused` (`[Plugin] Refused ...`). Model roots go to `writeModelRoot`
   ([compatibility model-root write rules](llm-requests.md#compatibility-model-root-writes)); a refusal warns
   `[Settings] Refused ...`. Outside a hook, a preset field lands where the settings views resolve when the waits end
   (the open chat's bound preset, else this tab's selection).
@@ -117,8 +115,7 @@ postprocessors: the tab's selection, or an ambient context of the same plugin, a
 A remote `plugins` change (another tab or device; `onRemoteRecordApplied` after a live record, a live patch, or a
 conflict reload) reloads the plugins here once plugin work is idle (`queueDeferredCheck`).
 
-- Only a change to the load signature counts (`loadSignature`: each enabled `'3.0'` plugin's name, script, and
-  `allowedIPC`, in list order), compared with the plugins running now.
+- Only a change from the running signature counts; `loadSignature`'s JSDoc defines its fields and order.
 - Idle (`pluginWorkIdle`, `src/ts/plugins/apiV3/v3.svelte.ts`; `onPluginWorkChange` hears changes) means all of:
   - no send of this tab (`anyLocalSend`);
   - no job of this tab that may still call its hooks (`generationPluginWorkActive`, `src/ts/network/generationJobs.ts`):
@@ -126,9 +123,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
     one as an unregistered hook;
   - no host-side hook invocation running (every wrapped hook, and a provider from before its permission prompt);
   - every sandbox idle (`SandboxHost.isIdle`).
-- Each source notifies on a change toward idle. When idle, one reload is queued on the `pluginReload` chain; it checks
-  idleness again right before it clears anything and waits again when work started meanwhile. It loads the list as it is
-  then. There is no wait limit or interruption: work that never ends is in [Limitations](#limitations).
+- Idle scheduling and final checks: `queueDeferredCheck` JSDoc. Work that never ends defers reload
+  ([Limitations](#limitations)).
 
 ### Job owner presence
 
@@ -147,26 +143,29 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 - `db.plugins: RisuPlugin[]`, saved as the `plugins` resource.
 - Plugin storage:
-  - `pluginStorage` is saved data in `db.pluginCustomStorage` (the `pluginStorage` resource), a settings record: each
-    write queues its save once. It uses the reserved `_pluginStorage` sub-object, and `setItem` JSON-normalizes values
-    (throws on BigInt). The top level holds the non-`allowedDbKeys` properties written through
-    `setDatabase`/`setDatabaseLite`.
-  - Every plugin shares the one record. The storage writes resolve when queued, not when saved. A conflict with another
-    tab's or device's write is [merged key by key](resource-sync.md#record-merge), and `onStorageDiscarded` tells every
-    listening plugin which keys lost a value.
-  - `getLocalPluginStorage()` (`SafeLocalPluginStorage`) is saved too, under the reserved `_safeLocalPluginStorage`
-    sub-object (legacy browser-local values are imported at boot). Values must be plain JSON (`isJsonValue`); anything
-    else throws `TypeError` and changes nothing.
-  - Any string is a `_safeLocalPluginStorage` key, `__proto__` included (the module rebuilds the dictionary for it, and
-    the save adapter serializes `pluginStorage` straight from the proxy so the key reaches the server).
+  - `db.pluginCustomStorage` (`pluginStorage` record): `_ownedPluginStorage` by plugin name, `_pluginStorage` legacy
+    read-through until claim-on-write or owner `clear()`; U+0000 names use legacy storage (module header). Shared
+    top-level custom keys are non-`allowedDbKeys` keys of `setDatabase`/`setDatabaseLite`; replacement keeps omitted
+    reserved dictionaries. `setItem` JSON-normalizes values (BigInt throws).
+  - Plugins share one record. Writes resolve when queued. Concurrent tab/device writes are
+    [merged key by key](resource-sync.md#record-merge); `onStorageDiscarded` reports each listener's own lost keys and
+    legacy keys.
+  - Shared `getLocalPluginStorage()` (`SafeLocalPluginStorage`) is saved under `_safeLocalPluginStorage`; boot imports
+    legacy browser-local values. JSON validation: `pluginSafeClass.ts` `SafeLocalPluginStorage`, `isJsonValue`.
+  - String-key rules: `pluginStorageStore.svelte.ts` module header; the save adapter
+    [preserves `__proto__`](resource-sync.md#invariants).
   - `safeLocalStorage` (`SafeLocalStorage`) stays device-local (`localStorage` `safe_plugin_*`).
 - v3 permission grants live in the server-owned `pluginPermissions` resource (`permissionStore.ts`), outside the
   settings records: `grants` keyed by `<sha256 of the script>_<permission>`, `lastGrantTime` by plugin name and
   permission.
-  - Only `getPluginPermission` (host consent) adds to it; no plugin API, `getDatabase` snapshot,
+  - Only host consent (`getPluginPermission`) and the legacy import add to it; no plugin API, `getDatabase` snapshot,
     `setDatabase`/`setDatabaseLite`, or `pluginCustomStorage` write can reach it.
   - The script hash is taken from the script the plugin was loaded with, and answers are cached per plugin and
     permission for the page load (cleared on unload).
+  - Only the settings page revokes (`resetPluginPermissions`, `removeOrphanPluginPermissionGrants`); a revoked grant
+    drops its cached answer in every tab.
+- `PluginDataSettings.svelte` (component contract): namespace sizes, owned keys by owner; legacy keys assigned or
+  deleted through the mutations above.
 
 ## Coupling
 
@@ -176,20 +175,18 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 ## Invariants
 
-- The plugin's internal `name` is its identity. Updates must not change it, because permission hashes, IPC allowlists,
-  storage, and arguments are keyed by it.
-- Only API 3.0 exists. Plugins run only inside the iframe; nothing executes plugin code in the main document.
-- v3 calls are async RPC. Nested classes and callbacks inside values are unsupported. Streams need MessagePort
-  credit/cancel, and `terminate` must close them.
+- The plugin's internal `name` is its identity: storage, IPC allowlists, arguments and grant timestamps use it; grants
+  use script hashes. Updates must keep the name.
+- Only API 3.0 exists. Plugins run only inside the iframe, never in the main document.
+- RPC values and streams: `v3.svelte.ts` and `factory.ts` module headers.
 - A host call's abort controllers live until every response stream finishes (done, error, guest cancel, unread expiry,
-  rollback, or termination). A guest callback's mirrored controllers likewise live until every returned stream finishes,
-  errors, is cancelled by the host, or is rolled back, so a host abort still reaches the plugin and requests using its
-  signal after the callback returns. Calls and callbacks that throw or return no streams release their controllers
-  immediately.
+  rollback, or termination). A guest callback's mirrored controllers likewise live until every returned stream ends, so
+  a host abort still reaches the plugin and requests using its signal after the callback returns. Calls and callbacks
+  that throw or return no streams release their controllers at once. Termination closes both bridges.
 - The sandbox host never logs an RPC message or its answer: their arguments carry the plugin's `nativeFetch` headers
   (API keys) and bodies.
 - Main-document DOM access requires the v3 `getRootDocument` permission plus the Safe wrappers.
-- Any new v3 UI or hook must call `addPluginUnloadCallback` and must sanitize external HTML and URLs.
+- Any new v3 UI or hook must call `addPluginUnloadCallback` and sanitize external HTML and URLs.
 - A plugin or MCP write goes through a mutation module (`characterStore.svelte.ts`, `collectionStore.svelte.ts`,
   `pluginStorageStore.svelte.ts`, the chat module); a new host setter or tool never writes a record or a chat directly.
   A refused value warns (plugins) or answers an error (MCP) and changes nothing.
@@ -201,10 +198,10 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - A hook runner captures the call context before its first await and passes it to every hook it calls; a new
   selection-dependent host function reads `currentContext` on its first line.
 - v3 plugin storage accepts JSON data only, at most 256 levels deep (`requireJsonData`).
-- `changeColorScheme` with an unknown name changes nothing: neither the active scheme nor its stored name.
-- A `SafeElement` listener hears only events that reach its element through DOM propagation; the `SafeDocument` from
-  `getRootDocument` registers on `document`. Each registration keeps its target, type, and options, and removal by id
-  and the reload teardown replay that record, whatever the caller passes to `removeEventListener`.
+- `changeColorScheme` with an unknown name changes neither the active scheme nor its stored name.
+- A `SafeElement` listener hears only events reaching its element through DOM propagation; `SafeDocument` from
+  `getRootDocument` registers on `document`. Each registration keeps its target, type and options; removal by id and
+  reload teardown replay that record whatever the caller passes to `removeEventListener`.
 - Plugin key listeners (`keydown`/`keyup`/`keypress`, on any element or the document, capture phase included) receive
   nothing from the terminal notice's opening until reload, its acknowledgement key release included
   (`terminalNoticeShown`): the notice stops only bubbling.
@@ -221,11 +218,11 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - `sendChat`'s local checks are per chat: with no job channel callback running, a send in idle chat B can run while chat
   A sends in this tab; shared resource flush (`GenerationBlockedError`), binding, and server refusals still apply.
 - A plugin changes the installed plugin list only through `setDatabase({ plugins })`, which asks the user to confirm
-  each new or changed plugin. `setDatabaseLite` drops `plugins` before it applies anything; the other keys of the call
-  still apply.
+  each new or changed plugin. `setDatabaseLite` drops `plugins` before it applies anything; the call's other keys still
+  apply.
 - `risu-set-module-info` checks every recognized field's type before it writes any field or `enabledModules`.
 - `updateModule` validates a detached patched copy, then applies the patch to the live module in place, so a plugin's or
-  an editor's retained module reference stays current.
+  editor's retained module reference stays current.
 
 ## Recipes
 
@@ -243,14 +240,21 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - Focused:
   `pnpm --silent test:agent src/ts/plugins src/ts/storage/tests/{pluginStorageStore,collectionStore}.test.ts src/ts/network/generationJobsPluginWork.test.ts`.
   The MCP clients and tool dispatch: [mcp](mcp.md#tests).
-- `slow`: none. `e2e`: `e2e/transformGolden.spec.ts` (edit hooks), `e2e/settingsPages.spec.ts` (the page).
+- `slow`: none.
+- `e2e/transformGolden.spec.ts`: edit hooks.
+- `e2e/settingsPages.spec.ts`: the page.
+- `e2e/pluginSandbox.spec.ts`: real-browser sandbox isolation and detached database reads.
 - `SandboxHost` stub (`vi.mock` of `./factory`, most of `apiV3/`): the real API object is driven directly.
 - `guestBridge.test.ts`: the srcdoc's guest half over a fake window; it still logs its property initialization.
 - `sandboxActivity.test.ts`: a real `SandboxHost`, the guest simulated by window messages.
+- `databaseAccessRecorder.test.ts`: the developer `getDatabase` recorder in the real srcdoc guest, fake timers.
 - `pluginDeferredReload.test.ts`, `pluginSafeBoot.test.ts`: a mocked v3 loader, the idle predicate and safe-boot flag
-  controlled. `pluginWorkIdle.test.ts`: a controllable sandbox idle flag, the job channel real.
-- `storeBackedServer.ts`: the real save adapter over the real server store, for saved writes. `FakeResourceServer`:
-  `permissionStore.test.ts`.
+  controlled.
+- `pluginWorkIdle.test.ts`: a controllable sandbox idle flag, the job channel real.
+- `storeBackedServer.ts`: the real save adapter over the real server store, for writes and detached reads.
+- `getDatabaseDetached.test.ts`: database reads, cache reuse, setter load skipping, and scoped reads (summaries,
+  `getChats`) over `StoreBackedServer`.
+- `permissionStore.test.ts`: grants over `FakeResourceServer`.
 - Browser checks, not in the gate ([test-harness](test-harness.md)): `util/playwright/checkJobProtocol.mjs` (a real v3
   plugin provider answers job callbacks from the sandbox) and `checkJobHandoff.mjs` (hooks move between two tabs).
 - Not tested: hot reload, and the remaining sandbox RPC surface.
@@ -272,10 +276,9 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   element from the page keeps it (and the element), a `once` listener that fired stays in the teardown list, and a
   wrapper queried again for the same node does not know the id.
 - A plugin's whole-chat setter (`setChatToIndex`, and a character setter's `chats`) diffs the plugin's copy against the
-  chat at call time: `captureChatBaseline` runs right before `applyChatResult`, not when the plugin read the chat. So a
-  change another writer made after the plugin's read is overwritten: a changed message field or chat field is set back
-  to the copy's value (a `CHAT_META_MERGE_KEYS` map only in the entries that differ), and a message added meanwhile is
-  removed.
+  chat at call time (`captureChatBaseline` right before `applyChatResult`), not as the plugin read it. So a change
+  another writer made after the plugin's read is overwritten: a changed message field or chat field is set back to the
+  copy's value (a `CHAT_META_MERGE_KEYS` map only in the entries that differ), and a message added meanwhile is removed.
 - `unloadV3Plugin` waits up to one second after the unload callbacks before `SandboxHost.terminate`; a plugin's pending
   async work can still register a hook in that window. The post-unload reset removes providers registered then; other
   hooks still have this hazard.
@@ -288,45 +291,47 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   a local `loadPlugins` runs: a top-level script that never settles, a hook or guest callback that never answers, a
   stream bridged either way never finished (a host stream the guest never pulls expires at 60 s), or a job this tab
   never releases. Work that starts while a reload unloads the old sandboxes is not fenced: a job created then lists the
-  hooks registered at that time. Decision: RisuNest Small Wins D4, [archive](../archived-plan/README.md).
+  hooks registered at that time. Decision: RisuNest Small Wins D4, archive.
 - A cancelled hook that never settles keeps plugin `sendChat` refused (`channelCallbacksRunning`), and after the
   server's `CANCELLED_CALLBACK_DRAIN_MS` (60 s) a later job's root callbacks are refused on this tab, both until the
   page reloads; admitting another root while the cancelled hook can still write would let it overlap later work.
-  Decision: Per-Chat Send D8, [archive](../archived-plan/README.md).
+  Decision: Per-Chat Send D8, archive.
 - A plugin's timers and UI callbacks share the instance's ambient `PluginCallContext`, so they may inherit an in-flight
   hook's context. Exact per-call attribution needs an RPC correlation id. Decision:
   [`pluginContext.ts`](../../src/ts/plugins/apiV3/pluginContext.ts).
 - Aux calls (`runLLMModel`, `imggen` prompt requests) made through `channelCall` end with their hook callback; calls
   without that context do not. The send guard accepts its job ids only while the callback runs uncancelled and checks a
-  stale context against the chat binding. Decision: Per-Chat Send D8, [archive](../archived-plan/README.md).
+  stale context against the chat binding. Decision: Per-Chat Send D8, archive.
 - A plugin's ambient context carries its hook callback, but body interceptors have no context, a provider's context ends
   when it returns its stream, and tab `internal:aiaccess` captures chat context without `channelCall`; requests from
-  those paths are not ended with the callback. Decision: Per-Chat Send D8, [archive](../archived-plan/README.md).
+  those paths are not ended with the callback. Decision: Per-Chat Send D8, archive.
 - A plugin setter's non-null section value is not normalized on the writing tab: the server normalizes its copy, but the
   batch answer carries revisions only, so the tab keeps the value until reread or a live update. Decision: accepted
   mirror-normalization limit in [persistence](persistence.md#known-hazards).
 - A plugin call that adds a character and also passes `characterOrder` without the new id: the order is written after
-  the add and overwrites the add's repair, so the id is missing from the order until the next `checkCharOrder`
-  (`pluginKeyOrder` in `v3.svelte.ts`). Decision: [`pluginKeyOrder`](../../src/ts/plugins/apiV3/v3.svelte.ts).
+  the add and overwrites the add's repair, so the id is missing from the order until the next `checkCharOrder`.
+  Decision: [`pluginKeyOrder`](../../src/ts/plugins/apiV3/v3.svelte.ts).
 
 ### Gotchas
 
-- The character records hold no chats: the plugin getters build the legacy shape at the boundary (`withChatsCopy`). The
-  getters pin the chats, await `loadChats`, and copy from the chat module, so `getDatabase` with `characters` loads
-  every chat that is not loaded, and idle chats can be evicted afterwards. It reads through the store, not detached:
-  unsaved local changes are in the copy.
+- Full character reads use `withChatsCopy`; records hold no chats. Outside hooks, `getDatabase` and `getChats` use
+  `withDetachedDatabaseChats`: flush, then unloaded copies via `readChatRefsDetached` or
+  `src/ts/plugins/apiV3/detachedChatCache.ts`, never installed; held chats stay pinned until the synchronous copy.
+  Unsafe copies and hooks load.
+- `getDatabase(keys, { chats: "summaries" })` reads, flushes, pins, and loads no chat (`chatSummaryList` in
+  `src/ts/storage/chatStore.svelte.ts`); every plugin character setter strips `chatSummaries`. Outside hooks, `getChats`
+  reads only its page's unloaded chats.
 - `getChatFromIndex`, `setChatToIndex`, `parseRisuChat`, and `sendChat` capture their chat by id first and await
-  `ensureChatLoaded`. The character setters capture their targets, pin and load the chats, then apply synchronously.
+  `ensureChatLoaded`. `setDatabase`/`setDatabaseLite` skip loading omitted chats and exact round trips, rechecked before
+  applying, else load (`applyPluginDatabaseWithChats` JSDoc). Other character setters capture targets, pin and load,
+  then apply synchronously.
 - Plugins hand back whole objects, but [chats are saved as changes](chat-store.md#whole-chat-writers).
-  `applyPluginCharacter`/`applyPluginCharacters` pass a character's `chats` to `reconcileCharacterChats`: a chat with a
-  known id is diffed against the chat as it is at the call and applied (`applyChatResult`), a chat without an id or with
-  a new one is created, a chat left out is deleted (never the last one), the list order becomes the chat order, and a
-  supplied `chatPage` selects that chat in this tab. New setters go through the same functions; never assign `chats` or
-  `chatPage`.
+  `applyPluginCharacter`/`applyPluginCharacters` JSDoc holds reconciliation rules (`reconcileCharacterChats`,
+  `applyChatResult`); a chat left out is deleted, never the last one. New setters use these functions, never assign
+  `chats` or `chatPage`.
 - When a whole-chat diff would change or remove a message being generated (`assertUnlocked`), that chat's update is
-  skipped with a console warning; a reorder of unchanged messages while it generates drops only the order change.
-- A character that is generating is neither replaced (another `chaId` at its index) nor removed (left out of a
-  `characters` list), a `characters` list with duplicate `chaId` values is refused as a whole, and `removeChar` refuses
-  a permanent delete of it.
+  skipped with a warning; a reorder of unchanged messages while it generates drops only the order change.
+- Generating-character and duplicate-id refusals: `applyPluginCharacter`/`applyPluginCharacters`; `removeChar` also
+  refuses permanent deletion during generation.
 - A custom `tokenizerFunc` is never called: tab token counts run on the server, which uses `cl100k_base` for a
   provider's `custom` tokenizer ([LLM requests](llm-requests.md)).

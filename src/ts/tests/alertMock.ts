@@ -50,6 +50,10 @@ export function createAlertMock(overrides: Partial<AlertModule> = {}): AlertModu
         alertClear: vi.fn(),
         alertSelectChar: vi.fn(async () => ""),
         alertConfirm: vi.fn(async (_msg: string) => false),
+        alertConfirmWithCheckbox: vi.fn(async (_msg: string, _label: string, checked = true) => ({
+            confirmed: false,
+            checked,
+        })),
         alertPluginConfirm: vi.fn(async (_msg: string) => false),
         alertRealmTerms: vi.fn(async () => false),
         alertCardExport: vi.fn(async () => ({ type: "cancel", type2: "" })),

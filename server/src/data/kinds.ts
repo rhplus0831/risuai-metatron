@@ -1,3 +1,5 @@
+import { PLUGIN_STORAGE_DICTIONARIES } from "../../../shared/pluginStorage.ts";
+import type { RecordWritePatchOptions } from "../../../shared/recordPatch.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { isAssetStorageKey } from "../routes/storage.ts";
 import {
@@ -47,8 +49,11 @@ import { ResourceValidationError } from "./resourceStore.ts";
  * and a plain write's data is `prepareWrite(incoming, stored)` before it is normalized (it may refuse
  * with `ResourceValidationError`). Both run in the same synchronous block as the write, so they are
  * atomic with its revision check.
+ *
+ * `nestedFields` declares dictionaries that write patches may change one entry at a time. `itemKey`
+ * allows an explicit alternative array-item key in a write patch; patches without it still use `id`.
  */
-export interface ResourceKind<T = unknown> {
+export interface ResourceKind<T = unknown> extends RecordWritePatchOptions {
     readonly name: string;
     readonly schemaVersion: number;
     readonly singleton?: boolean;
@@ -142,12 +147,14 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
     },
     {
         name: RESOURCE_KIND.plugins,
+        itemKey: "name",
         schemaVersion: 1,
         singleton: true,
         normalize: (input) => requireArrayOfObjects(input, "plugins"),
     },
     {
         name: RESOURCE_KIND.pluginStorage,
+        nestedFields: PLUGIN_STORAGE_DICTIONARIES,
         schemaVersion: 1,
         singleton: true,
         shallowNormalize: true,

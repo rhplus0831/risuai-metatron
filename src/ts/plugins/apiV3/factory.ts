@@ -942,7 +942,8 @@ export class SandboxHost {
         this.activeStreamCleanups.clear();
     }
 
-    public run(container: HTMLElement | HTMLIFrameElement, userCode: string) {
+    /** The optional guest prelude runs after bridge initialization, before the plugin's code. */
+    public run(container: HTMLElement | HTMLIFrameElement, userCode: string, options?: { guestPrelude?: string }) {
         if (container instanceof HTMLIFrameElement) {
             this.iframe = container;
         } else {
@@ -1109,7 +1110,7 @@ export class SandboxHost {
             window.__risuGuestStarted = true;
             document.querySelector('meta#csp-meta')?.remove();
             (async () => {
-                ${GUEST_BRIDGE_SCRIPT}
+                ${GUEST_BRIDGE_SCRIPT}${options?.guestPrelude ? "\n" + options.guestPrelude : ""}
                     
                 await (async () => {
                     ${userCode}

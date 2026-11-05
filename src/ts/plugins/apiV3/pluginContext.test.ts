@@ -98,11 +98,13 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
 }));
 
 // The permissions are granted unless a test lowers `grants.value` (then `alertConfirm` is asked).
-vi.mock("./permissionStore", () => ({
-    hasPermissionGrant: () => grants.value,
-    getLastGrantTime: () => Date.now(),
-    recordPermissionGrants: vi.fn(async () => undefined),
-}));
+vi.mock("./permissionStore", async () =>
+    (await import("./tests/permissionStoreMock")).createPermissionStoreMock({
+        hasPermissionGrant: () => grants.value,
+        getLastGrantTime: () => Date.now(),
+        recordPermissionGrants: vi.fn(async () => undefined),
+    }),
+);
 
 // The send pipeline is a stand-in: `sendChat` records what the plugin's `sendChat` passes it; the
 // busy check reads the real registry (`localSends.ts`), as the product wires it.

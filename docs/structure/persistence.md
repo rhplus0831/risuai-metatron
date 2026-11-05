@@ -134,6 +134,7 @@ data older versions kept only in the browser to the server: LocalForage `inlay`,
 write, read back, then delete only a local entry still holding the imported value, which another tab may have changed).
 
 - A restore meanwhile (412) stops the import; any other failed step leaves its entries for the next boot.
+- Permission grants merge once per browser (a `localStorage` marker), so a revoked grant stays revoked.
 - An inlay whose server metadata lacks its file is repaired from the browser's bytes only when they are the file the
   metadata names (`repairInlayMedia`, `src/ts/process/files/inlays.ts`); otherwise the browser copy stays.
 - Deleting `firefox-translations-models` is not awaited: another tab can block it, and a later boot retries.
@@ -209,9 +210,8 @@ them up, and a backup does not carry them.
 - Shared `character`/`groupChat` shapes retain `chats` and `chatPage` for server job projections, cards, and plugin
   snapshots; `ClientCharacter`/`ClientGroup` omit them, so records hold no chats. A group has `type: 'group'` and member
   ids in `characters`.
-- `pluginCustomStorage` holds at its top level the custom DB properties the plugin `setDatabase`/`setDatabaseLite` APIs
-  route there (keys outside `allowedDbKeys`). Reserved: `_pluginStorage` (plugin `pluginStorage`, JSON-normalized on
-  write) and `_safeLocalPluginStorage` (`getLocalPluginStorage()`, JSON values only).
+- `pluginCustomStorage` (custom `setDatabase` keys, reserved plugin storage dictionaries): the
+  `src/ts/storage/pluginStorageStore.svelte.ts` module header, [plugins State](plugin-sandbox.md#state).
 
 ### Chat fields
 

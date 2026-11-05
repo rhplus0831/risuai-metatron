@@ -350,11 +350,11 @@ describe("the routing table: collections, the selection, and custom keys", () =>
         expect(ui().lineHeight).toBe(3);
     });
 
-    it("pluginCustomStorage replaces the whole object through both setters, and a list is refused", async () => {
+    it("pluginCustomStorage replaces the top level through both setters, keeping an omitted reserved dictionary, and a list is refused", async () => {
         settings.pluginStorage = { old: 1, _pluginStorage: { k: 1 } };
         const api = await makeApi();
         await api.setDatabaseLite({ pluginCustomStorage: { lite: true } });
-        expect(plain(settings.pluginStorage)).toEqual({ lite: true });
+        expect(plain(settings.pluginStorage)).toEqual({ lite: true, _pluginStorage: { k: 1 } });
         await api.setDatabase({ pluginCustomStorage: { _pluginStorage: { full: 1 } } });
         expect(plain(settings.pluginStorage)).toEqual({ _pluginStorage: { full: 1 } });
         expect(await api._getPluginStorage("full")).toBe(1);
@@ -808,6 +808,49 @@ describe("the full setter's plugins key", () => {
 });
 
 describe("reserved storage namespaces a plugin replaced", () => {
+    it.each(["setDatabase", "setDatabaseLite"])(
+        "%s keeps omitted reserved names in fresh and returned pluginCustomStorage objects and replaces supplied names",
+        async (setter) => {
+            liveDatabase({
+                pluginCustomStorage: {
+                    obsolete: true,
+                    _pluginStorage: { otherPlugin: { count: 1 } },
+                    _safeLocalPluginStorage: { otherPlugin: ["local"] },
+                },
+            });
+            const api = await makeApi();
+            const local = api.getLocalPluginStorage();
+
+            await api[setter]({ pluginCustomStorage: { custom: "updated" } });
+
+            expect(await api._getPluginStorage("otherPlugin")).toEqual({ count: 1 });
+            expect(await local.getItem("otherPlugin")).toEqual(["local"]);
+            const returned = await api.getDatabase(["pluginCustomStorage"]);
+            expect(returned).toEqual({
+                pluginCustomStorage: {
+                    custom: "updated",
+                    _pluginStorage: { otherPlugin: { count: 1 } },
+                    _safeLocalPluginStorage: { otherPlugin: ["local"] },
+                },
+            });
+
+            returned.pluginCustomStorage._pluginStorage = { replacement: "new v3" };
+            delete returned.pluginCustomStorage._safeLocalPluginStorage;
+            await api[setter](returned);
+
+            expect(await api._getPluginStorage("otherPlugin")).toBeNull();
+            expect(await api._getPluginStorage("replacement")).toBe("new v3");
+            expect(await local.getItem("otherPlugin")).toEqual(["local"]);
+            expect(await api.getDatabase(["pluginCustomStorage"])).toEqual({
+                pluginCustomStorage: {
+                    custom: "updated",
+                    _pluginStorage: { replacement: "new v3" },
+                    _safeLocalPluginStorage: { otherPlugin: ["local"] },
+                },
+            });
+        },
+    );
+
     it("a list in _pluginStorage is read by index, listed, removed from, and written to without losing an entry", async () => {
         const api = await makeApi();
         await api.setDatabaseLite({ _pluginStorage: ["saved", { deep: true }] });
@@ -818,16 +861,15 @@ describe("reserved storage namespaces a plugin replaced", () => {
         expect(await api._keyPluginStorage(1)).toBe("1");
         expect(await api._lengthPluginStorage()).toBe(2);
 
+        // A new key goes to the plugin's own storage; the legacy list keeps every entry.
         await api._setPluginStorage("2", "next");
-        expect(plain(settings.pluginStorage._pluginStorage)).toEqual({
-            "0": "saved",
-            "1": { deep: true },
-            "2": "next",
-        });
+        expect(plain(settings.pluginStorage._pluginStorage)).toEqual(["saved", { deep: true }]);
+        expect(await api._getPluginStorage("2")).toBe("next");
         expect(await api._getPluginStorage("0")).toBe("saved");
 
         await api._removePluginStorage("1");
-        expect(await api._keysPluginStorage()).toEqual(["0", "2"]);
+        expect(plain(settings.pluginStorage._pluginStorage)).toEqual({ "0": "saved" });
+        expect(await api._keysPluginStorage()).toEqual(["2", "0"]);
         expect(console.warn).not.toHaveBeenCalled();
     });
 

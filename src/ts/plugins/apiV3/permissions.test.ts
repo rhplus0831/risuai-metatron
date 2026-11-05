@@ -52,11 +52,13 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
     risuUnescape: (text: string) => text,
 }));
-vi.mock("./permissionStore", () => ({
-    hasPermissionGrant: (key: string) => grants.has(key),
-    getLastGrantTime: (key: string) => times.get(key),
-    recordPermissionGrants: recorded,
-}));
+vi.mock("./permissionStore", async () =>
+    (await import("./tests/permissionStoreMock")).createPermissionStoreMock({
+        hasPermissionGrant: (key: string) => grants.has(key),
+        getLastGrantTime: (key: string) => times.get(key),
+        recordPermissionGrants: recorded,
+    }),
+);
 vi.mock("src/ts/process/files/inlays", () => ({ getInlayAsset: vi.fn(async () => ({ name: "inlay" })) }));
 
 import { executePluginV3, getV3PluginInstance, loadV3Plugins } from "./v3.svelte";

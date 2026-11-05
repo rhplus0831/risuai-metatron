@@ -34,11 +34,13 @@ vi.mock("src/ts/process/modules", () => ({
     getModules: () => [],
     getModuleMcps: () => [...harness.mcps],
 }));
-vi.mock("./apiV3/permissionStore", () => ({
-    hasPermissionGrant: () => true,
-    getLastGrantTime: () => Date.now(),
-    recordPermissionGrants: vi.fn(),
-}));
+vi.mock("./apiV3/permissionStore", async () =>
+    (await import("./apiV3/tests/permissionStoreMock")).createPermissionStoreMock({
+        hasPermissionGrant: () => true,
+        getLastGrantTime: () => Date.now(),
+        recordPermissionGrants: vi.fn(),
+    }),
+);
 
 import { loadPlugins } from "./plugins.svelte";
 import { customV3ProviderMetaStore, executePluginV3, getV3PluginInstance, loadV3Plugins } from "./apiV3/v3.svelte";

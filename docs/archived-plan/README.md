@@ -59,6 +59,7 @@ git show c34f69365:docs/plan/job-handoff.md
 git show 72830e9f6:docs/plan/asset-lifecycle.md
 git show c249c3a21:docs/plan/incremental-chat-transport.md
 git show a72c5f736:docs/plan/render-work-budget.md
+git show f521f3d63:docs/plan/plugin-storage.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -121,6 +122,7 @@ it is not a current architecture guide.
 | Asset Lifecycle                          | `72830e9f6`: `docs/plan/asset-lifecycle.md`                               | [self-host server](../structure/self-host-server.md) (Asset mark, Storage routes, Limitations), [server resources](../structure/server-resources.md) (Snapshots and restore, pins), [assets](../structure/assets.md) (Asset client, Asset queues), [settings and i18n](../structure/settings-i18n.md) (Storage section), [test harness](../structure/test-harness.md) (`checkAssetLifecycle.mjs`)                                                                                           |
 | Incremental Chat Transport               | `c249c3a21`: `docs/plan/incremental-chat-transport.md`                    | [live updates](../structure/live-updates.md) (Feed connection, Chat live updates), [live-update feed](../structure/live-update-feed.md) (hello `cursor`, feed chat entries), [server resources](../structure/server-resources.md) (change log, `chatRows`), [server generation](../structure/server-generation.md) (streamed rows, `proto`), [chat store](../structure/chat-store.md) (By-id ops)                                                                                           |
 | Render Work Budget                       | `a72c5f736`: `docs/plan/render-work-budget.md`                            | [CBS and rendering](../structure/cbs-rendering.md), [UI and theming](../structure/ui-theming.md), [translation](../structure/translation.md), [test harness](../structure/test-harness.md) (`measureRenderWork.mjs`)                                                                                                                                                                                                                                                                        |
+| Plugin Storage and Data API              | `f521f3d63`: `docs/plan/plugin-storage.md`                                | [plugins](../structure/plugin-sandbox.md) (State, Gotchas, Tests), [resource sync](../structure/resource-sync.md) (Record patches), [server resources](../structure/server-resources.md) (kinds, resource routes), [chat store](../structure/chat-store.md) (detached reads, `chatSummaryList`), [backup sync hub](../structure/backup-sync-hub.md) (Upstream database export), [test harness](../structure/test-harness.md) (`measurePluginData.mjs`), `plugins.md`                        |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1135,6 +1137,30 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     watched from a second device; an owner reloading mid-stream on a real device (`streamed` rows and the resync).
   - Found by the run: 4 entries in `docs/research/found-issues.md` (the change log's row-count bound, `proto` absent
     from Diagnostics, `measureChats.mjs` and safe boot, a `checkServerSend` alert after its reload).
+- Plugin Storage and Data API:
+  - All 11 slices landed on 2026-11-05 (plan-runner, on `dev`): `c140f2db7` (Slice 0, the measurement driver),
+    `d5c824f99` (Slice 1, the plugin data page and permission reset), `b3e3417a8` (Slice 2, nested and by-name write
+    patches), `86ac8b272` (Slice 3, reserved dictionaries kept on a `pluginCustomStorage` write), `c81a3fab7` (Slice 4,
+    the detached `getDatabase` read), `2b778c365` (Slice 5, the detached chat reuse cache), `d7e305392` (Slice 6,
+    owned `pluginStorage`), `aab3052ef` (Slice 7, `setDatabase` skips unchanged characters), `142c3920e` (Slice 8,
+    the summaries option and `getChats`), `e6e02d2ba` (Slice 9, the sandbox browser spec), `aa6687b96` (Slice 10, the
+    guide pass), with `dev` merged in at `d3add7cc2`. Q1–Q5 were answered as recommended: owned `pluginStorage` with
+    legacy read-through and claim-on-write, reserved dictionaries kept, a 64 MiB reuse cache, one confirm with "also
+    delete its stored data" on removal, and `getDatabase()`'s default unchanged.
+  - Measured with `util/playwright/measurePluginData.mjs` (300 characters, 3,000 chats): a `pluginStorage.setItem`
+    save 2,051,203 → 244 bytes and a plugin toggle 1,026,620 → 229; `getDatabase(["characters"])` 300 sequential
+    reads (about 30 s) → 7 cold and 1 on a repeat call; an unchanged `getDatabase` → `setDatabase` round trip 27.4 s
+    and 300 reads → 6.8 s and 39 (the characters whose chats the cache evicted).
+  - Still open: browser checks of the plugin data page (namespaces, owners, assign, deletes), Reset permissions and a
+    reinstall asking again, the remove dialog's checkbox (default, Enter/Space, unchecked keeps data), the reuse
+    cache after a hidden tab and after another tab's chat edit, a summaries call making no chat read, a `getChats`
+    page's order, and the developer hint printing once.
+  - Not planned (the plan's Later list): a streamed `getDatabase` transfer into the iframe, device-local large storage
+    spaces, owners for `getLocalPluginStorage()` and the top-level custom keys, and changing `getDatabase()`'s default
+    once the developer access recorder has run on the owner's plugins (Q5).
+  - Found by the run: 5 entries in `docs/research/found-issues.md` (the feed still sending `pluginStorage` and plugin
+    toggles whole, `flushResources` after a restore halt, Reset permissions leaving a running plugin's capabilities, a
+    multi-tab removal bringing deleted data back, the global-api guide's checkbox confirm).
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.

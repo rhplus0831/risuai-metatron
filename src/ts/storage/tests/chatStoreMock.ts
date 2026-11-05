@@ -64,6 +64,7 @@ export function createChatStoreMock(overrides: ModuleMockOverrides<ChatStoreModu
         chatCount: vi.fn(() => 0),
         characterLastChattedAt: vi.fn(() => 0),
         chatList: vi.fn(() => []),
+        chatSummaryList: vi.fn(() => []),
         chatEntry: vi.fn(() => undefined),
         countChatEntries: vi.fn(() => 0),
         isMessageLocked: vi.fn(() => false),

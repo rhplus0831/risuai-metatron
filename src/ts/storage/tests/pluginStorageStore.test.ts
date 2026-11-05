@@ -64,6 +64,76 @@ afterEach(() => {
     server.current?.close();
 });
 
+describe("plugin storage inventory", () => {
+    it("reads an absent inventory without creating the pluginStorage record", async () => {
+        vi.resetModules();
+        const ps = await import("../pluginStorageStore.svelte");
+        const { settings } = await import("../settingsViews.svelte");
+
+        expect(settings.pluginStorage).toBeUndefined();
+        expect(ps.pluginStorageInventory()).toEqual({
+            custom: [],
+            pluginStorage: [],
+            ownedPluginStorage: {},
+            safeLocalPluginStorage: [],
+        });
+        expect(ps.getPluginCustomValue("missing")).toBeNull();
+        expect(settings.pluginStorage).toBeUndefined();
+    });
+
+    it("lists JSON byte sizes and values, treating reserved objects and lists as namespaces and scalars as custom keys", async () => {
+        const { sync, pluginStorageStore: ps, record } = await boot();
+        const stored = {
+            custom: { text: "한🙂" },
+            _pluginStorage: ["é", null],
+            _safeLocalPluginStorage: { flag: false, quoted: '"\n' },
+            // Owned keys are grouped by owner; a clear marker lists its owner with no keys.
+            _ownedPluginStorage: { "plug\u0000k": 1, other: { legacyHidden: true } },
+        };
+        ps.replacePluginCustomStorage(stored);
+        await sync.flushResources();
+
+        // JSON punctuation counts too: {"text":"한🙂"} is 18 UTF-8 bytes; "é" is 4.
+        expect(ps.pluginStorageInventory()).toEqual({
+            custom: [{ key: "custom", bytes: 18 }],
+            pluginStorage: [
+                { key: "0", bytes: 4 },
+                { key: "1", bytes: 4 },
+            ],
+            ownedPluginStorage: { plug: [{ key: "k", bytes: 1 }], other: [] },
+            safeLocalPluginStorage: [
+                { key: "flag", bytes: 5 },
+                { key: "quoted", bytes: 6 },
+            ],
+        });
+        expect(ps.getPluginCustomValue("custom")).toEqual({ text: "한🙂" });
+        expect(ps.getPluginStorageValue("0")).toBe("é");
+        expect(ps.getSafeLocalPluginValue("quoted")).toBe('"\n');
+        await sync.flushResources();
+        expect(record("pluginStorage")).toEqual(stored);
+
+        ps.replacePluginCustomStorage({ _pluginStorage: { count: 12 }, _safeLocalPluginStorage: ["🙂"] });
+        expect(ps.pluginStorageInventory()).toEqual({
+            custom: [],
+            pluginStorage: [{ key: "count", bytes: 2 }],
+            ownedPluginStorage: { plug: [{ key: "k", bytes: 1 }], other: [] },
+            safeLocalPluginStorage: [{ key: "0", bytes: 6 }],
+        });
+
+        ps.replacePluginCustomStorage({ _pluginStorage: null, _safeLocalPluginStorage: "한" });
+        expect(ps.pluginStorageInventory()).toEqual({
+            custom: [
+                { key: "_pluginStorage", bytes: 4 },
+                { key: "_safeLocalPluginStorage", bytes: 5 },
+            ],
+            pluginStorage: [],
+            ownedPluginStorage: { plug: [{ key: "k", bytes: 1 }], other: [] },
+            safeLocalPluginStorage: [],
+        });
+        expect(ps.getPluginCustomValue("_safeLocalPluginStorage")).toBe("한");
+    });
+});
+
 describe("the v3 pluginStorage dictionary", () => {
     it("sets, reads a detached copy, lists, removes, and clears, with every write saved", async () => {
         const { sync, pluginStorageStore: ps, record } = await boot();
@@ -106,6 +176,56 @@ describe("the v3 pluginStorage dictionary", () => {
 });
 
 describe("the safe local dictionary and the custom keys", () => {
+    it.each([
+        {
+            shape: "dictionaries",
+            v3: { otherPlugin: { count: 1 } },
+            local: { otherPlugin: ["local"] },
+        },
+        { shape: "a scalar and a list", v3: false, local: ["legacy"] },
+    ])(
+        "saves a fresh replacement keeping omitted reserved values ($shape) and removing omitted custom keys",
+        async ({ v3, local }) => {
+            const { sync, pluginStorageStore: ps, record } = await boot();
+            const stored = { obsolete: true, _pluginStorage: v3, _safeLocalPluginStorage: local };
+            ps.replacePluginCustomStorage(stored);
+            await sync.flushResources();
+            expect(record("pluginStorage")).toStrictEqual(stored);
+
+            ps.replacePluginCustomStorage({ custom: { count: 2 } });
+            await sync.flushResources();
+
+            expect(record("pluginStorage")).toStrictEqual({
+                custom: { count: 2 },
+                _pluginStorage: v3,
+                _safeLocalPluginStorage: local,
+            });
+            expect(ps.getPluginCustomValue("_pluginStorage")).toEqual(v3);
+            expect(ps.getPluginCustomValue("_safeLocalPluginStorage")).toEqual(local);
+            expect(ps.getPluginCustomValue("custom")).toEqual({ count: 2 });
+            expect(ps.getPluginCustomValue("obsolete")).toBeNull();
+        },
+    );
+
+    it("saves an own undefined reserved name as removal while keeping the omitted reserved name", async () => {
+        const { sync, pluginStorageStore: ps, record } = await boot();
+        ps.replacePluginCustomStorage({
+            _pluginStorage: { v3: "saved v3" },
+            _safeLocalPluginStorage: { local: "saved local" },
+        });
+        await sync.flushResources();
+
+        ps.replacePluginCustomStorage({ custom: "updated", _pluginStorage: undefined });
+        await sync.flushResources();
+
+        expect(record("pluginStorage")).toStrictEqual({
+            custom: "updated",
+            _safeLocalPluginStorage: { local: "saved local" },
+        });
+        expect(ps.getPluginCustomValue("_pluginStorage")).toBeNull();
+        expect(ps.getPluginCustomValue("_safeLocalPluginStorage")).toEqual({ local: "saved local" });
+    });
+
     it("sets, has, lists, removes, and clears the getLocalPluginStorage() values", async () => {
         const { sync, pluginStorageStore: ps, record } = await boot();
         ps.setSafeLocalPluginValue("a", "x");
@@ -125,7 +245,7 @@ describe("the safe local dictionary and the custom keys", () => {
         expect(record("pluginStorage")._safeLocalPluginStorage).toEqual({});
     });
 
-    it("stores custom keys, including the reserved dictionary names, removes one for undefined, and replaces the whole object", async () => {
+    it("stores custom keys, including the reserved dictionary names, removes one for undefined, and replaces the top level, keeping an omitted reserved dictionary", async () => {
         const { sync, pluginStorageStore: ps, record, settings } = await boot();
         ps.setPluginCustomValue("custom", { v: 1 });
         ps.setPluginCustomValue("_pluginStorage", { k: { v: 2 } });
@@ -141,9 +261,58 @@ describe("the safe local dictionary and the custom keys", () => {
         ps.replacePluginCustomStorage(whole);
         whole.top = 2;
         expect(ps.getSafeLocalPluginValue("s")).toBe(true);
-        expect(ps.pluginStorageKeys()).toEqual([]);
+        expect(ps.pluginStorageKeys()).toEqual(["k"]);
         await sync.flushResources();
-        expect(record("pluginStorage")).toEqual({ top: 1, _safeLocalPluginStorage: { s: true } });
+        expect(record("pluginStorage")).toEqual({
+            top: 1,
+            _safeLocalPluginStorage: { s: true },
+            _pluginStorage: { k: { v: 2 } },
+        });
+    });
+});
+
+describe("owned storage administration", () => {
+    it("keeps owned entries and clear markers when a custom-storage replacement omits the dictionary", async () => {
+        const { sync, pluginStorageStore: ps, record } = await boot();
+        ps.replacePluginCustomStorage({
+            obsolete: true,
+            _ownedPluginStorage: { "plug\u0000key": { value: 1 }, other: { legacyHidden: true } },
+        });
+        await sync.flushResources();
+        ps.replacePluginCustomStorage({ custom: "replacement" });
+        await sync.flushResources();
+        expect(record("pluginStorage")).toEqual({
+            custom: "replacement",
+            _ownedPluginStorage: { "plug\u0000key": { value: 1 }, other: { legacyHidden: true } },
+        });
+    });
+
+    it("moves a legacy entry to an installed owner and deletes only that owner's data and marker", async () => {
+        const { sync, pluginStorageStore: ps, record } = await boot();
+        // The harness installs the plugin named plug; it has previously hidden legacy reads.
+        ps.replacePluginCustomStorage({
+            _pluginStorage: { assign: { value: 1 }, keep: "legacy" },
+            _ownedPluginStorage: { plug: { legacyHidden: true }, "other\u0000assign": "other value" },
+        });
+        await sync.flushResources();
+        expect(ps.assignLegacyPluginStorageItem("plug", "assign")).toBe(true);
+        await sync.flushResources();
+        expect(record("pluginStorage")).toEqual({
+            _pluginStorage: { keep: "legacy" },
+            _ownedPluginStorage: {
+                plug: { legacyHidden: true },
+                "other\u0000assign": "other value",
+                "plug\u0000assign": { value: 1 },
+            },
+        });
+        expect(ps.getOwnedPluginStorageValue("plug", "assign")).toEqual({ value: 1 });
+
+        ps.deleteOwnedPluginStorage("plug");
+        await sync.flushResources();
+        expect(record("pluginStorage")).toEqual({
+            _pluginStorage: { keep: "legacy" },
+            _ownedPluginStorage: { "other\u0000assign": "other value" },
+        });
     });
 });
 

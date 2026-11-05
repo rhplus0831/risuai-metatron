@@ -372,7 +372,11 @@ interface Persona {
  * Plugins can only access these specific database properties for security.
  */
 interface DatabaseSubset {
-    /** Array of characters and group chats */
+    /**
+     * Array of characters and group chats. With getDatabase's chats: "summaries" option,
+     * each has chatSummaries: { id: string; name: string; lastMessageAt?: number }[] in chat
+     * order instead of chats and chatPage. Unknown times are omitted; there are no message counts.
+     */
     characters?: any[];
     /** Risuai modules */
     modules?: RisuModule[];
@@ -1032,7 +1036,7 @@ interface SafeMutationObserver {
  */
 interface StorageDiscardedEvent {
     type: "storageDiscarded";
-    /** Keys of `risuai.pluginStorage` */
+    /** This plugin's lost keys without owner prefixes, plus legacy lost keys or keys exposed by a discarded clear(). */
     pluginStorage: string[];
     /** Keys of `getLocalPluginStorage()` */
     localPluginStorage: string[];
@@ -1041,7 +1045,9 @@ interface StorageDiscardedEvent {
 }
 
 /**
- * Plugin-specific storage that syncs with save files
+ * Storage owned by the plugin's internal name that syncs with save files. Two plugins' same key stays separate.
+ * Legacy values remain readable until claimed on write; clear() stops reading them without deleting them for others.
+ * Names containing U+0000 retain shared legacy storage.
  *
  * **All methods return Promises** due to iframe message passing.
  *
@@ -1067,7 +1073,7 @@ interface PluginStorage {
     getItem(key: string): Promise<any | null>;
 
     /**
-     * Sets an item in storage
+     * Sets an owned item, moving a visible legacy value under this key into this plugin's storage
      * @param key - Storage key
      * @param value - Value to store (any JSON-serializable value)
      * @returns Promise that resolves when the write is queued for background saving, not when it is saved (see `onStorageDiscarded`)
@@ -1075,14 +1081,14 @@ interface PluginStorage {
     setItem(key: string, value: any): Promise<void>;
 
     /**
-     * Removes an item from storage
+     * Removes this plugin's item and any visible legacy value under this key
      * @param key - Storage key
      * @returns Promise that resolves when the removal is queued for background saving, not when it is saved (see `onStorageDiscarded`)
      */
     removeItem(key: string): Promise<void>;
 
     /**
-     * Clears all items from storage
+     * Clears only this plugin's items and stops reading legacy values; other plugins' data stays
      * @returns Promise that resolves when the clear is queued for background saving, not when it is saved (see `onStorageDiscarded`)
      */
     clear(): Promise<void>;
@@ -1526,7 +1532,11 @@ interface RisuaiPluginAPI {
     /**
      * Gets the database with limited access
      * @param includeOnly - Array of keys to include or 'all' for all allowed keys. defaults to 'all'.
+     * @param options - chats defaults to "full". "summaries" replaces characters' chats and chatPage
+     * with chatSummaries from this tab, without reading, flushing, pinning or loading chats, even
+     * inside hooks. Other fields, including derived lastInteraction and hook preset scoping, are unchanged.
      * @returns DatabaseSubset object (limited to allowed keys) or null if consent not given
+     * @throws Error for a non-object options value or an unsupported chats value.
      *
      * Allowed keys: characters, modules, enabledModules, moduleIntergration,
      * personas, plugins, pluginCustomStorage, temperature, askRemoval,
@@ -1534,17 +1544,32 @@ interface RisuaiPluginAPI {
      * textTheme, lineHeight, seperateModelsForAxModels, seperateModels,
      * customCSS, guiHTML, colorSchemeName, characterOrder, selectedPersona
      *
-     * Use includeOnly to limit which keys to retrieve for better performance.
+     * Prefer explicit keys with chats: "summaries", getChats() for a page, or getCharacter()
+     * for the current character. The default copies every chat of every character.
      * 
      * @example
      * ```typescript
-     * const db = await risuai.getDatabase();
+     * const db = await risuai.getDatabase(["characters"], { chats: "summaries" });
      * if(db) {
      *   console.log(db.characters);
      * }
      * ```
      */
-    getDatabase(includeOnly?: string[]|'all'): Promise<DatabaseSubset|null>;
+    getDatabase(includeOnly?: string[]|'all', options?: { chats?: "full" | "summaries" }): Promise<DatabaseSubset|null>;
+
+    /**
+     * Gets a character's chats in member order, in the same shape as getDatabase's full chats.
+     * Requires the same database access consent; returns null without it or when chaId is unknown
+     * (including a character deleted during the call).
+     * @param chaId - Stable character id.
+     * @param options - offset defaults to 0, limit to all remaining chats. Both must be non-negative
+     * safe integers when supplied. An empty page does not read chats.
+     * @returns The page and total member count. Loaded chats reflect this tab; unloaded chats are
+     * detached server copies using the same reuse cache as getDatabase. Only the page's unloaded
+     * chats are read normally; hooks and fallback reads load the character's chats first.
+     * @throws Error for an invalid offset or limit.
+     */
+    getChats(chaId: string, options?: { offset?: number; limit?: number }): Promise<{ chats: any[]; total: number }|null>;
 
     /**
      * Sets the database (lightweight save)
@@ -1554,6 +1579,8 @@ interface RisuaiPluginAPI {
      * Model roots follow the slot/profile rules in DatabaseSubset. Inside a hook they use its
      * captured model preset. A refused key warns and keeps its old value; other keys still apply.
      * The `plugins` property is ignored; use setDatabase() to install plugins with user confirmation.
+     * Existing characters with chats omitted or undefined keep their chats without loading them.
+     * chatSummaries is ignored by character setters and never saved in a character record.
      * @param db - DatabaseSubset object to save
      * In a read-only transform/display continuation the entire call warns and returns undefined,
      * without writing or throwing, including custom keys. Use pluginStorage for plugin-private data.
@@ -1563,6 +1590,7 @@ interface RisuaiPluginAPI {
     /**
      * Sets the database (full save with sync)
      * Model roots and per-key refusals follow the same rules as setDatabaseLite().
+     * Omitted/undefined chats and chatSummaries follow the same rules as setDatabaseLite().
      * @param db - DatabaseSubset object to save
      * In a read-only transform/display continuation the entire call warns and returns undefined,
      * without writing or throwing, including custom keys. Use pluginStorage for plugin-private data.
@@ -2119,7 +2147,8 @@ interface RisuaiPluginAPI {
      * another tab or device saved a different value under the same key first, this browser's
      * unsaved values are replaced by the saved ones, and every listener is called once with the
      * keys whose value was lost. Writes of different keys from two tabs are both kept and raise
-     * nothing. The storage is shared by all plugins, so the keys may be another plugin's.
+     * nothing. All plugins share one record for merging, but pluginStorage lists only this plugin's
+     * own lost keys (without owner prefixes) and legacy lost keys, plus legacy keys exposed by a discarded clear().
      * The listener is removed when the plugin unloads.
      *
      * @example

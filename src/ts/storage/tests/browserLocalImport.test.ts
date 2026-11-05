@@ -182,6 +182,8 @@ beforeEach(async () => {
     fake.set("plugins", "main", []);
     fake.set("pluginStorage", "main", {});
     server.current = fake;
+    // Device-local state, such as the legacy permission import marker, must not leak between cases.
+    localStorage.clear();
     localStorage.setItem("risuauth", "stale token");
     await boot();
 });
@@ -301,6 +303,51 @@ describe("plugin storage", () => {
 });
 
 describe("permissions", () => {
+    it("does not restore revoked grants on reboot when legacy cleanup left entries in this browser", async () => {
+        const legacy = await import("localforage");
+        const createInstance = legacy.default.createInstance.bind(legacy.default);
+        const cleanupFailure = vi.spyOn(legacy.default, "createInstance").mockImplementation((options) => {
+            const instance = createInstance(options);
+            if (options.name === "plugin_permissions") {
+                instance.removeItem = async () => {
+                    throw new Error("browser cleanup failed");
+                };
+            }
+            return instance;
+        });
+        table(PERMISSIONS).set("hash_db", true);
+        table(PERMISSIONS).set("p_db_lastGrantTime", 10);
+        fake.set("pluginPermissions", "main", {
+            grants: { other_db: true },
+            lastGrantTime: { other_db_lastGrantTime: 20 },
+        });
+
+        await importer.importBrowserLocalData();
+        cleanupFailure.mockRestore();
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { other_db: true, hash_db: true },
+            lastGrantTime: { other_db_lastGrantTime: 20, p_db_lastGrantTime: 10 },
+        });
+        expect(table(PERMISSIONS).get("hash_db")).toBe(true);
+        expect(table(PERMISSIONS).get("p_db_lastGrantTime")).toBe(10);
+
+        await permissions.revokePermissionGrants(
+            (key) => key === "hash_db",
+            (key) => key === "p_db_lastGrantTime",
+        );
+        await boot();
+        await importer.importBrowserLocalData();
+
+        expect(permissions.hasPermissionGrant("hash_db")).toBe(false);
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { other_db: true },
+            lastGrantTime: { other_db_lastGrantTime: 20 },
+        });
+        expect(
+            fake.requests.filter(({ method, path }) => method === "PUT" && path.includes("pluginPermissions")),
+        ).toEqual([]);
+    });
+
     it("reloads a grant committed by another writer after the legacy merge", async () => {
         table(PERMISSIONS).set("legacy", true);
         const fetch = fake.fetch;
