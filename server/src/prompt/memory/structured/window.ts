@@ -33,6 +33,8 @@ import type { MemoryTokenizer } from "../host.ts";
  * - Recorded means cited by a stored event in any status: the writer must not automatically record it
  *   again, whatever became of the event. It says nothing about the raw history a send may drop, where
  *   only an active event counts.
+ * - A window before another event's cited message uses the historical write path (`historicalWindow`)
+ *   to preserve current state, whether it repairs an event or records previously unrecorded messages.
  * - Windows close in order over the turns left. A trailing partial one stays open unless a manual
  *   start closes it.
  * - What is recorded can be asked to be recorded again, one event at a time (`rerecord` on the event): a
@@ -123,6 +125,47 @@ export function readRecordedMessages(store: Pick<ResourceStore, "memory">, chaId
     return recordedMessages(
         stored.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []),
     );
+}
+
+/**
+ * Historical write options when an event other than the one `window` replaces cites a message after
+ * its last source. Every event status counts: stale, retracted and adopted events also leave state
+ * behind. Positions come from message ids in `messages`, never stored indexes or creation revisions;
+ * sources no longer in the chat do not count. Read before each window's write, so earlier commits in
+ * the same run count, and freeze every page that exists then. Undefined when no later evidence exists.
+ */
+export function historicalWindow(
+    store: Pick<ResourceStore, "memory">,
+    chaId: string,
+    chatId: string,
+    messages: readonly Message[],
+    window: WriterWindow,
+): { frozenPages: string[] } | undefined {
+    const lastSource = window.sources.at(-1);
+    if (!lastSource) {
+        return undefined;
+    }
+    const positions = new Map(messages.map(({ chatId }, index) => [chatId, index]));
+    const last = positions.get(lastSource.messageId);
+    if (last === undefined) {
+        return undefined;
+    }
+    const contents = store.memory.readContents(chaId, chatId);
+    for (const { id } of contents?.events ?? []) {
+        if (id === window.rerecords) {
+            continue;
+        }
+        const event = store.memory.readRecord(chaId, chatId, "events", id)?.data;
+        if (
+            storedMemorySources(event?.sources).some(({ messageId }) => {
+                const position = positions.get(messageId);
+                return position !== undefined && position > last;
+            })
+        ) {
+            return { frozenPages: contents?.pages.map(({ id }) => id) ?? [] };
+        }
+    }
+    return undefined;
 }
 
 /** The chat's events waiting for a re-record: marked, and not retracted. Empty for a missing chat. */

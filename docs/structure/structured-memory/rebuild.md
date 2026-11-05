@@ -103,11 +103,10 @@ the projection stands aside while they remain. The live store's write also prese
 ### Backfill
 
 Backfill includes an adopted chat's user messages that summaries left uncovered, even when their replies were recorded.
-Its windows precede existing records, so `rebuildWork` gives the staged writer `historical: { frozenPages }`. The
-writer's `admissionState` and `historicalAnalysis`, with `withoutFrozenTargets` in
-`server/src/prompt/memory/structured/pages.ts`, leave existing pages, the scene and threads alone while adding events
-and new pages. A link `addLinks` in `server/src/prompt/memory/structured/pages.ts` writes onto a frozen page's staged
-copy goes at the swap. `rebuildSeed` and `rebuildChanges` own the seed and swap preservation rules.
+Its windows precede existing records, so `rebuildWork` gives the staged writer `historical: { frozenPages }`:
+`admissionState`, `historicalAnalysis`, `withoutFrozenTargets` and `commitPages` leave existing pages, their links, the
+scene and threads alone while adding events and new pages. `rebuildSeed` and `rebuildChanges` own the seed and swap
+preservation rules.
 
 ### The swap
 

@@ -34,7 +34,7 @@ import { defaultPrompts } from "../prompt/memory/structured/prompts.ts";
 import { revertChange } from "../prompt/memory/structured/pages.ts";
 import { readRecordSet, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
 import { readMemoryRecords } from "../prompt/memory/structured/step.ts";
-import { reconcileMessageChanges } from "../prompt/memory/structured/reconcile.ts";
+import { reconcileMessageChanges, withUnsupportedSections } from "../prompt/memory/structured/reconcile.ts";
 import { retrieveLanes } from "../prompt/memory/structured/retrieve.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ChatInvalidation } from "../data/resourceStore.ts";
@@ -3823,6 +3823,190 @@ describe("structured memory tasks", () => {
             receipt: { state: "failed", reason: "hostFailure" },
         });
         expect(t.embeddings.bodies).toEqual([]);
+    });
+
+    it.each(["active", "stale", "retracted"] as const)(
+        "automatically repairs an earlier event without changing the present when the later event is %s",
+        async (status) => {
+            const t = structuredHarness();
+            t.store.onMessagesChanged((notice) => reconcileMessageChanges(t.store, notice));
+            await recordOnly(t, {
+                ...analysis({ summary: "We visited the old farm." }),
+                scene: { place: "Old farm", time: "", state: "", participants: [] },
+            });
+            const old = eventRecord(t);
+            const [farm, castle] = memoryRecords(["farm", "castle"]).pages;
+            farm.title = "Old farm";
+            farm.links = [castle.id];
+            castle.title = "Castle";
+            writeMemory(t.store, "c", "k1", { pages: [farm, castle] });
+            await recordOnly(
+                t,
+                {
+                    ...analysis({
+                        summary: "We reached the castle and took up the watch.",
+                        openThreads: {
+                            add: [
+                                { title: "Keep gate watch", who: [] },
+                                { title: "Deliver the letter", who: [] },
+                            ],
+                            close: [],
+                            transitions: [],
+                        },
+                    }),
+                    scene: { place: "Castle", time: "", state: "", participants: [] },
+                },
+                writerInput(t, "m5"),
+            );
+            const later = { ...eventRecord(t), status };
+            writeMemory(
+                t.store,
+                "c",
+                "k1",
+                withUnsupportedSections(t.store, { chaId: "c", chatId: "k1" }, { events: [later] }),
+            );
+            const pagesBefore = pageRecords(t);
+            const threadsBefore = contents(t).threads.map(
+                ({ id }) => t.store.memory.readRecord("c", "k1", "threads", id)!.data,
+            );
+            const scene = () => pageRecords(t).find(({ type }) => type === "scene")!;
+            expect(scene().sections.find(({ heading }) => heading === "place")!.body).toBe("Castle");
+            expect(threadsBefore.map(({ title, state }) => ({ title, state }))).toEqual([
+                { title: "Keep gate watch", state: "open" },
+                { title: "Deliver the letter", state: "open" },
+            ]);
+
+            t.write("k1", [{ op: "setText", id: "m2", text: "The old farm was red." }]);
+            expect(t.store.memory.readRecord("c", "k1", "events", old.id)!.data.rerecord).toBe(true);
+            const { request, terminal } = await beginAnalysis(t, writerInput(t, "m5"));
+            request.answer(
+                JSON.stringify({
+                    ...analysis({
+                        summary: "The old farm was red, and its archive held the letter.",
+                        relationshipShifts: [
+                            { from: "castle", to: "farm", direction: "owns", note: "The castle owns the farm." },
+                            {
+                                from: "Archive",
+                                to: "castle",
+                                direction: "serves",
+                                note: "The archive serves the castle.",
+                            },
+                        ],
+                        openThreads: {
+                            add: [{ title: "Reopen the farm", who: [] }],
+                            close: [threadsBefore[0].id],
+                            transitions: [{ threadId: threadsBefore[1].id, to: "paused" }],
+                        },
+                    }),
+                    scene: { place: "Red old farm", time: "", state: "", participants: [] },
+                    pageCandidates: [
+                        { targetId: "castle", reason: "Historical ownership", confidence: 1 },
+                        {
+                            create: { type: "location", title: "Archive", aliases: [] },
+                            reason: "Historical archive",
+                            confidence: 1,
+                        },
+                    ],
+                }),
+            );
+            const patch = await nextPatch(t, request.index + 1, terminal);
+            const patchText = patch.body.messages.find((message: OpenAIChat) => message.role === "user")
+                .content as string;
+            const rows = patchText
+                .split("\n\nEvent:\n")[0]
+                .slice("Pages:\n".length)
+                .split("\n")
+                .map((line) => JSON.parse(line));
+            const archiveId = rows.find(({ title }) => title === "Archive").id as string;
+            patch.answer(
+                JSON.stringify({
+                    patches: [
+                        {
+                            pageId: "castle",
+                            heading: "Gate",
+                            op: "upsert",
+                            body: "An old farm gate replaces the castle gate.",
+                        },
+                        {
+                            pageId: archiveId,
+                            heading: "Records",
+                            op: "upsert",
+                            body: "The farm's archive held the letter.",
+                        },
+                    ],
+                }),
+            );
+            await finishRecording(t, terminal);
+
+            expect(scene().sections.find(({ heading }) => heading === "place")!.body).toBe("Castle");
+            // Retiring the old event can still flag a section every supporting event of which is now retracted.
+            const content = (pages: MemoryPage[]) =>
+                status === "retracted"
+                    ? pages.map((page) => ({
+                          ...page,
+                          sections: page.sections.map(({ unsupported, ...rest }) => rest),
+                      }))
+                    : pages;
+            expect(content(pageRecords(t).filter(({ id }) => id !== archiveId))).toEqual(content(pagesBefore));
+            expect(
+                contents(t).threads.map(({ id }) => t.store.memory.readRecord("c", "k1", "threads", id)!.data),
+            ).toEqual(threadsBefore);
+            expect(t.store.memory.readRecord("c", "k1", "events", later.id)!.data).toEqual(later);
+            expect(t.store.memory.readRecord("c", "k1", "events", old.id)!.data).toEqual({
+                ...old,
+                status: "retracted",
+            });
+            expect(contents(t).events).toHaveLength(3);
+            const replacement = eventRecord(t);
+            expect(replacement).toMatchObject({
+                status: "active",
+                summary: "The old farm was red, and its archive held the letter.",
+                relationshipShifts: [
+                    { from: "castle", to: "farm", direction: "owns", note: "The castle owns the farm." },
+                    { from: archiveId, to: "castle", direction: "serves", note: "The archive serves the castle." },
+                ],
+            });
+            expect(replacement.sources).toEqual(
+                t
+                    .chat("k1")!
+                    .message.slice(0, 2)
+                    .map((message, index) => ({
+                        messageId: message.chatId!,
+                        index,
+                        hash: messageSourceHash(message),
+                    })),
+            );
+            expect(replacement).not.toHaveProperty("rerecord");
+            expect(t.store.memory.readRecord("c", "k1", "pages", archiveId)!.data).toMatchObject({
+                title: "Archive",
+                sections: [{ heading: "Records", body: "The farm's archive held the letter." }],
+                links: ["castle"],
+            });
+        },
+    );
+
+    it("rewrites the scene when automatically re-recording the newest event", async () => {
+        const t = structuredHarness();
+        t.store.onMessagesChanged((notice) => reconcileMessageChanges(t.store, notice));
+        await recordOnly(t, {
+            ...analysis({ summary: "We visited the old farm." }),
+            scene: { place: "Old farm", time: "", state: "", participants: [] },
+        });
+        const old = eventRecord(t);
+        t.write("k1", [{ op: "setText", id: "m2", text: "The old farm was red." }]);
+        expect(eventRecord(t).rerecord).toBe(true);
+        await recordOnly(t, {
+            ...analysis({ summary: "The old farm was red." }),
+            scene: { place: "Red old farm", time: "", state: "", participants: [] },
+        });
+        expect(
+            pageRecords(t)
+                .find(({ type }) => type === "scene")!
+                .sections.find(({ heading }) => heading === "place")!.body,
+        ).toBe("Red old farm");
+        expect(t.store.memory.readRecord("c", "k1", "events", old.id)!.data).toEqual({ ...old, status: "retracted" });
+        expect(contents(t).events).toHaveLength(2);
+        expect(eventRecord(t)).toMatchObject({ status: "active", summary: "The old farm was red." });
     });
 
     it("retries a marked repair only on a press and atomically replaces it without repeat merging or lost user marks", async () => {

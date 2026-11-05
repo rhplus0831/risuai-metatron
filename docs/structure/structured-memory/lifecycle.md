@@ -68,11 +68,11 @@ comparisons and repair eligibility.
 The panel sends event repairs through [the edit route](records.md#the-edit-route) to `applyEventRepair`. Retraction also
 passes through `withUnsupportedSections` before the store write. Keep acknowledges the message state seen in the tab,
 since messages can change without moving the memory revision. Re-record marks the old event, then the tab presses record
-now; [the writer's commit](writer.md#the-writer-task) swaps it for the replacement. Until then, even after a failed run,
-the old event and mark stay. `applyEventRepair` owns no-op and refusal rules.
+now; [the writer's commit](writer.md#the-writer-task) swaps it for the replacement. A replacement older than another
+event is [historical](writer.md#a-writer-run). Until then, even after a failed run, the old event and mark stay.
+`applyEventRepair` owns no-op and refusal rules.
 
-Loading a checkpoint starts no work. A press can take a restored `rerecord` mark;
-[an automatic task](writer.md#the-writers-windows) takes only the changed-source marks `automaticRerecords` admits. See
+Loading a checkpoint starts no work: a restored `rerecord` mark [waits for a press](writer.md#the-writers-windows). See
 [State](#state) for the two persisted repair fields.
 
 ### Retraction and edits

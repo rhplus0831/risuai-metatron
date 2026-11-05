@@ -107,9 +107,10 @@ import { windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./w
  * - Store: a run reads and writes through the `memory` it is given, the live records or a rebuild's staged
  *   set (`createStructuredWriter`). So a rebuild's writer stands on what the run wrote, and a chat's run is
  *   defended at the writer's one live write (`commitWindow`).
- * - A historical write (`historical`, a backfill) records a window that lies before records that already
- *   exist, so it must leave current state alone: it merges into no later event, rewrites no scene, moves
- *   no thread, and patches no page in `frozenPages`. It still makes new pages, which later windows patch.
+ * - A historical write (`historical`, a backfill or a live window before stored evidence) leaves current
+ *   state alone: it merges into no later event, rewrites no scene, moves no thread, and neither patches
+ *   nor adds outgoing links to pages in `frozenPages`. Relationship shifts remain event evidence. New
+ *   pages outside the frozen set still take patches and links.
  * - Custom prompts: under the preset's `fineTuning`, its own ChatML is each call's whole frame
  *   (`parseCustomFrame`), with the same slots and the same validation of the answer. The run and its
  *   receipts carry `customPrompt`, a stored input is replayed only under the same mode, and a frame that
@@ -730,6 +731,7 @@ export function createStructuredWriter(
     return async (arg) => {
         const { host, input, tokenizer, window } = arg;
         const { chaId, chatId } = input.chatRef;
+        const frozenPages = new Set(arg.historical?.frozenPages);
         const opened = await openRun(store, arg);
         if ("outcome" in opened) {
             return opened;
@@ -865,6 +867,7 @@ export function createStructuredWriter(
             const { plan, admission } = admitRecording(store, arg, run.id, recording, fresh, pages);
             const written = commitPages({
                 pages,
+                frozenPages,
                 plan,
                 admission,
                 patches: run.patches ?? [],

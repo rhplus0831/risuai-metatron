@@ -359,12 +359,15 @@ export function applyPatches(arg: {
 /**
  * Everything one commit does to pages, from `pages`, the chat's whole pages as they stand now: the pages
  * `plan` makes, the scene page when the chat has none, so a chat with records has one, the patches, the
- * compactions of what those changed, the links of a new event's relationship shifts, and the scene. A
+ * compactions of what those changed, the links of a new event's relationship shifts except from frozen
+ * pages, and the scene. The event keeps every shift as evidence even when its link is frozen. A
  * repeat stops the links and the patches, which it lists as unseen, and so the compactions, which it
  * lists as stale, but not the scene.
  */
 export function commitPages(arg: {
     pages: readonly MemoryPage[];
+    /** Pages whose outgoing links a historical write must preserve. */
+    frozenPages?: ReadonlySet<string>;
     plan: PagePlan;
     admission: Pick<Admission, "event" | "repeated" | "scene">;
     patches: readonly MemoryPatch[];
@@ -386,7 +389,11 @@ export function commitPages(arg: {
     const warnings = applyPatches({ changes, pages, patches, seen, stamp });
     warnings.push(...applyCompactions({ changes, pages, compactions, stamp }));
     if (!admission.repeated) {
-        addLinks(changes, pages, admission.event.relationshipShifts);
+        addLinks(
+            changes,
+            pages,
+            admission.event.relationshipShifts.filter(({ from }) => !arg.frozenPages?.has(from)),
+        );
     }
     if (admission.scene) {
         warnings.push(...rewriteScene(changes, changes.get(scene.id)?.page ?? scene, admission.scene, stamp));

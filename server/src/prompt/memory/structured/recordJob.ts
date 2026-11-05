@@ -36,6 +36,7 @@ import { MEMORY_TASK_LIMITS, type StructuredMemoryCommit } from "../memoryTasks.
 import { retireRerecorded } from "./reconcile.ts";
 import {
     confirmedWindows,
+    historicalWindow,
     readRecordedMessages,
     readRerecordEvents,
     writerCadence,
@@ -226,6 +227,7 @@ async function runWindows(
             }
             run.update({ done: index, total: windows.length });
             refreshed();
+            const historical = historicalWindow(store, characterId, chatId, scopeChat(scope)?.message ?? [], window);
             const result = await writer({
                 scope,
                 input,
@@ -233,6 +235,7 @@ async function runWindows(
                 tokenizer,
                 window,
                 manual: true,
+                ...(historical ? { historical } : {}),
                 commit: commitFor(window),
             });
             setup.check();

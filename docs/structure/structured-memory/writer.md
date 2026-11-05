@@ -8,8 +8,8 @@
 - Paths: `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob}.ts`, the
   writer's task kind in `server/src/prompt/memory/memoryTasks.ts`, and `structuredMemoryStep` in
   `server/src/prompt/assemble.ts`.
-- See [structured memory](records.md) for how the algorithm is selected, and
-  [the archive](../../archived-plan/README.md) for the design and remaining work.
+- Algorithm selection: [structured memory](records.md); design and remaining work:
+  [the archive](../../archived-plan/README.md).
 - Not here:
   - The records, the projection, the read path, the lifecycle, the rebuild, and the page tools →
     [the area README](README.md).
@@ -26,8 +26,8 @@
 - `shared/hypaV3Presets.ts`: preset defaults; `createHypaV3Preset`.
 - `server/src/jobs/jobScope.ts`: task settings digest; `memorySettingsFingerprint`.
 - `server/src/prompt/memory/structured/window.ts`: confirmed writer windows; `confirmedWindows`, `WriterWindow`,
-  `WriterCeiling`, `writerCeiling`, `writerCadence`, `recordedMessages`, `readRecordedMessages`, `readRerecordEvents`,
-  `confirmedThrough`, `windowStillConfirmed`, `windowOf`.
+  `WriterCeiling`, `writerCeiling`, `writerCadence`, `recordedMessages`, `readRecordedMessages`, `historicalWindow`,
+  `readRerecordEvents`, `confirmedThrough`, `windowStillConfirmed`, `windowOf`.
 - `server/src/prompt/memory/structured/prompts.ts`: prompt frames and safe slot filling; `analysisSlots`,
   `assembleAnalysisPrompt`, `patchSlots`, `assemblePatchPrompt`, `compactSlots`, `assembleCompactPrompt`,
   `parseCustomFrame`, `defaultPrompts`, `sceneTakenBackLines`.
@@ -118,6 +118,9 @@ replacement commits. Reconciliation holds no fence; a running writer meets `revi
 the pre-call snapshot; the writer's comments own pause, request failures, custom prompts and dry runs. A `historical`
 write [leaves current state alone](rebuild.md#backfill).
 
+The task loop and `runWindows` ask `historicalWindow` per live window: another event, in any status, citing a later
+message makes it historical, with every existing page frozen.
+
 A held chat ends any run, including manual, `skipped awaitingAdoption` with no call or row. Automatic runs honor
 `writerPaused`; manual starts bypass it. The newest nonrecorded row supplies replay input only when message ids and
 hashes, `settingsFingerprint` and prompt mode match; that input includes the current scene's taken-back lines. A
@@ -187,8 +190,7 @@ source hash, and a message edit during the run can leave one send with a slightl
 The module comments own the per-call rules: `assembleAnalysisPrompt` and `parseCustomFrame` for safe ChatML/CBS slot
 filling and [fine-tuning](read.md#prompt-fine-tuning); `parseAnalysis`/`admitAnalysis` for bounded parsing, quotes,
 references, threads and repeat admission; `castSlice`/`planPages` for cast selection, identities, alias seeds and the
-group speaker. `planPages` and `admitAnalysis` run against fresh records for each attempt; prompt assembly and answer
-parsing do not rerun on closing-commit retries.
+group speaker.
 
 `commitPages` gathers created pages, patches, compactions, relationship links and scene changes into one map by page id,
 because the store refuses duplicate writes of an id in one change set. `changeSection` stamps bounded evidence, history,
@@ -266,8 +268,7 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
   `upstreamHypaV3Presets` leaves `structured` out.
 - `memoryRecord` is a [generation](../server-generation.md) `command` job; `recordJob.ts` shares the runner's job
   helpers (`createJobMemoryHost`, `jobMemoryTaskBase`).
-- `analysis.ts` and `patches.ts` share `answerJson`, `readList`, and `readConfidence`; `sectionVectorText` is the text a
-  retrieval of sections must embed.
+- `analysis.ts` and `patches.ts` share `answerJson`, `readList`, and `readConfidence`.
 
 ## Invariants
 
@@ -312,8 +313,7 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
 - `structured/analysis.test.ts`, `pages.test.ts`, `patches.test.ts`, `compact.test.ts`, and `prompts.test.ts` drive the
   pure pieces with plain values; `prompts.test.ts` parses with the real CBS evaluator. The one-scene rule is in
   `memoryStore.test.ts` and `restoreStage.test.ts`.
-- Compaction's calls and its one commit: `memoryTasks.test.ts`. `recordJob.ts` runs the same writer, with no test of its
-  own.
+- Compaction's calls and its one commit: `memoryTasks.test.ts`.
 - Record now: `memoryTasks.test.ts` for the lock refusal and `through`; `memoryJobs.test.ts` for the job's two paths on
   a real stack.
 - Focused command:
@@ -348,6 +348,8 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
   button and the `memoryProgress` overlay, as with a blocking HypaV3 summary. The job holds the chat's slot and the
   lease. A throw there leaves the run `pending` with no failed receipt, and the next run closes it `interrupted`.
   Decision: Structured Memory slice 2d, archive.
+- A repair never carries an edit into later state; a rebuild from that point does. A later event with every cited
+  message deleted no longer counts. Decision: Implementation Audit Fixes Q3.
 
 ### Gotchas
 
@@ -355,10 +357,10 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
   were removed and items naming a page left out.
 - `memory_runs.input` is never pruned, so a run costs about its prompt in storage. `inputTokens` counts one attempt
   though `host.request` may retry, and `maxResponse` bounds the answer, so a low value fails runs on truncated JSON.
-- `MEMORY_SECTION_BUDGETS` are starting values with no setting; `memorySectionOverBudget` is the one test of them.
+- `MEMORY_SECTION_BUDGETS` are starting values with no setting.
 - Every numeric default in `normalizeStructuredMemorySettings` is a starting value too; the required cap and the lane
   targets add up to the default `memoryBudgetTokens`. Only the cadence, highlight mode, and highlight kinds defaults are
   owner decisions.
 - A character's language override does not travel in a card: the card exporters use explicit field lists.
-- `readMemoryRecords` and `readRecordedMessages` read every stored event of the chat, once per send and once per task,
-  because the store has no bulk read, so their cost grows with the chat's events.
+- `readMemoryRecords`, `readRecordedMessages` and `historicalWindow` read every stored event of the chat (per send, task
+  or window): the store has no bulk read.

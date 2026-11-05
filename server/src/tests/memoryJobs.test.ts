@@ -2540,6 +2540,153 @@ describe("HypaV3 with the server's memory task service", () => {
         await patchSettings({ hypaV3: true });
     });
 
+    it.each(["task service", "request trigger"] as const)(
+        "Record now preserves Castle when repairing an earlier event through the %s",
+        async (mode) => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            const previousAlgorithm = (await single("ui")).data.memoryAlgorithmType;
+            try {
+                await patchSettings({ hypaV3: false, memoryAlgorithmType: "structuredMemory" });
+                await patchHypaV3({ structured: { cadence: "manual", windowTurns: 1 } });
+                const chaId = await seedCharacter({
+                    messages: [
+                        { chatId: "u1", role: "user", data: "Where are we?" },
+                        { chatId: "a1", role: "char", data: "At the old farm." },
+                        { chatId: "u2", role: "user", data: "Travel to the castle." },
+                        { chatId: "a2", role: "char", data: "We have reached the castle." },
+                    ],
+                    extra:
+                        mode === "request trigger"
+                            ? {
+                                  lowLevelAccess: true,
+                                  triggerscript: [
+                                      {
+                                          comment: "Record request",
+                                          type: "request",
+                                          conditions: [],
+                                          lowLevelAccess: true,
+                                          effect: [
+                                              {
+                                                  type: "v2SetVar",
+                                                  indent: 0,
+                                                  var: "seen",
+                                                  operator: "=",
+                                                  value: "1",
+                                                  valueType: "value",
+                                              },
+                                          ],
+                                      },
+                                  ],
+                              }
+                            : {},
+                });
+                state.summaries = [
+                    { place: "Old farm", summary: "We visited the old farm." },
+                    { place: "Castle", summary: "We reached the castle." },
+                    { place: "Red old farm", summary: "The old farm was red." },
+                ].map(({ place, summary }) =>
+                    JSON.stringify({
+                        title: place,
+                        summary,
+                        participants: [],
+                        storyTime: { text: "" },
+                        keyLines: [],
+                        stateChanges: [],
+                        knowledge: [],
+                        relationshipShifts: [],
+                        openThreads: { add: [], close: [], transitions: [] },
+                        scene: { place, time: "", state: "", participants: [] },
+                    }),
+                );
+                const record = async (messageId: string) => {
+                    const recordedTask = mode === "task service" ? nextTerminal(chaId) : null;
+                    const result = await job(
+                        "command",
+                        chaId,
+                        { mode: "manual" },
+                        {
+                            command: { type: "memoryRecord", messageId },
+                        },
+                    );
+                    expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                    if (recordedTask) {
+                        expect(await recordedTask).toMatchObject({ kind: "structuredMemory", state: "done", done: 1 });
+                        await tasks().drain();
+                    } else {
+                        expect(
+                            result.events
+                                .filter((event) => event.type === "notice" && event.kind === "memoryProgress")
+                                .map((event) => event.payload),
+                        ).toContainEqual(
+                            expect.objectContaining({
+                                phase: "blocking",
+                                reason: "requestTrigger",
+                            }),
+                        );
+                    }
+                };
+                const store = createResourceStore({
+                    file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                    kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+                });
+                try {
+                    const contents = () => store.memory.readContents(chaId, "k")!;
+                    const event = (id: string) => store.memory.readRecord(chaId, "k", "events", id)!.data;
+                    const scene = () =>
+                        store.memory.readRecord(
+                            chaId,
+                            "k",
+                            "pages",
+                            contents().pages.find(({ type }) => type === "scene")!.id,
+                        )!.data;
+                    await record("a1");
+                    const old = event(contents().events[0].id);
+                    expect(scene().sections.find(({ heading }) => heading === "place")!.body).toBe("Old farm");
+                    await record("a2");
+                    const later = event(contents().events[1].id);
+                    const sceneBefore = scene();
+                    expect(sceneBefore.sections.find(({ heading }) => heading === "place")!.body).toBe("Castle");
+                    expect(
+                        (
+                            await batch({
+                                chats: [
+                                    {
+                                        characterId: chaId,
+                                        chatId: "k",
+                                        baseRevision: (await readChat(chaId)).revision,
+                                        ops: [{ op: "setText", id: "a1", text: "At the red old farm." }],
+                                    },
+                                ],
+                            })
+                        ).status,
+                    ).toBe(200);
+                    expect(event(old.id).rerecord).toBe(true);
+
+                    await record("a1");
+
+                    expect(scene().sections.find(({ heading }) => heading === "place")!.body).toBe("Castle");
+                    expect(scene()).toEqual(sceneBefore);
+                    expect(event(later.id)).toEqual(later);
+                    expect(event(old.id)).toEqual({ ...old, status: "retracted" });
+                    expect(contents().events).toHaveLength(3);
+                    const replacement = event(contents().events[2].id);
+                    expect(replacement).toMatchObject({ status: "active", summary: "The old farm was red." });
+                    expect(replacement).not.toHaveProperty("rerecord");
+                    expect(replacement.sources.map(({ messageId }) => messageId)).toEqual(["u1", "a1"]);
+                    expect(replacement.sources[1].hash).toBe(
+                        messageSourceHash({ role: "char", data: "At the red old farm." }),
+                    );
+                    expect(summaries()).toHaveLength(3);
+                } finally {
+                    store.close();
+                }
+            } finally {
+                await patchSettings({ memoryAlgorithmType: previousAlgorithm });
+                vi.useRealTimers();
+            }
+        },
+    );
+
     it("records only the selected candidate text when record now is pressed on the newest reply, and a later candidate switch marks the event for rerecording", async () => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
         const previousAlgorithm = (await single("ui")).data.memoryAlgorithmType;
