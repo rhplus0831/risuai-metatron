@@ -1,6 +1,6 @@
 # Implementation Audit Fixes Plan
 
-Status: drafted 2026-11-05; landed: T1 (4ddbedc0b), C1 (f7b51a4ef), T5 (ceb668290), C3 (dd5f59b52), M1 (fb5dd3edc), T2 (b5372b93b), P1 (b4e78facc), M3 (a4513d4d0), C4 (87b523b1f), H3 (6d317482d), M2 (696a93c21), T4 (3379b6781), H1 (e8e8173e5), P3 (b14560182), H4 (8367c3986), A1 (7604b836f), C2 (9310bf523), M5 (8243ded32), R1 (b29c272ed), H5 (73e4cb555), A2 (06f4b852b), M4 (549c166a2). The owner confirmed the recommendation of all three questions on
+Status: drafted 2026-11-05; landed: T1 (4ddbedc0b), C1 (f7b51a4ef), T5 (ceb668290), C3 (dd5f59b52), M1 (fb5dd3edc), T2 (b5372b93b), P1 (b4e78facc), M3 (a4513d4d0), C4 (87b523b1f), H3 (6d317482d), M2 (696a93c21), T4 (3379b6781), H1 (e8e8173e5), P3 (b14560182), H4 (8367c3986), A1 (7604b836f), C2 (9310bf523), M5 (8243ded32), R1 (b29c272ed), H5 (73e4cb555), A2 (06f4b852b), M4 (549c166a2), H6 (f884f5c25). The owner confirmed the recommendation of all three questions on
 2026-11-05.
 
 Sources: the seven implementation audits of 2026-11-05 under `docs/manual-audit/`, all made against `dev` at
