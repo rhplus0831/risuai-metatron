@@ -41,6 +41,7 @@ import {
     ResourceValidationError,
     serialize,
     snapshotRows,
+    snapshotTableGroup,
 } from "./resourceStore.ts";
 
 /**
@@ -750,44 +751,11 @@ export function walkCheckpointSnapshot(
     sink: CheckpointSnapshotSink,
     signal?: AbortSignal,
 ): void {
-    const tables = Object.entries(CHECKPOINT_TABLE_COLUMNS);
-    let present = 0;
-    for (const [table, columns] of tables) {
-        try {
-            const objects = source
-                .prepare("SELECT name, type, sql FROM sqlite_schema WHERE name = ? COLLATE NOCASE")
-                .all(table) as { name: string; type: string; sql: string | null }[];
-            if (objects.length === 0) {
-                continue;
-            }
-            if (
-                objects.length !== 1 ||
-                objects[0].name !== table ||
-                objects[0].type !== "table" ||
-                !/^CREATE TABLE\b/i.test(objects[0].sql ?? "")
-            ) {
-                throw new ResourceValidationError(`${table}: not an ordinary checkpoint table`);
-            }
-            const info = source.prepare(`PRAGMA table_xinfo(${table})`).all() as { name: string; hidden: number }[];
-            if (
-                info.length !== columns.length ||
-                !info.every((column, index) => column.name === columns[index] && column.hidden === 0)
-            ) {
-                throw new ResourceValidationError(`${table}: invalid checkpoint table columns`);
-            }
-            present += 1;
-        } catch (error) {
-            if (error instanceof ResourceValidationError) {
-                throw error;
-            }
-            throw new ResourceValidationError(`${table}: cannot read checkpoint table layout`);
-        }
-    }
-    if (present === 0) {
+    const layouts = Object.fromEntries(
+        Object.entries(CHECKPOINT_TABLE_COLUMNS).map(([table, columns]) => [table, [columns]]),
+    );
+    if (snapshotTableGroup(source, "checkpoint", layouts) === null) {
         return;
-    }
-    if (present !== tables.length) {
-        throw new ResourceValidationError("Incomplete checkpoint tables in resource database");
     }
 
     const rowsOf = (table: string, order: string) =>

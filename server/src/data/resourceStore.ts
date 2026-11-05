@@ -530,6 +530,58 @@ export function* snapshotRows(
 }
 
 /**
+ * Checks an optional snapshot table group in `layouts` order, returning each table's matched column
+ * list, or null when none exists. Every name must be an ordinary table with one of its exact layouts
+ * and no hidden columns. A partial group, an invalid table, or an unreadable layout throws
+ * `ResourceValidationError`; `group` names the group in each refusal.
+ */
+export function snapshotTableGroup(
+    source: DatabaseSync,
+    group: string,
+    layouts: Readonly<Record<string, readonly (readonly string[])[]>>,
+): Map<string, readonly string[]> | null {
+    const tables = Object.entries(layouts);
+    const matched = new Map<string, readonly string[]>();
+    for (const [table, columns] of tables) {
+        try {
+            const objects = source
+                .prepare("SELECT name, type, sql FROM sqlite_schema WHERE name = ? COLLATE NOCASE")
+                .all(table) as { name: string; type: string; sql: string | null }[];
+            if (objects.length === 0) {
+                continue;
+            }
+            if (
+                objects.length !== 1 ||
+                objects[0].name !== table ||
+                objects[0].type !== "table" ||
+                !/^CREATE TABLE\b/i.test(objects[0].sql ?? "")
+            ) {
+                throw new ResourceValidationError(`${table}: not an ordinary ${group} table`);
+            }
+            const info = source.prepare(`PRAGMA table_xinfo(${table})`).all() as { name: string; hidden: number }[];
+            const layout = columns.find(
+                (expected) =>
+                    info.length === expected.length &&
+                    info.every((column, index) => column.name === expected[index] && column.hidden === 0),
+            );
+            if (!layout) {
+                throw new ResourceValidationError(`${table}: invalid ${group} table columns`);
+            }
+            matched.set(table, layout);
+        } catch (error) {
+            if (error instanceof ResourceValidationError) {
+                throw error;
+            }
+            throw new ResourceValidationError(`${table}: cannot read ${group} table layout`);
+        }
+    }
+    if (matched.size !== 0 && matched.size !== tables.length) {
+        throw new ResourceValidationError(`Incomplete ${group} tables in resource database`);
+    }
+    return matched.size === 0 ? null : matched;
+}
+
+/**
  * Reads and checks a snapshot file (read-only; nothing in it is executed beyond reading), row by row,
  * handing each checked row to `sink`, so what the checks hold is ids, never a table:
  * `integrity_check`, the schema version, the layout (`resources` and `meta` are real tables

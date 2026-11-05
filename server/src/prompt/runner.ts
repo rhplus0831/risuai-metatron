@@ -763,7 +763,7 @@ export function jobMemoryTaskBase(arg: {
 }
 
 /** Why a job's memory requests need its tab: a Plugin `memory` model, a `request` trigger; or null. */
-export function jobMemoryBlockingReason(scope: JobScope): MemoryBlockingReason | null {
+export function jobMemoryBlockingReason(scope: JobScope): Exclude<MemoryBlockingReason, "gap"> | null {
     const resolved = resolveJobRequestModel(scope.request.db, "memory");
     if (resolved.kind === "resolved" && resolved.modelInfo.format === LLMFormat.Plugin) {
         return "pluginModel";

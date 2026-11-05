@@ -75,7 +75,6 @@ export const MEMORY_HISTORY_CHANGE_KINDS = [
     "change",
     "contradiction",
     "delete",
-    "retract",
     "compact",
     "edit",
     "revert",
@@ -130,7 +129,6 @@ export const STRUCTURED_MEMORY_HIGHLIGHT_KINDS = [
     "create",
     "contradiction",
     "delete",
-    "retract",
     "change",
 ] as const satisfies readonly MemoryHistoryChangeKind[];
 export type StructuredMemoryHighlightKind = (typeof STRUCTURED_MEMORY_HIGHLIGHT_KINDS)[number];
@@ -1531,7 +1529,7 @@ export function normalizeStructuredMemorySettings(input: unknown): StructuredMem
                       source.highlightKinds.flatMap((kind) => memberOf(STRUCTURED_MEMORY_HIGHLIGHT_KINDS, kind) ?? []),
                   ),
               ]
-            : ["create", "contradiction", "delete", "retract"],
+            : ["create", "contradiction", "delete"],
         highlightChangeGrade: integerIn(source.highlightChangeGrade, 5, 0, STRUCTURED_MEMORY_LIMITS.gradeMax),
         volatileBeforeLastUser:
             typeof source.volatileBeforeLastUser === "boolean" ? source.volatileBeforeLastUser : false,

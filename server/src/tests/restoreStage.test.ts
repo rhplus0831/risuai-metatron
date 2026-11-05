@@ -550,6 +550,37 @@ it.each(memoryTables)("refuses a partial memory group missing %s", async (table)
     await expect(staging).rejects.toThrow(/memory/i);
 });
 
+it.each([
+    { group: "memory", table: "memory_pages" },
+    { group: "checkpoint", table: "checkpointPages" },
+])("refuses malformed $group table groups with their own layout messages", async ({ group, table }) => {
+    for (const { sql, message } of [
+        {
+            sql: `DROP TABLE ${table}`,
+            message: `Incomplete ${group} tables in resource database`,
+        },
+        {
+            sql: `ALTER TABLE ${table} ADD COLUMN unexpected TEXT`,
+            message: `${table}: invalid ${group} table columns`,
+        },
+        {
+            sql: `ALTER TABLE ${table} RENAME TO ordinary_${table}; CREATE VIEW ${table} AS SELECT * FROM ordinary_${table}`,
+            message: `${table}: not an ordinary ${group} table`,
+        },
+    ]) {
+        const { source, output } = await memoryFixture();
+        const db = new DatabaseSync(source);
+        try {
+            db.exec(sql);
+        } finally {
+            db.close();
+        }
+        const staging = stageValidatedSnapshot(source, output, kinds);
+        await expect(staging).rejects.toThrow(ResourceValidationError);
+        await expect(staging).rejects.toHaveProperty("message", message);
+    }
+});
+
 it("replaceAll leaves no memory rows belonging to replaced chats", async () => {
     const { dir, source, output } = fixture();
     const report = await stageValidatedSnapshot(source, output, kinds);

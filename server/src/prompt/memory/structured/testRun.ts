@@ -1,5 +1,5 @@
 import { selectedHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
-import type { MemoryBlockingReason, MemoryTaskBase, StructuredMemoryTaskInput } from "../../../../../shared/jobs.ts";
+import type { MemoryTaskBase, StructuredMemoryTaskInput } from "../../../../../shared/jobs.ts";
 import {
     type MemoryAnchoredSource,
     type MemoryRun,
@@ -62,11 +62,10 @@ import { createStructuredWriter, writerHostDeps } from "./writer.ts";
  *   that are no slot) are read from the frames again, for the result alone: a run never reports them.
  */
 
-const TEST_REFUSALS: Readonly<Record<MemoryBlockingReason, string>> = {
+const TEST_REFUSALS: Readonly<Record<NonNullable<ReturnType<typeof jobMemoryBlockingReason>>, string>> = {
     pluginModel: "The memory model is a plugin model, which needs this tab, so a test run cannot call it",
     requestTrigger:
         "A request trigger applies to this chat's requests, which needs this tab, so a test run cannot make them",
-    gap: "A test run cannot start here",
 };
 
 const NO_SLOT_WARNINGS: StructuredMemorySlotWarnings = { unquoted: [], unknown: [] };

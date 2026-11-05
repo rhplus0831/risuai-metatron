@@ -155,7 +155,7 @@ it("leaves fine-tuning off with an explanation when defaults cannot be read and 
     ]);
 });
 
-it("tests only an open chat, reports followed and lost results, and renders model data as text", async () => {
+it("tests only an open chat, reports followed and lost results, and renders the test outcome and model data as text", async () => {
     open();
     const run = () => button("[data-structured-memory-test-run]");
     expect(run().disabled).toBe(true);
@@ -200,6 +200,10 @@ it("tests only an open chat, reports followed and lost results, and renders mode
     });
     run().click();
     await settle();
+    const result = target.querySelector('[data-structured-memory-test-result="recorded"]')!;
+    const resultLines = [...result.querySelectorAll("span")].map((node) => node.textContent);
+    expect(resultLines).toContain(`${text.testResult.outcome}: ${text.testResult.outcomes.recorded}`);
+    expect(resultLines).not.toContain(`${text.testResult.outcome}: ${language.structuredMemory.log.results.recorded}`);
     expect(target.querySelector("[data-memory-test-analysis]")?.textContent).toBe(JSON.stringify(analysis, null, 2));
     expect(target.querySelector("[data-memory-test-patches]")?.textContent).toBe(JSON.stringify(patches, null, 2));
     expect(target.querySelector("[data-memory-test-unquoted]")?.textContent).toContain("{{slot::rules}}");

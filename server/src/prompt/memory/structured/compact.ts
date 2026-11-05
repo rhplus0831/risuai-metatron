@@ -52,7 +52,10 @@ export type ReadCompaction = { ok: true; compaction: Compaction } | { ok: false;
 const reallyChanged = ({ beforeHash, afterHash }: ReceiptSection) =>
     afterHash !== undefined && afterHash !== beforeHash;
 
-/** Whether the model may rewrite `section`. */
+/**
+ * Whether the model may rewrite `section`. A real change keeps `userCorrected` only on a disputed
+ * join (`changeSection`), already refused by `disputed`; checking it here restates the protection.
+ */
 const mayCompact = ({ locked, userCorrected, disputed }: MemorySection) => !locked && !userCorrected && !disputed;
 
 /**

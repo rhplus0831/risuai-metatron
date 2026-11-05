@@ -293,7 +293,8 @@ settings sections and collections, no `root` record; tables as in version 2).
 ### Checkpoint tables
 
 The checkpoint tables are created the same way and outside the required layout (a snapshot without them is valid), but a
-snapshot with any of them has them checked and restored (`walkCheckpointSnapshot`).
+snapshot with any of them has them checked and restored (`walkCheckpointSnapshot`). The memory tables share its layout
+check, `snapshotTableGroup`.
 
 - `chatCheckpoints` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `id`, `kind`
   (`manual`, `auto`, `safety`), `name`, `createdAt`, `revision`, `chatRevision`, `userTurns`, `messageCount`, `preview`

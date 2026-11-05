@@ -5,8 +5,7 @@
 - Owns the `structuredMemory` writer: its settings and their overrides, the windows it records, its task kind in the
   memory task service, a writer run, the analysis and patch prompts, admission of the model's answer, the pages it
   maintains, and record now with the `memoryRecord` job.
-- Paths:
-  `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob,testRun}.ts`, the
+- Paths: `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob}.ts`, the
   writer's task kind in `server/src/prompt/memory/memoryTasks.ts`, and `structuredMemoryStep` in
   `server/src/prompt/assemble.ts`.
 - See [structured memory](records.md) for how the algorithm is selected, and
@@ -45,8 +44,6 @@
   `commitWindow`, `writerRequestDb`, `writerHostDeps`, `adoptionHold`, `chatAdoptionHold`, re-exported `writerPaused`.
 - `server/src/prompt/memory/structured/recordJob.ts`: manual recording jobs and send-approved gaps; `runMemoryRecord`,
   `admitRecord`, `recordGapInJob`, `RECORD_REFUSALS`.
-- `server/src/prompt/memory/structured/testRun.ts`: detached writer trial; `runMemoryTest`
-  ([the test run](read.md#the-test-run)).
 - `server/src/prompt/memory/memoryTasks.ts`: writer task kind in the shared service; `createMemoryTasks`,
   `StructuredMemoryWriter`, test-injected `structuredWriter`, `StructuredMemoryWriterResult`, `StructuredMemoryCommit`,
   `MemoryTaskLimits.maxWriterWindows`.

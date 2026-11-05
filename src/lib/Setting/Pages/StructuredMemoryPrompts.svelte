@@ -229,7 +229,7 @@
                 <span>{resultText.nothing}</span>
             {:else}
                 <span>{resultText.window(result.messageIds.length)}</span>
-                <span>{resultText.outcome}: {codeText(language.structuredMemory.log.results, result.outcome)}</span>
+                <span>{resultText.outcome}: {codeText(resultText.outcomes, result.outcome)}</span>
                 {#if result.reason !== undefined}
                     <span>{resultText.reason}: {memoryReasonText(result.reason)}</span>
                 {/if}

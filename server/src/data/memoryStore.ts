@@ -38,6 +38,7 @@ import {
     ResourceValidationError,
     serialize,
     snapshotRows,
+    snapshotTableGroup,
 } from "./resourceStore.ts";
 
 /**
@@ -1031,50 +1032,13 @@ function isPositiveSafeInteger(value: unknown): value is number {
  * names, is a `ResourceValidationError`.
  */
 function memoryStateLayout(source: DatabaseSync): readonly string[] | null {
-    const tables = Object.entries(MEMORY_TABLE_COLUMNS);
-    let present = 0;
-    let stateColumns: readonly string[] | null = null;
-    for (const [table, columns] of tables) {
-        try {
-            const objects = source
-                .prepare("SELECT name, type, sql FROM sqlite_schema WHERE name = ? COLLATE NOCASE")
-                .all(table) as { name: string; type: string; sql: string | null }[];
-            if (objects.length === 0) {
-                continue;
-            }
-            if (
-                objects.length !== 1 ||
-                objects[0].name !== table ||
-                objects[0].type !== "table" ||
-                !/^CREATE TABLE\b/i.test(objects[0].sql ?? "")
-            ) {
-                throw new ResourceValidationError(`${table}: not an ordinary memory table`);
-            }
-            const info = source.prepare(`PRAGMA table_xinfo(${table})`).all() as { name: string; hidden: number }[];
-            const layouts = table === "memory_state" ? [columns, MEMORY_STATE_COLUMNS_BEFORE_DECLINE] : [columns];
-            const layout = layouts.find(
-                (expected) =>
-                    info.length === expected.length &&
-                    info.every((column, index) => column.name === expected[index] && column.hidden === 0),
-            );
-            if (!layout) {
-                throw new ResourceValidationError(`${table}: invalid memory table columns`);
-            }
-            if (table === "memory_state") {
-                stateColumns = layout;
-            }
-            present += 1;
-        } catch (error) {
-            if (error instanceof ResourceValidationError) {
-                throw error;
-            }
-            throw new ResourceValidationError(`${table}: cannot read memory table layout`);
-        }
-    }
-    if (present !== 0 && present !== tables.length) {
-        throw new ResourceValidationError("Incomplete memory tables in resource database");
-    }
-    return stateColumns;
+    const layouts = Object.fromEntries(
+        Object.entries(MEMORY_TABLE_COLUMNS).map(([table, columns]) => [
+            table,
+            table === "memory_state" ? [columns, MEMORY_STATE_COLUMNS_BEFORE_DECLINE] : [columns],
+        ]),
+    );
+    return snapshotTableGroup(source, "memory", layouts)?.get("memory_state") ?? null;
 }
 
 /**

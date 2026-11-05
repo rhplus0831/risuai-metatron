@@ -500,7 +500,7 @@ const structuredDefaults = {
     patchPrompt: "",
     fineTuning: false,
     highlightMode: "important",
-    highlightKinds: ["create", "contradiction", "delete", "retract"],
+    highlightKinds: ["create", "contradiction", "delete"],
     highlightChangeGrade: 5,
     volatileBeforeLastUser: false,
 };
@@ -647,17 +647,17 @@ describe("Structured Memory settings", () => {
         ).toStrictEqual({ ...structuredCustom, screening: { refusal: ["No", "No"], format: ["Wrong format"] } });
     });
 
-    it("keeps known highlight kinds once in their first-occurrence order and preserves an empty selection", () => {
+    it("keeps known highlight kinds once in their first-occurrence order, drops a stored retract, and preserves an empty selection", () => {
         for (const [input, expected] of [
             [
                 ["change", "delete", "create", "change", null, "unknown", "retract", "contradiction", "delete"],
-                ["change", "delete", "create", "retract", "contradiction"],
+                ["change", "delete", "create", "contradiction"],
             ],
             [[], []],
             [["unknown", 1], []],
-            [undefined, ["create", "contradiction", "delete", "retract"]],
-            [null, ["create", "contradiction", "delete", "retract"]],
-            ["create", ["create", "contradiction", "delete", "retract"]],
+            [undefined, ["create", "contradiction", "delete"]],
+            [null, ["create", "contradiction", "delete"]],
+            ["create", ["create", "contradiction", "delete"]],
         ]) {
             expect(normalizeStructuredMemorySettings({ ...structuredCustom, highlightKinds: input })).toStrictEqual({
                 ...structuredCustom,

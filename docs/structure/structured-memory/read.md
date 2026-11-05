@@ -5,9 +5,10 @@
 - Owns the `structuredMemory` read path and what the tab shows of it: the lanes that offer records, the memory card that
   spends the budget on them, the trim, the manifest and report a send leaves, the receipts on messages, the memory panel
   and receipt line in the tab, and the prompt fine-tuning page with its test run.
-- Paths: `server/src/prompt/memory/structured/{lanes,retrieve,card,step}.ts`, `src/lib/Others/StructuredMemory/`,
-  `src/lib/ChatScreens/MemoryReceiptLine.svelte`, `src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`, and the
-  receipt and panel parts of `src/ts/process/structuredMemory.svelte.ts`.
+- Paths: `server/src/prompt/memory/structured/{lanes,retrieve,card,step,testRun}.ts`,
+  `src/lib/Others/StructuredMemory/`, `src/lib/ChatScreens/MemoryReceiptLine.svelte`,
+  `src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`, and the receipt and panel parts of
+  `src/ts/process/structuredMemory.svelte.ts`.
 - See [structured memory](records.md) for the records the read path reads and how the algorithm is selected, and
   [the archive](../../archived-plan/README.md) for the design and remaining work.
 - Not here:
@@ -182,7 +183,8 @@ The contract for `createMemoryTaskHost` in `server/src/prompt/memory/memoryTaskH
 callback, or chat-variable write. `createStructuredWriter`'s `dryRun` skips the last event to prevent self-deduping the
 patch, while `commitPages` validation still runs. Its header holds prompt rebuilding, skipped compaction and warming,
 and a commit that stores nothing. The answer crosses `done.result` as `StructuredMemoryTestResult` in
-`shared/structuredMemory.ts`; `pressMemoryTest`'s comment holds missing-result handling.
+`shared/structuredMemory.ts`; `pressMemoryTest`'s comment holds missing-result handling. Its outcome words are
+`testResult.outcomes`, not the log's.
 
 ### Reply screening
 

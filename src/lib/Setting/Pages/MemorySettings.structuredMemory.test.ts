@@ -229,7 +229,7 @@ it("edits only consumed Structured Memory settings and shares the selected prese
     expect((control(hypa.memoryBudgetTokensLabel) as HTMLInputElement).value).toBe("4321");
 });
 
-it("edits highlight modes, kinds and change grade while preserving a stored retract kind", () => {
+it("edits highlight modes, kinds and change grade and drops a stored retract kind on the first tick", () => {
     settings.ui.memoryAlgorithmType = "structuredMemory";
     const preset = () => settings.hypaV3Presets.items.find((p) => p.id === "first")!.settings.structured;
     Object.assign(preset(), { highlightMode: "none", highlightKinds: ["retract"], highlightChangeGrade: 4 });
@@ -257,7 +257,7 @@ it("edits highlight modes, kinds and change grade while preserving a stored retr
         input.click();
         flushSync();
         expect(preset().highlightKinds).toContain(kind);
-        expect(preset().highlightKinds).toContain("retract");
+        expect(preset().highlightKinds).not.toContain("retract");
     }
     change(control(text.highlightChangeGrade) as HTMLInputElement, "5");
     expect(preset().highlightChangeGrade).toBe(5);
@@ -265,13 +265,13 @@ it("edits highlight modes, kinds and change grade while preserving a stored retr
         .find((input) => input.closest("label")!.textContent!.includes(text.highlightKinds.change))!
         .click();
     flushSync();
-    expect(preset().highlightKinds).toEqual(expect.arrayContaining(["retract", "create", "contradiction", "delete"]));
+    expect(preset().highlightKinds).toEqual(["create", "contradiction", "delete"]);
     expect(preset().highlightKinds).not.toContain("change");
     expect(target.textContent).not.toContain(text.highlightChangeGrade);
     change(control(text.highlightMode) as HTMLSelectElement, "all");
     expect(preset().highlightMode).toBe("all");
     expect(boxes()).toHaveLength(0);
-    expect(preset().highlightKinds).toContain("retract");
+    expect(preset().highlightKinds).toEqual(["create", "contradiction", "delete"]);
 });
 
 it("edits both screening lists by line while preserving a typed newline", () => {

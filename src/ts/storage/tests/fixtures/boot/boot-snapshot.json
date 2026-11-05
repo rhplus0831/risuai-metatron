@@ -521,7 +521,7 @@
           "analysisPrompt": "",
           "patchPrompt": "",
           "highlightMode": "important",
-          "highlightKinds": ["create", "contradiction", "delete", "retract"],
+          "highlightKinds": ["create", "contradiction", "delete"],
           "highlightChangeGrade": 5,
           "volatileBeforeLastUser": false
         }

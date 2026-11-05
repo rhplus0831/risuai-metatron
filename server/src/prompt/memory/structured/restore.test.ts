@@ -53,6 +53,15 @@ it("refuses malformed nested records instead of accepting or repairing them", ()
                 },
             ],
         },
+        {
+            ...valid,
+            pages: [
+                {
+                    ...valid.pages[0],
+                    history: [{ id: "h", heading: null, kind: "retract", highlighted: false, at: 1, before: null }],
+                },
+            ],
+        },
         { ...valid, pages: [{ ...valid.pages[0], retrieval: { keywords: [7] } }] },
         {
             ...valid,
