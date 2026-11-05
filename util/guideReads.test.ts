@@ -138,11 +138,11 @@ describe("docs:reads", () => {
         expect(report).not.toContain("calls named no guide");
     });
 
-    it("counts README as the guides index but README.md as naming no guide", async () => {
+    it("counts README and README.md as the guides index", async () => {
         const root = tree({
             "index/session.jsonl": transcript(tool("index-readme", "Bash", { command: "pnpm docs:read README" })),
-            "repository/session.jsonl": transcript(
-                tool("repository-readme", "Bash", { command: "pnpm docs:read README.md" }),
+            "suffixed/session.jsonl": transcript(
+                tool("suffixed-readme", "Bash", { command: "pnpm docs:read README.md" }),
             ),
         });
         const { tally: index, files } = await scanTranscripts(
@@ -157,13 +157,14 @@ describe("docs:reads", () => {
             "| README | 0 | 0 | 0 | 0 | 1 |",
         );
 
-        const { tally: repository } = await scanTranscripts(
-            [path.join(root, "repository")],
+        const { tally: suffixed } = await scanTranscripts(
+            [path.join(root, "suffixed")],
             textAt,
             (guide: string) => guide === "README",
         );
-        expect([...repository.guides.keys()]).toEqual([]);
-        expect(repository.unresolvedGuide).toBe(1);
+        expect([...suffixed.guides.keys()]).toEqual(["README"]);
+        expect(suffixed.guides.get("README")).toMatchObject({ docsRead: 1, bash: 0 });
+        expect(suffixed.unresolvedGuide).toBe(0);
     });
 
     it("reports aggregates and guide headings without transcript text or paths", async () => {

@@ -26,8 +26,8 @@
 
 ### Relevant `package.json` scripts
 
-Run scripts with `pnpm <script>`; `package.json` is the executable inventory, and as JSON it holds no comments, so the
-roles are here. Test commands and `check:tests` belong to [test-harness](test-harness.md#recipes).
+`package.json` is the script inventory; as JSON it holds no comments, so the roles are here. Test commands and
+`check:tests` belong to [test-harness](test-harness.md#recipes).
 
 | Script                             | Use                                                                                           |
 | ---------------------------------- | --------------------------------------------------------------------------------------------- |
@@ -62,8 +62,8 @@ roles are here. Test commands and `check:tests` belong to [test-harness](test-ha
   - `pnpm docs:read <guide> [heading]` (`util/docsRead.mjs`): a guide's headings with their bytes, or one section.
   - `pnpm docs:owner <path>...` (`util/docsOwner.mjs`): each path's owning guide; exit 1 on an unowned one.
   - `pnpm docs:contracts <file-or-dir>...` (`util/docsContracts.mjs`): each export with the `/** */` comment above it.
-  - `pnpm docs:ledger <guide> [--base <ref>]` (`util/docsLedger.mjs`): the base's `Files` and `Flows` identifiers that
-    neither the guide nor a file it names holds; exit 1 on any.
+  - `pnpm docs:ledger <guide> [--base <ref>] [--strict]` (`util/docsLedger.mjs`): the base's `Files` and `Flows`
+    identifiers that neither the guide nor a file it names (`--strict`: no glob) holds; exit 1 on any.
   - `pnpm docs:reads [--out <file>] [<dir>...]` (`util/guideReads.mjs`): guide reads counted over local session
     transcripts, for a one-off `docs/audit/guide-reads-<date>.md`; not a gate.
 
@@ -105,9 +105,8 @@ roles are here. Test commands and `check:tests` belong to [test-harness](test-ha
   (`crypto.subtle`) and the service worker need; `RISU_AGENT_DEV_HOST` binds elsewhere, `tailscale` to this machine's
   Tailscale IPv4 only.
 - `util/agentDataSandbox.mjs` `prepareAgentDataSandbox` (`RISU_AGENT_DATA_MODE`: `clone`, `keep`, `fresh`): builds
-  `save-agent/` from `save/` in `.save-agent.staging-*` and swaps it in; its comments list what a clone copies
-  (`data/resources.sqlite`, `data/vectors.sqlite`, `assets/`) and what it leaves behind (`server/` secrets, `backups/`,
-  `diagnostics/`, `data/request-history.sqlite`, `data/generation-jobs.sqlite`, `models/`).
+  `save-agent/` from `save/` in `.save-agent.staging-*` and swaps it in; its comments list what a clone copies and
+  leaves behind (`server/` secrets among them).
 - Test command environment and agent restrictions: [human gate](test-harness.md#human-gate).
 
 ### Analysis scripts
@@ -286,8 +285,9 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   scripts over small fixtures in a temporary directory, through their exported functions.
 - Not tested: the `/sw/check` route, the `fetch` handler's default `/sw/*` and `/tf` responses, the rest of the `push`
   display (icon, title and body fallbacks), and the userscript; verify those manually.
-- Not tested: the exit codes and output streams of the documentation scripts' command lines (`util/docs*.mjs`,
-  `util/guideReads.mjs`).
+- Not tested: the documentation scripts' command lines (exit codes, output streams).
+- Known skews of `pnpm docs:reads`: `scanTranscripts` checks a guide name only for `docs:read`, so a fixture guide path
+  in a command (`a.md`) counts as a read; a title-heading read counts the title alone (`countEvent`).
 - Not tested: the dev runner's process handling (process groups, the lock, the readiness wait); verify it manually when
   changing that code.
 

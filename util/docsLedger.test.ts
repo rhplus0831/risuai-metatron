@@ -97,4 +97,34 @@ describe("docs:ledger", () => {
         ]);
         expect(missingIdentifiers(identifiers, { texts: ["`src/old-reader.ts`"], patterns: [] })).toEqual([]);
     });
+
+    it("excludes glob files and path matches in strict mode while retaining exact braces and Markdown links", () => {
+        const base = [
+            "## Files",
+            "`droppedFact` `readerFact` `writerFact` `linkedFact`",
+            "`src/lost.ts` `src/reader.ts` `src/writer.ts`",
+        ].join("\n");
+        const work = "## Files\n`src/*.ts`, `src/{reader,writer}.ts`\n[Moved](moved.md#linkedfact)";
+        const root = tree({
+            [GUIDE]: work,
+            "src/lost.ts": "export const droppedFact = 1;",
+            "src/reader.ts": "export const readerFact = 1;",
+            "src/writer.ts": "export const writerFact = 1;",
+            "docs/structure/moved.md": "# Moved\n## linkedFact",
+        });
+        const rootDirs = new Set(["src", "docs"]);
+        const identifiers = ledgerIdentifiers(base, rootDirs);
+        const targets = namedTargets(work, GUIDE, rootDirs);
+        const missing = ({ files, patterns }: ReturnType<typeof resolveNamed>) =>
+            missingIdentifiers(identifiers, {
+                texts: [work, ...files.map((file) => readFileSync(path.join(root, file), "utf8"))],
+                patterns,
+            });
+
+        expect(missing(resolveNamed(root, targets))).toEqual([]);
+        expect(missing(resolveNamed(root, targets, { strict: true }))).toEqual([
+            { id: "droppedFact", path: false, section: "Files" },
+            { id: "src/lost.ts", path: true, section: "Files" },
+        ]);
+    });
 });

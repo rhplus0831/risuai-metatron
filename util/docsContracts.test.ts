@@ -22,6 +22,48 @@ function tree(files: Record<string, string>) {
 }
 
 describe("docs:contracts", () => {
+    it("skips typedef and callback blocks without prose and finds a later module header", () => {
+        for (const tag of ["@typedef {object} Record", "@callback Reader"]) {
+            const typeOnly = `/** ${tag} */`;
+            for (const file of ["reader.ts", "reader.js", "reader.mjs"]) {
+                expect(fileContracts(file, `${typeOnly}\n\nexport const value = 1;`).scripts[0]).toMatchObject({
+                    header: null,
+                    headerLine: null,
+                });
+                expect(
+                    fileContracts(file, `${typeOnly}\n\n/** Reads records. */\n\nexport const value = 1;`).scripts[0],
+                ).toMatchObject({ header: "Reads records.", headerLine: 3 });
+            }
+        }
+    });
+
+    it("uses a leading line-comment block as an MJS header only when no doc header qualifies", () => {
+        const text = [
+            "// Reads records.",
+            "// Keeps their revisions.",
+            "",
+            "/** @typedef {object} Record */",
+            "",
+            "export const value = 1;",
+        ].join("\n");
+        expect(fileContracts("reader.mjs", text).scripts[0]).toMatchObject({
+            header: "Reads records.\nKeeps their revisions.",
+            headerLine: 1,
+        });
+        expect(fileContracts("reader.mjs", `#!/usr/bin/env node\n${text}`).scripts[0]).toMatchObject({
+            header: "Reads records.\nKeeps their revisions.",
+            headerLine: 2,
+        });
+        for (const file of ["reader.ts", "reader.js"]) {
+            expect(fileContracts(file, text).scripts[0]).toMatchObject({ header: null, headerLine: null });
+        }
+        const withDocHeader = text.replace("/** @typedef {object} Record */", "/** Documents this module. */");
+        expect(fileContracts("reader.mjs", withDocHeader).scripts[0]).toMatchObject({
+            header: "Documents this module.",
+            headerLine: 4,
+        });
+    });
+
     it("prints attached doc comments and the documented export count for TS and JS", () => {
         const text = [
             "/** Reads a record. */",

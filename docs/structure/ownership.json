@@ -156,7 +156,10 @@
     { "match": "src/ts/process/{command,serverCommands}.test.ts", "guide": "scripts-triggers" },
     { "match": "src/ts/process/structuredMemory.test.ts", "guide": "structured-memory" },
     { "match": "src/ts/storage/tests/{bootCache,bootCacheServer}.test.ts", "guide": "app-shell" },
-    { "match": "src/ts/storage/tests/{assetClient.test.ts,assetClientMock.ts,assetQueue.test.ts}", "guide": "assets" },
+    {
+      "match": "src/ts/storage/tests/{assetClient.test.ts,assetClientMock.ts,assetQueue.test.ts,assetLifecycleClient.test.ts}",
+      "guide": "assets"
+    },
     { "match": "src/ts/storage/tests/{chatStore.test.ts,chatStoreMock.ts}", "guide": "chat-store" },
     {
       "match": "src/ts/storage/tests/{draftJournal.test.ts,fakeLockManager.ts,recoveryBootServer.ts}",
@@ -316,7 +319,7 @@
     { "match": "server/src/data/upstream/{export,import}{Runner,Stage,Worker}.ts", "guide": "server-resources" },
     { "match": "server/src/data/upstream/**", "guide": "backup-sync-hub" },
     { "match": "shared/{upstreamBackup,upstreamExportReport}.ts", "guide": "backup-sync-hub" },
-    { "match": "src/ts/storage/{assetClient,assetQueue}.ts", "guide": "assets" },
+    { "match": "src/ts/storage/{assetClient,assetQueue,assetLifecycleClient}.ts", "guide": "assets" },
     { "match": "shared/assetBatch.ts", "guide": "assets" },
     { "match": "src/ts/screenshotCaptureCache.test.ts", "guide": "assets" },
     { "match": "shared/{localNetwork,notifications}.ts", "guide": "network-jobs" },

@@ -11,8 +11,10 @@
 //     comment covers all of them), `export default`, and a local declaration exported by `export { a as b }`.
 //     Re-exports of other modules (`export { a } from`, `export * from`, an imported name exported again) are no
 //     declarations: they are listed apart and never counted as undocumented.
-//   - The module header is the first `/** */` block after the imports, before the first other statement. A block
-//     touching that statement with no blank line between is the statement's comment, not a header.
+//   - The module header is the first `/** */` block after the imports, before the first other statement, skipping
+//     blocks containing only `@typedef`/`@callback` tags without prose. A block touching that statement with no
+//     blank line between is the statement's comment, not a header. In `.mjs` only, when no such header is found,
+//     a leading `//` block before the imports counts instead; a shebang may precede it.
 //   - A `.svelte` file's `<script module>` is read as a module. Its instance `<script>` has no exports but
 //     `export const/function` (component exports); the `$props()` destructuring is not one. Its contract is the
 //     instance script's header, by the same rule, except that a block touching a `$props()` statement counts.
@@ -86,10 +88,27 @@ const isPropsStatement = (statement) =>
             decl.initializer.expression.text === "$props",
     );
 
+/** Whether a doc block contains only typedef/callback tags, without prose. */
+function isTypeOnlyBlock(text, range) {
+    const source = ts.createSourceFile(
+        "header.js",
+        `${text.slice(range.pos, range.end)}\nconst value = 0;`,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.JS,
+    );
+    const doc = source.statements[0].jsDoc?.[0];
+    return (
+        !doc?.comment &&
+        doc?.tags?.length > 0 &&
+        doc.tags.every((tag) => !tag.comment && ["typedef", "callback"].includes(tag.tagName.text))
+    );
+}
+
 /**
- * The header of a parsed script: the first `/** *\/` block in the leading comments of its first statement that is
- * not an import, as `{ pos, end }`, or null. A block touching that statement (no blank line, nothing between) is the
- * statement's comment instead, unless `touchingCounts(statement)`. With only imports, the block after the last one.
+ * The header as `{ pos, end, kind }`, or null: the first doc block before the first non-import statement, skipping
+ * type-only blocks. A touching block is the statement's comment unless `touchingCounts(statement)`. With only
+ * imports, look after the last one. In `.mjs`, fall back to a leading `//` block, optionally after a shebang.
  */
 function headerBlock(source, touchingCounts = () => false) {
     const text = source.text;
@@ -97,11 +116,23 @@ function headerBlock(source, touchingCounts = () => false) {
     const ranges = statement
         ? leadingComments(text, statement)
         : (ts.getLeadingCommentRanges(text, source.endOfFileToken.pos) ?? []);
-    const first = ranges.find((range) => isDocBlock(text, range));
-    if (!first || !statement) return first ?? null;
-    const touching =
-        first === ranges.at(-1) && !/\n[ \t]*\r?\n/.test(text.slice(first.end, statement.getStart(source)));
-    return touching && !touchingCounts(statement) ? null : first;
+    const first = ranges.find((range) => isDocBlock(text, range) && !isTypeOnlyBlock(text, range));
+    if (first) {
+        const touching =
+            statement &&
+            first === ranges.at(-1) &&
+            !/\n[ \t]*\r?\n/.test(text.slice(first.end, statement.getStart(source)));
+        if (!touching || touchingCounts(statement)) return first;
+    }
+    if (!source.fileName.endsWith(".mjs")) return null;
+    const leading = /^(?:#![^\n]*\n)?[ \t]*(\/\/[^\n]*(?:\n[ \t]*\/\/[^\n]*)*)/.exec(text);
+    return leading
+        ? {
+              pos: leading[0].length - leading[1].length,
+              end: leading[0].length,
+              kind: ts.SyntaxKind.SingleLineCommentTrivia,
+          }
+        : null;
 }
 
 const kindOf = (statement) =>
@@ -223,7 +254,15 @@ export function scriptContracts(text, { fileName = "source.ts", lineOffset = 0, 
         else if (name) add(statement, kind, name);
     }
     return {
-        header: header ? commentText(text.slice(header.pos, header.end)) : null,
+        header: header
+            ? header.kind === ts.SyntaxKind.SingleLineCommentTrivia
+                ? text
+                      .slice(header.pos, header.end)
+                      .split("\n")
+                      .map((line) => line.replace(/^[ \t]*\/\/ ?/, "").trimEnd())
+                      .join("\n")
+                : commentText(text.slice(header.pos, header.end))
+            : null,
         headerLine: header ? lineOf(header.pos) : null,
         exports: exports.sort((a, b) => a.line - b.line),
         reexports,

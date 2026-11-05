@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { checkOwnership, formatOwner, ownerOf, parseOwnership } from "./docsOwner.mjs";
 
@@ -43,6 +44,17 @@ describe("checkOwnership", () => {
 });
 
 describe("ownership lookup", () => {
+    it("assigns the asset lifecycle client and its tests to assets", () => {
+        const { rules } = parseOwnership(
+            readFileSync(new URL("../docs/structure/ownership.json", import.meta.url), "utf8"),
+        );
+        expect(
+            ["src/ts/storage/assetLifecycleClient.ts", "src/ts/storage/tests/assetLifecycleClient.test.ts"].map(
+                (file) => ownerOf(rules, file)?.guide,
+            ),
+        ).toEqual(["assets", "assets"]);
+    });
+
     it("uses the first matching glob for planned paths and dotfiles", () => {
         const { rules } = parseOwnership(
             JSON.stringify({

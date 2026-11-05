@@ -5,7 +5,7 @@
 // copies its parent's history into a new file). The Markdown report goes to `--out` or stdout and holds only counts,
 // guide names, and the guides' own headings: no session ids or paths, commands, prompts, or other transcript text.
 //   - A guide is `docs/structure/<name>.md` (`<area>/README.md` is the area `<area>`) or `STRUCTURE.md`, under any
-//     checkout path.
+//     checkout path. For `docs:read`, `README` and `README.md` (also with `./`) name Doc Maintenance.
 //   - Per guide: `Read` calls without `offset` and `limit` (whole), `Read` calls with either (ranged), Bash commands
 //     naming the guide's path (heredoc bodies stripped first, so a file written through `cat <<EOF` is not counted;
 //     a command counted as a `docs:read` of that guide is not counted again as Bash), of which `sed -n`: the Bash
@@ -116,14 +116,14 @@ export function shellWords(text) {
 
 /**
  * The guide name a `docs:read` argument names (a name, an area or its README, `STRUCTURE`, or a path), or null.
- * Bare `README` names the guides index; `README.md` names the repository README and is not a guide.
+ * `README` and `README.md` (also with `./`) name the Doc Maintenance guide, counted as `README`.
  */
 export function guideOfArgument(argument) {
     const stripped = argument.replace(/^\.\//, "").replace(/\/$/, "");
     const fromPath = guideOfPath(stripped);
     if (fromPath) return fromPath;
     const name = stripped.replace(/\.md$/, "");
-    if (name === INDEX_NAME || stripped === "README") return name;
+    if (name === INDEX_NAME || name === "README") return name;
     const guide = name.replace(/^([^/]+)\/README$/, "$1");
     return GUIDE_NAME.test(guide) ? guide : null;
 }

@@ -1,15 +1,17 @@
 // `pnpm docs:read <guide> [heading]`: the guide reader of the Agent Read Protocol. With a guide alone it prints the
 // guide's headings with their bytes, so the next read can be one section instead of the file; with a heading it
 // prints that section through its subsections. The guide is a name (`chat-store`, `structured-memory/read`), an
-// area folder (`structured-memory`, its `README.md`), `STRUCTURE`, or a path. A heading matches by case-insensitive
-// whole text, then by prefix, then by substring; several matches list themselves instead of printing one.
+// area folder (`structured-memory`, its `README.md`), `STRUCTURE`, or a path. `README` and `README.md` (also with
+// `./`) name Doc Maintenance. Headings and queries ignore backticks and case, matching whole text, then prefix,
+// then substring; several matches list themselves instead of printing one.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { GUIDE_DIR, INDEX_DOC, parseGuide } from "./docsBudget.mjs";
 
-/** The repository path `name` names, or null: a path as given, a guide name, an area folder, or `STRUCTURE`. */
+/** The repository path `name` names, or null: README aliases name Doc Maintenance; otherwise paths come first. */
 export function resolveGuide(root, name) {
+    if (/^(?:\.\/)?README(?:\.md)?$/.test(name)) name = `${GUIDE_DIR}/README.md`;
     const stripped = name.replace(/\.md$/, "").replace(/\/$/, "");
     const candidates = [
         name,
@@ -53,8 +55,8 @@ export function outline(text) {
  */
 export function sectionText(text, query) {
     const { sections } = parseGuide(text);
-    const wanted = query.trim().toLowerCase();
     const plain = (heading) => heading.replace(/`/g, "").toLowerCase();
+    const wanted = plain(query.trim());
     const matches =
         [
             sections.filter((section) => plain(section.heading) === wanted),

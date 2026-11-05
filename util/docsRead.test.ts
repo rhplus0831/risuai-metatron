@@ -74,9 +74,20 @@ describe("docs:read", () => {
         expect(() => sectionText(TEXT, "absent")).toThrow(/matches no heading:\n {2}# Guide/);
     });
 
-    it("resolves a guide by name, by area folder, by path, and as STRUCTURE", () => {
+    it("ignores backticks in heading queries while preserving the section text", () => {
+        const text = "# Guide\n## Relevant `package.json` scripts\n\nUse pnpm.\n## Next\nOther text.";
+        for (const query of ["Relevant `package.json` scripts", "`package.json` scripts"]) {
+            const result = sectionText(text, query);
+            expect(result.section).toMatchObject({ heading: "Relevant `package.json` scripts", line: 2 });
+            expect(result.text).toBe("## Relevant `package.json` scripts\n\nUse pnpm.");
+        }
+    });
+
+    it("resolves guide names, area folders, paths, STRUCTURE, and README aliases", () => {
         const root = tree({
             "STRUCTURE.md": "# STRUCTURE\n",
+            "README.md": "# Repository\n",
+            "docs/structure/README.md": "# Doc Maintenance\n",
             "docs/structure/chat-store.md": TEXT,
             "docs/structure/area/README.md": "# Area\n",
             "docs/structure/area/read.md": TEXT,
@@ -87,7 +98,10 @@ describe("docs:read", () => {
         expect(resolveGuide(root, "area")).toBe("docs/structure/area/README.md");
         expect(resolveGuide(root, "area/read")).toBe("docs/structure/area/read.md");
         expect(resolveGuide(root, "STRUCTURE")).toBe("STRUCTURE.md");
+        for (const alias of ["README", "README.md", "./README", "./README.md", "docs/structure/README.md"]) {
+            expect(resolveGuide(root, alias)).toBe("docs/structure/README.md");
+        }
         expect(resolveGuide(root, "missing")).toBeNull();
-        expect(guideNames(root)).toEqual(["area", "area/read", "chat-store"]);
+        expect(guideNames(root)).toEqual(["README", "area", "area/read", "chat-store"]);
     });
 });

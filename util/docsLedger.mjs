@@ -1,8 +1,8 @@
-// `pnpm docs:ledger <guide> [--base <ref>]`: the mechanical check of a trim's fact ledger. It reads the guide at
-// `<ref>` (default `HEAD`, through `git show`) and on disk, and prints each identifier of the base's `## Files` and
-// `## Flows` sections (their `###` subsections included) that is now in neither the working guide nor a file the
-// working guide names: one line each, with the old heading it came from (`Files > Readers`), in order of first
-// appearance. The guide is a name as `pnpm docs:read` takes it.
+// `pnpm docs:ledger <guide> [--base <ref>] [--strict]`: the mechanical check of a trim's fact ledger.
+// It reads the guide at `<ref>` (default `HEAD`, through `git show`) and on disk, and prints each identifier of the
+// base's `## Files` and `## Flows` sections (their `###` subsections included) that is now in neither the working
+// guide nor a file the working guide names: one line each, with the old heading it came from (`Files > Readers`),
+// in order of first appearance. The guide is a name as `pnpm docs:read` takes it.
 //   - Identifiers come from code spans only (fenced code is opaque, as in `pnpm check:docs`). A span that is a
 //     repository path by the `missing-path` rule of `util/docsBudget.mjs` is the path itself, one per brace
 //     expansion, with no trailing `/`. Any other span yields its tokens: each run of letters, digits, `_`, and `$`
@@ -15,7 +15,8 @@
 //     of its path spans, or a match of one of its globs), or when it occurs whole in that text or a named file.
 //   - The named files: each path span of the working guide, braces expanded and globs matched, that is a file
 //     (a directory is not searched), plus each relative `.md` link target of the working guide that exists, since
-//     another guide's heading is a legitimate destination for a moved fact.
+//     another guide's heading is a legitimate destination for a moved fact. With `--strict`, path patterns containing
+//     `*` add neither named files nor path-presence matches; exact brace expansions and `.md` links still count.
 // Exit 0 when nothing is missing, 1 when something is, 2 on a usage error, an unknown guide, or a ref without it.
 import { execFileSync } from "node:child_process";
 import { globSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -182,9 +183,9 @@ export function formatLedger(rel, base, missing, { checked, files }) {
     ].join("\n");
 }
 
-/** The repository files the guide's `namedTargets` resolve to under `root`, and the path patterns it names. */
-export function resolveNamed(root, { pathSpans, links }) {
-    const patterns = pathSpans.flatMap(spanPatterns);
+/** The named files and path patterns under `root`; `strict` excludes patterns containing `*` from both. */
+export function resolveNamed(root, { pathSpans, links }, { strict = false } = {}) {
+    const patterns = pathSpans.flatMap(spanPatterns).filter((pattern) => !strict || !pattern.includes("*"));
     const files = new Set();
     const isFile = (rel) => {
         try {
@@ -205,16 +206,20 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const args = process.argv.slice(2);
     const usage = (message) => {
-        process.stderr.write(`${message ? `${message}\n` : ""}usage: pnpm docs:ledger <guide> [--base <ref>]\n`);
+        process.stderr.write(
+            `${message ? `${message}\n` : ""}usage: pnpm docs:ledger <guide> [--base <ref>] [--strict]\n`,
+        );
         process.exit(2);
     };
     let base = "HEAD";
+    let strict = false;
     const positional = [];
     for (let i = 0; i < args.length; i++) {
         if (args[i] === "--base") {
             if (!args[i + 1]) usage("--base needs a ref");
             base = args[++i];
         } else if (args[i].startsWith("--base=")) base = args[i].slice("--base=".length);
+        else if (args[i] === "--strict") strict = true;
         else if (args[i].startsWith("-")) usage(`unknown option ${args[i]}`);
         else positional.push(args[i]);
     }
@@ -243,7 +248,7 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     );
     const workText = readFileSync(path.join(root, rel), "utf8");
     const identifiers = ledgerIdentifiers(baseText, rootDirs);
-    const { files, patterns } = resolveNamed(root, namedTargets(workText, rel, rootDirs));
+    const { files, patterns } = resolveNamed(root, namedTargets(workText, rel, rootDirs), { strict });
     const texts = [workText, ...files.map((file) => readFileSync(path.join(root, file), "utf8"))];
     const missing = missingIdentifiers(identifiers, { texts, patterns });
     process.stdout.write(`${formatLedger(rel, base, missing, { checked: identifiers.length, files: files.length })}\n`);

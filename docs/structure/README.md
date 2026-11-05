@@ -22,8 +22,7 @@ The rules for editing the guides in this folder and `STRUCTURE.md`, the index ev
   read). Check the ledger on the result; for parallel trims, on the combined tree before the last one lands, since two
   trims can each leave a fact to the other.
 - Draft the ledger from `pnpm docs:contracts <owned files>`, which shows what the modules already document, and check it
-  with `pnpm docs:ledger <guide>`, which lists each old `Files` or `Flows` identifier that neither the guide nor a file
-  it names still holds.
+  with `pnpm docs:ledger <guide>`, plus `--strict` when the guide names a glob, which can hide a miss.
 - Budgets: at most 40,000 bytes per guide, 8,000 under any leaf heading, 600 characters per list item or table row
   (continuation lines and code spans included), and parentheses at most two deep outside code spans. They are the same
   for every guide, this README, and `STRUCTURE.md`: `pnpm check:docs` fails on any of them, and
