@@ -328,10 +328,6 @@ async function getSource(url, request = null){
     }))
 }
 
-async function check(){
-
-}
-
 /**
  * Stores `buffer` in `risuCache`. A relative string resolves against the worker origin; a URL object is
  * accepted too. Without `noContentType` the second path segment becomes `img` (`/sw/register/<hex>` is

@@ -1,11 +1,8 @@
-// Port of `src/ts/process/stringlize.ts`: the database and the user name come from the request
-// context instead of the tab (`TextContext`).
+// Formats chat text using the database and user name captured in the request context (`TextContext`).
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { RequestContext } from "./context.ts";
 
 export type TextContext = Pick<RequestContext, "db" | "userName">;
-
-export function multiChatReplacer() {}
 
 export function stringlizeChat(formated: OpenAIChat[], char: string, continued: boolean) {
     let resultString: string[] = [];
@@ -27,75 +24,6 @@ export function stringlizeChat(formated: OpenAIChat[], char: string, continued: 
         res += `\n\n${char}:`;
     }
     return res;
-}
-
-function appendWhitespace(prefix: string, seperator: string = " ") {
-    if (!prefix) {
-        return "";
-    }
-    if (prefix && !"> \n".includes(prefix[prefix.length - 1])) {
-        prefix += seperator.includes("\n\n") ? "\n" : " ";
-    }
-    return prefix;
-}
-export function stringlizeChatOba(
-    formated: OpenAIChat[],
-    characterName: string,
-    suggesting: boolean,
-    continued: boolean,
-    ctx: TextContext,
-) {
-    const db = ctx.db;
-    let resultString: string[] = [];
-    let { systemPrefix, userPrefix, assistantPrefix, seperator } = db.ooba.formating;
-    systemPrefix = systemPrefix ?? "";
-    userPrefix = userPrefix ?? "";
-    assistantPrefix = assistantPrefix ?? "";
-    seperator = seperator ?? "\n";
-
-    for (const form of formated) {
-        if (form.content === "[Start a new chat]") {
-            resultString.push("<START>");
-            continue;
-        }
-        let prefix = "";
-        let name = form.name;
-        if (form.role === "user") {
-            prefix = appendWhitespace(suggesting ? assistantPrefix : userPrefix, seperator);
-            name ??= `${ctx.userName}`;
-            name += ": ";
-        } else if (form.role === "assistant") {
-            prefix = appendWhitespace(suggesting ? userPrefix : assistantPrefix, seperator);
-            name ??= `${characterName}`;
-            name += ": ";
-        } else if (form.role === "system") {
-            prefix = appendWhitespace(systemPrefix, seperator);
-            name = "";
-        }
-        if (db.ooba.formating.useName) {
-            resultString.push(prefix + name + form.content);
-        } else {
-            resultString.push(prefix + form.content);
-        }
-    }
-    if (!continued) {
-        if (db.ooba.formating.useName) {
-            if (suggesting) {
-                resultString.push(
-                    appendWhitespace(assistantPrefix, seperator) + `${ctx.userName}:\n` + db.autoSuggestPrefix,
-                );
-            } else {
-                resultString.push(assistantPrefix + `${characterName}:`);
-            }
-        } else {
-            if (suggesting) {
-                resultString.push(appendWhitespace(assistantPrefix, seperator) + `\n` + db.autoSuggestPrefix);
-            } else {
-                resultString.push(assistantPrefix);
-            }
-        }
-    }
-    return resultString.join(seperator).trim();
 }
 
 const userStrings = ["user", "human", "input", "inst", "instruction"];

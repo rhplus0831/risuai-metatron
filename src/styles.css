@@ -561,14 +561,6 @@ body {
     flex-shrink: 0;
 }
 
-.chat-message-container .dyna-icon {
-    display: none;
-}
-
-.chat-message-container:first-of-type .dyna-icon {
-    display: block;
-}
-
 .default-chat-screen.metatron-chat-theme .chat-message-container {
     border-top: 1px solid #222222;
 }

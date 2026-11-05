@@ -5,7 +5,8 @@
  * budget or html-to-image scales it down. Rows are never split.
  *
  * Each page canvas is sized once. Only one row canvas is alive at a time, and its size is zeroed
- * after its draw. The page canvas is released before the next page, also on failure.
+ * after its draw. Each page is filled with the passed background color. The page canvas is released
+ * before the next page, also on failure.
  *
  * Each page sends one PNG Blob to `download`. An empty plan, a null Blob, or an empty Blob is an error.
  */
@@ -104,6 +105,7 @@ export interface ScreenshotComposeOptions<Row> {
     createCanvas(): HTMLCanvasElement;
     download(name: string, blob: Blob): Promise<void>;
     baseName: string;
+    background: string;
     onProgress?(done: number, total: number): void;
     warn?(message: string): void;
 }
@@ -114,6 +116,7 @@ export async function composeScreenshot<Row>({
     createCanvas,
     download,
     baseName,
+    background,
     onProgress,
     warn = console.warn,
 }: ScreenshotComposeOptions<Row>): Promise<void> {
@@ -128,7 +131,7 @@ export async function composeScreenshot<Row>({
             canvas.height = page.height;
             const ctx = canvas.getContext("2d");
             if (!ctx) throw new Error("Screenshot canvas context is unavailable");
-            ctx.fillStyle = "var(--risu-theme-bgcolor)";
+            ctx.fillStyle = background;
             ctx.fillRect(0, 0, page.width, page.height);
 
             for (const slot of page.rows) {

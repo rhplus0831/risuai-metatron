@@ -1175,7 +1175,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - Not planned (the plan's Later list): a single-candidate delete control, a boot sweep writing back the previous
     candidate after a process death, bundle candidates for multi-reply tails, PocketRisu `swipes` in the `.bin`
     export, and pruning older messages' candidates at the commit boundary.
-  - Found by the run: 2 entries in `docs/research/found-issues.md` (the dead `dyna-icon` reroll variant, the
+  - Found by the run: 2 entries in `docs/research/found-issues.md` (the dead dynamic reroll icon variant, the
     Structured Memory decision pointers that still say "plan").
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry

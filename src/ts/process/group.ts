@@ -1,6 +1,5 @@
 import { characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { appendMessage, ensureChatLoaded, selectedChatId } from "../storage/chatStore.svelte";
-import shuffle from "lodash/shuffle";
 import { findCharacterbyId } from "../util";
 import { alertConfirm, alertError, alertSelectChar } from "../alert";
 import { language } from "src/lang";
@@ -62,68 +61,4 @@ export function rmCharFromGroup(index: number) {
         group.characterTalks.splice(index, 1);
         group.characterActive.splice(index, 1);
     }
-}
-
-export type GroupOrder = {
-    id: string;
-    talkness: number;
-    index: number;
-};
-
-/**
- * Unreferenced: a send's speaker order is the server's copy (`groupOrder` in
- * `server/src/prompt/runner.ts`). Members named in `input` (words split at spaces and newlines,
- * case-insensitive) come first, one per word in word order, so a member named twice appears twice; then
- * each other member, shuffled, with chance `talkness` (0.5 when unset); never empty.
- */
-export function groupOrder(chars: GroupOrder[], input: string): GroupOrder[] {
-    let order: GroupOrder[] = [];
-    let ids: string[] = [];
-    if (input) {
-        const words = getWords(input);
-
-        for (const word of words) {
-            for (let char of chars) {
-                const charNameChunks = getWords(findCharacterbyId(char.id).name);
-
-                if (charNameChunks.includes(word)) {
-                    order.push(char);
-                    ids.push(char.id);
-                    break;
-                }
-            }
-        }
-    }
-
-    const shuffled = shuffle(chars);
-    for (const char of shuffled) {
-        if (ids.includes(char.id)) {
-            continue;
-        }
-
-        const chance = char.talkness ?? 0.5;
-
-        if (chance >= Math.random()) {
-            order.push(char);
-            ids.push(char.id);
-        }
-    }
-
-    while (order.length === 0) {
-        order.push(chars[Math.floor(Math.random() * chars.length)]);
-    }
-
-    return order;
-}
-
-function getWords(data: string) {
-    const matches = data.split(/\n| /g);
-    let words: string[] = [];
-    if (!matches) {
-        return [data];
-    }
-    for (const match of matches) {
-        words.push(match.toLocaleLowerCase());
-    }
-    return words;
 }

@@ -212,7 +212,7 @@
         messageId?: string;
         chatRef?: ChatRef | null;
         messageGenerationInfo?: MessageGenerationInfo | null;
-        rerollIcon?: boolean | "dynamic";
+        rerollIcon?: boolean;
         candidateCount?: number;
         candidateIndex?: number;
         candidateCarrier?: boolean;
@@ -399,7 +399,7 @@
         candidateCount?: number;
         candidateIndex?: number;
         candidateCarrier?: boolean;
-        rerollIcon?: boolean | "dynamic";
+        rerollIcon?: boolean;
         idx?: number;
         isOptimizedStreamingMessage?: boolean;
         streamingOptimizationMode?: StreamingDisplayOptimizationMode;
@@ -1866,7 +1866,6 @@
         {#if settings.ui.swipe || altGreeting || (candidateCarrier && candidateCount >= 2)}
             <button
                 class="flex items-center hover:text-blue-500 transition-colors button-icon-unreroll"
-                class:dyna-icon={rerollIcon === "dynamic"}
                 class:opacity-50={locked}
                 disabled={locked}
                 onclick={unReroll}
@@ -1880,7 +1879,6 @@
             {/if}
             <button
                 class="flex items-center hover:text-blue-500 transition-colors button-icon-reroll"
-                class:dyna-icon={rerollIcon === "dynamic"}
                 class:opacity-50={locked}
                 disabled={locked}
                 onclick={onReroll}
@@ -1890,7 +1888,6 @@
         {:else}
             <button
                 class="flex items-center hover:text-blue-500 transition-colors button-icon-reroll"
-                class:dyna-icon={rerollIcon === "dynamic"}
                 class:opacity-50={locked}
                 disabled={locked}
                 onclick={onReroll}

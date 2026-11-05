@@ -232,7 +232,7 @@ function getWords(data: string) {
     return words;
 }
 
-/** `groupOrder` of `src/ts/process/group.ts`: named members first, then by chance, never none. */
+/** Orders named members first, then other members by chance; always picks at least one. */
 function groupOrder(
     chars: GroupOrder[],
     input: string | undefined,

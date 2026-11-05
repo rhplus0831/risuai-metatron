@@ -1005,6 +1005,9 @@
             await withFileSrcFetch(() =>
                 composeScreenshot({
                     pages,
+                    background:
+                        getComputedStyle(document.documentElement).getPropertyValue("--risu-theme-bgcolor").trim() ||
+                        "#282a36",
                     capture: (row) => html2canvas.toCanvas(row, SCREENSHOT_CAPTURE_OPTIONS),
                     createCanvas: () => document.createElement("canvas"),
                     download: downloadFile,

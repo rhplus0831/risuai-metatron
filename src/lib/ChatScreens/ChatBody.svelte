@@ -54,11 +54,11 @@
      * body update on the next run.
      *
      * Each render run owns an `AbortController` (`parseController`), aborted when the next run starts in
-     * `markParsingResult` or on destroy. Its signal goes to `ParseMarkdown` and `translateHTML`; `run === parseRun`
-     * and `destroyed` remain the correctness guards. Only the run that set `translating` clears it (`translatingRun`).
-     * The cached-only auto-translate probe remembers `lastCharArg`, `lastChatId`, `lastAutoTranslate` only on
-     * completion or in its 10 ms `translated` flip. An aborted flip writes nothing and settles
-     * `pendingAutoTranslate`, so the next run probes again.
+     * `markParsingResult`, when raw streaming starts, or on destroy. Its signal goes to `ParseMarkdown` and
+     * `translateHTML`; `run === parseRun` and `destroyed` remain the correctness guards. Only the run that set
+     * `translating` clears it (`translatingRun`). The cached-only auto-translate probe remembers `lastCharArg`,
+     * `lastChatId`, `lastAutoTranslate` only on completion or in its 10 ms `translated` flip. An aborted flip writes
+     * nothing and settles `pendingAutoTranslate`, so the next run probes again.
      *
      * Abort resolves quietly: no alert, retry or `lastParsed` write. Errors marked transient in
      * `src/ts/parser/renderErrors.ts` retry after 250 ms, then 1,000 ms, while the run is live. Other errors, or a
@@ -175,6 +175,18 @@
     let shouldRenderRawStreaming = $derived(
         renderRawStreaming && (storedPath ? !storedTranslationShown : !translated && !retranslate),
     );
+    let rawStreamingRevision = $state(0);
+    let wasRawStreaming = false;
+    $effect.pre(() => {
+        const rawStreaming = shouldRenderRawStreaming;
+        if (rawStreaming && !wasRawStreaming) {
+            parseController?.abort();
+            ++parseRun;
+            // The next rendered body needs a fresh promise even when its text is unchanged.
+            rawStreamingRevision += 1;
+        }
+        wasRawStreaming = rawStreaming;
+    });
 
     const markParsing = async (
         data: string,
@@ -546,6 +558,7 @@
         // Translation can await before ParseMarkdown reads the parser's asset inputs.
         moduleAssets;
         confirmedRevision;
+        rawStreamingRevision;
         parseController?.abort();
         parseController = new AbortController();
         return markParsing(
@@ -573,6 +586,7 @@
             await pending;
             await pendingAutoTranslate;
             await tick();
+            if (shouldRenderRawStreaming) return;
             if (pending === markParsingResult && !pendingAutoTranslate) return;
         }
     }

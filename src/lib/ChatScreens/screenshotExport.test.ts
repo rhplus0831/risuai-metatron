@@ -16,9 +16,12 @@ type Row = ReturnType<typeof row>;
 class FakeCanvas {
     readonly widthAssignments: number[] = [];
     readonly heightAssignments: number[] = [];
+    readonly fillStyles: string[] = [];
     readonly context = {
         fillStyle: "",
-        fillRect: vi.fn(),
+        fillRect: vi.fn(() => {
+            this.fillStyles.push(this.context.fillStyle);
+        }),
         drawImage: vi.fn((source: HTMLCanvasElement, ..._coordinates: number[]) => {
             const captured = source as unknown as FakeCanvas;
             expect(captured.width).toBeGreaterThan(0);
@@ -82,6 +85,7 @@ function exportIO(blobs: (Blob | null)[] = [png()]) {
             return canvas.element;
         },
         download: vi.fn(async (_name: string, _blob: Blob) => {}),
+        background: "#282a36",
     };
 }
 
@@ -95,6 +99,21 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+});
+
+it("fills every page with the passed background color around narrower rows", async () => {
+    const background = "#123456";
+    const rows = [row("a", 100, 1), row("b", 200, 8192), row("c", 100, 1), row("d", 200, 8192)];
+    const pages = planScreenshotPages(rows, (row) => row);
+    const io = exportIO([png(), png()]);
+
+    await composeScreenshot({ ...io, background, pages, baseName });
+
+    expect(io.canvases).toHaveLength(2);
+    for (const [index, canvas] of io.canvases.entries()) {
+        expect(canvas.fillStyles).toEqual([background]);
+        expect(canvas.context.fillRect).toHaveBeenCalledExactlyOnceWith(0, 0, pages[index].width, pages[index].height);
+    }
 });
 
 it("sizes a page once and releases each source after drawing it before capturing the next row", async () => {

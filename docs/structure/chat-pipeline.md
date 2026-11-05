@@ -107,8 +107,8 @@ module headers.
   `runMultisend`). `/trigger` runs on the server (`runServerManualTrigger`, `scripts-triggers.md`); a command job runs
   its queued `/multisend` parts on the server under one job id and chat slot ([generation](server-generation.md)).
 - `src/ts/process/files/multisend.ts` `postChatFile`: file attachments.
-- `src/ts/process/group.ts` (`addGroupChar`, `rmCharFromGroup`; the client `groupOrder` is unreferenced);
-  `src/ts/process/infunctions.ts` `calcString`: the CBS calc function.
+- `src/ts/process/group.ts` (`addGroupChar`, `rmCharFromGroup`); `src/ts/process/infunctions.ts` `calcString`: the CBS
+  calc function.
 - `shared/messageSearch.ts` defines `POST /api/chats/search` shapes; `src/ts/messageSearch.svelte.ts` builds requests
   and owns the pending message-jump coordinator (module header).
 
@@ -116,8 +116,7 @@ module headers.
 
 - `src/ts/process/files/inlays.ts`: inlays on the server (module header; `writeInlayImage`, `setInlayAsset`,
   `getInlayAsset`, `listInlayAssets`, `removeInlayAsset`, `getInlayMedia`, `getInlayObjectUrl`, `verifyInlay`,
-  `repairInlayMedia`). `src/ts/process/inlayScreen.ts` `runInlayScreen` is an unreferenced client copy of the job tail's
-  view-screen pass.
+  `repairInlayMedia`).
   - `src/ts/bootstrap.ts` wires inlay feed changes to `noteRemoteInlay`, reconnects to `reconcileInlays`, and remote
     record or chat reloads (`onRemoteRecordApplied`, `setRemoteChatListener`) to `invalidateInlayCaches`.
   - Rendering: [CBS rendering](cbs-rendering.md) `parseInlayAssets`. The `<source>` type comes from

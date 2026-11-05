@@ -298,6 +298,65 @@ async function drain() {
 const callsFor = (text: string) => vi.mocked(ParseMarkdown).mock.calls.filter(([source]) => source === text);
 
 describe("ChatBody render lifetime", () => {
+    it("aborts a pending parse on raw streaming entry and renders unchanged text with a fresh run", async () => {
+        const props = $state({ ...bodyProps(), renderRawStreaming: false, rawStreamingText: "Old text" });
+        const { target, instance } = mountBody(props);
+        const interrupted = hoisted.parses.find((parse) => parse.text === props.msgDisplay)!;
+        const signal = callsFor(props.msgDisplay)[0][6];
+        expect(signal?.aborted).toBe(false);
+
+        props.renderRawStreaming = true;
+        flushSync();
+        // Check before resolving any parse or asking whenRendered to evaluate the rendered path.
+        expect(signal?.aborted).toBe(true);
+        expect(target.textContent).toBe("Old text");
+
+        props.renderRawStreaming = false;
+        flushSync();
+        const parses = hoisted.parses.filter((parse) => parse.text === props.msgDisplay);
+        expect(parses).toHaveLength(2);
+        parses[1].resolve("<p>Fresh body</p>");
+        await drain();
+        await instance.whenRendered();
+        expect(target.textContent).toBe("Fresh body");
+
+        interrupted.resolve("<p>Aborted body</p>");
+        await drain();
+        expect(target.textContent).toBe("Fresh body");
+    });
+
+    it("keeps the last completed body when an aborted parse settles during raw streaming", async () => {
+        const props = $state({ ...bodyProps(), renderRawStreaming: false, rawStreamingText: "Current text" });
+        const { target, instance } = mountBody(props);
+        hoisted.parses.find((parse) => parse.text === "Old text")!.resolve("<p>Previous body</p>");
+        await drain();
+        await instance.whenRendered();
+        expect(target.textContent).toBe("Previous body");
+
+        props.msgDisplay = "Current text";
+        flushSync();
+        const interrupted = hoisted.parses.find((parse) => parse.text === "Current text")!;
+        const signal = callsFor("Current text")[0][6];
+        props.renderRawStreaming = true;
+        flushSync();
+        expect(signal?.aborted).toBe(true);
+
+        interrupted.resolve("<p>Aborted body</p>");
+        await drain();
+        expect(target.textContent).toBe("Current text");
+
+        props.renderRawStreaming = false;
+        flushSync();
+        const parses = hoisted.parses.filter((parse) => parse.text === "Current text");
+        expect(parses).toHaveLength(2);
+        expect(target.textContent).toBe("Previous body");
+
+        parses[1].resolve("<p>Current body</p>");
+        await drain();
+        await instance.whenRendered();
+        expect(target.textContent).toBe("Current body");
+    });
+
     it("aborts pretranslation on text, character and revision changes and keeps the newest body", async () => {
         const props = $state({ ...bodyProps(), translated: true, autoTranslate: true });
         const { target, instance } = mountBody(props);
