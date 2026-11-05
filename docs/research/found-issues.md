@@ -14,9 +14,9 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (1)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (7)
-- [Client and plugins](#client-and-plugins) (24)
+- [Client and plugins](#client-and-plugins) (25)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (11)
-- [Guides](#guides) (4)
+- [Guides](#guides) (5)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (19)
 
@@ -488,6 +488,14 @@ The type `SelectInput`'s `onchange` in `src/lib/UI/PromptDataItem.svelte` (~268)
 **Why it matters:** the plan's retry for a failed asset read (its D2) rarely fires; a transient storage failure leaves a broken image until the row re-renders for another reason.
 **Suggested handling:** an opt-in failure channel in `globalApi.svelte.ts` for the render path, rather than making the shared loader reject for every caller.
 
+### Declined lowLevelAccess on a JSON card falls through to the off-spec import
+
+In `src/ts/characterCards.ts` `importCharacterProcess`, the JSON branch calls `importCharacterCardSpec(da)` (around 196), which returns `false` both for a card that is not V2/V3 and when the user declines `confirmCardLowLevelAccess`. The caller then tries the off-spec path (`da.char_name || da.name`, around 201, then `convertOffSpecCards`), so a V2/V3 card that also carries the V1 top-level fields (common for compatibility) is imported as an off-spec card after the user said no. Found in the Asset Lifecycle run (2026-11-05, slice 2), which kept the fall-through for every refusal but its own asset handoff failure.
+
+**Why it matters:** the decline is meant to stop the import (asked before anything is saved, so a declined card leaves no assets behind); importing a reduced copy anyway is likely unintended, though it is pre-existing behavior.
+
+**Suggested handling:** ask the owner; if the decline should end the import, make `importCharacterCardSpec` tell a decline apart from "not a V2/V3 card" and return before the off-spec path.
+
 ## Build, drivers, and e2e
 
 ### checkJobProtocol's first run after a source change fails its SIGKILL case
@@ -615,6 +623,14 @@ Lookup trials of the Guides To Source run (2026-11-04/05) hesitated or guessed a
 **Why it matters:** a reader following the hazard's link finds no explanation.
 
 **Suggested handling:** point the link at the server-generation section on job creation and lock acquisition (or drop the "see"), and relabel line 285's link.
+
+### docs:owner sends the asset lifecycle client to persistence
+
+`pnpm docs:owner src/ts/storage/assetLifecycleClient.ts` (and its test `src/ts/storage/tests/assetLifecycleClient.test.ts`) answers `persistence` through the `src/ts/storage/` fallback, while the client is documented in `docs/structure/assets.md` (Asset client, Tests). The Asset Lifecycle run's Storage panel slice (2026-11-05) added the files and could not edit `docs/structure/ownership.json`.
+
+**Why it matters:** an agent routed by `docs:owner` reads the persistence guide and finds nothing about the report, scan, and sweep client.
+
+**Suggested handling:** add `assetLifecycleClient` to the assets rules in `docs/structure/ownership.json` beside `src/ts/storage/{assetClient,assetQueue}.ts` and their tests rule, then run `pnpm check:docs`.
 
 ## Test timing
 
