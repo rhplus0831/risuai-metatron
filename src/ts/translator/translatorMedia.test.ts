@@ -281,8 +281,9 @@ describe("translateHTML media regressions", () => {
                 const processed = changed ? `<em>${translated}</em>` : translated;
                 deps.request.mockResolvedValue({ type: "success", result: `<p>${translated}</p>` });
                 deps.script.mockResolvedValue({ data: processed });
+                const signal = new AbortController().signal;
                 const rendered = body(
-                    await translateHTML(`<p><strong>${source}</strong></p>`, false, "", 7, false, transform),
+                    await translateHTML(`<p><strong>${source}</strong></p>`, false, "", 7, false, transform, signal),
                 );
                 expect(deps.script).toHaveBeenCalledWith(
                     expect.anything(),
@@ -292,6 +293,7 @@ describe("translateHTML media regressions", () => {
                     {},
                     transform,
                     "translation",
+                    signal,
                 );
                 expect(deps.markdown).toHaveBeenCalledTimes(1);
                 expect(rendered.querySelector("p")?.getAttribute("data-markdown")).toBe("applied");

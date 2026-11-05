@@ -59,6 +59,8 @@ describe("translateHTML render lifetime", () => {
         const paragraphs = Array.from({ length: 12 }, (_, i) => `<p>Queued paragraph ${i}</p>`);
         const translating = translateHTML(paragraphs.join(""), false, "", -1, false, null, controller.signal);
         const settled = translating.catch(() => undefined);
+        // Workers take their shared slots asynchronously; let the first requests go out.
+        await new Promise((resolve) => setTimeout(resolve, 0));
         const started = provider.mock.calls.length;
         // Hold all in-flight answers so there is still queued work when the first one arrives.
         expect(started).toBeGreaterThan(0);

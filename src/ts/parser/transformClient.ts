@@ -88,6 +88,15 @@ import {
  * Re-render generation fence every answer's cache changes, replacement callback, and effects.
  * Overlapping answers condition their writes on the entry version they read.
  *
+ * Identical inputs and capture provenance share an operation through settlement, including in flight.
+ * Each caller subscribes until its completion or abort; a caller without a signal keeps its subscription.
+ * Abort returns that caller's input immediately and suppresses its completion's effects. The last departure
+ * withdraws a queued operation; a dispatched chunk is cancelled only when none of its open operations has
+ * subscribers. One controller serves both calls, forwarding the deadline and subscriber cancellation by hand;
+ * cancellation starts no further plugin hook or second call. Its `cancelled` settlements touch no cache,
+ * recovery, diagnostics or provisional callback and show no toast; deadlines remain failures. Withdrawal and
+ * cancellation restore any Re-render bypass the operation consumed, and remove it from the join map at once.
+ *
  * `@@emo` effects apply only from full answers, once per tab and result key, and only when the
  * caller's character argument is not `simple`; cached text and `same` never apply emotions.
  */
@@ -249,19 +258,28 @@ export function resetTransformEffects(): void {
     advanceTransformResultsGeneration();
 }
 
-type Answer = TransformResult | NonNullable<TransformResponse["same"]>[number];
-
-type Pending = {
-    target: TransformTarget;
-    captured: CapturedTransform;
-    resolve: (result: Answer) => void;
-};
+type Answer = TransformResult | NonNullable<TransformResponse["same"]>[number] | { id: string; cancelled: true };
 
 type Operation = {
+    key: string;
     target: TransformTarget;
+    captured: CapturedTransform;
+    batch: Batch;
     entry: TransformResultEntry | undefined;
     version: symbol | undefined;
     answer: Promise<Answer>;
+    resolve: (result: Answer) => void;
+    subscribers: number;
+    settled: boolean;
+    chunk?: Chunk;
+    bypassKey?: string;
+};
+
+type Chunk = {
+    open: Map<string, Operation>;
+    controller: AbortController;
+    deadline: number;
+    cancelled: boolean;
 };
 
 type Batch = {
@@ -269,9 +287,7 @@ type Batch = {
     captured: CapturedTransform;
     client: { viewport: { width: number; height: number }; browserLanguage: string };
     handlers: ReturnType<typeof handlerSet>;
-    pending: Pending[];
-    /** Identical targets share one entry (by their inputs). */
-    shared: Map<string, Operation>;
+    pending: Operation[];
     /**
      * Whether this batch's failure toast was shown (one per batch, its chunks included) or is
      * suppressed (a restore refused it: the terminal notice tells the user).
@@ -280,7 +296,48 @@ type Batch = {
 };
 
 const batches = new Map<string, Batch>();
+const operations = new Map<string, Operation>();
 let scheduled = false;
+
+function forgetOperation(operation: Operation): void {
+    if (operations.get(operation.key) === operation) operations.delete(operation.key);
+}
+
+function restoreBypass(operation: Operation): void {
+    const key = operation.bypassKey;
+    if (key && generations.get(key) === operation.captured.generation && !noCacheNext.has(key)) {
+        noCacheNext.set(key, operation.captured.generation);
+    }
+}
+
+function cancelUnobservedChunk(chunk: Chunk): void {
+    if (
+        chunk.controller.signal.aborted ||
+        Date.now() >= chunk.deadline ||
+        chunk.open.size === 0 ||
+        [...chunk.open.values()].some((operation) => operation.subscribers > 0)
+    )
+        return;
+    chunk.cancelled = true;
+    // Remove joinable entries before abort listeners can enqueue replacement work.
+    for (const operation of chunk.open.values()) {
+        forgetOperation(operation);
+        restoreBypass(operation);
+    }
+    chunk.controller.abort();
+}
+
+function unsubscribe(operation: Operation): void {
+    operation.subscribers -= 1;
+    if (operation.chunk) {
+        cancelUnobservedChunk(operation.chunk);
+    } else if (!operation.settled && operation.subscribers === 0) {
+        const pending = operation.batch.pending;
+        pending.splice(pending.indexOf(operation), 1);
+        restoreBypass(operation);
+        settle(operation, { id: operation.target.id, cancelled: true });
+    }
+}
 
 const schedule = () => {
     if (scheduled) {
@@ -347,8 +404,8 @@ function beforeDeadline<T>(work: Promise<T>, deadline: number, message: string):
 }
 
 /** One call, within `deadline` as a whole (authentication, the request, and the body). */
-function post(path: string, body: unknown, deadline: number): Promise<TransformResponse> {
-    return beforeDeadline(postOnce(path, body, deadline), deadline, "The render took too long");
+function post(path: string, body: unknown, chunk: Chunk): Promise<TransformResponse> {
+    return beforeDeadline(postOnce(path, body, chunk.controller.signal), chunk.deadline, "The render took too long");
 }
 
 /** Errors of a request the server refused for another epoch (a restore replaced the data). */
@@ -356,18 +413,20 @@ const epochRefusals = new WeakSet<object>();
 /** Errors of a request the server refused as malformed or too large: the same request fails again. */
 const permanentRefusals = new WeakSet<object>();
 
-async function postOnce(path: string, body: unknown, deadline: number): Promise<TransformResponse> {
+async function postOnce(path: string, body: unknown, signal: AbortSignal): Promise<TransformResponse> {
+    signal.throwIfAborted();
     const response = await authFetch(path, {
         method: "POST",
         headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
         body: JSON.stringify(body),
         cache: "no-store",
-        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+        signal,
     });
     let answer: { error?: string; epoch?: string } & Partial<TransformResponse> = {};
     try {
         answer = await response.json();
     } catch {}
+    signal.throwIfAborted();
     if (response.status === 412 && answer.error === "EpochMismatch") {
         const error = epochMismatch(answer.epoch ?? "");
         epochRefusals.add(error);
@@ -395,10 +454,14 @@ function reportFailure(batch: Batch, error: string): void {
 }
 
 /** Answers a caller once; a failed target is reported. */
-function settle(batch: Batch, entry: Pending, result: Answer): void {
+function settle(entry: Operation, result: Answer): void {
+    if (entry.settled) return;
+    entry.settled = true;
+    forgetOperation(entry);
+    entry.chunk?.open.delete(entry.target.id);
     entry.resolve(result);
     if ("ok" in result && result.ok === false && isCurrent(entry.captured)) {
-        reportFailure(batch, result.error);
+        reportFailure(entry.batch, result.error);
     }
 }
 
@@ -411,6 +474,7 @@ async function runHandlers(
     batch: Batch,
     entry: { id: string; text: string },
     deadline: number,
+    signal: AbortSignal,
 ): Promise<{ id: string; text: string } | { id: string; error: string }> {
     const hooks = batch.handlers?.hooks ?? [];
     // Both transform modes are read-only, even when called from a writable job hook.
@@ -427,6 +491,7 @@ async function runHandlers(
     const run = async (): Promise<{ id: string; text: string } | { id: string; error: string }> => {
         let text = entry.text;
         for (const hook of hooks) {
+            signal.throwIfAborted();
             if (abandoned || Date.now() >= deadline) {
                 return timeout;
             }
@@ -447,13 +512,13 @@ async function runHandlers(
 
 async function sendBatch(batch: Batch): Promise<void> {
     // Split at the server's caps (an oversized single target fails alone, never requeued).
-    const chunks: Pending[][] = [];
-    let chunk: Pending[] = [];
+    const chunks: Operation[][] = [];
+    let chunk: Operation[] = [];
     let bytes = 0;
     for (const entry of batch.pending) {
         const size = textBytes(entry.target.source);
         if (size > MAX_TRANSFORM_TEXT_BYTES) {
-            settle(batch, entry, {
+            settle(entry, {
                 id: entry.target.id,
                 ok: false,
                 error: "The text is too long to render",
@@ -479,17 +544,24 @@ async function sendBatch(batch: Batch): Promise<void> {
  * One request (and its second call): every target is answered as soon as its result is known, and
  * each exactly once; whatever is still open when the chunk fails or its deadline passes fails.
  */
-async function sendChunk(batch: Batch, entries: Pending[]): Promise<void> {
+async function sendChunk(batch: Batch, entries: Operation[]): Promise<void> {
     const deadline = Date.now() + CHUNK_DEADLINE_MS;
     const open = new Map(entries.map((entry) => [entry.target.id, entry]));
+    const controller = new AbortController();
+    const chunk: Chunk = { open, controller, deadline, cancelled: false };
+    for (const entry of entries) entry.chunk = chunk;
+    const timer = setTimeout(
+        () => controller.abort(new DOMException("The render took too long", "TimeoutError")),
+        CHUNK_DEADLINE_MS,
+    );
     const answer = (results: Answer[]) => {
-        for (const result of results) {
+        for (const received of results) {
+            const result: Answer = chunk.cancelled ? { id: received.id, cancelled: true } : received;
             const entry = open.get(result.id);
             if (entry) {
                 // An unrecognized confirmation leaves the target unanswered, like a missing result.
-                if (!("ok" in result) && result.key !== entry.target.knownKey) continue;
-                open.delete(result.id);
-                settle(batch, entry, result);
+                if (!("ok" in result) && !("cancelled" in result) && result.key !== entry.target.knownKey) continue;
+                settle(entry, result);
             }
         }
     };
@@ -505,10 +577,13 @@ async function sendChunk(batch: Batch, entries: Pending[]): Promise<void> {
                 targets: entries.map((entry) => entry.target),
                 ...(batch.handlers ? { handlers: batch.handlers.id } : {}),
             },
-            deadline,
+            chunk,
         );
+        controller.signal.throwIfAborted();
         answer(first.results);
         answer(first.same ?? []);
+        cancelUnobservedChunk(chunk);
+        controller.signal.throwIfAborted();
         if (first.snapshotId && first.pending && first.pending.length > 0) {
             // Each text's handlers run in order; the texts run side by side, as the tab renders messages.
             // They end before the second call's reserve, so the finished texts still go out with a hung
@@ -517,16 +592,21 @@ async function sendChunk(batch: Batch, entries: Pending[]): Promise<void> {
             if (Date.now() >= handlersDeadline) {
                 throw new Error("The render took too long");
             }
-            const texts = await Promise.all(first.pending.map((entry) => runHandlers(batch, entry, handlersDeadline)));
+            const texts = await Promise.all(
+                first.pending.map((entry) => runHandlers(batch, entry, handlersDeadline, controller.signal)),
+            );
+            cancelUnobservedChunk(chunk);
+            controller.signal.throwIfAborted();
             const second = await post(
                 "/api/transform/continue",
                 { clientId, snapshotId: first.snapshotId, texts },
-                deadline,
+                chunk,
             );
+            controller.signal.throwIfAborted();
             answer(second.results);
         }
     } catch (error) {
-        if (typeof error === "object" && error !== null && epochRefusals.has(error)) {
+        if (!chunk.cancelled && typeof error === "object" && error !== null && epochRefusals.has(error)) {
             // A restore replaced the data: its notice tells the user and the page reloads, so no toast.
             batch.reported = true;
         }
@@ -535,15 +615,27 @@ async function sendChunk(batch: Batch, entries: Pending[]): Promise<void> {
         const permanent =
             entries.length === 1 && typeof error === "object" && error !== null && permanentRefusals.has(error);
         answer(
-            [...open.keys()].map((id) => ({
-                id,
-                ok: false as const,
-                error: message,
-                ...(permanent ? { permanent: true as const } : {}),
-            })),
+            [...open.keys()].map((id) =>
+                chunk.cancelled
+                    ? { id, cancelled: true as const }
+                    : {
+                          id,
+                          ok: false as const,
+                          error: message,
+                          ...(permanent ? { permanent: true as const } : {}),
+                      },
+            ),
         );
+    } finally {
+        clearTimeout(timer);
     }
-    answer([...open.keys()].map((id) => ({ id, ok: false as const, error: "The render did not answer" })));
+    answer(
+        [...open.keys()].map((id) =>
+            chunk.cancelled
+                ? { id, cancelled: true as const }
+                : { id, ok: false as const, error: "The render did not answer" },
+        ),
+    );
 }
 
 function isCurrent(captured: CapturedTransform): boolean {
@@ -597,10 +689,12 @@ export async function serverProcessScript(
     }
     const handlers = handlerSet(mode);
     const key = captured.messageId ? messageKey(captured.chatRef, captured.messageId) : null;
+    let consumedBypass = false;
     // The bypass is taken by a transform actually sent at the marked generation (never by an older render).
     if (!captured.noCache && key !== null && isCurrent(captured) && noCacheNext.get(key) === captured.generation) {
         noCacheNext.delete(key);
         captured.noCache = true;
+        consumedBypass = true;
     }
     const noCache = captured.noCache;
     const client = {
@@ -655,11 +749,6 @@ export async function serverProcessScript(
     if (entry && (char.type === "simple" || appliedEmotions.has(entry.key))) target.knownKey = entry.key;
     // A batch reuses its first plugin context; purpose, owner and job parent must also agree.
     const batchKey = JSON.stringify([mode, captured.context, captured.pluginContext, handlers?.id ?? null, client]);
-    let batch = batches.get(batchKey);
-    if (!batch) {
-        batch = { mode, captured, client, handlers, pending: [], shared: new Map(), reported: false };
-        batches.set(batchKey, batch);
-    }
     const inputs = JSON.stringify([
         identity,
         data,
@@ -668,18 +757,37 @@ export async function serverProcessScript(
         captured.generation,
         target.knownKey ?? null,
     ]);
-    let operation = batch.shared.get(inputs);
+    const operationKey = JSON.stringify([batchKey, inputs, captured.installVersion, captured.hadUnackedWork]);
+    let operation = operations.get(operationKey);
     if (!operation) {
+        let batch = batches.get(batchKey);
+        if (!batch) {
+            batch = { mode, captured, client, handlers, pending: [], reported: false };
+            batches.set(batchKey, batch);
+        }
+        let resolve: Operation["resolve"];
+        const answer = new Promise<Answer>((done) => {
+            resolve = done;
+        });
         operation = {
+            key: operationKey,
             target,
+            captured,
+            batch,
             entry,
             version,
-            answer: new Promise<Answer>((resolve) => batch!.pending.push({ target, captured, resolve })),
+            answer,
+            resolve: resolve!,
+            subscribers: 0,
+            settled: false,
         };
-        batch.shared.set(inputs, operation);
+        operations.set(operationKey, operation);
+        batch.pending.push(operation);
         schedule();
     }
     const shared = operation;
+    if (consumedBypass) shared.bypassKey = key!;
+    shared.subscribers += 1;
     const provisional =
         onProvisional &&
         shared.entry &&
@@ -688,85 +796,118 @@ export async function serverProcessScript(
         !captured.hadUnackedWork &&
         isCurrent(captured);
     if (provisional) captured.pendingProvisional = (captured.pendingProvisional ?? 0) + 1;
+    let provisionalPending = !!provisional;
+    const giveBackProvisional = () => {
+        if (!provisionalPending) return;
+        provisionalPending = false;
+        captured.pendingProvisional! -= 1;
+    };
+    let subscribed = true;
+    let aborted = false;
+    const original = { data, emoChanged: false };
+    let resolveAbort: (value: typeof original) => void;
+    const departed = new Promise<typeof original>((resolve) => {
+        resolveAbort = resolve;
+    });
+    const leave = () => {
+        if (!subscribed) return;
+        subscribed = false;
+        signal?.removeEventListener("abort", onAbort);
+        unsubscribe(shared);
+    };
+    const onAbort = () => {
+        aborted = true;
+        giveBackProvisional();
+        leave();
+        resolveAbort(original);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
     const completion = shared.answer.then((answered) => {
-        const current = isCurrent(captured);
-        const mixed = isMixedDisplay(mode, captured);
-        if (current && mixed) captured.mixedDisplay = true;
-        const failed = "ok" in answered && !answered.ok;
-        let text = data;
-        let emoChanged = false;
-        if (!("ok" in answered)) {
-            // The response belongs to the shared operation's dispatched target, not this caller's id.
-            text = shared.entry!.text;
-            if (current) confirmTransformResult(identity, shared.entry!.version);
-        } else if (answered.ok === false) {
-            console.warn("[Transform]", answered.error);
-            if (current) {
-                replaceTransformResult(identity, shared.version, key);
-            }
-            if (mode === "editdisplay") {
-                recordClientEvent({ kind: "notice", notice: "transformFailed" });
-                // A permanent failure waits for a changed source or context, a remount, or a Re-render; like
-                // a success, it ends an older generation's pending retry.
-                if (captured.messageId && current) {
-                    if (answered.permanent) {
-                        markDisplayTransformSucceeded(captured.chatRef, captured.messageId, captured.generation);
-                    } else {
-                        markDisplayTransformFailed(captured.chatRef, captured.messageId, captured.generation);
+        try {
+            if (aborted || "cancelled" in answered) return original;
+            const current = isCurrent(captured);
+            const mixed = isMixedDisplay(mode, captured);
+            if (current && mixed) captured.mixedDisplay = true;
+            const failed = "ok" in answered && !answered.ok;
+            let text = data;
+            let emoChanged = false;
+            if (!("ok" in answered)) {
+                // The response belongs to the shared operation's dispatched target, not this caller's id.
+                text = shared.entry!.text;
+                if (current) confirmTransformResult(identity, shared.entry!.version);
+            } else if (answered.ok === false) {
+                console.warn("[Transform]", answered.error);
+                if (current) {
+                    replaceTransformResult(identity, shared.version, key);
+                }
+                if (mode === "editdisplay") {
+                    recordClientEvent({ kind: "notice", notice: "transformFailed" });
+                    // A permanent failure waits for a changed source or context, a remount, or a Re-render; like
+                    // a success, it ends an older generation's pending retry.
+                    if (captured.messageId && current) {
+                        if (answered.permanent) {
+                            markDisplayTransformSucceeded(captured.chatRef, captured.messageId, captured.generation);
+                        } else {
+                            markDisplayTransformFailed(captured.chatRef, captured.messageId, captured.generation);
+                        }
                     }
                 }
-            }
-        } else {
-            text = answered.text;
-            if (current) replaceTransformResult(identity, shared.version, key, { ...answered, source: data });
-            if (
-                char.type !== "simple" &&
-                current &&
-                answered.emotions.length > 0 &&
-                !appliedEmotions.has(answered.key)
-            ) {
-                if (appliedEmotions.size >= MAX_APPLIED) appliedEmotions.clear();
-                appliedEmotions.add(answered.key);
-                const charemotions = get(CharEmotion);
-                for (const emotion of answered.emotions) {
-                    const list = charemotions[char.chaId] ?? [];
-                    if (list.length > 4) list.splice(0, 1);
-                    list.push([emotion.name, emotion.image, Date.now()]);
-                    charemotions[char.chaId] = list;
+            } else {
+                text = answered.text;
+                if (current) replaceTransformResult(identity, shared.version, key, { ...answered, source: data });
+                if (
+                    char.type !== "simple" &&
+                    current &&
+                    answered.emotions.length > 0 &&
+                    !appliedEmotions.has(answered.key)
+                ) {
+                    if (appliedEmotions.size >= MAX_APPLIED) appliedEmotions.clear();
+                    appliedEmotions.add(answered.key);
+                    const charemotions = get(CharEmotion);
+                    for (const emotion of answered.emotions) {
+                        const list = charemotions[char.chaId] ?? [];
+                        if (list.length > 4) list.splice(0, 1);
+                        list.push([emotion.name, emotion.image, Date.now()]);
+                        charemotions[char.chaId] = list;
+                    }
+                    CharEmotion.set(charemotions);
+                    emoChanged = true;
                 }
-                CharEmotion.set(charemotions);
-                emoChanged = true;
             }
+            if (!failed && current && mode === "editdisplay" && captured.messageId) {
+                markDisplayTransformSucceeded(captured.chatRef, captured.messageId, captured.generation);
+            }
+            if (provisional && current) {
+                giveBackProvisional();
+                const replaced = failed || text !== shared.entry!.text;
+                onProvisional({
+                    replaced,
+                    mixed,
+                    ...(replaced && (!mixed || failed)
+                        ? {
+                              outcome: {
+                                  identity,
+                                  cacheGeneration: captured.cacheGeneration,
+                                  generation: captured.generation,
+                                  installVersion: captured.installVersion,
+                                  source: data,
+                                  text,
+                              },
+                          }
+                        : {}),
+                });
+            }
+            return { data: text, emoChanged };
+        } finally {
+            giveBackProvisional();
+            leave();
         }
-        if (!failed && current && mode === "editdisplay" && captured.messageId) {
-            markDisplayTransformSucceeded(captured.chatRef, captured.messageId, captured.generation);
-        }
-        if (provisional && current) {
-            captured.pendingProvisional -= 1;
-            const replaced = failed || text !== shared.entry!.text;
-            onProvisional({
-                replaced,
-                mixed,
-                ...(replaced && (!mixed || failed)
-                    ? {
-                          outcome: {
-                              identity,
-                              cacheGeneration: captured.cacheGeneration,
-                              generation: captured.generation,
-                              installVersion: captured.installVersion,
-                              source: data,
-                              text,
-                          },
-                      }
-                    : {}),
-            });
-        }
-        return { data: text, emoChanged };
     });
     if (provisional) {
         // The row settles without waiting for confirmation; the callback schedules any correction.
         void completion.catch((error) => console.error("[Transform]", error));
-        return { data: shared.entry!.text, emoChanged: false };
+        return aborted ? original : { data: shared.entry!.text, emoChanged: false };
     }
-    return completion;
+    return Promise.race([completion, departed]);
 }

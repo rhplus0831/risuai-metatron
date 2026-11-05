@@ -143,8 +143,9 @@ and video have two modes:
 
 ### Display transform
 
-- The batching, the skip of a locked (streaming) message, the provisional display and its correction, and the failure
-  toast are the `src/ts/parser/transformClient.ts` header.
+- The batching and in-flight join, the subscribers and the `cancelled` settlement once the last one leaves, the skip of
+  a locked (streaming) message, the provisional display and its correction, and the failure toast are the
+  `src/ts/parser/transformClient.ts` header.
 - The server (`server/src/prompt/transform.ts`) runs Lua `editDisplay`, the `display` trigger, CBS, and the regex
   scripts; the tab's `editdisplay` plugin handlers run read-only between its two calls ([Invariants](#invariants)).
 - `ChatBody` shows provisional text on its stored and plain display paths; translation inputs and auto-translate probes
