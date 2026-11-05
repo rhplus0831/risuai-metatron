@@ -19,6 +19,7 @@ import {
     MEMORY_SECTION_BUDGETS,
     MEMORY_REVISION_CHATS_MAX,
     STRUCTURED_MEMORY_LIMITS,
+    normalizeStructuredMemorySettings,
 } from "../../../shared/structuredMemory.ts";
 import { defaultPrompts, analysisSlots, patchSlots } from "../prompt/memory/structured/prompts.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -32,8 +33,12 @@ import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { messageSourceHash } from "../data/memoryStore.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
+import { createVectorCache } from "../data/vectorCache.ts";
+import { createEmbeddings } from "../prompt/embeddings.ts";
+import type { MemoryHost } from "../prompt/memory/host.ts";
 import { readRecordSet, rebuildChanges, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
 import { reconcileEvents } from "../prompt/memory/structured/reconcile.ts";
+import { retrieveLanes } from "../prompt/memory/structured/retrieve.ts";
 import { changeSection, type PageChanges } from "../prompt/memory/structured/pages.ts";
 import { memoryKinds, projectionHistory, writeMemory } from "./memoryFixtures.ts";
 import { allowListenerOrigin, createResourceTestClient, type TestServerOptions } from "./testSupport.ts";
@@ -1273,6 +1278,143 @@ it("retracts cited events on a confirmed delete or panel repair and only flags s
             ...p,
             sections: [{ ...p.sections[0], unsupported: true }, ...p.sections.slice(1)],
         });
+    }
+});
+
+type RetractionAction = "confirmed message deletion" | "Timeline retraction";
+
+async function threadRetractionServer() {
+    const s = await server();
+    bindChat(s);
+    const messages = (s.store.readChatSource(characterId, chatId).data as Chat).message;
+    const opened: MemoryThread = {
+        id: "return",
+        title: "Return to the gate",
+        who: [],
+        state: "open",
+        openedBy: "opening",
+    };
+    const closed: MemoryThread = { ...opened, state: "done", closedBy: "closing" };
+    const unsupported: MemoryThread = {
+        id: "key",
+        title: "Find the key",
+        who: [],
+        state: "open",
+        openedBy: "key-opening",
+    };
+    const events = [
+        { ...event("opening"), openThreads: { add: [{ title: opened.title, who: [] }], close: [], transitions: [] } },
+        { ...event("closing"), openThreads: { add: [], close: [closed.id], transitions: [] } },
+        {
+            ...event("key-opening"),
+            openThreads: { add: [{ title: unsupported.title, who: [] }], close: [], transitions: [] },
+        },
+    ].map((e, index) => ({
+        ...e,
+        sources: [{ messageId: messages[index].chatId!, index, hash: messageSourceHash(messages[index]) }],
+    }));
+    s.write({ events, threads: [closed, unsupported] });
+
+    const cache = createVectorCache({ file: ":memory:", now: () => 1000 });
+    cleanups.push(() => cache.close());
+    const db = { hypaModel: "custom", hypaCustomSettings: { key: "" }, voyageApiKey: "" } as MemoryHost["db"];
+    const unexpectedWorker = async (): Promise<never> => {
+        throw new Error("Unexpected local model call");
+    };
+    const embeddings = createEmbeddings({
+        cache,
+        transformers: {
+            runEmbedding: unexpectedWorker,
+            runSummarizer: unexpectedWorker,
+            runImageCaption: unexpectedWorker,
+            runTextGeneration: unexpectedWorker,
+            dispose: async () => {},
+        },
+    }).forJob({ db, signal: new AbortController().signal, supaMemoryKey: "" });
+    const threadIds = async () => {
+        const records = readRecordSet(s.store.memory, characterId, chatId)!;
+        const current = (s.store.readChatSource(characterId, chatId).data as Chat).message;
+        const result = await retrieveLanes(
+            { db, embeddings, fence() {} },
+            {
+                ...records,
+                events: reconcileEvents(records.events, current),
+                entries: current.map((m) => ({ messageId: m.chatId, role: m.role, text: m.data })),
+                window: { start: 0, dropped: new Set() },
+                stage: [],
+                settings: normalizeStructuredMemorySettings({
+                    flowEvents: 0,
+                    laneTargets: { pages: 0, events: 0, evidence: 0, threads: 1000 },
+                }),
+            },
+        );
+        return result.lanes
+            .find(({ lane }) => lane === "threads")!
+            .items.map(({ id }) => id)
+            .sort();
+    };
+    const retract = async (action: RetractionAction, eventId: string, messageId: string) => {
+        await answer(
+            action === "confirmed message deletion"
+                ? await s.json("/api/resources/batch", {
+                      chats: [
+                          {
+                              characterId,
+                              chatId,
+                              baseRevision: s.store.chatRevision(characterId, chatId),
+                              ops: [{ op: "remove", ids: [messageId], retract: true }],
+                          },
+                      ],
+                  })
+                : await s.json(`${base}/edits`, {
+                      revision: s.store.memory.readContents(characterId, chatId)!.revision,
+                      edit: { kind: "event", eventId, repair: "retract" },
+                  }),
+        );
+        expect(s.store.memory.readRecord(characterId, chatId, "events", eventId)!.data.status).toBe("retracted");
+    };
+    const readThread = (id: string) => s.store.memory.readRecord(characterId, chatId, "threads", id)?.data;
+    return { ...s, opened, closed, unsupported, threadIds, retract, readThread };
+}
+
+it.each<RetractionAction>(["confirmed message deletion", "Timeline retraction"])(
+    "reopens closed threads and removes unsupported openings from retrieval after %s",
+    async (action) => {
+        const s = await threadRetractionServer();
+        expect(await s.threadIds()).toEqual(["key"]);
+
+        await s.retract(action, "closing", "a");
+        expect(s.readThread("return")).toStrictEqual(s.opened);
+        expect(await s.threadIds()).toEqual(["key", "return"]);
+
+        await s.retract(action, "key-opening", "next");
+        expect(s.readThread("key")).toBeUndefined();
+        expect(s.store.memory.readContents(characterId, chatId)!.threads.map(({ id }) => id)).toEqual(["return"]);
+        expect(s.readThread("return")).toStrictEqual(s.opened);
+        expect(await s.threadIds()).toEqual(["return"]);
+    },
+);
+
+it("preserves user-edited cancelled and paused thread states when their supporting events are retracted", async () => {
+    for (const action of ["confirmed message deletion", "Timeline retraction"] as const) {
+        const s = await threadRetractionServer();
+        const cancelled = { ...s.closed, state: "cancelled" as const };
+        const paused = { ...s.unsupported, state: "paused" as const };
+        for (const thread of [cancelled, paused]) {
+            const edited = await answer(
+                await s.json(`${base}/edits`, {
+                    revision: s.store.memory.readContents(characterId, chatId)!.revision,
+                    edit: { kind: "thread", threadId: thread.id, state: thread.state },
+                }),
+            );
+            expect(edited.data).toStrictEqual(thread);
+        }
+
+        await s.retract(action, "closing", "a");
+        await s.retract(action, "key-opening", "next");
+        expect(s.readThread("return"), action).toStrictEqual(cancelled);
+        expect(s.readThread("key"), action).toStrictEqual(paused);
+        expect(await s.threadIds(), action).toEqual(["key"]);
     }
 });
 

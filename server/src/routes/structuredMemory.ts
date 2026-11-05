@@ -73,7 +73,7 @@ import {
 } from "../prompt/memory/structured/pages.ts";
 import { defaultPrompts } from "../prompt/memory/structured/prompts.ts";
 import { memoryWorkCost } from "../prompt/memory/structured/rebuild.ts";
-import { withUnsupportedSections } from "../prompt/memory/structured/reconcile.ts";
+import { withRetractedEvidence } from "../prompt/memory/structured/reconcile.ts";
 import { parseRestoredRecords } from "../prompt/memory/structured/restore.ts";
 import { chatAdoptionHold } from "../prompt/memory/structured/writer.ts";
 import type { AppEnv } from "../types.ts";
@@ -766,7 +766,7 @@ export function registerStructuredMemoryRoutes(
                     characterId,
                     chatId,
                     options,
-                    edited ? withUnsupportedSections(store, { chaId: characterId, chatId }, { events: [edited] }) : {},
+                    edited ? withRetractedEvidence(store, { chaId: characterId, chatId }, { events: [edited] }) : {},
                 );
                 return compressedJson(c, {
                     revision: written,

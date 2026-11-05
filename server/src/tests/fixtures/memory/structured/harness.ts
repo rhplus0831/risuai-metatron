@@ -75,7 +75,7 @@ import { readRecordSet, rebuildPlan, rebuildSeed } from "../../../../prompt/memo
 import {
     reconcileEvents,
     reconcileMessageChanges,
-    withUnsupportedSections,
+    withRetractedEvidence,
 } from "../../../../prompt/memory/structured/reconcile.ts";
 import { retrieveLanes } from "../../../../prompt/memory/structured/retrieve.ts";
 import {
@@ -634,7 +634,7 @@ export function createFixture(options: FixtureOptions) {
                         CHARACTER_ID,
                         CHAT_ID,
                         { epoch, baseRevision: contents().revision },
-                        withUnsupportedSections(store, chatRef, { events: [edited] }),
+                        withRetractedEvidence(store, chatRef, { events: [edited] }),
                     );
                 }
                 return;

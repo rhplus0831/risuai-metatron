@@ -2,11 +2,14 @@ import type { Message } from "../../../../../shared/database.ts";
 import type { MemoryChatRef } from "../../../../../shared/jobs.ts";
 import {
     type MemoryEvent,
+    type MemoryThread,
+    type MemoryThreadState,
     type MemoryTrustFlags,
+    memoryThreadEnded,
     reconcileMemoryEvents,
     storedMemorySources,
 } from "../../../../../shared/structuredMemory.ts";
-import { type MemoryChanges, messageSourceHash } from "../../../data/memoryStore.ts";
+import { type MemoryChanges, type MemoryEventWrite, messageSourceHash } from "../../../data/memoryStore.ts";
 import type { MessagesChanged, ResourceStore } from "../../../data/resourceStore.ts";
 import { applyEventRepair, flagUnsupportedSections } from "./edits.ts";
 import type { WriterCadence, WriterWindow } from "./window.ts";
@@ -24,6 +27,8 @@ import type { WriterMemory } from "./writer.ts";
  * - The old event is retracted, not removed, so what it cited stays recorded and its history stays.
  * - Every retraction, a person's repair, a confirmed delete, or a re-record's retire, also flags the
  *   sections it leaves with nothing but retracted events behind them (`withUnsupportedSections`).
+ * - A repair or confirmed delete also replays affected threads from surviving events, retiring an
+ *   unsupported opening and preserving states the full history cannot explain (`withReconciledThreads`).
  * - A chat write reaches the records through `reconcileMessageChanges`: a delete a person confirmed
  *   retracts what cites the message, and an edit marks what cites it for a re-record. It runs in the
  *   write's own turn, holds up no send, and has no fence: a running writer sees `revisionConflict` and
@@ -102,6 +107,147 @@ export function withUnsupportedSections(
 }
 
 /**
+ * Each named thread's state in event order: `close`, then `transitions`, the last naming winning.
+ * An event cannot move a thread already ended before it, and an ended result names that event.
+ * Threads never named start open, without a closing event, and have no entry here.
+ */
+function replayedThreads(events: readonly MemoryEventWrite[]): Map<string, Pick<MemoryThread, "state" | "closedBy">> {
+    const replayed = new Map<string, Pick<MemoryThread, "state" | "closedBy">>();
+    for (const { id, openThreads } of events) {
+        const moved = new Map<string, MemoryThreadState>();
+        for (const threadId of openThreads.close) {
+            moved.set(threadId, "done");
+        }
+        for (const { threadId, to } of openThreads.transitions) {
+            moved.set(threadId, to);
+        }
+        for (const [threadId, state] of moved) {
+            const previous = replayed.get(threadId);
+            if (!previous || !memoryThreadEnded(previous.state)) {
+                replayed.set(threadId, memoryThreadEnded(state) ? { state, closedBy: id } : { state });
+            }
+        }
+    }
+    return replayed;
+}
+
+/**
+ * `changes` with affected writer-owned threads replayed after an existing event becomes retracted.
+ * It reads stored threads except those already written or removed by `changes`, selecting those opened,
+ * closed, or named in `close` or `transitions` by a newly retracted event. Only then does it read event
+ * bodies, in contents order, with `changes.events` taking precedence.
+ *
+ * The full replay uses stored non-retracted events. A thread whose state or closing event differs from
+ * that replay is left alone, preserving user state edits and unexplained history. Otherwise the replay
+ * of surviving events supplies its state and closing event; a retracted opening with no surviving event
+ * naming the thread removes it instead. Other thread fields and changes are preserved.
+ *
+ * Without a newly retracted stored event it answers `changes` itself and reads no record body; without
+ * affected threads it reads no event body. Call it in the write's synchronous step, except when retiring
+ * a re-record whose replacement carries the old event's thread effects.
+ */
+export function withReconciledThreads(
+    store: { memory: Pick<WriterMemory, "readContents" | "readRecord"> },
+    { chaId, chatId }: MemoryChatRef,
+    changes: MemoryChanges,
+): MemoryChanges {
+    const retracting = changes.events?.filter(({ status }) => status === "retracted") ?? [];
+    const contents = retracting.length > 0 ? store.memory.readContents(chaId, chatId) : null;
+    if (!contents) {
+        return changes;
+    }
+    const statuses = new Map(contents.events.map(({ id, status }) => [id, status]));
+    const newlyRetracted = retracting.filter(({ id }) => statuses.has(id) && statuses.get(id) !== "retracted");
+    if (newlyRetracted.length === 0) {
+        return changes;
+    }
+    const retractedIds = new Set(newlyRetracted.map(({ id }) => id));
+    const moved = new Set(
+        newlyRetracted.flatMap(({ openThreads: { close, transitions } }) => [
+            ...close,
+            ...transitions.map(({ threadId }) => threadId),
+        ]),
+    );
+    const written = new Set(changes.threads?.map(({ id }) => id));
+    const removed = new Set(changes.remove?.threads);
+    const affected = contents.threads.flatMap(({ id }) => {
+        const thread =
+            written.has(id) || removed.has(id)
+                ? undefined
+                : store.memory.readRecord(chaId, chatId, "threads", id)?.data;
+        return thread &&
+            ((thread.openedBy !== undefined && retractedIds.has(thread.openedBy)) ||
+                (thread.closedBy !== undefined && retractedIds.has(thread.closedBy)) ||
+                moved.has(id))
+            ? [thread]
+            : [];
+    });
+    if (affected.length === 0) {
+        return changes;
+    }
+    const changedEvents = new Map(changes.events?.map((event) => [event.id, event]));
+    const removedEvents = new Set(changes.remove?.events);
+    const fullEvents: MemoryEventWrite[] = [];
+    const survivingEvents: MemoryEventWrite[] = [];
+    for (const { id, status } of contents.events) {
+        const changed = changedEvents.get(id);
+        const survives = !removedEvents.has(id) && (changed?.status ?? status) !== "retracted";
+        if (status === "retracted" && !survives) {
+            continue;
+        }
+        const event = changed ?? store.memory.readRecord(chaId, chatId, "events", id)?.data;
+        if (event) {
+            if (status !== "retracted") {
+                fullEvents.push(event);
+            }
+            if (survives) {
+                survivingEvents.push(event);
+            }
+        }
+    }
+    const full = replayedThreads(fullEvents);
+    const surviving = replayedThreads(survivingEvents);
+    const threads: MemoryThread[] = [];
+    const retired: string[] = [];
+    for (const thread of affected) {
+        const before = full.get(thread.id) ?? { state: "open" };
+        if (thread.state !== before.state || thread.closedBy !== before.closedBy) {
+            continue;
+        }
+        if (thread.openedBy !== undefined && retractedIds.has(thread.openedBy) && !surviving.has(thread.id)) {
+            retired.push(thread.id);
+            continue;
+        }
+        const after = surviving.get(thread.id) ?? { state: "open" as const };
+        if (thread.state !== after.state || thread.closedBy !== after.closedBy) {
+            const { closedBy, ...open } = thread;
+            threads.push({ ...open, ...after });
+        }
+    }
+    if (threads.length === 0 && retired.length === 0) {
+        return changes;
+    }
+    return {
+        ...changes,
+        ...(threads.length > 0 ? { threads: [...(changes.threads ?? []), ...threads] } : {}),
+        ...(retired.length > 0 ? { remove: { ...changes.remove, threads: [...removed, ...retired] } } : {}),
+    };
+}
+
+/**
+ * `changes` with threads reconciled from surviving evidence and unsupported page sections flagged.
+ * Use for repairs and confirmed deletes in the write's synchronous step; re-record retirement keeps
+ * its thread effects and calls `withUnsupportedSections` alone.
+ */
+export function withRetractedEvidence(
+    store: { memory: Pick<WriterMemory, "readContents" | "readRecord"> },
+    chatRef: MemoryChatRef,
+    changes: MemoryChanges,
+): MemoryChanges {
+    return withUnsupportedSections(store, chatRef, withReconciledThreads(store, chatRef, changes));
+}
+
+/**
  * What `changes` commits for `window`, or null when `window` re-records an event that no longer wants
  * it. A window that re-records an event, in the writer's final commit, the one with an event in it,
  * retires the event it replaces in the same write: the new event carries the old one's `pinned`,
@@ -168,7 +314,7 @@ function reactToMessageChanges({ memory }: { memory: WriterMemory }, notice: Mes
         }
     }
     if (events.length > 0) {
-        const changes = withUnsupportedSections({ memory }, { chaId, chatId }, { events });
+        const changes = withRetractedEvidence({ memory }, { chaId, chatId }, { events });
         memory.write(chaId, chatId, { epoch, baseRevision: contents.revision }, changes);
     }
 }
@@ -177,8 +323,9 @@ function reactToMessageChanges({ memory }: { memory: WriterMemory }, notice: Mes
  * What a chat write leaves of the records, from `notice` (`onMessagesChanged`): an event that cites a
  * `retracted` id is retracted, the same write as the panel's, and an event that cites a `rewritten` id, is
  * not retracted here, and has no mark yet is marked `rerecord` and nothing else, so it stays until a
- * re-record commits. The sections a retraction leaves unsupported are flagged. Nothing affected writes
- * nothing. A chat's rebuild takes the same reaction on its staged records, after the live ones.
+ * re-record commits. A retraction reconciles the affected threads and flags unsupported sections.
+ * Nothing affected writes nothing. A chat's rebuild takes the same reaction on its staged records,
+ * after the live ones.
  *
  * It reads no message: `notice` says what changed, and whether a marked event can be re-recorded is the
  * windows' to say. A notice from before an epoch change stops here.

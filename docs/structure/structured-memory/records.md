@@ -95,7 +95,7 @@ the changes to stored records.
 3. `StructuredMemoryEditAnswer` gives the current record and the revision the next edit must name.
 
 [Event repairs](lifecycle.md#reconciliation-and-repairs) call `applyEventRepair`, reading the stored chat in the same
-step except for retract. Retraction also passes through `withUnsupportedSections` before the write.
+step except for retract. Retraction also passes through `withRetractedEvidence` before the write.
 
 ### The revert route
 

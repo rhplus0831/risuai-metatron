@@ -24,7 +24,7 @@
 - `shared/structuredMemory.ts`: shared reconciliation rules; `reconcileMemoryEvents`, `memoryAnchorState`,
   `memoryRerecordTarget`, `storedMemorySources`. Other parts: [records](records.md#files).
 - `server/src/prompt/memory/structured/reconcile.ts`: server reconciliation and reactions; `reconcileEvents`,
-  `retireRerecorded`, `withUnsupportedSections`, `automaticRerecords`, `reconcileMessageChanges`.
+  `retireRerecorded`, `withRetractedEvidence`, `automaticRerecords`, `reconcileMessageChanges`.
 - `server/src/prompt/memory/structured/edits.ts`: event repairs and section flags; `applyEventRepair`,
   `flagUnsupportedSections`. Other edits: [records](records.md#files).
 - `server/src/prompt/memory/structured/inherit.ts`: copy and branch record builder; `inheritedRecords`,
@@ -66,7 +66,7 @@ A send takes `reconcileEvents`' copy against stored messages; the tab takes `rec
 comparisons and repair eligibility.
 
 The panel sends event repairs through [the edit route](records.md#the-edit-route) to `applyEventRepair`. Retraction also
-passes through `withUnsupportedSections` before the store write. Keep acknowledges the message state seen in the tab,
+passes through `withRetractedEvidence` before the store write. Keep acknowledges the message state seen in the tab,
 since messages can change without moving the memory revision. Re-record marks the old event, then the tab presses record
 now; [the writer's commit](writer.md#the-writer-task) swaps it for the replacement. A replacement older than another
 event is [historical](writer.md#a-writer-run). Until then, even after a failed run, the old event and mark stay.
@@ -85,14 +85,13 @@ A chat write reaches memory through a post-commit notice:
    `server/src/app.ts` subscribes `reconcileMessageChanges` with or without a task service. At the read revision, the
    reaction retracts events citing `retracted` ids through `applyEventRepair`, or marks rewritten evidence for
    re-recording.
-3. This reaction, the edit route and `retireRerecorded` pass retractions through `withUnsupportedSections` before
-   `store.memory.write`. It supplies `flagUnsupportedSections` with the change set's resulting events and pages. A
-   writer's later `changeSection` clears the flag while adding its active event to the section's provenance.
+3. This reaction and the edit route pass retractions through `withRetractedEvidence` before `store.memory.write`:
+   `withReconciledThreads` reopens a thread its closing event left, removes one only its opening event supported, and
+   keeps a state a person set. `flagUnsupportedSections` then gets the resulting events and pages; a writer's later
+   `changeSection` clears the flag. `retireRerecorded` flags sections only: its replacement keeps the thread effects.
 
-This is separate from the chat transaction: a crash between them leaves `missing` or `changed` for a repair. The
-reaction runs in the write's turn and awaits no writer task. It holds no fence, so a running writer meets
-`revisionConflict` and admits from fresh records, or `windowChanged`; retirement refuses a re-record whose old event no
-longer wants it.
+This is separate from the chat transaction: a crash between them leaves `missing` or `changed` for a repair. Its turn,
+fence and conflict rules are the `reconcile.ts` header's.
 
 In the tab, `removeMessages` checks immediately and, outside this algorithm, removes immediately. Under this algorithm,
 `removeAfterAsking` pins the chat and reads coverage before asking `language.structuredMemory.removeRetracts` when a
@@ -287,7 +286,7 @@ takes over.
 - A new reconciliation reason: add it to the ordered list in `reconcileMemoryEvents`, where the first that holds wins,
   and read it only through the reconciled copy, never stored.
 - A new repair: add it to the `repair` cases `applyEventRepair` applies, through
-  [the edit route](records.md#the-edit-route), and send any retraction through `withUnsupportedSections`.
+  [the edit route](records.md#the-edit-route), and send any retraction through `withRetractedEvidence`.
 - A new field on a record a copy must carry: `inheritedRecords` keeps every field as stored but `createdRevision` and
   `rerecord`, so decide whether the new one is a fact about the source chat, as `rerecord` is.
 - A new thing a checkpoint holds: it needs its own chunks in the manifest under `CHECKPOINT_MEMORY_FIELD`, a check in
