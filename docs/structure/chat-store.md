@@ -86,7 +86,7 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 ### By-id ops
 
 - By-id reads and writes share `positionOf`'s index with translation and the transcript (`heldMessageById`,
-  `messagePositionOf`); its comment owns stale lookups and misses: an id or order change calls `dropMessagePositions`.
+  `messagePositionOf`); its comment owns stale lookups and misses: id or order changes call `dropMessagePositions`.
 - Which ops apply on a stale revision and which need the current one is the `ChatOp` contract in `shared/chats.ts`,
   enforced by the server ([chat writes](server-resources.md#chat-writes-and-checkpoints)) and the
   [restore floor](#restore-floor). A `remove` may carry `retract`,
