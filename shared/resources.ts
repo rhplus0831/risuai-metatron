@@ -550,7 +550,7 @@ export function chatCollectionClaim(
         .padStart(32, "0");
 }
 
-export type BackupSnapshotInfo = { id: string; createdAt: string; size: number };
+export type BackupSnapshotInfo = { id: string; createdAt: string; size: number; pinned: boolean; label: string | null };
 
 /** First record of a local backup archive (format version 2). */
 export type BackupArchiveManifest = {

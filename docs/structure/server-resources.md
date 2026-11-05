@@ -28,9 +28,10 @@ headers and method comments.
   per kind).
 - `server/src/data/checkpointStore.ts` (`createCheckpointTables`, `walkCheckpointSnapshot`) and
   `server/src/data/checkpointService.ts` (`createCheckpointService`: `save`, `load`, `autoSave`): checkpoints.
-- `server/src/data/snapshots.ts` (`createSnapshotManager`: the timer, `pin`, `withMaintenance`; `MaintenanceGate`),
-  `server/src/data/archive.ts` (the version-2 archive records), `server/src/data/databaseProjection.ts` (the flat
-  `Database` projection of a job's scope and the upstream export), and `server/src/data/recordPatchText.ts`.
+- `server/src/data/snapshots.ts` (`createSnapshotManager`: the timer, `stageCopy`, `withMaintenance`;
+  `MaintenanceGate`), `server/src/data/archive.ts` (the version-2 archive records),
+  `server/src/data/databaseProjection.ts` (the flat `Database` projection of a job's scope and the upstream export), and
+  `server/src/data/recordPatchText.ts`.
 - The store publishes on the [feed](live-update-feed.md#coalescing-and-publish-order).
 
 ### Backup and import internals
@@ -80,10 +81,11 @@ limiter, `no-store`; writes also need the epoch. `GET /api/chat-checkpoints` and
 ### Backup routes
 
 `server/src/routes/backups.ts` `registerBackupRoutes`: `checkAuth`, authenticated limiter; the epoch applies to the
-restore and the import only. `GET /api/backups`; `POST /api/backups/:id/restore` ([restore](#snapshots-and-restore); it
-never reads its body, [Limitations](self-host-server.md#limitations)); `POST /api/backups/export` and
-`POST /api/backups/import` ([export and import](#archive-export-and-import)). The import's raw body has no 100 MiB
-limit: `RISU_MAX_IMPORT_BYTES` (`DEFAULT_MAX_IMPORT_BYTES`, 16 GiB) caps it and the upstream, module, and CharX uploads.
+restore and the import only. `GET /api/backups`; `POST /api/backups/snapshot`, `PATCH`/`DELETE /api/backups/:id`;
+`POST /api/backups/:id/restore` ([restore](#snapshots-and-restore); it never reads its body,
+[Limitations](self-host-server.md#limitations)); `POST /api/backups/export` and `POST /api/backups/import`
+([export and import](#archive-export-and-import)). The import's raw body has no 100 MiB limit: `RISU_MAX_IMPORT_BYTES`
+(`DEFAULT_MAX_IMPORT_BYTES`, 16 GiB) caps it and the upstream, module, and CharX uploads.
 
 ### Upstream backup routes
 
@@ -170,13 +172,11 @@ leave absence as absence (upstream reads it as now).
 
 ### Snapshots and restore
 
-- `createSnapshotManager`'s comment has the timer, retention, and disk check.
-- A restore checks the epoch and takes a turn of `createRestoreQueue` (`routes/backups.ts`; its comment) through
-  validation and install.
-- The turn retains the snapshot (`snapshots.retain`), checks free disk (507), pins it into a staging folder
-  (`snapshots.pin`), [validates](#validation) it in a worker outside maintenance, verifies the staged file, then under
-  maintenance (`withMaintenance`) checks the epoch, makes a safety snapshot, and [installs](#install), advancing the
-  epoch. A client that leaves does not cancel a restore.
+- `createSnapshotManager`'s comment has the timer, retention, pins, removal, and disk check.
+- A restore checks the epoch, then in a `createRestoreQueue` turn (`routes/backups.ts`) retains the snapshot
+  (`snapshots.retain`), checks disk (507), links it (`snapshots.stageCopy`), [validates](#validation) it outside
+  maintenance, then under `withMaintenance` checks the epoch, takes a safety snapshot, and [installs](#install). A
+  client that leaves does not cancel it.
 - A write admitted before the gate closes commits without moving the epoch, so the restore's check still passes: the
   write is in the safety snapshot and is replaced by the install, and the tab's next write meets the new epoch (412).
 
@@ -233,8 +233,8 @@ maintenance gate; the asset sweep uses only `exclusive`. Jobs, transforms, and m
 ## State
 
 Paths are under `save/` ([Disk layout](self-host-server.md#disk-layout)). `backups/` holds the resource snapshots
-(`resources-*.sqlite`, single files, newest 20); assets are not in snapshots, and the
-[asset ledger](self-host-server.md#asset-mark) indexes each one's references once.
+(`resources-*.sqlite`, single files, newest 20 unpinned plus pinned ones, `pins.json`); assets are not in snapshots, and
+the [asset ledger](self-host-server.md#asset-mark) indexes each one's references once.
 
 ### Store tables
 
@@ -390,7 +390,7 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 ### Limitations
 
 - Every listed snapshot is an [asset mark](self-host-server.md#asset-mark) root, so its assets stay until it rotates
-  away. Decision: [Asset Lifecycle](../plan/asset-lifecycle.md) D3.
+  away or is deleted. Decision: [Asset Lifecycle](../plan/asset-lifecycle.md) D3.
 - The SQLite resource store assumes one server process and a local filesystem
   ([Invariants](self-host-server.md#invariants)). Network filesystems are unsupported. Decision: Server Byte Budgets Q1,
   archive.

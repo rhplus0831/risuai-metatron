@@ -332,6 +332,8 @@ it("counts owner shares and inlay ids while preserving each orphan's since", asy
 });
 
 it("persists snapshot indexes, finds republished keys, and counts only exclusively held bytes", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2030-01-01"));
     const f = fixture();
     const escaped = ['assets/quote".png', "assets/back\\slash.png", "assets/new\nline.png"];
     for (const key of escaped) f.asset(key, 2);
@@ -341,13 +343,16 @@ it("persists snapshot indexes, finds republished keys, and counts only exclusive
         image: escaped[0],
         additionalAssets: [...escaped.slice(1), "assets/shared", "assets/republished"].map((k) => [k, k, "png"]),
     });
-    const first = await f.snapshots.snapshotNow();
+    const first = await f.snapshots.snapshotNow({ label: "Saved assets" });
+    await f.snapshots.setPinned(first.id, { pinned: true });
     f.put("characters", "saved", { chaId: "saved", image: "assets/shared" });
     const link = vi.spyOn(fs, "link");
     const report = await f.lifecycle.scan();
     expect(report.complete, report.reasons.join("\n")).toBe(true);
     expect(report.unreferenced.count).toBe(0);
-    expect(report.snapshots).toContainEqual(expect.objectContaining({ id: first.id, heldBytes: 6 }));
+    expect(report.snapshots).toContainEqual(
+        expect.objectContaining({ id: first.id, heldBytes: 6, pinned: true, label: "Saved assets" }),
+    );
     expect(link.mock.calls.filter(([from]) => String(from).endsWith(`${first.id}.sqlite`))).toHaveLength(1);
     await f.reopen();
     f.asset("assets/republished", 4);
@@ -357,6 +362,7 @@ it("persists snapshot indexes, finds republished keys, and counts only exclusive
         image: "assets/new-snapshot",
         additionalAssets: [["shared", "assets/shared", "png"]],
     });
+    vi.setSystemTime(new Date("2030-01-02"));
     const second = await f.snapshots.snapshotNow();
     f.put("characters", "saved", { chaId: "saved" });
     const next = await f.lifecycle.scan();
@@ -365,8 +371,8 @@ it("persists snapshot indexes, finds republished keys, and counts only exclusive
     expect(next.referenced.dedupedBytes).toBe(18);
     expect(next.snapshots).toEqual(
         expect.arrayContaining([
-            expect.objectContaining({ id: first.id, heldBytes: 10 }),
-            expect.objectContaining({ id: second.id, heldBytes: 5 }),
+            expect.objectContaining({ id: first.id, heldBytes: 10, pinned: true, label: "Saved assets" }),
+            expect.objectContaining({ id: second.id, heldBytes: 5, pinned: false, label: null }),
         ]),
     );
     for (const snapshot of [first, second])
@@ -374,6 +380,51 @@ it("persists snapshot indexes, finds republished keys, and counts only exclusive
             link.mock.calls.filter(([from]) => String(from).endsWith(`${snapshot.id}.sqlite`)),
             snapshot.id,
         ).toHaveLength(1);
+});
+
+it("deletes an unpinned snapshot's file, metadata, and all ledger indexes before responding", async () => {
+    const clock = sweepClock();
+    const s = await createResourceTestClient({ assetLifecycle: clock.options });
+    cleanups.push(() => s.close());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2030-01-01"));
+    seedSweepAsset(s, "assets/held", "saved bytes");
+    await s.create("pluginStorage", "main", { image: "assets/held", text: "{{inlay::saved-inlay}}" });
+    const removed = await s.context.snapshots.snapshotNow({ label: "Disposable" });
+    vi.setSystemTime(new Date("2030-01-02"));
+    const kept = await s.context.snapshots.snapshotNow({ label: "Keep" });
+    await s.context.snapshots.setPinned(kept.id, { pinned: true });
+    expect((await s.context.assetLifecycle.scan()).complete).toBe(true);
+    const ledger = new DatabaseSync(path.join(s.savePath, "data", "asset-lifecycle.sqlite"), { readOnly: true });
+    const backups = path.join(s.savePath, "backups");
+    const pins = () => JSON.parse(readFileSync(path.join(backups, "pins.json"), "utf8")).entries;
+    const indexes = (id: string) => ({
+        refs: ledger.prepare("SELECT tail FROM snapshotRefs WHERE snapshotId = ?").all(id),
+        inlays: ledger.prepare("SELECT id FROM snapshotInlays WHERE snapshotId = ?").all(id),
+        indexed: ledger.prepare("SELECT snapshotId FROM snapshotIndexed WHERE snapshotId = ?").all(id),
+    });
+    try {
+        expect(indexes(removed.id)).toEqual({
+            refs: [{ tail: "held" }],
+            inlays: [{ id: "saved-inlay" }],
+            indexed: [{ snapshotId: removed.id }],
+        });
+        expect(pins()[removed.id]).toEqual({ pinned: false, label: "Disposable" });
+        const response = await s.request(`/api/backups/${removed.id}`, { method: "DELETE" });
+        expect(response.status).toBe(200);
+        // Inspect before another scan could repair stale rows.
+        expect(indexes(removed.id)).toEqual({ refs: [], inlays: [], indexed: [] });
+        expect(syncFs.existsSync(path.join(backups, `${removed.id}.sqlite`))).toBe(false);
+        expect(pins()).toEqual({ [kept.id]: { pinned: true, label: "Keep" } });
+        expect(indexes(kept.id)).toEqual({
+            refs: [{ tail: "held" }],
+            inlays: [{ id: "saved-inlay" }],
+            indexed: [{ snapshotId: kept.id }],
+        });
+        expect(syncFs.existsSync(path.join(backups, `${kept.id}.sqlite`))).toBe(true);
+    } finally {
+        ledger.close();
+    }
 });
 
 it.each(["unreadable snapshot", "missing live column", "invalid selected JSON"] as const)(

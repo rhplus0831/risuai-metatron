@@ -105,6 +105,58 @@ describe("requests", () => {
     });
 });
 
+describe("snapshot controls", () => {
+    it("sends snapshot methods, encoded ids, and only the supplied fields", async () => {
+        server.current = {
+            fetch: vi.fn().mockImplementation(async () => Response.json({ snapshot: { id: "saved" } })),
+        };
+        const id = "copy/한 글%";
+        await client.takeSnapshot();
+        await client.takeSnapshot("Before import");
+        await client.updateSnapshot(id, { pinned: true });
+        await client.updateSnapshot(id, { label: "Renamed" });
+        await client.updateSnapshot(id, { pinned: false, label: null });
+        await client.deleteSnapshot(id);
+        expect(
+            calls.map(({ path, init }) => ({
+                path,
+                method: init.method,
+                body: init.body === undefined ? undefined : JSON.parse(init.body as string),
+            })),
+        ).toEqual([
+            { path: "/api/backups/snapshot", method: "POST", body: {} },
+            { path: "/api/backups/snapshot", method: "POST", body: { label: "Before import" } },
+            { path: "/api/backups/copy%2F%ED%95%9C%20%EA%B8%80%25", method: "PATCH", body: { pinned: true } },
+            { path: "/api/backups/copy%2F%ED%95%9C%20%EA%B8%80%25", method: "PATCH", body: { label: "Renamed" } },
+            {
+                path: "/api/backups/copy%2F%ED%95%9C%20%EA%B8%80%25",
+                method: "PATCH",
+                body: { pinned: false, label: null },
+            },
+            { path: "/api/backups/copy%2F%ED%95%9C%20%EA%B8%80%25", method: "DELETE", body: undefined },
+        ]);
+        for (const { init } of calls.slice(0, -1))
+            expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
+    });
+
+    it("preserves snapshot conflict messages as request errors with status 409", async () => {
+        const message = "Snapshot is pinned; unpin it first";
+        server.current = {
+            fetch: vi.fn().mockImplementation(async () => Response.json({ error: message }, { status: 409 })),
+        };
+        for (const request of [
+            () => client.takeSnapshot("Before import"),
+            () => client.updateSnapshot("saved", { pinned: true }),
+            () => client.deleteSnapshot("saved"),
+        ]) {
+            const error = await request().catch((error: unknown) => error);
+            expect(error).toBeInstanceOf(client.ResourceRequestError);
+            expect(error).not.toBeInstanceOf(client.ResourceConflictError);
+            expect(error).toMatchObject({ status: 409, message });
+        }
+    });
+});
+
 describe("conflicts", () => {
     it("maps a batch 409 to every listed conflict", async () => {
         client.setResourceEpoch("epoch-1");

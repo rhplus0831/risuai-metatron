@@ -380,6 +380,12 @@ export function createAssetLifecycle(
             throw error;
         }
     }
+    const unregisterRemoved = snapshots.onRemoved((id) => {
+        if (closed) return;
+        transaction(() => {
+            for (const statement of deleteSnapshotIndex) statement.run(id);
+        });
+    });
     async function pause(signal: AbortSignal) {
         signal.throwIfAborted();
         await yieldImmediate(undefined, { signal });
@@ -708,8 +714,6 @@ export function createAssetLifecycle(
         }
         const snapshotReports = listed.map((snapshot) => ({
             ...snapshot,
-            pinned: false as const,
-            label: null,
             heldBytes: 0,
         }));
         const sizes = new Map(files.map((file) => [file.key, file.bytes]));
@@ -884,9 +888,9 @@ export function createAssetLifecycle(
                 try {
                     await fs.mkdir(path.dirname(link), { recursive: true });
                     signal.throwIfAborted();
-                    const pinned = await snapshots.pin(snapshot.id, link);
+                    const staged = await snapshots.stageCopy(snapshot.id, link);
                     signal.throwIfAborted();
-                    if (!pinned) {
+                    if (!staged) {
                         continue;
                     }
                     const errors: string[] = [];
@@ -895,6 +899,8 @@ export function createAssetLifecycle(
                     reasons.push(...errors);
                     if (!errors.length) {
                         const start = monoNow();
+                        // A staged link can outlive removal; never reinsert the removed root's index.
+                        if (snapshots.resolve(snapshot.id) === null) continue;
                         transaction(() => {
                             for (const value of snapshotRoot.tails) {
                                 insertSnapshotReference.run(snapshot.id, value);
@@ -1410,6 +1416,7 @@ export function createAssetLifecycle(
         beginShutdown,
         close(): Promise<void> {
             beginShutdown();
+            unregisterRemoved();
             closing ??= (async () => {
                 try {
                     await Promise.allSettled([active, sweepActive]);

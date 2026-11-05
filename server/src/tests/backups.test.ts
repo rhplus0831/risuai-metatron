@@ -162,13 +162,91 @@ describe("GET /api/backups", () => {
     });
 });
 
+describe("snapshot controls", () => {
+    it("takes labeled unpinned snapshots and refuses a manual snapshot on short disk", async () => {
+        let free = Number.MAX_SAFE_INTEGER;
+        const s = await defaultServer({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date("2030-01-01"));
+        const taken = await s.json("/api/backups/snapshot", { label: "Before import" });
+        expect(taken.status).toBe(200);
+        const { snapshot } = (await taken.json()) as { snapshot: Snapshot };
+        expect(snapshot).toMatchObject({ pinned: false, label: "Before import" });
+        expect(await listBackups(s)).toEqual([
+            expect.objectContaining({ id: snapshot.id, pinned: false, label: "Before import" }),
+        ]);
+        const files = readdirSync(backupsDir(s));
+        vi.setSystemTime(new Date("2030-01-02"));
+        free = 0;
+        expect((await s.json("/api/backups/snapshot", { label: "Cannot fit" })).status).toBe(507);
+        expect(readdirSync(backupsDir(s))).toEqual(files);
+        expect((await listBackups(s)).map(({ id }) => id)).toEqual([snapshot.id]);
+    });
+
+    it("patches only supplied metadata, rejects invalid bodies, and protects pinned snapshots from deletion", async () => {
+        const s = await defaultServer();
+        const snapshot = await s.context.snapshots.snapshotNow({ label: "Original" });
+        const url = `/api/backups/${snapshot.id}`;
+        const patch = (body: unknown) => s.json(url, body, { method: "PATCH" });
+        expect((await patch({ pinned: true })).status).toBe(200);
+        expect(await listBackups(s)).toEqual([
+            expect.objectContaining({ id: snapshot.id, pinned: true, label: "Original" }),
+        ]);
+        const renamed = await patch({ label: "Renamed" });
+        expect(renamed.status).toBe(200);
+        expect(await renamed.json()).toMatchObject({ snapshot: { id: snapshot.id, pinned: true, label: "Renamed" } });
+        expect((await s.request(url, { method: "DELETE" })).status).toBe(409);
+        expect(readdirSync(backupsDir(s))).toContain(`${snapshot.id}.sqlite`);
+        for (const body of [null, [], { pinned: "true" }, { label: 7 }, { unknown: true }]) {
+            expect((await patch(body)).status, JSON.stringify(body)).toBe(400);
+        }
+        expect(await listBackups(s)).toEqual([
+            expect.objectContaining({ id: snapshot.id, pinned: true, label: "Renamed" }),
+        ]);
+        expect((await s.json("/api/backups/missing", { label: "Unknown" }, { method: "PATCH" })).status).toBe(404);
+        const unpinned = await patch({ pinned: false });
+        expect(unpinned.status).toBe(200);
+        expect(await unpinned.json()).toMatchObject({ snapshot: { pinned: false, label: "Renamed" } });
+        expect((await s.request(url, { method: "DELETE" })).status).toBe(200);
+        expect(await listBackups(s)).toEqual([]);
+        expect((await s.request(url, { method: "DELETE" })).status).toBe(404);
+    });
+
+    it("refuses the twenty-first pin with 409 and permits it after another snapshot is unpinned", async () => {
+        const s = await defaultServer();
+        // Metadata controls only need listed files; no database copies or restore validation are involved.
+        const ids = Array.from(
+            { length: 21 },
+            (_, i) => `resources-20300101T000000000Z-${i.toString(16).padStart(8, "0")}`,
+        );
+        for (const id of ids) writeFileSync(path.join(backupsDir(s), `${id}.sqlite`), "snapshot");
+        const patch = (id: string, pinned: boolean) => s.json(`/api/backups/${id}`, { pinned }, { method: "PATCH" });
+        for (const id of ids.slice(0, 20)) expect((await patch(id, true)).status).toBe(200);
+        expect((await patch(ids[20], true)).status).toBe(409);
+        expect(await listBackups(s)).toContainEqual(expect.objectContaining({ id: ids[20], pinned: false }));
+        expect((await patch(ids[0], false)).status).toBe(200);
+        expect((await patch(ids[20], true)).status).toBe(200);
+        expect(await listBackups(s)).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ id: ids[0], pinned: false }),
+                ...ids.slice(1).map((id) => expect.objectContaining({ id, pinned: true })),
+            ]),
+        );
+    });
+});
+
 describe("POST /api/backups/:id/restore", () => {
     it("replaces every resource with the snapshot under a new epoch, after a safety snapshot", async () => {
         const s = await defaultServer();
         const a = await s.create("characters", "a", character("a"));
         // `pluginStorage`: a singleton the store does not materialize, so the test's own write is a create.
         await s.create("pluginStorage", "main", { note: "before" });
-        const snapshot = await s.context.snapshots.snapshotNow();
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date("2030-01-01"));
+        const snapshot = await s.context.snapshots.snapshotNow({ label: "At snapshot time" });
+        await s.context.snapshots.setPinned(snapshot.id, { pinned: true, label: "Keep after restore" });
+        const pinsBefore = readFileSync(path.join(backupsDir(s), "pins.json"), "utf8");
+        vi.setSystemTime(new Date("2030-01-02"));
         await s.put("characters", "a", { baseRevision: a, data: character("a", { name: "changed" }) });
         await s.create("characters", "b", character("b"));
         const oldEpoch = s.epoch;
@@ -180,7 +258,8 @@ describe("POST /api/backups/:id/restore", () => {
         expect(await s.readEpoch()).toBe(epoch);
         const backups = await listBackups(s);
         expect(backups).toHaveLength(2);
-        expect(backups[1]).toEqual(snapshot);
+        expect(backups[1]).toEqual({ ...snapshot, pinned: true, label: "Keep after restore" });
+        expect(readFileSync(path.join(backupsDir(s), "pins.json"), "utf8")).toBe(pinsBefore);
         // The safety snapshot holds the state from just before the restore.
         expect(
             writtenRows(reader.readSnapshot(path.join(backupsDir(s), `${backups[0].id}.sqlite`)).rows).map(
@@ -343,14 +422,14 @@ describe("maintenance", () => {
         expect((await s.request("/api/list")).status).toBe(200);
         expect((await s.request("/api/backups")).status).toBe(200);
         // A restore or an export arriving meanwhile queues behind the lock instead: the restore's
-        // `pin` takes the lock, so once it is called the restore waits there.
-        const pinned = vi.spyOn(s.context.snapshots, "pin");
+        // `stageCopy` takes the lock, so once it is called the restore waits there.
+        const staged = vi.spyOn(s.context.snapshots, "stageCopy");
         let queuedRestore: Response | null = null;
         const queuedExport = s.json("/api/backups/export", {});
         const queuedRestoring = restore(s, "resources-20300101T000000000Z-01234567").then(
             (res) => (queuedRestore = res),
         );
-        await waitFor(() => pinned.mock.calls.length === 1);
+        await waitFor(() => staged.mock.calls.length === 1);
         expect(queuedRestore).toBeNull();
 
         release.resolve();
@@ -2054,11 +2133,13 @@ it("retains the restore source as a listed root through rotation and staging cle
     const restoring = restore(s, source.id);
     try {
         await held.promise;
+        expect((await s.request(`/api/backups/${source.id}`, { method: "DELETE" })).status).toBe(409);
+        const newer: string[] = [];
         for (let i = 1; i <= 21; i++) {
             vi.setSystemTime(Date.UTC(2030, 0, 1, 0, 0, i));
-            await s.context.snapshots.snapshotNow();
+            newer.push((await s.context.snapshots.snapshotNow()).id);
         }
-        expect((await listBackups(s)).map((x) => x.id)).toContain(source.id);
+        expect((await listBackups(s)).map((x) => x.id)).toEqual([...newer.slice(-20).reverse(), source.id]);
         const rm = fs.rm;
         let cleanupSawRoot = false;
         vi.spyOn(fs, "rm").mockImplementation(async (...args) => {

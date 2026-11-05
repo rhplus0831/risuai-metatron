@@ -476,6 +476,8 @@ export const ROUTE_TEMPLATES = [
     "/api/backups",
     "/api/backups/export",
     "/api/backups/import",
+    "/api/backups/snapshot",
+    "/api/backups/:id",
     "/api/backups/import-upstream/prepare",
     "/api/backups/import-upstream/commit",
     "/api/backups/import-upstream/cancel",

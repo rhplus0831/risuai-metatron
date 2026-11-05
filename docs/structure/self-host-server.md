@@ -163,9 +163,9 @@ the store runs the [normalization pass](server-resources.md#store-open-and-norma
 ### Asset mark
 
 `createAssetLifecycle` (an hour after `startBackgroundTasks`, then daily, or `POST /api/assets/scan`;
-`RISU_ASSET_GRACE_DAYS`, `RISU_AGENT_DEV_ASSET_CLOCK_OFFSET_MS`) marks the roots its header lists (`snapshots.pin`,
-`createExportHolds`) into `data/asset-lifecycle.sqlite`. The sweep (`POST /api/assets/sweep`) deletes past-grace
-candidates; its batches and synchronous turn are `sweep`'s comment.
+`RISU_ASSET_GRACE_DAYS`, `RISU_AGENT_DEV_ASSET_CLOCK_OFFSET_MS`) marks the roots its header lists
+(`snapshots.stageCopy`, `createExportHolds`) into `data/asset-lifecycle.sqlite`. The sweep (`POST /api/assets/sweep`)
+deletes past-grace candidates; its batches and synchronous turn are `sweep`'s comment.
 
 ### Login flow
 

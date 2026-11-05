@@ -40,7 +40,14 @@ export type AssetLifecycleReport = {
         total: number;
     };
     owners: AssetOwner[];
-    snapshots: { id: string; createdAt: string; size: number; pinned: false; label: null; heldBytes: number }[];
+    snapshots: {
+        id: string;
+        createdAt: string;
+        size: number;
+        pinned: boolean;
+        label: string | null;
+        heldBytes: number;
+    }[];
 };
 
 /** Absent keys selects all past-grace candidates; absent inlays selects no records. */
