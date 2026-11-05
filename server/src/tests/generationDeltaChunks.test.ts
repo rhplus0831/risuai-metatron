@@ -398,6 +398,7 @@ describe("generation delta chunks on the owner socket", () => {
                             },
                         ],
                     },
+                    cursor: expect.any(Number),
                 });
         } finally {
             sockets.forEach((ws) => ws.close());

@@ -1838,12 +1838,19 @@ describe("the registry over a real socket", () => {
         const callback = await owner.next("callback");
         expect(callback.replay).toBeUndefined();
         expect(callback).toMatchObject({ jobId, name: "editoutput", payload: { text: "early" } });
-        // The attach snapshot (the job chat as a `chatPatch` while the job runs, and the character the
-        // job sent), then the barrier's fresh hydration of both (the chat whole: the client's barrier
-        // re-applies a remembered whole copy once its local work settled), then the callback carrying
-        // their receipts.
+        // The owner's role, the attach snapshot (the job chat as a `chatPatch` while the job runs, and
+        // the character the job sent), then the barrier's fresh hydration of both (the chat whole: the
+        // client's barrier re-applies a remembered whole copy once its local work settled), then the
+        // callback carrying their receipts.
         const index = owner.events.indexOf(callback);
-        expect(types(owner.events.slice(0, index))).toEqual(["chatPatch", "resource", "resource", "resource"]);
+        expect(types(owner.events.slice(0, index))).toEqual([
+            "handoff",
+            "chatPatch",
+            "resource",
+            "resource",
+            "resource",
+        ]);
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
         const hydrated = owner.events.slice(index - 2, index) as Extract<GenerationEvent, { type: "resource" }>[];
         expect(callback.revisions).toEqual(
             hydrated.map((event) => ({
@@ -1934,8 +1941,18 @@ describe("the registry over a real socket", () => {
             expect(cancel.id).toBe(q3.id);
             await second.next("done");
             expect(outcome.second).toMatchObject({ outcome: "timedOut" });
-            // The job chat on the attach and at the end goes as a `chatPatch` (the job's own chat events).
-            expect(types(second.events)).toEqual(["chatPatch", "question", "question", "cancel", "chatPatch", "done"]);
+            // The owner's role opens the attach; the job chat on the attach and at the end goes as a
+            // `chatPatch` (the job's own chat events).
+            expect(types(second.events)).toEqual([
+                "handoff",
+                "chatPatch",
+                "question",
+                "question",
+                "cancel",
+                "chatPatch",
+                "done",
+            ]);
+            expect(second.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
         } finally {
             closes.mockRestore();
             first.ws.terminate();
@@ -1969,8 +1986,9 @@ describe("the registry over a real socket", () => {
         expect((await request(`/api/generations/${jobId}?clientId=tab`, { method: "DELETE" })).status).toBe(200);
         await owner.next("error");
         expect(outcome.question).toMatchObject({ outcome: "aborted" });
-        expect(types(owner.events)).toEqual(["chatPatch", "question", "cancel", "chatPatch", "error"]);
-        expect((owner.events[2] as { id: string }).id).toBe(question.id);
+        expect(types(owner.events)).toEqual(["handoff", "chatPatch", "question", "cancel", "chatPatch", "error"]);
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        expect((owner.events[3] as { id: string }).id).toBe(question.id);
 
         // A runner that ends while its callback waits (once the owner has it): the callback is
         // aborted first.
@@ -1991,9 +2009,19 @@ describe("the registry over a real socket", () => {
         release();
         await next.next("done");
         expect(outcome.callback).toMatchObject({ outcome: "aborted" });
-        // The attach's `chatPatch`, the barrier's whole chat before the callback, the terminal `chatPatch`.
-        expect(types(next.events)).toEqual(["chatPatch", "resource", "callback", "cancel", "chatPatch", "done"]);
-        expect((next.events[3] as { id: string }).id).toBe(callback.id);
+        // The owner's role, the attach's `chatPatch`, the barrier's whole chat before the callback, the
+        // terminal `chatPatch`.
+        expect(types(next.events)).toEqual([
+            "handoff",
+            "chatPatch",
+            "resource",
+            "callback",
+            "cancel",
+            "chatPatch",
+            "done",
+        ]);
+        expect(next.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        expect((next.events[4] as { id: string }).id).toBe(callback.id);
     });
 });
 
@@ -2100,5 +2128,95 @@ describe("the hub: provider chunks and the caller's signal", () => {
         // Nothing is left on the lane: the next root callback is dispatched at once.
         void link.channel.callback("editoutput", { text: "t" });
         expect(h.ofType("callback")).toHaveLength(dispatched + 2);
+    });
+});
+
+describe("callback lanes after ownership transfer", () => {
+    it("moves queued roots away from the creator and serializes them behind the new owner's running root", async () => {
+        const h = harness();
+        const creator = h.open("creator-other-chat");
+        const moving = h.open("moving-chat");
+        const worker = h.open("worker-chat", { clientId: "worker" });
+        const creatorRoot = creator.channel.callback("editoutput", { text: "creator busy" });
+        const creatorId = h.last("callback").id;
+        const movedRoot = moving.channel.callback("editoutput", { text: "move me" });
+        const workerRoot = worker.channel.callback("editoutput", { text: "worker busy" });
+        const workerId = h.last("callback").id;
+        expect(moving.transferOwner("worker")).toBe(true);
+        expect(h.ofType("callback").map((event) => event.job)).toEqual(["creator-other-chat", "worker-chat"]);
+        h.answer(worker, workerId);
+        await workerRoot;
+        expect(h.last("callback")).toMatchObject({ job: "moving-chat", payload: { text: "move me" } });
+        expect(await h.state(creatorRoot)).toBe("pending");
+        h.answer(moving, h.last("callback").id, "moved answer");
+        expect(await movedRoot).toMatchObject({ value: "moved answer" });
+        h.answer(creator, creatorId);
+        await creatorRoot;
+        // Both lanes are free after settlement, including the entry removed from the old queue.
+        const a = creator.channel.callback("editoutput", { text: "creator next" });
+        const aId = h.last("callback").id;
+        const b = worker.channel.callback("editoutput", { text: "worker next" });
+        expect(
+            h
+                .ofType("callback")
+                .slice(-2)
+                .map((event) => event.job),
+        ).toEqual(["creator-other-chat", "worker-chat"]);
+        h.answer(worker, h.last("callback").id);
+        h.answer(creator, aId);
+        await Promise.all([a, b]);
+    });
+
+    it("redispatches an undelivered request only after the new owner's root settles with a fresh sixty seconds", async () => {
+        const h = harness();
+        const attached = { value: false };
+        const moving = h.open("moving-chat", { attached });
+        const worker = h.open("worker-chat", { clientId: "worker" });
+        h.delivering.value = false;
+        const moved = moving.channel.callback("editoutput", { text: "absent" });
+        h.delivering.value = true;
+        const own = worker.channel.callback("editoutput", { text: "working" });
+        const ownId = h.last("callback").id;
+        await h.tick(50_000);
+        attached.value = true;
+        expect(moving.transferOwner("worker")).toBe(true);
+        expect(h.ofType("callback").map((event) => event.job)).toEqual(["moving-chat", "worker-chat"]);
+        await h.tick(9_999);
+        h.answer(worker, ownId);
+        await own;
+        const dispatched = h.last("callback");
+        expect(dispatched).toMatchObject({ job: "moving-chat", deadline: h.clock.value + CALLBACK_TIMEOUT_MS });
+        expect(dispatched).not.toHaveProperty("replay");
+        await h.tick(1);
+        expect(await h.state(moved)).toBe("pending");
+        h.answer(moving, dispatched.id, "first delivery");
+        expect(await moved).toEqual({ outcome: "answered", value: "first delivery" });
+    });
+
+    it("keeps a cancelled delivered callback's drain hold on its dispatch client after a transfer", async () => {
+        const h = harness();
+        const moving = h.open("moving-chat");
+        const creator = h.open("creator-other-chat");
+        const controller = new AbortController();
+        const delivered = moving.channel.callback("editoutput", { text: "running" }, { signal: controller.signal });
+        const id = h.last("callback").id;
+        const oldQueued = creator.channel.callback("editoutput", { text: "old lane" });
+        const newQueued = moving.channel.callback("editoutput", { text: "new lane" });
+        expect(moving.transferOwner("worker")).toBe(false);
+        moving.deferTransfer(true);
+        controller.abort();
+        expect(await delivered).toMatchObject({ outcome: "aborted" });
+        expect(moving.transferOwner("worker")).toBe(true);
+        expect(h.ofType("callback").map((event) => event.payload)).toEqual([{ text: "running" }, { text: "new lane" }]);
+        const newId = h.last("callback").id;
+        expect(moving.drained(id, "third")).toBe(false);
+        expect(moving.drained(id, "worker")).toBe(false);
+        expect(await h.state(oldQueued)).toBe("pending");
+        expect(moving.drained(id, "tab")).toBe(true);
+        expect(h.last("callback")).toMatchObject({ job: "creator-other-chat", payload: { text: "old lane" } });
+        h.answer(creator, h.last("callback").id);
+        h.answer(moving, newId);
+        await Promise.all([oldQueued, newQueued]);
+        expect(moving.drained(id, "tab")).toBe(false);
     });
 });

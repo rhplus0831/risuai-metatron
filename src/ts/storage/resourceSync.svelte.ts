@@ -116,7 +116,7 @@ import {
     hydrateChat,
     hydrateChatPatch,
     isChatBehind,
-    type ChatPatch,
+    type JobChatPatch,
     JOB_RETRY_MS,
     hasUnsavedChatWork,
     hasRefusedChatWork,
@@ -140,6 +140,8 @@ import {
     deferredReloads,
     finishDeferredReload,
     idleChatRefreshes,
+    idleChatRows,
+    finishIdleChatRows,
     idleSummaryRefreshes,
     scheduleTrim,
     settleSummaryRefresh,
@@ -157,6 +159,7 @@ import {
     applyBatchText,
     getResource,
     getResourceEpoch,
+    epochMismatch,
     prepareUnloadAuth,
     readRefs,
     ResourceConflictError,
@@ -4460,7 +4463,9 @@ export async function refreshStaleChat(ref: ChatRef): Promise<boolean> {
 
 /**
  * Reads eligible chats for the background queue or an explicit stale-chat refresh. Responses are
- * checked against the notice, held revision and read stamp before they enter the mirror.
+ * checked against the notice, held revision and read stamp before they enter the mirror. Eligible
+ * manifests read named rows; a moved answer or apply miss awaits one whole-chat fallback under the
+ * same deadline and epoch checks.
  */
 async function readIdleChats(refs: readonly ChatRef[]) {
     if (refs.length === 0) {
@@ -4474,25 +4479,60 @@ async function readIdleChats(refs: readonly ChatRef[]) {
     for (const ref of refs) {
         noteIdleChatRead(ref, readStamp);
     }
-    const read = await deadlineRead((signal) =>
-        readRefs([], {
-            chats: refs.map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
-            signal,
+    const rows = new Map(
+        refs.flatMap((ref) => {
+            const request = idleChatRows(ref);
+            return request ? [[`${ref.chaId}\u0000${ref.chatId}`, { ref, request }] as const] : [];
         }),
     );
-    if (halted) {
-        return;
-    }
-    for (const chat of read.chats ?? []) {
-        const key = `${chat.characterId}\u0000${chat.id}`;
-        if (
-            finishIdleChatRefresh({ ...chat, readStamp } as RemoteChat, notices.get(key) ?? 0, issued.get(key)) &&
-            chat.revision === null
-        ) {
-            // The chat is gone: the character's list is read again, never discarding local work.
-            noteRemoteCollection(chat.characterId);
+    const finishWhole = (read: Awaited<ReturnType<typeof readRefs>>) => {
+        for (const chat of read.chats ?? []) {
+            const key = `${chat.characterId}\u0000${chat.id}`;
+            if (
+                finishIdleChatRefresh({ ...chat, readStamp } as RemoteChat, notices.get(key) ?? 0, issued.get(key)) &&
+                chat.revision === null
+            ) {
+                // The chat is gone: the character's list is read again, never discarding local work.
+                noteRemoteCollection(chat.characterId);
+            }
         }
-    }
+    };
+    await deadlineRead(async (signal) => {
+        const read = await readRefs([], {
+            chats: refs
+                .filter((ref) => !rows.has(`${ref.chaId}\u0000${ref.chatId}`))
+                .map((ref) => ({ characterId: ref.chaId, id: ref.chatId })),
+            ...(rows.size > 0
+                ? {
+                      chatRows: [...rows.values()].map(({ ref, request }) => ({
+                          characterId: ref.chaId,
+                          id: ref.chatId,
+                          revision: request.revision,
+                          messageIds: request.rows.changed,
+                          meta: request.rows.meta,
+                      })),
+                  }
+                : {}),
+            signal,
+        });
+        // A timed-out transport may still resolve: neither it nor its fallback may install late.
+        signal.throwIfAborted();
+        if (halted) return;
+        finishWhole(read);
+        const answers = new Map((read.chatRows ?? []).map((chat) => [`${chat.characterId}\u0000${chat.id}`, chat]));
+        const fallback = [...rows.entries()].filter(
+            ([key, { ref, request }]) => !finishIdleChatRows(ref, request, answers.get(key), readStamp),
+        );
+        if (fallback.length === 0) return;
+        const whole = await readRefs([], {
+            chats: fallback.map(([, { ref }]) => ({ characterId: ref.chaId, id: ref.chatId })),
+            signal,
+        });
+        signal.throwIfAborted();
+        if (halted) return;
+        if (whole.epoch !== read.epoch) throw epochMismatch(whole.epoch);
+        finishWhole(whole);
+    });
 }
 
 /**
@@ -4655,8 +4695,9 @@ function runOwner(kind: string, run: (owner: RemoteResourceOwner) => void) {
  * only without local edits, except preserved `llmSecrets` siblings (`applyRemoteUpdates`); a
  * missing character or a singleton absent at boot (such as pluginStorage) can be inserted remotely,
  * but a locally created unsaved record waits for its save's 409 instead of adopting another create.
- * A chat goes to `src/ts/storage/chatStore.svelte.ts` with its optional by-id change (`delta`, else
- * `patch`: applied at its exact base while loaded and idle, otherwise the ordinary idle refresh)
+ * A chat goes to `src/ts/storage/chatStore.svelte.ts` with its optional by-id change (`rowDelta`, else
+ * `delta`, else `patch`: applied at its exact base while loaded and idle, otherwise the ordinary idle
+ * refresh)
  * and its summary knowledge (`summary` or `summaryBase`: settles a chat held only as its summary
  * without its character's chat list when it fits); a new chat or a changed chat order reads the
  * character's chat list (also for a character still waiting to be inserted). Never an outgoing
@@ -4721,13 +4762,16 @@ export function noteRemoteChanges(changes: ChangeSet) {
             }
             continue;
         }
-        // At most one of the two: a delta carries the metadata by field when the whole one did not fit.
-        const change = chat.delta ?? chat.patch;
+        // At most one body: whole rows, metadata by field, or row diffs with metadata by field.
+        const change = chat.rowDelta ?? chat.delta ?? chat.patch;
         const { summary, summaryBase } = chat;
-        const outcome = noteRemoteChat({ chaId: chat.characterId, chatId: chat.id }, chat.revision, change, {
-            summary,
-            summaryBase,
-        });
+        const outcome = noteRemoteChat(
+            { chaId: chat.characterId, chatId: chat.id },
+            chat.revision,
+            change,
+            { summary, summaryBase },
+            chat.rows,
+        );
         if (outcome === "collection") {
             noteRemoteCollection(chat.characterId);
         }
@@ -5302,7 +5346,7 @@ export function applyHydration(record: HydrationRecord): boolean {
  * through `hydrateChatPatch`: `"mismatch"` asks the caller to request the chat whole.
  */
 export function applyPatchHydration(
-    patch: ChatPatch,
+    patch: JobChatPatch,
     job?: { jobId: string; streaming: readonly StreamingMessage[] },
 ): "applied" | "busy" | "mismatch" | "old" {
     if (halted || parseRevisionToken(patch.revision)?.epoch !== getResourceEpoch()) {

@@ -1,5 +1,7 @@
+import { language } from "src/lang";
+import { ASSET_LEASE_MS } from "../../../shared/assetLifecycle.ts";
 import { assetKey, loadAssets, saveAsset, saveAssetBatch } from "../globalApi.svelte";
-import { ASSET_BATCH_CLIENT_BYTES, ASSET_BATCH_CLIENT_RECORDS, assetContentHash } from "./assetClient";
+import { ASSET_BATCH_CLIENT_BYTES, ASSET_BATCH_CLIENT_RECORDS, assetContentHash, missingAssets } from "./assetClient";
 
 /**
  * Batched asset reads for exports and bounded save queues for imports, through
@@ -68,7 +70,11 @@ export const DEFAULT_ASSET_CONCURRENCY = 10;
 
 /** One asset to save: `saveAsset(await load(), customId, fileName)`. */
 export type AssetSaveItem = {
-    /** Produces the bytes. Called once, only when the item has a slot; a throw fails the item. */
+    /**
+     * Produces the bytes under admission. saveAssets may call it again to repair a missing file at
+     * completion; replay must produce the same content. The callback is retained until completion,
+     * including anything it closes over. Prefer re-readable sources to captured decoded payloads.
+     */
     load: () => Promise<Uint8Array> | Uint8Array;
     /** Gives the stored key its extension (`saveAsset`'s `fileName`; default `png`). */
     fileName?: string;
@@ -240,7 +246,9 @@ type LoadedAsset = { index: number; key: string; bytes: Uint8Array | null; size:
  * the next batch loads. Without a `customId`, a canonical key's hash is carried as `sha256`, so
  * `writeAssets` in `src/ts/storage/assetClient.ts` skips bytes the server holds verified; a custom
  * id is always sent. An item whose hash key another item of this call already carries is not sent
- * again when it has no `customId`.
+ * again when it has no `customId`. After draining, all canonical keys are checked again; missing
+ * keys (all keys after a failed check) are reloaded, hash-checked, and rewritten. A final pass lasting
+ * an hour refuses the handoff. Custom ids are always uploaded and are not presence-checked.
  *
  * `onProgress(done, total)` runs for each item once it settles: when its batch is written or fails,
  * or when its `load()` throws; `total` is the item count, or for an async iterable the items taken
@@ -272,6 +280,7 @@ export async function saveAssets(
     const errors: unknown[] = [];
     // Hash keys already in a batch of this call (written, being written, or waiting).
     const batchedKeys = new Set<string>();
+    const replay = new Map<string, AssetSaveItem>();
     let open: LoadedAsset[] = [];
     let openRecords = 0;
     let openBytes = 0;
@@ -375,6 +384,7 @@ export async function saveAssets(
                 if (halted()) {
                     return;
                 }
+                if (!item.customId && assetContentHash(key) && !replay.has(key)) replay.set(key, item);
                 if (!item.customId && batchedKeys.has(key)) {
                     open.push({ index, key, bytes: null, size: 0 });
                 } else {
@@ -456,6 +466,29 @@ export async function saveAssets(
     if (errors.length > 0) {
         throw new AssetSaveError(errors);
     }
+    // Earlier batches may have waited behind an arbitrarily slow loader. Reclaim every canonical
+    // key now; a failed check rewrites ALL of them, never relying on the earlier batches' leases.
+    const claimStart = performance.now();
+    let missing: Set<string>;
+    try {
+        missing = await missingAssets([...replay.keys()], signal ? { signal } : undefined);
+    } catch (error) {
+        if (signal?.aborted) throw abortReason(signal);
+        console.warn("Asset completion check failed; rewriting canonical assets", error);
+        missing = new Set(replay.keys());
+    }
+    for (const key of missing) {
+        const item = replay.get(key)!;
+        const bytes = await item.load();
+        if (signal?.aborted) throw abortReason(signal);
+        if ((await assetKey(bytes, "", item.fileName ?? "")) !== key)
+            throw new Error(language.errors.assetReloadChanged);
+        // Omit sha256 to force publication: the failed end check must not become another old skip.
+        await saveAssetBatch([{ key, bytes }], signal ? { signal } : undefined);
+    }
+    if (signal?.aborted) throw abortReason(signal);
+    if (replay.size && performance.now() - claimStart >= ASSET_LEASE_MS)
+        throw new Error(language.errors.assetClaimsExpired);
     return keys;
 }
 

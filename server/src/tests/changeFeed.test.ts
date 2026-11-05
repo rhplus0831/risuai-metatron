@@ -207,6 +207,86 @@ describe("the change feed", () => {
 });
 
 describe("the store publishes committed changes", () => {
+    it("logs independent nested commits once and publishes their newest cursor even when the enclosing write fails", () => {
+        for (const outcome of ["commit", "input throw", "rollback"] as const) {
+            const { store, events } = setup();
+            const epoch = store.epoch();
+            const before = store.get(ui, "main")!;
+            let nested!: string;
+            const write = () =>
+                store.applyChanges({
+                    get ops() {
+                        nested = store.put(modules, "main", [], null).revision;
+                        expect(store.cursor()).toBe(1);
+                        expect(store.listChanges(0, 1, epoch)).toEqual({
+                            epoch,
+                            cursor: 1,
+                            changes: { ...empty, resources: [{ kind: "modules", id: "main", revision: nested }] },
+                        });
+                        expect(events).toEqual([]);
+                        if (outcome === "input throw") throw new Error("input failed");
+                        return [
+                            { kind: ui, id: "main", baseRevision: before.revision, data: { language: "de" } },
+                            ...(outcome === "rollback"
+                                ? [{ kind: modules, id: "main", baseRevision: null, data: [] }]
+                                : []),
+                        ];
+                    },
+                });
+            if (outcome === "commit") write();
+            else expect(write).toThrow(outcome === "input throw" ? "input failed" : ResourceBatchConflictError);
+            const cursor = outcome === "commit" ? 2 : 1;
+            const resources = [
+                { kind: "modules", id: "main", revision: nested },
+                ...(outcome === "commit"
+                    ? [{ kind: "ui", id: "main", revision: store.get(ui, "main")!.revision }]
+                    : []),
+            ];
+            expect(store.cursor()).toBe(cursor);
+            expect(store.listChanges(0, cursor, epoch)).toEqual({ epoch, cursor, changes: { ...empty, resources } });
+            expect(events).toEqual([{ type: "change", epoch, cursor, changes: { ...empty, resources } }]);
+        }
+    });
+
+    it("keeps each publication's committed cursor during reentrant writes and omits it from streaming-only frames", () => {
+        const { store, feed, events } = setup();
+        let nested = false;
+        feed.subscribe((event) => {
+            if (event.type === "change" && !nested) {
+                nested = true;
+                store.put(plugins, "main", [], null);
+            }
+        });
+        const observed: ChangeFeedEvent[] = [];
+        feed.subscribe((event) => observed.push(event));
+        store.put(modules, "main", [], null);
+        expect(store.cursor()).toBe(2);
+        expect(observed).toEqual([
+            {
+                type: "change",
+                epoch: store.epoch(),
+                cursor: 1,
+                changes: {
+                    ...empty,
+                    resources: [{ kind: "modules", id: "main", revision: store.get(modules, "main")!.revision }],
+                },
+            },
+            {
+                type: "change",
+                epoch: store.epoch(),
+                cursor: 2,
+                changes: {
+                    ...empty,
+                    resources: [{ kind: "plugins", id: "main", revision: store.get(plugins, "main")!.revision }],
+                },
+            },
+        ]);
+        const streaming = [{ characterId: "c", id: "k", streaming: [] }];
+        store.publishStreaming(streaming);
+        expect(events.at(-1)).toEqual({ type: "change", epoch: store.epoch(), changes: empty, streaming });
+        expect(store.cursor()).toBe(2);
+    });
+
     it("publishes an independently committed input write when the outer batch throws or rolls back", () => {
         for (const failure of ["input throw", "transaction rollback"] as const) {
             const { store, events } = setup();
@@ -232,6 +312,7 @@ describe("the store publishes committed changes", () => {
                 {
                     type: "change",
                     epoch: store.epoch(),
+                    cursor: expect.any(Number),
                     changes: { ...empty, resources: [{ kind: "modules", id: "main", revision: nestedRevision }] },
                 },
             ]);
@@ -254,6 +335,7 @@ describe("the store publishes committed changes", () => {
         expect(events[0]).toEqual({
             type: "change",
             epoch: store.epoch(),
+            cursor: expect.any(Number),
             changes: { ...empty, resources: [{ kind: "modules", id: "main", revision: created }] },
         });
         expect(observed[0]).toBe(created);
@@ -263,6 +345,7 @@ describe("the store publishes committed changes", () => {
         expect(events.at(-1)).toEqual({
             type: "change",
             epoch: store.epoch(),
+            cursor: expect.any(Number),
             changes: { ...empty, resources: [{ kind: "modules", id: "main", revision: updated }] },
         });
     });
@@ -286,6 +369,7 @@ describe("the store publishes committed changes", () => {
         expect(events.at(-1)).toEqual({
             type: "change",
             epoch: store.epoch(),
+            cursor: expect.any(Number),
             changes: {
                 resources: [{ kind: "characters", id: "c", revision: created }],
                 chats: [],
@@ -332,6 +416,7 @@ describe("the store publishes committed changes", () => {
             {
                 type: "change",
                 epoch: store.epoch(),
+                cursor: expect.any(Number),
                 changes: {
                     resources: [{ kind: "characters", id: "c", revision: applied.results[0].revision }],
                     chats: applied.chats.map((chat) => ({
@@ -361,6 +446,7 @@ describe("the store publishes committed changes", () => {
             {
                 type: "change",
                 epoch: store.epoch(),
+                cursor: expect.any(Number),
                 changes: {
                     resources: [],
                     chats: [
@@ -479,6 +565,7 @@ describe("the store publishes committed changes", () => {
         expect(events[0]).toEqual({
             type: "change",
             epoch: store.epoch(),
+            cursor: expect.any(Number),
             changes: {
                 resources: [
                     { kind: "modules", id: "main", revision: store.get(modules, "main")!.revision },
@@ -802,6 +889,7 @@ describe("field patches in the feed", () => {
             {
                 type: "change",
                 epoch: store.epoch(),
+                cursor: expect.any(Number),
                 changes: {
                     resources: [
                         {
@@ -1102,14 +1190,14 @@ describe("the publication patch budget", () => {
                     characterId: "c",
                     chatId: id,
                     baseRevision: null,
-                    ops: [chatCreate(id, [{ chatId: "m", data: "", role: "char" }])],
+                    ops: [chatCreate(id, [])],
                 },
             ],
         });
         const baseRevision = store.chatRevision("c", id)!;
         const patch = sizedPatch(typeof bytes === "number" ? bytes : bytes(baseRevision), (data) => ({
             baseRevision,
-            messages: [{ after: null, message: { chatId: "m", data, role: "char" } }],
+            messages: [{ after: null, message: { chatId: "m", data, role: "char" as const } }],
             count: 1,
         }));
         return {
@@ -1117,12 +1205,133 @@ describe("the publication patch budget", () => {
                 characterId: "c",
                 chatId: id,
                 baseRevision,
-                ops: [{ op: "setText", id: "m", text: patch.messages[0].message.data }] satisfies ChatOp[],
+                // An inserted row: a whole-row patch is its only body, whatever its size.
+                ops: [
+                    { op: "append", anchor: { start: true }, messages: [patch.messages[0].message] },
+                ] satisfies ChatOp[],
             },
             patch,
             ref: () => ({ characterId: "c", id, revision: store.chatRevision("c", id) }),
         };
     }
+
+    it.each([0, 1])("budgets a rowDelta at the remaining publication bytes plus %i", (excess) => {
+        const { store, events } = budgetSetup();
+        store.put(characters, "c", { chaId: "c" }, null);
+        const data = "x".repeat(100 * 1024);
+        store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [chatCreate("k", [{ chatId: "m", role: "char", data }])],
+                },
+            ],
+        });
+        const baseRevision = store.chatRevision("c", "k")!;
+        const rowDelta = sizedPatch(remainder + excess, (text) => ({
+            baseRevision,
+            count: 1,
+            rowDiffs: [{ id: "m", text: { keep: data.length, text } }],
+        }));
+        const records = ["a", "b", "c", "d"].map((id) => field(store, id));
+        events.length = 0;
+        store.applyChanges({
+            ops: records.map((entry) => entry.op),
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision,
+                    ops: [{ op: "setText", id: "m", text: data + rowDelta.rowDiffs[0].text.text }],
+                },
+            ],
+        });
+        expect(events).toHaveLength(1);
+        const event = events[0];
+        if (event.type !== "change") throw new Error("expected a committed change");
+        expect(event.changes.resources).toEqual(records.map((entry) => ({ ...entry.ref(), patch: entry.patch })));
+        expect(event.changes.chats).toEqual([
+            {
+                characterId: "c",
+                id: "k",
+                revision: store.chatRevision("c", "k"),
+                // At the exact budget the body stays and leaves no room for summaryBase. An oversized
+                // body is dropped, so the small summaryBase that follows still fits.
+                ...(excess ? { summaryBase: baseRevision } : { rowDelta }),
+            },
+        ]);
+        const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+        const payloads = [
+            ...event.changes.resources.map(({ patch }) => patch),
+            ...event.changes.chats.flatMap(({ patch, delta, rowDelta, summary, summaryBase }) => [
+                patch,
+                delta,
+                rowDelta,
+                summary,
+                summaryBase,
+            ]),
+        ].filter((value) => value !== undefined);
+        expect(payloads.reduce<number>((sum, value) => sum + bytes(value), 0)).toBe(
+            excess ? 4 * nearCap + bytes(baseRevision) : MAX_FEED_PUBLICATION_PATCH_BYTES,
+        );
+        expect(store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data!.message).toEqual([
+            { chatId: "m", role: "char", data: data + rowDelta.rowDiffs[0].text.text },
+        ]);
+    });
+
+    it("coalesces successive row deltas to the later revision without any body", () => {
+        const { store, events } = budgetSetup();
+        store.put(characters, "c", { chaId: "c" }, null);
+        const data = "x".repeat(100 * 1024);
+        store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [chatCreate("k", [{ chatId: "m", role: "char", data }])],
+                },
+            ],
+        });
+        const baseRevision = store.chatRevision("c", "k")!;
+        const group = (text: string) => ({
+            characterId: "c",
+            chatId: "k",
+            baseRevision: store.chatRevision("c", "k"),
+            ops: [{ op: "setText", id: "m", text }] satisfies ChatOp[],
+        });
+        events.length = 0;
+        store.applyChanges({
+            get chats() {
+                store.applyChanges({ chats: [group(data + " first")] });
+                expect(events).toEqual([]);
+                return [group(data + " first second")];
+            },
+        });
+        expect(events).toEqual([
+            {
+                type: "change",
+                epoch: store.epoch(),
+                cursor: expect.any(Number),
+                changes: {
+                    ...empty,
+                    chats: [
+                        {
+                            characterId: "c",
+                            id: "k",
+                            revision: store.chatRevision("c", "k"),
+                            summaryBase: baseRevision,
+                        },
+                    ],
+                },
+            },
+        ]);
+        expect(store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data!.message).toEqual([
+            { chatId: "m", role: "char", data: data + " first second" },
+        ]);
+    });
 
     it("shares the publication byte budget across patches, deltas, summaries and summary bases", () => {
         const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
@@ -1246,7 +1455,7 @@ describe("the publication patch budget", () => {
         const first = chat(store, "first");
         const second = chat(store, "second");
         const dropped = chat(store, "dropped");
-        // Each text write leaves its chat's summary unchanged, so each entry also carries its base as
+        // Each append of an undated row leaves its chat's summary unchanged, so each entry also carries its base as
         // `summaryBase`, after its patch on the wire: the small patch fills exactly what the four kept
         // 60 KiB patches and the four summary bases (the dropped entry's included, which still fits) leave.
         const summaryBaseBytes = (baseRevision: string) => Buffer.byteLength(JSON.stringify(baseRevision));
@@ -1299,6 +1508,7 @@ describe("the publication patch budget", () => {
             {
                 type: "change",
                 epoch: store.epoch(),
+                cursor: expect.any(Number),
                 changes: {
                     resources: [
                         { ...record.ref(), patch: record.patch },
@@ -1353,6 +1563,7 @@ describe("the publication patch budget", () => {
             {
                 type: "change",
                 epoch: store.epoch(),
+                cursor: expect.any(Number),
                 changes: {
                     ...empty,
                     resources: [
@@ -1391,6 +1602,7 @@ describe("the publication patch budget", () => {
             {
                 type: "change",
                 epoch: store.epoch(),
+                cursor: expect.any(Number),
                 changes: {
                     ...empty,
                     resources: [
@@ -1464,6 +1676,7 @@ describe("the store publishes generation locks", () => {
         expect(change(events[0])).toEqual({
             type: "change",
             epoch: store.epoch(),
+            cursor: expect.any(Number),
             changes: {
                 resources: [],
                 chats: [expect.objectContaining({ characterId: "c", id: "k", revision: applied.chats[0].revision })],
@@ -1486,7 +1699,7 @@ describe("the store publishes generation locks", () => {
             },
             { epoch: store.epoch(), jobToken: "T", committed: () => [] },
         );
-        expect(Object.keys(change(events[0]))).toEqual(["type", "epoch", "changes"]);
+        expect(Object.keys(change(events[0]))).toEqual(["type", "epoch", "changes", "cursor"]);
     });
 
     it("runs `committed` without a feed attached (the job's bookkeeping does not depend on one)", () => {

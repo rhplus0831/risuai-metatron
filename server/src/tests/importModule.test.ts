@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import { matureSweep, seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 import { serve } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { encodeRPack } from "../../../shared/rpack.ts";
@@ -17,6 +18,7 @@ afterEach(async () => {
     // Also release a suspended generator if an assertion (or a mutation) failed.
     await Promise.all(responses.splice(0).map((res) => res.body?.cancel().catch(() => {})));
     vi.restoreAllMocks();
+    vi.useRealTimers();
     await Promise.all(servers.splice(0).map((s) => s.close()));
 });
 
@@ -504,4 +506,59 @@ describe("POST /api/import/module", () => {
             }
         },
     );
+});
+
+it("reclaims every filled module key before the result and republishes a skipped file lost during progress", async () => {
+    vi.useFakeTimers({ toFake: ["performance"] });
+    const clock = sweepClock();
+    const s = await server({ assetLifecycle: clock.options });
+    const bytes = Buffer.from("module replay bytes");
+    const second = Buffer.from("module second bytes");
+    const key = keyOf(bytes);
+    const target = seedSweepAsset(s, key, bytes.toString());
+    const metadata = "assets/metadata-only";
+    seedSweepAsset(s, metadata);
+    await matureSweep(s, clock);
+    const module = moduleOf(4);
+    module.assets[2][1] = metadata;
+    module.assets[3][1] = "assets/portable-missing";
+    const held = deferred(),
+        release = deferred();
+    const rename = fs.rename;
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        if (String(to) === path.join(s.savePath, keyOf(second))) {
+            held.resolve();
+            await release.promise;
+        }
+        return rename(from, to);
+    });
+    const response = await post(s, risum(module, [bytes, second]));
+    const reading = lines(response);
+    try {
+        await held.promise;
+        expect((await s.context.assetLifecycle.sweep({ dryRun: false, keys: [key] })).skipped).toEqual([
+            { key, reason: "leased" },
+        ]);
+        // A later upload is latched: the first skip is complete, the final claims have not begun.
+        rmSync(target);
+        await vi.advanceTimersByTimeAsync(3_600_000);
+        release.resolve();
+        const result = (await reading).at(-1) as { module: { assets: string[][] } };
+        expect(result.module.assets.map((entry) => entry[1])).toEqual([
+            key,
+            keyOf(second),
+            metadata,
+            "assets/portable-missing",
+        ]);
+        expect(readFileSync(target)).toEqual(bytes);
+        expect(existsSync(path.join(s.savePath, "assets", "portable-missing"))).toBe(false);
+        await fs.utimes(target, 1, 1);
+        expect((await s.context.assetLifecycle.sweep({ dryRun: false, keys: [key, metadata] })).skipped).toEqual([
+            { key, reason: "leased" },
+            { key: metadata, reason: "leased" },
+        ]);
+    } finally {
+        release.resolve();
+        await reading;
+    }
 });

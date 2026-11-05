@@ -328,6 +328,7 @@ type JobOptions = {
     command?: import("../../../shared/jobs.ts").GenerationCommand;
     /** Hold the first script worker call until attach can replay preparing. */
     observeStages?: boolean;
+    streamedRows?: boolean;
     onEvent?: (event: GenerationEvent) => void;
     abortAfterChunks?: number;
     /** Runs at every `chunk` event the owner socket gets. */
@@ -398,7 +399,8 @@ async function job(
         const jobId = created.body.jobId as string;
         const url =
             `${base.replace("http", "ws")}/api/generations/${jobId}/ws` +
-            `?risu-auth=${encodeURIComponent(await signer.jwt())}&clientId=tab&attach=${++attach}`;
+            `?risu-auth=${encodeURIComponent(await signer.jwt())}&clientId=tab&attach=${++attach}` +
+            (options.streamedRows ? "&rows=streamed&hydration=patch&proto=1" : "");
         const ws = new WebSocket(url);
         socket = ws;
         const events: any[] = [];
@@ -606,6 +608,94 @@ afterAll(async () => {
 });
 
 describe("a send", () => {
+    it(
+        "reconstructs a runner checkpoint from the raw stream but sends the editoutput rewrite whole at the same chunk",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann", messages: [{ role: "user", data: "q", chatId: "u1" }] });
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+            let controller!: ReadableStreamDefaultController<Record<string, string>>;
+            const stream = new ReadableStream<Record<string, string>>({
+                start(value) {
+                    controller = value;
+                },
+            });
+            const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+                await socketOpen;
+                return { type: "streaming", result: stream };
+            });
+            const chunk = deferred<void>();
+            const checkpoint = deferred<Extract<GenerationEvent, { type: "chatPatch" }>>();
+            const pending = job(
+                "send",
+                chaId,
+                {},
+                {
+                    streamedRows: true,
+                    hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+                    answerCallback: () => ({ outcome: "answered", value: "Processed reply" }),
+                    onChunk: () => chunk.resolve(),
+                    onEvent: (event) => {
+                        if (event.type === "chatPatch" && event.streaming.some((entry) => entry.seq === 1)) {
+                            checkpoint.resolve(event);
+                        }
+                    },
+                },
+            );
+            const cleanup = cleanupOnce(() => {
+                upstream.mockRestore();
+                vi.useRealTimers();
+            });
+            try {
+                controller.enqueue({ "0": "Raw reply" });
+                await chunk.promise;
+                await vi.advanceTimersByTimeAsync(3000);
+                const raw = await checkpoint.promise;
+                const { messageId, generationId } = raw.streaming[0];
+                expect(raw.messages).toEqual([{ after: "u1", id: messageId, streamed: { generationId, seq: 1 } }]);
+                controller.close();
+                const result = await pending;
+                expect(result.terminal?.type).toBe("done");
+                const processed = result.events.find(
+                    (event) =>
+                        event.type === "chatPatch" &&
+                        event.streaming.some(
+                            (entry: { generationId: string; seq: number }) =>
+                                entry.generationId === generationId && entry.seq === 1,
+                        ) &&
+                        event.messages?.some(
+                            (entry: { message?: { data: string } }) => entry.message?.data === "Processed reply",
+                        ),
+                );
+                expect(processed).toBeDefined();
+                const initial = result.events.find(
+                    (event) =>
+                        event.type === "chatPatch" &&
+                        event.messages?.some(
+                            (entry: { message?: { chatId: string; data: string } }) =>
+                                entry.message?.chatId === messageId && entry.message.data === "",
+                        ),
+                );
+                const initialRow = initial.messages.find(
+                    (entry: { message?: { chatId: string } }) => entry.message?.chatId === messageId,
+                ).message;
+                expect(processed.messages).toEqual([
+                    { after: "u1", message: { ...initialRow, data: "Processed reply" } },
+                ]);
+                expect(processed.streaming).toEqual([{ messageId, generationId, seq: 1 }]);
+            } finally {
+                if (stream.locked) {
+                    try {
+                        controller.close();
+                    } catch {
+                        /* Already closed by the test. */
+                    }
+                }
+                cleanup();
+            }
+        },
+        SLOW,
+    );
+
     it("ends with status 429 and the queue-full message when SupaMemory's local summarizer is refused", async () => {
         const memorySettings = (await single("memoryTranslateMedia")).data;
         const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);

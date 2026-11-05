@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { mkdirDurable, syncDir, syncFile } from "../data/durableWrite.ts";
 import type { SnapshotManager } from "../data/snapshots.ts";
-import { resolveStorageKey, writeStorageFile } from "../routes/storage.ts";
+import { claimAssetKey } from "../routes/storage.ts";
 import { assetVerification, holdsVerifiedAsset } from "./assetVerification.ts";
 
 /**
@@ -11,7 +11,7 @@ import { assetVerification, holdsVerifiedAsset } from "./assetVerification.ts";
  * reader): an asset is stored under `assets/<SHA-256 hex of its bytes>.png`, the key the client's
  * `saveAsset` gives the same bytes (its default extension; never sniffed), and skipped when that file
  * already holds those bytes (`holdsVerifiedAsset`); an empty, truncated, or wrong file there is
- * replaced in one rename. Each write holds the maintenance gate.
+ * replaced in one rename. Each reuse or write holds the maintenance gate and claims the key under its lock, renewing its lease.
  */
 
 /** The key `bytes` are stored under. */
@@ -31,17 +31,17 @@ export async function writeContentAsset(
 ): Promise<string | null> {
     const hashHex = createHash("sha256").update(bytes).digest("hex");
     const key = contentAssetKey(hashHex);
-    const fullPath = resolveStorageKey(savePath, key);
-    if (fullPath === null || !(await holdsVerifiedAsset(fullPath, hashHex))) {
-        if (signal.aborted) {
-            return null;
-        }
-        const leave = snapshots.gate.enter();
-        try {
-            await writeStorageFile(savePath, key, bytes, hashHex);
-        } finally {
-            leave();
-        }
+    if (signal.aborted) return null;
+    const leave = snapshots.gate.enter();
+    try {
+        await claimAssetKey(savePath, key, {
+            verify: (fullPath) => holdsVerifiedAsset(fullPath, hashHex),
+            bytes,
+            hashHex,
+            signal,
+        });
+    } finally {
+        leave();
     }
     return key;
 }
@@ -60,24 +60,21 @@ export async function publishStagedContentAsset(
     signal: AbortSignal,
 ): Promise<string | null> {
     const key = contentAssetKey(hashHex);
-    const fullPath = resolveStorageKey(savePath, key);
-    if (fullPath === null) {
-        throw new Error(`No storage location for ${key}`);
-    }
-    if (await holdsVerifiedAsset(fullPath, hashHex)) {
-        return key;
-    }
-    if (signal.aborted) {
-        return null;
-    }
-    const stat = await fs.stat(stagedPath, { bigint: true });
-    await syncFile(stagedPath);
+    if (signal.aborted) return null;
     const leave = snapshots.gate.enter();
     try {
-        await mkdirDurable(path.dirname(fullPath));
-        await fs.rename(stagedPath, fullPath);
-        assetVerification.recordVerification(fullPath, stat, true);
-        await syncDir(path.dirname(fullPath));
+        await claimAssetKey(savePath, key, {
+            signal,
+            verify: (fullPath) => holdsVerifiedAsset(fullPath, hashHex),
+            publish: async (fullPath) => {
+                const stat = await fs.stat(stagedPath, { bigint: true });
+                await syncFile(stagedPath);
+                await mkdirDurable(path.dirname(fullPath));
+                await fs.rename(stagedPath, fullPath);
+                assetVerification.recordVerification(fullPath, stat, true);
+                await syncDir(path.dirname(fullPath));
+            },
+        });
     } finally {
         leave();
     }

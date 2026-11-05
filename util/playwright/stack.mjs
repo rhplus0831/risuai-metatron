@@ -4,12 +4,26 @@
 // dev server proxying to it. Used by `playwright.config.ts` and the `util/playwright/` scripts.
 import { spawn } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { isIPv4 } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const chromePath = process.env.RISU_CHROME ?? "/usr/bin/google-chrome";
+
+/** Install a v3 plugin at boot using the persisted shape written by importPlugin. */
+export function pluginFixtureOp(name, script, plugins) {
+    return {
+        kind: "plugins",
+        id: "main",
+        baseRevision: plugins.revision,
+        data: [
+            ...plugins.data.filter((plugin) => plugin.name !== name),
+            { name, script, version: "3.0", enabled: true, arguments: {}, realArg: {}, customLink: [], argMeta: {} },
+        ],
+    };
+}
 
 /** Hosts a check may reach: the app, its server, and the checks' local mocks. */
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0", "host.docker.internal"]);
@@ -119,16 +133,17 @@ function stop(child, signal = "SIGTERM") {
  * and the repository save/ is never touched; auth is real unless serverEnv explicitly overrides it.
  * `stop()` ends both the server and Vite and deletes the work directory.
  *
- * `restartServer({ signal })` stops the server (SIGTERM by default, for graceful shutdown) and starts it again over
+ * `restartServer({ signal, serverEnv })` stops the server (SIGTERM by default, for graceful shutdown) and starts it again over
  * the same `save/`, leaving the dev server running: for checks of what a server start does to
  * stored data. Pass `signal: "SIGKILL"` to check crash recovery without a final checkpoint.
+ * Restart environment overrides merge into the original serverEnv (including its egress guard) for that start only.
  *
  * `serverEnv` adds variables to the server's environment only (e.g. `NODE_OPTIONS` with an `--import`
  * preload for a check's harness). Without its own `NODE_OPTIONS` the server gets the egress guard:
  * no public service is reached (`deniedEgress()` lists what was refused).
  *
  * @param {{ serverPort?: number, vitePort?: number, log?: (text: string) => void, serverEnv?: Record<string, string> }} [options]
- * @returns {Promise<{ baseURL: string, serverURL: string, workDir: string, deniedEgress: () => Promise<string[]>, restartServer: (options?: { signal?: NodeJS.Signals }) => Promise<void>, stop: () => Promise<void> }>}
+ * @returns {Promise<{ baseURL: string, serverURL: string, workDir: string, deniedEgress: () => Promise<string[]>, restartServer: (options?: { signal?: NodeJS.Signals, serverEnv?: Record<string, string> }) => Promise<void>, stop: () => Promise<void> }>}
  */
 export async function startStack({ serverPort = 6101, vitePort = 5201, log, serverEnv = {} } = {}) {
     const workDir = await mkdtemp(path.join(os.tmpdir(), "risu-playwright-"));
@@ -144,12 +159,14 @@ export async function startStack({ serverPort = 6101, vitePort = 5201, log, serv
         await writeFile(guard, egressGuard(deniedFile));
         serverEnv = { ...serverEnv, NODE_OPTIONS: `--import=${guard}` };
     }
-    const serverURL = `http://localhost:${serverPort}`;
+    // A listener pinned to IPv4 cannot answer localhost when Node resolves it to ::1.
+    const host = serverEnv.RISU_HOST?.trim() ?? "";
+    const serverURL = `http://${isIPv4(host) && host.startsWith("127.") ? host : "localhost"}:${serverPort}`;
     const baseURL = `http://localhost:${vitePort}`;
     // The listener and the storage are the harness's own, whatever the shell exports for
     // `pnpm dev:agent` (`server/src/listenConfig.ts`): the store stays in `workDir`, auth is real.
     const { RISU_HOST, RISU_SAVE_DIR, RISU_AGENT_DEV_AUTH_BYPASS, ...inheritedEnv } = process.env;
-    const startServer = () =>
+    const startServer = (overrides = {}) =>
         run(
             process.execPath,
             [path.join(repoRoot, "server/src/main.ts")],
@@ -158,6 +175,7 @@ export async function startStack({ serverPort = 6101, vitePort = 5201, log, serv
                 env: {
                     ...inheritedEnv,
                     ...serverEnv,
+                    ...overrides,
                     PORT: String(serverPort),
                     RISU_SAVE_DIR: path.join(workDir, "save"),
                 },
@@ -188,9 +206,9 @@ export async function startStack({ serverPort = 6101, vitePort = 5201, log, serv
         async deniedEgress() {
             return (await readFile(deniedFile, "utf8").catch(() => "")).split("\n").filter(Boolean);
         },
-        async restartServer({ signal = "SIGTERM" } = {}) {
+        async restartServer({ signal = "SIGTERM", serverEnv: overrides } = {}) {
             await stop(server, signal);
-            server = startServer();
+            server = startServer(overrides);
             await waitForHttp(`${serverURL}/api/test_auth`, server, 30_000);
         },
         async stop() {

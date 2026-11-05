@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, and the seventh (the Guides To Source run) on 2026-11-05; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run) and the ninth (the Incremental Chat Transport run) on 2026-11-05; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -8,15 +8,15 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (7)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (8)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (8)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (11)
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
-- [Request history and diagnostics](#request-history-and-diagnostics) (1)
-- [Display transform](#display-transform) (1)
-- [Chat screen and input](#chat-screen-and-input) (4)
-- [Client and plugins](#client-and-plugins) (23)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (11)
-- [Guides](#guides) (4)
+- [Request history and diagnostics](#request-history-and-diagnostics) (2)
+- [Display transform](#display-transform) (2)
+- [Chat screen and input](#chat-screen-and-input) (7)
+- [Client and plugins](#client-and-plugins) (25)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
+- [Guides](#guides) (5)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (19)
 
@@ -82,11 +82,18 @@ Identifiers re-checked 2026-11-03 (`setCharacterChatView`, `installRead`, `adopt
 
 **Suggested handling:** confirm with two tabs on `pnpm dev:agent`, then decide whether the remote apply should call the display update functions.
 
+### A retaken handoff job drops its live stream
+
+Found 2026-11-05 in Job Handoff Slice 2. A tab whose takeover was lost (its ticket attach never reached `owner: "self"`) ends that follow through `releaseGenerationJob` (`src/ts/network/generationJobs.ts`), which calls `endServerJob` (`src/ts/storage/chatStore.svelte.ts`). `endServerJob` adds the job's generation ids to `retiredGenerations`, and `applyServerGeneration` / `applyServerGenerationChunk` then drop every later `accepted`/`chunk` for those ids for the rest of the page's life. If that tab later takes the reopened offer for the same job, it shows no live stream for the reply in progress. Chat patches, the final copy, and callbacks still arrive. Slice 2 accepted this as a limitation.
+
+**Why it matters:** today it only affects what the worker displays. It becomes a real problem once anything relies on the worker's stream view.
+**Suggested handling:** add a chat-store "detach without retiring" release that drops the job's entries but leaves its generation ids unretired, and use it for a lost takeover.
+
 ## Server jobs and prompt assembly
 
 ### Tool schemas are outside the assembly token budget
 
-`server/src/prompt/assemble.ts`'s final recheck counts messages; `AssemblyHost` has no tool-schema input, and the OpenAI adapter (`server/src/llm/openAI/requests.ts`) adds `body.tools` from descriptors supplied later in `server/src/llm/requests.ts`. A prompt assembled to the budget can therefore exceed the provider's context by the schemas' tokens. Traced by the [cross-plan review](../audit/cross-plan-2026-10-29.md#hypotheses-not-reproduced) (memory seam) and not reproduced with a real tokenizer; unverified.
+`server/src/prompt/assemble.ts`'s final recheck counts messages; `AssemblyHost` has no tool-schema input, and the OpenAI adapter (`server/src/llm/openAI/requests.ts`) adds `body.tools` from descriptors supplied later in `server/src/llm/requests.ts`. A prompt assembled to the budget can therefore exceed the provider's context by the schemas' tokens. Traced by the [cross-plan review](../manual-audit/cross-plan-2026-10-29.md#hypotheses-not-reproduced) (memory seam) and not reproduced with a real tokenizer; unverified.
 
 **Why it matters:** with many or large tool definitions a send near the budget could be refused by the provider although the meter shows room.
 **Suggested handling:** measure with a real tool set and tokenizer; if the gap is real, charge an estimate of the schemas in the recheck (the token-counting follow-up group of the Deep Audit Fixes plan).
@@ -145,6 +152,27 @@ These client exports have no caller in `src/`, `shared/` or `server/`, while a s
 
 **Suggested handling:** write a nested-loop trigger test first; if it fails, match the break's indent the way the loop jump does.
 
+### A job's current owner can take its own handoff offer
+
+Found 2026-11-05 in Job Handoff Slice 3. `takeover()` in `server/src/jobs/generationJobs.ts` gives a ticket to any client that asks against an open offer, and that includes the job's current `ownerClientId`. Slice 3 only made `handoff()` refuse a request that targets the owner (409 `alreadyOwner`). On the tab side, `takeOffer` in `src/ts/network/handoff.ts` lets a worker take any untargeted offer for a job it did not create. That covers a job it already owns, for example an `absent` offer raised after its own socket went silent. The ticket attach then replaces the owner's own socket. If a callback delivered to the old socket is still outstanding, the attach becomes a pending takeover on a viewer socket, which cannot answer that callback. The callback then runs out as `disconnected` instead of being replayed when the owner reattaches normally.
+
+**Why it matters:** an owner that would have recovered its outstanding callback by reattaching can lose it, and losing a request-side callback ends the job.
+**Suggested handling:** make `takeover()` refuse the current owner, so the tab drops the offer and its running follow reattaches as owner. Check the fix against the creator's own `absent` take-back path.
+
+### The handoff role event never carries the new owner's name
+
+Found 2026-11-05 by the Job Handoff Slice 4 driver (`util/playwright/checkJobHandoff.mjs`, case creator-keeps-watching). `shared/jobs.ts` declares the role event as `{ type: "handoff"; owner; clientName?; pending? }`. `src/ts/process/serverCommands.ts` shows `serverJob.handoff.takenBy` with the name when `clientName` is set. Nothing in `server/src/jobs/generationJobs.ts` or the `server/src/app.ts` wiring ever fills `clientName`, because the registry cannot look up the `register` names kept by `server/src/routes/events.ts`. Plan D2/D5 said the event carries the owner's name "when the server knows one".
+
+**Why it matters:** the creator always sees the generic `takenByOther` text instead of the worker's name.
+**Suggested handling:** give the registry a `clientName(clientId)` dependency, fed from the events route's registrations in `app.ts`, and use it when building every role event. Then tighten the driver's case so it requires the name.
+
+### A cancelled hook can overlap the worker's next callback
+
+Found 2026-11-05 in Job Handoff Slice 1. The owner switch (`switchOwner`, `hasDeliveredRequests` in `server/src/jobs/generationJobs.ts`) waits until no request delivered to the old owner is outstanding, and a server-side cancel or expiry counts as settled. A cancelled callback's hook may still be running on the old tab, and `runCallback` (`src/ts/network/jobChannel.ts`) flushes its resource changes even after a cancel. The old lane's drain hold (`holdDraining`, `server/src/jobs/channel.ts`) keeps only that lane busy, so the worker's lane can start the next callback while the old hook is still running. An old owner's late answer also arrives on a viewer socket and is ignored, so its drain hold ends only through `POST /drained` or the 60 s bound.
+
+**Why it matters:** the plan's guarantee that no callback runs on two tabs holds for a single callback, but a cancelled hook can still write alongside the worker's next one. The plugins guide (Job owner presence) states only the single-callback form.
+**Suggested handling:** ask the owner whether the switch should also wait for the old lane's drain holds, or state the overlap as a limitation in the server-generation guide.
+
 ## Server routes and resource store
 
 ### Routes still measure a body the limiter already counted
@@ -161,13 +189,6 @@ Since `limitedBody` counts the bytes that arrive (Server Byte Budgets slice 1, `
 **Why it matters:** D1 of the plan says route caps go through the shared helper; two copies drift.
 **Suggested handling:** replace the copy with `limitedBody(MAX_CHECKPOINT_BODY_BYTES)` and remove the guide's note.
 
-### checkpoints.sweep has no product caller
-
-`store.checkpoints.sweep` (`server/src/data/resourceStore.ts` ~1756 on 2026-11-01) is called only by tests; the open-time sweep (~1181) calls the table function directly. Since `prune` and `delete` stopped sweeping the whole `checkpointPages` table (slice 7, `7d55d0189`), the pages a chat or character cascade orphans wait for the next open, so a long-running server keeps them until a restart. The plan accepted the wait; the unused wrapper was noticed in passing.
-
-**Why it matters:** the bytes of a deleted chat's pages stay in the database file and in every snapshot's copy until a restart (a restore drops them).
-**Suggested handling:** if orphan growth ever matters, call the sweep from a maintenance tick or after a chat delete; otherwise the wrapper is test-only and could move.
-
 ### The LLM answer route comment names one 404 and no cap
 
 The comment above `registerLlmRoutes` in `server/src/routes/llm.ts` (~236) says `POST /api/llm/request/:id/answer` is 404 "for an unknown request" and the request route 429 "past the per-client cap". In code, `answer` in `server/src/llm/requests.ts` also gives 404 for another client's request and for one that has ended, and the cap is `MAX_REQUESTS_PER_CLIENT` (32, ~40). Found in the Guides To Source run (2026-11-05); server-generation's guide keeps both facts in its LLM and token routes entry because llm-requests owns the file.
@@ -175,6 +196,14 @@ The comment above `registerLlmRoutes` in `server/src/routes/llm.ts` (~236) says 
 **Why it matters:** a later trim of that guide entry would leave the narrower comment as the only statement.
 
 **Suggested handling:** at the next llm-requests edit, extend the comment and let server-generation's entry point there.
+
+### The change log's bound is a row count, not 4 MB
+
+The `changes` table in `resources.sqlite` (Incremental Chat Transport D5, `server/src/data/resourceStore.ts`, pruned by `pruneChanges` ~1020) keeps the newest 20,000 rows. The plan's Q1 and D5 text ("a row is under 200 bytes: 4 MB at most", "40 snapshots hold up to about 160 MB of logs", cross-plan X8) understates the worst case: ids may be 512 UTF-16 units (the id validator in `resourceStore.ts`, chat ids in `server/src/data/chatStore.ts`), a 20,000-row probe with such ids made an 82 MB database (2026-11-05, Slice 3), and DELETE-based pruning never shrinks the file. Whole-file snapshots (`backupTo`) and version-2 downloadable backups (`server/src/routes/backups.ts`, which strips `llmSecrets` and vacuums) carry it. Found by Slice 3's challenge.
+
+**Why it matters:** with typical UUID ids the log is a few MB, but the Asset Lifecycle snapshot budget counts 40 copies of it at a byte size the code does not bound.
+
+**Suggested handling:** size snapshot storage as rows × id length; add a VACUUM or a byte bound if a real store comes near it.
 
 ## Request history and diagnostics
 
@@ -195,14 +224,29 @@ Identifiers re-checked 2026-11-03 (`trimPartial`, `APP_PATH`, `FRAME`, `copyText
 **Why it matters:** a security review of the history folder or the diagnostics report should know which gaps were chosen.
 **Suggested handling:** read before such a review; delete items as they settle, and move confirmed ones to `diagnostics.md` or `llm-requests.md` Known Hazards.
 
+### Socket protocol numbers are not in Diagnostics
+
+Both sockets send `proto=1` (Incremental Chat Transport D4, Slice 2). The server records it per socket (`protocols` in `server/src/routes/events.ts` ~72, `socketFlags` in `server/src/jobs/generationJobs.ts` ~811) and logs one `console.info` line per socket (`[Live-update socket] proto=…`, `[Generation socket] proto=…`). D4 says a later plan sets a floor and measures "which clients are below it from the diagnostics", but the Diagnostics schema (`shared/diagnostics.ts`) and `logEvent`'s fields (`server/src/diagnostics/log.ts`) carry no protocol number and neither socket has a recorder. Found by Slice 2 (2026-11-05).
+
+**Why it matters:** a floor decision would have to scrape server console logs; an exported diagnostics report shows nothing.
+
+**Suggested handling:** before any `proto` floor work, add a diagnostics event field and a recorder on both sockets.
+
 ## Display transform
 
 ### Budget-refused handler rows not re-measured
 
-`server/src/prompt/transform.ts` refuses a two-call (tab plugin handler) target whose snapshot charge passes `MAX_SNAPSHOT_BYTES` (8 MiB, :54). Since the [cross-plan review's DT1 fix](../audit/cross-plan-2026-10-29.md#dt1--a-permanent-display-failure-retries-and-toasts-every-round) (94856bdc2) a scope over the limit alone fails `permanent` (shown raw until its source or context changes), while a refusal the request's other targets caused is a plain failure that `src/ts/parser/displayTransformRecovery.svelte.ts` retries after 5 s with only the failed rows, so the earlier claim that such rows stay raw until a remount no longer holds. What is left is the measurement: when Display Evaluation Slice 3 measured it (2026-10-28), a 2,000-message chat of about 6 MiB charged about 6.7 MiB per scope, so only 30–38 of a 64-target chunk fit; Slice 4 then excluded the shared display entries from the per-snapshot charge (`exclude: entries`), so that number is likely smaller now. Not re-measured since.
+`server/src/prompt/transform.ts` refuses a two-call (tab plugin handler) target whose snapshot charge passes `MAX_SNAPSHOT_BYTES` (8 MiB, :54). Since the [cross-plan review's DT1 fix](../manual-audit/cross-plan-2026-10-29.md#dt1--a-permanent-display-failure-retries-and-toasts-every-round) (94856bdc2) a scope over the limit alone fails `permanent` (shown raw until its source or context changes), while a refusal the request's other targets caused is a plain failure that `src/ts/parser/displayTransformRecovery.svelte.ts` retries after 5 s with only the failed rows, so the earlier claim that such rows stay raw until a remount no longer holds. What is left is the measurement: when Display Evaluation Slice 3 measured it (2026-10-28), a 2,000-message chat of about 6 MiB charged about 6.7 MiB per scope, so only 30–38 of a 64-target chunk fit; Slice 4 then excluded the shared display entries from the per-snapshot charge (`exclude: entries`), so that number is likely smaller now. Not re-measured since.
 
 **Why it matters:** users with display plugins and long chats may still see a round of raw rows before the retry, and a scope whose own charge is over the limit stays raw.
 **Suggested handling:** re-measure on a realistic large chat with handlers (`util/playwright/measureTransformLua.mjs` has the shape); if a scope alone still passes the limit on realistic chats, raise the limit or charge the transcript once per scope.
+
+### More than one transform chunk is in flight at a chat switch
+
+The Render Work Budget comparison run ([audit](../audit/render-work-budget-2026-11-05.md#acceptance-after-slices-14), 2026-11-05) met "no transform target sent after a switch" but not "in-flight ones at most one chunk": switching away 100 ms after all rows mounted left 1 / 2 / 4 `/api/transform` requests (1 / 45 / 171 targets) in flight at 30 / 150 / 600 rows. Every one had been sent before the switch and all but one ended `net::ERR_ABORTED` when the last subscriber left (`src/ts/parser/transformClient.ts`); at 600 rows unmounting the rows held the main thread for about 370 ms, so one 42-target request answered first and ran to completion. How many targets cross depends on where the switch falls in the send burst (the first after run: 0 / 49 / 78).
+
+**Why it matters:** the server still evaluates several chunks nobody will show after a switch on long chats; the cancellation arrives only after the unmount work.
+**Suggested handling:** owner decision whether the plan's one-chunk bound matters; if it does, cap the chunks in flight per chat, or abort a chat's transform subscriptions when the screen leaves the chat, before the rows unmount.
 
 ## Chat screen and input
 
@@ -235,6 +279,27 @@ The hand-written help text of the `"?"` case in `src/ts/process/command.ts` `pro
 **Why it matters:** users cannot discover those commands from `/?`.
 
 **Suggested handling:** add their entries to the help text.
+
+### The screenshot peak grows with the row count
+
+After the paged export (`src/lib/ChatScreens/screenshotExport.ts`), the Render Work Budget comparison run ([audit](../audit/render-work-budget-2026-11-05.md#acceptance-after-slices-14), 2026-11-05) writes 2 / 7 / 25 valid PNG pages for 30 / 150 / 600 rows, but the renderer's `VmHWM` still rises by 607 / 1,478 / 3,987 MiB while one page's RGBA (816 × 16,308) is 50.8 MiB, so the acceptance "peak under one page plus the largest row" is not met. Most of the peak is not the page canvas; what holds it (the per-row captures, `src/ts/screenshotCaptureCache.ts`, or the DOM-to-canvas renderer's clones) was not investigated.
+
+**Why it matters:** a 600-row export still costs about 4 GiB of renderer memory, enough to crash a tab on phones.
+**Suggested handling:** take a heap snapshot and `VmHWM` per page during a 150-row export to find what scales with rows, then release it per page.
+
+### The screenshot page fill is black
+
+`composeScreenshot` in `src/lib/ChatScreens/screenshotExport.ts` (~131, carried over from the old merge in `DefaultChatScreen.svelte`) sets `ctx.fillStyle = "var(--risu-theme-bgcolor)"`. Canvas `fillStyle` does not resolve `var(...)`, so the assignment is ignored and the fill stays `#000000`: a row narrower than its page leaves a black strip on its right, whatever the theme. Found in the Render Work Budget run (2026-11-05).
+
+**Why it matters:** visible in exports with mixed row widths on light themes.
+**Suggested handling:** resolve the color in the caller (`getComputedStyle(document.documentElement).getPropertyValue("--risu-theme-bgcolor")`) and pass it to `composeScreenshot`.
+
+### A render run pending at raw streaming is not aborted
+
+`src/lib/ChatScreens/ChatBody.svelte` aborts the previous run's `parseController` inside the `markParsingResult` `$derived.by` (~545). While `shouldRenderRawStreaming` is true neither the template nor the `$effect` reads `markParsingResult`, so the lazy derived does not re-run and the run pending when the row entered raw streaming keeps a live signal and runs to completion, hidden. Rows kept mounted across a reroll (`Chat.svelte`, `Chats.svelte`) reach it. Aborting there without a new `parseRun` would let the aborted run's `finally` write `lastParsed` (its guard is `run === parseRun`). Found in the Render Work Budget run (2026-11-05).
+
+**Why it matters:** bounded obsolete work, one run per streaming row.
+**Suggested handling:** on the transition into raw streaming, abort `parseController` and bump `parseRun` together.
 
 ## Client and plugins
 
@@ -432,6 +497,21 @@ The type `SelectInput`'s `onchange` in `src/lib/UI/PromptDataItem.svelte` (~268)
 
 **Suggested handling:** check what the editor and `src/ts/process/prompt.ts` do with a missing `text`, then initialize it in the `onchange` if needed.
 
+### getFileSrc never rejects, so asset reads are never retried
+
+`getFileSrc` in `src/ts/globalApi.svelte.ts` (~141) returns `getFileSource(loc).src`, whose loader's outer `catch` (~396) logs and resolves `""`. The render's transient classification (`src/ts/parser/renderErrors.ts`, the asset and inlay passes in `src/ts/parser/parser.svelte.ts`) marks `getFileSrc`/`getFileSrcCached` rejections transient, but a real read failure never rejects: the asset renders with an empty `src` and is not retried. `getFileSrcCached` does not cache `""` (falsy check), so the next render reads again. Found in the Render Work Budget run (2026-11-05).
+
+**Why it matters:** the plan's retry for a failed asset read (its D2) rarely fires; a transient storage failure leaves a broken image until the row re-renders for another reason.
+**Suggested handling:** an opt-in failure channel in `globalApi.svelte.ts` for the render path, rather than making the shared loader reject for every caller.
+
+### Declined lowLevelAccess on a JSON card falls through to the off-spec import
+
+In `src/ts/characterCards.ts` `importCharacterProcess`, the JSON branch calls `importCharacterCardSpec(da)` (around 196), which returns `false` both for a card that is not V2/V3 and when the user declines `confirmCardLowLevelAccess`. The caller then tries the off-spec path (`da.char_name || da.name`, around 201, then `convertOffSpecCards`), so a V2/V3 card that also carries the V1 top-level fields (common for compatibility) is imported as an off-spec card after the user said no. Found in the Asset Lifecycle run (2026-11-05, slice 2), which kept the fall-through for every refusal but its own asset handoff failure.
+
+**Why it matters:** the decline is meant to stop the import (asked before anything is saved, so a declined card leaves no assets behind); importing a reduced copy anyway is likely unintended, though it is pre-existing behavior.
+
+**Suggested handling:** ask the owner; if the decline should end the import, make `importCharacterCardSpec` tell a decline apart from "not a V2/V3 card" and return before the off-spec path.
+
 ## Build, drivers, and e2e
 
 ### checkJobProtocol's first run after a source change fails its SIGKILL case
@@ -520,6 +600,22 @@ Found in the Guides To Source run (2026-11-04/05); owner build-test-platforms.
 
 **Suggested handling:** delete it at the next worker edit.
 
+### measureChats.mjs trips safe boot and fakes its scrolled-up input
+
+`util/playwright/measureChats.mjs` as committed cannot finish: its boot loop waits `page.waitForTimeout(2000)` between three fresh boots (~317), below `SAFE_BOOT_SETTLE_MS` (10 s, `src/ts/safeBoot.ts`), so automatic safe boot opens its alert and the `Go Back` click in `chatRow` times out. Its `streamReply({ scrolledUp: true })` only sets `scrollTop`, while `Chats` releases its anchor on wheel, touch, pointer or key input, so "Long: scrolled-up streaming keeps the loaded window" fails (600 → 150 rows) as harness input, not a product change. Already described in `docs/research/rendering-performance-investigation.md`; seen again by Incremental Chat Transport Slice 0 (2026-11-05), which measured with a scratch copy.
+
+**Why it matters:** every measureChats-based slice needs a temporary settled copy until the driver is fixed.
+
+**Suggested handling:** wait 11 s after the seed check and between boots (or clear the safe-boot attempts as `util/playwright/stack.mjs` offers), and drive the scrolled-up case with real wheel input.
+
+### checkServerSend once hit an alert after its mid-stream reload
+
+On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the first `node util/playwright/checkServerSend.mjs` passed 11 checks, then `openCharacterChat` after the "reload in the middle of a slow stream" step (~340) timed out because a `[data-alert-dialog]` overlay covered the sidebar. The run overlapped a `docker build`; four reruns passed 19/19, two of them logging no alert after the reload, and the base `9bf28c429` passed 19/19. The alert text was not captured. Candidates: the automatic safe-boot notice (the driver does not clear safe-boot attempts) or an error alert from the owner's resync after the reload.
+
+**Why it matters:** if it recurs it may be a real owner-reload problem, not harness noise.
+
+**Suggested handling:** if it shows again, print the dialog text before `openCharacterChat` to tell the two apart; consider clearing safe-boot attempts in the driver.
+
 ## Guides
 
 ### Archive README cites a gone emotion table hazard
@@ -560,11 +656,19 @@ Lookup trials of the Guides To Source run (2026-11-04/05) hesitated or guessed a
 
 **Suggested handling:** point the link at the server-generation section on job creation and lock acquisition (or drop the "see"), and relabel line 285's link.
 
+### docs:owner sends the asset lifecycle client to persistence
+
+`pnpm docs:owner src/ts/storage/assetLifecycleClient.ts` (and its test `src/ts/storage/tests/assetLifecycleClient.test.ts`) answers `persistence` through the `src/ts/storage/` fallback, while the client is documented in `docs/structure/assets.md` (Asset client, Tests). The Asset Lifecycle run's Storage panel slice (2026-11-05) added the files and could not edit `docs/structure/ownership.json`.
+
+**Why it matters:** an agent routed by `docs:owner` reads the persistence guide and finds nothing about the report, scan, and sweep client.
+
+**Suggested handling:** add `assetLifecycleClient` to the assets rules in `docs/structure/ownership.json` beside `src/ts/storage/{assetClient,assetQueue}.ts` and their tests rule, then run `pnpm check:docs`.
+
 ## Test timing
 
 ### Gate tests still racing real time
 
-Untagged gate tests that depend on real wall-clock or scheduler time (invariant V3), noted by the [cross-plan review](../audit/cross-plan-2026-10-29.md#test-quality) on 2026-10-29; none failed in its runs. `src/ts/storage/tests/draftJournal.test.ts`: the start and adoption cases (the live-owner case near "leaves a live owner's rows alone" and the owner-reload case) call the real journal with its production 3 s open/seed and 5 s recovery-lock deadlines, and the file's blanket fake-timer comment does not hold for them. `server/src/tests/hypaV3Parts.test.ts`: selection and deferral cases built with `hostOf` run under the real 5,000 ms cumulative separator budget. `server/src/tests/transformService.test.ts`: `heldCount` polls with a real `setTimeout(2)` (up to 500 polls) and a 5 ms real sleep observes shutdown. `server/src/tests/transform.test.ts`: the real-worker route cases outside the cache describe's fake clock race worker, CBS, and transform deadlines (`SLOW = 60_000` is a timeout, not a `slow` tag). `src/ts/storage/tests/bootCacheServer.test.ts` (around the cases near lines 185 and 485 at that time): the real 3 s cache deadline with asynchronous IndexedDB work. Real sleeps: `server/src/tests/push.test.ts` (delivery and queue synchronization). `src/lib/ChatScreens/Chat.draft.test.ts`: the auto-popup cases wait for the first row with real `vi.waitFor` before faking timers. `src/ts/network/generationJobs.test.ts` and `src/ts/process/serverCommands.test.ts`: zero-delay real-timer `flush` helpers (28 and 106 calls) as synchronization. Re-checked 2026-11-03: behind mocks that resolve at once these flushes are close to deterministic; the load-sensitive part left is the `generationJobs` `startFollow` cases outside fake timers, which race the real connect timeout. `server/src/tests/testSupport.ts` `waitFor` without `timeoutMs` has no deadline of its own and is not one of these.
+Untagged gate tests that depend on real wall-clock or scheduler time (invariant V3), noted by the [cross-plan review](../manual-audit/cross-plan-2026-10-29.md#test-quality) on 2026-10-29; none failed in its runs. `src/ts/storage/tests/draftJournal.test.ts`: the start and adoption cases (the live-owner case near "leaves a live owner's rows alone" and the owner-reload case) call the real journal with its production 3 s open/seed and 5 s recovery-lock deadlines, and the file's blanket fake-timer comment does not hold for them. `server/src/tests/hypaV3Parts.test.ts`: selection and deferral cases built with `hostOf` run under the real 5,000 ms cumulative separator budget. `server/src/tests/transformService.test.ts`: `heldCount` polls with a real `setTimeout(2)` (up to 500 polls) and a 5 ms real sleep observes shutdown. `server/src/tests/transform.test.ts`: the real-worker route cases outside the cache describe's fake clock race worker, CBS, and transform deadlines (`SLOW = 60_000` is a timeout, not a `slow` tag). `src/ts/storage/tests/bootCacheServer.test.ts` (around the cases near lines 185 and 485 at that time): the real 3 s cache deadline with asynchronous IndexedDB work. Real sleeps: `server/src/tests/push.test.ts` (delivery and queue synchronization). `src/lib/ChatScreens/Chat.draft.test.ts`: the auto-popup cases wait for the first row with real `vi.waitFor` before faking timers. `src/ts/network/generationJobs.test.ts` and `src/ts/process/serverCommands.test.ts`: zero-delay real-timer `flush` helpers (28 and 106 calls) as synchronization. Re-checked 2026-11-03: behind mocks that resolve at once these flushes are close to deterministic; the load-sensitive part left is the `generationJobs` `startFollow` cases outside fake timers, which race the real connect timeout. `server/src/tests/testSupport.ts` `waitFor` without `timeoutMs` has no deadline of its own and is not one of these.
 
 **Why it matters:** each is a load-sensitive failure waiting for a slow CI runner; the timing plans' policy (`docs/structure/test-harness.md` `Tests`) asks for controlled clocks or the `slow` tag.
 **Suggested handling:** when one of these files is next touched, control its clock (inject the deadline or fake the timers) or tag the case `slow`; `pnpm --silent test:agent --slow-tests` lists the ones over 1 s.

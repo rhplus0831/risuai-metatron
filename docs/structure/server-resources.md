@@ -28,9 +28,10 @@ headers and method comments.
   per kind).
 - `server/src/data/checkpointStore.ts` (`createCheckpointTables`, `walkCheckpointSnapshot`) and
   `server/src/data/checkpointService.ts` (`createCheckpointService`: `save`, `load`, `autoSave`): checkpoints.
-- `server/src/data/snapshots.ts` (`createSnapshotManager`: the timer, `pin`, `withMaintenance`; `MaintenanceGate`),
-  `server/src/data/archive.ts` (the version-2 archive records), `server/src/data/databaseProjection.ts` (the flat
-  `Database` projection of a job's scope and the upstream export), and `server/src/data/recordPatchText.ts`.
+- `server/src/data/snapshots.ts` (`createSnapshotManager`: the timer, `stageCopy`, `withMaintenance`;
+  `MaintenanceGate`), `server/src/data/archive.ts` (the version-2 archive records),
+  `server/src/data/databaseProjection.ts` (the flat `Database` projection of a job's scope and the upstream export), and
+  `server/src/data/recordPatchText.ts`.
 - The store publishes on the [feed](live-update-feed.md#coalescing-and-publish-order).
 
 ### Backup and import internals
@@ -42,25 +43,26 @@ headers and method comments.
 - `server/src/http/spool.ts`, `server/src/http/fileImport.ts` (`serveFileImport`, `serveStagedImport`,
   `createImportSlot`), `server/src/http/contentAsset.ts`, and `server/src/http/recordStream.ts` handle archive and card
   file transfer for the routes below.
-- A content-named asset (`assets/<sha256 hex>.<ext>`) that already exists is kept only when it holds its bytes
-  (`holdsVerifiedAsset` in `server/src/http/assetVerification.ts`, a recorded verification of the same file included):
-  the module, CharX, PNG, and Realm imports replace an empty, truncated, or wrong file by rename, and an archive restore
-  (`server/src/routes/backups.ts` `restoreValidated`) replaces it when the archive's copy hashes to the name. Other
-  existing names are never overwritten by a restore.
+- An existing content-named asset (`assets/<sha256 hex>.<ext>`) is kept only when it holds its bytes
+  (`holdsVerifiedAsset`): the file imports replace a damaged one by rename, and `restoreValidated` (`routes/backups.ts`)
+  when the archive's copy hashes to the name. A restore never overwrites other existing names.
 
 ### Resource routes
 
 `server/src/routes/resources.ts` `registerResourceRoutes` and `server/src/routes/resourceBoot.ts` (`parseBootRequest`,
-`readBoot`): `checkAuth` (JWT), authenticated limiter. Writes need the [epoch](#epoch-and-response-rules); reads, `POST`
-reads included, do not. A reverse proxy must keep the encoded ids ([Gotchas](self-host-server.md#gotchas)). Shapes:
-`shared/resources.ts` (`ResourceBootRequest`, `ResourceBootResult`, `ChatReadRecord`) and `shared/chats.ts`.
+`readBoot`): JWT (`checkAuth`) and authenticated limiter. Only writes need the [epoch](#epoch-and-response-rules).
+Proxies must preserve encoded ids ([Gotchas](self-host-server.md#gotchas)). Shapes: `shared/resources.ts`
+(`ResourceBootRequest`, `ResourceBootResult`, `ChatReadRecord`) and `shared/chats.ts`.
 
 - Reads: `GET /api/resources?kinds=` (whole kinds, one committed state), `POST /api/resources/read` (named records,
-  chats, and collections; the [read budget](#read-budget)), `POST /api/resources/boot` (skips what the tab holds),
-  `GET /api/resources/revisions` (no data: the live-update reconcile), `GET /api/resources/:kind`, and
-  `GET /api/resources/:kind/:id`, all compressed per `Accept-Encoding` (`compressedJson`).
+  chats, rows, and collections; the [read budget](#read-budget)), `POST /api/resources/boot` (skips what the tab holds),
+  `GET /api/resources/revisions` (revision refs), `GET /api/resources/:kind`, and `GET /api/resources/:kind/:id`, all
+  compressed per `Accept-Encoding` (`compressedJson`).
 - Writes, + epoch: `POST /api/resources/batch` (resource ops, chat groups, chat orders; a conflict applies nothing),
   `PUT` and `DELETE /api/resources/:kind/:id` (`baseRevision`; 409 with the current revision).
+- `revisions?since=&until=&epoch=`: coalesced refs/tombstones (`ResourceChangesSince`); no `since`: whole listing.
+  Bounds require nonnegative safe integers and epoch nonempty (else 400). Coverage/expiry: `resourceStore.ts`
+  `listChanges`; epoch checks match listings.
 
 ### Credential routes
 
@@ -82,10 +84,11 @@ limiter, `no-store`; writes also need the epoch. `GET /api/chat-checkpoints` and
 ### Backup routes
 
 `server/src/routes/backups.ts` `registerBackupRoutes`: `checkAuth`, authenticated limiter; the epoch applies to the
-restore and the import only. `GET /api/backups`; `POST /api/backups/:id/restore` ([restore](#snapshots-and-restore); it
-never reads its body, [Limitations](self-host-server.md#limitations)); `POST /api/backups/export` and
-`POST /api/backups/import` ([export and import](#archive-export-and-import)). The import's raw body has no 100 MiB
-limit: `RISU_MAX_IMPORT_BYTES` (`DEFAULT_MAX_IMPORT_BYTES`, 16 GiB) caps it and the upstream, module, and CharX uploads.
+restore and the import only. `GET /api/backups`; `POST /api/backups/snapshot`, `PATCH`/`DELETE /api/backups/:id`;
+`POST /api/backups/:id/restore` ([restore](#snapshots-and-restore); it never reads its body,
+[Limitations](self-host-server.md#limitations)); `POST /api/backups/export` and `POST /api/backups/import`
+([export and import](#archive-export-and-import)). The import's raw body has no 100 MiB limit: `RISU_MAX_IMPORT_BYTES`
+(`DEFAULT_MAX_IMPORT_BYTES`, 16 GiB) caps it and the upstream, module, and CharX uploads.
 
 ### Upstream backup routes
 
@@ -129,11 +132,12 @@ Realm bodies capped at 4 KiB).
 `POST /api/resources/read` deduplicates its entries, always. With `continue: true` one answer is bounded by its charged
 bytes (`readResponseBytes`, default `MAX_READ_RESPONSE_BYTES` in `shared/resources.ts`, 16 MiB) and names what it left
 out in `unanswered`; without it the answer is whole, so an older tab that takes an absent entry for a deleted one never
-meets `unanswered`. The budget is soft: an answer's first group is served whatever its size, so a chat or a collection
-that outgrew it stays readable, and a chat or a collection is never split. The groups, their order, and the charge
-(stored bytes from SQL, not wire bytes; a [projection](structured-memory/projection.md#the-hypav3-projection) read,
-which the routes ask for and the store does when structured memory is the stored memory algorithm
-(`overlaysMemoryProjection`), adds the chats' `memory_events`) are `readRefsWithinBudget`'s comment.
+meets `unanswered`. The budget is soft: an answer's first group is served whatever its size, so an entry that outgrew it
+stays readable, and a chat or a collection is never split. The groups, their order, and the charge (stored SQL bytes,
+not wire bytes; a [projection](structured-memory/projection.md#the-hypav3-projection) read, asked by the routes and done
+under structured memory, `overlaysMemoryProjection`, adds the chats' `memory_events`) are `readRefsWithinBudget`'s
+comment. A `chatRows` entry (one group, charged its rows and stored metadata) answers its rows and named fields as
+stored (no projection) at exactly its revision, else `moved` with the current one (null: gone), never `unanswered`.
 
 ### Chat summaries
 
@@ -172,24 +176,19 @@ leave absence as absence (upstream reads it as now).
 
 ### Snapshots and restore
 
-- The snapshot timer runs every ten minutes and writes only after committed resource changes; it retains the newest 20
-  snapshots (`createSnapshotManager`).
-- A restore checks the epoch and takes a turn of a FIFO queue (`createRestoreQueue` in `routes/backups.ts`) that spans
-  its validation and install, so one validation worker runs at a time; a stale waiter answers 412 with no work and no
-  safety snapshot.
-- The turn pins the snapshot into a staging folder (`snapshots.pin`), [validates](#validation) it in a worker outside
-  maintenance, verifies the staged file, then under maintenance (`withMaintenance`: the snapshot lock and the
-  maintenance listeners come first, and mutations stay open until the gate closes) checks the epoch, makes a safety
-  snapshot, and [installs](#install), advancing the epoch. A client that leaves does not cancel a restore.
+- `createSnapshotManager`'s comment has the timer, retention, pins, removal, and disk check.
+- A restore checks the epoch, then in a `createRestoreQueue` turn (`routes/backups.ts`) retains the snapshot
+  (`snapshots.retain`), checks disk (507), links it (`snapshots.stageCopy`), [validates](#validation) it outside
+  maintenance, then under `withMaintenance` checks the epoch, takes a safety snapshot, and [installs](#install). A
+  client that leaves does not cancel it.
 - A write admitted before the gate closes commits without moving the epoch, so the restore's check still passes: the
   write is in the safety snapshot and is replaced by the install, and the tab's next write meets the new epoch (412).
 
 ### Archive export and import
 
-The version-2 archive export streams a database snapshot and asset records; its exported database omits `llmSecrets`.
-Import authenticates and checks the epoch before reading, spools the full archive and validates it, its database in a
-turn of the same queue that ends before maintenance, then installs it under maintenance with a safety snapshot, adding
-missing asset files and repairing damaged ones under the [content-name rule](#backup-and-import-internals).
+The version-2 export and import contracts are the comments above their routes in `routes/backups.ts`: the export's
+database omits `llmSecrets`; the import validates the whole archive, its database in a restore queue turn, then installs
+under maintenance by the [content-name rule](#backup-and-import-internals).
 
 ### Validation
 
@@ -208,11 +207,9 @@ after the commit are its comment.
 
 ### Shutdown during a restore
 
-Shutdown aborts a restore before its install (`restoreShutdown` in `app.ts`, `restoreSignal` in `routes/backups.ts`):
-its worker is terminated, a waiter ends at its turn, and it answers 503 with its staging removed. The signal is checked
-at the turn, through the hash pass, before maintenance, inside it, and right before `replaceAll`; an install past that
-check completes. An upstream commit stops the same way (`staging.signal`). A version-2 import admitted before shutdown
-finishes, its worker included, and `dispose` waits for it.
+Shutdown aborts a restore before its install (`restoreShutdown` in `app.ts`; `restoreSignal`'s comment in
+`routes/backups.ts` has where it is checked), answering 503 with its staging removed. An upstream commit stops the same
+way (`staging.signal`). A version-2 import admitted before shutdown finishes, and `dispose` waits for it.
 
 ### Upstream backups
 
@@ -220,9 +217,8 @@ finishes, its worker included, and `dispose` waits for it.
   heap cap; staged work expires after ten minutes. `RISU_MAX_UPSTREAM_DB_BYTES` caps the decoded database.
 - The prepare's worker stages from its build store with `stageValidatedSnapshot`, on the default kinds
   (`importStage.ts`).
-- Import reports changes for review; the commit reads no row and checks the epoch and the accepted write count again
-  right before maintenance, and a change answers 412 or `409 changedSinceReview` (the comment above the commit route has
-  when the import is handed back).
+- Import reports changes for review; the commit's recheck, its 412 and `409 changedSinceReview`, and when the import is
+  handed back are the comment above the commit route.
 - Export reads the snapshot without checkpoint tables, so upstream saves hold no named checkpoint history. A failed
   memory walk does not stop it ([projection](structured-memory/projection.md#the-hypav3-projection)).
 
@@ -235,12 +231,14 @@ commits its assets, and shares one import slot with module and CharX imports.
 ### Maintenance
 
 Maintenance closes new resource and storage mutations and waits for admitted writes. Restore and backup imports use the
-maintenance gate. Jobs, transforms, and memory tasks stop for it ([job state](server-generation.md#process-memory)).
+maintenance gate; the asset sweep uses only `exclusive`. Jobs, transforms, and memory tasks stop for it
+([job state](server-generation.md#process-memory)).
 
 ## State
 
 Paths are under `save/` ([Disk layout](self-host-server.md#disk-layout)). `backups/` holds the resource snapshots
-(`resources-*.sqlite`, single files, newest 20); assets are not in snapshots.
+(`resources-*.sqlite`, single files, newest 20 unpinned plus pinned ones, `pins.json`); assets are not in snapshots, and
+the [asset ledger](self-host-server.md#asset-mark) indexes each one's references once.
 
 ### Store tables
 
@@ -259,6 +257,11 @@ settings sections and collections, no `root` record; tables as in version 2).
   row; `openChatSchema` creates it when missing, parsing every message row once on an older file's first open; it makes
   SQLite refuse a non-JSON `data`.
 - `chatOrders` (`characterId`, `seq`, `revision`, `ids` JSON).
+- `changes` (`cursor` autoincrement, `kind`, `characterId`, `id`, `revision`): transactional refs/tombstones; order ids
+  are character ids. Created at open beside `openChatSchema`, outside `STORE_TABLES_SQL` and the layout check; no
+  version bump. Open-time writes bypass it.
+- The log prunes to 20,000 rows (a few MB with typical ids; deletion does not shrink the file). `replaceAll` truncates
+  it without resetting the sequence. Whole-file snapshots and backups contain it; restore ignores it.
 - `chatGroups` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `groupId`, `revision`,
   `result` JSON, unique `(chatSeq, groupId)`), which `openChatSchema` creates when missing, with no version change. It
   is outside the layout check, a snapshot's copy is not restored, and a restore leaves it empty (deleting the chats
@@ -389,14 +392,14 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 
 ### Issues
 
-- Snapshots (`save/backups/`) copy `resources.sqlite`, not assets; retained snapshots can keep references to assets that
-  are never deleted, so `save/assets/` can grow.
 - `normalizeCharacterOrder` and `normalizeCustomModels` do not deduplicate entries. The former accepts folder objects
   without validating their fields; the latter requires string `id` and `internalId` and strips retired credential
   fields.
 
 ### Limitations
 
+- Every listed snapshot is an [asset mark](self-host-server.md#asset-mark) root, so its assets stay until it rotates
+  away or is deleted. Decision: Asset Lifecycle D3, archive.
 - The SQLite resource store assumes one server process and a local filesystem
   ([Invariants](self-host-server.md#invariants)). Network filesystems are unsupported. Decision: Server Byte Budgets Q1,
   archive.

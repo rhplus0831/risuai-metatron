@@ -14,8 +14,8 @@ import { alertError } from "../alert";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import {
     type ChatRef,
-    findChat,
     heldChatRevision,
+    heldMessageById,
     isMessageLocked,
     setMessageTranslation,
 } from "../storage/chatStore.svelte";
@@ -82,7 +82,7 @@ export function freshTranslation(message: {
 
 /** The held message (tracked: the held chats are deep state). */
 export function heldMessage(ref: ChatRef, messageId: string) {
-    return findChat(ref)?.message.find((entry) => entry.chatId === messageId);
+    return heldMessageById(ref, messageId);
 }
 
 /** Whether a translation of the message is being requested in this tab. Tracked. */

@@ -3,11 +3,16 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
     EVENT_FEED_PATH,
+    MAX_FEED_CLIENT_NAME,
+    MAX_FEED_CLIENTS,
     type ChatStreamingSnapshot,
     type EventFeedFrame,
+    type FeedClient,
+    type HandoffOffer,
     type MemoryTaskEntry,
 } from "../../../shared/events.ts";
 import type { ChangeFeed, ChangeFeedEvent } from "../data/changeFeed.ts";
+import { isValidResourceId } from "../data/resourceStore.ts";
 
 const HEARTBEAT_MS = 15_000;
 /**
@@ -26,13 +31,20 @@ export type EventSockets = ReturnType<typeof createEventSockets>;
 /**
  * The live-update socket (`/api/events/ws`): every committed change the resource store
  * publishes goes to every connected client as refs and revisions (`shared/events.ts`). The handshake
- * needs a JWT (`risu-auth` query or header), never the raw password. On connect the socket sends
+ * needs a JWT (`risu-auth` query or header), never the raw password. Optional `proto` is a finite
+ * non-negative integer recorded per socket and logged without content (absent or invalid: none);
+ * the number never changes admission or behavior. On connect the socket sends
  * `hello` with the epoch, current generation locks (`streaming`), and every chat's memory task
- * status (`memoryTasks`), plus an optional revision-listing `digest`, all read in the same synchronous
- * step before the socket is registered and the hello sent. Nothing is replayed: a client reconciles
- * from its advertised map when the digest matches, otherwise from a fetched revision listing.
+ * status (`memoryTasks`), open handoff offers (`handoffs`), registered clients (`clients`), and an
+ * optional revision-listing `digest`, all sampled synchronously before adding the socket and sending hello.
+ * A text `register` message sets this socket's presence. The newest registration per client id wins;
+ * names use at most 64 UTF-16 units and the list keeps the newest 64 clients. Join, leave and change
+ * publish the list through the same queue as feed events. Unregistered sockets still receive everything.
+ * A client reconciles from its advertised map when the digest matches, otherwise from a log replay or
+ * a fetched revision listing.
  * A failed `digest` logs only the error name (or the type of a non-Error throw) and omits only that
  * field; failure of any other hello snapshot closes the socket with 1011.
+ * The optional change-log `cursor` is sampled in the same step, and a failed one is omitted like `digest`.
  * Every published event goes to every socket in publication order, also one published
  * while another is being sent; a socket too far behind to take a frame (`MAX_BUFFERED_BYTES`) is
  * terminated before it is queued, and the other sockets still receive the frame. Sockets are not
@@ -49,10 +61,17 @@ export function createEventSockets(options: {
     memoryTasks: () => MemoryTaskEntry[];
     /** Digest of the revision listing, sampled synchronously with the other hello snapshots. */
     digest?: () => string;
+    /** Committed log high-water cursor, sampled synchronously with the digest. */
+    cursor?: () => number;
+    /** Open handoff offers, sampled with the other hello snapshots. */
+    handoffs?: () => HandoffOffer[];
 }) {
     const { feed, epoch, authorize, streaming, memoryTasks, digest } = options;
-    const wsServer = new WebSocketServer({ noServer: true });
+    const wsServer = new WebSocketServer({ noServer: true, maxPayload: 4096 });
     const sockets = new Set<WebSocket>();
+    const protocols = new WeakMap<WebSocket, number | null>();
+    const registrations = new Map<WebSocket, FeedClient>();
+    let clients: FeedClient[] = [];
     let closed = false;
 
     /**
@@ -85,6 +104,7 @@ export function createEventSockets(options: {
                     type: "change",
                     epoch: event.epoch,
                     changes: event.changes,
+                    ...(event.cursor !== undefined ? { cursor: event.cursor } : {}),
                     ...(event.streaming ? { streaming: event.streaming } : {}),
                 };
             case "memoryTask":
@@ -95,6 +115,8 @@ export function createEventSockets(options: {
                     chatId: event.chatId,
                     status: event.status,
                 };
+            case "handoff":
+                return { ...event };
             case "epoch":
                 return { type: "epoch", epoch: event.epoch };
         }
@@ -105,8 +127,8 @@ export function createEventSockets(options: {
     // once, for every socket.
     const outgoing: string[] = [];
     let fanningOut = false;
-    const unsubscribe = feed.subscribe((event: ChangeFeedEvent) => {
-        outgoing.push(JSON.stringify(frameOf(event)));
+    function broadcast(text: string) {
+        outgoing.push(text);
         if (fanningOut) {
             return;
         }
@@ -122,18 +144,58 @@ export function createEventSockets(options: {
         } finally {
             fanningOut = false;
         }
-    });
+    }
+    const unsubscribe = feed.subscribe((event: ChangeFeedEvent) => broadcast(JSON.stringify(frameOf(event))));
 
-    function attach(ws: WebSocket) {
+    function publishClients() {
+        const newest = new Map<string, FeedClient>();
+        for (const client of [...registrations.values()].reverse()) {
+            if (!newest.has(client.clientId)) newest.set(client.clientId, client);
+            if (newest.size === MAX_FEED_CLIENTS) break;
+        }
+        const next = [...newest.values()];
+        if (JSON.stringify(next) === JSON.stringify(clients)) return;
+        clients = next;
+        broadcast(JSON.stringify({ type: "clients", clients } satisfies EventFeedFrame));
+    }
+
+    function attach(ws: WebSocket, proto: number | null) {
+        protocols.set(ws, proto);
+        console.info(`[Live-update socket] proto=${proto ?? "none"}`);
         let ping: ReturnType<typeof setInterval> | undefined;
         const drop = () => {
             clearInterval(ping);
             sockets.delete(ws);
+            if (registrations.delete(ws)) publishClients();
         };
         ws.on("close", drop);
         ws.on("error", drop);
-        // The socket is server to client only.
-        ws.on("message", () => {});
+        ws.on("message", (data, binary) => {
+            if (binary || !sockets.has(ws)) return;
+            let message: unknown;
+            try {
+                message = JSON.parse(data.toString());
+            } catch {
+                return;
+            }
+            if (typeof message !== "object" || message === null) return;
+            const registration = message as Record<string, unknown>;
+            if (
+                registration.type !== "register" ||
+                !isValidResourceId(registration.clientId) ||
+                typeof registration.name !== "string" ||
+                typeof registration.worker !== "boolean"
+            )
+                return;
+            // Re-registering moves this socket to the newest position, including reconnect races.
+            registrations.delete(ws);
+            registrations.set(ws, {
+                clientId: registration.clientId,
+                name: registration.name.slice(0, MAX_FEED_CLIENT_NAME),
+                worker: registration.worker,
+            });
+            publishClients();
+        });
         let hello: string;
         try {
             const frame: Extract<EventFeedFrame, { type: "hello" }> = {
@@ -142,6 +204,8 @@ export function createEventSockets(options: {
                 epoch: epoch(),
                 streaming: streaming(),
                 memoryTasks: memoryTasks(),
+                clients,
+                ...(options.handoffs ? { handoffs: options.handoffs() } : {}),
             };
             try {
                 if (digest) frame.digest = digest();
@@ -149,6 +213,14 @@ export function createEventSockets(options: {
                 // Without the digest the client reads the listing; the other snapshots stay usable.
                 console.error(
                     "[Live updates] hello digest failed:",
+                    error instanceof Error ? error.name : typeof error,
+                );
+            }
+            try {
+                if (options.cursor) frame.cursor = options.cursor();
+            } catch (error) {
+                console.error(
+                    "[Live updates] hello cursor failed:",
                     error instanceof Error ? error.name : typeof error,
                 );
             }
@@ -195,12 +267,15 @@ export function createEventSockets(options: {
                     socket.destroy();
                     return;
                 }
+                const protocolQuery = url.searchParams.get("proto");
+                const protocolNumber = protocolQuery?.trim() ? Number(protocolQuery) : NaN;
+                const proto = Number.isInteger(protocolNumber) && protocolNumber >= 0 ? protocolNumber : null;
                 wsServer.handleUpgrade(req, socket, head, (ws) => {
                     if (closed) {
                         ws.close(1001);
                         return;
                     }
-                    attach(ws);
+                    attach(ws, proto);
                 });
             } catch {
                 socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
@@ -229,6 +304,8 @@ export function createEventSockets(options: {
                 ws.close(1001);
             }
             sockets.clear();
+            registrations.clear();
+            clients = [];
             wsServer.close();
         },
     };

@@ -1,3 +1,4 @@
+import { ensureFreeSpace, InsufficientStorageError, liveDatabaseBytes, type DiskStatfs } from "../http/diskSpace.ts";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -201,6 +202,7 @@ export function registerUpstreamImportRoutes(
     app: Hono<AppEnv>,
     arg: {
         savePath: string;
+        statfs?: DiskStatfs;
         store: ResourceStore;
         snapshots: SnapshotManager;
         auth: AuthStore;
@@ -408,9 +410,11 @@ export function registerUpstreamImportRoutes(
      * 400 invalid body or staged file, 404 "Import expired", 409 busy or
      * { error: "changedSinceReview", writes }, 412 epoch, 503 maintenance/shutdown.
      * Takes the import and reads no row; verifyStagedFile hashes it while writes remain open, then
+     * Disk preflight answers 507 before the final stale/abort checks; no await splits their queue boundary.
      * staleCommit rechecks both epochs and the accepted write count immediately before maintenance.
      * Admission refusals do not take the import; a post-hash 409/412 gives it back with a fresh TTL
-     * if staging is still open. Once taken, other failures (including shutdown or an epoch change
+     * if staging is still open. A disk shortage also returns the import with a fresh TTL, so freeing
+     * space allows retrying the same token. Once taken, other failures (including shutdown or an epoch change
      * under maintenance) remove its folder; a 503 does not invariably preserve it.
      */
     app.post(UPSTREAM_IMPORT_COMMIT_PATH, limiter, async (c) => {
@@ -457,6 +461,12 @@ export function registerUpstreamImportRoutes(
         let handedBack = false;
         try {
             await verifyStagedFile(taken.databaseFile, taken.databaseReport, staging.signal);
+            // Already-staged assets are linked; remaining allocations are safety snapshot and install.
+            await ensureFreeSpace(
+                savePath,
+                (await liveDatabaseBytes(savePath)) + (await fs.stat(taken.databaseFile)).size,
+                { statfs: arg.statfs },
+            );
             // Writes stayed open during that pass. From here to the lock's queue, nothing awaits.
             staging.signal.throwIfAborted();
             const changed = staleCommit(c, taken, expectedEpoch, acceptWrites);
@@ -481,6 +491,9 @@ export function registerUpstreamImportRoutes(
             recordSafely(diagnostics, { kind: "lifecycle", phase: "import" });
             return c.json({ ...result, selection: taken.selection } satisfies UpstreamImportCommitted);
         } catch (error) {
+            if (error instanceof InsufficientStorageError) {
+                handedBack = staging.giveBack(token, taken);
+            }
             return backupErrorResponse(c, error);
         } finally {
             if (!handedBack) {

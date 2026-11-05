@@ -29,6 +29,7 @@ import { language } from "src/lang";
 import { v4 as uuidv4, v4 } from "uuid";
 import { changeChar } from "./characters";
 import {
+    assetKey,
     AppendableBuffer,
     BlankWriter,
     checkCharOrder,
@@ -63,6 +64,8 @@ import {
     serverImportErrorMessage,
 } from "./process/modules";
 import { loadAssetsInBatches, saveAssets, type AssetSaveItem } from "./storage/assetQueue";
+import { assetContentHash, missingAssets, writeAssets } from "./storage/assetClient";
+import { ASSET_LEASE_MS } from "../../shared/assetLifecycle.ts";
 import { importCharxOverServer } from "./storage/charxImportClient";
 import { cancelRealmImport, commitRealmImport, prepareRealmImport } from "./storage/realmImportClient";
 import { ServerImportRequestError } from "./storage/serverImportClient";
@@ -92,8 +95,43 @@ import {
  * (the module dialog converts it to a module). The card's `lowLevelAccess` question comes before the importer saves
  * an asset of its own. Before it, a PNG's asset chunks and a server-read CharX's entries are already stored, and the
  * in-tab `CharXImporter`'s entry saves are stored or still queued (its `done()` is awaited only after the question is
- * accepted); the Realm import asks before its commit.
+ * accepted); the Realm import asks before its commit. Immediately before addCharacter or returning
+ * a built record, the canonical keys saved, reused, or received by this import are checked again.
+ * Free-text references remain portable. Missing bytes are replayed when available; a failed check or
+ * an unavailable replay refuses the record and alerts the import error.
  */
+
+/**
+ * Final record handoff, after all questions/uploads, over explicit import results only. Free text
+ * may name keys from another server and is not proof that this import saved/reused those files.
+ * Server and one-shot stream imports may have only keys left: a missing imported key without replay
+ * bytes fails closed. False is the already-alerted asset failure, not a declined card question.
+ */
+async function claimCardAssets(
+    importedKeys: Iterable<string>,
+    replay = new Map<string, AssetSaveItem>(),
+): Promise<boolean> {
+    const keys = new Set([...importedKeys].filter((key) => assetContentHash(key) !== null));
+    if (!keys.size) return true;
+    try {
+        const start = performance.now();
+        const missing = await missingAssets([...keys]);
+        for (const key of missing) {
+            const item = replay.get(key);
+            if (!item) throw new Error(language.errors.cardAssetsUnavailable);
+            const bytes = await item.load();
+            if ((await assetKey(bytes, "", item.fileName ?? "")) !== key)
+                throw new Error(language.errors.assetReloadChanged);
+            await writeAssets([{ key, bytes }]);
+        }
+        if (performance.now() - start >= ASSET_LEASE_MS) throw new Error(language.errors.assetClaimsExpired);
+        return true;
+    } catch (error) {
+        console.warn("Card asset handoff failed", error);
+        alertError(language.errors.cardAssetsUnavailable);
+        return false;
+    }
+}
 
 /** The Realm hub's base path: the self-host server's same-origin `/hub-proxy` (`server/src/routes/proxy.ts`). */
 export const hubURL = "/hub-proxy";
@@ -159,8 +197,10 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
         if (imported) {
             return imported as any;
         }
+        if (imported === null) return null; // Asset handoff failed and was already alerted.
         if ((da.char_name || da.name) && (da.char_persona || da.description) && (da.char_greeting || da.first_mes)) {
-            const chaId = addCharacter(convertOffSpecCards(da));
+            const character = convertOffSpecCards(da);
+            const chaId = addCharacter(character);
             alertNormal(language.importedCharacter);
             return chaId as any;
         } else {
@@ -499,7 +539,11 @@ async function importPngCharacter(
 ): Promise<string | false | null> {
     if (read.kind === "tavern") {
         const imgp = typeof img === "string" ? img : await saveAsset(img);
-        const chaId = addCharacter(convertOffSpecCards(read.card, imgp));
+        const character = convertOffSpecCards(read.card, imgp);
+        const replay = new Map<string, AssetSaveItem>();
+        if (typeof img !== "string") replay.set(imgp, { load: () => img });
+        if (!(await claimCardAssets([imgp, ...Object.values(assets)], replay))) return null;
+        const chaId = addCharacter(character);
         alertNormal(language.importedCharacter);
         return chaId;
     }
@@ -968,6 +1012,7 @@ async function saveEmbeddedAssets(
     assetDict: { [key: string]: string },
     mode: "hub" | "normal",
     msg: string,
+    replay: Map<string, AssetSaveItem>,
 ): Promise<string[]> {
     const paths: string[] = [];
     const pending: number[] = [];
@@ -1002,6 +1047,7 @@ async function saveEmbeddedAssets(
     const saved = await saveAssets(items, { onProgress: showProgress });
     pending.forEach((entry, i) => {
         paths[entry] = saved[i];
+        if (!replay.has(saved[i])) replay.set(saved[i], items[i]);
     });
     return paths;
 }
@@ -1011,6 +1057,8 @@ async function saveEmbeddedAssets(
  * `addCharacter`, or with `returnValue` returns it unadded. It asks `lowLevelAccess` before it saves any asset, the
  * portrait included, so a declined card leaves none of its own behind; a caller that asked already passes
  * `lowLevelAccessAsked`. `img` as a string is the key the server stored the portrait under.
+ * A failed asset handoff returns null (already alerted), distinct from other false refusals so the
+ * JSON caller can preserve its existing off-spec fallback for those refusals.
  *
  * V3 asset URIs: `__asset:<id>` and `embeded://<path>` resolve through `assetDict` (a key it lacks throws),
  * `ccdefault:` is the portrait as it is at that entry, and a `data:` URI is saved (one whose base64 text is
@@ -1030,7 +1078,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
     returnValue: T = false as T,
     /** The caller asked the `lowLevelAccess` confirmation already (`confirmCardLowLevelAccess`). */
     lowLevelAccessAsked = false,
-): Promise<T extends true ? character | false : string | false> {
+): Promise<T extends true ? character | false | null : string | false | null> {
     if (!card || (card.spec !== "chara_card_v2" && card.spec !== "chara_card_v3")) {
         return false;
     }
@@ -1044,6 +1092,10 @@ async function importCharacterCardSpec<T extends boolean = false>(
     const data = card.data;
     // A string is the key the server already stored the image under (the Realm download).
     let im = typeof img === "string" ? img : img ? await saveAsset(img) : undefined;
+    const replay = new Map<string, AssetSaveItem>();
+    const importedKeys = new Set(Object.values(assetDict));
+    if (im) importedKeys.add(im);
+    if (img && typeof img !== "string") replay.set(im, { load: () => img });
     const risuext = safeStructuredClone(data.extensions.risuai);
     let emotions: [string, string][] = [];
     let bias: [string, number][] = [];
@@ -1067,6 +1119,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
                 assetDict,
                 mode,
                 "Loading... (Loading Emotions)",
+                replay,
             );
             for (let i = 0; i < risuext.emotions.length; i++) {
                 emotions.push([risuext.emotions[i][0], paths[i]]);
@@ -1079,6 +1132,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
                 assetDict,
                 mode,
                 "Loading... (Loading Assets)",
+                replay,
             );
             for (let i = 0; i < risuext.additionalAssets.length; i++) {
                 extAssets.push([risuext.additionalAssets[i][0], paths[i], fileNames[i]]);
@@ -1091,6 +1145,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
                 assetDict,
                 mode,
                 "Loading... (Loading VITS)",
+                replay,
             );
             for (let i = 0; i < keys.length; i++) {
                 risuext.vits[keys[i]] = paths[i];
@@ -1160,6 +1215,9 @@ async function importCharacterCardSpec<T extends boolean = false>(
                 showProgress(0);
             }
             const saved = await saveAssets(items, { onProgress: showProgress });
+            saved.forEach((key, index) => {
+                if (!replay.has(key)) replay.set(key, items[index]);
+            });
             for (let i = 0; i < data.assets.length; i++) {
                 const source = sources[i];
                 if (!source) {
@@ -1318,6 +1376,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
         char.modification_date = card.data.modification_date ?? 0;
     }
 
+    if (!(await claimCardAssets([...importedKeys, ...replay.keys()], replay))) return null;
     if (returnValue) {
         return char as any;
     }

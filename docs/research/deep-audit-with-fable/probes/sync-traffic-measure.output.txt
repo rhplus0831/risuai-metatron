@@ -43,3 +43,708 @@
   "chatReplace": 4244301,
   "translation": 2222
 }
+
+{
+  "commit": "de72fc1eb",
+  "recordDataBytes": {
+    "presets": 1406641,
+    "modules": 7313371,
+    "plugins": 1024691,
+    "pluginStorage": 2051044
+  },
+  "moduleLoreBytes": 316691,
+  "moduleAssetsBytes": 48891
+}
+{
+  "commit": "de72fc1eb",
+  "node": "v24.21.0",
+  "counts": {
+    "characters": 300,
+    "chats": 3000,
+    "resources": 325
+  },
+  "coldRequest": 424,
+  "warmRequest": 38961,
+  "coldResponse": 51531025,
+  "coldGzip1": 2027786,
+  "warmResponse": 4328163,
+  "warmGzip1": 202065,
+  "revisionListing": 539239,
+  "revisionListingGzip1Hypothetical": 106168,
+  "summaries": 1051894,
+  "orders": 152893,
+  "summaryCollection10": 4180,
+  "oneCharacter": 128379,
+  "longChatRead": 4244437,
+  "characterPayloadTotal": 38514714,
+  "presets": 1408769,
+  "modules": 7314271,
+  "plugins": 1024770,
+  "pluginStorage": 2051123
+}
+{
+  "commit": "de72fc1eb",
+  "warmAfterOneCharacterTimestamp": 4456460,
+  "extra": 128297,
+  "oneMsgSetText": 2118,
+  "oneRemove": 62,
+  "remove100": 3923,
+  "chatReplace": 4244301,
+  "translation": 2222
+}
+{
+  "label": "mixed-write-feed",
+  "commit": "de72fc1eb",
+  "node": "v24.21.0",
+  "fixture": {
+    "chunkChars": 1536,
+    "checkpoints": 45,
+    "replyChars": 69120,
+    "pasteChars": 98304,
+    "candidateCount": 3,
+    "candidateChars": 32768,
+    "candidateWrites": 3
+  },
+  "denominator": "Body-form and body-less cause counts divide by publishedEntries; unpublishedGroups divide by attemptedGroups.",
+  "fixtures": {
+    "appendingCheckpoints": {
+      "attemptedGroups": 45,
+      "publishedEntries": 45,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 42,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 3,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 1393551
+    },
+    "finalGenerationInfo": {
+      "attemptedGroups": 1,
+      "publishedEntries": 1,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 1,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0
+    },
+    "smallUserEdits": {
+      "attemptedGroups": 3,
+      "publishedEntries": 3,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 3,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 510
+    },
+    "largePaste": {
+      "attemptedGroups": 1,
+      "publishedEntries": 1,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 1,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0
+    },
+    "importReplace": {
+      "attemptedGroups": 1,
+      "publishedEntries": 1,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 1,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0
+    },
+    "rerollCandidates": {
+      "attemptedGroups": 3,
+      "publishedEntries": 3,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 3,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0
+    },
+    "reappendOrNoop": {
+      "attemptedGroups": 2,
+      "publishedEntries": 2,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 2,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0
+    }
+  },
+  "total": {
+    "attemptedGroups": 56,
+    "publishedEntries": 56,
+    "unpublishedGroups": 0,
+    "bodies": {
+      "patch": 45,
+      "delta": 0,
+      "rowDelta": 0
+    },
+    "bodyless": {
+      "overCap": 8,
+      "wholeChatWrite": 1,
+      "reappendOrNoop": 2,
+      "budgetDrop": 0
+    },
+    "bodyBytes": 1394061
+  }
+}
+
+{
+  "commit": "de72fc1eb+rowDelta",
+  "recordDataBytes": {
+    "presets": 1406641,
+    "modules": 7313371,
+    "plugins": 1024691,
+    "pluginStorage": 2051044
+  },
+  "moduleLoreBytes": 316691,
+  "moduleAssetsBytes": 48891
+}
+{
+  "commit": "de72fc1eb+rowDelta",
+  "node": "v24.21.0",
+  "counts": {
+    "characters": 300,
+    "chats": 3000,
+    "resources": 325
+  },
+  "coldRequest": 424,
+  "warmRequest": 38961,
+  "coldResponse": 51531025,
+  "coldGzip1": 2022110,
+  "warmResponse": 4328163,
+  "warmGzip1": 201785,
+  "revisionListing": 539239,
+  "revisionListingGzip1Hypothetical": 106267,
+  "summaries": 1051894,
+  "orders": 152893,
+  "summaryCollection10": 4180,
+  "oneCharacter": 128379,
+  "longChatRead": 4244437,
+  "characterPayloadTotal": 38514714,
+  "presets": 1408769,
+  "modules": 7314271,
+  "plugins": 1024770,
+  "pluginStorage": 2051123
+}
+{
+  "commit": "de72fc1eb+rowDelta",
+  "warmAfterOneCharacterTimestamp": 4456460,
+  "extra": 128297,
+  "oneMsgSetText": 2118,
+  "oneRemove": 62,
+  "remove100": 3923,
+  "chatReplace": 4244301,
+  "translation": 2222
+}
+{
+  "label": "mixed-write-feed",
+  "commit": "de72fc1eb+rowDelta",
+  "node": "v24.21.0",
+  "fixture": {
+    "chunkChars": 1536,
+    "checkpoints": 45,
+    "replyChars": 69120,
+    "pasteChars": 98304,
+    "candidateCount": 3,
+    "candidateChars": 32768,
+    "candidateWrites": 3
+  },
+  "denominator": "Body-form and body-less cause counts divide by publishedEntries; unpublishedGroups divide by attemptedGroups.",
+  "fixtures": {
+    "appendingCheckpoints": {
+      "attemptedGroups": 45,
+      "publishedEntries": 45,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 5,
+        "delta": 0,
+        "rowDelta": 40
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 90569
+    },
+    "finalGenerationInfo": {
+      "attemptedGroups": 1,
+      "publishedEntries": 1,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 1
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 187
+    },
+    "smallUserEdits": {
+      "attemptedGroups": 3,
+      "publishedEntries": 3,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 3,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 510
+    },
+    "largePaste": {
+      "attemptedGroups": 1,
+      "publishedEntries": 1,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 1,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0
+    },
+    "importReplace": {
+      "attemptedGroups": 1,
+      "publishedEntries": 1,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 1,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0
+    },
+    "rerollCandidates": {
+      "attemptedGroups": 3,
+      "publishedEntries": 3,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 3,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0
+    },
+    "reappendOrNoop": {
+      "attemptedGroups": 2,
+      "publishedEntries": 2,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 2,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0
+    }
+  },
+  "total": {
+    "attemptedGroups": 56,
+    "publishedEntries": 56,
+    "unpublishedGroups": 0,
+    "bodies": {
+      "patch": 8,
+      "delta": 0,
+      "rowDelta": 41
+    },
+    "bodyless": {
+      "overCap": 4,
+      "wholeChatWrite": 1,
+      "reappendOrNoop": 2,
+      "budgetDrop": 0
+    },
+    "bodyBytes": 91266
+  }
+}
+
+{
+  "commit": "b234d14ff+rows",
+  "recordDataBytes": {
+    "presets": 1406641,
+    "modules": 7313371,
+    "plugins": 1024691,
+    "pluginStorage": 2051044
+  },
+  "moduleLoreBytes": 316691,
+  "moduleAssetsBytes": 48891
+}
+{
+  "commit": "b234d14ff+rows",
+  "node": "v24.21.0",
+  "counts": {
+    "characters": 300,
+    "chats": 3000,
+    "resources": 325
+  },
+  "coldRequest": 424,
+  "warmRequest": 38961,
+  "coldResponse": 51531025,
+  "coldGzip1": 2018421,
+  "warmResponse": 4328163,
+  "warmGzip1": 202003,
+  "revisionListing": 539239,
+  "revisionListingGzip1Hypothetical": 106365,
+  "summaries": 1051894,
+  "orders": 152893,
+  "summaryCollection10": 4180,
+  "oneCharacter": 128379,
+  "longChatRead": 4244437,
+  "characterPayloadTotal": 38514714,
+  "presets": 1408769,
+  "modules": 7314271,
+  "plugins": 1024770,
+  "pluginStorage": 2051123
+}
+{
+  "commit": "b234d14ff+rows",
+  "warmAfterOneCharacterTimestamp": 4456460,
+  "extra": 128297,
+  "oneMsgSetText": 2118,
+  "oneRemove": 62,
+  "remove100": 3923,
+  "chatReplace": 4244301,
+  "translation": 2222
+}
+{
+  "label": "mixed-write-feed",
+  "commit": "b234d14ff+rows",
+  "node": "v24.21.0",
+  "fixture": {
+    "chunkChars": 1536,
+    "checkpoints": 45,
+    "replyChars": 69120,
+    "pasteChars": 98304,
+    "candidateCount": 3,
+    "candidateChars": 32768,
+    "candidateWrites": 3
+  },
+  "denominator": "Body-form and body-less cause counts divide by publishedEntries; unpublishedGroups divide by attemptedGroups.",
+  "fixtures": {
+    "appendingCheckpoints": {
+      "attemptedGroups": 45,
+      "publishedEntries": 45,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 5,
+        "delta": 0,
+        "rowDelta": 40
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 90569,
+      "overCapReads": []
+    },
+    "finalGenerationInfo": {
+      "attemptedGroups": 1,
+      "publishedEntries": 1,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 1
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 187,
+      "overCapReads": []
+    },
+    "smallUserEdits": {
+      "attemptedGroups": 3,
+      "publishedEntries": 3,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 3,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 510,
+      "overCapReads": []
+    },
+    "largePaste": {
+      "attemptedGroups": 1,
+      "publishedEntries": 1,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 1,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0,
+      "overCapReads": [
+        {
+          "rowsManifest": true,
+          "wholeChat": {
+            "bytes": 168009,
+            "gzip": 1345
+          },
+          "chatRows": {
+            "bytes": 98639,
+            "gzip": 700
+          }
+        }
+      ]
+    },
+    "importReplace": {
+      "attemptedGroups": 1,
+      "publishedEntries": 1,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 1,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0,
+      "overCapReads": []
+    },
+    "rerollCandidates": {
+      "attemptedGroups": 3,
+      "publishedEntries": 3,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 3,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 0,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0,
+      "overCapReads": [
+        {
+          "rowsManifest": true,
+          "wholeChat": {
+            "bytes": 266340,
+            "gzip": 1820
+          },
+          "chatRows": {
+            "bytes": 98671,
+            "gzip": 732
+          }
+        },
+        {
+          "rowsManifest": true,
+          "wholeChat": {
+            "bytes": 266340,
+            "gzip": 1820
+          },
+          "chatRows": {
+            "bytes": 98671,
+            "gzip": 732
+          }
+        },
+        {
+          "rowsManifest": true,
+          "wholeChat": {
+            "bytes": 266340,
+            "gzip": 1821
+          },
+          "chatRows": {
+            "bytes": 98671,
+            "gzip": 733
+          }
+        }
+      ]
+    },
+    "reappendOrNoop": {
+      "attemptedGroups": 2,
+      "publishedEntries": 2,
+      "unpublishedGroups": 0,
+      "bodies": {
+        "patch": 0,
+        "delta": 0,
+        "rowDelta": 0
+      },
+      "bodyless": {
+        "overCap": 0,
+        "wholeChatWrite": 0,
+        "reappendOrNoop": 2,
+        "budgetDrop": 0
+      },
+      "bodyBytes": 0,
+      "overCapReads": []
+    }
+  },
+  "total": {
+    "attemptedGroups": 56,
+    "publishedEntries": 56,
+    "unpublishedGroups": 0,
+    "bodies": {
+      "patch": 8,
+      "delta": 0,
+      "rowDelta": 41
+    },
+    "bodyless": {
+      "overCap": 4,
+      "wholeChatWrite": 1,
+      "reappendOrNoop": 2,
+      "budgetDrop": 0
+    },
+    "bodyBytes": 91266,
+    "overCapReads": [
+      {
+        "rowsManifest": true,
+        "wholeChat": {
+          "bytes": 168009,
+          "gzip": 1345
+        },
+        "chatRows": {
+          "bytes": 98639,
+          "gzip": 700
+        }
+      },
+      {
+        "rowsManifest": true,
+        "wholeChat": {
+          "bytes": 266340,
+          "gzip": 1820
+        },
+        "chatRows": {
+          "bytes": 98671,
+          "gzip": 732
+        }
+      },
+      {
+        "rowsManifest": true,
+        "wholeChat": {
+          "bytes": 266340,
+          "gzip": 1820
+        },
+        "chatRows": {
+          "bytes": 98671,
+          "gzip": 732
+        }
+      },
+      {
+        "rowsManifest": true,
+        "wholeChat": {
+          "bytes": 266340,
+          "gzip": 1821
+        },
+        "chatRows": {
+          "bytes": 98671,
+          "gzip": 733
+        }
+      }
+    ]
+  }
+}

@@ -32,7 +32,8 @@ comments; an entry names its path, role, and identifiers.
 - `server/src/main.ts` the process entry (HTTP or HTTPS, upgrades, shutdown): `startServer`, `REQUEST_TIMEOUT_MS`,
   `SHUTDOWN_GRACE_MS`, `TRUST_PROXY`.
 - `server/src/listenConfig.ts` bind, storage, and development-auth settings: `readListenConfig`, `ListenConfig` (`PORT`,
-  `RISU_HOST`, `RISU_SAVE_DIR`, `RISU_AGENT_DEV_AUTH_BYPASS`), `isLoopbackHost`, `parsePasswordSeed`.
+  `RISU_HOST`, `RISU_SAVE_DIR`, `RISU_AGENT_DEV_AUTH_BYPASS`), `isLoopbackHost`, `parsePasswordSeed`,
+  `parseAssetClockOffset`.
 - `server/src/app.ts` the assembly of state, routes, and lifecycle: `createServerContext`, `RouteLimits`,
   `attachWebSocket`, `startBackgroundTasks`, `beginShutdown`, `dispose`. It and its route factories consume the
   variables below; a value one of them cannot parse stops the start, with the variable's name.
@@ -60,6 +61,8 @@ comments; an entry names its path, role, and identifiers.
 - `server/src/http/assetVerification.ts` content-name verification: `assetVerification`, `contentNameHash`,
   `verifyFiles`, `holdsVerifiedAsset`. `server/src/http/assetThumbnails.ts` the thumbnail service and cache:
   `createThumbnailService`, `THUMBNAIL_VERSION`, `ThumbnailRequest`, `ENTRY_NAME`.
+- `server/src/data/assetLifecycle.ts` the [asset mark](#asset-mark) and sweep: `recognize`, `sweep`;
+  `server/src/http/diskSpace.ts` `freeBytes`.
 - `diagnostics/` owns request history, diagnostic journals, reports, and support shares ([diagnostics](diagnostics.md)).
 - Packaging: `server/ssl/` generates local certificates; `Dockerfile`, `.dockerignore`, `server.sh`, and `server.bat`
   define deployment and launch behavior.
@@ -134,10 +137,11 @@ authenticated limiter, `no-store`, bodies capped after authentication (`PUT /api
 - `GET /api/read`, `GET /api/list`, `POST /api/write`, and `GET /api/remove` (no client calls it).
 - `GET`/`HEAD /api/asset/*`: `assetHeaders`, `serveAssetFile`, `shared/assetMime.ts` (`assetMimeType`,
   `isActiveAssetExtension`), `assetVerification`; `?w=256|512` is the thumbnail variant (`createThumbnailService`). The
-  cache headers, ETags, and the variant's `307` reasons (`x-risu-thumbnail`: `original`, `unavailable`, `busy`, `error`;
-  `thumbnailRedirect`, `thumbnailFailure`) are the comment above the route.
+  cache headers, ETags, and the variant's `307` reasons (`x-risu-thumbnail`) are the comment above the route.
 - `POST /api/assets/write` and `/api/assets/read` (`shared/assetBatch.ts` framing); `POST /api/assets/missing`
-  (`ASSET_MISSING_PATH`, `checkAuth` before the body, `assetVerification.verifyFiles`).
+  (`ASSET_MISSING_PATH`).
+- `GET /api/assets/report`, `POST /api/assets/{scan,sweep}`: `server/src/routes/assetLifecycle.ts`,
+  `shared/assetLifecycle.ts`.
 - The thumbnail sizes are admitted here (`widths`, `thumbnailSize`) and repeated in `ThumbnailRequest.size` and
   `ENTRY_NAME`: change them together. The browser and the service worker follow the variant's redirect to the original,
   so a page needs no status handling.
@@ -148,13 +152,20 @@ authenticated limiter, `no-store`, bodies capped after authentication (`PUT /api
 
 1. `server/src/main.ts` `startServer`: `readListenConfig`, `createServerContext` (save directory by `mkdirDurableSync`,
    state, routes), `serve()`, `attachWebSocket`, `startBackgroundTasks` (`generationJobs.startGc`, `snapshots.start`,
-   `diagnostics.start`, the thumbnail sweep).
+   `diagnostics.start`, the thumbnail sweep, the [asset mark](#asset-mark)).
 2. SIGINT or SIGTERM: `beginShutdown`, the HTTP drain (`SHUTDOWN_GRACE_MS`), `dispose()`; for a restore or an import see
    [shutdown during a restore](server-resources.md#shutdown-during-a-restore).
 
 `__NODE__` in the flagged `index.html` lets the client mount only when this server is present. Client boot, auth, and
 dev proxy setup are documented in [app-shell](app-shell.md) and [build-test-platforms](build-test-platforms.md). Opening
 the store runs the [normalization pass](server-resources.md#store-open-and-normalization).
+
+### Asset mark
+
+`createAssetLifecycle` (an hour after `startBackgroundTasks`, then daily, or `POST /api/assets/scan`;
+`RISU_ASSET_GRACE_DAYS`, `RISU_AGENT_DEV_ASSET_CLOCK_OFFSET_MS`) marks the roots its header lists
+(`snapshots.stageCopy`, `createExportHolds`) into `data/asset-lifecycle.sqlite`. The sweep (`POST /api/assets/sweep`)
+deletes past-grace candidates; its batches and synchronous turn are `sweep`'s comment.
 
 ### Login flow
 
@@ -206,7 +217,8 @@ Everything lives under `save/`. `data/`, `backups/`, and `cache/thumbnails/` are
 - `cache/thumbnails/`: the [thumbnail cache](#thumbnail-cache).
 - `data/resources.sqlite` and `backups/`: [the resource store](server-resources.md#state).
 - `data/generation-jobs.sqlite`: [the job receipts](server-generation.md#job-receipts).
-- `data/` also holds the [request history](diagnostics.md) and the [vector cache](memory.md).
+- `data/` also holds the [request history](diagnostics.md), the [vector cache](memory.md), and the
+  [asset ledger](#asset-mark).
 
 ### Auth and push files
 
@@ -246,8 +258,8 @@ Everything lives under `save/`. `data/`, `backups/`, and `cache/thumbnails/` are
 
 A logical key `assets/<name>` lives at `save/assets/<encodeFileName(name)>`, e.g. `assets/<sha>.png` or
 `assets/inlay_<sha256>.png`. The legacy `save/database` and `save/remotes` folders are left in place and never read, and
-files of the flat layout (hex file names and `__password` directly in `save/`) are neither read nor migrated. Retained
-snapshots can keep assets from being deleted ([Issues](server-resources.md#issues)).
+files of the flat layout (hex file names and `__password` directly in `save/`) are neither read nor migrated. Only the
+[sweep](#asset-mark) deletes an asset.
 
 - `encodeFileName` keeps `a-z 0-9 . _ -` readable and writes every other UTF-8 byte (uppercase letters, `/`, `%`,
   spaces, non-ASCII) as `%XX`. It also escapes a trailing dot and the first character of a Windows device name
@@ -262,10 +274,9 @@ snapshots can keep assets from being deleted ([Issues](server-resources.md#issue
 created when an entry is ready to be staged. `/api/list`, full and upstream exports (`listAssetKeys`), and snapshots
 never see it, and a restore or an import leaves it in place.
 
-- Each entry is `<sha256(key)>-w<size>-v<THUMBNAIL_VERSION>-<size>-<mtimeNs>-<ino>-<dev>` plus `.webp`, or `.orig` (an
-  empty marker for a deterministic "serve the original" decision: small, animated, non-raster or unsupported, or over
-  the input caps; never for a transient failure). Entries are staged under `.tmp/` and renamed into place, outside the
-  maintenance gate.
+- Each entry is `<sha256(key)>-w<size>-v<THUMBNAIL_VERSION>-<size>-<mtimeNs>-<ino>-<dev>` plus `.webp`, or `.orig`, an
+  empty marker for a deterministic "serve the original" decision (`createThumbnailService`'s comment has when). Entries
+  are staged under `.tmp/` and renamed into place, outside the maintenance gate.
 - Publication and removal touch only that key's directory: after publishing, the service lists it and drops entries
   whose identity differs from the source file's current stat (all of them when the source is gone, including the one
   just written), removing the directory if empty; `/api/remove` removes the directory.
@@ -277,15 +288,16 @@ never see it, and a restore or an import leaves it in place.
 
 ### Process memory
 
-The module-level `assetVerification` singleton holds bounded verification results and its hash queue, keyed by absolute
-paths so separate save directories do not collide. The remaining state is inside the `createServerContext` closure; the
-store's and the jobs' parts are in [store state](server-resources.md#process-memory) and
+The module-level `assetVerification` and `assetLeases.ts` (key locks, leases) singletons are keyed by absolute paths so
+separate save directories do not collide. The remaining state is inside the `createServerContext` closure; the store's
+and the jobs' parts are in [store state](server-resources.md#process-memory) and
 [job state](server-generation.md#process-memory).
 
 - `password` and the known key hashes.
 - Rate-limit counters.
 - The thumbnail service (`thumbnails`): its single flights, generation slots and wait queue, per-key locks, and the
   loaded encoder. A restart loses only work in flight; the disk cache stays.
+- The asset mark's last report, run identity, and export holds.
 
 ## Coupling
 
@@ -315,6 +327,7 @@ store's and the jobs' parts are in [store state](server-resources.md#process-mem
   cache answers any same-origin request of that URL without reaching the server, including a plugin's `nativeFetch`; the
   service worker passes a request whose destination it does not sign through unsigned instead of answering 401 itself.
   Do not reopen this without a new finding.
+- Every server publish or reuse of an asset key goes through `claimAssetKey`.
 - File publication flushes staged file data before rename and syncs its directory where supported. Preserve atomic
   replacement and the ordering of durable writes; `EINVAL` and `EPERM` from directory sync are tolerated.
 - A push or auth state change is one operation on the ordered writer: read, derive, write durably, install, never a file
@@ -392,6 +405,8 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
   file beside its target.
 - Replacing bytes under an already cached immutable content name does not update a browser's cached asset, and a fresh
   copy stays under the [accepted exposure](#invariants). Decision: Direct Asset URLs closeout, archive.
+- Swept bytes stay in a browser's immutable cache until evicted; browser-only keys are no root. Decision: Asset
+  Lifecycle D11, archive.
 - `/api/set_password` and `/api/crypto` are unauthenticated by design and rate limited. A server has one password and
   registered browser keys, not separate users. Decision: Static Audit Fixes Q6 and Server-Owned Data non-goals, archive.
 - A chunked body over the cap to the snapshot restore is not refused: the operation runs and the adapter discards the

@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { matureSweep, seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assetVerification } from "../http/assetVerification.ts";
 import { resolveStorageKey } from "../routes/storage.ts";
@@ -539,4 +540,34 @@ describe("missing asset checks", () => {
         expect((await missing(Array(512).fill(name))).status).toBe(200);
         expect((await missing(Array(513).fill(name))).status).toBe(400);
     });
+});
+
+it("deletes candidate bytes, every thumbnail version, verification, and its ledger row", async () => {
+    await s.close();
+    const clock = sweepClock();
+    s = await createResourceTestClient({ assetLifecycle: clock.options });
+    const key = `assets/${sha256("verified bytes")}.png`;
+    const target = seedSweepAsset(s, key, "verified bytes");
+    const stat = await fs.stat(target, { bigint: true });
+    assetVerification.recordVerification(target, stat, true);
+    const directory = path.join(s.savePath, "cache", "thumbnails", sha256(key));
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, "old.webp"), "thumb");
+    await matureSweep(s, clock);
+    const response = await s.json("/api/assets/sweep", { dryRun: false });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+        deleted: [key],
+        freedBytes: 14,
+        removedInlays: [],
+        skipped: [],
+        skippedInlays: [],
+    });
+    await expect(fs.stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(assetVerification.lookupVerification(target, stat)).toBe("unknown");
+    expect(s.context.assetLifecycle.report().unreferenced.count).toBe(0);
+    // Reappearance starts a new grace clock; a stale ledger row must not authorize immediate deletion.
+    seedSweepAsset(s, key, "verified bytes");
+    expect((await s.context.assetLifecycle.scan()).unreferenced.candidates).toEqual([]);
 });

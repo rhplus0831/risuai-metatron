@@ -47,6 +47,7 @@ export async function createResourceClientMock(
         })),
         readRefs: vi.fn(async () => ({ epoch: "", items: [] })),
         listRevisions: vi.fn(async () => ({ epoch: "", resources: [], chats: [], chatOrders: [] })),
+        listChanges: vi.fn<ResourceClientModule["listChanges"]>(async () => ({ epoch: "", cursor: 0, expired: true })),
         getResource: vi.fn(async () => null),
         // A `Mock` drops the call's type parameter, hence the cast.
         putResource: vi.fn(async (_kind: string, _id: string, data: unknown) => ({
@@ -59,6 +60,21 @@ export async function createResourceClientMock(
         prepareUnloadAuth: vi.fn(),
         sendBatchOnUnload: vi.fn(() => false),
         listBackups: vi.fn(async () => []),
+        takeSnapshot: vi.fn<ResourceClientModule["takeSnapshot"]>(async (label) => ({
+            id: "",
+            createdAt: "",
+            size: 0,
+            pinned: false,
+            label: label ?? null,
+        })),
+        updateSnapshot: vi.fn<ResourceClientModule["updateSnapshot"]>(async (id, update) => ({
+            id,
+            createdAt: "",
+            size: 0,
+            pinned: update.pinned ?? false,
+            label: update.label ?? null,
+        })),
+        deleteSnapshot: vi.fn<ResourceClientModule["deleteSnapshot"]>(async () => ({ deleted: true })),
         restoreBackup: vi.fn(async () => ""),
         exportBackup: vi.fn(async () => new Response()),
         importBackup: vi.fn(async () => ({ epoch: "", assetsWritten: 0, assetsSkipped: 0 })),

@@ -5,49 +5,44 @@
 - Owns the tab's side of the live-update feed: the connection and its reconnect, what a `hello` reconciles, how a
   `change` frame's record refs and patches, chat entries, and lock lists reach the mirror, when a noticed record or chat
   is read instead, the feed locks, and the halt a restore or import causes.
-- Paths: `src/ts/network/eventFeed.ts`, `src/ts/network/socketLiveness.ts`, and the live-update part of
-  `src/ts/storage/resourceSync.svelte.ts` (`noteRemoteChanges`, `reconcileRemote`, `haltForRestore`). Chat entries and
-  locks go to `src/ts/storage/chatStore.svelte.ts` (`noteRemoteChat`, `noteRemoteStreaming`), owned by
-  [chat-store](chat-store.md).
-- Not here:
-  - The save cycle, conflicts, and the reads the loop runs → [resource-sync](resource-sync.md); a live update that
-    cannot apply waits for [a cycle or refresh pass](resource-sync.md#save-cycle).
-  - The server's feed, its frames, and the publication budget → [live-update-feed](live-update-feed.md).
-  - What a chat patch does to the chat module → [chat-store](chat-store.md#summaries-and-refresh); the restore journal →
-    [draft-recovery](draft-recovery.md#journal-writes).
-  - The job sockets that share `socketLiveness.ts` → [network-jobs](network-jobs.md).
+- Not here: the save cycle, conflicts, and the loop's reads ([resource-sync](resource-sync.md); an update that cannot
+  apply waits for [a cycle or refresh pass](resource-sync.md#save-cycle)); the server's feed, frames, and publication
+  budget ([live-update-feed](live-update-feed.md)); what a chat patch does to the chat module
+  ([chat-store](chat-store.md#summaries-and-refresh)); the restore journal
+  ([draft-recovery](draft-recovery.md#journal-writes)); the job sockets sharing `socketLiveness.ts`
+  ([network-jobs](network-jobs.md)).
 
 ## Files
 
-- `src/ts/network/eventFeed.ts`: client feed socket; `startEventFeed`, `stopEventFeed`, `receive`, `reconcile`,
-  `scheduleReconnect`, `resumeReconnect`, `generation`, `advertised`, `RECONCILE_DEADLINE_MS`.
-- `src/ts/network/socketLiveness.ts`: shared socket liveness and resume policy; `watchSocket`, `watchResume`,
-  `CONNECT_TIMEOUT_MS`, `STALE_AFTER_MS`, `RESUME_AFTER_HIDDEN_MS`, `RESUME_FOLD_MS`.
-- `src/ts/storage/resourceSync.svelte.ts`, live-update part: record refresh and restore adapter; `noteRemoteChanges`,
-  `reconcileRemote`, `setRemoteResourceOwner`, `remoteRecords`, `remoteCollections`, `applyRemotePatch`,
-  `patchedRecord`, `canApplyRemote`, `applyToMirror`, `applyRemoteUpdates`, `REMOTE_DELAY_MS`, `MAX_REMOTE_READS`,
-  `beforeRestoreReload`, `haltForRestore`, `watchForRestore`.
+Identifiers the flows below name are not repeated here.
+
+- `src/ts/network/eventFeed.ts`: client feed socket; `stopEventFeed`, `receive`, `reconcile`, `scheduleReconnect`,
+  `resumeReconnect`, `generation`, `advertised`, `RECONCILE_DEADLINE_MS`.
+- `src/ts/network/socketLiveness.ts`: shared socket liveness and resume policy; `CONNECT_TIMEOUT_MS`, `STALE_AFTER_MS`,
+  `RESUME_AFTER_HIDDEN_MS`, `RESUME_FOLD_MS`.
+- `src/ts/storage/resourceSync.svelte.ts`, live-update part: record refresh and restore adapter; `remoteRecords`,
+  `remoteCollections`, `patchedRecord`, `canApplyRemote`, `REMOTE_DELAY_MS`, `MAX_REMOTE_READS`, `beforeRestoreReload`.
 - `src/ts/storage/chatStore.svelte.ts`: chat updates and feed locks, owned by [chat-store](chat-store.md);
-  `noteRemoteChat`, `applyRemoteChatPatch`, `stagedMetaFields`, `noteRemoteStreaming`, `replaceFeedLocks`, `feedLocks`,
-  `issueChatReadStamp`, `dropFeedLocksOf`, `canRefreshChat`, `isChatStreamedHere`, `isCharacterStreamedHere`,
-  `finishIdleChatRefresh`, `removeRemoteChat`, `dropChatRevision`, `forgetCharacter`.
+  `stagedMetaFields`, `feedLocks`, `canRefreshChat`, `finishIdleChatRefresh`.
 
 ## Flows
 
 ### Feed connection
 
-- After the boot read and `startResourceSync`, `src/ts/bootstrap.ts` calls `startEventFeed` in
-  `src/ts/network/eventFeed.ts`, the client of `/api/events/ws` (`shared/events.ts`). A `change` frame sends refs to the
-  save adapter's `noteRemoteChanges`: record `patch` entries apply or wait for a read; chat `patch`, `delta` and summary
-  knowledge follow [Chat live updates](#chat-live-updates).
-- A same-epoch `hello` installs the chat module's `replaceFeedLocks` before `reconcileRemote`. A matching `hello.digest`
-  / `revisionDigest` uses the advertised map; otherwise `listRevisions` reads `/api/resources/revisions`. Reconciliation
-  routes listed refs and missing held rows through the adapter and registered owners. A different-epoch `hello` or
-  `epoch` frame [halts](#restore-halt).
-- The fetched listing itself goes unchanged to reconciliation and `src/ts/process/memoryTasks.svelte.ts` fences; the
-  advertised map alone overlays changes received since `hello`.
-- A dead socket (a phone freeze leaves it open and silent) is abandoned by `watchSocket`, and a page that comes back
-  replaces it through `watchResume` (`src/ts/network/socketLiveness.ts` header); the new `hello` reconciles as above.
+- After boot and `startResourceSync`, `src/ts/bootstrap.ts` calls `eventFeed.ts` `startEventFeed` for `/api/events/ws`
+  (`shared/events.ts`). Changes reach `noteRemoteChanges`: record patches apply or await reads; chat bodies and
+  summaries follow [Chat live updates](#chat-live-updates).
+- A same-epoch `hello` installs `replaceFeedLocks` before `reconcileRemote`. A matching digest uses the advertised map.
+  Otherwise, with that map in the loaded epoch and both cursors plus digest, freeze its maps and held cursor before
+  awaiting `listChanges({ since: heldCursor, until: hello.cursor, epoch })`.
+- Replay only into the copy; reconcile from it if its digest matches. Expired coverage, a remaining mismatch or absent
+  cursors (including older servers) uses `listRevisions`. Both reads share the deadline and post-hello overlay.
+- The unoverlaid replay/listing reaches reconciliation and `src/ts/process/memoryTasks.svelte.ts` fences; only the
+  advertised map takes the overlay. Same-epoch frames advance the held cursor; success also takes `hello.cursor`.
+  Reconciliation routes listed and missing refs through the adapter and owners. Epoch mismatches [halt](#restore-halt).
+- Handoff offers and presence go to `src/ts/network/handoff.ts`; `register` timing: the `eventFeed.ts` header.
+- `watchSocket` abandons dead sockets; `watchResume` replaces the connection when the page returns
+  (`src/ts/network/socketLiveness.ts`).
 
 ### Live updates
 
@@ -63,21 +58,24 @@
 
 ### Chat live updates
 
-- The adapter passes a chat ref to `noteRemoteChat` with at most one by-id change (`patch`, or `delta` with
-  `metaFields`) and [summary knowledge](chat-store.md#summaries-and-refresh). A loaded chat takes a fitting
-  `applyRemoteChatPatch`; otherwise the ordinary notice and idle refresh applies. A newer order ref or a new chat asks
-  the adapter for the list. Chat revisions advance by applied op count; a feed patch never settles a job hydration.
-- Feed deltas enter through `applyRemoteChatPatch`, never `mergeChatMeta`, which queues a write.
+- The adapter passes a chat ref to `noteRemoteChat` with at most one by-id change (`rowDelta ?? delta ?? patch`) and
+  [summary knowledge](chat-store.md#summaries-and-refresh). A loaded chat takes a fitting `applyRemoteChatPatch`;
+  otherwise the ordinary notice and idle refresh applies. A newer order ref or a new chat asks the adapter for the list.
+  Chat revisions advance by applied op count; a feed patch never settles a job hydration.
+- Feed deltas enter through `applyRemoteChatPatch`, never `mergeChatMeta`, which queues a write. `stagedRowDiffs` checks
+  all row diffs first (a failure is a miss); diffs alone keep the position index.
+- A `rows` manifest stays on the notice of a loaded, idle chat at its `baseRevision`; the idle read asks `chatRows` for
+  its rows and fields and applies them as a patch (`finishIdleChatRows`). A `moved` answer or a miss reads the chat
+  whole once in the same read (`refreshStaleChat` awaits it).
 - A list that meets this client's order work: `canApplyRemoteCollection` and `applyRemoteCollection` in
   [chat store](chat-store.md#summaries-and-refresh); only the acknowledgement rebase (`keepPendingOrder`) takes a list
   over a queued reorder.
 
 ### Feed locks
 
-- A `change` frame's lock lists reach `noteRemoteStreaming` after its refs, so a fitting `begin` patch puts the row in
-  before its lock; otherwise the lock is installed by id and the row arrives locked. Each listed chat's list replaces
-  its `feedLocks`. Deletion/forget paths (`removeRemoteChat`, `dropChatRevision`, `forgetCharacter`) clear locks without
-  retiring the generation; its next job write can lock again.
+- A `change` frame's lock lists reach `noteRemoteStreaming` after its refs (`eventFeed.ts` header). Each listed chat's
+  list replaces its `feedLocks`. Deletion/forget paths (`removeRemoteChat`, `dropChatRevision`, `forgetCharacter`) clear
+  locks without retiring the generation; its next job write can lock again.
 - Whole reads carry `ChatReadRecord.streaming`, sampled with the read, never on summaries. The adapter stamps issue with
   `issueChatReadStamp`; an adopted read replaces the chat's locks regardless of revision only when issued after its
   newest feed list, the newest `hello` and its last honored read. `dropFeedLocksOf` defines suppression and the revision
@@ -99,10 +97,10 @@
   settles, then halts saving and opens `resourceRestored` through `alertTerminal`. Reload follows acknowledgement and
   the snapshot's existing wait, bounded to 1 s from its start before the notice; journal failure or timeout still
   permits reload. Acknowledgement has no timeout.
-- A restore-refused transform shows no extra toast (`src/ts/parser/transformClient.ts`). `setMutationAdmission` in
-  `src/ts/storage/resourceClient.ts` checks after signing, immediately before dispatch. A halt seen before a batch
-  requeues that batch and the rest; after a request answers or rejects, a halt returns without requeueing. Queue reads
-  abort and late answers apply nothing.
+- A restore-refused transform shows no extra toast (`src/ts/parser/transformClient.ts`). `setMutationAdmission`
+  (`resourceClient.ts`) checks after signing, immediately before dispatch. A halt seen before a batch requeues that
+  batch and the rest; after a request answers or rejects, a halt returns without requeueing. Queue reads abort and late
+  answers apply nothing.
 - A job ended by `maintenance` calls `watchForRestore` from `src/ts/process/serverCommands.ts`, so its owner learns of
   replacement even with its socket down; only a watch finding no replacement shows the job's error.
 
@@ -118,7 +116,7 @@
 ## Coupling
 
 - [Live-update feed](live-update-feed.md): the server's frames, their admission, and the publication budget; an entry's
-  `patch` or `delta` and `summary` are built there.
+  body and `summary` are built there.
 - [Resource sync](resource-sync.md): the refresh queue reads what a patch cannot take, `canApplyRemote` keeps a record
   with a local change for its 409, and a conflict's `rebuildConflictRecord` reuses a waiting feed patch.
 - [Chat store](chat-store.md): `canRefreshChat`, the lock readers, and the chat list reads; the sidebar status and the
@@ -134,8 +132,8 @@
 - A feed lock is a lock only: it holds no text, retires nothing, and never holds the save loop.
 - A `hello` or `epoch` frame of another epoch halts; different-epoch `change` and `memoryTask` frames are ignored. After
   the halt every write is refused until the page reloads.
-- One connection is current: a late answer of an older connection applies nothing, except its listing's epoch-mismatch
-  error.
+- One connection is current: a late answer of an older connection applies nothing, except its replay or listing's
+  epoch-mismatch error.
 
 ## Recipes
 
@@ -173,7 +171,5 @@
 
 - Two tabs editing one record converge only through the 409 path: live updates skip a record with an unsent change.
   Decision: Durable Drafts D11, D8, archive.
-- A loaded chat noticed without a by-id change is read whole when idle: a reply over `MAX_FEED_PATCH_BYTES` (64 KiB)
-  into a chat another tab has open costs up to one read per checkpoint. Decision: no by-id read for an over-cap change:
-  `delta` removed the measured large-metadata case, and no measurement shows how often an observer meets the rest (ST04,
-  [server migration audit](../research/deep-audit-with-fable/server-migration-audit.md)).
+- A loaded chat noticed without a body or an applicable `rows` manifest is read whole when idle: a manifest past 64 KiB,
+  a second over-cap write before the row read, or a `moved` answer. Decision: Incremental Chat Transport D6, archive.

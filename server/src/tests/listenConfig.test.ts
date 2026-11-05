@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createServerContext } from "../app.ts";
-import { isLoopbackHost, readListenConfig } from "../listenConfig.ts";
+import { isLoopbackHost, parseAssetClockOffset, readListenConfig } from "../listenConfig.ts";
 import { TEST_INDEX_HTML } from "./testSupport.ts";
 
 const ROOT = "/srv/risu";
@@ -150,4 +150,16 @@ describe("createServerContext savePath and authBypass", () => {
         expect(read.status).toBe(400);
         expect(await read.json()).toEqual({ error: "No auth header" });
     });
+});
+
+it("allows the asset clock offset only on numeric loopback listeners", () => {
+    expect(parseAssetClockOffset(undefined, undefined)).toBe(0);
+    for (const host of [undefined, "0.0.0.0", "::", "localhost", "[::1]", "192.168.1.10", "::ffff:127.0.0.1"]) {
+        expect(() => parseAssetClockOffset("86400000", host), String(host)).toThrow(/numeric loopback/);
+    }
+    for (const host of ["127.0.0.1", "127.42.3.4", "::1", "0:0:0:0:0:0:0:1"]) {
+        expect(parseAssetClockOffset("86400000", host), host).toBe(86400000);
+    }
+    // Zero disables the offset, so it requires no loopback host, like a disabled auth bypass.
+    expect(parseAssetClockOffset("0", undefined)).toBe(0);
 });

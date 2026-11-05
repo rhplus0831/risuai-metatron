@@ -198,6 +198,33 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
+describe("heldMessage", () => {
+    it("shares the position index and returns the current row after insertion, replacement and removal", async () => {
+        const { chat, stored } = await boot();
+        const before = chat.messagePositionStats();
+        expect(stored.heldMessage(ref, "a")).toMatchObject({ chatId: "a", data: "A" });
+        expect(stored.heldMessage(ref, "b")).toMatchObject({ chatId: "b", data: "B" });
+        expect(chat.messagePositionStats().builds).toBe(before.builds + 1);
+
+        chat.appendMessage(ref, { role: "user", chatId: "x", data: "Inserted" }, { anchor: { start: true } });
+        const inserted = chat.messagePositionStats();
+        expect(stored.heldMessage(ref, "a")).toMatchObject({ chatId: "a", data: "A" });
+        expect(chat.messagePositionOf(ref, "a")).toBe(1);
+        expect(chat.messagePositionStats().builds).toBe(inserted.builds + 1);
+
+        chat.replaceMessage(ref, { role: "char", chatId: "a", data: "Replacement" });
+        const replaced = chat.messagePositionStats();
+        expect(stored.heldMessage(ref, "a")).toMatchObject({ chatId: "a", data: "Replacement" });
+        expect(chat.messagePositionStats().builds).toBe(replaced.builds + 1);
+
+        chat.removeMessagesUnasked(ref, ["a"]);
+        const removed = chat.messagePositionStats();
+        expect(stored.heldMessage(ref, "a")).toBeUndefined();
+        expect(stored.heldMessage(ref, "b")).toMatchObject({ chatId: "b", data: "B" });
+        expect(chat.messagePositionStats().builds).toBe(removed.builds + 1);
+    });
+});
+
 describe("requestStoredTranslation: before the request", () => {
     it("stops with translationNoContext when the chat has no complete display context, saving and sending nothing", async () => {
         const { stored } = await boot({ persona: false });

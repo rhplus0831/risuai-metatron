@@ -162,6 +162,8 @@ export type JobRunState = {
     stage: GenerationErrorStage;
     /** The reply hooks skipped for want of an owner tab, in order (`done.skipped`). */
     skippedHooks: SkippedHook[];
+    /** Delivered reply listeners that disconnected and cannot be replayed. */
+    missedHooks: Extract<SkippedHook, { name: "chatOutput" }>[];
 };
 
 /**
@@ -219,6 +221,7 @@ export function createJobRunState(job: RunningJob, budget: LuaBudget = createLua
         tools: createJobToolState(),
         stage: "setup",
         skippedHooks: [],
+        missedHooks: [],
     };
 }
 

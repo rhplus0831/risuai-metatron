@@ -189,17 +189,31 @@ export type ResourceReadRefsResult = {
     items: { kind: string; id: string; revision: string | null; data: unknown }[];
     /** The named chats; a missing one has revision and data null. */
     chats?: (ChatReadRecord | { characterId: string; id: string; revision: null; data: null })[];
+    /** Named rows at exactly the requested revision; a moved or missing chat is an answer, not a deferral. */
+    chatRows?: ChatRowsReadResult[];
     /** The named characters' orders (null: no order) and all their chats. */
     chatCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatReadRecord[] }[];
     /** The named characters' orders (null: no order) and their chats' summaries. */
     chatSummaryCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatSummary[] }[];
 };
 
+/** Stored rows and named metadata fields, or the current revision when that requested is no longer held. */
+export type ChatRowsReadResult =
+    | {
+          characterId: string;
+          id: string;
+          revision: string;
+          rows: { id: string; after: string | null; message: Record<string, unknown> }[];
+          metaFields?: ChatMetaFields;
+      }
+    | { characterId: string; id: string; revision: string | null; moved: true };
+
 /**
  * What one answer of `POST /api/resources/read` is charged at most, for a client that sent
  * `continue: true`: stored bytes (a record's text, a chat's metadata and message rows, a collection's
- * order and chats, a summary collection's order and stored projections), not the bytes on the wire. A
- * soft budget: an answer's first group is served whatever its size, so nothing grows past being readable.
+ * order and chats, a summary collection's order and stored projections, or named rows and metadata),
+ * not the bytes on the wire. A soft budget: an answer's first group is served whatever its size, so nothing grows past
+ * being readable.
  */
 export const MAX_READ_RESPONSE_BYTES = 16 * 1024 * 1024;
 
@@ -207,6 +221,7 @@ export const MAX_READ_RESPONSE_BYTES = 16 * 1024 * 1024;
 export type ResourceReadEntries = {
     refs: readonly { kind: string; id: string }[];
     chats: readonly { characterId: string; id: string }[];
+    chatRows: readonly { characterId: string; id: string; revision: string; messageIds: string[]; meta: string[] }[];
     chatCollections: readonly string[];
     chatSummaryCollections: readonly string[];
 };
@@ -222,7 +237,8 @@ export type ResourceReadRequest = Partial<ResourceReadEntries> & { continue?: bo
  * The answer as the route sends it: `ResourceReadRefsResult`, each entry listed once, plus `unanswered`
  * when `continue: true` met the budget. `unanswered` names what was left out, in the request's
  * shapes and with every list present. A character's record and its two collection entries are served
- * or left out together; every other entry stands alone. A client re-sends the lists as they are.
+ * or left out together; every other entry, including a chatRows entry, stands alone. A client
+ * re-sends the lists as they are.
  */
 export type ResourceReadRefsAnswer = ResourceReadRefsResult & { unanswered?: ResourceReadEntries };
 
@@ -416,35 +432,80 @@ export type ChatMetaFields = {
 export type ChatDeltaBody = Omit<ChatPatchBody, "meta"> & { metaFields?: ChatMetaFields };
 
 /**
- * The largest record or chat patch, or chat delta (UTF-8 bytes of its JSON), a feed entry carries;
- * larger ones are left out.
+ * One existing row's change from the stored base to the group's result. Fields compare as JSON
+ * values, without key order: `set` holds added or changed values whole, `unset` names fields gone.
+ * `data` comes separately as its common prefix length in UTF-16 code units and the remaining text.
+ * Optional feed-only data for older clients: `fields` and `text` are independently absent when
+ * unchanged; the id needs no anchor because surviving existing rows never reorder in a by-id group.
+ */
+export type ChatRowDiff = {
+    id: string;
+    fields?: { set: Record<string, unknown>; unset: string[] };
+    text?: { keep: number; text: string };
+};
+
+/**
+ * An optional feed body older clients ignore: metadata by field, eligible existing rows in
+ * `rowDiffs`, other changed rows whole in `messages` with their anchors. Never a job socket body.
+ * `rowDiffs` is required within this body; older servers omit the entire `rowDelta` field.
+ */
+export type ChatRowDeltaBody = ChatDeltaBody & { rowDiffs: ChatRowDiff[] };
+
+/**
+ * Optional for older clients and servers: a body-less chat entry names the stored rows and metadata
+ * fields to read at its revision. Mutually exclusive with `patch`, `delta`, and `rowDelta`.
+ */
+export type ChatRowsManifest = {
+    baseRevision: string;
+    changed: string[];
+    removed: string[];
+    count: number;
+    meta: string[];
+};
+
+/**
+ * The largest record patch, chat body, or row manifest (UTF-8 bytes of its JSON) a feed entry carries.
+ * A chat has at most one body of `patch`, `delta`, `rowDelta`: a patch below `SMALL_FEED_PATCH_BYTES`,
+ * else a fitting rowDelta with row diffs smaller than the whole patch, else a fitting patch, else a
+ * fitting delta.
+ * If none fits, the entry carries a `rows` manifest only if it fits this same cap.
  */
 export const MAX_FEED_PATCH_BYTES = 64 * 1024;
 
+/** Selection threshold, not a cap: whole-row patches below it take precedence over row diffs. */
+export const SMALL_FEED_PATCH_BYTES = 8 * 1024;
+
 /**
  * The most optional-payload bytes one `change` frame carries: the UTF-8 bytes of the JSON of each
- * record `patch`, chat `patch` or `delta`, `summary`, and `summaryBase`, summed over its record and
- * chat entries in wire order. A payload that would pass it is left out of its entry.
+ * record `patch`, chat `patch`, `delta`, `rowDelta`, `rows`, `summary`, and `summaryBase`, summed in wire
+ * order. A chat carries at most one body or manifest, selected as `MAX_FEED_PATCH_BYTES` describes.
+ * A payload that would pass this budget is left out.
  */
 export const MAX_FEED_PUBLICATION_PATCH_BYTES = 256 * 1024;
 
 /**
  * What one committed write changed (live updates): refs and their new revisions, and data only as
- * optional payloads: a record patch (`RecordPatch`), and for a chat a by-id change (`patch`, or
- * `delta` with the metadata by field) and what the entry knows about its summary. A `null` revision
- * is a deletion. A record or chat recorded more than once in the write appears once with its final
- * revision and no patch or delta. A client holding exactly a patch's or delta's base revision may
+ * optional payloads: a record patch (`RecordPatch`), and for a chat a by-id change (`patch`, `delta`
+ * with metadata by field, or `rowDelta` with row diffs too), or a `rows` manifest, plus summary
+ * knowledge. A `null` revision is a deletion. A record or chat recorded more than once in the write
+ * appears once with its final revision and no body or manifest. A client holding exactly a body's base revision may
  * apply it when idle (a chat must also be loaded and not stale); otherwise it handles the plain
  * notice as before. Chat revisions advance by the applied op count, not necessarily one. Whole-chat
- * writes, no-op groups, remove-and-reappend groups, and changes over `MAX_FEED_PATCH_BYTES` carry
- * neither; an entry carries at most one of them, a `delta` only when the `patch` would not fit.
+ * writes, no-op groups and remove-and-reappend groups carry no body or manifest. An entry carries
+ * at most one of `patch`, `delta`, `rowDelta`, `rows`: a whole-row patch below
+ * `SMALL_FEED_PATCH_BYTES`; else a rowDelta with at least one row diff that fits the cap and is
+ * strictly smaller than the patch; else a fitting patch; else a fitting delta; else a fitting `rows`
+ * manifest. A loaded, idle chat at the manifest's base reads those rows and named metadata fields at
+ * the entry's revision; a moved answer or apply miss reads the chat whole. These bodies and manifests
+ * are optional for older clients and servers: a client that does not know `rowDelta` or `rows` takes
+ * the notice and reads whole, without advancing its revision from a body it cannot apply.
  *
  * A chat entry carries at most one of `summary` (the chat's summary at the entry's revision, when
  * the write changed it) and `summaryBase` (a revision, the stored one right before the write: the
  * summary, `revision` aside, is the same as at that revision). Neither means unknown: a whole-chat
  * write, a no-op group, a deletion, a payload left out, or a chat recorded twice without that proof.
  * The payloads of one publication share `MAX_FEED_PUBLICATION_PATCH_BYTES`: taken in wire order
- * (resources, then chats; within a chat entry `patch` or `delta` before `summary` or `summaryBase`),
+ * (resources, then chats; within a chat entry `patch`, `delta`, `rowDelta`, `rows`, `summary`, `summaryBase`),
  * one that does not fit is left out of its entry, and a later smaller one may still fit.
  */
 export type ChangeSet = {
@@ -455,6 +516,10 @@ export type ChangeSet = {
         revision: string | null;
         patch?: ChatPatchBody;
         delta?: ChatDeltaBody;
+        /** Optional for older clients and servers; mutually exclusive with `patch`, `delta`, and `rows`. */
+        rowDelta?: ChatRowDeltaBody;
+        /** Optional for older clients and servers; mutually exclusive with all three bodies. */
+        rows?: ChatRowsManifest;
         summary?: ChatSummary;
         summaryBase?: string;
     }[];
@@ -467,6 +532,21 @@ export type ResourceRevisionListing = {
     resources: { kind: string; id: string; revision: string }[];
     chats: { characterId: string; id: string; revision: string }[];
     chatOrders: { characterId: string; revision: string }[];
+};
+
+/**
+ * `GET /api/resources/revisions?since=&until=&epoch=`: refs with `since < cursor <= until`,
+ * coalesced per key, without payloads. A different epoch returns only its epoch and current cursor.
+ * Older servers omit the replay fields; callers then use the whole revision listing.
+ */
+export type ResourceChangesSince = {
+    epoch: string;
+    /** Optional on older servers. The requested `until`, or the high-water cursor if unavailable. */
+    cursor?: number;
+    /** Optional on older servers and unavailable replays; null revisions are deletion tombstones. */
+    changes?: ChangeSet;
+    /** Optional on older servers; true when the bounds are outside the retained coverage. */
+    expired?: boolean;
 };
 
 const revisionEncoder = new TextEncoder();
@@ -550,7 +630,7 @@ export function chatCollectionClaim(
         .padStart(32, "0");
 }
 
-export type BackupSnapshotInfo = { id: string; createdAt: string; size: number };
+export type BackupSnapshotInfo = { id: string; createdAt: string; size: number; pinned: boolean; label: string | null };
 
 /** First record of a local backup archive (format version 2). */
 export type BackupArchiveManifest = {

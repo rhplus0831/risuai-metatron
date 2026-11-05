@@ -169,25 +169,27 @@ stage.
 - Stop before dispatch sends nothing; after dispatch it immediately sends request-id cancel with an independent 10 s per
   attempt and the same retry schedule.
 - A retained uncertain id is cancelled even if this invocation stops before dispatch. A known owned job still uses
-  owner-scoped DELETE while followed.
+  participant-scoped DELETE while followed.
 
 ### Stop for a job this tab does not follow
 
 - A chat with a server lock or a known job this tab does not follow shows an extra Stop beside Send (or chat setup). The
   advisory `foreignJobs` mark never participates in `isChatBusy` or removes the Send hotkey.
-- `stopChatJob(ref)` admits one confirmation flow per chat, even across screen remounts. `readChatGeneration` looks up
-  the current slot without attaching or holding plugin work; `stopChatGeneration` sends that exact job id. Each exchange
-  has a 10 s deadline; a timeout ends the flow. The confirmation wait is not bounded.
+- `stopChatJob(ref)` admits one confirmation flow per chat, even across screen remounts. It uses `readChatGeneration`
+  and `stopChatGeneration` (their comments). Each exchange has a 10 s deadline; a timeout ends the flow. The
+  confirmation wait is not bounded.
 - A 409 `jobChanged` reads and confirms the replacement; 404 clears the mark and stops nothing.
 - A successful stop leaves the mark through abort grace; a later idle lookup, an owned/followed lookup, the release of
   that chat's server lock, or a new local send/follow clears it.
-- Only the explicit chat stop attributes another client; request-id cancel remains an ordinary silent abort.
+- Creator viewers and current workers use the followed-job Stop, with `HandoffControls.svelte` beside it (Take back for
+  `viewingJobs`, Hand off to a worker); pending/former workers use the foreign-job Stop. Participant and chat stops
+  attribute the stopper; request-id cancel remains an ordinary silent abort.
 
 ### Replays and uncertain creates
 
-- Classify a replay before saving or following it. Follow owned jobs; never attach to a foreign job. A known terminal
-  remains known if a later read fails. Foreign running jobs retain their id for the explicit chat Stop flow; other
-  foreign or malformed outcomes reconcile the chat and report whether that read succeeded.
+- Classify a replay before saving or following it; only a handoff ticket starts a foreign follow. A known terminal
+  survives failed reads. Foreign running jobs retain their id for chat Stop; other foreign or malformed outcomes
+  reconcile the chat and report whether that read succeeded.
 - After an unanswered create, keep the request uncertain until a decoded result fences a delayed copy of the POST:
   success, replay, or a `registryRefusal` for the same frozen body. `503`, `chatBusy`, `chatBindingIncomplete`, and
   `chatLoreOverrideOrphaned` may change on retry, so they do not fence it; pre-lookup and undecodable failures also
@@ -223,9 +225,8 @@ stage.
 
 ### Reconnect and status reads
 
-`followJobToEnd` and `followOnce` (`serverCommands.ts`) reconnect after socket loss and read status after a close
-without a terminal. Only consecutive failed attaches exhaust `MAX_ATTACHES`; a resumed connection or a close while the
-page is away does not count. Kept terminal receipts and shutdown outcomes are owned by
+`followJobToEnd` / `followOnce` (`serverCommands.ts`) document reconnect budgets, status reads, ticket wakes, lost
+takeovers, viewer boot resume and creator warnings. Kept receipts and shutdown outcomes belong to
 [generation](server-generation.md#job-receipts).
 
 ### Recovery reads
@@ -324,8 +325,8 @@ page is away does not count. Kept terminal receipts and shutdown outcomes are ow
   response budget, with its last two chats protected.
 - A new `PromptItem` type needs the `Recipes` entry's places, plus import conversion.
 - Inlays are not stored in chat text. Removing an inlay (`removeInlayAsset`, the Inlay Explorer) breaks the
-  `{{inlay::id}}` tags that name it; it removes metadata only, since retained snapshots may reference the blob. Deleting
-  messages never removes inlays.
+  `{{inlay::id}}` tags that name it; it removes metadata only; the asset sweep reclaims the blob. Deleting messages
+  never removes inlays.
 - Images become `MultiModal` input only when the model has `LLMFlags.hasImageInput`. Otherwise the job captions them
   (`captionImage`, `memory.md`).
 - Built-in Jinja templates enforce roles: Gemma has no system role, and Mistral requires alternating roles.

@@ -23,6 +23,7 @@ type ServerCommandsModule = typeof import("../serverCommands");
 export function createServerCommandsMock(overrides: Partial<ServerCommandsModule> = {}): ServerCommandsModule {
     const defaults = {
         followedJobs: writable<ReadonlyMap<string, string>>(new Map()),
+        viewingJobs: writable<ReadonlySet<string>>(new Set()),
         followedJobsOf: vi.fn<ServerCommandsModule["followedJobsOf"]>(() => []),
         stopChatJob: vi.fn<ServerCommandsModule["stopChatJob"]>(async () => {}),
         followJobToEnd: vi.fn<ServerCommandsModule["followJobToEnd"]>(async () => "lost"),

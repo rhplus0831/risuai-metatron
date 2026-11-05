@@ -3,7 +3,11 @@ import { createFakeLockManager } from "./fakeLockManager";
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { secretPathKey } from "../../../../shared/llmSecrets.ts";
-import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import {
+    RESOURCE_KIND,
+    type ResourceChangesSince,
+    type ResourceRevisionListing,
+} from "../../../../shared/resources.ts";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
@@ -1601,5 +1605,156 @@ describe("the character order another writer replaced", () => {
         }
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
+    });
+});
+
+describe("reconnecting through the revision log", () => {
+    async function connectFeed(fake: StoreBackedServer) {
+        const { FakeSocket } = await import("../../network/tests/eventSocket");
+        const { revisionDigest } = await import("../../../../shared/resources.ts");
+        // The server store's replay methods, typed structurally like `ServerStore` (no server import).
+        const store = fake.store as unknown as {
+            epoch(): string;
+            cursor(): number;
+            listChanges(since: number, until: number, epoch: string): ResourceChangesSince;
+            listRevisions(): ResourceRevisionListing;
+        };
+        const feed = await import("../../network/eventFeed");
+        FakeSocket.instances = [];
+        vi.stubGlobal("WebSocket", FakeSocket);
+        vi.spyOn(Math, "random").mockReturnValue(1 - Number.EPSILON);
+        const requests: string[] = [];
+        const transport = server.current;
+        const fetch = transport.fetch.bind(transport);
+        const replay = { epoch: null as string | null };
+        transport.fetch = async (path: string, init?: RequestInit) => {
+            const url = new URL(path, "http://test");
+            if (url.pathname === "/api/resources/revisions") {
+                requests.push(path);
+                if (url.searchParams.has("since")) {
+                    return Response.json(
+                        replay.epoch
+                            ? { epoch: replay.epoch, cursor: store.cursor() }
+                            : store.listChanges(
+                                  Number(url.searchParams.get("since")),
+                                  Number(url.searchParams.get("until")),
+                                  url.searchParams.get("epoch")!,
+                              ),
+                    );
+                }
+            }
+            return fetch(path, init);
+        };
+        const hello = (ws: InstanceType<typeof FakeSocket>) =>
+            ws.frame({
+                type: "hello",
+                epoch: store.epoch(),
+                cursor: store.cursor(),
+                digest: revisionDigest(store.listRevisions()),
+                streaming: [],
+                memoryTasks: [],
+            });
+        feed.startEventFeed();
+        await vi.advanceTimersByTimeAsync(0);
+        let ws = FakeSocket.instances.at(-1)!;
+        ws.open();
+        hello(ws);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(requests).toEqual(["/api/resources/revisions"]);
+        requests.length = 0;
+        return {
+            store,
+            feed,
+            requests,
+            replay,
+            task() {
+                ws.frame({
+                    type: "memoryTask",
+                    epoch: store.epoch(),
+                    characterId: "c",
+                    chatId: "k",
+                    status: { taskId: "t", state: "running", done: 0, total: 1 },
+                });
+            },
+            async reconnect(delay = 1000) {
+                const previous = ws;
+                ws.close();
+                await vi.advanceTimersByTimeAsync(delay);
+                ws = FakeSocket.instances.at(-1)!;
+                expect(ws).not.toBe(previous);
+                ws.open();
+                hello(ws);
+                await vi.advanceTimersByTimeAsync(0);
+            },
+        };
+    }
+
+    it("replays a deletion and recreation into held chats while keeping the old incarnation fenced until hydration", async () => {
+        const { fake, live, chat, texts } = await boot();
+        live.paused = true;
+        const connection = await connectFeed(fake);
+        const tasks = await import("../../process/memoryTasks.svelte");
+        try {
+            const since = connection.store.cursor();
+            const oldRevision = chat.heldChatRevision(refK);
+            connection.task();
+            expect(tasks.memoryTaskFenced(refK)).toBe(true);
+            fake.chatBatch(
+                ["j", "k"].map((chatId) => ({
+                    characterId: "c",
+                    chatId,
+                    baseRevision: fake.chat("c", chatId)!.revision,
+                    ops: [{ op: "delete" } as any],
+                })),
+            );
+            fake.store.applyChanges({ chats: [create("c", "k", [m("new", "Recreated")])] });
+            const until = connection.store.cursor();
+            await connection.reconnect();
+            expect(connection.requests).toEqual([
+                `/api/resources/revisions?since=${since}&until=${until}&epoch=${connection.store.epoch()}`,
+            ]);
+            // Reconciliation has only advertised the new incarnation; the old loaded copy is still held.
+            expect(chat.heldChatRevision(refK)).toBe(oldRevision);
+            expect(tasks.memoryTaskFenced(refK)).toBe(true);
+            await settle(fake);
+            expect(chat.chatEntry({ chaId: "c", chatId: "j" })).toBeUndefined();
+            expect(chat.findChat({ chaId: "c", chatId: "j" })).toBeUndefined();
+            expect(texts("c", "k")).toEqual(["Recreated"]);
+            expect(chat.heldChatRevision(refK)).toBe(fake.chat("c", "k")!.revision);
+            expect(tasks.memoryTaskFenced(refK)).toBe(false);
+            expect(fake.batchCount()).toBe(0);
+            expect(connection.requests).toHaveLength(1);
+        } finally {
+            connection.feed.stopEventFeed();
+        }
+    });
+
+    it("halts on another epoch's replay, clears memory fences and advertised revisions, and sends no further writes", async () => {
+        const { fake, live, settings, sync } = await boot();
+        live.paused = true;
+        const connection = await connectFeed(fake);
+        const tasks = await import("../../process/memoryTasks.svelte");
+        try {
+            connection.task();
+            expect(tasks.memoryTaskFenced(refK)).toBe(true);
+            editUi(fake, { zoomsize: 175 });
+            connection.replay.epoch = "restored-epoch";
+            await connection.reconnect();
+            expect(connection.requests).toHaveLength(1);
+            expect(connection.requests[0]).toContain("?since=");
+            expect(tasks.memoryTaskFenced(refK)).toBe(false);
+            expect(alerts.terminal).toHaveBeenCalledExactlyOnceWith("restored");
+            expect(settings.ui.zoomsize).not.toBe(175);
+            settings.ui.iconsize = 44;
+            await expect(sync.flushResources()).rejects.toThrow("Saving stopped: the server data was restored");
+            expect(fake.batchCount()).toBe(0);
+            connection.replay.epoch = null;
+            // The failed reconcile kept the doubled backoff; its old advertised evidence is unusable.
+            await connection.reconnect(2000);
+            expect(connection.requests).toHaveLength(2);
+            expect(connection.requests[1]).toBe("/api/resources/revisions");
+        } finally {
+            connection.feed.stopEventFeed();
+        }
     });
 });

@@ -1,7 +1,7 @@
 # Reroll Candidates Plan
 
 Status: drafted 2026-11-03, revised 2026-11-04 after the [design
-audit](../audit/plan-design-audit-2026-11-04.md) and again after its adversarial challenge. Landed: 1 (`30bec41a4`), 3 (`4976a15f0`).
+audit](../manual-audit/plan-design-audit-2026-11-04.md) and again after its adversarial challenge. Landed: 1 (`30bec41a4`), 3 (`4976a15f0`).
 Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q4 were answered by the owner on
 2026-11-03 (the recommended option each time). The first revision corrected D2–D5 and D7–D10 (D10 took the
 server op its draft rejected) and added D13 and D14; the second corrects D2–D8, D10 and D13 (a trigger's
@@ -37,8 +37,8 @@ store guide](../structure/chat-store.md) (By-id ops, Map merges, Job hydration),
 guide](../structure/structured-memory/writer.md) (The writer's windows), the [memory
 guide](../structure/memory.md) (Selection, Memory writes), and the [backup and sync hub
 guide](../structure/backup-sync-hub.md) (Upstream database export) at `8f0db0fb7`; the 2026-11-04 [design
-audit](../audit/plan-design-audit-2026-11-04.md) (its Reroll Candidates section RC1–RC7 and the cross-plan
-items X1, X5, X6, X7), its [per-plan report](../audit/plan-design-audit-2026-11-04/reroll-candidates.md) (24
+audit](../manual-audit/plan-design-audit-2026-11-04.md) (its Reroll Candidates section RC1–RC7 and the cross-plan
+items X1, X5, X6, X7), its [per-plan report](../manual-audit/plan-design-audit-2026-11-04/reroll-candidates.md) (24
 findings with file and line evidence), and an independent cross-check of that audit (the failed attempt's own
 variable writes and the stale switch's variable decision, both answered by D10 and D13); and the adversarial
 challenge of that revision (2026-11-04: failures F1–F7 with file and line evidence, its additional contract
@@ -60,14 +60,14 @@ Relation to other work: Chat Checkpoints (named per-chat save slots, done) snaps
 none of their storage (a message's checkpoint is a field of the message, captured and restored by the job).
 The Deep Audit Fixes (done) made a trigger's result merge `scriptstate` by key (`applyTriggerChat`,
 `CHAT_META_MERGE_KEYS`), which is what the per-key restore of D5 relies on. The [Asset Lifecycle
-plan](asset-lifecycle.md), written in parallel, scans the strings of a message's JSON at any depth, so the
+plan](../archived-plan/README.md), written in parallel, scans the strings of a message's JSON at any depth, so the
 inlay references inside non-selected candidates (`candidates[].data`) are covered by construction; that plan
 adds a test for it, and this plan names the field (D4). The [Incremental Chat Transport
-plan](incremental-chat-transport.md) carries the rows this plan makes larger: its D2's delta forms keep a
+plan](../archived-plan/README.md) (archived) carries the rows this plan makes larger: its D2's delta forms keep a
 text-only checkpoint small, and its Slice 4 (the over-cap row manifest and the by-id row read, with that
 plan's D6 amended so the read also carries the chat's changed metadata fields) is a merge-time dependency of
 this plan's Slice 2 (D4): no code here calls what it adds, so the two may be built on separate branches, but
-Slice 2 reaches `dev` only in the same merge or after it; its Slice 2 is no dependency at all. The [Job Handoff plan](job-handoff.md) keys nothing this plan needs
+Slice 2 reaches `dev` only in the same merge or after it; its Slice 2 is no dependency at all. The [Job Handoff plan](../archived-plan/README.md) keys nothing this plan needs
 by owner (the reroll lock is the job's, so a takeover does not touch it), but its notices reach the job's
 owner only (D12); the slices that share files are listed under **Slices**.
 
@@ -332,9 +332,10 @@ does not re-propose it.
   lines 579–608). This plan relies on the Incremental Chat Transport plan for the delta forms (its D2, being
   widened to a per-row top-level field diff with `data` as a text delta, so a text-only checkpoint stays small
   whatever the candidates weigh) and on its Slice 4 (the over-cap row manifest and the by-id row read) with
-  that plan's D6 amended so that a manifest with `meta: true` is answered with the rows plus the chat's
-  changed metadata fields at that revision (`metaFields`) instead of falling to a whole-chat read. The
-  amendment is what makes the fallback one row read for this plan: the begin group, the write-back and a
+  that plan's D6 amended so that a manifest naming the changed metadata fields (`meta: string[]`) is answered
+  with the rows plus those fields' stored values at that revision (`metaFields`) instead of falling to a
+  whole-chat read. The amendment is what makes the fallback one row read for this plan: the begin group, the
+  write-back and a
   switch change `scriptstate` in the same transaction as `candidates` (D5, D10, D13), and Slice 4 as first
   written reads the chat whole for every such entry. With it, a loaded observer at the base revision applies a
   reroll's begin group (the candidates and the `scriptstate` merge) without a whole read. This plan makes that
@@ -925,8 +926,8 @@ the owner asked for; 3 settles the export and the memory proofs; 4 is the browse
   branches (D4): after the merge, besides V1 and `pnpm check:docs` on the guides both plans edit, add these
   cases to the two plans' focused tests and run them, since each branch's tests cover only its side:
   - a reroll's begin group, its write-back and a `selectCandidate` switch on a carrier over
-    `MAX_FEED_PATCH_BYTES` each publish a row manifest with `meta: true` and the carrier's id in `changed`, and
-    a second tab holding the chat loaded at the base revision applies the rows and `metaFields` through the
+    `MAX_FEED_PATCH_BYTES` each publish a row manifest whose `meta` names the restored variables' field
+    (`scriptstate`) and the carrier's id in `changed`, and a second tab holding the chat loaded at the base revision applies the rows and `metaFields` through the
     `chatRows` read without a whole-chat read (`server/src/tests/chatFeedPatches.test.ts`,
     `src/ts/storage/tests/resourceSyncFeedPatches.test.ts`, with this plan's real ops in place of Transport
     Slice 4's fixture);

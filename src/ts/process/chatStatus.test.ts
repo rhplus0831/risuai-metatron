@@ -30,9 +30,14 @@ const error: GenerationTerminalEvent = {
     reason: "failed",
 };
 
-type Follow = { jobId: string; end: (terminal: GenerationTerminalEvent | null) => void };
+type Follow = {
+    jobId: string;
+    end: (terminal: GenerationTerminalEvent | null) => void;
+    event: (event: GenerationEvent) => void;
+};
 const stubs = vi.hoisted(() => ({
     follows: [] as Follow[],
+    attached: undefined as (() => void) | undefined,
     closeWithoutTerminal: false,
     read: vi.fn(),
     healthFetch: vi.fn<typeof import("../storage/serverAuth").authFetch>(),
@@ -49,13 +54,14 @@ vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createA
 vi.mock("../network/generationJobs", async () => {
     const { createGenerationJobsMock, createFollowStub } = await import("../network/tests/generationJobsMock");
     return createGenerationJobsMock({
-        followGenerationJob: (jobId: string, onEvent: (event: GenerationEvent) => void) => {
+        followGenerationJob: (jobId, onEvent, options) => {
             const stub = createFollowStub(jobId);
             const end: Follow["end"] = (terminal) => {
                 if (terminal) onEvent(terminal);
                 stub.end(terminal);
             };
-            stubs.follows.push({ jobId, end });
+            stubs.follows.push({ jobId, end, event: onEvent });
+            stubs.attached?.();
             if (stubs.closeWithoutTerminal) end(null);
             return stub.follow;
         },
@@ -154,6 +160,7 @@ beforeEach(async () => {
     sessionStorage.clear();
     stubs.healthFetch.mockReset();
     stubs.follows.length = 0;
+    stubs.attached = undefined;
     stubs.closeWithoutTerminal = false;
     stubs.read.mockReset().mockResolvedValue({ characterId: "c", chatId: "k", epoch: EPOCH, state: "running" });
     chat = await import("../storage/chatStore.svelte");
@@ -503,6 +510,28 @@ describe("chat status sources", () => {
 });
 
 describe("isChatBusy", () => {
+    it("keeps a pending worker foreign, moves it to followed only as owner, and clears both at its end", async () => {
+        vi.useFakeTimers();
+        status.noteForeignJob(a, "taken-over");
+        const ready = new Promise<void>((resolve) => {
+            stubs.attached = resolve;
+        });
+        const end = commands.followJobToEnd("taken-over", a, undefined, { ticket: "worker-ticket" });
+        await ready;
+        const socket = stubs.follows[0];
+        socket.event({ type: "handoff", epoch: EPOCH, owner: "other", pending: true });
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "taken-over"]]));
+        expect(get(commands.followedJobs).size).toBe(0);
+        socket.event({ type: "handoff", epoch: EPOCH, owner: "self" });
+        expect(get(status.foreignJobs).size).toBe(0);
+        expect(get(commands.followedJobs)).toEqual(new Map([["taken-over", keyA]]));
+        const terminal = done();
+        socket.end(terminal);
+        expect(await end).toEqual(terminal);
+        expect(get(status.foreignJobs).size).toBe(0);
+        expect(get(commands.followedJobs).size).toBe(0);
+    });
+
     it("is true for a chat with a local send, a followed job, or a lock (this tab's or the feed's), for that chat only", async () => {
         const { beginLocalSend } = await import("./localSends");
         expect(status.isChatBusy(a)).toBe(false);

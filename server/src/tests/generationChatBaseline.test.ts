@@ -42,6 +42,8 @@ function applyPatch(copy: Copy, patch: GenerationChatPatchEvent): Copy {
     const removed = new Set(patch.removed ?? []);
     const messages = data.message.filter((row) => !removed.has(row.chatId!));
     for (const row of patch.messages ?? []) {
+        // These sockets never advertise `rows=streamed`: every carried row is whole.
+        if (!("message" in row)) throw new Error(`unexpected streamed row ${row.id}`);
         const incoming = row.message as Message;
         const previous = messages.findIndex((item) => item.chatId === incoming.chatId);
         if (previous !== -1) messages.splice(previous, 1);
@@ -186,14 +188,13 @@ async function setup() {
             ws.once("open", resolve);
             ws.once("error", reject);
         });
-        return {
-            ws,
-            closed,
-            next: () =>
-                events.length
-                    ? Promise.resolve(events.shift()!)
-                    : new Promise<GenerationEvent>((resolve) => waiters.push(resolve)),
-        };
+        const next = () =>
+            events.length
+                ? Promise.resolve(events.shift()!)
+                : new Promise<GenerationEvent>((resolve) => waiters.push(resolve));
+        // Every attach opens with the owner's role, before the attach chat the callers check next.
+        expect(await next()).toEqual({ type: "handoff", epoch: store.epoch(), owner: "self" });
+        return { ws, closed, next };
     };
     const resetReads = () => {
         wholeReads = 0;
@@ -257,9 +258,10 @@ async function setup() {
 }
 
 const rows = (patch: GenerationChatPatchEvent) =>
-    (patch.messages ?? []).map(({ after, message }) => {
-        const row = message as Message;
-        return [row.chatId, after, row.data];
+    (patch.messages ?? []).map((entry) => {
+        if (!("message" in entry)) throw new Error(`unexpected streamed row ${entry.id}`);
+        const row = entry.message as Message;
+        return [row.chatId, entry.after, row.data];
     });
 
 describe("owner chat working baselines", () => {

@@ -44,7 +44,9 @@ import {
     MAX_FEED_PUBLICATION_PATCH_BYTES,
     RESOURCE_KIND,
     type RecordPatch,
+    type ResourceChangesSince,
     type ResourceReadEntries,
+    type ResourceReadRefsResult,
     type ResourceRevisionListing,
     SINGLETON_RESOURCE_ID,
 } from "../../../shared/resources.ts";
@@ -344,7 +346,7 @@ export type ApplyChangesTransaction = {
 /**
  * The chat changes a write made, for the writer that asked (`applyChanges` with `changes: true`):
  * aligned with `AppliedChanges.chats`, each by-id group's change as stored, undefined for a group
- * without one. The feed's capped patch or delta comes from the same change in
+ * without one. The feed's capped patch, delta, or rowDelta comes from the same change in
  * `server/src/data/chatStore.ts`; `budgetedEntries` drops payloads only from feed entries, leaving
  * these writer changes intact.
  */
@@ -389,6 +391,7 @@ type ChatRead = ChatRecord | { characterId: string; id: string; revision: null; 
 /** What `readRefs` names besides records. */
 type ReadRefsOptions = {
     chats?: readonly { characterId: string; id: string }[];
+    chatRows?: ResourceReadEntries["chatRows"];
     chatCollections?: readonly string[];
     chatSummaryCollections?: readonly string[];
     /**
@@ -421,6 +424,8 @@ type PreparedOperation =
     | { operation: ResourceBatchOperation; mode: "patch"; patch: PreparedPatch; index: number };
 
 type ChangeAccumulator = {
+    /** Newest log row committed by this publication's transactions, never sampled at dispatch. */
+    cursor?: number;
     resources: Map<string, ChangeSet["resources"][number]>;
     chats: Map<string, ChangeSet["chats"][number]>;
     chatOrders: Map<string, ChangeSet["chatOrders"][number]>;
@@ -428,12 +433,16 @@ type ChangeAccumulator = {
     streaming: Map<string, ChatStreaming>;
 };
 
+/** Orders use their character id in both `characterId` and `id`; resources have no character id. */
+type ChangeLogRow = { kind: string; characterId: string | null; id: string; revision: string | null };
+
 type ChatChange = ChangeSet["chats"][number];
 
 /**
  * One feed entry for a chat recorded twice in a publication, `earlier` then `later`: the later ref,
- * without a patch or delta (their base would be a revision no client was told about), with only the
- * summary knowledge the two prove together. The later `summary` stands; else the earlier `summary`,
+ * without a patch, delta, rowDelta, or row manifest (their base would be a revision no client was
+ * told about), with only the summary knowledge the two prove together. The later `summary` stands; else the earlier
+ * `summary`,
  * moved to the later revision, when the later entry says the summary is unchanged since the earlier
  * revision (`summaryBase`); two such unchanged entries in a row say unchanged since the earlier base.
  * Anything else (a gap, an entry that knows nothing, a deletion) knows nothing. A new entry: neither
@@ -813,6 +822,8 @@ export function createResourceStore(options: {
     feed?: ChangeFeed;
     /** The `patchBases` cache's budget in estimated units (default `PATCH_BASES_MAX_UNITS`; tests lower it). */
     patchBaseMaxUnits?: number;
+    /** Retained change-log rows (default 20,000; tests lower it). */
+    changeLogLimit?: number;
     /**
      * The build of the code behind `kinds`' normalizers. Without one, with no commit, or dirty, this
      * store has no stamp: every open runs the normalization pass, and the pass removes a stored stamp.
@@ -828,6 +839,10 @@ export function createResourceStore(options: {
 }) {
     const { kinds, guard, feed, normalizationIdentity: identity } = options;
     const patchBaseMaxUnits = options.patchBaseMaxUnits ?? PATCH_BASES_MAX_UNITS;
+    const changeLogLimit = options.changeLogLimit ?? 20_000;
+    if (!Number.isSafeInteger(changeLogLimit) || changeLogLimit < 0) {
+        throw new Error("Invalid change log limit");
+    }
     /** This store's normalization stamp, or null when no identity vouches for its code. */
     const ownStamp = identity?.commit && !identity.dirty ? normalizationStamp(identity.commit, kinds) : null;
     if (options.file !== ":memory:") {
@@ -985,12 +1000,35 @@ export function createResourceStore(options: {
                 : normalizeStoredRecords();
         db.exec("COMMIT");
         openChatSchema(db);
+        // Reconnect history is created on every open, outside the snapshot layout and restore copy.
+        // Open-time normalization deliberately bypasses it; a changed digest forces a full listing.
+        db.exec(`CREATE TABLE IF NOT EXISTS changes (
+            cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            characterId TEXT,
+            id TEXT NOT NULL,
+            revision TEXT
+        ) STRICT`);
     } catch (error) {
         if (db.isTransaction) {
             db.exec("ROLLBACK");
         }
         db.close();
         throw error;
+    }
+    const insertChange = db.prepare("INSERT INTO changes (kind, characterId, id, revision) VALUES (?, ?, ?, ?)");
+    const pruneChanges = db.prepare(
+        "DELETE FROM changes WHERE cursor <= (SELECT cursor FROM changes ORDER BY cursor DESC LIMIT 1 OFFSET ?)",
+    );
+    const selectCursor = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'changes'");
+    const selectChangeFloor = db.prepare("SELECT MIN(cursor) AS oldest FROM changes");
+    const selectChanges = db.prepare(
+        "SELECT kind, characterId, id, revision FROM changes WHERE cursor > ? AND cursor <= ? ORDER BY cursor",
+    );
+
+    function cursor(): number {
+        assertOpen();
+        return (selectCursor.get() as { seq: number } | undefined)?.seq ?? 0;
     }
     /** Set while `transaction` runs; the first conflict inside it makes the whole unit roll back. */
     let transactionState: { conflict: ResourceConflictError | null; writes: number } | null = null;
@@ -1021,6 +1059,8 @@ export function createResourceStore(options: {
      * `transaction` or `atomically` joins the open one).
      */
     let transactionInvalidations: Map<string, { characterId: string; id: string }> | null = null;
+    /** One final ref per key in the open transaction, independent of the attached feed. */
+    let transactionChanges: Map<string, ChangeLogRow> | null = null;
     const invalidationListeners = new Set<(notice: ChatInvalidation) => void>();
     /** Notices of committed writes not delivered yet, oldest first. */
     const pendingInvalidations: ChatInvalidation[] = [];
@@ -1052,6 +1092,7 @@ export function createResourceStore(options: {
         db.exec("BEGIN IMMEDIATE");
         chatTables.beginTransaction();
         transactionInvalidations = new Map();
+        transactionChanges = new Map();
         transactionMessageChanges = [];
     }
 
@@ -1059,14 +1100,24 @@ export function createResourceStore(options: {
      * Commits the open transaction and, in the same synchronous step, advances the source
      * generation of every chat it invalidated and queues their notices and its message changes
      * (`deliverInvalidations`). A rebuild outlives this process and its generations, so a chat's run takes
-     * the same news in the transaction itself.
+     * the same news in the transaction itself. Final refs and retention pruning commit with the
+     * write; only after COMMIT succeeds may the publication carry their newest cursor.
      */
     function commitTransaction() {
         for (const { characterId, id } of transactionInvalidations?.values() ?? []) {
             memoryTables.rebuild.noteSourceReplaced(characterId, id);
         }
+        let newestCursor: number | undefined;
+        for (const { kind, characterId, id, revision } of transactionChanges?.values() ?? []) {
+            newestCursor = Number(insertChange.run(kind, characterId, id, revision).lastInsertRowid);
+        }
+        if (newestCursor !== undefined) pruneChanges.run(changeLogLimit);
         db.exec("COMMIT");
         chatTables.commitTransaction();
+        if (newestCursor !== undefined && publishingScope) {
+            publishingScope.changes.cursor = Math.max(publishingScope.changes.cursor ?? 0, newestCursor);
+        }
+        transactionChanges = null;
         const invalidated = transactionInvalidations;
         const messageChanges = transactionMessageChanges;
         transactionInvalidations = null;
@@ -1081,9 +1132,10 @@ export function createResourceStore(options: {
         }
     }
 
-    /** Rolls back the open transaction, if any, with the invalidations and message changes it recorded. */
+    /** Rolls back the open transaction, if any, dropping its refs, invalidations and message changes. */
     function rollbackTransaction() {
         chatTables.rollbackTransaction();
+        transactionChanges = null;
         transactionInvalidations = null;
         transactionMessageChanges = null;
         if (db.isTransaction) {
@@ -1144,6 +1196,7 @@ export function createResourceStore(options: {
      * committed nested accumulator is merged again when its enclosing write fails.
      */
     function mergeChanges(target: ChangeAccumulator, source: ChangeAccumulator) {
+        if (source.cursor !== undefined) target.cursor = Math.max(target.cursor ?? 0, source.cursor);
         for (const [key, entry] of source.resources) {
             const { kind, id, revision } = entry;
             target.resources.set(key, target.resources.has(key) ? { kind, id, revision } : entry);
@@ -1164,12 +1217,13 @@ export function createResourceStore(options: {
      * A publication's record and chat entries in wire order, with their optional payloads within
      * `MAX_FEED_PUBLICATION_PATCH_BYTES` together. Called once per publication, on the outermost
      * write's final accumulator, so nested scopes have merged and coalescing has dropped repeated keys'
-     * patches and deltas. The payloads are taken in wire order: resources, then chats, and within a
-     * chat entry its `patch` or `delta`, then its `summary` or `summaryBase`. A payload stays while
+     * patches, deltas, rowDeltas, and row manifests. Payloads are taken in wire order: resources,
+     * then chats, and within a chat entry `patch`, `delta`, `rowDelta`, `rows`, `summary`, then `summaryBase`. A
+     * payload stays while
      * the running sum including it fits; one that does not fit is left out of a copy of its entry in
      * the same place (a later, smaller payload may still fit), so a dropped `summary` leaves the entry
      * with neither summary field. Every candidate payload is measured, rejected ones included, so the
-     * measuring work is proportional to the payloads the write built (each patch or delta already
+     * measuring work is proportional to the payloads the write built (each body or row manifest already
      * within `MAX_FEED_PATCH_BYTES` when built), not to the frame. Refs are never dropped.
      */
     function budgetedEntries(changes: ChangeAccumulator): Pick<ChangeSet, "resources" | "chats"> {
@@ -1194,7 +1248,7 @@ export function createResourceStore(options: {
         return {
             resources: [...changes.resources.values()].map((entry) => withinBudget(entry, ["patch"])),
             chats: [...changes.chats.values()].map((entry) =>
-                withinBudget(entry, ["patch", "delta", "summary", "summaryBase"]),
+                withinBudget(entry, ["patch", "delta", "rowDelta", "rows", "summary", "summaryBase"]),
             ),
         };
     }
@@ -1204,6 +1258,7 @@ export function createResourceStore(options: {
      * in this scope loses it: its base would be a revision no client was told about.
      */
     function recordResource(kind: string, id: string, revision: string | null, patch?: RecordPatch) {
+        transactionChanges?.set(JSON.stringify([kind, null, id]), { kind, characterId: null, id, revision });
         const changes = publishingScope?.changes;
         const key = `${kind}\u0000${id}`;
         changes?.resources.set(
@@ -1217,6 +1272,12 @@ export function createResourceStore(options: {
      * written in this scope coalesces with its earlier entry (`coalescedChat`).
      */
     function recordChat(characterId: string, id: string, revision: string | null, payloads?: ChatFeedPayloads) {
+        transactionChanges?.set(JSON.stringify(["chats", characterId, id]), {
+            kind: "chats",
+            characterId,
+            id,
+            revision,
+        });
         const changes = publishingScope?.changes;
         const key = `${characterId}\u0000${id}`;
         const entry: ChangeSet["chats"][number] = { characterId, id, revision, ...payloads };
@@ -1229,6 +1290,12 @@ export function createResourceStore(options: {
     }
 
     function recordOrder(characterId: string, revision: string | null) {
+        transactionChanges?.set(JSON.stringify(["chatOrders", characterId]), {
+            kind: "chatOrders",
+            characterId,
+            id: characterId,
+            revision,
+        });
         publishingScope?.changes.chatOrders.set(characterId, { characterId, revision });
     }
 
@@ -1291,6 +1358,7 @@ export function createResourceStore(options: {
                         type: "change",
                         epoch,
                         changes: { resources, chats, chatOrders: [...changes.chatOrders.values()] },
+                        ...(changes.cursor !== undefined ? { cursor: changes.cursor } : {}),
                         ...(changes.streaming.size > 0 ? { streaming: [...changes.streaming.values()] } : {}),
                     });
                 }
@@ -1552,7 +1620,7 @@ export function createResourceStore(options: {
         refs: readonly { kind: ResourceKind; id: string }[],
         options: ReadRefsOptions,
         overlaying = overlaysMemoryProjection(options),
-    ) {
+    ): ResourceReadRefsResult & Required<Pick<ResourceReadRefsResult, "chats" | "chatCollections">> {
         const items = refs.map(({ kind, id }) => {
             assertKind(kind);
             assertId(kind, id);
@@ -1566,6 +1634,9 @@ export function createResourceStore(options: {
             }
             return chat;
         });
+        const rowReads: { chatRows?: ReturnType<typeof chatTables.readRows>[] } = options.chatRows?.length
+            ? { chatRows: options.chatRows.map((request) => chatTables.readRows(request)) }
+            : {};
         const chatCollections = (options.chatCollections ?? []).map((characterId) => {
             const collection = chatTables.readCollection(characterId);
             if (overlaying) {
@@ -1576,13 +1647,13 @@ export function createResourceStore(options: {
             return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
         });
         if (!options.chatSummaryCollections || options.chatSummaryCollections.length === 0) {
-            return { epoch, items, chats, chatCollections };
+            return { epoch, items, chats, ...rowReads, chatCollections };
         }
         const chatSummaryCollections = options.chatSummaryCollections.map((characterId) => {
             const collection = chatTables.readCollectionSummaries(characterId);
             return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
         });
-        return { epoch, items, chats, chatCollections, chatSummaryCollections };
+        return { epoch, items, chats, ...rowReads, chatCollections, chatSummaryCollections };
     }
 
     /**
@@ -1816,9 +1887,6 @@ export function createResourceStore(options: {
             if (options.inTransaction?.after) {
                 runCheckpointCallback((tx) => options.inTransaction!.after!(applied, tx));
             }
-            commitTransaction();
-            committed = true;
-            writeCount += prepared.length + chatOutcome.applied + checkpointWrites;
             for (const [index, result] of results.entries()) {
                 recordResource(result.kind, result.id, result.revision, patches.get(index));
             }
@@ -1830,6 +1898,9 @@ export function createResourceStore(options: {
             for (const order of chatOutcome.orders) {
                 recordOrder(order.characterId, order.revision);
             }
+            commitTransaction();
+            committed = true;
+            writeCount += prepared.length + chatOutcome.applied + checkpointWrites;
             if (written && chatOutcome.changes) {
                 written.chats = chatOutcome.changes;
             }
@@ -1896,6 +1967,56 @@ export function createResourceStore(options: {
         /** Committed writes since the store opened. */
         writeCount(): number {
             return writeCount;
+        },
+
+        /**
+         * Synchronous retention recheck on the writer's connection. Fixed schema identifiers only;
+         * needles are bound parameters, including the JSON escape superset. The lifecycle supplies
+         * only generic recognition needles; it narrows selected text in JS before parsing, avoiding
+         * per-key SQL predicates over every row's full text. Reads every checkpoint
+         * page conservatively. Missing tables/columns, invalid text, or a throwing visitor abort the
+         * caller's batch; no transaction or await separates this read from its synchronous deletes.
+         */
+        readAssetReferenceText(
+            filter: { needles: readonly string[]; lowerNeedles: readonly string[] },
+            visit: (text: string, json: boolean) => void,
+        ): void {
+            assertOpen();
+            const columns: [string, string, boolean][] = [
+                ["resources", "data", true],
+                ["chats", "meta", true],
+                ["messages", "data", true],
+                ["chatCheckpoints", "name", false],
+                ["chatCheckpoints", "preview", true],
+                ["checkpointPages", "text", true],
+            ];
+            for (const table of [
+                "memory_pages",
+                "memory_events",
+                "memory_threads",
+                "memory_runs",
+                "memory_staged_pages",
+                "memory_staged_events",
+                "memory_staged_threads",
+                "memory_staged_runs",
+            ]) {
+                columns.push([table, "data", true]);
+                if (!table.endsWith("runs")) columns.push([table, "title", false]);
+            }
+            for (const [table, column, json] of columns) {
+                const needles = [...new Set([...filter.needles, ...(json ? ["\\u", "\\/"] : [])])];
+                const lower = [...new Set(filter.lowerNeedles)];
+                const predicate =
+                    [
+                        ...needles.map(() => `instr(${column}, ?) > 0`),
+                        ...lower.map(() => `instr(lower(${column}), ?) > 0`),
+                    ].join(" OR ") || "0";
+                const query = db.prepare(`SELECT ${column} AS text FROM ${table} WHERE ${predicate}`);
+                for (const row of query.iterate(...needles, ...lower)) {
+                    if (typeof row.text !== "string") throw new Error(`Invalid reference text in ${table}.${column}`);
+                    visit(row.text, json);
+                }
+            }
         },
 
         /** Cold checkpoint data: writes count toward snapshots without publishing chat changes. */
@@ -2298,6 +2419,8 @@ export function createResourceStore(options: {
          * `chats` names single chats (missing: revision and data null); `chatCollections` names
          * characters whose order and every chat are read (no order: null); `chatSummaryCollections`
          * names characters whose order and every chat's summary are read (with memoized last-message times).
+         * `chatRows` reads named rows and metadata at exactly a revision, or answers moved with the current
+         * revision (null when missing). Row reads always use stored metadata, without projection overlays.
          */
         readRefs(refs: readonly { kind: ResourceKind; id: string }[], options: ReadRefsOptions = {}) {
             assertOpen();
@@ -2307,9 +2430,9 @@ export function createResourceStore(options: {
         /**
          * `readRefs` of what `budget` stored bytes cover, in one synchronous call, with the rest named in
          * `unanswered` (`ResourceReadRefsAnswer`; present only when something was left out). The entries
-         * go in groups, each placed at its first mention in `refs`, `chats`, `chatCollections`,
+         * go in groups, each placed at its first mention in `refs`, `chats`, `chatRows`, `chatCollections`,
          * `chatSummaryCollections` order: a character's record and its two collection entries are one
-         * group, since a client installs them together, and every other entry, a chat included, is alone.
+         * group, since a client installs them together, and every other entry, a chat or row read included, is alone.
          * Groups are charged from SQL in that order and served until the first that would pass the
          * budget; it and every group after it are left unread, and later groups are not charged.
          * The first group is
@@ -2321,8 +2444,10 @@ export function createResourceStore(options: {
          * resource, meta plus message rows for a chat (two queries), order text plus separate chat-meta
          * and message aggregates for a whole collection, order text plus stored chatSummaries rows
          * for a summary collection (`data/chatStore.ts` chatBytes/collectionBytes/collectionSummaryBytes).
-         * Projection reads add memory_events bytes. A chat or collection is never split; the character
-         * group is read in this synchronous call, but separate continuation rounds share no snapshot.
+         * A row read charges its named rows and, when fields are named, whole stored metadata; a moved
+         * answer costs zero and is never deferred for its requested rows' size. Projection reads add
+         * memory_events bytes. A chat or collection is never split; the character group is read in this synchronous
+         * call, but separate continuation rounds share no snapshot.
          * Internal readRefs callers are unbudgeted; `routes/resources.ts` opts into this method only
          * for continue: true and deduplicates each request before calling it.
          */
@@ -2336,7 +2461,7 @@ export function createResourceStore(options: {
                 assertKind(kind);
                 assertId(kind, id);
             }
-            const { chats = [], chatCollections = [], chatSummaryCollections = [] } = options;
+            const { chats = [], chatRows = [], chatCollections = [], chatSummaryCollections = [] } = options;
             const overlaying = overlaysMemoryProjection(options);
             const groups: ReadGroup[] = [];
             const characterGroups = new Map<string, ReadGroup>();
@@ -2367,6 +2492,7 @@ export function createResourceStore(options: {
                         (overlaying ? memoryTables.chatEventBytes(characterId, id) : 0),
                 ),
             );
+            const rowGroups = chatRows.map((request) => groupOf(null, () => chatTables.rowsBytes(request)));
             const collectionGroups = chatCollections.map((characterId) =>
                 groupOf(
                     characterId,
@@ -2395,12 +2521,14 @@ export function createResourceStore(options: {
             ];
             const [servedRefs, leftRefs] = fates(refs, refGroups);
             const [servedChats, leftChats] = fates(chats, chatGroups);
+            const [servedRows, leftRows] = fates(chatRows, rowGroups);
             const [servedCollections, leftCollections] = fates(chatCollections, collectionGroups);
             const [servedSummaries, leftSummaries] = fates(chatSummaryCollections, summaryGroups);
             const read = readNamed(
                 servedRefs,
                 {
                     chats: servedChats,
+                    chatRows: servedRows,
                     chatCollections: servedCollections,
                     chatSummaryCollections: servedSummaries,
                 },
@@ -2414,6 +2542,7 @@ export function createResourceStore(options: {
                 unanswered: {
                     refs: leftRefs.map(({ kind, id }) => ({ kind: kind.name, id })),
                     chats: leftChats,
+                    chatRows: leftRows,
                     chatCollections: leftCollections,
                     chatSummaryCollections: leftSummaries,
                 },
@@ -2507,6 +2636,49 @@ export function createResourceStore(options: {
                 .filter((row) => kinds.has(row.kind))
                 .map((row) => ({ kind: row.kind, id: row.id, revision: token(row.seq, row.revision) }));
             return { epoch, resources, ...chatTables.listRevisions() };
+        },
+
+        /** Committed high-water cursor, including pruned rows; zero before the first logged write. */
+        cursor,
+
+        /**
+         * Bounded reconnect replay, coalesced to the last revision or tombstone per key, without
+         * payloads. Coverage starts at MIN(cursor) - 1, or the high-water cursor when empty.
+         * Invalid or uncovered bounds expire; a different epoch returns this epoch without changes.
+         */
+        listChanges(since: number, until: number, requestedEpoch: string = epoch): ResourceChangesSince {
+            const high = cursor();
+            if (requestedEpoch !== epoch) return { epoch, cursor: high };
+            const { oldest } = selectChangeFloor.get() as { oldest: number | null };
+            const floor = oldest === null ? high : oldest - 1;
+            if (
+                !Number.isSafeInteger(since) ||
+                !Number.isSafeInteger(until) ||
+                since < floor ||
+                since > until ||
+                until > high
+            ) {
+                return { epoch, cursor: high, expired: true };
+            }
+            const changes = changeAccumulator();
+            for (const { kind, characterId, id, revision } of selectChanges.all(since, until) as ChangeLogRow[]) {
+                if (kind === "chats" && characterId !== null) {
+                    changes.chats.set(JSON.stringify([characterId, id]), { characterId, id, revision });
+                } else if (kind === "chatOrders" && characterId !== null) {
+                    changes.chatOrders.set(characterId, { characterId, revision });
+                } else {
+                    changes.resources.set(JSON.stringify([kind, id]), { kind, id, revision });
+                }
+            }
+            return {
+                epoch,
+                cursor: until,
+                changes: {
+                    resources: [...changes.resources.values()],
+                    chats: [...changes.chats.values()],
+                    chatOrders: [...changes.chatOrders.values()],
+                },
+            };
         },
 
         /**
@@ -2925,6 +3097,7 @@ export function createResourceStore(options: {
                     DELETE FROM main.chatOrders;
                     DELETE FROM main.chats;
                     DELETE FROM main.checkpointPages;
+                    DELETE FROM main.changes;
                     INSERT INTO main.resources (kind, id, revision, schemaVersion, data)
                         SELECT kind, id, revision, schemaVersion, data FROM staged.resources ORDER BY seq;
                 `);

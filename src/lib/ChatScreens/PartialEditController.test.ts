@@ -213,6 +213,47 @@ afterEach(async () => {
     vi.useRealTimers();
 });
 
+describe("PartialEditController block hover", () => {
+    it("clones and measures an unchanged paragraph once across ten frames, and checks its text again when it changes", () => {
+        const frames = new Map<number, FrameRequestCallback>();
+        let nextFrameId = 0;
+        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+            frames.set(++nextFrameId, callback);
+            return nextFrameId;
+        });
+        vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+
+        const ui = render({ html: "<p><em>Hello world</em></p>", hovered: (root) => root.querySelector("em")! });
+        const paragraph = ui.block.closest("p")!;
+        // happy-dom has no layout. Give the paragraph a rectangle, then count calls through that stub.
+        paragraph.getBoundingClientRect = () => new DOMRect(100, 100, 300, 100);
+        const clone = vi.spyOn(paragraph, "cloneNode");
+        const rect = vi.spyOn(paragraph, "getBoundingClientRect");
+        const move = (offset: number) => {
+            document.dispatchEvent(
+                new MouseEvent("mousemove", { clientX: 120 + offset, clientY: 120 + offset, bubbles: true }),
+            );
+            expect(frames.size).toBe(1);
+            const pending = [...frames.values()];
+            frames.clear();
+            for (const callback of pending) callback(0);
+            flushSync();
+        };
+
+        for (let i = 0; i < 10; i++) move(i);
+
+        expect(clone).toHaveBeenCalledTimes(1);
+        expect(rect).toHaveBeenCalledTimes(1);
+        expect(ui.query<HTMLElement>(".partial-edit-btn-wrapper")!.style.display).toBe("flex");
+
+        // The pointer still hits the same child and paragraph, but the cached positive result is now stale.
+        ui.block.textContent = "   ";
+        move(10);
+        expect(clone).toHaveBeenCalledTimes(2);
+        expect(ui.query<HTMLElement>(".partial-edit-btn-wrapper")!.style.display).toBe("none");
+    });
+});
+
 describe("PartialEditController translation writes", () => {
     it("awaits the callback, refuses an overlapping save, and a save that ends after a cancel and a newer edit leaves the newer editor alone", async () => {
         const first = deferred<boolean>();

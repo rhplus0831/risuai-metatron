@@ -702,3 +702,150 @@ describe("the callback barrier over the real stores", () => {
         expect(b.fake.batchCount()).toBe(0);
     });
 });
+
+describe("stream references through the job transport and real chat store", () => {
+    async function streamedChat() {
+        const b = await boot();
+        const accepted = (seq: number, text: string, generationId = "g"): GenerationEvent => ({
+            type: "accepted",
+            epoch: b.epoch,
+            jobId: "J",
+            messageId: "c",
+            generationId,
+            revision: b.chat.heldChatRevision(refK)!,
+            seq,
+            text,
+        });
+        const checkpoint = () => {
+            const baseRevision = b.chat.heldChatRevision(refK)!;
+            b.fake.chatBatch([
+                {
+                    ...serverRef,
+                    baseRevision,
+                    ops: [
+                        { op: "setText", id: "a", text: "User changed" },
+                        { op: "setText", id: "c", text: "Raw two" },
+                    ],
+                },
+            ]);
+            const revision = b.fake.chat("c", "k")!.revision;
+            const patch: GenerationEvent = {
+                type: "chatPatch",
+                epoch: b.epoch,
+                characterId: "c",
+                id: "k",
+                baseRevision,
+                revision,
+                messages: [
+                    { after: null, message: m("a", "User changed") },
+                    { after: "b", id: "c", streamed: { generationId: "g", seq: 2 } },
+                ],
+                count: 3,
+                streaming: [{ messageId: "c", generationId: "g", seq: 2 }],
+            };
+            return { patch, baseRevision, revision };
+        };
+        const texts = () => b.chat.findChat(refK)!.message.map((message) => message.data);
+        return { ...b, accepted, checkpoint, texts };
+    }
+
+    it.each(["above the checkpoint", "at the checkpoint", "at the checkpoint with an older displayed row"] as const)(
+        "installs a buffer %s and passes its callback receipt without a read",
+        async (position) => {
+            const b = await streamedChat();
+            if (position === "at the checkpoint with an older displayed row") {
+                b.apply(b.chatEvent({ streaming: [{ messageId: "c", generationId: "g", seq: 2 }] }));
+                b.apply(b.accepted(2, "Raw two"));
+                // A covering stored copy can hide the raw buffer; equality must still install it.
+                expect(b.texts()).toEqual(["A", "B", "C"]);
+            } else {
+                b.apply(b.accepted(0, "C"));
+                b.apply({
+                    type: "chunk",
+                    epoch: b.epoch,
+                    messageId: "c",
+                    generationId: "g",
+                    seq: 2,
+                    base: 0,
+                    keep: 0,
+                    text: "Raw two",
+                });
+                if (position === "above the checkpoint") {
+                    b.apply({
+                        type: "chunk",
+                        epoch: b.epoch,
+                        messageId: "c",
+                        generationId: "g",
+                        seq: 3,
+                        base: 2,
+                        keep: 7,
+                        text: " plus three",
+                    });
+                }
+            }
+            const { patch, revision } = b.checkpoint();
+            b.apply(patch);
+            const expected = [
+                "User changed",
+                "B",
+                position === "above the checkpoint" ? "Raw two plus three" : "Raw two",
+            ];
+            expect(b.texts()).toEqual(expected);
+            expect(b.chat.heldChatRevision(refK)).toBe(revision);
+            expect(b.follow.send).not.toHaveBeenCalled();
+            const observed: string[][] = [];
+            b.hooks.editoutput.add((text) => {
+                observed.push(b.texts());
+                return text;
+            });
+            b.apply(b.callbackEvent("streamed", revision));
+            expect(await b.answerReceived).toMatchObject({ id: "streamed", outcome: "answered" });
+            expect(observed).toEqual([expected]);
+            expect(b.fake.requests.filter((request) => request.path === "/api/resources/read")).toEqual([]);
+            expect(b.fake.batchCount()).toBe(0);
+        },
+    );
+
+    it("requests one resync for a buffer below the checkpoint, preserving every row, revision and watermark until accepted catches up", async () => {
+        const b = await streamedChat();
+        const frames: FrameRequestCallback[] = [];
+        vi.stubGlobal("requestAnimationFrame", (run: FrameRequestCallback) => frames.push(run));
+        b.apply(b.accepted(1, "Raw one"));
+        const { patch, baseRevision } = b.checkpoint();
+        const before = plain(b.chat.findChat(refK));
+        b.apply(patch);
+        b.apply(patch);
+        expect(b.follow.send.mock.calls).toEqual([[{ type: "resync" }]]);
+        expect(plain(b.chat.findChat(refK))).toEqual(before);
+        expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+        expect(b.chat.isChatStale(refK)).toBe(true);
+        // If the refused patch claimed seq 2, this accepted would be hidden by its watermark.
+        b.apply(b.accepted(2, "Raw two"));
+        frames.splice(0).forEach((run) => run(0));
+        expect(b.texts()).toEqual(["A", "B", "Raw two"]);
+        expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+        expect(b.follow.send.mock.calls).toEqual([[{ type: "resync" }]]);
+    });
+
+    it.each(["absent", "a placeholder", "retired", "held by another job"] as const)(
+        "requests one resync and refuses the entire patch when the stream buffer is %s",
+        async (state) => {
+            const b = await streamedChat();
+            if (state === "a placeholder") {
+                b.apply(b.chatEvent({ streaming: [{ messageId: "c", generationId: "g", seq: 0 }] }));
+            } else if (state === "retired") {
+                b.apply(b.accepted(2, "Raw two"));
+                b.apply(b.chatEvent({ streaming: [] }));
+            } else if (state === "held by another job") {
+                b.transport.applyGenerationEvent("other-job", refK, b.accepted(2, "Other job text"), b.follow);
+            }
+            const { patch, baseRevision } = b.checkpoint();
+            const before = plain(b.chat.findChat(refK));
+            b.apply(patch);
+            b.apply(patch);
+            expect(b.follow.send.mock.calls).toEqual([[{ type: "resync" }]]);
+            expect(plain(b.chat.findChat(refK))).toEqual(before);
+            expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+        },
+    );
+});
