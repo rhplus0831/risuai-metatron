@@ -132,14 +132,14 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 ### Job owner presence
 
-[Generation channels](server-generation.md#generation-channels) owns the contract a tab-side tool or hook answers inside
-(pings, the 45 s silent socket, the 120 s absence bound, attach replay).
+[Generation channels](server-generation.md#generation-channels) owns presence, deadlines and safe-boundary transfers;
+`src/ts/network/jobChannel.ts` documents callback execution and viewer refusal.
 
-- MCP owner checks exclude silent sockets. A live tab answering pings can keep a long non-streaming provider call
-  running without progress frames.
-- A provider failure on absence expiry (`disconnected`) follows the partial-save and job-end path. A completed reply's
-  hooks skip ([server generation](server-generation.md#generation-channels)): `editoutput` and `replacerafterRequest`
-  keep the text; an undelivered `chatOutput` callback runs late in a returning tab under the chat's own context.
+- Hooks may run on a worker showing another chat: `getRootDocument` finds no message DOM there. Targets remain the
+  job's; device-local keys are the worker's. A delivered callback never runs on a second tab, even if its device sleeps.
+- MCP excludes silent owners; a live tab answering pings keeps a long provider call alive. Absence failure saves partial
+  text and ends the job. Completed-reply transforms keep text; undelivered listeners run late, delivered ones are
+  missed.
 
 ## State
 

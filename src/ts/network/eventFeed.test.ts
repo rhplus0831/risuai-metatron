@@ -1,3 +1,4 @@
+import { get } from "svelte/store";
 import { revisionDigest, type ResourceRevisionListing } from "../../../shared/resources.ts";
 import { ResourceEpochMismatchError } from "../storage/resourceClient";
 import { FakeSocket } from "./tests/eventSocket";
@@ -91,6 +92,38 @@ async function started() {
 }
 
 describe("the live-update socket client", () => {
+    it("replaces handoff offers from hello, updates open and closed offers, and ignores unknown frames", async () => {
+        const { acceptHandoffs, handoffOffers } = await import("./handoff");
+        acceptHandoffs.set(false);
+        const offer = {
+            epoch: "E1",
+            jobId: "job-a",
+            characterId: "c",
+            chatId: "k",
+            state: "open",
+            reason: "preferred",
+        } as const;
+        const ws = await started();
+        ws.frame({ type: "hello", epoch: "E1", handoffs: [offer] });
+        await vi.advanceTimersByTimeAsync(0);
+        expect([...get(handoffOffers).keys()]).toEqual(["job-a"]);
+        ws.frame({ type: "handoff", ...offer, jobId: "job-b" });
+        expect([...get(handoffOffers).keys()]).toEqual(["job-a", "job-b"]);
+        ws.frame({ type: "handoff", ...offer, state: "closed" });
+        expect([...get(handoffOffers).keys()]).toEqual(["job-b"]);
+        const before = get(handoffOffers);
+        ws.frame({ ...offer, type: "future-frame", changes: change, handoffs: [], state: "closed", epoch: "E2" });
+        expect(get(handoffOffers)).toEqual(before);
+        expect(mocks.noteRemoteChanges).not.toHaveBeenCalled();
+        expect(mocks.epochMismatch).not.toHaveBeenCalled();
+        expect(ws.closed).toBe(false);
+        ws.frame({ type: "hello", epoch: "E1", handoffs: [offer] });
+        expect([...get(handoffOffers).keys()]).toEqual(["job-a"]);
+        ws.frame({ type: "hello", epoch: "E1" });
+        expect(get(handoffOffers).size).toBe(0);
+        await vi.dynamicImportSettled();
+    });
+
     it("connects once to the feed path with a signed JWT, reconciles on `hello`, and passes changes of the loaded epoch", async () => {
         const ws = await started();
         feed.startEventFeed();

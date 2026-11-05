@@ -135,7 +135,9 @@ vi.mock("../plugins/apiV3/pluginContext", () => ({
     PluginTargetGoneError: class PluginTargetGoneError extends Error {},
 }));
 vi.mock("../process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: deps.mcps }));
-vi.mock("../plugins/plugins.svelte", () => ({ pluginsStarted: () => deps.pluginsStarted() }));
+vi.mock("../plugins/plugins.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("plugins", { pluginsStarted: () => deps.pluginsStarted() }),
+);
 vi.mock("../util", () => ({ sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)) }));
 vi.mock("../../lang", () => ({ language: {} }));
 vi.mock("../storage/database.svelte", () => ({}));
@@ -243,6 +245,7 @@ function transport() {
     const answers: ChannelAnswer[] = [];
     return {
         answers,
+        viewing: () => false,
         send: vi.fn((message: ChannelAnswer) => {
             answers.push(message);
             return true;
@@ -342,6 +345,26 @@ afterEach(() => {
 });
 
 describe("notices and questions", () => {
+    it("applies display notices for viewers and refuses their callbacks without running a hook", async () => {
+        const viewer = { ...tx, viewing: () => true };
+        const listener = vi.fn();
+        hooks.chatOutput.add(listener);
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+        send(notice("reloadDisplay"), "J", viewer);
+        await pump();
+        expect(get(stores.ReloadGUIPointer)).toBe(1);
+        send(notice("updateGUI"), "J", viewer);
+        await pump();
+        expect(get(stores.ReloadGUIPointer)).toBe(2);
+        send(callback("viewer-output", "chatOutput", { messageId: "m2", speakerId: "c" }), "J", viewer);
+        await pump();
+        expect(tx.answers).toEqual([
+            expect.objectContaining({ type: "answer", id: "viewer-output", outcome: "failed", failure: "protocol" }),
+        ]);
+        expect(listener).not.toHaveBeenCalled();
+        expect(deps.contexts).toEqual([]);
+    });
+
     it("drops an ended job's queued statuses, keeps its modal notices, and clears only the status it still owns", async () => {
         // Watch every published value: a stale toast that was immediately cleared must still fail.
         const seen: string[] = [];
@@ -1358,6 +1381,35 @@ describe("callbacks", () => {
 });
 
 describe("the reply tail's callbacks", () => {
+    it("runs an owner's chatOutput under the job targets while another chat is selected", async () => {
+        const selection = await import("../storage/selection.svelte");
+        await withCharacter(
+            { chaId: "elsewhere", type: "character" },
+            { chats: [{ id: "other-chat", message: [] }] },
+            async () => {
+                selection.selectCharacter("elsewhere");
+                const listener = vi.fn();
+                hooks.chatOutput.add(listener);
+                send(callback("worker-output", "chatOutput", { messageId: "m2", speakerId: "c" }), "J", {
+                    ...tx,
+                    viewing: () => false,
+                });
+                await pump();
+                expect(listener).toHaveBeenCalledExactlyOnceWith(
+                    expect.objectContaining({
+                        char: expect.objectContaining({ chaId: "c" }),
+                        chat: { id: "k", message: [{ chatId: "m1" }, { chatId: "m2" }] },
+                        chatIndex: 0,
+                        messageIndex: 1,
+                    }),
+                );
+                expect(deps.contexts).toEqual([hookContext("worker-output")]);
+                expect(tx.answers).toEqual([{ type: "answer", id: "worker-output", outcome: "answered", value: true }]);
+                expect(selection.selection.characterId).toBe("elsewhere");
+            },
+        );
+    });
+
     // `chatOutput` walks the live listener set as the tab's own send does (a listener an earlier one
     // removed does not run, one it added does), gives each listener a plain copy of the speaker and
     // the chat as they are then with indices looked up again, logs a throw, and answers `true`.
