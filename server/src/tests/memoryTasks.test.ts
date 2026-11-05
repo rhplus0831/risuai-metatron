@@ -2094,10 +2094,14 @@ describe("the server wiring", () => {
         const a = await w.socket();
         expect(a.frames[0]).toEqual({
             type: "hello",
+            rerollInPlace: true,
             epoch: w.epoch,
             streaming: [],
             memoryTasks: [],
+            handoffs: [],
+            clients: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+            cursor: expect.any(Number),
         });
 
         w.handOff("k1");
@@ -2273,10 +2277,14 @@ describe("the server wiring", () => {
         const b = await w.socket();
         expect(b.frames[0]).toEqual({
             type: "hello",
+            rerollInPlace: true,
             epoch: next,
             streaming: [],
             memoryTasks: [],
+            handoffs: [],
+            clients: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+            cursor: expect.any(Number),
         });
         // The old epoch's retained input is gone with the registry: a start waits for the next send.
         w.epoch = next;

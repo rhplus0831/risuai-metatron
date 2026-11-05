@@ -78,11 +78,12 @@ function writeFetchLog(entry: fetchLog): void {
     fetchLog.length = length;
 }
 
-export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer | string) {
+/** Downloads bytes or a string as octet-stream data; a Blob passes through without a copy, keeping its type. */
+export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer | string | Blob) {
     if (typeof dat === "string") {
         dat = Buffer.from(dat, "utf-8");
     }
-    const data = new Uint8Array(dat);
+    const blob = dat instanceof Blob ? dat : new Blob([new Uint8Array(dat)], { type: "application/octet-stream" });
     const downloadURL = (data: string, fileName: string) => {
         const a = document.createElement("a");
         a.href = data;
@@ -93,7 +94,6 @@ export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer |
         a.remove();
     };
 
-    const blob = new Blob([data], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
 
     downloadURL(url, name);

@@ -1955,6 +1955,250 @@ describe("message translations", () => {
     });
 });
 
+describe("message positions", () => {
+    let frames: FrameRequestCallback[];
+
+    beforeEach(() => {
+        frames = [];
+        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+    });
+
+    afterEach(() => vi.unstubAllGlobals());
+
+    const since = (chat: ChatModule, before: ReturnType<ChatModule["messagePositionStats"]>) => {
+        const after = chat.messagePositionStats();
+        return { builds: after.builds - before.builds, lookups: after.lookups - before.lookups };
+    };
+
+    it.each([100, 10_000])(
+        "shares one lazy index across 200 streamed tail updates in a %i-message chat",
+        async (count) => {
+            const { chat, ref, server } = await boot();
+            const before = chat.messagePositionStats();
+            chat.replaceChat(ref, {
+                ...clone(chat.findChat(ref)!),
+                message: Array.from({ length: count }, (_, index) => m(`row-${index}`, `text-${index}`, "char")),
+            });
+            expect(since(chat, before)).toEqual({ builds: 0, lookups: 0 });
+            const messageId = `row-${count - 1}`;
+            expect(
+                chat.applyServerGeneration(ref, { jobId: "J", messageId, generationId: "g", text: "reply-0", seq: 0 }),
+            ).toBe(true);
+            expect(since(chat, before).builds).toBe(1);
+
+            // A burst shares the stream buffer; later updates each get their own controlled frame.
+            for (let seq = 1; seq < 200; seq++) {
+                const lookups = chat.messagePositionStats().lookups;
+                const applied =
+                    seq % 2 === 0
+                        ? chat.applyServerGeneration(ref, {
+                              jobId: "J",
+                              messageId,
+                              generationId: "g",
+                              text: `reply-${seq}`,
+                              seq,
+                          })
+                        : chat.applyServerGenerationChunk(ref, "J", {
+                              type: "chunk",
+                              epoch: server.store.epoch(),
+                              messageId,
+                              generationId: "g",
+                              base: seq - 1,
+                              seq,
+                              keep: 0,
+                              text: `reply-${seq}`,
+                          });
+                expect(applied).toBe(true);
+                expect(chat.messagePositionStats().lookups).toBeGreaterThan(lookups);
+                if (seq < 10) {
+                    expect(chat.findChat(ref)!.message[count - 1].data).toBe("reply-0");
+                    expect(frames).toHaveLength(1);
+                } else {
+                    const beforeFrame = chat.messagePositionStats();
+                    frames.shift()!(0);
+                    expect(since(chat, beforeFrame).builds).toBe(0);
+                    expect(chat.findChat(ref)!.message[count - 1].data).toBe(`reply-${seq}`);
+                }
+            }
+
+            expect(chat.messagePositionOf(ref, messageId)).toBe(count - 1);
+            expect(chat.heldMessageById(ref, messageId)).toMatchObject({ chatId: messageId, data: "reply-199" });
+            expect(chat.findChat(ref)!.message[count - 2].data).toBe(`text-${count - 2}`);
+            expect(since(chat, before).builds).toBe(1);
+        },
+    );
+
+    it("rebuilds once after append, removal and chat replacement between streaming updates", async () => {
+        const { chat, ref } = await boot();
+        const stream = (seq: number, text: string, jobId = "J", generationId = "g") =>
+            chat.applyServerGeneration(ref, { jobId, generationId, messageId: "c", seq, text });
+        const before = chat.messagePositionStats();
+        expect(stream(0, "first")).toBe(true);
+        expect(since(chat, before).builds).toBe(1);
+
+        chat.appendMessage(ref, m("d", "D"));
+        const appended = chat.messagePositionStats();
+        expect(stream(1, "after append")).toBe(true);
+        frames.shift()!(0);
+        expect(chat.messagePositionOf(ref, "c")).toBe(2);
+        expect(chat.heldMessageById(ref, "c")!.data).toBe("after append");
+        expect(chat.findChat(ref)!.message[3].data).toBe("D");
+        expect(since(chat, appended).builds).toBe(1);
+
+        chat.removeMessagesUnasked(ref, ["a"]);
+        const removed = chat.messagePositionStats();
+        expect(stream(2, "after removal")).toBe(true);
+        frames.shift()!(0);
+        expect(chat.messagePositionOf(ref, "c")).toBe(1);
+        expect(texts(chat.findChat(ref))).toEqual(["B", "after removal", "D"]);
+        expect(since(chat, removed).builds).toBe(1);
+        const missing = chat.messagePositionStats();
+        expect(chat.messagePositionOf(ref, "a")).toBe(-1);
+        expect(since(chat, missing)).toEqual({ builds: 1, lookups: 1 });
+
+        chat.endServerJob("J");
+        chat.replaceChat(ref, {
+            ...clone(chat.findChat(ref)!),
+            message: [m("b", "replacement B"), m("c", "replacement C", "char"), m("d", "replacement D")],
+        });
+        const replaced = chat.messagePositionStats();
+        expect(stream(0, "after replacement", "J2", "g2")).toBe(true);
+        expect(chat.messagePositionOf(ref, "c")).toBe(1);
+        expect(chat.heldMessageById(ref, "c")!.data).toBe("after replacement");
+        expect(texts(chat.findChat(ref))).toEqual(["replacement B", "after replacement", "replacement D"]);
+        expect(since(chat, replaced).builds).toBe(1);
+    });
+
+    it("shares one rebuilt index with job hydration and patch tails while restoring newer streamed text", async () => {
+        const { chat, ref, server } = await boot();
+        for (const messageId of ["a", "c"]) {
+            chat.applyServerGeneration(ref, {
+                jobId: "J",
+                generationId: `g-${messageId}`,
+                messageId,
+                text: `live-${messageId}`,
+                seq: 3,
+            });
+        }
+        const streaming = ["a", "c"].map((messageId) => ({ messageId, generationId: `g-${messageId}`, seq: 1 }));
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "meta", set: { note: "server note" } }],
+            },
+        ]);
+        const hydrated = chat.messagePositionStats();
+        expect(chat.hydrateChat(server.chat("c", "k")!, { jobId: "J", streaming })).toBe(true);
+        expect(texts(chat.findChat(ref))).toEqual(["live-a", "B", "live-c"]);
+        expect(since(chat, hydrated).builds).toBe(1);
+        expect(since(chat, hydrated).lookups).toBeGreaterThanOrEqual(2);
+
+        const baseRevision = chat.heldChatRevision(ref)!;
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision,
+                ops: [{ op: "append", messages: [m("d", "D")], anchor: { end: true } }],
+            },
+        ]);
+        const patched = chat.messagePositionStats();
+        expect(
+            chat.hydrateChatPatch(
+                {
+                    characterId: "c",
+                    id: "k",
+                    baseRevision,
+                    revision: server.chat("c", "k")!.revision,
+                    count: 4,
+                    messages: [{ after: "c", message: m("d", "D") }],
+                },
+                { jobId: "J", streaming },
+            ),
+        ).toBe("applied");
+        expect(since(chat, patched).builds).toBe(1);
+        expect(chat.messagePositionOf(ref, "d")).toBe(3);
+        expect(chat.heldMessageById(ref, "c")!.data).toBe("live-c");
+        expect(texts(chat.findChat(ref))).toEqual(["live-a", "B", "live-c", "D"]);
+        expect(since(chat, patched).builds).toBe(1);
+    });
+
+    it("rebuilds once after normalizing a new character's message ids", async () => {
+        const { chat, records } = await boot();
+        const refN = { chaId: "n", chatId: "new-chat" };
+        chat.installCharacterChats(
+            "n",
+            [
+                {
+                    id: "new-chat",
+                    name: "New",
+                    note: "",
+                    localLore: [],
+                    message: [
+                        m("stable", "Stable"),
+                        m("dup", "First duplicate"),
+                        m("dup", "Second duplicate"),
+                        m(undefined, "Missing id"),
+                    ],
+                },
+            ],
+            {},
+        );
+        records.insertCharacterRecord({ chaId: "n", name: "N" });
+        expect(chat.messagePositionOf(refN, "stable")).toBe(0);
+        const before = chat.messagePositionStats();
+        chat.normalizeNewCharacter("n");
+        expect(chat.messagePositionOf(refN, "stable")).toBe(0);
+        expect(since(chat, before).builds).toBe(1);
+        expect(chat.heldMessageById(refN, "dup")!.data).toBe("First duplicate");
+        const normalized = chat.findChat(refN)!;
+        const renamed = normalized.message[2].chatId!;
+        expect(renamed).not.toBe("dup");
+        expect(chat.messagePositionOf(refN, renamed)).toBe(2);
+        expect(chat.heldMessageById(refN, renamed)!.data).toBe("Second duplicate");
+        expect(chat.heldMessageById(refN, normalized.message[3].chatId!)!.data).toBe("Missing id");
+        expect(since(chat, before).builds).toBe(1);
+    });
+
+    it.each(["create", "replace"] as const)(
+        "rebuilds once when a server %s acknowledgment adopts a renamed message id",
+        async (op) => {
+            const { chat, ref, take, apply, ack, server } = await boot();
+            const target = op === "create" ? { chaId: "c", chatId: "new-chat" } : ref;
+            const data = {
+                id: target.chatId,
+                name: "Renamed",
+                note: "",
+                localLore: [],
+                message: [m("stable", "Stable"), m("bad\tid", "Renamed row", "char")],
+            };
+            if (op === "create") chat.createChat("c", data);
+            else chat.replaceChat(target, data);
+            const work = take();
+            const result = apply(work);
+            const renamed = server.chat("c", target.chatId)!.data.message[1].chatId!;
+            expect(renamed).not.toBe("bad\tid");
+            expect(chat.messagePositionOf(target, "stable")).toBe(0);
+            expect(chat.heldMessageById(target, "bad\tid")!.data).toBe("Renamed row");
+            const before = chat.messagePositionStats();
+            ack(work, result);
+            // This unchanged id must also see the structural invalidation.
+            expect(chat.messagePositionOf(target, "stable")).toBe(0);
+            expect(since(chat, before).builds).toBe(1);
+            expect(chat.messagePositionOf(target, renamed)).toBe(1);
+            expect(chat.heldMessageById(target, renamed)).toMatchObject({ chatId: renamed, data: "Renamed row" });
+            const edited = chat.messagePositionStats();
+            chat.setMessageText(target, renamed, "Edited under adopted id");
+            expect(since(chat, edited).builds).toBe(0);
+            expect(chat.heldMessageById(target, renamed)!.data).toBe("Edited under adopted id");
+            expect(since(chat, before).builds).toBe(1);
+            expect(chat.messagePositionOf(target, "bad\tid")).toBe(-1);
+        },
+    );
+});
+
 describe("stream updates per frame", () => {
     // The frames the chat module asked for, run by hand (the timers are fake: the fallback waits).
     let frames: FrameRequestCallback[] = [];

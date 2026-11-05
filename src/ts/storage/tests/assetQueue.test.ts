@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
+vi.mock("../serverAuth", async () => (await import("./serverAuthMock")).createServerAuthMock());
+import { authFetch } from "../serverAuth";
+import { createHash } from "node:crypto";
+
 import { assetKey, saveAsset, saveAssetBatch } from "../../globalApi.svelte";
 import { AssetSaveError, AssetSaveQueue, saveAssets, type AssetSaveItem } from "../assetQueue";
 
@@ -235,3 +239,36 @@ describe("AssetSaveQueue", () => {
         expect(queue.waiting).toBe(0);
     });
 });
+
+it.each(["missing", "check failure"])(
+    "reloads canonical keys at queue completion after %s before returning",
+    async (failure) => {
+        vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+        const bytes = [new Uint8Array([1]), new Uint8Array([2])];
+        const keys = bytes.map((b) => `assets/${createHash("sha256").update(b).digest("hex")}.png`);
+        const items = bytes.map((b) => ({ load: vi.fn(async () => b) }));
+        const disk = new Map<string, Uint8Array>();
+        const events: string[] = [];
+        vi.mocked(assetKey).mockImplementation(async (b) => keys[b[0] - 1]);
+        vi.mocked(saveAssetBatch).mockImplementation(async (batch) => {
+            events.push("upload");
+            for (const item of batch) disk.set(item.key, item.bytes);
+            if (events.length === 1) disk.delete(keys[0]);
+        });
+        vi.mocked(authFetch).mockImplementation(async (url, init) => {
+            expect(url).toBe("/api/assets/missing");
+            expect(events).toEqual(["upload"]);
+            expect(JSON.parse(init!.body as string)).toEqual({ names: keys });
+            events.push("final check");
+            return failure === "check failure"
+                ? Response.json({ error: "unavailable" }, { status: 500 })
+                : Response.json({ missing: [keys[0]] });
+        });
+        expect(await saveAssets(items)).toEqual(keys);
+        expect(events).toEqual(
+            failure === "missing" ? ["upload", "final check", "upload"] : ["upload", "final check", "upload", "upload"],
+        );
+        expect(items.map((item) => item.load.mock.calls.length)).toEqual(failure === "missing" ? [2, 1] : [2, 2]);
+        expect([...disk.entries()].sort()).toEqual(keys.map((key, i) => [key, bytes[i]]).sort());
+    },
+);

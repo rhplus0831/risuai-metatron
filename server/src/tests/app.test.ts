@@ -15,6 +15,8 @@ import {
 import fsPromises from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { Hono } from "hono";
 import { createAuthStore } from "../routes/auth.ts";
 import type { DurableFs } from "../data/durableWrite.ts";
@@ -1489,4 +1491,157 @@ describe("serialized auth persistence", () => {
             rmSync(save, { recursive: true, force: true });
         }
     });
+});
+
+it("authenticates asset reports and scans, disables caching, and refuses overlapping scans", async () => {
+    const paused = deferred();
+    const resume = deferred();
+    const s = await createResourceTestClient({
+        assetLifecycle: {
+            wallClock: () => Date.UTC(2030, 0, 20),
+            monoClock: () => 0,
+            betweenChunks: async () => {
+                paused.resolve();
+                await resume.promise;
+            },
+        },
+    });
+    servers.push(s);
+    try {
+        for (const [url, method] of [
+            ["/api/assets/report", "GET"],
+            ["/api/assets/scan", "POST"],
+        ]) {
+            const denied = await s.app.request(url, { method });
+            expect(denied.status, url).toBe(400);
+            expect(await denied.json()).toEqual({ error: "No auth header" });
+            expect(denied.headers.get("cache-control"), url).toBe("no-store");
+        }
+        const initial = await s.request("/api/assets/report");
+        expect(initial.status).toBe(200);
+        expect(initial.headers.get("cache-control")).toBe("no-store");
+        expect(await initial.json()).toMatchObject({ running: false, generatedAt: null });
+        const start = await s.request("/api/assets/scan", { method: "POST" });
+        expect(start.status).toBe(202);
+        expect(start.headers.get("cache-control")).toBe("no-store");
+        expect(await start.json()).toMatchObject({ running: true });
+        await paused.promise;
+        const overlap = await s.request("/api/assets/scan", { method: "POST" });
+        expect(overlap.status).toBe(409);
+        expect(overlap.headers.get("cache-control")).toBe("no-store");
+        expect(await (await s.request("/api/assets/report")).json()).toMatchObject({ running: true });
+    } finally {
+        resume.resolve();
+    }
+    // Yield to the scan's filesystem work; there is no wall-clock polling deadline.
+    while (s.context.assetLifecycle.running) await nextTurn();
+    const complete = await s.request("/api/assets/report");
+    expect(complete.headers.get("cache-control")).toBe("no-store");
+    expect(await complete.json()).toMatchObject({ complete: true, running: false });
+});
+
+it("sweeps unclaimed checkpoint pages before the hourly first scan and daily scans, skipping maintenance", async () => {
+    const day = 86_400_000;
+    const hour = 3_600_000;
+    const now = Date.UTC(2030, 0, 20);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.setSystemTime(now);
+    const s = createTestServer({ snapshotIntervalMs: 7 * day, assetLifecycle: { monoClock: () => Date.now() } });
+    servers.push(s);
+    const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+    mkdirSync(path.join(s.savePath, "assets"), { recursive: true });
+    const asset = resolveStorageKey(s.savePath, "assets/abandoned")!;
+    writeFileSync(asset, "old");
+    utimesSync(asset, (now - 30 * day) / 1000, (now - 30 * day) / 1000);
+    const page = () =>
+        db
+            .prepare("INSERT INTO checkpointPages (hash, text) VALUES ('abandoned', ?)")
+            .run(JSON.stringify("assets/abandoned"));
+    const pages = () => db.prepare("SELECT hash FROM checkpointPages WHERE hash = 'abandoned'").all();
+    const settled = async () => {
+        while (s.context.assetLifecycle.running) await nextTurn();
+    };
+    const entered = deferred();
+    const release = deferred();
+    let maintenance: Promise<unknown> | undefined;
+    try {
+        page();
+        expect((await s.context.assetLifecycle.scan()).unreferenced.count).toBe(1);
+        expect(pages()).toHaveLength(1); // A read-only mark does not sweep or delete.
+        s.context.startBackgroundTasks();
+        vi.advanceTimersByTime(hour - 1);
+        expect(s.context.assetLifecycle.runIdentity!.runId).toBe(1);
+        expect(pages()).toHaveLength(1);
+        vi.advanceTimersByTime(1);
+        await settled();
+        expect(s.context.assetLifecycle.runIdentity!.runId).toBe(2);
+        expect(pages()).toEqual([]);
+        expect(s.context.assetLifecycle.report()).toMatchObject({ complete: true, generatedAt: now + hour });
+        page();
+        maintenance = s.context.snapshots.withMaintenance(async () => {
+            entered.resolve();
+            await release.promise;
+        });
+        await entered.promise;
+        vi.advanceTimersByTime(day);
+        expect(s.context.assetLifecycle.runIdentity!.runId).toBe(2);
+        expect(pages()).toHaveLength(1);
+        release.resolve();
+        await maintenance;
+        vi.advanceTimersByTime(day - 1);
+        expect(pages()).toHaveLength(1);
+        vi.advanceTimersByTime(1);
+        await settled();
+        expect(s.context.assetLifecycle.runIdentity!.runId).toBe(3);
+        expect(pages()).toEqual([]);
+        expect(readFileSync(asset, "utf8")).toBe("old");
+        await s.context.dispose();
+        vi.advanceTimersByTime(day);
+        expect(s.context.assetLifecycle.runIdentity!.runId).toBe(3);
+    } finally {
+        release.resolve();
+        await maintenance;
+        db.close();
+        await s.context.dispose();
+        vi.useRealTimers();
+    }
+});
+
+it("uses seven grace days by default, accepts three, and rejects a smaller environment grace", async () => {
+    const day = 86_400_000;
+    const now = Date.UTC(2030, 0, 20);
+    let rootDir = "";
+    try {
+        for (const [env, days] of [
+            [undefined, 7],
+            ["3", 3],
+        ] as const) {
+            vi.stubEnv("RISU_ASSET_GRACE_DAYS", env);
+            const s = createTestServer({ assetLifecycle: { wallClock: () => now, monoClock: () => 0 } });
+            servers.push(s);
+            rootDir = s.rootDir;
+            mkdirSync(path.join(s.savePath, "assets"), { recursive: true });
+            for (const [name, age] of [
+                ["young", days * day - 1],
+                ["old", days * day],
+            ] as const) {
+                const file = resolveStorageKey(s.savePath, `assets/${name}`)!;
+                writeFileSync(file, "x");
+                utimesSync(file, (now - age) / 1000, (now - age) / 1000);
+            }
+            const report = await s.context.assetLifecycle.scan();
+            expect(report.complete).toBe(true);
+            expect(report.referenced.count, String(env)).toBe(1);
+            expect(report.unreferenced.count, String(env)).toBe(1);
+            await s.context.dispose();
+        }
+        for (const invalid of ["0", "1", "2", "-1"]) {
+            vi.stubEnv("RISU_ASSET_GRACE_DAYS", invalid);
+            expect(() => {
+                servers.push(createTestServer({ rootDir }));
+            }, invalid).toThrow(/RISU_ASSET_GRACE_DAYS/);
+        }
+    } finally {
+        vi.unstubAllEnvs();
+    }
 });

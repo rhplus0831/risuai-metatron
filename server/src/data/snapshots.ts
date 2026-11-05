@@ -1,14 +1,74 @@
 import { randomBytes } from "node:crypto";
-import { lstatSync, readdirSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { BackupSnapshotInfo } from "../../../shared/resources.ts";
-import { mkdirDurableSync, syncDir, syncFile } from "./durableWrite.ts";
-import type { ResourceStore } from "./resourceStore.ts";
+import { mkdirDurableSync, syncDir, syncFile, writeFileDurable } from "./durableWrite.ts";
+import { ensureFreeSpace, InsufficientStorageError, liveDatabaseBytes, type DiskStatfs } from "../http/diskSpace.ts";
+import { ResourceValidationError, type ResourceStore } from "./resourceStore.ts";
 
 const DEFAULT_INTERVAL_MS = 10 * 60 * 1000;
 const DEFAULT_KEEP = 20;
+const MAX_PINNED_SNAPSHOTS = 20;
+export const MAX_SNAPSHOT_LABEL_LENGTH = 200;
 const snapshotNameRegex = /^resources-(\d{8}T\d{9}Z)-[0-9a-f]{8}\.sqlite$/;
+type SnapshotMetadata = { pinned: boolean; label: string | null };
+
+export class SnapshotConflictError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "SnapshotConflictError";
+    }
+}
+
+function normalizeLabel(label: string | null): string | null {
+    if (label === null) return null;
+    const trimmed = label.trim();
+    if (trimmed.length > MAX_SNAPSHOT_LABEL_LENGTH) {
+        throw new ResourceValidationError(`Snapshot label must be at most ${MAX_SNAPSHOT_LABEL_LENGTH} characters`);
+    }
+    return trimmed || null;
+}
+
+/** Only a missing metadata file is empty: losing unreadable pins would make rotation unsafe. */
+function readMetadata(file: string): Map<string, SnapshotMetadata> {
+    let text: string;
+    try {
+        text = readFileSync(file, "utf8");
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Map();
+        throw new Error(`Cannot read snapshot metadata ${file}`, { cause: error });
+    }
+    const isObject = (value: unknown): value is Record<string, unknown> =>
+        value !== null && typeof value === "object" && !Array.isArray(value);
+    try {
+        const data: unknown = JSON.parse(text);
+        if (!isObject(data) || data.version !== 1 || !isObject(data.entries) || Object.keys(data).length !== 2) {
+            throw new Error("Expected version 1 and entries");
+        }
+        const entries = new Map<string, SnapshotMetadata>();
+        for (const [id, entry] of Object.entries(data.entries)) {
+            if (
+                !snapshotNameRegex.test(`${id}.sqlite`) ||
+                !isObject(entry) ||
+                Object.keys(entry).length !== 2 ||
+                typeof entry.pinned !== "boolean" ||
+                (entry.label !== null && typeof entry.label !== "string") ||
+                (typeof entry.label === "string" &&
+                    (entry.label.length > MAX_SNAPSHOT_LABEL_LENGTH ||
+                        !entry.label ||
+                        entry.label.trim() !== entry.label)) ||
+                (!entry.pinned && entry.label === null)
+            ) {
+                throw new Error(`Invalid entry ${id}`);
+            }
+            entries.set(id, { pinned: entry.pinned, label: entry.label });
+        }
+        return entries;
+    } catch (error) {
+        throw new Error(`Invalid snapshot metadata ${file}: ${String(error)}`, { cause: error });
+    }
+}
 
 /**
  * A mutation arrived while a restore or an import holds the store, or a backup operation arrived
@@ -53,23 +113,35 @@ function parseStamp(value: string): string {
  * Periodic snapshots of the resource database under `dir` (`save/backups/`) and the lock that
  * serializes every operation touching the whole database: snapshots, export copies, restores, and
  * imports. A snapshot is written to a hidden temporary name, flushed, renamed into place, and its
- * directory synced; the list only shows finished files and the newest `keep` are retained.
+ * directory synced; retention keeps the newest `keep` unpinned files plus every pinned file and
+ * restore-retained id. Pins (at most 20) and labels live in durable pins.json, outside restores;
+ * unreadable metadata refuses startup. Listing prunes missing entries in memory; the next metadata
+ * write persists that pruning. Metadata changes and deletions share the lock, and removal listeners
+ * run synchronously after unlink. stageCopy links a snapshot for work outside the lock.
  * After the maintenance listeners finish, the gate closes while admitted storage writes drain and
  * the maintenance callback runs; resource mutations then answer 503.
- * Defaults: a ten-minute timer and the newest 20 snapshots. A periodic tick writes only when the
+ * Defaults: a ten-minute timer and the newest 20 unpinned snapshots. A periodic tick writes only when the
  * committed store.writeCount changed since the previous periodic snapshot; starting the timer alone
- * takes no initial snapshot. Explicit safety snapshots are not conditional on that count.
+ * takes no initial snapshot. A disk preflight includes main + WAL; a shortage logs once and skips
+ * without advancing the write count. Restore retention holds keep their sources listed as asset roots.
+ * Manual snapshots run the same disk preflight and propagate a shortage. Safety snapshots skip it;
+ * neither manual nor safety snapshots are conditional on the write count.
  */
 export function createSnapshotManager(options: {
     store: ResourceStore;
     dir: string;
     intervalMs?: number;
     keep?: number;
+    databaseFile?: string;
+    statfs?: DiskStatfs;
 }) {
     const { store, dir } = options;
     const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     const keep = options.keep ?? DEFAULT_KEEP;
     mkdirDurableSync(dir);
+    const metadataFile = path.join(dir, "pins.json");
+    let metadata = readMetadata(metadataFile);
+    let metadataDirty = false;
 
     let tail: Promise<unknown> = Promise.resolve();
     let maintenance = false;
@@ -83,6 +155,9 @@ export function createSnapshotManager(options: {
     const maintenanceListeners = new Set<() => Promise<(() => void) | void>>();
     /** `store.writeCount()` covered by the last periodic snapshot (none is taken before the first write). */
     let snapshotWrites = store.writeCount();
+    let shortDiskLogged = false;
+    const retained = new Map<string, number>();
+    const removalListeners = new Set<(id: string) => void>();
 
     /** Runs `fn` after every earlier exclusive operation has settled. */
     function exclusive<T>(fn: () => Promise<T>): Promise<T> {
@@ -100,10 +175,98 @@ export function createSnapshotManager(options: {
             }
             const stat = lstatSync(path.join(dir, name), { throwIfNoEntry: false });
             if (stat?.isFile()) {
-                items.push({ id: name.slice(0, -".sqlite".length), createdAt: parseStamp(match[1]), size: stat.size });
+                const id = name.slice(0, -".sqlite".length);
+                items.push({ id, createdAt: parseStamp(match[1]), size: stat.size, ...metadataFor(id) });
+            }
+        }
+        const present = new Set(items.map((item) => item.id));
+        for (const id of metadata.keys()) {
+            if (!present.has(id)) {
+                metadata.delete(id);
+                metadataDirty = true;
             }
         }
         return items.sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+    }
+
+    function metadataFor(id: string): SnapshotMetadata {
+        return metadata.get(id) ?? { pinned: false, label: null };
+    }
+
+    /** Caller holds exclusive. A failed flush may follow rename, so either state's pins survive. */
+    async function writeMetadata(next: Map<string, SnapshotMetadata>): Promise<void> {
+        const previous = new Map(metadata);
+        const install = (state: Map<string, SnapshotMetadata>, dirty: boolean) => {
+            // list() may prune a missing file while the durable write yields; keep that pruning.
+            for (const id of previous.keys()) {
+                if (!metadata.has(id) && state.delete(id)) dirty = true;
+            }
+            metadata = state;
+            metadataDirty = dirty;
+        };
+        try {
+            await writeFileDurable(metadataFile, JSON.stringify({ version: 1, entries: Object.fromEntries(next) }));
+        } catch (error) {
+            const conservative = new Map(previous);
+            for (const [id, entry] of next) {
+                if (entry.pinned) conservative.set(id, { pinned: true, label: previous.get(id)?.label ?? null });
+            }
+            install(conservative, true);
+            throw error;
+        }
+        install(next, false);
+    }
+
+    /** Caller holds exclusive and has checked pins and restore retention. */
+    async function unlinkSnapshot(id: string): Promise<void> {
+        try {
+            await fs.unlink(path.join(dir, `${id}.sqlite`));
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        try {
+            for (const listener of removalListeners) listener(id);
+        } finally {
+            await syncDir(dir);
+            if (metadata.has(id) || metadataDirty) {
+                const next = new Map(metadata);
+                next.delete(id);
+                await writeMetadata(next);
+            }
+        }
+    }
+
+    function setPinned(
+        id: string,
+        update: { pinned?: boolean; label?: string | null },
+    ): Promise<BackupSnapshotInfo | null> {
+        assertRunning();
+        return exclusive(async () => {
+            const items = list();
+            const snapshot = items.find((item) => item.id === id);
+            if (!snapshot) return null;
+            const pinned = update.pinned ?? snapshot.pinned;
+            const label = update.label === undefined ? snapshot.label : normalizeLabel(update.label);
+            if (!snapshot.pinned && pinned && items.filter((item) => item.pinned).length >= MAX_PINNED_SNAPSHOTS) {
+                throw new SnapshotConflictError(`At most ${MAX_PINNED_SNAPSHOTS} snapshots may be pinned`);
+            }
+            const next = new Map(metadata);
+            if (pinned || label !== null) next.set(id, { pinned, label });
+            else next.delete(id);
+            await writeMetadata(next);
+            return { ...snapshot, pinned, label };
+        });
+    }
+
+    function remove(id: string): Promise<boolean> {
+        assertRunning();
+        return exclusive(async () => {
+            if (resolve(id) === null) return false;
+            if (metadataFor(id).pinned) throw new SnapshotConflictError("Snapshot is pinned; unpin it first");
+            if (retained.has(id)) throw new SnapshotConflictError("Snapshot is retained by a restore");
+            await unlinkSnapshot(id);
+            return true;
+        });
     }
 
     /** The file of a listed snapshot, or null for any id that is not one. */
@@ -117,12 +280,17 @@ export function createSnapshotManager(options: {
     }
 
     /**
-     * Pins the listed snapshot `id` at `target` under the lock, so retention cannot take its file from
+     * Stages the listed snapshot `id` at `target` under the lock, so retention cannot take its file from
      * a restore that works outside the lock: a hard link, or a copy across devices or where links are
      * refused (EXDEV or EPERM only). False for any id that is not a listed snapshot; the restore
-     * route in `routes/backups.ts` maps that to 404. Never call it while holding the lock.
+     * route in `routes/backups.ts` maps that to 404. beforeCopy rechecks remaining disk allocations
+     * immediately before a fallback copy. Never call it while holding the lock.
      */
-    function pin(id: string, target: string): Promise<boolean> {
+    function stageCopy(
+        id: string,
+        target: string,
+        options: { beforeCopy?: (bytes: number) => Promise<void> } = {},
+    ): Promise<boolean> {
         return exclusive(async () => {
             const file = resolve(id);
             if (file === null) {
@@ -135,6 +303,7 @@ export function createSnapshotManager(options: {
                 if (code !== "EXDEV" && code !== "EPERM") {
                     throw error;
                 }
+                await options.beforeCopy?.((await fs.stat(file)).size);
                 await fs.copyFile(file, target);
             }
             return true;
@@ -155,11 +324,16 @@ export function createSnapshotManager(options: {
             await fs.rm(temporary, { force: true }).catch(() => {});
             throw error;
         }
-        for (const old of list().slice(keep)) {
-            await fs.rm(path.join(dir, `${old.id}.sqlite`), { force: true });
+        for (const old of list()
+            .filter((item) => !item.pinned)
+            .slice(keep)) {
+            if (retained.has(old.id)) continue;
+            await unlinkSnapshot(old.id);
         }
+        shortDiskLogged = false;
         const size = (await fs.stat(path.join(dir, name))).size;
-        return { id: name.slice(0, -".sqlite".length), createdAt: now.toISOString(), size };
+        const id = name.slice(0, -".sqlite".length);
+        return { id, createdAt: now.toISOString(), size, ...metadataFor(id) };
     }
 
     function tick() {
@@ -172,6 +346,22 @@ export function createSnapshotManager(options: {
             const writes = store.writeCount();
             if (stopped || writes === snapshotWrites) {
                 return;
+            }
+            if (options.databaseFile) {
+                try {
+                    await ensureFreeSpace(dir, await liveDatabaseBytes(dir, options.databaseFile), {
+                        statfs: options.statfs,
+                    });
+                } catch (error) {
+                    if (!(error instanceof InsufficientStorageError)) throw error;
+                    if (!shortDiskLogged)
+                        console.error("[Server] Resource snapshot skipped: insufficient storage", {
+                            needed: error.needed,
+                            free: error.free,
+                        });
+                    shortDiskLogged = true;
+                    return;
+                }
             }
             await takeLocked();
             snapshotWrites = writes;
@@ -229,7 +419,31 @@ export function createSnapshotManager(options: {
         gate,
         list,
         resolve,
-        pin,
+        stageCopy,
+        setPinned,
+        remove,
+        /** Synchronous cleanup after unlink, under exclusive; listeners must not take the lock. */
+        onRemoved(listener: (id: string) => void): () => void {
+            removalListeners.add(listener);
+            return () => {
+                removalListeners.delete(listener);
+            };
+        },
+        /**
+         * Keeps a source listed as an asset root through a restore's staging lifetime. Acquire before
+         * stageCopy; release after staging cleanup. Rotation skips held ids; this does not take exclusive.
+         */
+        retain(id: string): () => void {
+            retained.set(id, (retained.get(id) ?? 0) + 1);
+            let released = false;
+            return () => {
+                if (released) return;
+                released = true;
+                const count = retained.get(id)! - 1;
+                if (count) retained.set(id, count);
+                else retained.delete(id);
+            };
+        },
         exclusive,
 
         /**
@@ -248,10 +462,24 @@ export function createSnapshotManager(options: {
             return operation;
         },
 
-        /** Takes a snapshot now (after any running exclusive operation). */
-        snapshotNow(): Promise<BackupSnapshotInfo> {
+        /** Takes an unpinned snapshot after a disk preflight, then durably labels it in the same turn. */
+        snapshotNow(snapshotOptions: { label?: string | null } = {}): Promise<BackupSnapshotInfo> {
             assertRunning();
-            return exclusive(takeLocked);
+            return exclusive(async () => {
+                const label = normalizeLabel(snapshotOptions.label ?? null);
+                if (options.databaseFile) {
+                    await ensureFreeSpace(dir, await liveDatabaseBytes(dir, options.databaseFile), {
+                        statfs: options.statfs,
+                    });
+                }
+                const snapshot = await takeLocked();
+                if (label !== null) {
+                    const next = new Map(metadata);
+                    next.set(snapshot.id, { pinned: false, label });
+                    await writeMetadata(next);
+                }
+                return { ...snapshot, label };
+            });
         },
 
         /**

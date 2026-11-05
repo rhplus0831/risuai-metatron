@@ -955,3 +955,43 @@ describe("chat checkpoints", () => {
         expect(store.checkpoints.readPolicy("c", "k")).toBeNull();
     });
 });
+
+describe("legacy candidate fields in named checkpoints", () => {
+    it("loads a checkpoint page with malformed candidates without losing the reply or its valid baseline", () => {
+        const { store, file } = fileStore();
+        seed(store, { name: "K", note: "", localLore: [], message: [m("r", "Saved reply", "char")] });
+        const saved = save(store);
+        const writer = new DatabaseSync(file);
+        try {
+            const legacy = JSON.stringify([
+                {
+                    ...m("r", "Saved reply", "char"),
+                    candidates: [{ id: "only", data: "orphan" }],
+                    selected: 3,
+                    scriptstateCheckpoint: { before: null },
+                },
+            ]);
+            const hash = sha256(legacy);
+            writer.prepare("INSERT INTO checkpointPages (hash, text) VALUES (?, ?)").run(hash, legacy);
+            writer.prepare("UPDATE chatCheckpoints SET pages = ? WHERE id = ?").run(JSON.stringify([hash]), saved.id);
+            writer
+                .prepare(
+                    "DELETE FROM checkpointPageRefs WHERE checkpointSeq = (SELECT seq FROM chatCheckpoints WHERE id = ?)",
+                )
+                .run(saved.id);
+            writer
+                .prepare(
+                    "INSERT INTO checkpointPageRefs (checkpointSeq, hash) SELECT seq, ? FROM chatCheckpoints WHERE id = ?",
+                )
+                .run(hash, saved.id);
+        } finally {
+            writer.close();
+        }
+        edit(store, [{ op: "setText", id: "r", text: "Changed" }]);
+        expect(loadCheckpoint(store, saved.id).status).toBe(200);
+        const loaded = store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0];
+        expect(loaded.data?.message).toEqual([
+            { ...m("r", "Saved reply", "char"), scriptstateCheckpoint: { before: null } },
+        ]);
+    });
+});

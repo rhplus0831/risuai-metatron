@@ -278,6 +278,50 @@ describe("the boot from summaries", () => {
 });
 
 describe("live updates of chats that are not loaded", () => {
+    it("keeps a row delta's chat unloaded while advancing its known summary without reads", async () => {
+        const b = await boot();
+        const data = "x".repeat(100 * 1024);
+        const writeText = (text: string) =>
+            b.fake.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: b.fake.chat("c", "k")!.revision,
+                    ops: [{ op: "setText", id: "b", text }],
+                },
+            ]);
+        writeText(data);
+        const summary = JSON.parse(JSON.stringify(b.chat.chatEntry(refK)));
+        const baseRevision = b.chat.heldChatRevision(refK);
+        writeText(data + " appended");
+        const event = b.fake.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("expected a committed change");
+        expect(event.changes.chats).toEqual([
+            {
+                characterId: "c",
+                id: "k",
+                revision: b.fake.chat("c", "k")!.revision,
+                summaryBase: baseRevision,
+                rowDelta: {
+                    baseRevision,
+                    count: 3,
+                    rowDiffs: [{ id: "b", text: { keep: data.length, text: " appended" } }],
+                },
+            },
+        ]);
+        expect(b.chat.findChat(refK)).toBeUndefined();
+        expect(b.reads()).toEqual([]);
+        await settle(b.fake);
+        expect(b.chat.findChat(refK)).toBeUndefined();
+        expect(b.chat.chatEntry(refK)).toEqual(summary);
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        expect(b.reads()).toEqual([]);
+        expect(b.fake.batchCount()).toBe(0);
+        expect(b.chat.hasChatWork()).toBe(false);
+        noNotice();
+    });
+
     it("installs known summaries and advances matching summary bases without collection reads or writes", async () => {
         const b = await boot();
         const order = b.chat.heldOrderRevision("c");

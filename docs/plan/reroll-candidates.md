@@ -1,14 +1,16 @@
 # Reroll Candidates Plan
 
 Status: drafted 2026-11-03, revised 2026-11-04 after the [design
-audit](../audit/plan-design-audit-2026-11-04.md) and again after its adversarial challenge; no slice landed.
+audit](../manual-audit/plan-design-audit-2026-11-04.md) and again after its adversarial challenge. Landed: 1 (`30bec41a4`), 3 (`4976a15f0`).
 Decisions D1–D14 are recommendations for the owner; the **Open questions** Q1–Q4 were answered by the owner on
 2026-11-03 (the recommended option each time). The first revision corrected D2–D5 and D7–D10 (D10 took the
 server op its draft rejected) and added D13 and D14; the second corrects D2–D8, D10 and D13 (a trigger's
 append during a reroll, the attempt ledger, candidate ids and the list revision, the kept baseline, the
 transport's metadata rows, the error's target), narrows D9 and D14, and completes the slice inventories. On
 2026-11-05 the dependency on Incremental Chat Transport Slice 4 was restated as a merge-time one (D4), with the
-merge's integration checks under **Verification**. Code anchors re-checked at `1550ebdd3`; verify them again before editing (STRUCTURE.md protocol step 5).
+merge's integration checks under **Verification**. The same day the owner settled the gaps Slice 1's challenge found (D3's read paths, D4's
+toast codes, D6 at the store's append boundary, CBS in D7's view, D8's rounds, D13's transaction), and Slice 1's
+Files grew to match. Code anchors re-checked at `1550ebdd3`; verify them again before editing (STRUCTURE.md protocol step 5).
 
 Sources: the owner's 2026-11-03 choice of this plan as the next one after the asset lifecycle plan;
 [PocketRisu/RisuBard picks](../research/pocketrisu-risubard-picks.md) §1.1 item 1 (per-reroll scriptstate
@@ -35,8 +37,8 @@ store guide](../structure/chat-store.md) (By-id ops, Map merges, Job hydration),
 guide](../structure/structured-memory/writer.md) (The writer's windows), the [memory
 guide](../structure/memory.md) (Selection, Memory writes), and the [backup and sync hub
 guide](../structure/backup-sync-hub.md) (Upstream database export) at `8f0db0fb7`; the 2026-11-04 [design
-audit](../audit/plan-design-audit-2026-11-04.md) (its Reroll Candidates section RC1–RC7 and the cross-plan
-items X1, X5, X6, X7), its [per-plan report](../audit/plan-design-audit-2026-11-04/reroll-candidates.md) (24
+audit](../manual-audit/plan-design-audit-2026-11-04.md) (its Reroll Candidates section RC1–RC7 and the cross-plan
+items X1, X5, X6, X7), its [per-plan report](../manual-audit/plan-design-audit-2026-11-04/reroll-candidates.md) (24
 findings with file and line evidence), and an independent cross-check of that audit (the failed attempt's own
 variable writes and the stale switch's variable decision, both answered by D10 and D13); and the adversarial
 challenge of that revision (2026-11-04: failures F1–F7 with file and line evidence, its additional contract
@@ -58,14 +60,14 @@ Relation to other work: Chat Checkpoints (named per-chat save slots, done) snaps
 none of their storage (a message's checkpoint is a field of the message, captured and restored by the job).
 The Deep Audit Fixes (done) made a trigger's result merge `scriptstate` by key (`applyTriggerChat`,
 `CHAT_META_MERGE_KEYS`), which is what the per-key restore of D5 relies on. The [Asset Lifecycle
-plan](asset-lifecycle.md), written in parallel, scans the strings of a message's JSON at any depth, so the
+plan](../archived-plan/README.md), written in parallel, scans the strings of a message's JSON at any depth, so the
 inlay references inside non-selected candidates (`candidates[].data`) are covered by construction; that plan
 adds a test for it, and this plan names the field (D4). The [Incremental Chat Transport
-plan](incremental-chat-transport.md) carries the rows this plan makes larger: its D2's delta forms keep a
+plan](../archived-plan/README.md) (archived) carries the rows this plan makes larger: its D2's delta forms keep a
 text-only checkpoint small, and its Slice 4 (the over-cap row manifest and the by-id row read, with that
 plan's D6 amended so the read also carries the chat's changed metadata fields) is a merge-time dependency of
 this plan's Slice 2 (D4): no code here calls what it adds, so the two may be built on separate branches, but
-Slice 2 reaches `dev` only in the same merge or after it; its Slice 2 is no dependency at all. The [Job Handoff plan](job-handoff.md) keys nothing this plan needs
+Slice 2 reaches `dev` only in the same merge or after it; its Slice 2 is no dependency at all. The [Job Handoff plan](../archived-plan/README.md) keys nothing this plan needs
 by owner (the reroll lock is the job's, so a takeover does not touch it), but its notices reach the job's
 owner only (D12); the slices that share files are listed under **Slices**.
 
@@ -283,7 +285,10 @@ does not re-propose it.
   its messages. The store's ordinary reads parse stored rows without the normalizer (`readChat` and
   `readCollection`, `server/src/data/chatStore.ts` around lines 2616–2638), so the tolerant validation is
   wired into those read paths (and every other one that hands out stored rows), not only into
-  `normalizeMessage`. The caps are enforced by the job's writes (which trim before writing, D4) and by the
+  `normalizeMessage`: the 2026-11-05 Slice 1 challenge listed them, among them the feed and own-write row
+  changes, the job scope's incremental adoption, the owner socket's baseline, and the named checkpoint's composed
+  rows (`server/src/data/checkpointStore.ts`), which a load replaces strictly, so an old page with a malformed
+  field would otherwise refuse to load. The caps are enforced by the job's writes (which trim before writing, D4) and by the
   validator alike. Messages are chat data, not a section, so `shared/sections.ts` is unchanged (persistence
   D2: stored as sent, defaults at the readers), and chats with no field need no migration: absent means one
   candidate, no checkpoint. `CHECKPOINT_CHAT_FIELDS` is unchanged too: named checkpoints capture message rows
@@ -303,7 +308,11 @@ does not re-propose it.
   `scriptstateCheckpoint` JSON together: a write that would pass it drops the oldest non-selected candidate
   first, then the next, with the same `rerollCandidateDropped` toast; a previous reply that cannot fit even
   alone counts as over `MAX_CANDIDATE_BYTES` (not kept, `rerollCandidateTooLarge`), so for one long reply the
-  per-message total binds before the per-candidate cap. A candidate's copy of `generationInfo` leaves out
+  per-message total binds before the per-candidate cap. The three toasts are `alertToast` notices that carry
+  an optional typed `code` beside their English `message` (`GenerationNotice`, `shared/jobs.ts`); the tab
+  (`src/ts/network/jobChannel.ts`) shows the `en.ts`/`ko.ts` string for a code it knows and the message
+  otherwise, so an older tab still shows the English text (U2; the owner's choice on 2026-11-05 after the Slice 1
+  challenge found that a notice carries only its text). A candidate's copy of `generationInfo` leaves out
   `context` (the `ContextReport`, `shared/database.ts` around line 1351), the only large field of
   `MessageGenerationInfo`, and its copy of `promptInfo` leaves out `promptText` (the whole prompt, around line
   1368); the memory receipt (`generationInfo.memory`) stays with its candidate. A switch therefore brings back
@@ -323,9 +332,10 @@ does not re-propose it.
   lines 579–608). This plan relies on the Incremental Chat Transport plan for the delta forms (its D2, being
   widened to a per-row top-level field diff with `data` as a text delta, so a text-only checkpoint stays small
   whatever the candidates weigh) and on its Slice 4 (the over-cap row manifest and the by-id row read) with
-  that plan's D6 amended so that a manifest with `meta: true` is answered with the rows plus the chat's
-  changed metadata fields at that revision (`metaFields`) instead of falling to a whole-chat read. The
-  amendment is what makes the fallback one row read for this plan: the begin group, the write-back and a
+  that plan's D6 amended so that a manifest naming the changed metadata fields (`meta: string[]`) is answered
+  with the rows plus those fields' stored values at that revision (`metaFields`) instead of falling to a
+  whole-chat read. The amendment is what makes the fallback one row read for this plan: the begin group, the
+  write-back and a
   switch change `scriptstate` in the same transaction as `candidates` (D5, D10, D13), and Slice 4 as first
   written reads the chat whole for every such entry. With it, a loaded observer at the base revision applies a
   reroll's begin group (the candidates and the `scriptstate` merge) without a whole read. This plan makes that
@@ -376,15 +386,15 @@ does not re-propose it.
   reroll, which on a server with Lua buttons and a second tab is an ordinary race, not a corner case); taking
   `before` at admission before the input stage (a reroll would then undo the input trigger's writes, which the
   reroll never re-runs).
-- **D6. Checkpoints only on the latest reply.** The server owns the rule: the write that appends a new reply
-  or a new user message (the input stage's append, a speaker's reply append, a trigger's insert through
-  `applyTriggerChat`) unsets `scriptstateCheckpoint` and every `candidates[].scriptstateAfter` of every other
-  message in the same group (one `patchMessage` per message that has them, found in the job's chat copy).
-  Candidate texts stay (Q1). During an in-place reroll no `patchMessage` touches the carrier while its
-  generation is open: a write without a generation closes the fence whatever job token its group carries
+- **D6. Checkpoints only on the latest reply.** The store owns the rule: its append branch
+  (`server/src/data/chatStore.ts`), applying any group that appends a new reply or a new user message (the input
+  stage, a speaker's reply, an error reply, a trigger's insert, `/send` and `/sendas`, Lua, a command sequence,
+  a client op), unsets `scriptstateCheckpoint` and every `candidates[].scriptstateAfter` of every other message
+  of the chat that has them, in the same transaction. Candidate texts stay (Q1). The cleanup skips a message
+  whose generation is open: a write without a generation closes the fence whatever job token its group carries
   (`refusedByLock` compares tokens only, `server/src/data/chatStore.ts` around line 1451; the fence closes
   around lines 1936–1943), after which the generation's checkpoints and final write are `ignored`. So the
-  cleanup skips the carrier and applies to the other messages, and the carrier's checkpoint is rewritten or
+  cleanup leaves an in-place reroll's carrier to its own writes, and the carrier's checkpoint is rewritten or
   left out by its final write (D7 step 6) or its write-back (D8), both built from the stored row: when a
   trigger appended a message during the reroll that leaves the carrier no longer the newest reply at the end
   (a reply or a user message after it, not a comment), that write writes no `scriptstateCheckpoint` and no
@@ -398,7 +408,9 @@ does not re-propose it.
   stayed empty or partial while the lock was held: the challenge); a generation-tagged `setMessage` that
   cleans the carrier at the append (the challenge's alternative; it works, but the final write rewrites the
   carrier from the stored row anyway, and one carrier write per end is simpler to keep consistent with the
-  rollback state).
+  rollback state); one cleanup `patchMessage` per append producer in the job (the revision before 2026-11-05:
+  it named three producers, and the Slice 1 challenge found error replies, `/send`, `/sendas`, Lua, command
+  sequences and client ops appending without it; the owner chose the store boundary).
 - **D7. The reroll job, step by step.** At admission the route validates `context.rerollMessageId` as an id
   and accepts it only for `kind: "reroll"` (the kind-restricted model is `userMessageId`; `continueMessageId`
   is accepted for every kind); `requestFingerprint` includes it. The in-place path needs exactly one speaker:
@@ -443,7 +455,12 @@ does not re-propose it.
   including its read after the `start` trigger), the memory source (around lines 1322–1339),
   `runCurrentChatFunction` (around lines 1244–1270), and the `start` trigger's chat copy and its diff baseline
   (`runOnCopy`, diffed in `server/src/jobs/chatResult.ts`), with Lua's `liveChat` inside that trigger reading
-  the same view. It is the stored messages minus the carrier, derived at each read from the chat the job scope
+  the same view; and CBS, whose chat comes from the job's CBS host database (`getDatabase`,
+  `server/src/jobs/cbsHost.ts`), not from assembly's chat. Besides the view, in every job that host hands
+  CBS message objects without `candidates`, `selected`, `candidatesRevision` and `scriptstateCheckpoint`:
+  `{{history}}` and `{{charhistory}}` serialize whole message objects (`shared/cbs/registry.ts`), so an older
+  reply's discarded candidates would otherwise reach an ordinary send's prompt (found by the Slice 1
+  challenge, 2026-11-05). It is the stored messages minus the carrier, derived at each read from the chat the job scope
   holds after its refreshes, so a message a `start` trigger appends is in it: assembly re-reads the chat after
   the `start` trigger (`host.chat()`, `server/src/prompt/assemble.ts` around line 1691) and builds the prompt
   from that read, so the appended message is in the prompt. The trigger diff uses the same view as its
@@ -477,6 +494,15 @@ does not re-propose it.
   translation; and D13's variable rollback, which the store computes from its attempt ledger when it applies
   this group, after the pending metadata flush (`server/src/jobs/jobScope.ts` around lines 488–518). The job
   ends with the terminal it had; the tab's `restoreRerolledReplies` has nothing to do.
+
+  Rounds (the owner's choice on 2026-11-05, after the Slice 1 challenge found that `runSpeaker` finalizes before
+  it returns a next round and `runSend` re-enters it with the same context): only the job's first round is the
+  reroll. `rerollMessageId` is handled on the first `runSpeaker` entry only, and the attempt (the lock, the
+  ledger, the write-back) ends with that round's final write. A later round of the same job (an auto-continue, a
+  resend) runs as it does after a send: a continue round locks the carrier again, keeps `before`, and its final
+  write refreshes `candidates[selected]` and the checkpoint's `after`; a resend's reply is an append (D6); a
+  later round's failure writes nothing back. Rejected: holding the lock and the ledger across rounds so any
+  round's failure restores the previous candidate (it changes the round structure of `runSpeaker`).
 
   The ends that write back: an `error` terminal of any reason (`failed`: a request error, a tail failure after
   the reply text was stored, a write conflict; `aborted`; `timeout`); `shutdown` and `maintenance`, which
@@ -596,6 +622,10 @@ does not re-propose it.
   store keeps an attempt ledger for that chat. The job opens it with its begin group (an `applyChanges` option
   of the job's write path, not a field of the wire op; the group's own restore op is its first entry), and it
   closes when the generation's final write or write-back is applied; it lives in memory, as the lock does.
+  The option travels through `ResourceStore.applyChanges` (`server/src/data/resourceStore.ts`, which calls
+  `chatTables.apply` with explicit arguments), the ledger's changes are staged with the transaction and
+  dropped when it rolls back, and a ledger whose token or lock ends without a final write (grace expiry, an
+  epoch replacement) is dropped too.
   Every per-key write the store applies to the chat's `scriptstate` while it is open is recorded with its
   origin and the previous value or a removal tombstone (and the value it left, a tombstone for a removal): a
   `meta` op's `merge` and `mergeUnset`, and a whole-map write (`set` or `unset` of `scriptstate`, a
@@ -672,13 +702,16 @@ All four were answered on 2026-11-03 with the recommended option; they are kept 
 Each slice lands alone with the gates in **Verification** and updates the guides it changes. Files shared with
 the other active plans: Slice 1 edits `shared/jobs.ts`, `server/src/routes/generations.ts`,
 `server/src/routes/events.ts` and `shared/events.ts`, and the `followOnce` callback that `followJobToEnd` runs
-in `src/ts/process/serverCommands.ts` (D9's consumer moved into it), so it does not run in parallel with Job
-Handoff Slice 1 (`shared/jobs.ts`, `routes/generations.ts`) or Slice 2 (`followJobToEnd`), nor with
-Incremental Chat Transport Slice 2 (`shared/jobs.ts`) or Slice 3 (`routes/events.ts`; that plan says so too).
-Slice 1 also edits `server/src/data/chatStore.ts` (the op-write refusal, the tolerant reads,
-`candidatesRevision`, the attempt ledger), which Transport Slices 1 and 4 edit, and its
-`server/src/routes/events.ts` and `shared/events.ts` are Job Handoff Slice 3's too, so it does not run in
-parallel with those three slices either. Slice 2 edits `src/ts/storage/chatStore.svelte.ts`,
+in `src/ts/process/serverCommands.ts` (D9's consumer moved into it), which Job Handoff Slice 1
+(`shared/jobs.ts`, `routes/generations.ts`) and Slice 2 (`followJobToEnd`) and Incremental Chat Transport
+Slice 2 (`shared/jobs.ts`) and Slice 3 (`routes/events.ts`) also edit. Slice 1 also edits
+`server/src/data/chatStore.ts` (the op-write refusal, the tolerant reads, `candidatesRevision`, the attempt
+ledger), which Transport Slices 1 and 4 edit, and its `server/src/routes/events.ts` and `shared/events.ts` are
+Job Handoff Slice 3's too. The overlaps are files, not dependencies, so since 2026-11-05 (the owner's
+decision) Slice 1 may be built on its own branch beside those seven slices; whichever reaches `dev` second
+merges `dev` in, resolves the overlaps by hand (`server/src/prompt/runner.ts`,
+`server/src/jobs/generationJobs.ts`, `server/src/data/chatStore.ts`, `shared/jobs.ts` and the `hello` frame
+above all) and runs the merge checks under **Verification**. Slice 2 edits `src/ts/storage/chatStore.svelte.ts`,
 `src/ts/network/eventFeed.ts`, `DefaultChatScreen.svelte` and `Chats.svelte`, which Transport Slices 0–4, Job
 Handoff Slices 2 and 3 and Render Work Budget Slice 4 also edit; its `server/src/data/chatStore.ts` (the op)
 is Transport Slices 1 and 4's too; it reaches `dev` in the same merge as Transport Slice 4 with that plan's D6
@@ -693,8 +726,10 @@ Files: `shared/database.ts` (the types), new `shared/rerollCandidates.ts` (helpe
 `server/src/data/chats.ts` (`normalizeMessage`'s shape rules: refuse on op writes, drop on import and
 read-back), `server/src/data/chatStore.ts` (the refusal on op writes, the tolerant validation on the stored
 reads, `candidatesRevision` set on every write that changes `candidates` or `selected`, the attempt ledger and
-the rollback computed from it), `shared/jobs.ts` (`GenerationContext.rerollMessageId`, `alternatives` removed
-from the done event and the sequence event), `server/src/routes/generations.ts` (validation, the kind
+the rollback computed from it, D6's cleanup in the append branch), `server/src/data/resourceStore.ts` (the
+ledger option through `applyChanges`, staged with the transaction, D13), `server/src/data/checkpointStore.ts`
+(the tolerant read of composed rows, D3), `shared/jobs.ts` (`GenerationContext.rerollMessageId`, `alternatives`
+removed from the done event and the sequence event, the notice `code`, D4), `server/src/routes/generations.ts` (validation, the kind
 restriction, the context copy), `server/src/jobs/generationJobs.ts` (`requestFingerprint`, `keptTerminal`
 without `alternatives`, the ledger option through `writeAsJob`), `server/src/jobs/commandRunner.ts` (the
 sequence event without `result.alternatives`, around line 321), `server/src/prompt/runner.ts` (the carrier
@@ -703,15 +738,18 @@ stored-row non-streaming write, the `before` and `after` snapshots in `finalize`
 `candidates`, the write-back as the final write, the checkpoint left out after a trigger's append,
 `throwError` by the owned generation id, the samples as candidates, the toasts), `server/src/jobs/jobScope.ts`
 (the history view, the snapshot read beside `flushChatMetadata`), `server/src/jobs/runSetup.ts` (`runOnCopy`
-on the view), `server/src/lua/bindings.ts` (`liveChat` on the view), `server/src/jobs/chatResult.ts` (D6's
-unset in the group of an insert, skipping the carrier, the anchor after the carrier, the carrier removal
-turned into the no-reply outcome), `shared/events.ts` and `server/src/routes/events.ts` (`rerollInPlace` on
-`hello`), `src/ts/process/serverGeneration.ts` (`installReplyAlternatives` removed),
-`src/ts/process/serverCommands.ts` (the sequence event without `alternatives`), `src/ts/process/prereroll.ts`
-(`addRerolls` removed), `src/lang/en.ts` and `ko.ts` (the three toasts: tab strings for server notices live
-there), the server generation guide (Generation admission, Prompt job execution, a new "Reroll in place" flow,
-Invariants), the persistence guide (Messages), the scripts and triggers guide (State: what a reroll does to
-variables).
+on the view), `server/src/lua/bindings.ts` (`liveChat` on the view), `server/src/jobs/cbsHost.ts` (CBS on
+the view, message objects without the candidate fields, D7), `server/src/jobs/chatResult.ts` (the anchor
+after the carrier, the carrier removal turned into an explicit no-reply outcome), `shared/events.ts` and
+`server/src/routes/events.ts` (`rerollInPlace` on `hello`), `src/ts/process/serverGeneration.ts`
+(`installReplyAlternatives` removed), `src/ts/process/serverCommands.ts` (the sequence event without
+`alternatives`), `src/ts/process/prereroll.ts` (`addRerolls` removed), `src/ts/network/jobChannel.ts` (the
+notice `code` shown from the locale, D4), `src/lang/en.ts` and `ko.ts` (the three toasts), the server
+generation guide (Generation admission, Prompt job execution, a new "Reroll in place" flow, Invariants), the
+persistence guide (Messages), the scripts and triggers guide (State: what a reroll does to variables), the
+chat pipeline guide (the removed sample installation, D9). Existing tests that the removed field and export
+make stale: `server/src/tests/generations.test.ts`, `generationReceipts.test.ts`, `promptTail.test.ts`, and
+`src/ts/process/rerollHistory.test.ts` (its `addRerolls` cases).
 
 - Tests (`server/src/tests/promptRunner.test.ts`, `generationJobs.test.ts`, `chats.test.ts` for the
   normalizer, `chatStore.test.ts` for the op-write refusal, `chatResult.test.ts`, `memoryJobs.test.ts`,
@@ -764,6 +802,13 @@ variables).
     refuses `rerollMessageId` on a kind other than `reroll`; the fingerprint differs by `rerollMessageId`; a
     `reroll` job without the field runs as a send with empty input; the `hello` frame carries `rerollInPlace`;
     a sequence event of `commandRunner.ts` carries no `alternatives`.
+  - the 2026-11-05 additions: a prompt with `{{history}}` or `{{charhistory}}` holds no candidate text, in a
+    reroll and in an ordinary send after an older reply with candidates (CBS); a `/send` or Lua append unsets an
+    older reply's checkpoint, and an append during a reroll leaves the open carrier's fence open (the store
+    boundary); a reroll that auto-continues runs the reroll once, and a failure of its later round keeps the
+    first round's reply selected (rounds); a toast notice carries its `code` and the tab shows the Korean
+    string under `ko` (D4); a named checkpoint whose page holds a malformed candidate field loads without it
+    (D3); a write group that rolls back leaves the attempt ledger as it was (D13).
 
 ### Slice 2: the switch op and the tab's candidate controls (D10, D12, D14; needs 1; merges with or after Transport Slice 4)
 
@@ -788,7 +833,7 @@ store guide (the `selectCandidate` op).
 - Tests (`server/src/tests/chatStore.test.ts`, `server/src/tests/promptRunner.test.ts`,
   `src/ts/process/rerollCandidates.test.ts`, `src/ts/process/serverGeneration.test.ts`,
   `src/ts/network/eventFeed.test.ts`, `src/lib/ChatScreens/Chat.controls.test.ts`,
-  `src/ts/process/rerollHistory.test.ts` unchanged):
+  `src/ts/process/rerollHistory.test.ts` unchanged after Slice 1 removed its `addRerolls` cases):
   - the op: `selectCandidate` swaps `data`, `generationInfo`, `promptInfo` and a fresh translation from the
     stored candidate with `candidateId`, clears a stale one, and refreshes the slot it leaves from an edited
     text; it sets `scriptstateCheckpoint.after` to the target's `scriptstateAfter`, keeps `before`, and unsets
@@ -879,8 +924,8 @@ the owner asked for; 3 settles the export and the memory proofs; 4 is the browse
   branches (D4): after the merge, besides V1 and `pnpm check:docs` on the guides both plans edit, add these
   cases to the two plans' focused tests and run them, since each branch's tests cover only its side:
   - a reroll's begin group, its write-back and a `selectCandidate` switch on a carrier over
-    `MAX_FEED_PATCH_BYTES` each publish a row manifest with `meta: true` and the carrier's id in `changed`, and
-    a second tab holding the chat loaded at the base revision applies the rows and `metaFields` through the
+    `MAX_FEED_PATCH_BYTES` each publish a row manifest whose `meta` names the restored variables' field
+    (`scriptstate`) and the carrier's id in `changed`, and a second tab holding the chat loaded at the base revision applies the rows and `metaFields` through the
     `chatRows` read without a whole-chat read (`server/src/tests/chatFeedPatches.test.ts`,
     `src/ts/storage/tests/resourceSyncFeedPatches.test.ts`, with this plan's real ops in place of Transport
     Slice 4's fixture);
@@ -891,6 +936,14 @@ the owner asked for; 3 settles the export and the memory proofs; 4 is the browse
     matches the stored row at the end;
   - `hello` carries `rerollInPlace` beside the transport's `cursor`, and after a reconnect (`retire`, then a
     new `hello`) the capability is set again from the new `hello`.
+- The merge of Slice 1 with a Job Handoff Slice 1–3 or Transport Slice 1–4 built beside it: V1 and
+  `pnpm check:docs` after the merge, plus both sides' focused tests (this plan's server files above and the
+  other slice's own list), and these cases checked in the merged code: the job's `done` and sequence events
+  carry neither `alternatives` nor a field the other slice dropped, with the other slice's new job fields
+  intact; `hello` carries `rerollInPlace` beside every field the other slice added; a reroll's begin group,
+  final write and write-back still pass through the other slice's job write path with the attempt ledger
+  option, and the feed entries it publishes for them (row diffs or manifests) carry `candidates` and
+  `candidatesRevision`.
 - Not covered by any gate: the phone swipe on the owner's server, and a server process death mid-reroll or an
   abort past the grace (D8's partial text), which only a manual kill shows.
 

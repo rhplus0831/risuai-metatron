@@ -210,9 +210,8 @@ them up, and a backup does not carry them.
 - Shared `character`/`groupChat` shapes retain `chats` and `chatPage` for server job projections, cards, and plugin
   snapshots; `ClientCharacter`/`ClientGroup` omit them, so records hold no chats. A group has `type: 'group'` and member
   ids in `characters`.
-- `pluginCustomStorage` holds at its top level the custom DB properties plugin `setDatabase`/`setDatabaseLite` route
-  there (keys outside `allowedDbKeys`). Reserved: `_ownedPluginStorage`/legacy `_pluginStorage` (plugin `pluginStorage`,
-  JSON-normalized on write) and `_safeLocalPluginStorage` (`getLocalPluginStorage()`, JSON only).
+- `pluginCustomStorage` (custom `setDatabase` keys, reserved plugin storage dictionaries): the
+  `src/ts/storage/pluginStorageStore.svelte.ts` module header, [plugins State](plugin-sandbox.md#state).
 
 ### Chat fields
 
@@ -267,6 +266,9 @@ them up, and a backup does not carry them.
   backups, and every generation patch of its message, and a text edit keeps it. Its size is bounded by the section
   kinds, the 8-entry trim queue, the 8 named rejected lore entries, and at most three HypaV3 budget reductions. Readers
   use `parseContextReport`; data without a valid report reads as none.
+- `candidates`, `selected`, `candidatesRevision`, `scriptstateCheckpoint` (`shared/rerollCandidates.ts`): a reply's
+  alternatives, its own fields the selected one's. Op writes refuse a bad field; imports and reads drop it. The store
+  owns `candidatesRevision`; an append clears other checkpoints.
 
 ## Coupling
 

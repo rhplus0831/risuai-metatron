@@ -144,7 +144,7 @@ and keeps what spans files.
 
 - `server/src/data/upstream/importDatabase.ts` `convertUpstreamDatabase`, a writer of resources: pure and synchronous,
   run in the import worker; its module header and `convertPresets` comment hold the settings, preset, key, and persona
-  rules, and `server/src/data/upstream/importCharacters.ts` the library's.
+  rules, and `importCharacters.ts` the library's.
 
 ### Upstream library import
 
@@ -154,6 +154,7 @@ and keeps what spans files.
 - Cold storage is folded on import only (the export writes characters and chats inline): stub characters, cold chats
   (`importCharacters.ts` header), and plugin storage (`importCollections.ts` `convertPluginStorage`;
   [Invariants](#invariants)).
+- PocketRisu/RisuBard swipes become `candidates` (`message-swipes`; `importCharacters.ts` header).
 
 ### Upstream database export
 
@@ -170,6 +171,7 @@ and keeps what spans files.
   (`DEVICE_PLUGIN_STORAGE_KEYS`) from `pluginCustomStorage`, counting their entries as excluded `plugin-storage`; it
   also drops `_coldplugin`. Import still writes legacy `_pluginStorage`, served by owned read-through
   ([plugin storage](plugin-sandbox.md#state)).
+- Messages drop their reroll candidate fields (`message-candidates`, `upstreamChat`).
 
 ## State
 
@@ -196,8 +198,8 @@ and keeps what spans files.
     through the upstream import under the compatibility rule ([persistence](persistence.md#invariants)): a one-way,
     full-replace migration with a report before anything is replaced.
   - That covers both `database.risudat` encodings, the legacy MessagePack save and the block save current upstream
-    backups write (its SaveKV namespaces are listed under the excluded code `savekv-namespace`, by namespace without a
-    `kv:` prefix; this code lists every distinct namespace instead of applying the usual five-example cap).
+    backups write (`savekv-namespace` lists every distinct SaveKV namespace without its `kv:` prefix, past the usual
+    five-example cap).
   - A live block save whose data lies outside the file (a remote block, or a directory naming a block the file lacks) is
     refused with a message.
   - The version-2 import route still refuses upstream-format archives with a message naming the upstream import.
@@ -221,8 +223,8 @@ and keeps what spans files.
     entry without a key or value or a displaced duplicate or unparsable `s` (`invalid-data`), a large value whose record
     is missing, over the per-record cap, or not JSON (`cold-missing`, by key).
   - The commit stays all-or-nothing, so plugins never run against a half-restored store.
-- Export, change, and restore are covered end to end on a version-3 store: an archive import undoes changes made after
-  the export (a plugin `setCharacter`, an MCP tool), and restoring the safety snapshot the import took brings them back.
+- Tested end to end on a version-3 store: an archive import undoes changes made after the export (a plugin
+  `setCharacter`, an MCP tool); restoring the import's safety snapshot brings them back.
 - A backup restore replaces every resource and only adds assets that do not exist yet; the app reloads afterwards
   because every revision the tab held is void (new epoch).
 - A refused snapshot or archive, one over the server's restore memory limit (`RISU_RESTORE_HEAP_MB`) included, is
@@ -238,12 +240,11 @@ and keeps what spans files.
   another kind is needed (a full backup already takes every asset).
 - Change the archive format: the server side (see `server-resources.md`) and `tryReadManifest` here. Add a round-trip
   test.
-- Change what the RisuAI-compatible backup carries: the projection is `server/src/data/upstream/exportDatabase.ts`
-  ([Upstream database export](#upstream-database-export); metatron-only chat fields such as `loreOverrides` are in its
-  `METATRON_CHAT_FIELDS` strip list); a new report code goes into `shared/upstreamExportReport.ts` and
-  `language.upstreamExport` (`en.ts`, `ko.ts`). The record layout (assets by basename, then `database.risudat`) is
-  upstream's restore format: keep `upstreamAssetRecordName` in step with `planUpstreamArchive`, so this app's own import
-  reads every export back.
+- Change what the RisuAI-compatible backup carries: the projection is `exportDatabase.ts`
+  ([Upstream database export](#upstream-database-export); metatron-only chat fields go in `METATRON_CHAT_FIELDS`); a new
+  report code goes into `shared/upstreamExportReport.ts` and `language.upstreamExport` (`en.ts`, `ko.ts`). The record
+  layout (assets by basename, then `database.risudat`) is upstream's restore format: keep `upstreamAssetRecordName` in
+  step with `planUpstreamArchive`, so this app's own import reads every export back.
 - Change Realm: `characterCards.ts` hub functions and the matching `Realm*` component together. Check `hubURL` on Node
   (`/hub-proxy`).
 
@@ -256,9 +257,8 @@ and keeps what spans files.
 - `slow`:
   `pnpm --silent test:agent --tags-filter=slow server/src/tests/{upstreamImportWorker,upstreamExportWorker}.test.ts`;
   these exercise cold worker boots and heap limits.
-- Backup tests use fake `authFetch`/`LocalWriter` with stubbed resource flushes. The snapshot test exercises the real
-  export route; Realm tests use local server/Realm stand-ins; the report dialog and restore-selection hooks use alert
-  and storage fakes.
+- Backup tests fake `authFetch`, `LocalWriter` and resource flushes; the snapshot test runs the real export route, Realm
+  tests local server/Realm stand-ins, the report dialog and restore-selection hooks alert and storage fakes.
 - Manual compatibility check: `util/upstream/checkBinCompat.mjs` runs upstream's decoder/defaults against pinned
   `legacy` or `current` targets; `--bin` checks an existing export. The `current` target also runs upstream's plugin
   storage migration ([build/test platforms](build-test-platforms.md#files)).

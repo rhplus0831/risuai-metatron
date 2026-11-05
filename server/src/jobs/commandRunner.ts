@@ -254,7 +254,7 @@ async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, nam
  *
  * Progress updates memory and best-effort receipts before the first part (sent: 0) and after each
  * returned part, before the live-only sequence event: zero-based index, total, sent, optional
- * reply messageId and alternatives. A removed reply counts as sent; a stopped send does not.
+ * reply messageId. A removed reply counts as sent; a stopped send does not.
  * One done terminal carries sequence { total, sent, stopped? }: boundary refusals use their code,
  * a stopped send uses notSent. Throws and registry aborts retain error terminals with current
  * progress; the first abort wins. No queued parts means no sequence. The registry runs one
@@ -266,11 +266,13 @@ async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, comman
     const parts = commandState.sequence.flatMap(({ clear, parts }) => parts.map((part) => ({ clear, part })));
     /** The command's own skipped reply hooks (a Lua request's), then each part's (its own state). */
     const skipped: SkippedHook[] = [...commandState.skippedHooks];
+    const missed = [...commandState.missedHooks];
     if (parts.length === 0) {
         job.emit({
             type: "done",
             revision: deps.store.chatRevision(characterId, chatId),
             ...(skipped.length > 0 ? { skipped } : {}),
+            ...(missed.length > 0 ? { missed } : {}),
         });
         return;
     }
@@ -290,6 +292,7 @@ async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, comman
             ...(present ? { messageId } : {}),
             sequence: { total, sent, ...(stopped ? { stopped } : {}) },
             ...(skipped.length > 0 ? { skipped } : {}),
+            ...(missed.length > 0 ? { missed } : {}),
         });
     };
     sequence.progress({ total, sent });
@@ -340,6 +343,7 @@ async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, comman
         sequence.releaseRemovedReplies();
         messageId = result.messageId;
         if (result.skipped) skipped.push(...result.skipped);
+        if (result.missed) missed.push(...result.missed);
         if (!result.stopped) sent += 1;
         sequence.progress({ total, sent });
         job.emit({
@@ -348,7 +352,6 @@ async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, comman
             total,
             sent,
             ...(messageId ? { messageId } : {}),
-            ...(result.alternatives ? { alternatives: result.alternatives } : {}),
         });
         if (result.stopped) {
             finish("notSent");

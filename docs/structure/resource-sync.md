@@ -120,17 +120,12 @@
 
 ### Record patches
 
-- `resourceSync.svelte.ts` `updateOperation`, `baseParts`, `recordPatchText`: top-level field and array-item diffs.
-  Creates, records without parts (including JSON-hook fallbacks), incompatible parts/item keys, or patches no smaller
-  than whole data in UTF-8 bytes go whole. A changed top-level `__proto__` sends the object or affected item whole;
-  key-order-only changes can settle without a write. `llmSecrets` never has parts: the server refuses its patches,
+- `src/ts/storage/resourceSync.svelte.ts`: `updateOperation` (patch or whole record), `baseParts`, `recordPatchText`
+  (dictionary and item-key fallbacks), `itemProjection`. `llmSecrets` never has parts: the server refuses its patches,
   readable siblings included.
-- `pluginStorage` adds entry-level `set`/`remove` one level down in `PLUGIN_STORAGE_DICTIONARIES`
-  (`shared/pluginStorage.ts`). A reserved field being set stays top-level when either side lacks entry spans (including
-  a non-dictionary), its `__proto__` entry changes, or nested ops cannot reproduce its key order.
-- `plugins` prefers unique nonempty ids, else unique nonempty names with explicit `itemKey: "name"`; duplicate/empty
-  names without usable ids go whole. Shared validation/application comments: `shared/recordPatch.ts`
-  `checkRecordWritePatch`, `applyFieldPatch`, `itemIds`, `checkItemPatch`, `applyItemPatch`.
+- Write forms both sides check (`shared/recordPatch.ts`: `checkRecordWritePatch`, `applyFieldPatch`, `itemIds`,
+  `checkItemPatch`, `applyItemPatch`): `pluginStorage` entries one level down in `PLUGIN_STORAGE_DICTIONARIES`
+  (`shared/pluginStorage.ts`); `plugins` items by unique id, else by unique name with `itemKey: "name"`.
 
 ### Lost answers
 
@@ -266,8 +261,8 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 - `src/ts/storage/resourceClient.ts` owns loaded-epoch checks, `readRefs` continuation and pre-signed unload transport.
   Mutations carry the loaded epoch; a read of another epoch reaches the adapter's restore halt through the registered
   listener. Normal requests pass through `authFetch` in `src/ts/storage/serverAuth.ts`.
-- `readRefs` returns a complete result in request order or throws. Its rounds share an epoch, not a moment: only a
-  character record and its collection entries are guaranteed the same round's read
+- `readRefs` returns a complete result in request order or throws; a `moved` row read is an answer. Its rounds share an
+  epoch, not a moment: only a character record and its collection entries are guaranteed the same round's read
   ([server contract](server-resources.md)).
 
 ## State

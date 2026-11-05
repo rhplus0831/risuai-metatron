@@ -1,3 +1,4 @@
+import { normalizeCandidateFields, withoutCandidateCheckpoints } from "../../../shared/rerollCandidates.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
     ChatConflict,
@@ -12,13 +13,18 @@ import type {
     TranslationOutcome,
 } from "../../../shared/chats.ts";
 import { CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
-import type { Chat, MessageTranslation } from "../../../shared/database.ts";
+import type { Chat, Message, MessageTranslation } from "../../../shared/database.ts";
 import {
     type ChangeSet,
     type ChatDeltaBody,
     type ChatMetaFields,
     type ChatPatchBody,
+    type ChatRowDeltaBody,
+    type ChatRowDiff,
+    type ChatRowsReadResult,
+    type ResourceReadEntries,
     MAX_FEED_PATCH_BYTES,
+    SMALL_FEED_PATCH_BYTES,
     RESOURCE_KIND,
 } from "../../../shared/resources.ts";
 import { isSealedHypaV3Data } from "../../../shared/structuredMemory.ts";
@@ -47,7 +53,8 @@ import {
  * keyed by the chat's incarnation `seq` and `Message.chatId`, ordered by `position`), each
  * character's chat order (`chatOrders`), and each chat's stored summary projection (`chatSummaries`).
  * The resource store owns the connection, the epoch, and the transactions; this module prepares,
- * applies, reads, and validates chat changes inside them.
+ * applies, reads, and validates chat changes inside them. Candidate revisions and append-time
+ * checkpoint cleanup are store-owned. Reroll variable provenance is staged with the same transaction.
  *
  * Positions: an insert shifts the rows after its anchor by the number of inserted messages; a
  * removal leaves a gap. Positions are distinct within a chat but not unique-constrained, because
@@ -420,8 +427,8 @@ export type ChatWriteChange = {
 
 /**
  * What a group's feed entry carries beside its ref (`shared/resources.ts` `ChangeSet["chats"]`):
- * its by-id change, as a `patch` or a `delta`, and its summary knowledge. Feed-only: never in HTTP
- * results.
+ * its by-id change, as a `patch`, `delta`, `rowDelta`, or `rows` manifest, and its summary knowledge.
+ * Feed-only: never in HTTP results.
  *
  * An applied by-id group carries `summary` at its revision when the summary changed, otherwise
  * `summaryBase`, its stored base revision. The comparison ignores revisions: projection text before
@@ -431,12 +438,15 @@ export type ChatWriteChange = {
  * the transaction without the memo. Thus a note edit with removal of the last row, or leaving an
  * undated last row, still detects a changed time. A changed summary without a message op reads the
  * time once to complete it.
- * Removing and reappending one id keeps summary knowledge but carries neither `patch` nor `delta`.
+ * Removing and reappending one id keeps summary knowledge but carries no body or row manifest.
  * Whole-chat writes, no-op groups and deletions carry neither summary field: unknown, preserving
  * the summary-list read in `src/ts/storage/chatStore.svelte.ts`. Remembered groups publish no feed
  * entry at all (`server/src/data/resourceStore.ts`).
  */
-export type ChatFeedPayloads = Pick<ChangeSet["chats"][number], "patch" | "delta" | "summary" | "summaryBase">;
+export type ChatFeedPayloads = Pick<
+    ChangeSet["chats"][number],
+    "patch" | "delta" | "rowDelta" | "rows" | "summary" | "summaryBase"
+>;
 
 /**
  * Where a by-id group's change leaves a chat's messages, from their ids at its base (`base`, in
@@ -640,6 +650,39 @@ function chatMetaFields(before: Record<string, unknown>, after: Record<string, u
     return fields;
 }
 
+/**
+ * An existing row's fields and text from its first stored read to its final value. A non-string
+ * `data` or a changed own `__proto__` field needs a whole row. Equal JSON fields keep no diff even
+ * when their object keys were stored in another order.
+ */
+function chatRowDiff(id: string, before: Record<string, unknown>, after: Record<string, unknown>): ChatRowDiff | null {
+    if (typeof before.data !== "string" || typeof after.data !== "string") {
+        return null;
+    }
+    const unset = Object.keys(before).filter((key) => key !== "data" && !Object.hasOwn(after, key));
+    const set = Object.keys(after)
+        .filter((key) => key !== "data" && (!Object.hasOwn(before, key) || !sameJson(before[key], after[key])))
+        .map((key): [string, unknown] => [key, after[key]]);
+    if (unset.includes("__proto__") || set.some(([key]) => key === "__proto__")) {
+        return null;
+    }
+    const diff: ChatRowDiff = { id };
+    if (unset.length > 0 || set.length > 0) {
+        diff.fields = { set: Object.fromEntries(set), unset };
+    }
+    if (before.data !== after.data) {
+        let keep = before.data.length;
+        if (!after.data.startsWith(before.data)) {
+            keep = 0;
+            while (keep < before.data.length && keep < after.data.length && before.data[keep] === after.data[keep]) {
+                keep += 1;
+            }
+        }
+        diff.text = { keep, text: after.data.slice(keep) };
+    }
+    return diff;
+}
+
 function isNonNegativeSafeInteger(value: unknown): value is number {
     return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -650,7 +693,7 @@ function isPositiveSafeInteger(value: unknown): value is number {
 
 /** Normalizes the JSON copy of a message (what is stored), not the input: an in-process `toJSON` cannot change it after the check. */
 function prepareMessage(input: unknown): PreparedMessage {
-    const message = normalizeMessage(serialize(input).stored);
+    const message = normalizeMessage(serialize(input).stored, true);
     return { id: message.chatId as string, text: serialize(message).text };
 }
 
@@ -677,7 +720,7 @@ function prepareWholeChat(
     const summary = summaryText(stored as Record<string, unknown>);
     // Keep whole-array JSON semantics, but measure depth per message as `prepareMessage` does.
     const sent = chat.message === undefined ? undefined : serialize(chat.message, { arrayElementDepth: true }).stored;
-    const messages = normalizeMessageList(sent).map((message) => ({
+    const messages = normalizeMessageList(sent, true).map((message) => ({
         id: message.chatId as string,
         text: serialize(message).text,
     }));
@@ -1151,11 +1194,98 @@ export function openChatSchema(db: DatabaseSync): void {
     db.exec("COMMIT");
 }
 
+/** Process-local attempt control, admitted only through the job write path; never a wire op. */
+export type RerollAttemptWrite = {
+    characterId: string;
+    chatId: string;
+    messageId: string;
+    generationId: string;
+    action: "begin" | "rollback";
+};
+type AttemptEntry = { before: unknown; foreign?: { value: unknown }; last: "job" | "foreign" };
+type RerollAttempt = Omit<RerollAttemptWrite, "action"> & { token: string; entries: Map<string, AttemptEntry> };
+
+/** Only the new optional fields are sanitized on legacy reads; unrelated message data stays as stored. */
+function readMessage(text: string): Message {
+    return normalizeCandidateFields(JSON.parse(text)) as Message;
+}
+
+/** The counter is assigned after admission. Writers can neither reset it nor choose its next value. */
+function withCandidateRevision(text: string, previous?: string): string {
+    const message = JSON.parse(text) as Message;
+    const before = previous === undefined ? undefined : (JSON.parse(previous) as Message);
+    const revision = isNonNegativeSafeInteger(before?.candidatesRevision) ? before.candidatesRevision : undefined;
+    const changed =
+        sortedJson(message.candidates) !== sortedJson(before?.candidates) ||
+        sortedJson(message.selected) !== sortedJson(before?.selected);
+    delete message.candidatesRevision;
+    if (changed || revision !== undefined) {
+        message.candidatesRevision = nextRevision(revision ?? 0, changed ? 1 : 0);
+    }
+    return serialize(message).text;
+}
+
+/** Replay equality still compares the complete row's bytes, apart from the store-owned counter. */
+function appendReplay(text: string, stored: string): boolean {
+    const withoutRevision = (value: string) => {
+        const message = JSON.parse(value);
+        delete message.candidatesRevision;
+        return JSON.stringify(message);
+    };
+    return withoutRevision(text) === withoutRevision(stored);
+}
+
 /**
  * Prepares the chat statements and returns the methods over them. The tables must exist:
  * `openChatSchema` and `createCheckpointTables` (`chatRestoreFloors`) run first.
  */
 export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard?: MessageGuard) {
+    let attempts = new Map<string, RerollAttempt>();
+    let stagedAttempts: Map<string, RerollAttempt> | null = null;
+    const attemptKey = (characterId: string, chatId: string) => `${characterId}\u0000${chatId}`;
+    const liveAttempt = (characterId: string, chatId: string) => {
+        const map = stagedAttempts ?? attempts;
+        const key = attemptKey(characterId, chatId);
+        const attempt = map.get(key);
+        if (
+            attempt &&
+            (!guard?.isLive(attempt.token) || guard.holder(characterId, chatId, attempt.messageId) !== attempt.token)
+        ) {
+            map.delete(key);
+            return undefined;
+        }
+        return attempt;
+    };
+    const mapOf = (value: unknown): Record<string, unknown> => (isPlainObject(value) ? value : {});
+    const entryOf = (map: Record<string, unknown>, key: string) => (Object.hasOwn(map, key) ? map[key] : undefined);
+    function recordVariable(
+        attempt: RerollAttempt | undefined,
+        token: string | undefined,
+        key: string,
+        before: unknown,
+        after: unknown,
+    ) {
+        if (!attempt) return;
+        const own = token === attempt.token;
+        let entry = attempt.entries.get(key);
+        if (!entry) {
+            if (!own) return;
+            entry = { before, last: "job" };
+            attempt.entries.set(key, entry);
+        }
+        entry.last = own ? "job" : "foreign";
+        if (!own) entry.foreign = { value: after };
+    }
+    function recordMap(attempt: RerollAttempt | undefined, token: string | undefined, before: unknown, after: unknown) {
+        const was = mapOf(before),
+            now = mapOf(after);
+        for (const key of new Set([...Object.keys(was), ...Object.keys(now)])) {
+            if (sortedJson(entryOf(was, key)) !== sortedJson(entryOf(now, key))) {
+                recordVariable(attempt, token, key, entryOf(was, key), entryOf(now, key));
+            }
+        }
+    }
+
     const selectGroup = db.prepare("SELECT revision, result FROM chatGroups WHERE chatSeq = ? AND groupId = ?");
     const insertGroup = db.prepare("INSERT INTO chatGroups (chatSeq, groupId, revision, result) VALUES (?, ?, ?, ?)");
     const trimGroups = db.prepare(
@@ -1236,6 +1366,15 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const selectCharacterSummaries = db.prepare(`${summaryRead} WHERE c.characterId = ? ORDER BY c.seq`);
     const selectAllMessages = db.prepare("SELECT chatSeq, data FROM messages ORDER BY chatSeq, position");
     const selectChatMessages = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position");
+    // Only rows with candidate state need their previous revision carried through a replacement.
+    const selectCandidateRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND (
+        json_type(data, '$.candidates') IS NOT NULL OR json_type(data, '$.selected') IS NOT NULL OR
+        json_type(data, '$.candidatesRevision') IS NOT NULL)`);
+    // Appending reads only rows needing cleanup. Open generations clean their own carrier at finalize.
+    const selectCheckpointRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND id != ?
+        AND (generationId IS NULL OR generationFinal = 1) AND (
+        json_type(data, '$.scriptstateCheckpoint') IS NOT NULL OR EXISTS (
+            SELECT 1 FROM json_tree(messages.data, '$.candidates') WHERE key = 'scriptstateAfter'))`);
     const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");
     const countUserTurns = db.prepare(COUNT_USER_TURNS_SQL);
     const selectPatchMessages = db.prepare(
@@ -1269,7 +1408,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     );
     // A budgeted read's charges: stored sizes only, so no row text leaves SQLite for an entry left out.
     const selectChatBytes = db.prepare(
-        "SELECT seq, octet_length(meta) AS bytes FROM chats WHERE characterId = ? AND id = ?",
+        "SELECT seq, revision, octet_length(meta) AS bytes FROM chats WHERE characterId = ? AND id = ?",
+    );
+    const sumNamedMessageBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM messages " +
+            "WHERE chatSeq = ? AND id IN (SELECT value FROM json_each(?))",
     );
     const sumMessageBytes = db.prepare(
         "SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM messages WHERE chatSeq = ?",
@@ -1491,94 +1634,167 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
 
     /**
      * The touched rows as stored now, in position order, each with the id of the row right before it
-     * by position. Lazy: nothing is read before the first row is asked for, and a caller that stops
-     * early ends the read.
+     * by position. Invalid optional candidate fields are omitted from the returned row text.
+     * Lazy: nothing is read before the first row is asked for, and a caller that stops early ends the read.
      */
     function* touchedRows(chatSeq: number, touched: ReadonlySet<string>): Generator<ChatWriteChange["rows"][number]> {
         for (const stored of selectPatchMessages.iterate(chatSeq, JSON.stringify([...touched]))) {
-            yield stored as ChatWriteChange["rows"][number];
+            const row = stored as ChatWriteChange["rows"][number];
+            yield { ...row, data: JSON.stringify(readMessage(row.data)) };
         }
     }
 
     /**
-     * The feed's by-id change of a group from its stored parts: a `patch` with the metadata whole
-     * (`{baseRevision,count,meta?,removed?,messages?}`, in that key order) when its JSON fits
-     * `MAX_FEED_PATCH_BYTES`, else a `delta` with the metadata by field (`metaFields` in place of
-     * `meta`) when that fits, else neither. One pass, measured part by part on the stored strings:
-     * the whole metadata first, then the removals, then the rows. At the first byte over, a group
-     * that changed the metadata takes its field form (`meta.fields`, which parses both stored
-     * metadata values: an over-cap metadata is parsed, a cost the whole form alone never had) and goes
-     * on from there with the rows already read and the same row iterator; any other group, or one
-     * whose field form does not fit either, gives up there. `rows` is iterated only once the metadata
-     * and removals fit, and only while a form still fits; no row is parsed until all of it fits.
+     * One optional feed body, selected by its UTF-8 JSON size: the whole-row patch below
+     * `SMALL_FEED_PATCH_BYTES`, else a fitting rowDelta with at least one diff smaller than the
+     * patch, else a fitting patch, else a fitting delta, else a fitting row manifest. Metadata is
+     * whole in a patch and by field in both deltas. Inserted rows and rows that cannot be diffed
+     * keep their whole values and anchors.
+     *
+     * One pass over the stored row iterator, with separate running sizes. Small patches defer the
+     * alternatives; crossing the selection threshold considers the rows already read. Once a size
+     * passes the cap its exact value is unnecessary. The iterator stops when all three forms exceed
+     * the cap. Stored rows are parsed only for a live diff candidate or the selected whole-row body,
+     * with each after value reused if the diff loses the size comparison. The manifest takes ids
+     * from `touched`, never the iterator that may have stopped before reading them all.
      */
     function chatFeedChange(
         baseRevision: string,
         count: number,
         meta: { stored: string; fields: () => ChatMetaFields | null } | undefined,
         removed: ReadonlySet<string>,
-        rows: Iterable<{ after: string | null; data: string }> | null,
-    ): Pick<ChatFeedPayloads, "patch" | "delta"> {
+        touched: ReadonlySet<string>,
+        rows: Iterable<{ id: string; after: string | null; data: string }> | null,
+        before: ReadonlyMap<string, string>,
+        insertedHere: ReadonlySet<string>,
+    ): Pick<ChatFeedPayloads, "patch" | "delta" | "rowDelta" | "rows"> {
         const head = Buffer.byteLength(JSON.stringify({ baseRevision, count }));
-        let metaBytes = meta === undefined ? 0 : Buffer.byteLength(meta.stored) + ',"meta":'.length;
-        // Undefined while the metadata goes whole; null: by field, unchanged as JSON values.
+        const capped = (size: number) => Math.min(size, MAX_FEED_PATCH_BYTES + 1);
+        let patchBytes = capped(head + (meta === undefined ? 0 : Buffer.byteLength(meta.stored) + ',"meta":'.length));
+        let deltaBytes = head;
+        let rowDeltaBytes = head + ',"rowDiffs":[]'.length;
         let fields: ChatMetaFields | null | undefined;
-        let rest = 0;
-        /** Whether the body fits, taking the field form at the first byte over when there is one. */
-        const fits = (): boolean => {
-            if (head + metaBytes + rest <= MAX_FEED_PATCH_BYTES) {
-                return true;
-            }
-            if (meta === undefined || fields !== undefined) {
-                return false;
-            }
-            fields = meta.fields();
-            metaBytes = fields === null ? 0 : Buffer.byteLength(JSON.stringify(fields)) + ',"metaFields":'.length;
-            return head + metaBytes + rest <= MAX_FEED_PATCH_BYTES;
+        const readFields = () => {
+            if (fields !== undefined) return;
+            fields = meta?.fields() ?? null;
+            const size = fields === null ? 0 : Buffer.byteLength(JSON.stringify(fields)) + ',"metaFields":'.length;
+            deltaBytes = capped(deltaBytes + size);
+            rowDeltaBytes = capped(rowDeltaBytes + size);
         };
-        if (!fits()) {
-            return {};
-        }
+        const manifest = (): Pick<ChatFeedPayloads, "rows"> => {
+            readFields();
+            const rows = {
+                baseRevision,
+                changed: [...touched],
+                removed: [...removed],
+                count,
+                meta: fields
+                    ? [
+                          ...new Set([
+                              ...Object.keys(fields.set),
+                              ...fields.remove,
+                              ...Object.keys(fields.merge ?? {}),
+                              ...Object.keys(fields.mergeUnset ?? {}),
+                          ]),
+                      ]
+                    : [],
+            };
+            return Buffer.byteLength(JSON.stringify(rows)) <= MAX_FEED_PATCH_BYTES ? { rows } : {};
+        };
+        // Without a captured row, only an over-cap patch can make the metadata field form useful.
+        const considerAlternatives = () =>
+            patchBytes > MAX_FEED_PATCH_BYTES ||
+            (rows !== null && before.size > 0 && patchBytes >= SMALL_FEED_PATCH_BYTES);
+        const allOver = () =>
+            patchBytes > MAX_FEED_PATCH_BYTES &&
+            deltaBytes > MAX_FEED_PATCH_BYTES &&
+            rowDeltaBytes > MAX_FEED_PATCH_BYTES;
+        if (considerAlternatives()) readFields();
+        if (allOver()) return manifest();
         if (removed.size > 0) {
-            rest += ',"removed":[]'.length;
             let index = 0;
             for (const id of removed) {
-                rest += Buffer.byteLength(JSON.stringify(id)) + (index > 0 ? 1 : 0);
-                if (!fits()) {
-                    return {};
-                }
-                index += 1;
+                const size = Buffer.byteLength(JSON.stringify(id)) + (index++ > 0 ? 1 : ',"removed":[]'.length);
+                patchBytes = capped(patchBytes + size);
+                deltaBytes = capped(deltaBytes + size);
+                rowDeltaBytes = capped(rowDeltaBytes + size);
+                if (considerAlternatives()) readFields();
+                if (allOver()) return manifest();
             }
         }
-        const kept: { after: string | null; data: string }[] = [];
+        type FeedRow = {
+            id: string;
+            after: string | null;
+            data: string;
+            message?: Record<string, unknown>;
+            bytes: number;
+        };
+        const kept: FeedRow[] = [];
+        const whole: FeedRow[] = [];
+        const rowDiffs: ChatRowDiff[] = [];
+        const parsed = (row: FeedRow) => (row.message ??= JSON.parse(row.data) as Record<string, unknown>);
+        let considered = 0;
+        const diffRows = () => {
+            while (considered < kept.length && rowDeltaBytes <= MAX_FEED_PATCH_BYTES) {
+                const row = kept[considered++];
+                const old = insertedHere.has(row.id) ? undefined : before.get(row.id);
+                const diff = old === undefined ? null : chatRowDiff(row.id, JSON.parse(old), parsed(row));
+                if (diff) {
+                    rowDeltaBytes = capped(
+                        rowDeltaBytes + Buffer.byteLength(JSON.stringify(diff)) + (rowDiffs.length > 0 ? 1 : 0),
+                    );
+                    rowDiffs.push(diff);
+                } else {
+                    rowDeltaBytes = capped(
+                        rowDeltaBytes + row.bytes + (whole.length > 0 ? 1 : ',"messages":[]'.length),
+                    );
+                    whole.push(row);
+                }
+            }
+        };
         if (rows) {
-            rest += ',"messages":[]'.length;
+            patchBytes = capped(patchBytes + ',"messages":[]'.length);
+            deltaBytes = capped(deltaBytes + ',"messages":[]'.length);
+            if (considerAlternatives()) readFields();
+            if (allOver()) return manifest();
             for (const row of rows) {
-                rest +=
+                const size =
                     Buffer.byteLength(JSON.stringify(row.after)) +
                     Buffer.byteLength(row.data) +
-                    '{"after":,"message":}'.length +
-                    (kept.length > 0 ? 1 : 0);
-                // The row counts in either form: kept before the check, so the field form goes on with it.
-                kept.push(row);
-                if (!fits()) {
-                    return {};
+                    '{"after":,"message":}'.length;
+                patchBytes = capped(patchBytes + size + (kept.length > 0 ? 1 : 0));
+                deltaBytes = capped(deltaBytes + size + (kept.length > 0 ? 1 : 0));
+                kept.push({ ...row, bytes: size });
+                if (considerAlternatives()) {
+                    readFields();
+                    diffRows();
                 }
+                if (allOver()) return manifest();
             }
         }
+        const useRowDelta =
+            patchBytes >= SMALL_FEED_PATCH_BYTES &&
+            rowDiffs.length > 0 &&
+            rowDeltaBytes <= MAX_FEED_PATCH_BYTES &&
+            rowDeltaBytes < patchBytes;
+        const usePatch = !useRowDelta && patchBytes <= MAX_FEED_PATCH_BYTES;
+        if (!useRowDelta && !usePatch && deltaBytes > MAX_FEED_PATCH_BYTES) return manifest();
         const body: ChatPatchBody & ChatDeltaBody = { baseRevision, count };
-        if (meta !== undefined && fields === undefined) {
+        if (usePatch && meta !== undefined) {
             body.meta = JSON.parse(meta.stored) as Record<string, unknown>;
-        } else if (fields) {
+        } else if (!usePatch && fields) {
             body.metaFields = fields;
         }
-        if (removed.size > 0) {
-            body.removed = [...removed];
+        if (removed.size > 0) body.removed = [...removed];
+        const selected = useRowDelta ? whole : kept;
+        if (useRowDelta ? selected.length > 0 : rows !== null) {
+            body.messages = selected.map((row) => ({ after: row.after, message: parsed(row) }));
         }
-        if (rows) {
-            body.messages = kept.map(({ after, data }) => ({ after, message: JSON.parse(data) }));
+        if (useRowDelta) {
+            const rowDelta: ChatRowDeltaBody = { ...body, rowDiffs };
+            return { rowDelta };
         }
-        return fields === undefined ? { patch: body } : { delta: body };
+        return usePatch ? { patch: body } : { delta: body };
     }
 
     /**
@@ -1708,6 +1924,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         changedOrders: Set<string>,
         jobToken: string | undefined,
         changes: boolean,
+        attemptWrite?: RerollAttemptWrite,
     ): {
         result: ChatGroupResult;
         applied: number;
@@ -1775,6 +1992,25 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             }
             stale = base!.revision !== row!.revision;
         }
+        let attempt = liveAttempt(characterId, chatId);
+        const control =
+            attemptWrite?.characterId === characterId && attemptWrite.chatId === chatId ? attemptWrite : undefined;
+        if (control?.action === "begin") {
+            if (
+                !jobToken ||
+                !guard?.isLive(jobToken) ||
+                guard.holder(characterId, chatId, control.messageId) !== jobToken ||
+                !group.ops.some(
+                    (op) =>
+                        op.op === "begin" && op.id === control.messageId && op.generationId === control.generationId,
+                )
+            ) {
+                throw new ResourceValidationError("A reroll attempt must begin with its owned generation");
+            }
+            attempt = { ...control, token: jobToken, entries: new Map() };
+            (stagedAttempts ?? attempts).set(attemptKey(characterId, chatId), attempt);
+        }
+        let finishedAttempt = false;
         /** Messages this group inserted; a new generation may begin on them without the current revision. */
         const insertedHere = new Set<string>();
         // The actual stored base, which can be newer than a stale group's requested base.
@@ -1784,6 +2020,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 : null;
         // The stored metadata before the group, for the field form of its change (by-id groups).
         const metaBefore = patchBase ? row!.meta : undefined;
+        /** The first stored read of each mutable row, retained only for a possible feed body. */
+        const rowsBefore = new Map<string, string>();
         /** The projection right before the group's first `meta` op (by-id groups). */
         let summaryBefore: string | undefined;
         /** The projection the group's last `meta` op wrote. */
@@ -1820,7 +2058,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             switch (op.op) {
                 case "create": {
                     const seq = writeChatMeta({ kind: "create", characterId, id: chatId, meta: op.meta }, op.summary);
-                    insertAt(seq, -1, op.messages);
+                    insertAt(
+                        seq,
+                        -1,
+                        op.messages.map((message) => ({ ...message, text: withCandidateRevision(message.text) })),
+                    );
                     const order = ensureOrder(characterId);
                     const ids = order.ids.filter((id) => id !== chatId);
                     ids.splice(Math.min(op.index ?? ids.length, ids.length), 0, chatId);
@@ -1834,6 +2076,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     break;
                 }
                 case "delete": {
+                    (stagedAttempts ?? attempts).delete(attemptKey(characterId, chatId));
                     deleteChat.run(chatSeq);
                     const order = readOrder(characterId);
                     if (order) {
@@ -1857,9 +2100,23 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         generationSeq: number;
                         generationHistory: string | null;
                     }[];
+                    recordMap(attempt, jobToken, JSON.parse(row!.meta).scriptstate, JSON.parse(op.meta).scriptstate);
+                    const previous = new Map(
+                        (selectCandidateRows.all(chatSeq) as { id: string; data: string }[]).map(({ id, data }) => [
+                            id,
+                            data,
+                        ]),
+                    );
                     writeChatMeta({ kind: "update", seq: chatSeq, revision: row!.revision, meta: op.meta }, op.summary);
                     deleteMessages.run(chatSeq);
-                    insertAt(chatSeq, -1, op.messages);
+                    insertAt(
+                        chatSeq,
+                        -1,
+                        op.messages.map((message) => ({
+                            ...message,
+                            text: withCandidateRevision(message.text, previous.get(message.id)),
+                        })),
+                    );
                     const kept = new Set(op.messages.map((message) => message.id));
                     for (const fence of fences) {
                         if (kept.has(fence.id)) {
@@ -1884,17 +2141,22 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         summaryBefore = freshSummaryText(row!.seq, row!.revision, { meta: row!.meta });
                     }
                     const current = JSON.parse(row!.meta) as Record<string, unknown>;
+                    const previousVariables = current.scriptstate;
                     for (const key of op.unset) {
                         delete current[key];
                     }
                     Object.assign(current, op.set);
+                    recordMap(attempt, jobToken, previousVariables, current.scriptstate);
                     for (const key of new Set([...Object.keys(op.mergeUnset), ...Object.keys(op.merge)])) {
                         // Onto the entries as stored now: another writer's entries stay.
                         const stored = current[key];
                         const isMap = isPlainObject(stored);
                         const entries = Object.hasOwn(op.merge, key) ? op.merge[key] : undefined;
                         if (!isMap && !entries) {
-                            // Removals alone from a field that is not a map: nothing to remove.
+                            // An explicit removal still has an origin, even when already absent.
+                            if (key === "scriptstate")
+                                for (const id of op.mergeUnset[key] ?? [])
+                                    recordVariable(attempt, jobToken, id, undefined, undefined);
                             continue;
                         }
                         const map: Record<string, unknown> = Object.create(null);
@@ -1904,9 +2166,13 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                             }
                         }
                         for (const id of Object.hasOwn(op.mergeUnset, key) ? op.mergeUnset[key] : []) {
+                            if (key === "scriptstate")
+                                recordVariable(attempt, jobToken, id, entryOf(map, id), undefined);
                             delete map[id];
                         }
                         for (const id of Object.keys(entries ?? {})) {
+                            if (key === "scriptstate")
+                                recordVariable(attempt, jobToken, id, entryOf(map, id), entries![id]);
                             map[id] = entries![id];
                         }
                         current[key] = { ...map };
@@ -1939,8 +2205,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     for (const message of op.messages) {
                         const existing = selectMessage.get(chatSeq, message.id) as MessageRow | undefined;
                         if (!existing) {
-                            fresh.push(message);
-                        } else if (existing.data !== message.text) {
+                            fresh.push({ ...message, text: withCandidateRevision(message.text) });
+                        } else if (!appendReplay(message.text, existing.data)) {
                             conflictHere(row);
                         }
                     }
@@ -1951,6 +2217,22 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         }
                         fresh.forEach((message) => insertedHere.add(message.id));
                         insertAt(chatSeq, after, fresh);
+                        if (fresh.some(({ text }) => !JSON.parse(text).isComment)) {
+                            const newest = fresh.findLast(({ text }) => !JSON.parse(text).isComment)!.id;
+                            for (const { data } of selectCheckpointRows.all(chatSeq, newest) as { data: string }[]) {
+                                const message = readMessage(data);
+                                // A job may already own a row whose begin comes later in this group.
+                                if (guard && guard.holder(characterId, chatId, message.chatId!) !== null) continue;
+                                const cleaned = withoutCandidateCheckpoints(message);
+                                if (data === JSON.stringify(cleaned)) continue;
+                                setMessageData.run(
+                                    withCandidateRevision(serialize(cleaned).text, data),
+                                    chatSeq,
+                                    message.chatId!,
+                                );
+                                touched.add(message.chatId!);
+                            }
+                        }
                         applied += 1;
                     }
                     break;
@@ -1968,6 +2250,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         }
                         break;
                     }
+                    if (patchBase !== null && !rowsBefore.has(id)) {
+                        rowsBefore.set(id, existing.data);
+                    }
                     targets.push("applied");
                     if (op.op !== "patchMessage" && op.generation) {
                         const outcome = admitGeneration(chatSeq, id, existing!, op.generation);
@@ -1975,6 +2260,14 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         if (outcome !== "applied") {
                             break;
                         }
+                        if (
+                            op.generation.final &&
+                            attempt &&
+                            attempt.token === jobToken &&
+                            attempt.messageId === id &&
+                            attempt.generationId === op.generation.id
+                        )
+                            finishedAttempt = true;
                     } else {
                         closeFence(chatSeq, id, existing!);
                     }
@@ -2010,13 +2303,14 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                             message[key] = op.set[key];
                         }
                         rewrites = message.role !== role || message.data !== data;
-                        text = serialize(normalizeMessage(message)).text;
+                        text = serialize(normalizeMessage(message, true)).text;
                     } else {
                         const message = JSON.parse(existing!.data) as Record<string, unknown>;
                         rewrites = message.data !== op.text;
                         message.data = op.text;
                         text = serialize(message).text;
                     }
+                    if (op.op !== "setText") text = withCandidateRevision(text, existing!.data);
                     setMessageData.run(text, chatSeq, id);
                     if (text !== existing!.data) {
                         touched.add(id);
@@ -2077,6 +2371,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         translations.push("ignored");
                         break;
                     }
+                    if (patchBase !== null && !rowsBefore.has(op.id)) {
+                        rowsBefore.set(op.id, existing.data);
+                    }
                     targets.push("applied");
                     const message = JSON.parse(existing!.data) as Record<string, unknown>;
                     if (
@@ -2108,6 +2405,42 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     break;
                 }
             }
+        }
+        if (finishedAttempt && attempt) {
+            if (
+                control?.action === "rollback" &&
+                control.generationId === attempt.generationId &&
+                control.messageId === attempt.messageId &&
+                row &&
+                !deleted
+            ) {
+                if (patchBase && summaryBefore === undefined)
+                    summaryBefore = freshSummaryText(row.seq, row.revision, { meta: row.meta });
+                const current = JSON.parse(row.meta) as Record<string, unknown>;
+                const variables = { ...mapOf(current.scriptstate) };
+                for (const [key, entry] of attempt.entries) {
+                    if (entry.last === "foreign") continue;
+                    const value = entry.foreign ? entry.foreign.value : entry.before;
+                    if (value === undefined) delete variables[key];
+                    else
+                        Object.defineProperty(variables, key, {
+                            value,
+                            enumerable: true,
+                            configurable: true,
+                            writable: true,
+                        });
+                }
+                if (attempt.entries.size > 0) current.scriptstate = variables;
+                const meta = serialize(normalizeChatMeta(current, chatId)).text;
+                if (meta !== row.meta) {
+                    summaryAfter = summaryText(current);
+                    writeChatMeta({ kind: "update", seq: row.seq, revision: row.revision, meta }, summaryAfter);
+                    row = { ...row, meta };
+                    metaChanged = true;
+                    applied += 1;
+                }
+            }
+            (stagedAttempts ?? attempts).delete(attemptKey(characterId, chatId));
         }
         let revision: string | null = null;
         let next = 0;
@@ -2174,7 +2507,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         change.count,
                         meta,
                         removedIds,
+                        touched,
                         touched.size > 0 ? change.rows : null,
+                        rowsBefore,
+                        insertedHere,
                     );
                 } else {
                     // Without a change to build, the rows are read only while a form of the feed's change still fits.
@@ -2184,7 +2520,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         count,
                         meta,
                         removedIds,
+                        touched,
                         touched.size > 0 ? touchedRows(row!.seq, touched) : null,
+                        rowsBefore,
+                        insertedHere,
                     );
                 }
             }
@@ -2252,10 +2591,66 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return !!guard && messageIds.some((id) => guard.holder(characterId, chatId, id) !== null);
         },
 
+        /** Stage provenance alongside SQLite, including every later callback in the transaction. */
+        beginTransaction() {
+            for (const attempt of attempts.values()) liveAttempt(attempt.characterId, attempt.chatId);
+            stagedAttempts = structuredClone(attempts);
+        },
+        commitTransaction() {
+            if (stagedAttempts) attempts = stagedAttempts;
+            stagedAttempts = null;
+        },
+        rollbackTransaction() {
+            stagedAttempts = null;
+        },
+        dropRerollAttempts(token?: string) {
+            const map = stagedAttempts ?? attempts;
+            for (const [key, attempt] of map) if (token === undefined || attempt.token === token) map.delete(key);
+        },
+
         /** The chat's revision token, or null when it does not exist (no metadata or messages read). */
         chatRevision(characterId: string, id: string): string | null {
             const row = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq" | "revision"> | undefined;
             return row ? tokens.token(row.seq, row.revision) : null;
+        },
+
+        /**
+         * The named rows in position order, with their immediate predecessors and named metadata
+         * fields as stored. A different revision (including incarnation) or deletion answers moved;
+         * no projection is overlaid, so the client's patch installer can keep its sealed projection.
+         */
+        readRows(request: ResourceReadEntries["chatRows"][number]): ChatRowsReadResult {
+            const { characterId, id, revision, messageIds, meta } = request;
+            const current = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq" | "revision"> | undefined;
+            const token = current ? tokens.token(current.seq, current.revision) : null;
+            if (!current || token !== revision) {
+                return { characterId, id, revision: token, moved: true };
+            }
+            const rows = Array.from(touchedRows(current.seq, new Set(messageIds)), ({ id, after, data }) => ({
+                id,
+                after,
+                message: JSON.parse(data) as Record<string, unknown>,
+            }));
+            if (meta.length === 0) return { characterId, id, revision, rows };
+            const stored = JSON.parse((selectChat.get(characterId, id) as ChatRow).meta) as Record<string, unknown>;
+            const metaFields: ChatMetaFields = {
+                set: Object.fromEntries(
+                    meta.filter((name) => Object.hasOwn(stored, name)).map((name) => [name, stored[name]]),
+                ),
+                remove: meta.filter((name) => !Object.hasOwn(stored, name)),
+            };
+            return { characterId, id, revision, rows, metaFields };
+        },
+
+        /**
+         * Named rows' stored UTF-8 bytes, plus conservative whole metadata bytes when fields are named, before parsing.
+         */
+        rowsBytes({ characterId, id, revision, messageIds, meta }: ResourceReadEntries["chatRows"][number]): number {
+            const row = selectChatBytes.get(characterId, id) as
+                { seq: number; revision: number; bytes: number } | undefined;
+            if (!row || tokens.token(row.seq, row.revision) !== revision) return 0;
+            const messages = sumNamedMessageBytes.get(row.seq, JSON.stringify(messageIds)) as { bytes: number };
+            return messages.bytes + (meta.length > 0 ? row.bytes : 0);
         },
 
         /** How many of the chat's messages have the user role, or null when it does not exist (no message row read). */
@@ -2458,6 +2853,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             priorConflicts: boolean,
             jobToken?: string,
             changes = false,
+            attemptWrite?: RerollAttemptWrite,
         ) {
             const conflicts: (ChatConflict | ChatOrderConflict)[] = [];
             const results: ChatGroupResult[] = [];
@@ -2473,7 +2869,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             for (const [index, group] of groups.entries()) {
                 applyingOp = -1;
                 try {
-                    const outcome = applyGroup(group, changedOrders, jobToken, changes);
+                    const outcome = applyGroup(group, changedOrders, jobToken, changes, attemptWrite);
                     results.push(outcome.result);
                     written?.push(outcome.change);
                     if (outcome.duplicate) {
@@ -2591,7 +2987,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     list = [];
                     messagesBySeq.set(row.chatSeq, list);
                 }
-                list.push(JSON.parse(row.data));
+                list.push(readMessage(row.data));
             }
             const chats = (
                 selectAllChats.all() as {
@@ -2655,7 +3051,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 return null;
             }
             const messages = (selectChatMessages.all(row.seq) as { data: string }[]).map((entry) =>
-                JSON.parse(entry.data),
+                readMessage(entry.data),
             );
             return chatRecord(characterId, { ...row, id }, messages);
         },
@@ -2670,7 +3066,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 selectCharacterChats.all(characterId) as { seq: number; id: string; revision: number; meta: string }[]
             ).map((row) => {
                 const messages = (selectChatMessages.all(row.seq) as { data: string }[]).map((entry) =>
-                    JSON.parse(entry.data),
+                    readMessage(entry.data),
                 );
                 return chatRecord(characterId, row, messages);
             });

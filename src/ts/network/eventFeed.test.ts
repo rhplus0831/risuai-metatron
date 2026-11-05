@@ -1,3 +1,4 @@
+import { get } from "svelte/store";
 import { revisionDigest, type ResourceRevisionListing } from "../../../shared/resources.ts";
 import { ResourceEpochMismatchError } from "../storage/resourceClient";
 import { FakeSocket } from "./tests/eventSocket";
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => {
         epoch: { current: "E1" },
         tokens: { next: 0 },
         listRevisions: vi.fn(),
+        listChanges: vi.fn(),
         epochMismatch: vi.fn(),
         noteRemoteChanges: vi.fn(),
         reconcileRemote: vi.fn(),
@@ -36,6 +38,7 @@ vi.mock("../storage/resourceClient", async () =>
         epochMismatch: mocks.epochMismatch,
         getResourceEpoch: () => mocks.epoch.current,
         listRevisions: mocks.listRevisions,
+        listChanges: mocks.listChanges,
     }),
 );
 vi.mock("../storage/serverAuth", () => ({
@@ -69,6 +72,7 @@ beforeEach(async () => {
     mocks.epoch.current = "E1";
     mocks.tokens.next = 0;
     mocks.listRevisions.mockReset().mockResolvedValue(listing);
+    mocks.listChanges.mockReset();
     vi.stubGlobal("WebSocket", FakeSocket);
     vi.stubGlobal("location", { protocol: "https:", host: "risu.test" });
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -116,11 +120,90 @@ describe("the live-update socket client", () => {
         expect(feed.liveFeedCurrent()).toBe(true);
     });
 
+    it("registers after every same-epoch hello and preference change and replaces the connected-client snapshot", async () => {
+        const { acceptHandoffs, clientName, connectedClients } = await import("./handoff");
+        const { generationClientId } = await import("./generationJobs");
+        acceptHandoffs.set(false);
+        clientName.set("Kitchen");
+        const ws = await started();
+        ws.open();
+        clientName.set("Desk");
+        expect(ws.sent).toEqual([]);
+        const worker = { clientId: "worker", name: "Workstation", worker: true };
+        ws.frame({ type: "hello", epoch: "E1", clients: [worker] });
+        expect(get(connectedClients)).toEqual([worker]);
+        const registration = { type: "register", clientId: generationClientId(), name: "Desk", worker: false };
+        expect(ws.sent.map((text) => JSON.parse(text))).toEqual([registration]);
+        ws.frame({ type: "hello", epoch: "E1", clients: [] });
+        expect(get(connectedClients)).toEqual([]);
+        expect(ws.sent.map((text) => JSON.parse(text))).toEqual([registration, registration]);
+        clientName.set("Office");
+        acceptHandoffs.set(true);
+        expect(ws.sent.slice(2).map((text) => JSON.parse(text))).toEqual([
+            { ...registration, name: "Office" },
+            { ...registration, name: "Office", worker: true },
+        ]);
+        ws.frame({ type: "clients", clients: [worker] });
+        expect(get(connectedClients)).toEqual([worker]);
+        ws.frame({ type: "clients", clients: [] });
+        expect(get(connectedClients)).toEqual([]);
+        ws.close();
+        clientName.set("Reconnected");
+        expect(ws.sent).toHaveLength(4);
+        await vi.advanceTimersByTimeAsync(1_000);
+        const next = FakeSocket.instances.at(-1)!;
+        expect(next).not.toBe(ws);
+        next.open();
+        expect(next.sent).toEqual([]);
+        next.frame({ type: "hello", epoch: "E1", clients: [worker] });
+        expect(next.sent.map((text) => JSON.parse(text))).toEqual([
+            { ...registration, name: "Reconnected", worker: true },
+        ]);
+        next.frame({ type: "hello", epoch: "restored", clients: [] });
+        expect(next.sent).toHaveLength(1);
+        expect(mocks.epochMismatch).toHaveBeenCalledWith("restored");
+        feed.stopEventFeed();
+        acceptHandoffs.set(false);
+    });
+
+    it("replaces handoff offers from hello, updates open and closed offers, and ignores unknown frames", async () => {
+        const { acceptHandoffs, handoffOffers } = await import("./handoff");
+        acceptHandoffs.set(false);
+        const offer = {
+            epoch: "E1",
+            jobId: "job-a",
+            characterId: "c",
+            chatId: "k",
+            state: "open",
+            reason: "preferred",
+        } as const;
+        const ws = await started();
+        ws.frame({ type: "hello", epoch: "E1", handoffs: [offer] });
+        await vi.advanceTimersByTimeAsync(0);
+        expect([...get(handoffOffers).keys()]).toEqual(["job-a"]);
+        ws.frame({ type: "handoff", ...offer, jobId: "job-b" });
+        expect([...get(handoffOffers).keys()]).toEqual(["job-a", "job-b"]);
+        ws.frame({ type: "handoff", ...offer, state: "closed" });
+        expect([...get(handoffOffers).keys()]).toEqual(["job-b"]);
+        const before = get(handoffOffers);
+        ws.frame({ ...offer, type: "future-frame", changes: change, handoffs: [], state: "closed", epoch: "E2" });
+        expect(get(handoffOffers)).toEqual(before);
+        expect(mocks.noteRemoteChanges).not.toHaveBeenCalled();
+        expect(mocks.epochMismatch).not.toHaveBeenCalled();
+        expect(ws.closed).toBe(false);
+        ws.frame({ type: "hello", epoch: "E1", handoffs: [offer] });
+        expect([...get(handoffOffers).keys()]).toEqual(["job-a"]);
+        ws.frame({ type: "hello", epoch: "E1" });
+        expect(get(handoffOffers).size).toBe(0);
+        await vi.dynamicImportSettled();
+    });
+
     it("connects once to the feed path with a signed JWT, reconciles on `hello`, and passes changes of the loaded epoch", async () => {
         const ws = await started();
         feed.startEventFeed();
         await vi.advanceTimersByTimeAsync(0);
         expect(FakeSocket.instances).toHaveLength(1);
+        expect(new URL(ws.url).searchParams.get("proto")).toBe("1");
         expect(ws.url).toMatch(/^wss:\/\/risu\.test\/api\/events\/ws\?risu-auth=jwt-1-/);
         ws.frame({ type: "hello", epoch: "E1" });
         await vi.advanceTimersByTimeAsync(0);
@@ -952,4 +1035,191 @@ describe("advertised revision reconciliation", () => {
             expect(mocks.listRevisions).toHaveBeenCalledTimes(reads + 1);
         },
     );
+});
+
+describe("bounded reconnect replay", () => {
+    const empty = { resources: [], chats: [], chatOrders: [] };
+    const initial: ResourceRevisionListing = {
+        epoch: "E1",
+        ...empty,
+        resources: [
+            { kind: "ui", id: "main", revision: "E1:1:1" },
+            { kind: "characters", id: "c", revision: "E1:2:1" },
+        ],
+        chats: [{ characterId: "c", id: "k", revision: "E1:3:1" }],
+        chatOrders: [{ characterId: "c", revision: "E1:4:1" }],
+    };
+    const away: ResourceRevisionListing = {
+        ...initial,
+        resources: [{ kind: "ui", id: "main", revision: "E1:1:2" }],
+        chats: [],
+        chatOrders: [],
+    };
+    const replay = {
+        resources: [...away.resources, { kind: "characters", id: "c", revision: null }],
+        chats: [{ characterId: "c", id: "k", revision: null }],
+        chatOrders: [{ characterId: "c", revision: null }],
+    };
+    const hello = (ws: FakeSocket, rows: ResourceRevisionListing, cursor?: number) =>
+        ws.frame({ type: "hello", epoch: "E1", digest: revisionDigest(rows), cursor, memoryTasks: [], streaming: [] });
+    async function reconnect(ws: FakeSocket) {
+        ws.close();
+        await vi.advanceTimersByTimeAsync(1000);
+        const next = FakeSocket.instances.at(-1)!;
+        expect(next).not.toBe(ws);
+        next.open();
+        return next;
+    }
+    async function seed(cursor?: number) {
+        mocks.listRevisions.mockResolvedValue(initial);
+        const ws = await started();
+        ws.open();
+        hello(ws, initial, cursor);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listRevisions).toHaveBeenCalledTimes(1);
+        expect(mocks.listChanges).not.toHaveBeenCalled();
+        mocks.listRevisions.mockClear();
+        mocks.reconcileRemote.mockClear();
+        return ws;
+    }
+    beforeEach(() => vi.spyOn(Math, "random").mockReturnValue(1 - Number.EPSILON));
+
+    it("reconciles a frozen hello-time replay while later frames survive in the advertised map and advance the next cursor", async () => {
+        let ws = await seed(10);
+        // A connected frame advances the replay start even though hello last advertised 10.
+        ws.frame({
+            type: "change",
+            epoch: "E1",
+            cursor: 11,
+            changes: { ...empty, resources: [{ kind: "ui", id: "main", revision: "E1:1:2" }] },
+        });
+        ws = await reconnect(ws);
+        let answer!: (value: unknown) => void;
+        mocks.listChanges.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+        hello(ws, away, 14);
+        expect(mocks.listChanges).toHaveBeenCalledExactlyOnceWith({
+            since: 11,
+            until: 14,
+            epoch: "E1",
+            signal: expect.any(AbortSignal),
+        });
+        const later = {
+            ...empty,
+            resources: [{ kind: "ui", id: "main", revision: "E1:1:3" }],
+            chats: [{ characterId: "d", id: "j", revision: "E1:9:1" }],
+        };
+        ws.frame({ type: "change", epoch: "E1", cursor: 16, changes: later });
+        expect(mocks.noteRemoteChanges).toHaveBeenLastCalledWith(later);
+        expect(mocks.reconcileRemote).not.toHaveBeenCalled();
+        answer({ epoch: "E1", cursor: 14, changes: replay });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.reconcileRemote).toHaveBeenCalledExactlyOnceWith(away);
+        expect(mocks.listRevisions).not.toHaveBeenCalled();
+        const current = { epoch: "E1", ...later };
+        ws = await reconnect(ws);
+        hello(ws, current, 16);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.reconcileRemote).toHaveBeenLastCalledWith(current);
+        expect(mocks.listRevisions).not.toHaveBeenCalled();
+        expect(mocks.listChanges).toHaveBeenCalledTimes(1); // Digest match reads nothing.
+        ws = await reconnect(ws);
+        const newest = { ...current, resources: [{ kind: "ui", id: "main", revision: "E1:1:4" }] };
+        mocks.listChanges.mockResolvedValueOnce({
+            epoch: "E1",
+            cursor: 17,
+            changes: { ...empty, resources: newest.resources },
+        });
+        hello(ws, newest, 17);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listChanges).toHaveBeenLastCalledWith({
+            since: 16,
+            until: 17,
+            epoch: "E1",
+            signal: expect.any(AbortSignal),
+        });
+        expect(mocks.reconcileRemote).toHaveBeenLastCalledWith(newest);
+        expect(mocks.listRevisions).not.toHaveBeenCalled();
+    });
+
+    it("reads the whole listing once when replay expires or cannot explain the digest", async () => {
+        let ws = await seed(10);
+        for (const reason of ["expired", "digest mismatch"]) {
+            ws = await reconnect(ws);
+            const rows = reason === "expired" ? away : initial;
+            mocks.listChanges.mockResolvedValueOnce(
+                reason === "expired"
+                    ? { epoch: "E1", cursor: 20, expired: true }
+                    : { epoch: "E1", cursor: 21, changes: empty },
+            );
+            mocks.listRevisions.mockResolvedValueOnce(rows);
+            hello(ws, rows, reason === "expired" ? 20 : 21);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(mocks.listChanges).toHaveBeenCalledTimes(1);
+            expect(mocks.listRevisions).toHaveBeenCalledTimes(1);
+            expect(mocks.reconcileRemote).toHaveBeenLastCalledWith(rows);
+            mocks.listChanges.mockClear();
+            mocks.listRevisions.mockClear();
+        }
+    });
+
+    it("reads the listing on first connection and when either the held cursor or an older server's hello cursor is absent", async () => {
+        let ws = await seed();
+        ws = await reconnect(ws);
+        mocks.listRevisions.mockResolvedValueOnce(away);
+        hello(ws, away, 20); // No held cursor from the older connection.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listChanges).not.toHaveBeenCalled();
+        expect(mocks.listRevisions).toHaveBeenCalledTimes(1);
+        ws = await reconnect(ws);
+        mocks.listRevisions.mockResolvedValueOnce(initial);
+        hello(ws, initial); // A cursor is held now, but this server omits it.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listChanges).not.toHaveBeenCalled();
+        expect(mocks.listRevisions).toHaveBeenCalledTimes(2);
+        expect(mocks.reconcileRemote).toHaveBeenLastCalledWith(initial);
+    });
+
+    it("ignores unknown live frames without changing refs, locks, memory tasks or the resume cursor", async () => {
+        const tasks = await import("../process/memoryTasks.svelte");
+        let ws = await seed(10);
+        ws.frame({
+            type: "memoryTask",
+            epoch: "E1",
+            characterId: "c",
+            chatId: "k",
+            status: { taskId: "t", state: "running", done: 0, total: 1 },
+        });
+        const locks = mocks.replaceFeedLocks.mock.calls.length;
+        expect(() =>
+            ws.frame({
+                type: "future-frame",
+                epoch: "E2",
+                cursor: 999,
+                changes: replay,
+                streaming: [],
+                memoryTasks: [],
+            }),
+        ).not.toThrow();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.noteRemoteChanges).not.toHaveBeenCalled();
+        expect(mocks.noteRemoteStreaming).not.toHaveBeenCalled();
+        expect(mocks.replaceFeedLocks).toHaveBeenCalledTimes(locks);
+        expect(mocks.reconcileRemote).not.toHaveBeenCalled();
+        expect(mocks.epochMismatch).not.toHaveBeenCalled();
+        expect(tasks.memoryTaskFenced({ chaId: "c", chatId: "k" })).toBe(true);
+        ws = await reconnect(ws);
+        mocks.listChanges.mockResolvedValueOnce({ epoch: "E1", cursor: 14, changes: replay });
+        hello(ws, away, 14);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listChanges).toHaveBeenCalledExactlyOnceWith({
+            since: 10,
+            until: 14,
+            epoch: "E1",
+            signal: expect.any(AbortSignal),
+        });
+        expect(mocks.listRevisions).not.toHaveBeenCalled();
+        expect(mocks.reconcileRemote).toHaveBeenLastCalledWith(away);
+        ws.frame({ type: "change", epoch: "E1", cursor: 15, changes: change });
+        expect(mocks.noteRemoteChanges).toHaveBeenCalledExactlyOnceWith(change);
+    });
 });

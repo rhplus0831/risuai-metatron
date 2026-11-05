@@ -283,6 +283,44 @@ output already shows 3.3 ms, and the rise was not broken down further. The recom
 kept for stale or intervening writes. Unchanged: the feed patch still carries the whole changed message to every
 connected feed socket.
 
+**Feed row diffs, before at `de72fc1eb` and after the `rowDelta` body** ([checkpoint-probe.mjs](probes/checkpoint-probe.mjs),
+the `de72fc1eb` and `de72fc1eb+rowDelta` lines of [checkpoint-probe.output.txt](probes/checkpoint-probe.output.txt) and
+[sync-traffic-measure.output.txt](probes/sync-traffic-measure.output.txt)): the probe now reports the feed body's form
+and bytes, ends each fixture with a same-text `generationInfo` write, and counts the whole-chat reads of a model loaded
+observer. The SD01 fixture (seven unrelated 32 KiB texts, no shared prefix): 32,989 bytes of `patch` per checkpoint
+before, 32,927 bytes of `rowDelta` after; the final write 33,045 bytes of `patch` before, 217 bytes of `rowDelta` after;
+no observer read either way. An appending fixture (1,536 characters per checkpoint, 45 checkpoints, past 64 KiB):
+before, the patch grew by 1,536 bytes per checkpoint, the last three checkpoints and the final write carried no body,
+and the observer read the chat whole 4 times; after, the first five checkpoints stay `patch` (under 8 KiB), every later
+one is a `rowDelta` of about 1,700 bytes, the final write 218 bytes, and the observer reads nothing. The mixed fixture
+of `sync-traffic-measure.mjs` (56 entries): body bytes 1,394,061 before, 91,266 after; over-cap entries 8 before, 4
+after (one large paste, three reroll-carrier `candidates` writes), the before line of the by-id row read.
+
+**Over-cap row reads, after the `rows` manifest** (the `b234d14ff+rows` line of
+[sync-traffic-measure.output.txt](probes/sync-traffic-measure.output.txt), same mixed fixture, whose bodies and body
+bytes are unchanged): all 4 over-cap entries now carry a `rows` manifest, and a loaded observer at the base reads them
+through `chatRows` instead of the whole chat: 394,652 bytes in place of 967,029 (2,897 in place of 6,806 gzipped; this
+fixture's repeated text compresses far better than real chats). The large paste reads 98,639 bytes instead of 168,009;
+each reroll-carrier write 98,671 instead of 266,340, the carrier's row and its `candidates` and no other row.
+
+**Owner streamed rows, before at `db9ca1de0` and after the `rows=streamed` form** (the `db9ca1de0` and
+`db9ca1de0+streamed` lines of [checkpoint-probe.output.txt](probes/checkpoint-probe.output.txt) and
+[job-channel-probe.output.txt](probes/job-channel-probe.output.txt)): the probe's owner socket now attaches with
+`rows=streamed&proto=1`, each text checkpoint carries the raw cover and follows its chunk. Owner `chatPatch` bytes per
+checkpoint: the SD01 fixture 33,265 before, 498 after; the appending fixture 2,091 growing by 1,536 a checkpoint to
+69,675 before, 502 at every checkpoint after. The final `generationInfo` write still goes whole (33,322 and 69,676
+bytes either way: it changes a field other than `data`); feed bodies are unchanged. The callback barrier probe is
+unchanged: 503 frames, 2 `chatPatch` frames of 466 bytes, no whole chat.
+
+**After the Incremental Chat Transport plan** (last code commit `f906c864e`): the "Unchanged" sentence of the After at
+`ad0f8ef2b` is closed for both sockets. Past 8 KiB, a checkpoint reaches every other tab as the text it appended (a
+`rowDelta`) and the owner as a `streamed` row of about 500 bytes, whatever the reply's length. Left: the final
+`generationInfo` write still reaches the owner whole; a socket without `rows=streamed`, and a tab older than the
+change (until it reloads), still get whole rows. On that commit (headless Chrome, 2026-11-05) the browser checks
+passed: `checkLiveUpdates.mjs` 49/49, `checkServerSend.mjs` 19/19, `checkJobProtocol.mjs` 5/5 cases,
+`checkTwoClientSmoke.mjs` 50/50 against the Docker image, and the e2e specs `lazyChats`, `perChatSends` and
+`serverTransform` 9/9.
+
 ### TJ03 — A transform miss loads the whole scope; coarse keys invalidate every row
 
 **Measured and confirmed. P2.**
@@ -528,6 +566,16 @@ Node 24.21.0): **538,972 bytes** before for every `Accept-Encoding`; after, **81
 `gzip, deflate, br, zstd`), **106,189 bytes** with gzip (`gzip, deflate, br`), and 538,972 bytes for identity. The
 change cursor and a listing digest stay open (Boot bytes plan).
 
+**After the change log at `ca5a5cb8e`** (Incremental Chat Transport plan D5; `util/playwright/measureBoot.mjs`
+resume-away, its audit fixture, a change made while the tab was hidden, three runs in headless Chrome): before, at the
+slice's base `9bf28c429`, the reconnect read the whole listing, **88,727 bytes** on the wire (574,639 decoded), and
+took 425 ms; after, it reads `GET /api/resources/revisions?since=&until=&epoch=`, **536 bytes** on the wire (236
+decoded), and takes 358 ms. An unchanged resume still reads nothing (the Boot Bytes plan's digest). The listing stays
+the fallback when the log (the newest 20,000 rows) no longer covers the tab's cursor, the replay's digest still
+differs, or the tab holds no cursor (a fresh boot); an epoch mismatch halts as before. Both open items are closed.
+`checkLiveUpdates.mjs` (49/49, its restart and reconnect cases) and `checkTwoClientSmoke.mjs` (50/50 against the
+Docker image, its restart case) passed on the plan's last code commit (`f906c864e`).
+
 ### ST04 — Feed fallbacks expand a small change into a collection or a whole chat
 
 **Confirmed; amplification from measured payloads. P2.**
@@ -563,6 +611,16 @@ whole read without queuing a write", over the same 100 KiB of memory data). Open
 built, so the over-cap change of a loaded chat still reads the chat whole, a reply over 64 KiB streaming into a chat
 another tab has open ([live updates](../../structure/live-updates.md#limitations)). ST01's lore edit is
 not part of this change.
+
+**After the row diffs and the row read** (Incremental Chat Transport plan D2 at `917273384`, D6 at `2272abf6e`; the
+numbers are SD01's and `sync-traffic-measure.mjs`'s): the open item above is closed. A reply streaming past 64 KiB into
+a chat another tab has open reaches that tab as a `rowDelta` of about 1,700 bytes per checkpoint and 218 bytes for the
+final write, and the loaded observer reads the chat whole 0 times where it read it 4 times (SD01's appending fixture).
+An entry that still passes the cap carries a `rows` manifest, and a loaded observer at its base reads the named rows
+and metadata fields through `chatRows`: on the mixed fixture, the 4 over-cap entries (one large paste, three
+reroll-carrier `candidates` writes) cost 394,652 bytes of row reads in place of 967,029 bytes of whole-chat reads. A
+whole read remains for a manifest past 64 KiB, a second over-cap write before the row read, and a `moved` answer
+([live updates](../../structure/live-updates.md#limitations)).
 
 ### ST05 — A completed row still pays a transform round trip on every remount
 

@@ -89,7 +89,8 @@ import {
 
 /**
  * The client side of the job channel (`shared/jobs.ts`): it shows a job's notices, asks its
- * questions, and runs its plugin callbacks, answering through the job's socket.
+ * questions, and runs its plugin callbacks, answering through the job's socket. A viewer or pending
+ * takeover refuses callbacks as protocol failures; notices retain the server's audience routing.
  *
  * - Events are taken in socket order without waiting for a callback to finish, so an aux request's
  *   child callback can run while its parent waits.
@@ -123,6 +124,7 @@ import {
 
 /** Where the dispatcher sends its answers for one job (the job's current follow). */
 export type ChannelTransport = {
+    viewing?(): boolean;
     send(message: ChannelAnswer | ChannelChunk | ChatResyncRequest | ReplyResyncRequest): boolean;
 };
 
@@ -291,7 +293,15 @@ function showNotice(jobId: string, notice: GenerationNotice): boolean {
             alertMd(notice.payload.message);
             return true;
         case "alertToast":
-            alertToast(notice.payload.message, (status) => jobStatuses.set(jobId, status));
+            alertToast(
+                notice.payload.code &&
+                    ["rerollCandidateDropped", "rerollCandidateTooLarge", "scriptstateCheckpointSkipped"].includes(
+                        notice.payload.code,
+                    )
+                    ? language[notice.payload.code]
+                    : notice.payload.message,
+                (status) => jobStatuses.set(jobId, status),
+            );
             return false;
         case "alertWait":
             alertWait(notice.payload.message, (status) => jobStatuses.set(jobId, status));
@@ -1300,6 +1310,18 @@ function holdChild(jobId: string, event: GenerationCallbackEvent, parent: Outsta
  * outcomes. Duplicate deliveries use the cached answer; an unknown replay is refused as protocol.
  */
 function handleCallback(jobId: string, event: GenerationCallbackEvent) {
+    if (transports.get(jobId)?.viewing?.()) {
+        console.warn("[Channel] Refused a callback on a viewer follow", jobId, event.id);
+        remember(event.id, { jobId, answer: null, callback: true });
+        answer(jobId, {
+            type: "answer",
+            id: event.id,
+            outcome: "failed",
+            failure: "protocol",
+            error: "A viewer cannot run callbacks",
+        });
+        return;
+    }
     const known = requests.get(event.id);
     if (known) {
         // A duplicate (a reattach): never run twice; the answer goes out when it exists.

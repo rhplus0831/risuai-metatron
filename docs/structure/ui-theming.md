@@ -36,17 +36,17 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   Its `isolate` keeps local content below app popups (see [portals](#dialogs-popovers-and-portals)).
 - `src/lib/ChatScreens/DefaultChatScreen.svelte`: the composers, send/reroll ([chat pipeline](chat-pipeline.md)), and
   menus; chooses home, playground, `src/lib/ChatScreens/ClosedChatScreen.svelte` (`selection.chatOpen` false), or the
-  chat. It owns the transcript's row window (`loadPages`, `onTrim`) and binds `Chats.revealing` and `Chats.holding`
-  (`revealing`, `rowsHeld`). Screenshot: `screenShot`. Message jumps: `pendingBookmark` (`ScrollToMessageStore`), the
-  search claim, and `scrollToMessageId`.
+  chat. It owns the row window (`loadPages`, `onTrim`) and binds `Chats.revealing`/`Chats.holding` (`revealing`,
+  `rowsHeld`). Screenshot: `screenShot` over `src/lib/ChatScreens/screenshotExport.ts`. Message jumps: `pendingBookmark`
+  (`ScrollToMessageStore`), the search claim, `scrollToMessageId`.
 - `src/lib/ChatScreens/messageJump.ts`: the jump's decisions (`runMessageJump`, `messageJumpWindow`), testable without
   the screen.
 - The chat column: the scroller publishes `settings.ui.chatScreenWidth` (Display, default 900) as `--chat-screen-width`;
   the transcript (`Chats`), the first greeting (`.default-chat-screen > .risu-chat`), the composer, and the rows around
-  them carry `chat-screen-content-width` (`src/styles.css`). A new row in the scroller gets the class too, and a popup
-  tied to the composer (the composer menu) is positioned inside the composer row so it follows the column.
-- The `metatron` theme adds `metatron-chat-theme` to the scroller; `src/styles.css` styles each message (`.risu-chat`)
-  as a card under it. Any other non-`waifu` theme keeps the classic layout.
+  them carry `chat-screen-content-width` (`src/styles.css`). New scroller rows get the class too; the composer menu sits
+  in the composer row to follow the column.
+- The `metatron` theme adds `metatron-chat-theme` to the scroller; `src/styles.css` styles each `.risu-chat` as a card
+  under it; other non-`waifu` themes keep the classic layout.
 
 ### Composer
 
@@ -85,7 +85,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   branching with `createFolderOnBranch`). Props `messageId`, `streamingOverride`, `pendingReveal`, `isLastMemory`;
   `isEditing` (the trim guard), `whenRendered`, `chatBodyRevision`, `updateRow`, the memory limit line
   (`memoryBoundary`).
-- `src/lib/ChatScreens/ChatBody.svelte`: the body (`markParsing`, `{@html}`, `lastParsed`, `parseRun`, `whenRendered`).
+- `src/lib/ChatScreens/ChatBody.svelte`: the body (`markParsing`, `{@html}`, `lastParsed`, `parseRun`, `whenRendered`);
+  its contract holds the run's abort (`parseController`), the failure retries, and the pending body
+  (`prepareShownBody`).
 - `src/lib/ChatScreens/TransitionImage.svelte`: an image that drops an older `src` resolving late.
 
 ### Message editors
@@ -266,13 +268,15 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   `requestAnimationFrame` where a case needs the frames.
 - `ContextMeter.svelte.test.ts` stubs the chip's rectangle (happy-dom has no layout) and the count route: each count is
   one request the test answers when it chooses, so fake timers and deferred answers drive the debounce and the races.
+- `ChatBody.svelte.test.ts` mocks `ParseMarkdown` as deferred parses (`hoisted.parses`) the test settles by text.
+- `screenshotExport.test.ts` fakes canvases (happy-dom has no 2D context), counting sizes, draws, and releases.
 - `src/lib/UI/tests/`: `reactiveProps.svelte.ts` changes a mounted component's props from a `.test.ts` file;
   `LazyCharImageFixture.svelte` awaits the image as real consumers do. `ChatStyleProviderFixture.svelte`
   (`src/lib/ChatScreens/tests/`) provides the `ChatStyleRegistry` the chat screen would.
 - Browser scripts: `util/playwright/measureChats.mjs` checks production row counts, memory, and streaming cost;
   `util/playwright/checkSidebarChatStatus.mjs` covers the status badges.
-- Not tested: the search-to-transcript claim and scroll wiring, sidebar composition, and mobile interactions need a
-  browser check.
+- Not tested: the search-to-transcript claim and scroll wiring, sidebar composition, mobile interactions, and a failed
+  screenshot's restore need a browser check.
 - Not tested automatically: lost-follow recovery. Switch away from a running chat, stop the server until reattach
   attempts fail, confirm its recovery badges, then restart the server and reopen the chat.
 
@@ -302,7 +306,7 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/Others/PopupEditor.svelte` keeps only the text across its Monaco toggle: the textarea or the Monaco model is
   recreated, so the selection moves to the end and the undo history is gone. Keeping one model across the switch is a
   larger editor-lifetime change. Observed by the
-  [cross-plan review](../audit/cross-plan-2026-10-29.md#noted-not-recommended-to-fix). Decision: text-only toggle
+  [cross-plan review](../manual-audit/cross-plan-2026-10-29.md#noted-not-recommended-to-fix). Decision: text-only toggle
   contract kept, commit `634bc14c7`.
 - Older rows do not rerender merely because the chat length changes. Length-dependent CBS updates when that row next
   renders (edit, reload, remount, etc.). Decision: `docs/research/risunest-ideas.md`.

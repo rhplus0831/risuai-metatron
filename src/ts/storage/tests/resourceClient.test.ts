@@ -105,6 +105,58 @@ describe("requests", () => {
     });
 });
 
+describe("snapshot controls", () => {
+    it("sends snapshot methods, encoded ids, and only the supplied fields", async () => {
+        server.current = {
+            fetch: vi.fn().mockImplementation(async () => Response.json({ snapshot: { id: "saved" } })),
+        };
+        const id = "copy/한 글%";
+        await client.takeSnapshot();
+        await client.takeSnapshot("Before import");
+        await client.updateSnapshot(id, { pinned: true });
+        await client.updateSnapshot(id, { label: "Renamed" });
+        await client.updateSnapshot(id, { pinned: false, label: null });
+        await client.deleteSnapshot(id);
+        expect(
+            calls.map(({ path, init }) => ({
+                path,
+                method: init.method,
+                body: init.body === undefined ? undefined : JSON.parse(init.body as string),
+            })),
+        ).toEqual([
+            { path: "/api/backups/snapshot", method: "POST", body: {} },
+            { path: "/api/backups/snapshot", method: "POST", body: { label: "Before import" } },
+            { path: "/api/backups/copy%2F%ED%95%9C%20%EA%B8%80%25", method: "PATCH", body: { pinned: true } },
+            { path: "/api/backups/copy%2F%ED%95%9C%20%EA%B8%80%25", method: "PATCH", body: { label: "Renamed" } },
+            {
+                path: "/api/backups/copy%2F%ED%95%9C%20%EA%B8%80%25",
+                method: "PATCH",
+                body: { pinned: false, label: null },
+            },
+            { path: "/api/backups/copy%2F%ED%95%9C%20%EA%B8%80%25", method: "DELETE", body: undefined },
+        ]);
+        for (const { init } of calls.slice(0, -1))
+            expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
+    });
+
+    it("preserves snapshot conflict messages as request errors with status 409", async () => {
+        const message = "Snapshot is pinned; unpin it first";
+        server.current = {
+            fetch: vi.fn().mockImplementation(async () => Response.json({ error: message }, { status: 409 })),
+        };
+        for (const request of [
+            () => client.takeSnapshot("Before import"),
+            () => client.updateSnapshot("saved", { pinned: true }),
+            () => client.deleteSnapshot("saved"),
+        ]) {
+            const error = await request().catch((error: unknown) => error);
+            expect(error).toBeInstanceOf(client.ResourceRequestError);
+            expect(error).not.toBeInstanceOf(client.ResourceConflictError);
+            expect(error).toMatchObject({ status: 409, message });
+        }
+    });
+});
+
 describe("conflicts", () => {
     it("maps a batch 409 to every listed conflict", async () => {
         client.setResourceEpoch("epoch-1");
@@ -193,6 +245,78 @@ describe("epoch replacement", () => {
 });
 
 describe("continued reads", () => {
+    it("accepts a moved row answer on its own without another request", async () => {
+        const request = { characterId: "c", id: "k", revision: "epoch-1:1:2", messageIds: ["b"], meta: [] };
+        const moved = { characterId: "c", id: "k", revision: null, moved: true };
+        server.current = {
+            fetch: vi.fn().mockResolvedValue(Response.json({ epoch: "epoch-1", items: [], chatRows: [moved] })),
+        };
+        expect(await client.readRefs([], { chatRows: [request] })).toEqual({
+            epoch: "epoch-1",
+            items: [],
+            chatRows: [moved],
+        });
+        expect(calls).toHaveLength(1);
+        expect(JSON.parse(calls[0].init.body as string)).toEqual({ refs: [], chatRows: [request], continue: true });
+    });
+
+    it("counts moved row answers as progress and merges row reads across mixed continuations", async () => {
+        const requests = ["k", "j"].map((id) => ({
+            characterId: "c",
+            id,
+            revision: "epoch-1:1:2",
+            messageIds: ["b"],
+            meta: ["scriptstate"],
+        }));
+        const moved = { characterId: "c", id: "k", revision: "epoch-1:1:3", moved: true };
+        const rows = {
+            characterId: "c",
+            id: "j",
+            revision: requests[1].revision,
+            rows: [{ id: "b", after: "a", message: { chatId: "b", role: "char", data: "B" } }],
+            metaFields: { set: { scriptstate: { keep: "same", active: "reroll" } }, remove: [] },
+        };
+        const pending = {
+            refs: [],
+            chats: [],
+            chatRows: [requests[1]],
+            chatCollections: [],
+            chatSummaryCollections: ["c"],
+        };
+        const last = { ...pending, chatRows: [] };
+        const summary = { characterId: "c", order: null, chats: [] };
+        server.current = {
+            fetch: vi
+                .fn()
+                .mockResolvedValueOnce(
+                    Response.json({ epoch: "epoch-1", items: [], chatRows: [moved], unanswered: pending }),
+                )
+                .mockResolvedValueOnce(
+                    Response.json({ epoch: "epoch-1", items: [], chatRows: [rows], unanswered: last }),
+                )
+                .mockResolvedValueOnce(
+                    Response.json({ epoch: "epoch-1", items: [], chatSummaryCollections: [summary] }),
+                ),
+        };
+        const { signal } = new AbortController();
+        expect(await client.readRefs([], { chatRows: requests, chatSummaryCollections: ["c"], signal })).toEqual({
+            epoch: "epoch-1",
+            items: [],
+            chatRows: [moved, rows],
+            chatSummaryCollections: [summary],
+        });
+        expect(calls).toHaveLength(3);
+        expect(calls.map(({ init }) => init.signal)).toEqual([signal, signal, signal]);
+        expect(JSON.parse(calls[0].init.body as string)).toEqual({
+            refs: [],
+            chatRows: requests,
+            chatSummaryCollections: ["c"],
+            continue: true,
+        });
+        expect(JSON.parse(calls[1].init.body as string)).toEqual({ ...pending, continue: true });
+        expect(JSON.parse(calls[2].init.body as string)).toEqual({ ...last, continue: true });
+    });
+
     const a = { kind: "characters", id: "a" };
     const b = { kind: "characters", id: "b" };
     const pending = (refs = [b]) => ({ refs, chats: [], chatCollections: [], chatSummaryCollections: [] });

@@ -28,6 +28,7 @@ import { applyMarkdownToNode, risuChatParser, type simpleCharacterArgument } fro
 import { getModuleRegexScripts } from "../process/modules";
 import { getNodetextToSentence, sleep } from "../util";
 import { type CapturedTransform, captureTransform, serverProcessScript } from "../parser/transformClient";
+import { markTransient } from "../parser/renderErrors";
 import localforage from "localforage";
 import sendSound from "../../etc/send.mp3";
 
@@ -110,6 +111,53 @@ export const LLMCacheStorage = localforage.createInstance({
 });
 
 let waitTrans = 0;
+
+const MAX_TRANSLATION_WORKERS = 10;
+let translationWorkers = 0;
+const translationWaiters = new Set<() => void>();
+
+function releaseTranslationSlot(): void {
+    const next = translationWaiters.values().next().value;
+    if (next) next();
+    else translationWorkers -= 1;
+}
+
+/** FIFO permits shared by all rendered DOM translations; abort removes only a waiting acquisition. */
+function acquireTranslationSlot(signal?: AbortSignal): Promise<() => void> {
+    signal?.throwIfAborted();
+    if (translationWorkers < MAX_TRANSLATION_WORKERS) {
+        translationWorkers += 1;
+        return Promise.resolve(releaseTranslationSlot);
+    }
+    return new Promise((resolve, reject) => {
+        let waiting = true;
+        const remove = () => {
+            if (!waiting) return false;
+            waiting = false;
+            translationWaiters.delete(grant);
+            signal?.removeEventListener("abort", onAbort);
+            return true;
+        };
+        const grant = () => {
+            if (remove()) resolve(releaseTranslationSlot);
+        };
+        const onAbort = () => {
+            if (remove()) reject(signal!.reason);
+        };
+        translationWaiters.add(grant);
+        signal?.addEventListener("abort", onAbort, { once: true });
+    });
+}
+
+async function translateWithSlot(text: string, reverse: boolean, signal?: AbortSignal): Promise<string> {
+    const release = await acquireTranslationSlot(signal);
+    try {
+        signal?.throwIfAborted();
+        return await translate(text, reverse);
+    } finally {
+        release();
+    }
+}
 
 /**
  * The translator preset the tab translates with: the selected chat's own, else the global selection
@@ -379,10 +427,15 @@ async function translateMain(
         `https://${arg.host}/translate_a/single?client=gtx&dt=t&sl=${settings.memoryTranslateMedia.translatorInputLanguage}&tl=${arg.to}&q=` +
         encodeURIComponent(text);
 
-    const f = await fetch(url, {
-        signal: arg.signal,
-        method: "GET",
-    });
+    let f: Response;
+    try {
+        f = await fetch(url, {
+            signal: arg.signal,
+            method: "GET",
+        });
+    } catch (error) {
+        throw markTransient(error, arg.signal);
+    }
 
     const res = await f.json();
 
@@ -438,10 +491,19 @@ export function isExpTranslator() {
  * DOM jobs must all be collected before dispatch, so traversal cannot await an unflushed batch.
  * DeepLX keeps nodes intact in sequential `■` batches with a 5,000-character target (one oversized
  * node may exceed it), flushes the final partial batch, and retries jobs individually if the reply's
- * separator count disagrees. Other DOM providers allow at most ten jobs in flight.
+ * separator count disagrees. All DOM calls share `MAX_TRANSLATION_WORKERS` slots (10), including
+ * each DeepLX batch and fallback call. Waiting for a slot is abortable; a granted worker checks the
+ * signal before taking a job or chunk. An already requested `translate` runs to its answer, warms
+ * the memory pair cache and holds its slot until it answers, even if another worker rejects first.
  * Both DOM dispatch modes share result application: combined paragraph jobs may rerun editdisplay
  * through `src/ts/parser/transformClient.ts`, then Markdown, before the final edittrans pass. The
  * LLM path goes straight to edittrans. A missing transform skips the server display-script stage.
+ * The signal also reaches each job's display-script step and is checked before serialization.
+ * Ordinary LLM calls share an in-flight request by cache key; each caller aborts its own await, and
+ * only the last departure aborts the shared controller and removes the joinable entry. Regeneration
+ * neither joins nor can be joined. Producers claim a per-key generation at regeneration or an ordinary
+ * cache miss; a newer producer fences older writes even if it fails. Cache hits claim none, and generation state
+ * is released when the key has no outstanding producers. Other LLM callers and editor writes are unchanged.
  */
 export async function translateHTML(
     html: string,
@@ -453,7 +515,9 @@ export async function translateHTML(
      * A render's previously captured transform (`ChatBody`); null skips the script stage for lack of context.
      */
     capturedTransform?: CapturedTransform | null,
+    signal?: AbortSignal,
 ): Promise<string> {
+    signal?.throwIfAborted();
     if (!html) {
         return html;
     }
@@ -479,13 +543,18 @@ export async function translateHTML(
     const llmContext = settings.memoryTranslateMedia.translatorType === "llm" ? llmTranslationContext() : null;
     let cached: string | null = null;
     if (get(anyLocalSend) && isExpTranslator()) {
+        signal?.throwIfAborted();
         cached = llmContext ? await readLLMCacheEntry(llmCacheKeyPrefix(llmContext) + html) : null;
+        signal?.throwIfAborted();
         if (cached === null) {
             return html;
         }
     }
     if (llmContext) {
-        const r = cached !== null && !regenerate ? cached : await translateLLM(html, llmContext, regenerate);
+        signal?.throwIfAborted();
+        const r =
+            cached !== null && !regenerate ? cached : await translateRenderedLLM(html, llmContext, regenerate, signal);
+        signal?.throwIfAborted();
         if (settings.memoryTranslateMedia.playMessageOnTranslateEnd) {
             const audio = new Audio(sendSound);
             audio.play().catch(() => {});
@@ -564,20 +633,23 @@ export async function translateHTML(
 
     collectNode(dom.body);
 
+    signal?.throwIfAborted();
     const results: string[] = new Array(jobs.length);
     if (needSuperChunkedTranslate()) {
         // Keep each node intact; an oversized job forms a batch of its own.
         let batch: number[] = [];
         let batchLength = 0;
         async function translateBatch() {
+            signal?.throwIfAborted();
             if (batch.length === 0) return;
             // The separator on its own line keeps each node's asset lines protected (`runTranslator`).
-            const translated = await translate(batch.map((i) => jobs[i].text).join("\n■\n"), reverse);
+            const translated = await translateWithSlot(batch.map((i) => jobs[i].text).join("\n■\n"), reverse, signal);
             const split = translated.split("■");
             if (split.length !== batch.length) {
                 // A provider can remove or add separators. Only use the individual results then.
                 for (const i of batch) {
-                    results[i] = await translate(jobs[i].text, reverse);
+                    signal?.throwIfAborted();
+                    results[i] = await translateWithSlot(jobs[i].text, reverse, signal);
                 }
             } else {
                 // `runTranslator` keeps the line breaks around each separator; drop them again.
@@ -603,19 +675,30 @@ export async function translateHTML(
         let nextJob = 0;
         async function translateJobs() {
             while (nextJob < jobs.length) {
-                const i = nextJob++;
-                const chunks: string[] = [];
-                for (const chunk of jobs[i].text.split(/\n\n+/g)) {
-                    chunks.push(await translate(chunk, reverse));
+                const release = await acquireTranslationSlot(signal);
+                try {
+                    signal?.throwIfAborted();
+                    if (nextJob >= jobs.length) return;
+                    const i = nextJob++;
+                    const chunks: string[] = [];
+                    for (const chunk of jobs[i].text.split(/\n\n+/g)) {
+                        signal?.throwIfAborted();
+                        chunks.push(await translate(chunk, reverse));
+                    }
+                    results[i] = chunks.join("\n\n");
+                } finally {
+                    release();
                 }
-                results[i] = chunks.join("\n\n");
             }
         }
-        await Promise.all(Array.from({ length: Math.min(10, jobs.length) }, () => translateJobs()));
+        await Promise.all(
+            Array.from({ length: Math.min(MAX_TRANSLATION_WORKERS, jobs.length) }, () => translateJobs()),
+        );
     }
 
     // Every provider uses the same display-script and Markdown application path.
     for (let i = 0; i < jobs.length; i++) {
+        signal?.throwIfAborted();
         const { node, reprocessDisplayScript } = jobs[i];
         const translated = results[i];
         if (!reprocessDisplayScript) {
@@ -631,8 +714,10 @@ export async function translateHTML(
                   {},
                   transform,
                   "translation",
+                  signal,
               )
             : { data: translated };
+        signal?.throwIfAborted();
         if (translated === processedTranslated) {
             node.textContent = processedTranslated;
             applyMarkdownToNode(node);
@@ -644,6 +729,7 @@ export async function translateHTML(
         }
     }
     // Serialize the DOM back to HTML
+    signal?.throwIfAborted();
     const serializer = new XMLSerializer();
     let translatedHTML = serializer.serializeToString(dom);
     // Remove the outer <html|body|head> tags
@@ -765,12 +851,98 @@ export function llmTranslationCacheKey(text: string): string {
 
 /** Reads a full captured cache key; null is a miss, while an empty string is a cached translation. */
 export async function readLLMCacheEntry(key: string): Promise<string | null> {
-    return await LLMCacheStorage.getItem<string>(key);
+    try {
+        return await LLMCacheStorage.getItem<string>(key);
+    } catch (error) {
+        throw markTransient(error);
+    }
 }
 
 /** Writes the full key captured by an editor, without resolving the current preset or languages again. */
 export async function writeLLMCacheEntry(key: string, value: string): Promise<void> {
     await LLMCacheStorage.setItem(key, value);
+}
+
+type LLMFlight = {
+    promise: Promise<string>;
+    controller: AbortController;
+    subscribers: number;
+};
+const llmInFlight = new Map<string, LLMFlight>();
+const llmGenerations = new Map<string, { newest: number; active: number }>();
+let nextLLMGeneration = 0;
+
+function translateRenderedLLM(
+    text: string,
+    context: LLMTranslationContext,
+    regenerate: boolean,
+    signal?: AbortSignal,
+): Promise<string> {
+    signal?.throwIfAborted();
+    const key = llmCacheKeyPrefix(context) + text;
+    const produce = (requestSignal: AbortSignal | undefined) => {
+        let generationState: { newest: number; active: number } | undefined;
+        const claim = () => {
+            const state = llmGenerations.get(key) ?? { newest: 0, active: 0 };
+            const generation = ++nextLLMGeneration;
+            state.newest = generation;
+            state.active += 1;
+            llmGenerations.set(key, state);
+            generationState = state;
+            return () => state.newest === generation;
+        };
+        return translateLLM(text, context, regenerate, undefined, requestSignal, claim).finally(() => {
+            if (generationState && --generationState.active === 0 && llmGenerations.get(key) === generationState) {
+                llmGenerations.delete(key);
+            }
+        });
+    };
+    if (regenerate) return produce(signal);
+    let flight = llmInFlight.get(key);
+    if (!flight) {
+        const controller = new AbortController();
+        const created: LLMFlight = {
+            controller,
+            subscribers: 0,
+            promise: produce(controller.signal).finally(() => {
+                if (llmInFlight.get(key) === created) llmInFlight.delete(key);
+            }),
+        };
+        llmInFlight.set(key, created);
+        // The last subscriber may leave before the abandoned request rejects.
+        void created.promise.catch(() => {});
+        flight = created;
+    }
+    const shared = flight;
+    shared.subscribers += 1;
+    return new Promise((resolve, reject) => {
+        let subscribed = true;
+        const leave = () => {
+            if (!subscribed) return false;
+            subscribed = false;
+            signal?.removeEventListener("abort", onAbort);
+            shared.subscribers -= 1;
+            return true;
+        };
+        const onAbort = () => {
+            if (!leave()) return;
+            if (shared.subscribers === 0) {
+                if (llmInFlight.get(key) === shared) llmInFlight.delete(key);
+                shared.controller.abort();
+            }
+            reject(signal!.reason);
+        };
+        shared.promise.then(
+            (value) => {
+                if (leave()) resolve(value);
+            },
+            (error) => {
+                if (leave()) reject(error);
+            },
+        );
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
+    });
 }
 
 /**
@@ -783,6 +955,8 @@ export async function writeLLMCacheEntry(key: string, value: string): Promise<vo
  * inherited steps the translate slot, all with the captured request ids. A step failure alerts,
  * marks `failure` and returns the caller's original text. An observed abort rejects without that
  * alert; the final cache write has no subsequent signal check, so an abort during it can still resolve.
+ * Rendered producers optionally claim publication after a cache miss (regeneration immediately),
+ * then check that generation synchronously before either cache write.
  */
 async function translateLLM(
     text: string,
@@ -791,6 +965,7 @@ async function translateLLM(
     /** Set to failed when a step fails (the alert is shown and the text returned). */
     failure?: { failed: boolean },
     signal?: AbortSignal,
+    claim?: () => () => boolean,
 ): Promise<string> {
     signal?.throwIfAborted();
     const cacheKey = llmCacheKeyPrefix(context) + text;
@@ -801,12 +976,13 @@ async function translateLLM(
             return cacheMatch;
         }
     }
+    const isNewest = claim?.();
     // Exclude Chain-of-Thought: the reasoning blocks leave the text before anything else;
     // a text left blank is an empty translation, cached without a request. A failure below still
     // returns the text as it was given.
     const requestText = context.stripInput ? stripTranslatorReasoning(text) : text;
     if (context.stripInput && requestText.trim() === "") {
-        await writeLLMCacheEntry(cacheKey, "");
+        if (!isNewest || isNewest()) await writeLLMCacheEntry(cacheKey, "");
         return "";
     }
     // Without Send Text As-Is, each regex match becomes an indexed placeholder; reply substitutions
@@ -872,7 +1048,7 @@ async function translateLLM(
                   return styleDecodes[parseInt(p1)] ?? "";
               })
               .replace(/<\/style-data>/g, "");
-    await writeLLMCacheEntry(cacheKey, result);
+    if (!isNewest || isNewest()) await writeLLMCacheEntry(cacheKey, result);
     return result;
 }
 

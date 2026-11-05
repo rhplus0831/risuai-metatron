@@ -1,3 +1,4 @@
+import type { CandidateNoticeCode } from "./rerollCandidates.ts";
 import type { Chat, MessageGenerationInfo } from "./database.ts";
 import type { LLMModel } from "./llm.ts";
 import type { OpenAIChat } from "./openai.ts";
@@ -9,6 +10,10 @@ import type { StructuredMemoryRebuildMode } from "./structuredMemory.ts";
  * tab's `clientId`) follows it over `/api/generations/:id/ws`, and `DELETE /api/generations/:id`
  * aborts it. Any authenticated tab can read `/api/generations/current` and explicitly stop that
  * chat's named job through `/api/generations/stop`. One chat has at most one running job.
+ * The job socket's optional `rows=streamed` query accepts raw checkpoint rows reconstructed from
+ * the owner's stream buffer, independently of `hydration=patch` (incremental callback hydration).
+ * Optional `proto` is a finite non-negative integer recorded per socket and logged (invalid or
+ * absent: none), never enforced and never used to select capabilities.
  */
 
 export type GenerationKind = "send" | "continue" | "reroll" | "group" | "preview" | "previewPrompt" | "command";
@@ -36,6 +41,8 @@ export type GenerationContext = {
     mode: string;
     input: string;
     continueMessageId?: string;
+    /** Regenerate the newest reply in place; accepted only for a reroll job. */
+    rerollMessageId?: string;
     speakerChaId?: string;
     /**
      * A send's user message: the id the job appends `input` under after the input trigger and
@@ -135,6 +142,8 @@ type GenerationCreateBase = {
     clientId: string;
     /** Identifies one attempt across retries; omitted by older clients. */
     requestId?: string;
+    /** Publishes an offer at admission; the creator remains owner until a ticket attaches. */
+    handoff?: "prefer";
 };
 
 /** A create body: a `command` job carries its `command`; every other kind has none. */
@@ -159,12 +168,19 @@ export type GenerationCurrent = {
     jobId: string;
     kind: GenerationKind;
     owned: boolean;
+    handedOff?: true;
     stage?: GenerationStage;
     sequence?: Pick<GenerationSequence, "total" | "sent">;
 };
 
 /** Stops only the named job while it still holds this chat; clientId is attribution, not authority. */
 export type GenerationStopBody = { characterId: string; chatId: string; jobId: string; clientId: string };
+
+/** A participant opens an offer, optionally for one client. */
+export type GenerationHandoffBody = { clientId: string; target?: string };
+/** Claims an open offer; the returned ticket authorizes one socket attach. */
+export type GenerationTakeoverBody = { clientId: string };
+export type GenerationTakeoverAnswer = { ticket: string };
 
 /** 409: the chat has a running job (the owner can attach to it). */
 export type GenerationBusyBody = { error: "chatBusy"; jobId: string };
@@ -277,8 +293,19 @@ export type GenerationResourceEvent =
  * (`after`, null at the start). `meta` (the chat's fields without `message`) is present only when
  * it changed. `count` is the message count at `revision`. `streaming` is as in the chat `resource`
  * event. A client that cannot apply it sends `ChatResyncRequest`.
+ * With `rows=streamed`, a carried row already in the base may instead be `{ after, id, streamed }`:
+ * it is still locked to the named generation, its applied raw checkpoint covers exactly `seq`,
+ * its stored text equals that checkpoint's raw text, and all other fields equal the base row's.
+ * The client stages a detached held row with its stream buffer text only when that buffer belongs
+ * to the job and generation, is real and not retired, and has reached `seq`. The entry must agree
+ * with `streaming`; otherwise the entire patch mismatches and asks for a whole-chat resync without
+ * advancing the revision or claiming the checkpoint. At equality the buffer text is installed too.
  */
-export type GenerationChatPatchEvent = ChatPatchBody & {
+export type GenerationChatPatchEvent = Omit<ChatPatchBody, "messages"> & {
+    messages?: (
+        | NonNullable<ChatPatchBody["messages"]>[number]
+        | { after: string | null; id: string; streamed: { generationId: string; seq: number } }
+    )[];
     type: "chatPatch";
     epoch: string;
     characterId: string;
@@ -308,7 +335,6 @@ export type GenerationTerminalEvent =
           epoch: string;
           revision: string | null;
           messageId?: string;
-          alternatives?: string[];
           /** A preview's result (`preview`: a `GenerationPreviewResult`; `previewPrompt`: the provider body). */
           result?: unknown;
           /**
@@ -322,8 +348,11 @@ export type GenerationTerminalEvent =
            * The plugin hooks of its replies the job skipped because no owner tab was attached when
            * they came due (`disconnected`); absent when none was. The tab runs the `chatOutput`
            * listeners of each entry late (`replaySkippedListeners`) once it holds the job's chat.
+           * Only the frozen late-replay recipient receives the list; other readers receive [].
            */
           skipped?: SkippedHook[];
+          /** Delivered listeners that disconnected; may have run and must never be replayed. */
+          missed?: Extract<SkippedHook, { name: "chatOutput" }>[];
       }
     | {
           type: "error";
@@ -331,7 +360,7 @@ export type GenerationTerminalEvent =
           message: string;
           status: number;
           reason: GenerationErrorReason;
-          /** An explicit chat stop from another client; present only for reason `aborted`. */
+          /** A participant or chat stop from another client; present only for reason `aborted`. */
           abortedBy?: "other";
           sequence?: GenerationSequence;
           /**
@@ -371,9 +400,10 @@ export const MAX_SEQUENCE_PART_CHARS = 100_000;
 // the owner answers. Every request has one deadline from the moment it is dispatched; the server alone
 // decides `timedOut`, `disconnected`, `aborted`, and `refused`.
 
-/** A notice: a UI effect the job asks the owner's tab to show. */
+/** A notice: dialogs go to the owner, display effects to all sockets, device effects to the creator. */
 export type GenerationNotice =
-    | { kind: "alertNormal" | "alertError" | "alertToast" | "alertMd" | "alertWait"; payload: { message: string } }
+    | { kind: "alertToast"; payload: { message: string; code?: CandidateNoticeCode } }
+    | { kind: "alertNormal" | "alertError" | "alertMd" | "alertWait"; payload: { message: string } }
     | { kind: "alertClear"; payload: Record<string, never> }
     | { kind: "reloadDisplay" | "updateGUI"; payload: Record<string, never> }
     | { kind: "reloadChat"; payload: { chaId: string; chatId: string; messageId: string } }
@@ -796,6 +826,7 @@ export type ChannelAnswer =
     | { type: "answer"; id: string; outcome: "failed"; failure: CallbackFailure; error: string; discarded?: string[] };
 
 export type GenerationEvent =
+    | { type: "handoff"; epoch: string; owner: "self" | "other"; clientName?: string; pending?: true }
     | GenerationAcceptedEvent
     | GenerationChunkEvent
     | { type: "preset"; epoch: string; presetId: string }
@@ -813,15 +844,14 @@ export type GenerationEvent =
           total: number;
           sent: number;
           messageId?: string;
-          alternatives?: string[];
       }
     | GenerationTerminalEvent
     | { type: "ping"; ts: number };
 
 /**
- * `GET /api/generations/:id`: what the owner needs to attach again. After an ended job is collected,
+ * `GET /api/generations/:id`: what a participant needs to attach again. After an ended job is collected,
  * the server keeps its outcome for a while (`kept`): the job can no longer be attached, and its
- * terminal is trimmed (no preview `result`, large `alternatives` dropped, an error
+ * terminal is trimmed (no preview `result`, an error
  * message cut).
  */
 export type GenerationStatus = {
@@ -831,6 +861,7 @@ export type GenerationStatus = {
     chatId: string;
     epoch: string;
     state: "running" | "ended";
+    handedOff?: true;
     messageId?: string;
     generationId?: string;
     terminal?: GenerationTerminalEvent;

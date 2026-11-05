@@ -9,7 +9,8 @@ import path from "node:path";
  * a loopback address, so the bypass can never answer another machine. A flag value other than true,
  * false, `1`, or `0` throws with the variable's name, which stops the start. `parsePasswordSeed`
  * validates `RISU_PASSWORD_SHA256` for `createServerContext`: a password digest that seeds only a
- * missing file.
+ * missing file. `parseAssetClockOffset` validates the development asset clock offset; a nonzero
+ * offset requires the same numeric loopback host as the authentication bypass.
  */
 export type ListenConfig = {
     port: number;
@@ -73,4 +74,20 @@ function parseFlag(raw: string | undefined, name: string): boolean {
         return true;
     }
     throw new Error(`Invalid ${name}: ${raw} (expected TRUE or FALSE)`);
+}
+
+/** A development offset for both lifecycle clocks; only a numeric loopback listener may move them. */
+export function parseAssetClockOffset(raw: string | undefined, host: string | undefined): number {
+    const value = raw?.trim();
+    if (!value) {
+        return 0;
+    }
+    const offset = Number(value);
+    if (!/^[+-]?\d+$/.test(value) || !Number.isSafeInteger(offset)) {
+        throw new Error(`Invalid RISU_AGENT_DEV_ASSET_CLOCK_OFFSET_MS: ${raw}`);
+    }
+    if (offset !== 0 && !isLoopbackHost(host?.trim() ?? "")) {
+        throw new Error("RISU_AGENT_DEV_ASSET_CLOCK_OFFSET_MS needs RISU_HOST set to a numeric loopback address");
+    }
+    return offset;
 }

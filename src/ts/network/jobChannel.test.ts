@@ -135,9 +135,11 @@ vi.mock("../plugins/apiV3/pluginContext", () => ({
     PluginTargetGoneError: class PluginTargetGoneError extends Error {},
 }));
 vi.mock("../process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: deps.mcps }));
-vi.mock("../plugins/plugins.svelte", () => ({ pluginsStarted: () => deps.pluginsStarted() }));
+vi.mock("../plugins/plugins.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("plugins", { pluginsStarted: () => deps.pluginsStarted() }),
+);
 vi.mock("../util", () => ({ sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)) }));
-vi.mock("../../lang", () => ({ language: {} }));
+
 vi.mock("../storage/database.svelte", () => ({}));
 vi.mock("../process/tts", () => ({ sayTTS: deps.sayTTS }));
 vi.mock("./pushNotifications", () => ({ showCompletionNotification: deps.showCompletion }));
@@ -243,6 +245,7 @@ function transport() {
     const answers: ChannelAnswer[] = [];
     return {
         answers,
+        viewing: () => false,
         send: vi.fn((message: ChannelAnswer) => {
             answers.push(message);
             return true;
@@ -342,6 +345,49 @@ afterEach(() => {
 });
 
 describe("notices and questions", () => {
+    it("applies display notices for viewers and refuses their callbacks without running a hook", async () => {
+        const viewer = { ...tx, viewing: () => true };
+        const listener = vi.fn();
+        hooks.chatOutput.add(listener);
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+        send(notice("reloadDisplay"), "J", viewer);
+        await pump();
+        expect(get(stores.ReloadGUIPointer)).toBe(1);
+        send(notice("updateGUI"), "J", viewer);
+        await pump();
+        expect(get(stores.ReloadGUIPointer)).toBe(2);
+        send(callback("viewer-output", "chatOutput", { messageId: "m2", speakerId: "c" }), "J", viewer);
+        await pump();
+        expect(tx.answers).toEqual([
+            expect.objectContaining({ type: "answer", id: "viewer-output", outcome: "failed", failure: "protocol" }),
+        ]);
+        expect(listener).not.toHaveBeenCalled();
+        expect(deps.contexts).toEqual([]);
+    });
+
+    it("localizes candidate notices in Korean and keeps the server message for unknown codes", async () => {
+        const locale = await import("../../lang");
+        locale.changeLanguage("ko");
+        try {
+            for (const [code, expected] of [
+                ["rerollCandidateDropped", "메시지의 저장 한도를 지키기 위해 오래된 응답 후보를 삭제했습니다."],
+                ["rerollCandidateTooLarge", "이 응답은 너무 커서 후보로 저장할 수 없습니다."],
+                [
+                    "scriptstateCheckpointSkipped",
+                    "채팅 변수가 너무 커서 체크포인트를 저장할 수 없습니다. 이번 리롤에서는 변수를 복원하지 않습니다.",
+                ],
+            ]) {
+                send(notice("alertToast", { code, message: "English fallback" }));
+                expect(alert()).toMatchObject({ type: "toast", msg: expected });
+                send(notice("alertClear"));
+            }
+            send(notice("alertToast", { code: "futureCode", message: "Future server message" }));
+            expect(alert()).toMatchObject({ type: "toast", msg: "Future server message" });
+        } finally {
+            locale.changeLanguage("en");
+        }
+    });
+
     it("drops an ended job's queued statuses, keeps its modal notices, and clears only the status it still owns", async () => {
         // Watch every published value: a stale toast that was immediately cleared must still fail.
         const seen: string[] = [];
@@ -1358,6 +1404,35 @@ describe("callbacks", () => {
 });
 
 describe("the reply tail's callbacks", () => {
+    it("runs an owner's chatOutput under the job targets while another chat is selected", async () => {
+        const selection = await import("../storage/selection.svelte");
+        await withCharacter(
+            { chaId: "elsewhere", type: "character" },
+            { chats: [{ id: "other-chat", message: [] }] },
+            async () => {
+                selection.selectCharacter("elsewhere");
+                const listener = vi.fn();
+                hooks.chatOutput.add(listener);
+                send(callback("worker-output", "chatOutput", { messageId: "m2", speakerId: "c" }), "J", {
+                    ...tx,
+                    viewing: () => false,
+                });
+                await pump();
+                expect(listener).toHaveBeenCalledExactlyOnceWith(
+                    expect.objectContaining({
+                        char: expect.objectContaining({ chaId: "c" }),
+                        chat: { id: "k", message: [{ chatId: "m1" }, { chatId: "m2" }] },
+                        chatIndex: 0,
+                        messageIndex: 1,
+                    }),
+                );
+                expect(deps.contexts).toEqual([hookContext("worker-output")]);
+                expect(tx.answers).toEqual([{ type: "answer", id: "worker-output", outcome: "answered", value: true }]);
+                expect(selection.selection.characterId).toBe("elsewhere");
+            },
+        );
+    });
+
     // `chatOutput` walks the live listener set as the tab's own send does (a listener an earlier one
     // removed does not run, one it added does), gives each listener a plain copy of the speaker and
     // the chat as they are then with indices looked up again, logs a throw, and answers `true`.

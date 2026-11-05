@@ -6,7 +6,7 @@ import { WebSocket as WsClient } from "ws";
 import type { EventFeedFrame, MemoryTaskEntry } from "../../../shared/events.ts";
 import { revisionDigest, type ResourceRevisionListing } from "../../../shared/resources.ts";
 import { DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
-import { createChangeFeed } from "../data/changeFeed.ts";
+import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createEventSockets } from "../routes/events.ts";
 import {
     allowListenerOrigin,
@@ -16,6 +16,17 @@ import {
     waitFor,
     type TestServerOptions,
 } from "./testSupport.ts";
+
+/** A promise with its settle functions (`Promise.withResolvers` is newer than the server's `lib`). */
+function withResolvers<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+        resolve = done;
+        reject = fail;
+    });
+    return { promise, resolve, reject };
+}
 
 // The live-update socket (`/api/events/ws`, `server/src/routes/events.ts`) on a real listening
 // server: JWT-only authentication, `hello` with the epoch and the memory task snapshot, every
@@ -149,6 +160,188 @@ describe("the live-update socket on the server", () => {
     const epochOf = async () =>
         ((await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing).epoch;
 
+    it("sends committed cursors with hello and changes and serves bounded replay alongside the whole listing", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        await listen({ resourceKinds: digestKinds });
+        const initial = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+        const epoch = initial.epoch;
+        const put = async (baseRevision: string | null, text: string) => {
+            const response = await request("/api/resources/notes/r", {
+                ...json({ baseRevision, data: { text } }, { "x-resource-epoch": epoch }),
+                method: "PUT",
+            });
+            expect(response.status).toBe(200);
+            return ((await response.json()) as { revision: string }).revision;
+        };
+        const first = await open();
+        expect(await frameAt(first, 0)).toMatchObject({
+            type: "hello",
+            epoch,
+            cursor: 0,
+            digest: revisionDigest(initial),
+        });
+        const one = await put(null, "one");
+        const two = await put(one, "two");
+        expect(
+            (
+                await request(`/api/resources/notes/r?baseRevision=${encodeURIComponent(two)}`, {
+                    method: "DELETE",
+                    headers: { "x-resource-epoch": epoch },
+                })
+            ).status,
+        ).toBe(200);
+        for (const [index, revision] of [one, two, null].entries()) {
+            expect(await frameAt(first, index + 1)).toEqual({
+                type: "change",
+                epoch,
+                cursor: index + 1,
+                changes: {
+                    resources: [{ kind: "notes", id: "r", revision }],
+                    chats: [],
+                    chatOrders: [],
+                },
+            });
+        }
+        const reconnect = await open();
+        expect(await frameAt(reconnect, 0)).toMatchObject({
+            type: "hello",
+            epoch,
+            cursor: 3,
+            digest: revisionDigest(initial),
+        });
+        const replay = await request(`/api/resources/revisions?since=0&until=2&epoch=${epoch}`);
+        expect(replay.status).toBe(200);
+        expect(await replay.json()).toEqual({
+            epoch,
+            cursor: 2,
+            changes: { resources: [{ kind: "notes", id: "r", revision: two }], chats: [], chatOrders: [] },
+        });
+        expect(await (await request(`/api/resources/revisions?since=2&until=3&epoch=${epoch}`)).json()).toEqual({
+            epoch,
+            cursor: 3,
+            changes: { resources: [{ kind: "notes", id: "r", revision: null }], chats: [], chatOrders: [] },
+        });
+        expect(await (await request(`/api/resources/revisions?since=0&until=4&epoch=${epoch}`)).json()).toEqual({
+            epoch,
+            cursor: 3,
+            expired: true,
+        });
+        expect(await (await request("/api/resources/revisions?since=0&until=3&epoch=old")).json()).toEqual({
+            epoch,
+            cursor: 3,
+        });
+        expect(await (await request("/api/resources/revisions")).json()).toEqual(initial);
+        for (const query of [
+            "since=0&until=3",
+            `since=0&epoch=${epoch}`,
+            `since=&until=3&epoch=${epoch}`,
+            `since=-1&until=3&epoch=${epoch}`,
+            `since=0.5&until=3&epoch=${epoch}`,
+            `since=0&until=NaN&epoch=${epoch}`,
+            `since=0&until=9007199254740992&epoch=${epoch}`,
+        ])
+            expect((await request(`/api/resources/revisions?${query}`)).status, query).toBe(400);
+    });
+
+    it("publishes handoff offers at admission and request, lists them in hello, and closes them at takeover or job end", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const entered = withResolvers<import("../jobs/generationJobs.ts").RunningJob>();
+        await listen({
+            generationRunner: async (job) => {
+                entered.resolve(job);
+                await new Promise<void>((resolve) =>
+                    job.signal.addEventListener("abort", () => resolve(), { once: true }),
+                );
+            },
+        });
+        const epoch = await epochOf();
+        const first = async (kind: string) =>
+            ((await (await request(`/api/resources/${kind}/main`)).json()) as { data: { id: string }[] }).data[0].id;
+        const bound = {
+            presetId: await first("presets"),
+            modelPresetId: await first("modelPresets"),
+            personaId: await first("personas"),
+        };
+        const post = (url: string, body: unknown) => request(url, json(body, { "x-resource-epoch": epoch }));
+        expect(
+            (
+                await post("/api/resources/batch", {
+                    ops: [{ kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId: "k",
+                            baseRevision: null,
+                            ops: [
+                                {
+                                    op: "create",
+                                    chat: {
+                                        id: "k",
+                                        name: "K",
+                                        message: [],
+                                        modelPresetId: bound.modelPresetId,
+                                        promptPresetId: bound.presetId,
+                                        bindedPersona: bound.personaId,
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                })
+            ).status,
+        ).toBe(200);
+        const feed = await open();
+        expect(await frameAt(feed, 0)).toMatchObject({ type: "hello", handoffs: [] });
+        const read = await post("/api/resources/read", { chats: [{ characterId: "c", id: "k" }] });
+        const chatRevision = ((await read.json()) as { chats: { revision: string }[] }).chats[0].revision;
+        const created = await post("/api/generations", {
+            kind: "send",
+            clientId: "creator",
+            handoff: "prefer",
+            context: { ...bound, characterId: "c", chatId: "k", mode: "normal", input: "", chatRevision },
+        });
+        expect(created.status).toBe(200);
+        const { jobId } = (await created.json()) as { jobId: string };
+        const job = await entered.promise;
+        await delivered(feed);
+        const preferred = {
+            type: "handoff",
+            epoch,
+            jobId,
+            characterId: "c",
+            chatId: "k",
+            state: "open",
+            reason: "preferred",
+        };
+        expect(feed.frames.filter((frame) => frame.type === "handoff")).toEqual([preferred]);
+        const later = await open();
+        const { type: _type, ...offer } = preferred;
+        expect(await frameAt(later, 0)).toMatchObject({ type: "hello", handoffs: [offer] });
+        expect(
+            (await post(`/api/generations/${jobId}/handoff`, { clientId: "creator", target: "worker" })).status,
+        ).toBe(200);
+        await delivered(feed);
+        const requested = { ...preferred, reason: "requested", target: "worker" };
+        expect(feed.frames.filter((frame) => frame.type === "handoff").slice(-2)).toEqual([
+            { ...preferred, state: "closed" },
+            requested,
+        ]);
+        expect((await post(`/api/generations/${jobId}/takeover`, { clientId: "worker" })).status).toBe(200);
+        await delivered(feed);
+        expect(feed.frames.at(-1)).toEqual({ ...requested, state: "closed" });
+        await vi.advanceTimersByTimeAsync(10_000);
+        await delivered(feed);
+        expect(feed.frames.filter((frame) => frame.type === "handoff").at(-1)).toEqual(requested);
+        job.emit({ type: "done", revision: chatRevision });
+        await delivered(feed);
+        expect(feed.frames.filter((frame) => frame.type === "handoff").at(-1)).toEqual({
+            ...requested,
+            state: "closed",
+        });
+        const ended = await open();
+        expect(await frameAt(ended, 0)).toMatchObject({ type: "hello", handoffs: [] });
+    });
+
     it("admits a JWT in the query or the header and sends `hello` with the epoch and the (empty) memory task snapshot", async () => {
         await listen();
         const epoch = await epochOf();
@@ -157,20 +350,28 @@ describe("the live-update socket on the server", () => {
         await waitFor(() => byQuery.frames.length > 0);
         expect(byQuery.frames[0]).toEqual({
             type: "hello",
+            rerollInPlace: true,
             epoch,
             streaming: [],
             memoryTasks: [],
+            handoffs: [],
+            clients: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+            cursor: 0,
         });
         const byHeader = await open("", { "risu-auth": await signer.jwt() });
         expect(await byHeader.opened).toBe("open");
         await waitFor(() => byHeader.frames.length > 0);
         expect(byHeader.frames[0]).toEqual({
             type: "hello",
+            rerollInPlace: true,
             epoch,
             streaming: [],
             memoryTasks: [],
+            handoffs: [],
+            clients: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+            cursor: 0,
         });
         expect(server.context.eventSockets.size()).toBe(2);
     });
@@ -215,10 +416,14 @@ describe("the live-update socket on the server", () => {
         expect(listing.resources).toContainEqual({ kind: "notes", id: "missed", revision });
         expect(nextHello).toEqual({
             type: "hello",
+            rerollInPlace: true,
             epoch: before.epoch,
             streaming: [],
             memoryTasks: [],
+            handoffs: [],
+            clients: [],
             digest: revisionDigest(listing),
+            cursor: expect.any(Number),
         });
         expect(revisionDigest(listing)).not.toBe(revisionDigest(before));
         await delivered(reconnected);
@@ -544,6 +749,7 @@ describe("createEventSockets", () => {
         authorize: (token: string | undefined) => Promise<boolean>,
         memoryTasks: () => MemoryTaskEntry[] = () => [],
         digest?: () => string,
+        cursor?: () => number,
     ) {
         const feed = createChangeFeed();
         const sockets = createEventSockets({
@@ -553,6 +759,7 @@ describe("createEventSockets", () => {
             streaming: () => [],
             memoryTasks,
             digest,
+            cursor,
         });
         const node = http.createServer((_req, res) => res.end());
         node.on("upgrade", (req, socket, head) => {
@@ -566,6 +773,173 @@ describe("createEventSockets", () => {
         const { port } = node.address() as { port: number };
         return { feed, sockets, url: `ws://127.0.0.1:${port}/api/events/ws?risu-auth=t` };
     }
+
+    it("serves the same hello and changes with a known, invalid or absent protocol number", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const { feed, sockets, url } = await host(async () => true);
+        const clients = ["&proto=1", "&proto=garbage", ""].map((query) => connect(url + query));
+        try {
+            for (const client of clients) {
+                expect(await client.opened).toBe("open");
+                expect(await frameAt(client, 0)).toEqual({
+                    type: "hello",
+                    rerollInPlace: true,
+                    epoch: "E",
+                    streaming: [],
+                    memoryTasks: [],
+                    clients: [],
+                });
+            }
+            const change = { resources: [{ kind: "notes", id: "r", revision: "E:1:2" }], chats: [], chatOrders: [] };
+            feed.publish({ type: "change", epoch: "E", changes: change });
+            for (const client of clients) {
+                expect(await frameAt(client, 1)).toEqual({ type: "change", epoch: "E", changes: change });
+            }
+        } finally {
+            sockets.close();
+            await Promise.all(clients.map((client) => client.closed));
+        }
+    });
+
+    it("samples hello's digest and cursor before a queued commit can intervene", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        let cursor = 7;
+        const rows: ResourceRevisionListing = {
+            epoch: "E",
+            resources: [{ kind: "notes", id: "r", revision: "E:1:7" }],
+            chats: [],
+            chatOrders: [],
+        };
+        const digest = revisionDigest(rows);
+        const { sockets, url } = await host(
+            async () => true,
+            () => [],
+            () => {
+                queueMicrotask(() => {
+                    cursor = 8;
+                    rows.resources[0].revision = "E:1:8";
+                });
+                return revisionDigest(rows);
+            },
+            () => cursor,
+        );
+        const client = connect(url);
+        try {
+            expect(await frameAt(client, 0)).toMatchObject({ type: "hello", digest, cursor: 7 });
+            expect(cursor).toBe(8);
+        } finally {
+            sockets.close();
+            await client.closed;
+        }
+    });
+
+    it("publishes bounded names on registration, updates and departure while unregistered sockets receive every frame", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+        const { feed, sockets, url } = await host(async () => true);
+        const worker = connect(url);
+        const legacy = connect(url);
+        const observers = [worker, legacy];
+        try {
+            for (const client of observers) expect(await frameAt(client, 0)).toMatchObject({ clients: [] });
+            worker.ws.send(JSON.stringify({ type: "register", clientId: "desk", name: "D".repeat(65), worker: true }));
+            const registered = { clientId: "desk", name: "D".repeat(64), worker: true };
+            for (const client of observers) {
+                expect(await frameAt(client, 1)).toEqual({ type: "clients", clients: [registered] });
+            }
+            const later = connect(url);
+            observers.push(later);
+            expect(await frameAt(later, 0)).toMatchObject({ type: "hello", clients: [registered] });
+
+            const changed = { clientId: "desk", name: "Kitchen", worker: false };
+            worker.ws.send(JSON.stringify({ type: "register", ...changed }));
+            for (const [client, index] of [
+                [worker, 2],
+                [legacy, 2],
+                [later, 1],
+            ] as const) {
+                expect(await frameAt(client, index)).toEqual({ type: "clients", clients: [changed] });
+            }
+            const frames = [
+                { type: "change", epoch: "E", changes: { resources: [], chats: [], chatOrders: [] } },
+                {
+                    type: "memoryTask",
+                    epoch: "E",
+                    characterId: "c",
+                    chatId: "k",
+                    status: { taskId: "memory", state: "running", done: 0, total: 1 },
+                },
+                {
+                    type: "handoff",
+                    epoch: "E",
+                    jobId: "j",
+                    characterId: "c",
+                    chatId: "k",
+                    state: "open",
+                    reason: "requested",
+                    target: "desk",
+                },
+                { type: "epoch", epoch: "next" },
+            ] satisfies ChangeFeedEvent[];
+            for (const frame of frames) feed.publish(frame);
+            for (const [client, offset] of [
+                [worker, 3],
+                [legacy, 3],
+                [later, 2],
+            ] as const) {
+                for (const [index, frame] of frames.entries())
+                    expect(await frameAt(client, offset + index)).toEqual(frame);
+            }
+            worker.ws.close();
+            await worker.closed;
+            expect(await frameAt(legacy, 7)).toEqual({ type: "clients", clients: [] });
+            expect(await frameAt(later, 6)).toEqual({ type: "clients", clients: [] });
+        } finally {
+            for (const client of observers) client.ws.terminate();
+            sockets.close();
+        }
+    });
+
+    it("caps presence snapshots at 64 registered clients in broadcasts and hello", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+        const { sockets, url } = await host(async () => true);
+        const clients: Client[] = [];
+        try {
+            const observer = connect(url);
+            clients.push(observer);
+            await frameAt(observer, 0);
+            for (let index = 0; index < 65; index++) {
+                const client = connect(url);
+                clients.push(client);
+                await frameAt(client, 0);
+                client.ws.send(
+                    JSON.stringify({
+                        type: "register",
+                        clientId: `tab-${index}`,
+                        name: `Worker ${index}`,
+                        worker: true,
+                    }),
+                );
+                await delivered(client);
+                await delivered(observer);
+                const frame = observer.frames.at(-1)!;
+                expect(frame.type).toBe("clients");
+                if (frame.type !== "clients") throw new Error("Expected a presence snapshot");
+                expect(frame.clients).toHaveLength(Math.min(index + 1, 64));
+                expect(new Set(frame.clients.map((entry) => entry.clientId)).size).toBe(frame.clients.length);
+                expect(frame.clients.every((entry) => /^tab-\d+$/.test(entry.clientId))).toBe(true);
+            }
+            const later = connect(url);
+            clients.push(later);
+            const hello = await frameAt(later, 0);
+            expect(hello).toMatchObject({
+                type: "hello",
+                clients: (observer.frames.at(-1) as Extract<EventFeedFrame, { type: "clients" }>).clients,
+            });
+        } finally {
+            for (const client of clients) client.ws.terminate();
+            sockets.close();
+        }
+    });
 
     it("refuses (503) a socket whose authorization finished after `close()`", async () => {
         let finish!: (ok: boolean) => void;
@@ -610,7 +984,9 @@ describe("createEventSockets", () => {
             expect(client.frames[1]).toEqual({ type: "epoch", epoch: "F" });
         }
         expect(await failed.closed).toBe(1006);
-        expect(failed.frames).toEqual([{ type: "hello", epoch: "E", streaming: [], memoryTasks: [] }]);
+        expect(failed.frames).toEqual([
+            { type: "hello", rerollInPlace: true, epoch: "E", streaming: [], memoryTasks: [], clients: [] },
+        ]);
         await waitFor(() => sockets.size() === 2);
         for (const client of others) {
             client.ws.terminate();
@@ -675,7 +1051,7 @@ describe("createEventSockets", () => {
             const terminate = vi.spyOn(WsClient.prototype, "terminate");
             try {
                 if (frame.type === "ping") vi.advanceTimersByTime(15_000);
-                else if (frame.type !== "hello") feed.publish(frame);
+                else if (frame.type !== "hello" && frame.type !== "clients") feed.publish(frame);
                 expect(
                     send.mock.calls.map(([data]) => data),
                     frame.type,
@@ -683,7 +1059,9 @@ describe("createEventSockets", () => {
                 expect(terminate, frame.type).toHaveBeenCalledTimes(1);
                 expect(terminate.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
                 expect(await clients[0].closed).toBe(1006);
-                expect(clients[0].frames).toEqual([{ type: "hello", epoch: "E", streaming: [], memoryTasks: [] }]);
+                expect(clients[0].frames).toEqual([
+                    { type: "hello", rerollInPlace: true, epoch: "E", streaming: [], memoryTasks: [], clients: [] },
+                ]);
                 for (const client of clients.slice(1)) {
                     expect(await frameAt(client, 1)).toEqual(frame);
                     expect(client.ws.readyState).toBe(WsClient.OPEN);
@@ -707,7 +1085,14 @@ describe("createEventSockets", () => {
         try {
             const admitted = connect(url);
             clients.push(admitted);
-            const hello = { type: "hello", epoch: "E", streaming: [], memoryTasks: [] };
+            const hello = {
+                type: "hello",
+                rerollInPlace: true,
+                epoch: "E",
+                streaming: [],
+                memoryTasks: [],
+                clients: [],
+            };
             expect(admissionBytes + Buffer.byteLength(JSON.stringify(hello))).toBeGreaterThan(admissionBytes);
             expect(await frameAt(admitted, 0)).toEqual(hello);
             expect(admitted.ws.readyState).toBe(WsClient.OPEN);
@@ -733,7 +1118,14 @@ describe("createEventSockets", () => {
         const client = connect(url);
         expect(await client.opened).toBe("open");
         await waitFor(() => client.frames.length > 0);
-        expect(client.frames[0]).toEqual({ type: "hello", epoch: "E", streaming: [], memoryTasks: [] });
+        expect(client.frames[0]).toEqual({
+            type: "hello",
+            rerollInPlace: true,
+            epoch: "E",
+            streaming: [],
+            memoryTasks: [],
+            clients: [],
+        });
         vi.advanceTimersByTime(15_000);
         await waitFor(() => client.frames.length > 1);
         expect(client.frames[1]).toMatchObject({ type: "ping", ts: expect.any(Number) });
@@ -802,9 +1194,11 @@ describe("createEventSockets", () => {
         try {
             expect(await frameAt(client, 0)).toEqual({
                 type: "hello",
+                rerollInPlace: true,
                 epoch: "E",
                 streaming: [],
                 memoryTasks: [status],
+                clients: [],
             });
             expect(client.ws.readyState).toBe(WsClient.OPEN);
             feed.publish({ type: "epoch", epoch: "F" });

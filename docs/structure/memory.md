@@ -89,10 +89,9 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 ### Server
 
-A send's memory step runs in the job (`server/src/prompt/assemble.ts`). The browser code above serves the HypaV3 modal
-and the playground. The four algorithms (`Algorithms`, above) each take a `MemoryHost`
-(`server/src/prompt/memory/host.ts`) first; the type's comments say what each member stands for and how `completions`
-answers are checked.
+A send's memory step runs in the job (`server/src/prompt/assemble.ts`); the browser code above serves the HypaV3 modal
+and the playground. The four algorithms (`Algorithms`, above) take a `MemoryHost` (`server/src/prompt/memory/host.ts`)
+first, whose comments define each member and the `completions` answer checks.
 
 ### Server persistence
 
@@ -211,8 +210,7 @@ it matches a removable entry), so a prompt still over the context with them ends
   bound to one job (`createEmbeddings(...).forJob`), with `ContextualEmbeddingCountError`. Its header lists what differs
   from the tab.
 - `server/src/data/vectorCache.ts` (`createVectorCache`): the vectors of every client, in `save/data/vectors.sqlite`.
-- `server/src/prompt/transformers.ts` and `server/src/prompt/transformersWorker.ts`: the local models in one child
-  process.
+- `server/src/prompt/{transformers,transformersWorker}.ts`: the local models in one child process.
 
 ## State
 
@@ -220,9 +218,9 @@ it matches a removable entry), so a prompt still over the context with them ends
   - Algorithm flags: `hypaMemory`, `hypav2`, `hypaV3`, `hanuraiEnable`, `hanuraiSplit`, `hanuraiTokens`,
     `memoryAlgorithmType` (only `structuredMemory` is read).
   - Models and keys: `hypaModel`, `supaModelType`, `supaMemoryKey`, `voyageApiKey`. `supaMemoryKey` is edited only on
-    the Memory page, one input for summarization and embeddings; the Playground embedding tool shows its status and
-    links there ([settings-i18n](settings-i18n.md)), and keeps its draft (model, query, data, results) in module state,
-    so the round trip through the settings keeps it.
+    the Memory page, one input for summarization and embeddings; the Playground embedding tool shows its status, links
+    there ([settings-i18n](settings-i18n.md)), and keeps its draft (model, query, data, results) in module state across
+    that round trip.
   - Sizing: `hypaChunkSize`, `hypaAllocatedTokens`, `hypaCustomSettings`.
   - Presets: `hypaV3Presets`, `hypaV3PresetId` (the selected preset's id; `selectedHypaV3Preset` in
     `shared/hypaV3Presets.ts` resolves it). Both travel in the `hypaV3Presets` record as `{ items, selectedId }`.
@@ -267,11 +265,12 @@ it matches a removable entry), so a prompt still over the context with them ends
 - Never persist a runtime `Set`. Use the `toSerializable*` and `to*Data` converters in both directions.
 - `chatMemos` reference `Message.chatId` values. Rewriting chat IDs orphans summaries, which get cleaned unless
   `preserveOrphanedMemory` is set.
-- The memory card `memo` values `supaMemory` and `hypaMemory` are special-cased later in prompt assembly
-  (`assemblePrompt`). Do not rename them.
+- The memory card `memo` values `supaMemory` and `hypaMemory` are special-cased in `assemblePrompt`; do not rename them.
 
 ### Memory writes
 
+- Memory reads a message's `data`, its selected reroll candidate; a reroll's memory step leaves the carrier out
+  ([server generation](server-generation.md#reroll-in-place)).
 - Build a memory write from the chat as stored at that write, not the algorithm's pre-await snapshot. Merge helpers
   preserve unrelated stored fields; V3 uses `summaryKey` (its last message id starts the next summary), while V2 uses
   main-chunk ids plus source-message identity ([server persistence](#server-persistence)).
@@ -310,8 +309,8 @@ it matches a removable entry), so a prompt still over the context with them ends
 ### Server and tab copies
 
 - SupaMemory, HypaV2, Hanurai, and production send-time V3 run on the server. The tab keeps V3's legacy composition for
-  the modal and fixture; its behavior changes only with shared legacy behavior. Keep server standard and experimental
-  changes in sync where they share a contract, and update tab copies when shared legacy behavior changes.
+  the modal and fixture, updated only when shared legacy behavior changes. Keep server standard and experimental changes
+  in sync where they share a contract.
 - The detached task, V3 parts, source validation, lease, and token-budget mode are server-only. The tab reads ratio-mode
   settings and the modal calls `summarize`; it does not run the send-time embedding path. Decision: HypaV3 Background
   Memory D12, archive.

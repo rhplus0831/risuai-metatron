@@ -14,13 +14,16 @@ import type {
 } from "../../../shared/chats.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { ChatStreaming, ChatStreamingSnapshot } from "../../../shared/events.ts";
-import type { GenerationChunkEvent, StreamingMessage } from "../../../shared/jobs.ts";
+import type { GenerationChatPatchEvent, GenerationChunkEvent, StreamingMessage } from "../../../shared/jobs.ts";
 import { readChatBindingIds } from "../../../shared/chatBinding.ts";
 import {
     type ChangeSet,
     type ChatDeltaBody,
     type ChatMetaFields,
     type ChatPatchBody,
+    type ChatRowDeltaBody,
+    type ChatRowsManifest,
+    type ChatRowsReadResult,
     compareRevision,
     parseRevisionToken,
 } from "../../../shared/resources.ts";
@@ -437,9 +440,9 @@ const staleChats = new Set<string>();
  * Chats a live update announced as changed on the server (`noteRemoteChat`) → the sequence of the
  * latest notice and the revision it announced (null: deleted). Only an idle read that began after
  * that notice clears it, or this client coming to hold that revision another way (its own save, a
- * job's chat event).
+ * job's chat event). An eligible row manifest lives with its notice, so every notice reset drops it too.
  */
-const noticedChats = new Map<string, { seq: number; revision: string | null }>();
+const noticedChats = new Map<string, { seq: number; revision: string | null; rows?: ChatRowsManifest }>();
 let noticeSeq = 0;
 /** Bumped when `serverGenerations` or `feedLocks` changes, so the chat screen's lock reads re-run. */
 const lockState = $state({ version: 0 });
@@ -545,6 +548,16 @@ const slot = (id: string) => `#${id}`;
  * a chat to a list, and a server copy never loads a chat (only a load does).
  */
 const held: Record<string, HeldChats> = $state({});
+
+// Positions are validated against unique row ids; invalidation controls rebuild cost, not correctness.
+const messagePositions = new Map<string, Map<string, number>>();
+let messagePositionBuilds = 0;
+let messagePositionLookups = 0;
+
+/** Counts index builds and lookups so tests can check work without timing it. */
+export function messagePositionStats(): Readonly<{ builds: number; lookups: number }> {
+    return { builds: messagePositionBuilds, lookups: messagePositionLookups };
+}
 
 /** The selected chat id per character (this tab; reactive). */
 const chosen: Record<string, string> = $state({});
@@ -1024,6 +1037,38 @@ function heldChat(ref: ChatRef): Chat | undefined {
     return holdingAt(ref.chaId)?.chats[slot(ref.chatId)];
 }
 
+function dropMessagePositions(key: string) {
+    messagePositions.delete(key);
+}
+
+function buildMessagePositions(key: string, chat: DeepReadonly<Chat>): Map<string, number> {
+    const positions = new Map<string, number>();
+    chat.message.forEach((message, position) => positions.set(message.chatId!, position));
+    messagePositions.set(key, positions);
+    messagePositionBuilds += 1;
+    return positions;
+}
+
+/** A stale or missing position rebuilds once; a newly built map never rebuilds again in this lookup. */
+function positionOf(key: string, chat: DeepReadonly<Chat>, id: string): number {
+    messagePositionLookups += 1;
+    let positions = messagePositions.get(key);
+    const built = positions === undefined;
+    positions ??= buildMessagePositions(key, chat);
+    let position = positions.get(id);
+    if (position !== undefined && chat.message[position]?.chatId === id) {
+        return position;
+    }
+    if (!built) {
+        positions = buildMessagePositions(key, chat);
+        position = positions.get(id);
+        if (position !== undefined && chat.message[position]?.chatId === id) {
+            return position;
+        }
+    }
+    return -1;
+}
+
 /** Whether a member chat is loaded (its whole chat is held, not only its summary). */
 function isLoaded(ref: ChatRef): boolean {
     return heldChat(ref) !== undefined;
@@ -1106,6 +1151,7 @@ function entryAt(chaId: string, id: string): ChatEntry | undefined {
 /** Puts a chat into a character's list at `index` (loaded and a member); returns the held copy. */
 function insertChat(chaId: string, index: number, chat: Chat): Chat {
     const holding = holdingOf(chaId);
+    dropMessagePositions(keyOf(chaId, chat.id!));
     loadedKeys.add(keyOf(chaId, chat.id!));
     holding.chats[slot(chat.id!)] = chat;
     delete holding.summaries[slot(chat.id!)];
@@ -1117,6 +1163,7 @@ function insertChat(chaId: string, index: number, chat: Chat): Chat {
 /** Puts a chat into a character's list at `index` as its summary (not loaded). */
 function insertSummary(chaId: string, index: number, id: string, meta: ChatEntryMeta) {
     const holding = holdingOf(chaId);
+    dropMessagePositions(keyOf(chaId, id));
     loadedKeys.delete(keyOf(chaId, id));
     holding.summaries[slot(id)] = meta;
     delete holding.chats[slot(id)];
@@ -1135,6 +1182,7 @@ function removeChat(chaId: string, chatId: string) {
         holding.ids.splice(index, 1);
     }
     loadedKeys.delete(keyOf(chaId, chatId));
+    dropMessagePositions(keyOf(chaId, chatId));
     delete holding.chats[slot(chatId)];
     delete holding.summaries[slot(chatId)];
     dirtyOrderJournal(chaId, "latest");
@@ -1145,6 +1193,7 @@ function removeChat(chaId: string, chatId: string) {
 function dropHeld(chaId: string) {
     for (const id of holdingAt(chaId)?.ids ?? []) {
         loadedKeys.delete(keyOf(chaId, id));
+        dropMessagePositions(keyOf(chaId, id));
     }
     delete held[slot(chaId)];
     dirtyOrderJournal(chaId, "latest");
@@ -1158,10 +1207,12 @@ function setChatList(chaId: string, entries: readonly ChatEntry[]) {
     const holding = holdingOf(chaId);
     for (const id of holding.ids) {
         loadedKeys.delete(keyOf(chaId, id));
+        dropMessagePositions(keyOf(chaId, id));
     }
     const chats: Record<string, Chat> = {};
     const summaries: Record<string, ChatEntryMeta> = {};
     for (const entry of entries) {
+        dropMessagePositions(keyOf(chaId, entry.id));
         if (entry.chat) {
             chats[slot(entry.id)] = entry.chat;
             loadedKeys.add(keyOf(chaId, entry.id));
@@ -1187,6 +1238,18 @@ function loadedEntries(chats: readonly Chat[]): ChatEntry[] {
 /** The loaded chat; read-only (change it through this module). Tracked when read reactively. */
 export function findChat(ref: ChatRef): DeepReadonly<Chat> | undefined {
     return heldChat(ref);
+}
+
+/** The held row by id, read-only and tracked when read reactively. */
+export function heldMessageById(ref: ChatRef, id: string): DeepReadonly<Message> | undefined {
+    const chat = heldChat(ref);
+    return chat?.message[positionOf(keyOf(ref.chaId, ref.chatId), chat, id)];
+}
+
+/** The message's current position in the held chat, or -1 when either is absent. */
+export function messagePositionOf(ref: ChatRef, id: string): number {
+    const chat = heldChat(ref);
+    return chat ? positionOf(keyOf(ref.chaId, ref.chatId), chat, id) : -1;
 }
 
 function requireChat(ref: ChatRef): Chat {
@@ -1853,7 +1916,8 @@ function showStreamText(target: ChatRef & { messageId: string }) {
     if (mark && mark.generationId === entry.generationId && entry.seq <= mark.seq) {
         return;
     }
-    const message = heldChat(target)?.message.find((candidate) => candidate.chatId === target.messageId);
+    const chat = heldChat(target);
+    const message = chat?.message[positionOf(keyOf(target.chaId, target.chatId), chat, target.messageId)];
     if (message && message.data !== entry.text) {
         message.data = entry.text;
         changed(keyOf(target.chaId, target.chatId));
@@ -1900,7 +1964,8 @@ export function applyServerGeneration(
     if (retiredGenerations.has(update.generationId)) {
         return false;
     }
-    const message = heldChat(ref)?.message.find((entry) => entry.chatId === update.messageId);
+    const chat = heldChat(ref);
+    const message = chat?.message[positionOf(keyOf(ref.chaId, ref.chatId), chat, update.messageId)];
     if (!message) {
         return false;
     }
@@ -1965,7 +2030,7 @@ export function applyServerGenerationChunk(ref: ChatRef, jobId: string, chunk: G
     }
     // A reply-only recovery cannot install a missing message. Wait for the job's chat copy;
     // its placeholder lock will make the next chunk request the full reply once it can apply.
-    if (!heldChat(ref)?.message.some((message) => message.chatId === chunk.messageId)) {
+    if (messagePositionOf(ref, chunk.messageId) === -1) {
         return true;
     }
     const held = serverGenerations.get(messageKeyOf(ref, chunk.messageId));
@@ -2246,18 +2311,20 @@ export function hydrateChat(
 /**
  * Applies a job's `chatPatch` (`GenerationChatPatchEvent`): the change from `baseRevision` to
  * `revision` of a loaded chat, applied only when the mirror holds exactly one of the two revisions,
- * the chat is not marked stale, and it has no local work. Its messages are the stored rows (each
+ * the chat is not marked stale, and it has no local work. Streamed entries are staged from a real,
+ * matching job buffer at or above their checkpoint; a missing or behind buffer mismatches the patch.
+ * Resolved messages are the stored rows (each
  * replaces the mirror's message of its id, or is inserted after `after`); every other message keeps
  * its object. Then `job` is handled as for `hydrateChat`. `"busy"`: local work (marked stale, as
  * `hydrateChat`); `"mismatch"`: the mirror cannot take it (marked stale: the caller asks the job for
  * the chat whole); `"old"`: older than the held revision, another epoch, or a chat this client lacks.
  */
 export function hydrateChatPatch(
-    patch: ChatPatch,
+    patch: JobChatPatch,
     job?: { jobId: string; streaming: readonly StreamingMessage[] },
 ): "applied" | "busy" | "mismatch" | "old" {
     flushStreamText((target) => target.chaId === patch.characterId && target.chatId === patch.id);
-    const outcome = applyChatPatch(patch);
+    const outcome = applyChatPatch(patch, job);
     if (outcome === "old") {
         return outcome;
     }
@@ -2345,13 +2412,18 @@ export function prepareChatHydrationRefresh(ref: ChatRef, revision: string): ((s
         chatHydrationHold(ref) === "none";
 }
 
-/** The body of a job's `chatPatch` (`GenerationChatPatchEvent` without its event fields). */
+/** A whole-row patch, shared by feed installation and resolved job hydration. */
 export type ChatPatch = Omit<ChatPatchBody, "removed" | "messages"> & {
     characterId: string;
     id: string;
     revision: string;
     removed?: readonly string[];
     messages?: Readonly<ChatPatchBody["messages"]>;
+};
+
+/** Job hydration's input; streamed rows are resolved before the whole-row installer runs. */
+export type JobChatPatch = Omit<ChatPatch, "messages"> & {
+    messages?: Readonly<GenerationChatPatchEvent["messages"]>;
 };
 
 /**
@@ -2405,9 +2477,8 @@ function settleJobHydration(
             // sequence is below every protocol sequence (the first `accepted`/`chunk` fills the raw
             // buffer whatever its claim; the watermark above keeps a covering copy shown), and the
             // buffer starts as the mirror's text.
-            const message = heldChat({ chaId: server.characterId, chatId: server.id })?.message.find(
-                (candidate) => candidate.chatId === entry.messageId,
-            );
+            const chat = heldChat({ chaId: server.characterId, chatId: server.id });
+            const message = chat?.message[positionOf(key, chat, entry.messageId)];
             if (
                 message &&
                 serverGenerations.get(messageKey)?.generationId !== entry.generationId &&
@@ -2433,9 +2504,8 @@ function settleJobHydration(
                 // The copy holds this text or a later one; the stream buffer is kept for a lower claim.
                 continue;
             }
-            const message = heldChat({ chaId: server.characterId, chatId: server.id })?.message.find(
-                (candidate) => candidate.chatId === messageKey.slice(prefix.length),
-            );
+            const chat = heldChat({ chaId: server.characterId, chatId: server.id });
+            const message = chat?.message[positionOf(key, chat, messageKey.slice(prefix.length))];
             if (message) {
                 message.data = entry.text;
             }
@@ -2492,6 +2562,7 @@ function applyChatHydration(server: {
         if (keepsProjection("hypaV3Data", heldData, copy.hypaV3Data)) {
             copy.hypaV3Data = heldData;
         }
+        dropMessagePositions(key);
         holdingOf(server.characterId).chats[slot(server.id)] = copy;
     } else {
         holdingOf(server.characterId).summaries[slot(server.id)] = metaOf(server.data);
@@ -2514,7 +2585,10 @@ function applyChatHydration(server: {
  * loaded, or a patch whose messages do not fit the mirror's is a mismatch. Nothing changes before
  * the whole result is checked.
  */
-function applyChatPatch(patch: ChatPatch): "applied" | "busy" | "mismatch" | "old" {
+function applyChatPatch(
+    patch: JobChatPatch,
+    job?: { jobId: string; streaming: readonly StreamingMessage[] },
+): "applied" | "busy" | "mismatch" | "old" {
     const key = keyOf(patch.characterId, patch.id);
     const ref = { chaId: patch.characterId, chatId: patch.id };
     const heldRevision = chatRevisions.get(key);
@@ -2551,20 +2625,67 @@ function applyChatPatch(patch: ChatPatch): "applied" | "busy" | "mismatch" | "ol
     }
     const fits = held.seq === next.seq && (held.revision === base.revision || held.revision === next.revision);
     const chat = isLoaded(ref) ? heldChat(ref) : undefined;
+    let resolved: ChatPatch | null = null;
     let patched: { start: number; tail: Message[] } | null = null;
     try {
-        patched = fits && chat && !staleChats.has(key) ? patchedTail(chat.message, patch) : null;
+        if (fits && chat && !staleChats.has(key)) {
+            resolved = resolveJobChatPatch(chat, patch, job);
+            patched = resolved ? patchedTail(chat.message, resolved) : null;
+        }
     } catch (error) {
         // Anything unexpected in a server copy: read whole instead of failing the event.
         console.error("[Save]", error);
     }
-    if (!chat || !patched) {
+    if (!chat || !resolved || !patched) {
         staleChats.add(key);
         return "mismatch";
     }
     staleChats.delete(key);
-    installChatPatch(chat, patch, patched);
+    installChatPatch(chat, resolved, patched);
     return "applied";
+}
+
+/** Resolves job-only stream references into detached rows without changing the mirror or its claims. */
+function resolveJobChatPatch(
+    chat: Chat,
+    patch: JobChatPatch,
+    job?: { jobId: string; streaming: readonly StreamingMessage[] },
+): ChatPatch | null {
+    const messages: NonNullable<ChatPatch["messages"]>[number][] = [];
+    const ref = { chaId: patch.characterId, chatId: patch.id };
+    const key = keyOf(ref.chaId, ref.chatId);
+    const streaming = new Map(job?.streaming.map((entry) => [entry.messageId, entry]));
+    for (const entry of patch.messages ?? []) {
+        if (!("streamed" in entry)) {
+            messages.push(entry);
+            continue;
+        }
+        const { id, streamed } = entry;
+        const buffer = serverGenerations.get(messageKeyOf(ref, id));
+        const active = streaming.get(id);
+        const row = chat.message[positionOf(key, chat, id)];
+        if (
+            !job ||
+            !row ||
+            !buffer ||
+            buffer.jobId !== job.jobId ||
+            buffer.generationId !== streamed.generationId ||
+            buffer.seq < 0 ||
+            retiredGenerations.has(streamed.generationId) ||
+            !active ||
+            active.generationId !== streamed.generationId ||
+            active.seq !== streamed.seq ||
+            !Number.isSafeInteger(streamed.seq) ||
+            streamed.seq < 0 ||
+            buffer.seq < streamed.seq
+        ) {
+            return null;
+        }
+        const message = clone<Message>(row);
+        message.data = buffer.text;
+        messages.push({ after: entry.after, message });
+    }
+    return { ...patch, messages };
 }
 
 /**
@@ -2636,19 +2757,103 @@ function stagedMetaFields(chat: Chat, fields: unknown): { remove: string[]; set:
 }
 
 /**
+ * A feed body's row diffs, checked and cloned before installation. Every id must be held once in
+ * the diff list and absent from the body's whole rows and removals. Field changes exclude identity,
+ * text, and `__proto__`; text reconstructs from the held UTF-16 prefix at exactly the body's base.
+ * The JSON clone preserves own keys on reactive rows, including nested `__proto__` entries.
+ */
+function stagedRowDiffs(
+    key: string,
+    chat: Chat,
+    patch: Pick<ChatPatch, "removed" | "messages">,
+    diffs: unknown,
+): { position: number; message: Message }[] | null {
+    if (!Array.isArray(diffs)) return null;
+    const named = new Set(patch.removed ?? []);
+    for (const { message } of patch.messages ?? []) named.add((message as Message).chatId!);
+    const staged: { position: number; message: Message }[] = [];
+    for (const diff of diffs) {
+        if (!isPlainRecord(diff) || typeof diff.id !== "string" || named.has(diff.id)) return null;
+        named.add(diff.id);
+        const position = positionOf(key, chat, diff.id);
+        if (position < 0) return null;
+        const held = chat.message[position];
+        const unset: string[] = [];
+        const set: [string, unknown][] = [];
+        if (diff.fields !== undefined) {
+            if (!isPlainRecord(diff.fields) || !isPlainRecord(diff.fields.set) || !Array.isArray(diff.fields.unset))
+                return null;
+            const fields = new Set<string>();
+            const fresh = (name: unknown): name is string => {
+                if (
+                    typeof name !== "string" ||
+                    name === "data" ||
+                    name === "chatId" ||
+                    name === "__proto__" ||
+                    fields.has(name)
+                )
+                    return false;
+                fields.add(name);
+                return true;
+            };
+            for (const name of diff.fields.unset) {
+                if (!fresh(name)) return null;
+                unset.push(name);
+            }
+            for (const [name, value] of Object.entries(diff.fields.set)) {
+                if (!fresh(name)) return null;
+                set.push([name, clone(value)]);
+            }
+        }
+        let data: string | undefined;
+        if (diff.text !== undefined) {
+            if (
+                !isPlainRecord(diff.text) ||
+                typeof diff.text.keep !== "number" ||
+                !Number.isSafeInteger(diff.text.keep) ||
+                diff.text.keep < 0 ||
+                typeof diff.text.text !== "string" ||
+                typeof held.data !== "string" ||
+                held.data.length < diff.text.keep
+            )
+                return null;
+            data = held.data.slice(0, diff.text.keep) + diff.text.text;
+        }
+        const message = clone(held);
+        const target = message as unknown as Record<string, unknown>;
+        for (const name of unset) delete target[name];
+        for (const [name, value] of set) {
+            Object.defineProperty(target, name, { value, enumerable: true, configurable: true, writable: true });
+        }
+        if (data !== undefined) message.data = data;
+        staged.push({ position, message });
+    }
+    return staged;
+}
+
+/**
  * The checked row/meta/revision step shared by job hydration and idle change-feed patches. A whole
  * `meta` replaces the chat's fields; `fields` (a feed delta's, from `stagedMetaFields`) changes only
- * the fields it names.
+ * the fields it names. Diffed rows before the patched tail retain their positions.
  */
 function installChatPatch(
     chat: Chat,
     patch: ChatPatch,
     patched: { start: number; tail: Message[] },
     fields?: { remove: string[]; set: [string, unknown][] },
+    rowsBeforeTail: { position: number; message: Message }[] = [],
 ) {
     // Only the positions that changed are written (an append writes one; a removal or insertion
     // writes the positions after it), never the whole list as call arguments.
     const { start, tail } = patched;
+    // Field/text-only checkpoints keep the lazy index: ids and their order are unchanged.
+    if (
+        chat.message.length !== start + tail.length ||
+        tail.some((message, index) => chat.message[start + index]?.chatId !== message.chatId)
+    ) {
+        dropMessagePositions(keyOf(patch.characterId, patch.id));
+    }
+    for (const { position, message } of rowsBeforeTail) chat.message[position] = message;
     for (let index = 0; index < tail.length; index++) {
         if (chat.message[start + index] !== tail[index]) {
             chat.message[start + index] = tail[index];
@@ -2699,11 +2904,15 @@ function installChatPatch(
 }
 
 /**
- * A feed patch or delta is optional: a miss neither marks stale nor touches a job's locks. A delta's
- * metadata fields are checked against the held copy with its rows, before anything changes; one
+ * A feed body or completed row read is optional: a miss neither marks stale nor touches job locks.
+ * Metadata fields and row diffs are checked against the held copy before anything changes; one
  * that does not fit is a miss.
  */
-function applyRemoteChatPatch(ref: ChatRef, revision: string, body: ChatPatchBody | ChatDeltaBody): boolean {
+function applyRemoteChatPatch(
+    ref: ChatRef,
+    revision: string,
+    body: ChatPatchBody | ChatDeltaBody | ChatRowDeltaBody,
+): boolean {
     const key = keyOf(ref.chaId, ref.chatId);
     if (!isLoaded(ref) || !canRefreshChat(ref) || staleChats.has(key) || chatRevisions.get(key) !== body.baseRevision) {
         return false;
@@ -2738,16 +2947,36 @@ function applyRemoteChatPatch(ref: ChatRef, revision: string, body: ChatPatchBod
     const patch: ChatPatch = { ...change, characterId: ref.chaId, id: ref.chatId, revision };
     let patched: { start: number; tail: Message[] } | null = null;
     let fields: ReturnType<typeof stagedMetaFields> | undefined = null;
+    let rowDiffs: ReturnType<typeof stagedRowDiffs> = null;
+    const rowsBeforeTail: { position: number; message: Message }[] = [];
     try {
         patched = patchedTail(chat.message, patch);
         fields = metaFields === undefined ? undefined : stagedMetaFields(chat, metaFields);
+        rowDiffs = "rowDiffs" in body ? stagedRowDiffs(key, chat, patch, body.rowDiffs) : [];
+        if (patched && rowDiffs) {
+            const inTail = rowDiffs.filter(({ position }) => position >= patched!.start);
+            const tailPositions =
+                inTail.length > 0
+                    ? new Map(patched.tail.map((message, index) => [message.chatId, index]))
+                    : new Map<string, number>();
+            for (const row of rowDiffs) {
+                if (row.position < patched.start) {
+                    rowsBeforeTail.push(row);
+                } else {
+                    const index = tailPositions.get(row.message.chatId!);
+                    if (index === undefined) return false;
+                    patched.tail[index] = row.message;
+                }
+            }
+        }
     } catch (error) {
         console.error("[Save]", error);
-    }
-    if (!patched || fields === null) {
         return false;
     }
-    installChatPatch(chat, patch, patched, fields);
+    if (!patched || fields === null || rowDiffs === null) {
+        return false;
+    }
+    installChatPatch(chat, patch, patched, fields, rowsBeforeTail);
     return true;
 }
 
@@ -3278,8 +3507,8 @@ onCharacterSelectionChanged(() => loadSelectedChat());
 // ---------------------------------------------------------------------------------------------
 // Messages and metadata
 
-function indexOfMessage(chat: Chat, id: string): number {
-    return chat.message.findIndex((message) => message.chatId === id);
+function indexOfMessage(ref: ChatRef, chat: Chat, id: string): number {
+    return positionOf(keyOf(ref.chaId, ref.chatId), chat, id);
 }
 
 /** An owned copy of an anchor (a caller may reuse its object). */
@@ -3312,13 +3541,14 @@ export function appendMessage(
     } else if ("end" in anchor) {
         position = chat.message.length;
     } else {
-        const after = indexOfMessage(chat, anchor.after);
+        const after = indexOfMessage(ref, chat, anchor.after);
         if (after === -1) {
             throw new Error(`No message ${anchor.after} to insert after`);
         }
         position = after + 1;
     }
     chat.message.splice(position, 0, ...messages);
+    dropMessagePositions(keyOf(ref.chaId, ref.chatId));
     changed(keyOf(ref.chaId, ref.chatId));
     enqueueLocalEdit(ref, { op: "append", messages: clone(messages), anchor }, { absent: true });
     return messages.map((message) => message.chatId!);
@@ -3333,7 +3563,7 @@ export function appendMessage(
 export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
     const chat = requireChat(ref);
     const message = clone<Message>(input);
-    const index = indexOfMessage(chat, message.chatId!);
+    const index = indexOfMessage(ref, chat, message.chatId!);
     if (index === -1) {
         throw new Error(`No message ${message.chatId}`);
     }
@@ -3346,6 +3576,7 @@ export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
     }
     const before = { value: clone(chat.message[index]) };
     chat.message[index] = message;
+    dropMessagePositions(keyOf(ref.chaId, ref.chatId));
     changed(keyOf(ref.chaId, ref.chatId));
     enqueueLocalEdit(ref, { op: "setMessage", message: clone(message) }, before);
 }
@@ -3447,7 +3678,7 @@ export function patchMessage(
     unset: readonly string[] = [],
 ) {
     const chat = requireChat(ref);
-    const index = indexOfMessage(chat, id);
+    const index = indexOfMessage(ref, chat, id);
     if (index === -1) {
         throw new Error(`No message ${id}`);
     }
@@ -3461,7 +3692,7 @@ export function patchMessage(
 /** Sets a message's text. */
 export function setMessageText(ref: ChatRef, id: string, text: string) {
     const chat = requireChat(ref);
-    const index = indexOfMessage(chat, id);
+    const index = indexOfMessage(ref, chat, id);
     if (index === -1) {
         throw new Error(`No message ${id}`);
     }
@@ -3486,7 +3717,7 @@ export function setMessageTranslation(
     translation: DeepReadonly<MessageTranslation> | null,
 ): boolean {
     const chat = requireChat(ref);
-    const index = indexOfMessage(chat, id);
+    const index = indexOfMessage(ref, chat, id);
     if (index === -1) {
         throw new Error(`No message ${id}`);
     }
@@ -3516,7 +3747,7 @@ export function setMessageTranslation(
 /** The chat of `ref` and which of `ids` it holds; throws for a chat not held or a message locked. */
 function removalTarget(ref: ChatRef, ids: readonly string[]): { chat: Chat; present: string[] } {
     const chat = requireChat(ref);
-    const present = ids.filter((id) => indexOfMessage(chat, id) !== -1);
+    const present = ids.filter((id) => indexOfMessage(ref, chat, id) !== -1);
     assertUnlocked(ref, present);
     return { chat, present };
 }
@@ -3587,7 +3818,7 @@ async function removeAfterAsking(ref: ChatRef, ids: readonly string[]): Promise<
             return;
         }
         const chat = lifetimeOf(ref.chaId) === owner && findCharacter(ref.chaId) ? heldChat(ref) : undefined;
-        const present = chat ? ids.filter((id) => indexOfMessage(chat, id) !== -1) : [];
+        const present = chat ? ids.filter((id) => indexOfMessage(ref, chat, id) !== -1) : [];
         if (present.length === 0) {
             return;
         }
@@ -3609,12 +3840,12 @@ async function removeAfterAsking(ref: ChatRef, ids: readonly string[]): Promise<
  */
 function applyRemoval(ref: ChatRef, chat: Chat, present: readonly string[], mark: { retract?: true } = {}) {
     const removing = new Set(present);
-    const before =
-        removing.size === 1
-            ? { value: clone(chat.message.find((message) => removing.has(message.chatId!))!) }
-            : undefined;
-    const kept = chat.message.filter((message) => !removing.has(message.chatId!));
+    const positions = [...removing].map((id) => indexOfMessage(ref, chat, id));
+    const before = removing.size === 1 ? { value: clone(chat.message[positions[0]]) } : undefined;
+    const removedPositions = new Set(positions);
+    const kept = chat.message.filter((_, position) => !removedPositions.has(position));
     chat.message.splice(0, chat.message.length, ...kept);
+    dropMessagePositions(keyOf(ref.chaId, ref.chatId));
     changed(keyOf(ref.chaId, ref.chatId));
     enqueueLocalEdit(ref, { op: "remove", ids: [...removing], ...mark }, before);
 }
@@ -3646,13 +3877,13 @@ export function restoreUnsentRemoval(
     const index = entry.ops.findLastIndex(
         (op) => op.op === "remove" && op.ids.length === ids.size && op.ids.every((id) => ids.has(id)),
     );
-    const anchorIndex = anchor === null ? -1 : indexOfMessage(chat, anchor);
+    const anchorIndex = anchor === null ? -1 : indexOfMessage(ref, chat, anchor);
     if (
         index === -1 ||
         index !== entry.ops.length - 1 ||
         (anchor !== null && anchorIndex === -1) ||
         anchorIndex !== chat.message.length - 1 ||
-        messages.some((message) => indexOfMessage(chat, message.chatId!) !== -1)
+        messages.some((message) => indexOfMessage(ref, chat, message.chatId!) !== -1)
     ) {
         return false;
     }
@@ -3661,6 +3892,7 @@ export function restoreUnsentRemoval(
     const restored = clone<Message[]>(messages);
     restored.forEach((message) => dropInvalidTranslation(message));
     chat.message.push(...restored);
+    dropMessagePositions(key);
     changed(key);
     staleChats.add(key);
     if (entry.ops.length === 0 && !entry.create && !entry.resend && !inflight.has(key)) {
@@ -4040,6 +4272,7 @@ export function replaceChat(ref: ChatRef, input: DeepReadonly<Chat>) {
     delete chat.isStreaming;
     delete chat.activeStreamingDisplayOptimizationMode;
     settleHypaV3Data(keyOf(ref.chaId, ref.chatId), chat, heldChat(ref));
+    dropMessagePositions(keyOf(ref.chaId, ref.chatId));
     holdingOf(ref.chaId).chats[slot(ref.chatId)] = chat;
     changed(keyOf(ref.chaId, ref.chatId));
     enqueueLocalEdit(ref, { op: "replace", chat: sendChat(chat) });
@@ -4095,14 +4328,14 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     prepareMessages(next.message, new Set());
     for (const message of next.message) {
         // A new message may not reuse an id the chat already has.
-        if (!baseMessages.has(message.chatId!) && indexOfMessage(current, message.chatId!) !== -1) {
+        if (!baseMessages.has(message.chatId!) && indexOfMessage(ref, current, message.chatId!) !== -1) {
             message.chatId = uuidv4();
         }
     }
     const resultIds = new Set(next.message.map((message) => message.chatId!));
     const removed = baseline.chat.message
         .map((message) => message.chatId!)
-        .filter((id) => !resultIds.has(id) && indexOfMessage(current, id) !== -1);
+        .filter((id) => !resultIds.has(id) && indexOfMessage(ref, current, id) !== -1);
     const changedMessages = next.message.filter((message) => {
         const before = baseMessages.get(message.chatId!);
         return before !== undefined && JSON.stringify(before) !== JSON.stringify(message);
@@ -4116,7 +4349,7 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     const patches: { id: string; patch: MessagePatch }[] = [];
     for (const message of changedMessages) {
         const id = message.chatId!;
-        if (indexOfMessage(current, id) === -1) {
+        if (indexOfMessage(ref, current, id) === -1) {
             continue;
         }
         const beforeFields = baseMessages.get(id)! as unknown as Record<string, unknown>;
@@ -4159,7 +4392,7 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
         applyRemoval(ref, current, removed);
     }
     for (const { id, patch } of patches) {
-        const index = indexOfMessage(current, id);
+        const index = indexOfMessage(ref, current, id);
         if (index !== -1) {
             applyMessagePatch(ref, current, index, id, patch);
         }
@@ -4171,12 +4404,12 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
             const anchor: MessageAnchor =
                 previous === null
                     ? { start: true }
-                    : indexOfMessage(current, previous) !== -1
+                    : indexOfMessage(ref, current, previous) !== -1
                       ? { after: previous }
                       : { end: true };
             appendMessage(ref, message, { anchor });
         }
-        if (indexOfMessage(current, id) !== -1) {
+        if (indexOfMessage(ref, current, id) !== -1) {
             previous = id;
         }
     }
@@ -4438,6 +4671,7 @@ export function assembleChats(
     for (const key of Object.keys(held)) {
         delete held[key];
     }
+    for (const key of messagePositions.keys()) dropMessagePositions(key);
     loadedKeys.clear();
     pins.clear();
     lastUse.clear();
@@ -4916,6 +5150,7 @@ export function normalizeNewCharacter(chaId: string) {
         insertChat(chaId, 0, { id: uuidv4(), message: [], note: "", name: "Chat 1", localLore: [] });
     }
     for (const chat of chatsOf(chaId)) {
+        dropMessagePositions(keyOf(chaId, chat.id!));
         prepareChatInput(chat, character);
         chat.message ??= [];
         prepareMessages(chat.message, new Set());
@@ -5562,6 +5797,7 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
     }
     const ref = { chaId: group.characterId, chatId: group.chatId };
     const chat = heldChat(ref);
+    dropMessagePositions(group.key);
     const firstRename = new Map([...renames].map(([id, values]) => [id, values[0]]));
     if (chat) {
         for (const message of chat.message) {
@@ -6089,6 +6325,7 @@ function applyRemoteChat(server: RemoteChat) {
         } else if (!isMember(ref)) {
             insertSummary(server.characterId, memberIds(server.characterId).length, server.id, metaOf(server.data));
         } else if (isLoaded(ref)) {
+            dropMessagePositions(key);
             holdingOf(server.characterId).chats[slot(server.id)] = server.data;
         } else {
             holdingOf(server.characterId).summaries[slot(server.id)] = metaOf(server.data);
@@ -6140,7 +6377,7 @@ function isUnloadedMember(ref: ChatRef): boolean {
 }
 
 /**
- * Stale and noticed chats eligible for a whole-chat read inside the save cycle, never alongside a
+ * Stale and noticed chats eligible for an idle read inside the save cycle, never alongside a
  * batch: loaded ones (and ones no longer listed). A member that is not loaded is refreshed through
  * its character's summary list instead (`idleSummaryRefreshes`).
  */
@@ -6232,6 +6469,89 @@ export function settleSummaryRefresh(
 /** The sequence of a chat's latest notice (0 without one), taken before its read for `finishIdleChatRefresh`. */
 export function chatNoticeSeq(ref: ChatRef): number {
     return noticedChats.get(keyOf(ref.chaId, ref.chatId))?.seq ?? 0;
+}
+
+/** The manifest and notice captured when an idle row read is issued. */
+export type IdleChatRows = { revision: string; rows: ChatRowsManifest; notice: number };
+
+/** A noticed manifest still applies only to the loaded, idle, non-stale copy at its exact base. */
+export function idleChatRows(ref: ChatRef): IdleChatRows | undefined {
+    const key = keyOf(ref.chaId, ref.chatId);
+    const notice = noticedChats.get(key);
+    if (
+        !notice?.rows ||
+        notice.revision === null ||
+        (notice.rows.changed.length === 0 && notice.rows.meta.length === 0) ||
+        !isLoaded(ref) ||
+        !canRefreshChat(ref) ||
+        staleChats.has(key) ||
+        chatRevisions.get(key) !== notice.rows.baseRevision
+    )
+        return undefined;
+    return { revision: notice.revision, rows: notice.rows, notice: notice.seq };
+}
+
+/**
+ * Completes a row read only for the notice captured at issue, checking every requested row before
+ * the staged feed-patch installer runs. A miss keeps the notice and read stamp for a whole-chat
+ * fallback. Success retires only that notice, and leaves job hydration and locks alone.
+ */
+export function finishIdleChatRows(
+    ref: ChatRef,
+    request: IdleChatRows,
+    server: ChatRowsReadResult | undefined,
+    readStamp: number,
+): boolean {
+    const key = keyOf(ref.chaId, ref.chatId);
+    const current = idleChatRows(ref);
+    if (
+        !current ||
+        current.notice !== request.notice ||
+        current.rows !== request.rows ||
+        !server ||
+        "moved" in server ||
+        server.revision !== request.revision ||
+        server.characterId !== ref.chaId ||
+        server.id !== ref.chatId ||
+        !Array.isArray(server.rows)
+    )
+        return false;
+    const fields = server.metaFields;
+    const names = new Set(request.rows.meta);
+    if (fields !== undefined) {
+        if (
+            !isPlainRecord(fields) ||
+            !isPlainRecord(fields.set) ||
+            !Array.isArray(fields.remove) ||
+            fields.merge ||
+            fields.mergeUnset
+        )
+            return false;
+        for (const name of [...Object.keys(fields.set), ...fields.remove]) {
+            if (!names.delete(name)) return false;
+        }
+    }
+    if (names.size > 0) return false;
+    const missing = new Set(request.rows.changed);
+    if (server.rows.length !== missing.size) return false;
+    for (const row of server.rows) {
+        if (!row || !missing.delete(row.id) || !isPlainRecord(row.message) || row.message.chatId !== row.id)
+            return false;
+    }
+    if (
+        missing.size > 0 ||
+        !applyRemoteChatPatch(ref, server.revision, {
+            baseRevision: request.rows.baseRevision,
+            count: request.rows.count,
+            removed: request.rows.removed,
+            messages: server.rows.map(({ after, message }) => ({ after, message })),
+            ...(server.metaFields !== undefined ? { metaFields: server.metaFields } : {}),
+        })
+    )
+        return false;
+    if (noticedChats.get(key)?.seq === request.notice) noticedChats.delete(key);
+    if (laterIdleReadOut(key, readStamp)) staleChats.add(key);
+    return true;
 }
 
 /**
@@ -6451,15 +6771,18 @@ function applyRemoteSummary(
  * (`applyRemoteCollection`). A member that is not loaded is noticed too and also answers
  * `"collection"`: its summary comes with that list (never a whole-chat read), unless the entry's
  * summary knowledge (`known`: `summary` or `summaryBase`) settles it at once (`applyRemoteSummary`).
- * An optional by-id change (`patch`: a `ChatPatchBody`, or a `ChatDeltaBody` with the metadata by
- * field) applies without a notice or read only to a loaded, idle, non-stale chat held at exactly its
- * base revision. A miss follows the ordinary notice path. Nothing is queued or discarded.
+ * An optional by-id change (`patch`: a `ChatPatchBody`, `ChatDeltaBody`, or `ChatRowDeltaBody`)
+ * applies without a notice or read only to a loaded, idle, non-stale chat held at exactly its base
+ * revision. A miss follows the ordinary notice path. A row manifest is kept with that notice only
+ * under the same eligibility checks; the idle read rechecks them before requesting named rows.
+ * Nothing is queued or discarded.
  */
 export function noteRemoteChat(
     ref: ChatRef,
     revision: string | null,
-    patch?: ChatPatchBody | ChatDeltaBody,
+    patch?: ChatPatchBody | ChatDeltaBody | ChatRowDeltaBody,
     known?: { summary?: ChatSummary; summaryBase?: string },
+    rows?: ChatRowsManifest,
 ): "noticed" | "collection" | "ignored" {
     const key = keyOf(ref.chaId, ref.chatId);
     if (!findCharacter(ref.chaId)) {
@@ -6483,7 +6806,16 @@ export function noteRemoteChat(
         return "ignored";
     }
     noticeSeq += 1;
-    noticedChats.set(key, { seq: noticeSeq, revision });
+    const manifest =
+        revision !== null &&
+        rows &&
+        isLoaded(ref) &&
+        canRefreshChat(ref) &&
+        !staleChats.has(key) &&
+        heldRevision === rows.baseRevision
+            ? rows
+            : undefined;
+    noticedChats.set(key, { seq: noticeSeq, revision, ...(manifest ? { rows: manifest } : {}) });
     notifyWork();
     return isLoaded(ref) ? "noticed" : "collection";
 }
@@ -7141,6 +7473,7 @@ function installRead(
     } else {
         staleChats.delete(key);
     }
+    dropMessagePositions(key);
     holding.chats[slot(id)] = chat;
     delete holding.summaries[slot(id)];
     loadedKeys.add(key);
@@ -7283,6 +7616,7 @@ export function trimLoadedChats() {
             const [chaId, id] = key.split("\u0000");
             const ref = { chaId, chatId: id };
             if (!heldChat(ref) || !isMember(ref)) {
+                dropMessagePositions(key);
                 loadedKeys.delete(key);
                 continue;
             }
@@ -7297,6 +7631,7 @@ export function trimLoadedChats() {
         for (const { chaId, id } of candidates.slice(0, candidates.length - MAX_LOADED_CHATS)) {
             const holding = holdingAt(chaId)!;
             holding.summaries[slot(id)] = metaOf(holding.chats[slot(id)]);
+            dropMessagePositions(keyOf(chaId, id));
             delete holding.chats[slot(id)];
             loadedKeys.delete(keyOf(chaId, id));
         }

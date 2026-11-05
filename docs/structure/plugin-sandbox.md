@@ -128,14 +128,16 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 ### Job owner presence
 
-[Generation channels](server-generation.md#generation-channels) owns the contract a tab-side tool or hook answers inside
-(pings, the 45 s silent socket, the 120 s absence bound, attach replay).
+[Generation channels](server-generation.md#generation-channels) owns presence, deadlines and safe-boundary transfers;
+`src/ts/network/jobChannel.ts` documents callback execution and viewer refusal.
 
-- MCP owner checks exclude silent sockets. A live tab answering pings can keep a long non-streaming provider call
-  running without progress frames.
-- A provider failure on absence expiry (`disconnected`) follows the partial-save and job-end path. A completed reply's
-  hooks skip ([server generation](server-generation.md#generation-channels)): `editoutput` and `replacerafterRequest`
-  keep the text; an undelivered `chatOutput` callback runs late in a returning tab under the chat's own context.
+- Hooks may run on a worker showing another chat: `getRootDocument` finds no message DOM there. Targets remain the
+  job's; device-local keys are the worker's. A delivered callback never runs on a second tab, even if its device sleeps.
+- A hidden worker tab answered a hook in 19 ms (`checkJobHandoff.mjs`); Chrome's intensive timer throttling after 5
+  minutes hidden, which can delay a hook that waits on a timer, is unmeasured.
+- MCP excludes silent owners; a live tab answering pings keeps a long provider call alive. Absence failure saves partial
+  text and ends the job. Completed-reply transforms keep text; undelivered listeners run late, delivered ones are
+  missed.
 
 ## State
 
@@ -253,8 +255,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - `getDatabaseDetached.test.ts`: database reads, cache reuse, setter load skipping, and scoped reads (summaries,
   `getChats`) over `StoreBackedServer`.
 - `permissionStore.test.ts`: grants over `FakeResourceServer`.
-- `util/playwright/checkJobProtocol.mjs` (a browser check, not in the gate): a real v3 plugin provider answers job
-  callbacks from the sandbox ([test-harness](test-harness.md)).
+- Browser checks, not in the gate ([test-harness](test-harness.md)): `util/playwright/checkJobProtocol.mjs` (a real v3
+  plugin provider answers job callbacks from the sandbox) and `checkJobHandoff.mjs` (hooks move between two tabs).
 - Not tested: hot reload, and the remaining sandbox RPC surface.
 
 ## Known Hazards
@@ -316,14 +318,13 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   `withDetachedDatabaseChats`: flush, then unloaded copies via `readChatRefsDetached` or
   `src/ts/plugins/apiV3/detachedChatCache.ts`, never installed; held chats stay pinned until the synchronous copy.
   Unsafe copies and hooks load.
-- `getDatabase(keys, { chats: "summaries" })` reads, flushes, pins or loads no chat: `chatSummaries` comes from
-  `chatSummaryList` in `src/ts/storage/chatStore.svelte.ts`, and every plugin character ingestion path strips it.
-  `getChats` returns a page; outside hooks its member selector limits detached reads to that page (helper JSDoc).
+- `getDatabase(keys, { chats: "summaries" })` reads, flushes, pins, and loads no chat (`chatSummaryList` in
+  `src/ts/storage/chatStore.svelte.ts`); every plugin character setter strips `chatSummaries`. Outside hooks, `getChats`
+  reads only its page's unloaded chats.
 - `getChatFromIndex`, `setChatToIndex`, `parseRisuChat`, and `sendChat` capture their chat by id first and await
-  `ensureChatLoaded`. `setDatabase`/`setDatabaseLite` skip loading omitted or undefined chats or ordered JSON matches to
-  held chats or valid detached copies; matches are rechecked synchronously, then fall back once to loading
-  (`applyPluginDatabaseWithChats` JSDoc). Other character setters capture targets, pin and load, then apply
-  synchronously.
+  `ensureChatLoaded`. `setDatabase`/`setDatabaseLite` skip loading omitted chats and exact round trips, rechecked before
+  applying, else load (`applyPluginDatabaseWithChats` JSDoc). Other character setters capture targets, pin and load,
+  then apply synchronously.
 - Plugins hand back whole objects, but [chats are saved as changes](chat-store.md#whole-chat-writers).
   `applyPluginCharacter`/`applyPluginCharacters` JSDoc holds reconciliation rules (`reconcileCharacterChats`,
   `applyChatResult`); a chat left out is deleted, never the last one. New setters use these functions, never assign

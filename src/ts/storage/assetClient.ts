@@ -337,7 +337,7 @@ export async function readAsset(key: string, options: AssetRequestOptions = {}):
 }
 
 /** A record of a write batch: its encoded header and its bytes. */
-type WriteRecord = { header: Uint8Array; bytes: Uint8Array };
+type WriteRecord = AssetWriteItem & { header: Uint8Array };
 
 /**
  * Splits the items into request batches of at most {@link ASSET_BATCH_CLIENT_RECORDS} records and
@@ -348,7 +348,8 @@ function writeBatches(items: readonly AssetWriteItem[]): WriteRecord[][] {
     const batches: WriteRecord[][] = [];
     let batch: WriteRecord[] = [];
     let size = 0;
-    for (const { key, bytes } of items) {
+    for (const item of items) {
+        const { key, bytes } = item;
         const header = encodeAssetRecordHeader(key, bytes.byteLength);
         const recordSize = header.byteLength + bytes.byteLength;
         if (
@@ -359,7 +360,7 @@ function writeBatches(items: readonly AssetWriteItem[]): WriteRecord[][] {
             batch = [];
             size = 0;
         }
-        batch.push({ header, bytes });
+        batch.push({ ...item, header });
         size += recordSize;
     }
     if (batch.length > 0) {
@@ -388,7 +389,7 @@ function joinRecords(batch: readonly WriteRecord[]): Uint8Array {
 /**
  * Writes every item under its key with `POST /api/assets/write`, one batch at a time (see
  * {@link writeBatches}), each request retried as described above. Canonical names with matching
- * `sha256` are checked once per unique name and skip uploads when the server holds verified bytes.
+ * `sha256` are checked per batch, so each present answer renews its one-hour lease beside its upload.
  * An item without a matching `sha256` (a custom id or raw overwrite) always uploads and prevents
  * skipping every item for its key in this call. A failed or timed-out check sends everything; an abort
  * rejects with the signal's reason (`AbortError` for a nullish reason), even if every upload could be skipped.
@@ -412,20 +413,22 @@ export async function writeAssets(items: readonly AssetWriteItem[], options: Ass
     for (const key of alwaysWrite) {
         candidates.delete(key);
     }
-    let uploads = items;
-    if (candidates.size > 0) {
-        try {
-            const missing = await missingAssets([...candidates], options);
-            throwIfAborted(signal);
-            uploads = items.filter((item) => !candidates.has(item.key) || missing.has(item.key));
-        } catch (error) {
-            throwIfAborted(signal);
-            console.warn("Asset missing check failed; uploading all assets", error);
+    for (const batch of writeBatches(items)) {
+        const batchCandidates = [...new Set(batch.map((item) => item.key).filter((key) => candidates.has(key)))];
+        let uploads = batch;
+        if (batchCandidates.length > 0) {
+            try {
+                const missing = await missingAssets(batchCandidates, options);
+                throwIfAborted(signal);
+                uploads = batch.filter((item) => !candidates.has(item.key) || missing.has(item.key));
+            } catch (error) {
+                throwIfAborted(signal);
+                console.warn("Asset missing check failed; uploading batch", error);
+            }
         }
-    }
-    throwIfAborted(signal);
-    for (const batch of writeBatches(uploads)) {
-        const body = joinRecords(batch);
+        throwIfAborted(signal);
+        if (!uploads.length) continue;
+        const body = joinRecords(uploads);
         const da = await requestWithRetry(
             ASSET_BATCH_WRITE_PATH,
             () => ({

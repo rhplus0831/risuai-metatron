@@ -6,6 +6,7 @@ import {
     type ResourceBatchResult,
     type ResourceBootRequest,
     type ResourceBootResult,
+    type ResourceChangesSince,
     type ResourceReadEntries,
     type ResourceReadKindsResult,
     type ResourceReadRefsAnswer,
@@ -17,7 +18,7 @@ import { authFetch, getNodeServerProxyAuth } from "./serverAuth";
 import { clearTransformResults } from "../parser/transformResults";
 
 /**
- * Transport for the server resource routes (`/api/resources`, `/api/backups`). Every mutation sends
+ * Transport for the server resource routes (`/api/resources`, `/api/backups`). Every resource mutation sends
  * the database epoch the client loaded (`setResourceEpoch`); the server answers 412 when a restore
  * replaced the data since, which surfaces as `ResourceEpochMismatchError`. Once an epoch is loaded,
  * every epoch-bearing read is checked too; a mismatch calls the listener before throwing. Normal
@@ -108,7 +109,9 @@ function checkedEpoch<T extends { epoch?: string }>(result: T): T {
     return result;
 }
 
-async function send(path: string, init: RequestInit & { mutation?: boolean } = {}): Promise<Response> {
+type ResourceRequestInit = RequestInit & { mutation?: boolean; conflictAsRequestError?: boolean };
+
+async function send(path: string, init: ResourceRequestInit = {}): Promise<Response> {
     const headers = new Headers(init.headers);
     if (init.mutation) {
         headers.set(RESOURCE_EPOCH_HEADER, currentEpoch);
@@ -151,7 +154,7 @@ async function send(path: string, init: RequestInit & { mutation?: boolean } = {
     if (response.status === 412 && body.error === "EpochMismatch") {
         throw epochMismatch(body.epoch ?? "");
     }
-    if (response.status === 409) {
+    if (response.status === 409 && !init.conflictAsRequestError) {
         throw new ResourceConflictError(
             Array.isArray(body.conflicts)
                 ? body.conflicts
@@ -168,7 +171,7 @@ async function send(path: string, init: RequestInit & { mutation?: boolean } = {
     throw new ResourceRequestError(response.status, body.error ?? `Request failed (${response.status})`);
 }
 
-async function sendJson<T>(path: string, init: RequestInit & { mutation?: boolean } = {}): Promise<T> {
+async function sendJson<T>(path: string, init: ResourceRequestInit = {}): Promise<T> {
     return (await (await send(path, init)).json()) as T;
 }
 
@@ -216,6 +219,7 @@ function readKeys(entries: Partial<ResourceReadEntries>): Set<string> {
     return new Set([
         ...(entries.refs ?? []).map(({ kind, id }) => readKey("refs", kind, id)),
         ...(entries.chats ?? []).map(({ characterId, id }) => readKey("chats", characterId, id)),
+        ...(entries.chatRows ?? []).map(({ characterId, id }) => readKey("chatRows", characterId, id)),
         ...(entries.chatCollections ?? []).map((id) => readKey("chatCollections", id)),
         ...(entries.chatSummaryCollections ?? []).map((id) => readKey("chatSummaryCollections", id)),
     ]);
@@ -246,6 +250,10 @@ function mergeRounds(rounds: ResourceReadRefsResult[], requested: ReadonlySet<st
         rounds.map((round) => round.chats),
         ({ characterId, id }) => readKey("chats", characterId, id),
     );
+    const chatRows = merged(
+        rounds.map((round) => round.chatRows),
+        ({ characterId, id }) => readKey("chatRows", characterId, id),
+    );
     const chatCollections = merged(
         rounds.map((round) => round.chatCollections),
         ({ characterId }) => readKey("chatCollections", characterId),
@@ -258,13 +266,15 @@ function mergeRounds(rounds: ResourceReadRefsResult[], requested: ReadonlySet<st
         ...rounds[0],
         ...(items && { items }),
         ...(chats && { chats }),
+        ...(chatRows && { chatRows }),
         ...(chatCollections && { chatCollections }),
         ...(chatSummaryCollections && { chatSummaryCollections }),
     };
 }
 
 /**
- * Named records, chats (`chats`), characters' whole chat lists with their order (`chatCollections`),
+ * Named records, chats (`chats`), revision-guarded rows and metadata fields (`chatRows`), characters' whole chat lists
+ * with their order (`chatCollections`),
  * and characters' chat summaries with their order (`chatSummaryCollections`).
  *
  * The answer is complete and in request order, or the call throws: the server may stop at its byte
@@ -273,12 +283,14 @@ function mergeRounds(rounds: ResourceReadRefsResult[], requested: ReadonlySet<st
  * (a character's record and its collections come from one round; separate entries may not), and a
  * round of another epoch halts through `epochMismatch` like any other read, discarding all rounds.
  * A continuation that makes no progress throws `ResourceRequestError`; an aborted signal stops
- * continuation. Callers install only the complete result, never partially collected rounds.
+ * continuation. A moved row read is an answered entry; its caller can read the chat whole.
+ * Callers install only the complete result, never partially collected rounds.
  */
 export async function readRefs(
     refs: readonly { kind: string; id: string }[],
     options: {
         chats?: readonly { characterId: string; id: string }[];
+        chatRows?: ResourceReadEntries["chatRows"];
         chatCollections?: readonly string[];
         chatSummaryCollections?: readonly string[];
         signal?: AbortSignal;
@@ -324,6 +336,23 @@ export async function readRefs(
 export async function listRevisions(options: { signal?: AbortSignal } = {}): Promise<ResourceRevisionListing> {
     return checkedEpoch(
         await sendJson<ResourceRevisionListing>("/api/resources/revisions", { signal: options.signal }),
+    );
+}
+
+/** Refs in an epoch's bounded cursor interval, or an expired answer; epoch checks match the whole listing. */
+export async function listChanges(options: {
+    since: number;
+    until: number;
+    epoch: string;
+    signal?: AbortSignal;
+}): Promise<ResourceChangesSince> {
+    const query = new URLSearchParams({
+        since: String(options.since),
+        until: String(options.until),
+        epoch: options.epoch,
+    });
+    return checkedEpoch(
+        await sendJson<ResourceChangesSince>(`/api/resources/revisions?${query}`, { signal: options.signal }),
     );
 }
 
@@ -488,6 +517,39 @@ export function sendBatchOnUnload(body: string, onResult?: (result: ResourceBatc
 
 export async function listBackups(): Promise<BackupSnapshotInfo[]> {
     return (await sendJson<{ items: BackupSnapshotInfo[] }>("/api/backups")).items;
+}
+
+/** Snapshot controls have no resource epoch and preserve the server's conflict message. */
+export async function takeSnapshot(label?: string | null): Promise<BackupSnapshotInfo> {
+    return (
+        await sendJson<{ snapshot: BackupSnapshotInfo }>("/api/backups/snapshot", {
+            method: "POST",
+            headers: jsonHeaders,
+            body: JSON.stringify({ label }),
+            conflictAsRequestError: true,
+        })
+    ).snapshot;
+}
+
+export async function updateSnapshot(
+    id: string,
+    update: { pinned?: boolean; label?: string | null },
+): Promise<BackupSnapshotInfo> {
+    return (
+        await sendJson<{ snapshot: BackupSnapshotInfo }>(`/api/backups/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            headers: jsonHeaders,
+            body: JSON.stringify(update),
+            conflictAsRequestError: true,
+        })
+    ).snapshot;
+}
+
+export function deleteSnapshot(id: string): Promise<{ deleted: true }> {
+    return sendJson(`/api/backups/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        conflictAsRequestError: true,
+    });
 }
 
 export async function restoreBackup(id: string): Promise<string> {

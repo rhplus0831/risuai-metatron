@@ -37,8 +37,7 @@ and the module headers.
 
 - `src/ts/process/index.svelte.ts`: the send API (`sendChat`, `previewChat`, `previewChatReport`); `OpenAIChat` and
   `MultiModal` are declared in `shared/openai.ts`.
-- `src/ts/process/serverGeneration.ts`: the send as a server job (`sendChatOnServer`, `ServerSendResult`,
-  `installReplyAlternatives`).
+- `src/ts/process/serverGeneration.ts`: the send as a server job (`sendChatOnServer`, `ServerSendResult`).
 - `src/ts/process/localSends.ts`: this tab's sends, one per chat (`localSends`, `beginLocalSend`, `isLocalSend`,
   `anyLocalSend`).
 - `src/ts/process/jobStages.ts`: the latest presentation stage per followed job (`setJobStage`, `dropJobStage`,
@@ -97,8 +96,8 @@ and the module headers.
 
 ### Reroll modules
 
-- `src/ts/process/prereroll.ts`: the swipe candidates of a reply (module header; `Prereroll`, `PreUnreroll`,
-  `addRerolls`).
+- `src/ts/process/prereroll.ts`: in-memory swipe navigation (`Prereroll`, `PreUnreroll`), now unfilled: extra samples
+  are stored as `candidates` ([persistence](persistence.md#messages)).
 - `src/ts/process/rerollHistory.ts`: the screen's per-chat bundle history (`createRerollHistory`) and the restore after
   a reroll (`restoreRerolledReplies`, Flows `Reroll`).
 
@@ -170,25 +169,27 @@ stage.
 - Stop before dispatch sends nothing; after dispatch it immediately sends request-id cancel with an independent 10 s per
   attempt and the same retry schedule.
 - A retained uncertain id is cancelled even if this invocation stops before dispatch. A known owned job still uses
-  owner-scoped DELETE while followed.
+  participant-scoped DELETE while followed.
 
 ### Stop for a job this tab does not follow
 
 - A chat with a server lock or a known job this tab does not follow shows an extra Stop beside Send (or chat setup). The
   advisory `foreignJobs` mark never participates in `isChatBusy` or removes the Send hotkey.
-- `stopChatJob(ref)` admits one confirmation flow per chat, even across screen remounts. `readChatGeneration` looks up
-  the current slot without attaching or holding plugin work; `stopChatGeneration` sends that exact job id. Each exchange
-  has a 10 s deadline; a timeout ends the flow. The confirmation wait is not bounded.
+- `stopChatJob(ref)` admits one confirmation flow per chat, even across screen remounts. It uses `readChatGeneration`
+  and `stopChatGeneration` (their comments). Each exchange has a 10 s deadline; a timeout ends the flow. The
+  confirmation wait is not bounded.
 - A 409 `jobChanged` reads and confirms the replacement; 404 clears the mark and stops nothing.
 - A successful stop leaves the mark through abort grace; a later idle lookup, an owned/followed lookup, the release of
   that chat's server lock, or a new local send/follow clears it.
-- Only the explicit chat stop attributes another client; request-id cancel remains an ordinary silent abort.
+- Creator viewers and current workers use the followed-job Stop, with `HandoffControls.svelte` beside it (Take back for
+  `viewingJobs`, Hand off to a worker); pending/former workers use the foreign-job Stop. Participant and chat stops
+  attribute the stopper; request-id cancel remains an ordinary silent abort.
 
 ### Replays and uncertain creates
 
-- Classify a replay before saving or following it. Follow owned jobs; never attach to a foreign job. A known terminal
-  remains known if a later read fails. Foreign running jobs retain their id for the explicit chat Stop flow; other
-  foreign or malformed outcomes reconcile the chat and report whether that read succeeded.
+- Classify a replay before saving or following it; only a handoff ticket starts a foreign follow. A known terminal
+  survives failed reads. Foreign running jobs retain their id for chat Stop; other foreign or malformed outcomes
+  reconcile the chat and report whether that read succeeded.
 - After an unanswered create, keep the request uncertain until a decoded result fences a delayed copy of the POST:
   success, replay, or a `registryRefusal` for the same frozen body. `503`, `chatBusy`, `chatBindingIncomplete`, and
   `chatLoreOverrideOrphaned` may change on retry, so they do not fence it; pre-lookup and undecodable failures also
@@ -216,18 +217,16 @@ stage.
 - The tab's barrier reads the job chat whole once when it still does not hold the receipt (no or an older remembered
   copy, an unapplied patch, or a copy refused by the acknowledged floor), admitting it with the job's held streaming
   metadata before running the hook ([store](chat-store.md#callback-hydration)).
-- A live `sequence` event counts one `messages` statistic and installs the part's alternatives
-  (`installReplyAlternatives`); it keeps the job followed and its channel open. A `done.sequence.stopped` shows
-  `serverJob.sequenceStopped`.
+- A live `sequence` event counts one `messages` statistic; it keeps the job followed and its channel open. A
+  `done.sequence.stopped` shows `serverJob.sequenceStopped`.
 - A failed terminal goes through `alertJobError` with checked debug fields ([diagnostics](diagnostics.md)); sequence
   errors prefix the shown message with the progress and leave those fields intact.
 - An abort with `abortedBy: "other"` shows `serverJob.stoppedElsewhere`; every other abort stays silent.
 
 ### Reconnect and status reads
 
-`followJobToEnd` and `followOnce` (`serverCommands.ts`) reconnect after socket loss and read status after a close
-without a terminal. Only consecutive failed attaches exhaust `MAX_ATTACHES`; a resumed connection or a close while the
-page is away does not count. Kept terminal receipts and shutdown outcomes are owned by
+`followJobToEnd` / `followOnce` (`serverCommands.ts`) document reconnect budgets, status reads, ticket wakes, lost
+takeovers, viewer boot resume and creator warnings. Kept receipts and shutdown outcomes belong to
 [generation](server-generation.md#job-receipts).
 
 ### Recovery reads
@@ -326,8 +325,8 @@ page is away does not count. Kept terminal receipts and shutdown outcomes are ow
   response budget, with its last two chats protected.
 - A new `PromptItem` type needs the `Recipes` entry's places, plus import conversion.
 - Inlays are not stored in chat text. Removing an inlay (`removeInlayAsset`, the Inlay Explorer) breaks the
-  `{{inlay::id}}` tags that name it; it removes metadata only, since retained snapshots may reference the blob. Deleting
-  messages never removes inlays.
+  `{{inlay::id}}` tags that name it; it removes metadata only; the asset sweep reclaims the blob. Deleting messages
+  never removes inlays.
 - Images become `MultiModal` input only when the model has `LLMFlags.hasImageInput`. Otherwise the job captions them
   (`captionImage`, `memory.md`).
 - Built-in Jinja templates enforce roles: Gemma has no system role, and Mistral requires alternating roles.
@@ -416,10 +415,8 @@ In `shared/lore/activation.ts`.
 
 ### Limitations
 
-- Sequence events are live-only: parts completed without an attached socket do not install alternatives or count
-  statistics in that tab, and a received part's alternatives are not installed if the tab's chat copy lacks its reply.
-  Server chat writes and receipt counts are authoritative. Decision: [generation](server-generation.md) command
-  sequences.
+- Sequence events are live-only: parts completed without an attached socket do not count statistics in that tab. Server
+  chat writes and receipt counts are authoritative. Decision: [generation](server-generation.md) command sequences.
 - Accepted limits of sends in different chats at once (each chat has one local send and one server job; different chats
   of a tab run together). Decision: Per-Chat Send D1 and D6, [archive](../archived-plan/README.md).
   - Ordinary send, continue, reroll, and group jobs leave the character revision unchanged: last-chatted activity is

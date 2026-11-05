@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { diskNeeded, diskWithFree, liveBytes, matureSweep, seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { encodeSecretPath } from "../../../shared/llmSecrets.ts";
 import {
@@ -18,6 +19,9 @@ import { upstreamAssetRecordName } from "../data/upstream/archive.ts";
 import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
 import { stageUpstreamImport } from "../data/upstream/importStage.ts";
 import { decodeUpstreamDatabase } from "../data/upstream/risuSave.ts";
+import { runUpstreamExportWorker } from "../data/upstream/exportRunner.ts";
+import { stageUpstreamExport } from "../data/upstream/exportStage.ts";
+import { resolveStorageKey } from "../routes/storage.ts";
 import { createUpstreamExportStaging } from "../routes/backupsUpstreamExport.ts";
 import {
     createResourceTestClient,
@@ -27,14 +31,20 @@ import {
     type ResourceTestClient,
 } from "./testSupport.ts";
 
+function defer() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    return { promise, resolve };
+}
+
 vi.mock(import("../data/upstream/exportRunner.ts"), async (importOriginal) => {
     const { createExportRunnerMock } = await import("./exportRunnerMock.ts");
     const { stageUpstreamExport } = await import("../data/upstream/exportStage.ts");
     return createExportRunnerMock(await importOriginal(), {
-        runUpstreamExportWorker: async (input, { signal }) => {
+        runUpstreamExportWorker: vi.fn(async (input, { signal }) => {
             signal.throwIfAborted();
             return stageUpstreamExport(input);
-        },
+        }),
     });
 });
 
@@ -81,7 +91,8 @@ const chatGroup = (characterId: string, chatId: string, name: string) => ({
 });
 
 /** Alice with a profile image on disk, two chats, and a referenced image that is missing. */
-async function seed(s: ResourceTestClient) {
+/** `onDisk` places the profile file directly: an upload's one-hour lease would keep it past an export's end. */
+async function seed(s: ResourceTestClient, { onDisk = false } = {}) {
     await s.create("characters", "alice", {
         chaId: "alice",
         name: "Alice",
@@ -93,7 +104,13 @@ async function seed(s: ResourceTestClient) {
         chats: [chatGroup("alice", "first", "First"), chatGroup("alice", "second", "Second")],
     });
     expect(res.status, await res.clone().text()).toBe(200);
-    expect((await writeAsset(s, "assets/alice.png", PROFILE)).status).toBe(200);
+    if (onDisk) {
+        const file = resolveStorageKey(s.savePath, "assets/alice.png")!;
+        await fs.mkdir(path.dirname(file), { recursive: true });
+        await fs.writeFile(file, PROFILE);
+    } else {
+        expect((await writeAsset(s, "assets/alice.png", PROFILE)).status).toBe(200);
+    }
 }
 
 const prepareBody = (extra: Record<string, unknown> = {}) => ({
@@ -365,4 +382,175 @@ describe("upstreamAssetRecordName", () => {
             expect(upstreamAssetRecordName(key), key).toBeNull();
         }
     });
+});
+
+it("waits for a preparing export's keys and retains them while waiting and throughout download", async () => {
+    const now = Date.UTC(2030, 0, 20);
+    const s = await server({ assetLifecycle: { wallClock: () => now, monoClock: () => 0, exportWaitMs: 4321 } });
+    await seed(s, { onDisk: true });
+    await fs.utimes(resolveStorageKey(s.savePath, "assets/alice.png")!, 0, 0);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const entered = defer();
+    const release = defer();
+    const waiting = defer();
+    vi.mocked(runUpstreamExportWorker).mockImplementationOnce(async (input) => {
+        entered.resolve();
+        await release.promise;
+        return stageUpstreamExport(input);
+    });
+    const setTimeout = globalThis.setTimeout;
+    const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: (...values: unknown[]) => void,
+        delay?: number,
+        ...args: unknown[]
+    ) => {
+        const timer = setTimeout(callback, delay, ...args);
+        if (delay === 4321) waiting.resolve();
+        return timer;
+    }) as unknown as typeof globalThis.setTimeout);
+    const preparing = prepare(s);
+    let response: Response | undefined;
+    try {
+        await entered.promise;
+        const { revision } = (await (await s.get("characters", "alice")).json()) as { revision: string };
+        expect((await s.put("characters", "alice", { baseRevision: revision, data: { chaId: "alice" } })).status).toBe(
+            200,
+        );
+        const scan = s.context.assetLifecycle.scan();
+        expect(await Promise.race([waiting.promise.then(() => "waiting"), scan.then(() => "finished")])).toBe(
+            "waiting",
+        );
+        release.resolve();
+        const { token } = await preparing;
+        const prepared = await scan;
+        expect(prepared.complete, prepared.reasons.join("\n")).toBe(true);
+        expect(prepared.referenced).toMatchObject({ count: 1, dedupedBytes: Buffer.byteLength(PROFILE) });
+        expect((await s.context.assetLifecycle.scan()).unreferenced.count).toBe(0);
+        response = await downloadRequest(s, token);
+        expect(response.status).toBe(200);
+        expect(s.context.upstreamExportStaging.size).toBe(0);
+        expect((await s.context.assetLifecycle.scan()).unreferenced.count).toBe(0);
+        const records = parseArchive(new Uint8Array(await response.arrayBuffer()));
+        expect(records[0].data.toString()).toBe(PROFILE);
+        expect((await s.context.assetLifecycle.scan()).unreferenced).toMatchObject({
+            count: 1,
+            bytes: Buffer.byteLength(PROFILE),
+        });
+    } finally {
+        release.resolve();
+        const { token } = await preparing;
+        if (response && !response.bodyUsed) await response.body?.cancel();
+        await s.json(UPSTREAM_EXPORT_CANCEL_PATH, { token });
+        timerSpy.mockRestore();
+    }
+});
+
+it("releases prepared export roots on cancellation and expiry", async () => {
+    const now = Date.UTC(2030, 0, 20);
+    const s = await server({
+        upstreamExport: { stagedTtlMs: 100 },
+        assetLifecycle: { wallClock: () => now, monoClock: () => 0 },
+    });
+    await seed(s, { onDisk: true });
+    await fs.utimes(resolveStorageKey(s.savePath, "assets/alice.png")!, 0, 0);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    for (const end of ["cancel", "expiry"]) {
+        let { revision } = (await (await s.get("characters", "alice")).json()) as { revision: string };
+        expect(
+            (
+                await s.put("characters", "alice", {
+                    baseRevision: revision,
+                    data: { chaId: "alice", image: "assets/alice.png" },
+                })
+            ).status,
+        ).toBe(200);
+        const { token } = await prepare(s);
+        ({ revision } = (await (await s.get("characters", "alice")).json()) as { revision: string });
+        expect((await s.put("characters", "alice", { baseRevision: revision, data: { chaId: "alice" } })).status).toBe(
+            200,
+        );
+        expect((await s.context.assetLifecycle.scan()).unreferenced.count, end).toBe(0);
+        if (end === "cancel") expect((await s.json(UPSTREAM_EXPORT_CANCEL_PATH, { token })).status).toBe(204);
+        else await vi.advanceTimersByTimeAsync(100);
+        const report = await s.context.assetLifecycle.scan();
+        expect(report.complete, report.reasons.join("\n")).toBe(true);
+        expect(report.unreferenced.count, end).toBe(1);
+        expect((await downloadRequest(s, token)).status).toBe(404);
+    }
+});
+
+it("refuses export prepare with 507 before writing any staging", async () => {
+    const s = await server({ assetLifecycle: { statfs: async () => diskWithFree(0) } });
+    const needed = diskNeeded(2 * liveBytes(s.savePath));
+    const before = readdirSync(path.join(s.savePath, ".tmp"));
+    const mkdir = vi.spyOn(fs, "mkdir");
+    try {
+        const response = await prepareRequest(s);
+        expect(response.status).toBe(507);
+        expect(await response.json()).toEqual({ error: "Insufficient Storage", needed, free: 0 });
+        expect(mkdir.mock.calls.filter(([name]) => String(name).includes("export-upstream"))).toEqual([]);
+        expect(readdirSync(path.join(s.savePath, ".tmp"))).toEqual(before);
+    } finally {
+        mkdir.mockRestore();
+    }
+});
+
+it("waits for the export worker and keeps its candidate through download finalization", async () => {
+    const clock = sweepClock();
+    const s = await server({ assetLifecycle: { ...clock.options, exportWaitMs: 4321 } });
+    const key = "assets/export-candidate.png";
+    seedSweepAsset(s, key, "export candidate");
+    await matureSweep(s, clock);
+    const revision = await s.create("characters", "held", { chaId: "held", image: key });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const entered = defer(),
+        release = defer(),
+        waiting = defer();
+    vi.mocked(runUpstreamExportWorker).mockImplementationOnce(async (input) => {
+        entered.resolve();
+        await release.promise;
+        return stageUpstreamExport(input);
+    });
+    const timeout = globalThis.setTimeout;
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: (...args: unknown[]) => void,
+        delay?: number,
+        ...args: unknown[]
+    ) => {
+        const handle = timeout(callback, delay, ...args);
+        if (delay === 4321) waiting.resolve();
+        return handle;
+    }) as typeof setTimeout);
+    const preparing = prepare(s);
+    let response: Response | undefined;
+    let sweeping: ReturnType<typeof s.context.assetLifecycle.sweep> | undefined;
+    try {
+        await entered.promise;
+        expect((await s.put("characters", "held", { baseRevision: revision, data: { chaId: "held" } })).status).toBe(
+            200,
+        );
+        sweeping = s.context.assetLifecycle.sweep({ dryRun: false });
+        expect(await Promise.race([waiting.promise.then(() => "waiting"), sweeping.then(() => "deleted early")])).toBe(
+            "waiting",
+        );
+        release.resolve();
+        const { token } = await preparing;
+        expect(await sweeping).toMatchObject({ deleted: [], skipped: [{ key, reason: "held by export" }] });
+        response = await downloadRequest(s, token);
+        expect(response.status).toBe(200);
+        expect(await s.context.assetLifecycle.sweep({ dryRun: false })).toMatchObject({
+            deleted: [],
+            skipped: [{ key, reason: "held by export" }],
+        });
+        const records = parseArchive(new Uint8Array(await response.arrayBuffer()));
+        expect(records.some((r) => r.data.toString() === "export candidate")).toBe(true);
+        expect((await s.context.assetLifecycle.sweep({ dryRun: false })).deleted).toEqual([key]);
+    } finally {
+        release.resolve();
+        await sweeping;
+        const { token } = await preparing;
+        if (response && !response.bodyUsed) await response.body?.cancel();
+        await s.json(UPSTREAM_EXPORT_CANCEL_PATH, { token });
+        timer.mockRestore();
+    }
 });
