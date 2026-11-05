@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (20)
+- [Client and plugins](#client-and-plugins) (19)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
@@ -387,14 +387,6 @@ Three helpers misbehave on inputs no current caller is known to pass. Probed by 
 **Why it matters:** an image rendered from such a URL is broken until a reload.
 
 **Suggested handling:** reproduce with a lost controller and a cached entry, then check `navigator.serviceWorker.controller` before returning a `/sw/img` URL.
-
-### MCP full login stores an undefined refresh token
-
-`src/ts/process/mcp/mcplib.ts` `oauthLogin`'s full-login branch (~901) registers `refreshToken: tokenData.refresh_token` unchecked, unlike the refresh branch. `addAuthRefresh` (`src/ts/storage/collectionStore.svelte.ts`) accepts it, so a server that issues no refresh token leaves an entry whose next refresh sends the string "undefined", then a full login after the non-200. `server/src/mcp/client.ts` (~816) omits a missing token but then refreshes with `""`. Found by a lookup trial of the Guides To Source run (2026-11-05); not reproduced. Owner: mcp.
-
-**Why it matters:** one wasted token request per handshake and a bogus stored record that confuses diagnostics.
-
-**Suggested handling:** store and use a refresh entry only when the token is a non-empty string.
 
 ### Combined-paragraph translation sends protected text
 

@@ -1,7 +1,7 @@
 # Found Issues Sweep Plan
 
 Status: drafted 2026-11-05; the owner accepted every open question's recommendation the same day; landed:
-A1 (5d20f1e28), D2 (ba8849a05), F2 (4edfb27ab), C1 (c34f52416), B1 (fc21926be), J1 (406e15d19). Source: the 104 entries of [found-issues](../research/found-issues.md) as of `cc1fc4008`, each
+A1 (5d20f1e28), D2 (ba8849a05), F2 (4edfb27ab), C1 (c34f52416), B1 (fc21926be), J1 (406e15d19), E2 (6555c82e2). Source: the 104 entries of [found-issues](../research/found-issues.md) as of `cc1fc4008`, each
 re-checked against that tree the same day by eleven read-only workers whose file and line evidence was
 spot-checked. Every entry has a disposition in the **Index**: a slice here, an **Open question** for the
 owner, **Deferred** work for a later plan, or **Stays** (an accepted trade-off or a note that is reference
