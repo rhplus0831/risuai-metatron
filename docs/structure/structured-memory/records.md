@@ -162,18 +162,19 @@ group: no walk reads them.
   existing chat with no row is at revision 0. A decline is a write, so it moves the revision and a state row never sits
   at 0, which the snapshot walk refuses.
 - `adoptionDeclined` is the first column added to a table that already exists. `SCHEMA_VERSION` stays 3, since the group
-  is optional. `openChatSchema` adds it inside its `BEGIN IMMEDIATE`, so concurrent and repeated starts add it once and
-  every old row reads 0. `MEMORY_TABLES_SQL` has it too, because a restore's staged store runs that `CREATE` and never
-  `openChatSchema`. `memoryStateLayout` takes the two-column and the three-column `memory_state` and nothing else, and
-  the walk reads a two-column snapshot as 0 and refuses any value but 0 or 1.
+  is optional. `openChatSchema` adds it once, every old row reading 0. `MEMORY_TABLES_SQL` has it too, because a
+  restore's staged store runs that `CREATE` and never `openChatSchema`. `memoryStateLayout` takes both layouts, and the
+  walk reads a two-column snapshot as 0.
+- `memory_event_sources` and `memory_staged_event_sources` map `(chatSeq, messageId)` to citing events for
+  `readContents`' `citing`. Derived, outside the group: event-write triggers keep them, an older build's too;
+  `openChatSchema` backfills them.
 - `memory_pages` (`type`, `title`), `memory_events` (`title`, `status`, `createdRevision`), `memory_threads` (`title`,
   `state`), `memory_runs` (`result`): each with `seq` autoincrement, `chatSeq`, `id`, and `data`, the whole record as
   stored JSON, unique `(chatSeq, id)`. Sections stay embedded in the page's row.
 - `seq` is storage order, not message order; an update keeps it, because upserts never use `INSERT OR REPLACE`.
 - A restore (`walkMemorySnapshot`, `createMemoryStagingSink`, `copyStagedMemory`) keeps `data` and every revision as
-  stored, gives records fresh `seq`s in the source's order, and moves `chatSeq` through the staged chat seq map. The
-  listed columns come from the record, never from the source's columns, which a live write can leave unequal (a title
-  with a lone surrogate binds as U+FFFD and stays an escape in `data`).
+  stored, gives records fresh `seq`s in the source's order, and moves `chatSeq` through the staged chat seq map. Listed
+  columns come from the record, never the source's, which a live write can leave unequal.
 
 ## Coupling
 

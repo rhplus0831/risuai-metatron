@@ -56,7 +56,8 @@ import {
  * The resource store owns the connection, the epoch, and the transactions: the writers here join the
  * caller's open transaction and never begin or commit one, so a caller can compose them with its own
  * work. Past `createMemoryTables`, only a restore writes these tables: its staged writer
- * (`createMemoryStagingSink`) and the install's copy (`copyStagedMemory`).
+ * (`createMemoryStagingSink`) and the install's copy (`copyStagedMemory`). SQLite triggers maintain the
+ * derived message-to-event citation relations through every write path.
  *
  * A rebuild stages what it records in tables of its own (`createMemoryTables`' `rebuild`), one code path
  * with the live tables (`createRecordSet`), under a run row with a revision of its own. Nothing but that
@@ -136,6 +137,8 @@ export type MemoryEventRow = { readonly chatSeq: number; readonly data: string }
 /** What sets one record table apart from the others; everything else is one code path. */
 type MemoryTable = {
     table: string;
+    /** The derived message-to-event relation, for event tables only. */
+    sourcesTable?: string;
     /** Whether the kind has a `title` column. */
     titled: boolean;
     /** The column holding the kind's closed value, named as the record's own field. */
@@ -156,6 +159,7 @@ const MEMORY_TABLES: Record<MemoryRecordKind, MemoryTable> = {
     },
     events: {
         table: "memory_events",
+        sourcesTable: "memory_event_sources",
         titled: true,
         statusColumn: "status",
         statusValues: MEMORY_EVENT_STATUSES,
@@ -180,7 +184,11 @@ const MEMORY_TABLES: Record<MemoryRecordKind, MemoryTable> = {
 /** The tables a rebuild stages its records in, which differ from the live ones in their names alone. */
 const MEMORY_STAGED_TABLES: Record<MemoryRecordKind, MemoryTable> = {
     pages: { ...MEMORY_TABLES.pages, table: "memory_staged_pages" },
-    events: { ...MEMORY_TABLES.events, table: "memory_staged_events" },
+    events: {
+        ...MEMORY_TABLES.events,
+        table: "memory_staged_events",
+        sourcesTable: "memory_staged_event_sources",
+    },
     threads: { ...MEMORY_TABLES.threads, table: "memory_staged_threads" },
     runs: { ...MEMORY_TABLES.runs, table: "memory_staged_runs" },
 };
@@ -385,6 +393,14 @@ const namesNothing = (kinds: readonly ChangedKind[]) =>
  * `descriptions`, and the caller owns the counter the revision moves in.
  */
 function createRecordSet(db: DatabaseSync, descriptions: Record<MemoryRecordKind, MemoryTable>) {
+    const selectCitingEvents = db.prepare(
+        `SELECT ${listedColumns(descriptions.events)
+            .map((column) => `e.${column}`)
+            .join(", ")}, ` +
+            `octet_length(e.data) AS bytes FROM ${descriptions.events.table} e WHERE e.chatSeq = ? ` +
+            `AND e.id IN (SELECT eventId FROM ${descriptions.events.sourcesTable} ` +
+            "WHERE chatSeq = ? AND messageId IN (SELECT value FROM json_each(?))) ORDER BY e.seq",
+    );
     const selectCreatedRevision = db.prepare(
         `SELECT createdRevision FROM ${descriptions.events.table} WHERE chatSeq = ? AND id = ?`,
     );
@@ -489,10 +505,11 @@ function createRecordSet(db: DatabaseSync, descriptions: Record<MemoryRecordKind
         tables,
 
         /**
-         * Each kind's table of contents, with no record's body. A page row whose column says trashed is
+         * Each kind's table of contents, with no record's body. `citing` limits only the event list to
+         * events citing any of those message ids, once each. A page row whose column says trashed is
          * listed in `trash`, by id and title alone, so every reader that starts from `pages` leaves it out.
          */
-        listing(seq: number): Omit<MemoryContents, "revision" | "adoptionDeclined"> {
+        listing(seq: number, citing?: readonly string[]): Omit<MemoryContents, "revision" | "adoptionDeclined"> {
             const pages: MemoryContents["pages"] = [];
             const trash: MemoryContents["trash"] = [];
             const rows = tables.pages.selectContents.all(seq) as {
@@ -511,7 +528,9 @@ function createRecordSet(db: DatabaseSync, descriptions: Record<MemoryRecordKind
             return {
                 pages,
                 trash,
-                events: tables.events.selectContents.all(seq) as MemoryContents["events"],
+                events: (citing === undefined
+                    ? tables.events.selectContents.all(seq)
+                    : selectCitingEvents.all(seq, seq, JSON.stringify(citing))) as MemoryContents["events"],
                 threads: tables.threads.selectContents.all(seq) as MemoryContents["threads"],
                 runs: tables.runs.selectContents.all(seq) as MemoryContents["runs"],
             };
@@ -734,9 +753,15 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
         /**
          * The table of contents, read without any record's body. Missing chat: null. Each list is in
          * `seq` order, which is storage order, not message order: an updated record keeps its place.
+         * With `citing`, only events citing any of those message ids are listed, each once; other lists
+         * are unchanged, and an empty `citing` lists no events.
          * It says whether the chat declined adoption, and nothing else of its HypaV3 summaries.
          */
-        readContents(characterId: string, chatId: string): MemoryContents | null {
+        readContents(
+            characterId: string,
+            chatId: string,
+            options?: { citing?: readonly string[] },
+        ): MemoryContents | null {
             const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
             if (!chat) {
                 return null;
@@ -744,7 +769,7 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             const { revision, adoptionDeclined } = stateOf(chat.seq);
             return {
                 revision: tokens.token(chat.seq, revision),
-                ...live.listing(chat.seq),
+                ...live.listing(chat.seq, options?.citing),
                 ...(adoptionDeclined === 1 ? { adoptionDeclined: true as const } : {}),
             };
         },
@@ -913,12 +938,16 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                 }
             },
 
-            readContents(characterId: string, chatId: string): MemoryContents | null {
+            readContents(
+                characterId: string,
+                chatId: string,
+                options?: { citing?: readonly string[] },
+            ): MemoryContents | null {
                 const found = runOf(characterId, chatId);
                 return (
                     found && {
                         revision: tokens.token(found.seq, found.run.revision),
-                        ...staged.listing(found.seq),
+                        ...staged.listing(found.seq, options?.citing),
                         adoptionDeclined: true,
                     }
                 );
@@ -1171,7 +1200,8 @@ export function createMemoryStagingSink(db: DatabaseSync): MemorySnapshotSink {
  * `copyStagedChats` and before `copyStagedCheckpoints`, whose policy copy stays the install's last,
  * with the staged store attached as `staged`: onto the live chats through `STAGED_CHAT_SEQS`, each
  * record table by staged seq with fresh live seqs, so every chat's storage order holds. Every row here
- * was checked by the staging walk, and nothing is parsed.
+ * was checked by the staging walk and keeps its stored text; triggers derive citations as events are
+ * copied into the live tables.
  */
 export function copyStagedMemory(db: DatabaseSync): void {
     const records = Object.values(MEMORY_TABLES).map((description) => {

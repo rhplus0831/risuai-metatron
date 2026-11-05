@@ -30,8 +30,9 @@ import type { WriterMemory } from "./writer.ts";
  * - A repair or confirmed delete also replays affected threads from surviving events, retiring an
  *   unsupported opening and preserving states the full history cannot explain (`withReconciledThreads`).
  * - A chat write reaches the records through `reconcileMessageChanges`: a delete a person confirmed
- *   retracts what cites the message, and an edit marks what cites it for a re-record. It runs in the
- *   write's own turn, holds up no send, and has no fence: a running writer sees `revisionConflict` and
+ *   retracts what cites the message, and an edit marks what cites it for a re-record. The citation
+ *   relation selects the events whose bodies the reaction reads. It runs in the write's own turn,
+ *   holds up no send, and has no fence: a running writer sees `revisionConflict` and
  *   admits its answer again from fresh records, or `windowChanged` when its source moved. A rebuild's
  *   staged records take the same reaction, so the swap loses neither.
  * - An automatic task re-records only what an edit explains (`automaticRerecords`). Any other mark stays
@@ -289,16 +290,20 @@ export function retireRerecorded(
 
 /**
  * What a chat write leaves of the records `memory` holds, in one synchronous step: see
- * `reconcileMessageChanges`. A chat with no records there stops here.
+ * `reconcileMessageChanges`. An empty notice reads nothing; otherwise the citation relation selects
+ * the event bodies to check. Without citing events it stops here. Retractions then reconcile their evidence.
  */
 function reactToMessageChanges({ memory }: { memory: WriterMemory }, notice: MessagesChanged): void {
     const { epoch, characterId: chaId, id: chatId } = notice;
-    const contents = memory.readContents(chaId, chatId);
+    const retracted = new Set(notice.retracted);
+    const rewritten = new Set(notice.rewritten);
+    if (retracted.size === 0 && rewritten.size === 0) {
+        return;
+    }
+    const contents = memory.readContents(chaId, chatId, { citing: [...new Set([...retracted, ...rewritten])] });
     if (!contents || contents.events.length === 0) {
         return;
     }
-    const retracted = new Set(notice.retracted);
-    const rewritten = new Set(notice.rewritten);
     const events: MemoryEvent[] = [];
     for (const { id, status } of contents.events) {
         const event = status === "retracted" ? undefined : memory.readRecord(chaId, chatId, "events", id)?.data;
@@ -327,8 +332,10 @@ function reactToMessageChanges({ memory }: { memory: WriterMemory }, notice: Mes
  * Nothing affected writes nothing. A chat's rebuild takes the same reaction on its staged records,
  * after the live ones.
  *
- * It reads no message: `notice` says what changed, and whether a marked event can be re-recorded is the
- * windows' to say. A notice from before an epoch change stops here.
+ * It reads no message: `notice` says what changed, and the citation relation limits the reaction's
+ * event body reads to those citing changed ids. Retraction's evidence reconciliation can read further
+ * records. Whether a marked event can be re-recorded is the windows' to say. A notice from before an
+ * epoch change stops here.
  */
 export function reconcileMessageChanges(store: Pick<ResourceStore, "epoch" | "memory">, notice: MessagesChanged): void {
     if (store.epoch() !== notice.epoch) {

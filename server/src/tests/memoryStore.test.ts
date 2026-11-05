@@ -11,6 +11,7 @@ import { MAX_READ_RESPONSE_BYTES } from "../../../shared/resources.ts";
 import { sealHypaV3Data } from "../../../shared/structuredMemory.ts";
 import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
+import { createCheckpointService } from "../data/checkpointService.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { messageSourceHash, projectChatMemory, type MemoryChanges } from "../data/memoryStore.ts";
 import {
@@ -21,7 +22,7 @@ import {
     ResourceValidationError,
 } from "../data/resourceStore.ts";
 import { readRecordSet, rebuildChanges } from "../prompt/memory/structured/rebuild.ts";
-import { installSnapshot } from "./stagedRestore.ts";
+import { installSnapshot, stageSnapshot } from "./stagedRestore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
 import { reconcileEvents, reconcileMessageChanges } from "../prompt/memory/structured/reconcile.ts";
 
@@ -166,9 +167,315 @@ const dropMemoryTables = [
     "memory_staged_events",
     "memory_staged_threads",
     "memory_staged_runs",
+    "memory_event_sources",
+    "memory_staged_event_sources",
 ]
     .map((table) => `DROP TABLE ${table};`)
     .join("\n");
+
+function eventCiting(id: string, messageIds: string[]) {
+    return {
+        ...records([id]).events[0],
+        sources: messageIds.map((messageId, index) => ({
+            messageId,
+            index,
+            hash: messageSourceHash({ role: "user", data: messageId }),
+        })),
+    };
+}
+function sourceRows(db: DatabaseSync, table = "memory_event_sources") {
+    return db.prepare(`SELECT chatSeq, messageId, eventId FROM ${table} ORDER BY chatSeq, messageId, eventId`).all();
+}
+
+it.each(["live", "staged"] as const)(
+    "maintains %s event citations through insert, source updates and removal",
+    (target) => {
+        const { store, db } = fileStore();
+        seed(store);
+        seed(store, "other");
+        if (target === "staged") {
+            for (const characterId of ["c", "other"]) {
+                store.memory.rebuild.begin(
+                    characterId,
+                    "k",
+                    {
+                        epoch: store.epoch(),
+                        mode: "rebuild",
+                        plan: [["m", "next"]],
+                    },
+                    {},
+                );
+            }
+        }
+        const memory = target === "live" ? store.memory : store.memory.rebuild.staged;
+        const table = target === "live" ? "memory_event_sources" : "memory_staged_event_sources";
+        const save = (changes: MemoryChanges, characterId = "c") =>
+            memory.write(
+                characterId,
+                "k",
+                {
+                    epoch: store.epoch(),
+                    baseRevision: memory.readContents(characterId, "k")!.revision,
+                },
+                changes,
+            );
+        const shared = eventCiting("shared", ["m", "next"]);
+        save({ ...records(["shared", "overlap"]), events: [shared, eventCiting("overlap", ["m", "other"])] });
+        save({ events: [eventCiting("shared", ["foreign"])] }, "other");
+        const seq = chatSeq(db);
+        const otherSeq = chatSeq(db, "other");
+        expect(sourceRows(db, table)).toEqual([
+            { chatSeq: seq, messageId: "m", eventId: "overlap" },
+            { chatSeq: seq, messageId: "m", eventId: "shared" },
+            { chatSeq: seq, messageId: "next", eventId: "shared" },
+            { chatSeq: seq, messageId: "other", eventId: "overlap" },
+            { chatSeq: otherSeq, messageId: "foreign", eventId: "shared" },
+        ]);
+        const all = memory.readContents("c", "k")!;
+        expect(memory.readContents("c", "k", { citing: ["next"] })).toEqual({ ...all, events: [all.events[0]] });
+        for (const citing of [["m"], ["next", "m", "next", "missing"]]) {
+            expect(memory.readContents("c", "k", { citing })).toEqual(all);
+        }
+        for (const citing of [[], ["missing"], ["foreign"]]) {
+            expect(memory.readContents("c", "k", { citing })).toEqual({ ...all, events: [] });
+        }
+        expect(memory.readContents("other", "k", { citing: ["m"] })!.events).toEqual([]);
+
+        save({ events: [eventCiting("shared", ["next", "new"])] });
+        expect(sourceRows(db, table)).toEqual([
+            { chatSeq: seq, messageId: "m", eventId: "overlap" },
+            { chatSeq: seq, messageId: "new", eventId: "shared" },
+            { chatSeq: seq, messageId: "next", eventId: "shared" },
+            { chatSeq: seq, messageId: "other", eventId: "overlap" },
+            { chatSeq: otherSeq, messageId: "foreign", eventId: "shared" },
+        ]);
+        expect(memory.readContents("c", "k", { citing: ["m"] })!.events.map(({ id }) => id)).toEqual(["overlap"]);
+        expect(memory.readContents("c", "k", { citing: ["next", "new"] })!.events.map(({ id }) => id)).toEqual([
+            "shared",
+        ]);
+        save({ remove: { events: ["shared"] } });
+        expect(sourceRows(db, table)).toEqual([
+            { chatSeq: seq, messageId: "m", eventId: "overlap" },
+            { chatSeq: seq, messageId: "other", eventId: "overlap" },
+            { chatSeq: otherSeq, messageId: "foreign", eventId: "shared" },
+        ]);
+        expect(memory.readContents("c", "k", { citing: ["next", "new"] })!.events).toEqual([]);
+        expect(memory.readContents("c", "k", { citing: ["other"] })!.events.map(({ id }) => id)).toEqual(["overlap"]);
+    },
+);
+
+it("replaces event citations when loading a checkpoint", () => {
+    const { store, db } = fileStore();
+    seed(store);
+    const saved = eventCiting("saved", ["m"]);
+    write(store, contents(store).revision, { events: [saved] });
+    const checkpoint = store.checkpoints.save("c", "k", "Saved citations", "manual")!;
+    write(store, contents(store).revision, {
+        events: [eventCiting("saved", ["changed"]), eventCiting("later", ["later-message"])],
+    });
+    const loaded = createCheckpointService({ store, busy: () => false, memoryTasks: null }).load({
+        epoch: store.epoch(),
+        body: { characterId: "c", chatId: "k", id: checkpoint.id, chatBaseRevision: store.chatRevision("c", "k") },
+    });
+    expect(loaded.status).toBe(200);
+    expect(sourceRows(db)).toEqual([{ chatSeq: chatSeq(db), messageId: "m", eventId: "saved" }]);
+    expect(store.memory.readContents("c", "k", { citing: ["m"] })!.events.map(({ id }) => id)).toEqual(["saved"]);
+    expect(store.memory.readContents("c", "k", { citing: ["changed", "later-message"] })!.events).toEqual([]);
+    expect(store.memory.readRecord("c", "k", "events", "saved")!.data).toEqual({ ...saved, createdRevision: 1 });
+});
+
+it("derives event citations while staging and installing a backup snapshot", async () => {
+    const { store, db, dir } = fileStore();
+    seed(store);
+    const saved = eventCiting("saved", ["m", "next"]);
+    write(store, contents(store).revision, { events: [saved] });
+    const snapshot = path.join(dir, "citations.sqlite");
+    await store.backupTo(snapshot);
+    write(store, contents(store).revision, {
+        events: [eventCiting("saved", ["changed"]), eventCiting("later", ["later-message"])],
+    });
+    const prepared = await stageSnapshot(snapshot, kinds);
+    const stagedDb = new DatabaseSync(prepared.file, { readOnly: true });
+    try {
+        expect(sourceRows(stagedDb)).toEqual([
+            { chatSeq: chatSeq(stagedDb), messageId: "m", eventId: "saved" },
+            { chatSeq: chatSeq(stagedDb), messageId: "next", eventId: "saved" },
+        ]);
+    } finally {
+        stagedDb.close();
+    }
+    store.replaceAll(prepared.file, prepared.report);
+    expect(sourceRows(db)).toEqual([
+        { chatSeq: chatSeq(db), messageId: "m", eventId: "saved" },
+        { chatSeq: chatSeq(db), messageId: "next", eventId: "saved" },
+    ]);
+    expect(store.memory.readContents("c", "k", { citing: ["m", "next"] })!.events.map(({ id }) => id)).toEqual([
+        "saved",
+    ]);
+    expect(store.memory.readContents("c", "k", { citing: ["changed", "later-message"] })!.events).toEqual([]);
+    expect(store.memory.readRecord("c", "k", "events", "saved")!.data).toEqual({ ...saved, createdRevision: 1 });
+});
+
+it("moves rebuilt event citations into live memory and clears staged citations on swap", () => {
+    const { store, db } = fileStore();
+    seed(store);
+    write(store, contents(store).revision, {
+        events: [eventCiting("shared", ["m"]), eventCiting("removed", ["old-message"])],
+    });
+    store.memory.rebuild.begin(
+        "c",
+        "k",
+        {
+            epoch: store.epoch(),
+            mode: "rebuild",
+            plan: [["next", "new-message"]],
+        },
+        {},
+    );
+    const staged = store.memory.rebuild.staged;
+    staged.write(
+        "c",
+        "k",
+        {
+            epoch: store.epoch(),
+            baseRevision: staged.readContents("c", "k")!.revision,
+            advance: true,
+        },
+        { events: [eventCiting("shared", ["next"]), eventCiting("new", ["new-message"])] },
+    );
+    expect(staged.readContents("c", "k", { citing: ["next", "new-message"] })!.events.map(({ id }) => id)).toEqual([
+        "shared",
+        "new",
+    ]);
+    expect(store.memory.readContents("c", "k", { citing: ["next", "new-message"] })!.events).toEqual([]);
+    store.memory.rebuild.swap(
+        "c",
+        "k",
+        { epoch: store.epoch(), baseRevision: contents(store).revision },
+        {
+            events: readRecordSet(staged, "c", "k")!.events,
+            remove: { events: ["removed"] },
+        },
+    );
+    expect(sourceRows(db)).toEqual([
+        { chatSeq: chatSeq(db), messageId: "new-message", eventId: "new" },
+        { chatSeq: chatSeq(db), messageId: "next", eventId: "shared" },
+    ]);
+    expect(sourceRows(db, "memory_staged_event_sources")).toEqual([]);
+    expect(
+        store.memory.readContents("c", "k", { citing: ["next", "new-message"] })!.events.map(({ id }) => id),
+    ).toEqual(["shared", "new"]);
+    expect(store.memory.readContents("c", "k", { citing: ["m", "old-message"] })!.events).toEqual([]);
+    expect(store.memory.rebuild.status("c", "k")).toBeNull();
+});
+
+it("deletes live and staged citations only for the deleted chat incarnation", () => {
+    const { store, db } = fileStore();
+    for (const characterId of ["c", "other"]) {
+        seed(store, characterId);
+        write(store, contents(store, characterId).revision, { events: [eventCiting("shared", ["m"])] }, characterId);
+        store.memory.rebuild.begin(
+            characterId,
+            "k",
+            {
+                epoch: store.epoch(),
+                mode: "rebuild",
+                plan: [["next"]],
+            },
+            {},
+        );
+        const staged = store.memory.rebuild.staged;
+        staged.write(
+            characterId,
+            "k",
+            {
+                epoch: store.epoch(),
+                baseRevision: staged.readContents(characterId, "k")!.revision,
+            },
+            { events: [eventCiting("shared", ["next"])] },
+        );
+    }
+    const oldSeq = chatSeq(db);
+    const otherSeq = chatSeq(db, "other");
+    store.applyChanges({ chats: [group(store.chatRevision("c", "k"), [{ op: "delete" }])] });
+    expect(sourceRows(db)).toEqual([{ chatSeq: otherSeq, messageId: "m", eventId: "shared" }]);
+    expect(sourceRows(db, "memory_staged_event_sources")).toEqual([
+        { chatSeq: otherSeq, messageId: "next", eventId: "shared" },
+    ]);
+    store.applyChanges({ chats: [group(null, [{ op: "create", chat }])] });
+    expect(chatSeq(db)).not.toBe(oldSeq);
+    write(store, contents(store).revision, { events: [eventCiting("shared", ["fresh"])] });
+    expect(store.memory.readContents("c", "k", { citing: ["m", "next"] })!.events).toEqual([]);
+    expect(store.memory.readContents("c", "k", { citing: ["fresh"] })!.events.map(({ id }) => id)).toEqual(["shared"]);
+    expect(store.memory.readContents("other", "k", { citing: ["m"] })!.events.map(({ id }) => id)).toEqual(["shared"]);
+    expect(
+        store.memory.rebuild.staged.readContents("other", "k", { citing: ["next"] })!.events.map(({ id }) => id),
+    ).toEqual(["shared"]);
+});
+
+it("backfills live and staged event citations when opening a file without the relation tables", () => {
+    const { store, db, file } = fileStore();
+    seed(store);
+    write(store, contents(store).revision, {
+        events: [eventCiting("shared", ["m", "next"]), eventCiting("unrelated", ["other"])],
+    });
+    store.memory.rebuild.begin(
+        "c",
+        "k",
+        {
+            epoch: store.epoch(),
+            mode: "rebuild",
+            plan: [["m", "next"]],
+        },
+        {},
+    );
+    const staged = store.memory.rebuild.staged;
+    staged.write(
+        "c",
+        "k",
+        {
+            epoch: store.epoch(),
+            baseRevision: staged.readContents("c", "k")!.revision,
+        },
+        { events: [eventCiting("shared", ["m", "next"]), eventCiting("staged-only", ["staged-message"])] },
+    );
+    const before = memoryRows(db);
+    const stagedBefore = readRecordSet(staged, "c", "k");
+    const epoch = store.epoch();
+    store.close();
+    stores.splice(stores.indexOf(store), 1);
+    editFile(
+        file,
+        ["memory_event_sources", "memory_staged_event_sources"]
+            .map(
+                (table) =>
+                    `DROP TABLE ${table};\n` +
+                    ["insert", "update", "delete"].map((kind) => `DROP TRIGGER IF EXISTS ${table}_${kind};`).join("\n"),
+            )
+            .join("\n"),
+    );
+    const reopened = createResourceStore({ file, kinds });
+    stores.push(reopened);
+    const seq = chatSeq(db);
+    expect(sourceRows(db)).toEqual([
+        { chatSeq: seq, messageId: "m", eventId: "shared" },
+        { chatSeq: seq, messageId: "next", eventId: "shared" },
+        { chatSeq: seq, messageId: "other", eventId: "unrelated" },
+    ]);
+    expect(sourceRows(db, "memory_staged_event_sources")).toEqual([
+        { chatSeq: seq, messageId: "m", eventId: "shared" },
+        { chatSeq: seq, messageId: "next", eventId: "shared" },
+        { chatSeq: seq, messageId: "staged-message", eventId: "staged-only" },
+    ]);
+    for (const memory of [reopened.memory, reopened.memory.rebuild.staged]) {
+        expect(memory.readContents("c", "k", { citing: ["m", "next"] })!.events.map(({ id }) => id)).toEqual([
+            "shared",
+        ]);
+    }
+    expect(reopened.epoch()).toBe(epoch);
+    expect(memoryRows(db)).toEqual(before);
+    expect(readRecordSet(reopened.memory.rebuild.staged, "c", "k")).toEqual(stagedBefore);
+});
 
 it("starts at revision zero, ignores empty writes and distinguishes missing chats", () => {
     const { store, db } = fileStore();

@@ -178,7 +178,7 @@ const MEMORY_DECLINE_COLUMN_SQL = "adoptionDeclined INTEGER NOT NULL DEFAULT 0";
  * a chat to one `scene` page; `memoryStore.ts` refuses a second one before it reaches this index. Created
  * when missing; not part of the required snapshot layout (`CHAT_TABLE_COLUMNS`), so a snapshot from
  * before them restores with none, but a snapshot with any of them has them all checked and restored
- * (`walkMemorySnapshot`).
+ * (`walkMemorySnapshot`). Event citations are derived separately by `MEMORY_EVENT_SOURCES_SQL`.
  */
 export const MEMORY_TABLES_SQL = `
     CREATE TABLE IF NOT EXISTS memory_state (
@@ -286,6 +286,53 @@ const MEMORY_REBUILD_TABLES_SQL = `
     ) STRICT;
 `;
 
+const MEMORY_EVENT_SOURCE_TABLES = [
+    { events: "memory_events", sources: "memory_event_sources" },
+    { events: "memory_staged_events", sources: "memory_staged_event_sources" },
+];
+
+/**
+ * Message-to-event citations for live and staged records, keyed by chat incarnation. Created at open,
+ * outside the snapshot and checkpoint layouts: triggers derive them on every insert, update, and
+ * delete, including restore copies and writes by an older build. The event index bounds replacement
+ * and deletion; the primary key finds events citing a changed message without reading their bodies.
+ * Guards leave text SQLite cannot parse untouched and unindexed. Object sources with a string
+ * `messageId` count whether anchored or not, matching `storedMemorySources` for ordinary JSON.stringify
+ * output; crafted duplicate or NUL-containing keys can make SQLite's paths differ from JSON.parse.
+ */
+const MEMORY_EVENT_SOURCES_SQL = MEMORY_EVENT_SOURCE_TABLES.map(({ events, sources }) => {
+    // An outer upsert's DO UPDATE can override OR IGNORE, so duplicate citations are removed first.
+    const insert = `
+        INSERT OR IGNORE INTO ${sources} (chatSeq, messageId, eventId)
+            SELECT DISTINCT NEW.chatSeq, json_extract(source.value, '$.messageId'), NEW.id
+                FROM json_each(CASE WHEN json_valid(NEW.data) THEN NEW.data END, '$.sources') source
+                WHERE json_type(CASE WHEN json_valid(NEW.data) THEN NEW.data END, '$.sources') = 'array'
+                    AND source.type = 'object' AND json_type(source.value, '$.messageId') = 'text';`;
+    const remove = `DELETE FROM ${sources} WHERE chatSeq = OLD.chatSeq AND eventId = OLD.id;`;
+    return `
+        CREATE TABLE IF NOT EXISTS ${sources} (
+            chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+            messageId TEXT NOT NULL,
+            eventId TEXT NOT NULL,
+            PRIMARY KEY (chatSeq, messageId, eventId)
+        ) STRICT, WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS ${sources}_event ON ${sources} (chatSeq, eventId);
+        CREATE TRIGGER IF NOT EXISTS ${sources}_insert AFTER INSERT ON ${events}
+        BEGIN
+            ${insert}
+        END;
+        CREATE TRIGGER IF NOT EXISTS ${sources}_update AFTER UPDATE ON ${events}
+        BEGIN
+            ${remove}
+            ${insert}
+        END;
+        CREATE TRIGGER IF NOT EXISTS ${sources}_delete AFTER DELETE ON ${events}
+        BEGIN
+            ${remove}
+        END;
+    `;
+}).join("");
+
 /**
  * A message's role as `messages_role` indexes it. A query reaches that index only through this exact
  * expression, so every statement that counts by role builds on this text.
@@ -318,7 +365,7 @@ const MESSAGE_CHECKPOINT_INDEX_SQL = `CREATE INDEX IF NOT EXISTS messages_checkp
  * What `openChatSchema` adds to `CHAT_TABLES_SQL`, each created when missing, and a staged store's
  * writer too, so a staged file has the live schema.
  */
-export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MEMORY_REBUILD_TABLES_SQL}${MESSAGE_ROLE_INDEX_SQL}${MESSAGE_CHECKPOINT_INDEX_SQL}`;
+export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MEMORY_REBUILD_TABLES_SQL}${MEMORY_EVENT_SOURCES_SQL}${MESSAGE_ROLE_INDEX_SQL}${MESSAGE_CHECKPOINT_INDEX_SQL}`;
 
 /** A chat's user messages, answered from `messages_role` alone: no message row is read. */
 export const COUNT_USER_TURNS_SQL = `SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ? AND ${MESSAGE_ROLE_SQL} = 'user'`;
@@ -1196,14 +1243,16 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
 
 /**
  * The chat schema past the tables `initialize` creates, in its own transaction, before any statement
- * of `createChatTables` is prepared: creates `chatGroups`, `chatSummaries`, the memory and rebuild tables,
- * and the `messages_role` and `messages_checkpoints` indexes when missing (on fresh and existing files alike;
- * building the role index parses each message once, while the checkpoint index scans its text), adds
- * `memory_state`'s decline column to a table from before it, where every
- * existing row reads as not declined, and rebuilds the stored projections. `BEGIN IMMEDIATE` holds the
+ * of `createChatTables` is prepared: creates `chatGroups`, `chatSummaries`, the memory and rebuild tables
+ * with their citation relations and triggers, and the `messages_role` and `messages_checkpoints` indexes
+ * when missing (on fresh and existing files alike; building the role index parses each message once,
+ * while the checkpoint index scans its text), adds `memory_state`'s decline column to a table from before
+ * it, where every existing row reads as not declined, and rebuilds the stored projections. `BEGIN IMMEDIATE` holds the
  * look at that column and its `ALTER` together, so a second start, at once or later, finds the column
- * and adds nothing. Every chat's projections when the `meta` table's
- * `summaryProjectionVersion` is missing or differs from `SUMMARY_PROJECTION_VERSION`, otherwise only
+ * and adds nothing. When the live citation relation was absent, both relations are backfilled from
+ * stored event texts in this transaction, skipping text SQLite cannot parse. Rebuilds every chat's
+ * projections when the `meta` table's `summaryProjectionVersion` is missing or differs from
+ * `SUMMARY_PROJECTION_VERSION`, otherwise only
  * the chats with no row or a row at another revision, so an open with nothing to create or rebuild
  * writes nothing. The seqs come first and each chat's metadata is read alone, so a store with a large
  * chat never holds them all. The only pass that parses metadata for summaries at open; its rows are
@@ -1212,7 +1261,22 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
  */
 export function openChatSchema(db: DatabaseSync): void {
     db.exec("BEGIN IMMEDIATE");
+    const hadEventSources = db
+        .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'memory_event_sources'")
+        .get();
     db.exec(CHAT_OPEN_SCHEMA_SQL);
+    if (!hadEventSources) {
+        for (const { events, sources } of MEMORY_EVENT_SOURCE_TABLES) {
+            db.exec(`
+                INSERT OR IGNORE INTO ${sources} (chatSeq, messageId, eventId)
+                    SELECT e.chatSeq, json_extract(source.value, '$.messageId'), e.id
+                        FROM ${events} e,
+                            json_each(CASE WHEN json_valid(e.data) THEN e.data END, '$.sources') source
+                        WHERE json_type(CASE WHEN json_valid(e.data) THEN e.data END, '$.sources') = 'array'
+                            AND source.type = 'object' AND json_type(source.value, '$.messageId') = 'text';
+            `);
+        }
+    }
     const stateColumns = db.prepare("PRAGMA table_xinfo(memory_state)").all() as { name: string }[];
     if (!stateColumns.some(({ name }) => name === "adoptionDeclined")) {
         db.exec(`ALTER TABLE memory_state ADD COLUMN ${MEMORY_DECLINE_COLUMN_SQL}`);
