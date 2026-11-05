@@ -2256,6 +2256,22 @@ describe("generation ownership handoffs", () => {
         expect(viewer.events.at(-1)).toMatchObject({ type: "done" });
     });
 
+    it("sends provider chunk resync requests only to the current owner", async () => {
+        const h = await live({ preferred: true });
+        const viewer = await h.follow(h.job.id, "tab");
+        const owner = await h.take();
+        await owner.fence();
+        await viewer.fence();
+        const request = { type: "chunkResync" as const, id: "provider-callback" };
+        h.job.emit(request);
+        await owner.fence();
+        await viewer.fence();
+        expect(owner.events.filter((event) => event.type === "chunkResync")).toEqual([
+            { ...request, epoch: h.store.epoch() },
+        ]);
+        expect(viewer.events.filter((event) => event.type === "chunkResync")).toEqual([]);
+    });
+
     it("terminates an over-buffered creator viewer while the worker keeps receiving frames and answering callbacks", async () => {
         const h = await live({ preferred: true });
         const viewer = await followWithBuffer(h);

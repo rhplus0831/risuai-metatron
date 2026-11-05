@@ -112,6 +112,10 @@ import {
  * - Each request's state is kept in memory: a duplicate delivery never runs a callback twice (the
  *   cached answer is sent again), and a `replay` this page has no state for is refused
  *   (`failed`/`protocol`), since it may already have run on the page before a reload.
+ * - Provider streams use sequenced appends when the callback offers them, with snapshots on a
+ *   reconnect or resync request; older servers receive cumulative text. A negotiated stream's
+ *   final text is retained for replay until cancellation, job end, eviction, or the next new
+ *   callback, so the server can recover missing text before accepting its final sequence.
  * - One root callback runs at a time in this tab (the server's lane per client). A `cancel` only asks
  *   a running hook to stop: the callback stays outstanding until its hook settles, and a root that
  *   arrives meanwhile is refused. The server keeps the lane for a callback it cancelled until this tab
@@ -138,6 +142,8 @@ type Outstanding = {
     abort: AbortController;
     /** Called when the server cancels the callback or its job ends (a provider's request is aborted). */
     onCancel?: () => void;
+    /** Sends a negotiated provider stream's live snapshot on replay or resynchronization. */
+    resendChunks?: () => void;
 };
 
 /** Marks a callback cancelled and tells its hook. */
@@ -166,10 +172,17 @@ type UiItem =
 const MAX_REMEMBERED = 500;
 
 /** A request's state; `callback` marks a callback delivery, run or refused (a cancel may then hold the server's lane). */
-type RequestState = { jobId: string; answer: ChannelAnswer | null; retired?: true; callback?: true };
+type RequestState = {
+    jobId: string;
+    answer: ChannelAnswer | null;
+    retired?: true;
+    callback?: true;
+    /** Kept after the provider reader finishes, until the server no longer needs stream recovery. */
+    providerSnapshot?: { seq: number; text: string };
+};
 
 const transports = new Map<string, ChannelTransport>();
-/** Request id → its state; a finished one keeps its answer for a duplicate delivery. */
+/** Request id → its state; finished streams also keep the snapshot needed before a cached answer. */
 const requests = new Map<string, RequestState>();
 const outstanding: Outstanding[] = [];
 /** One replacement child waits for the cancelled hooks of its parent to finish. */
@@ -218,6 +231,19 @@ function remember(id: string, entry: RequestState) {
         if (value.answer || value.retired) {
             requests.delete(key);
         }
+    }
+}
+
+/** Replays the live stream or its retained final snapshot without invoking the provider again. */
+function resendProviderSnapshot(jobId: string, id: string) {
+    const state = requests.get(id);
+    if (state?.jobId !== jobId) return;
+    const running = outstanding.find((entry) => entry.id === id && entry.jobId === jobId);
+    if (running?.cancelled) return;
+    if (running?.resendChunks) {
+        running.resendChunks();
+    } else if (state.providerSnapshot) {
+        transports.get(jobId)?.send({ type: "chunk", id, ...state.providerSnapshot });
     }
 }
 
@@ -780,8 +806,11 @@ function errorText(error: unknown): string {
  * with the callback's abort signal; server cancellation or job end aborts it and suppresses late
  * results. Providers receive the server-built argument and an abort signal. A missing provider
  * or text beyond `MAX_PROVIDER_TEXT_CHARS` (4 Mi characters) fails as `hook`; a text answer is
- * `{ success, content }`. Successful streams send cumulative `chunk` text immediately, at most
- * every `PROVIDER_CHUNK_INTERVAL_MS` (50 ms), and finally before `{ success: true, streamed: true }`.
+ * `{ success, content }`. Successful streams send `chunk` text immediately, at most every
+ * `PROVIDER_CHUNK_INTERVAL_MS` (50 ms), and finally before `{ success: true, streamed: true }`.
+ * A `chunks: "append"` offer enables sequenced appends, snapshots on reconnect/resync, and a final
+ * `seq` in the answer; the final snapshot stays available after reading ends. Without the offer,
+ * chunks carry cumulative text and the answer has no sequence.
  * Failed streams are read whole into the answer; either reader is cancelled if the callback ends first.
  *
  * `mcpList`/`mcpTool` use the current `plugin:` registry or `readyTabClient` in
@@ -1055,22 +1084,49 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                     finish();
                     return { success: false, content: fullText };
                 }
-                // The text so far goes out as `chunk` messages: the first at once, so the server knows
-                // it is a stream; then the newest text at most every 50 ms and at the end.
-                let sent: string | null = null;
+                // The first chunk announces the stream. Only new text follows at most every 50 ms;
+                // snapshots repair a failed send, a replaced transport, or a server's sequence gap.
+                const negotiated = event.chunks === "append";
+                let seq = 0;
+                let flushedLength: number | null = null;
+                let sentLength = 0;
+                let sentOn = transports.get(entry.jobId);
+                let needSnapshot = false;
                 let lastSent = 0;
-                const flush = () => {
+                const flush = (snapshot = false) => {
                     if (timer !== null) {
                         clearTimeout(timer);
                         timer = null;
                     }
-                    if (entry.cancelled || sent === fullText) {
+                    const transport = transports.get(entry.jobId);
+                    if (
+                        entry.cancelled ||
+                        (flushedLength === fullText.length &&
+                            !snapshot &&
+                            (!negotiated || (!needSnapshot && transport === sentOn)))
+                    ) {
                         return;
                     }
-                    sent = fullText;
+                    flushedLength = fullText.length;
                     lastSent = Date.now();
-                    transports.get(entry.jobId)?.send({ type: "chunk", id: entry.id, text: fullText });
+                    if (!negotiated) {
+                        transport?.send({ type: "chunk", id: entry.id, text: fullText });
+                        return;
+                    }
+                    seq += 1;
+                    const frame: ChannelChunk =
+                        snapshot || needSnapshot || transport !== sentOn
+                            ? { type: "chunk", id: entry.id, seq, text: fullText }
+                            : { type: "chunk", id: entry.id, seq, append: fullText.slice(sentLength) };
+                    if (transport?.send(frame)) {
+                        needSnapshot = false;
+                        sentLength = fullText.length;
+                        sentOn = transport;
+                    } else {
+                        needSnapshot = true;
+                    }
                 };
+                if (negotiated) entry.resendChunks = () => flush(true);
                 flush();
                 for (;;) {
                     const read = await reader.read();
@@ -1092,11 +1148,17 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                 }
                 finish();
                 flush();
+                if (negotiated) {
+                    const state = requests.get(entry.id);
+                    if (state && !entry.cancelled) state.providerSnapshot = { seq, text: fullText };
+                    return { success: true, streamed: true, seq };
+                }
                 return { success: true, streamed: true };
             } catch (error) {
                 release();
                 throw error;
             } finally {
+                entry.resendChunks = undefined;
                 if (timer !== null) {
                     clearTimeout(timer);
                     timer = null;
@@ -1324,7 +1386,8 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
     }
     const known = requests.get(event.id);
     if (known) {
-        // A duplicate (a reattach): never run twice; the answer goes out when it exists.
+        // A reattach may have lost even the last chunk: restore the text before the cached answer.
+        resendProviderSnapshot(jobId, event.id);
         if (known.answer) {
             answer(jobId, known.answer);
         }
@@ -1337,6 +1400,10 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
     if (event.replay) {
         refuse("The callback may already have run before this page loaded; it is not run again");
         return;
+    }
+    // A new callback means the server's client lane has settled every earlier finished callback.
+    for (const state of requests.values()) {
+        if (state.answer || state.retired) delete state.providerSnapshot;
     }
     const live = outstanding.filter((entry) => !entry.cancelled);
     const top = live[live.length - 1];
@@ -1448,6 +1515,7 @@ export function recentEmotions(chaId: string): Record<string, string[]> {
 
 /** Routes one channel event of `jobId`'s socket; answers go out through `transport`. */
 export function handleChannelEvent(jobId: string, event: GenerationChannelEvent, transport: ChannelTransport) {
+    if (event.type === "chunkResync" && transport.viewing?.()) return;
     transports.set(jobId, transport);
     switch (event.type) {
         case "notice": {
@@ -1495,6 +1563,9 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
         case "callback":
             handleCallback(jobId, event);
             return;
+        case "chunkResync":
+            resendProviderSnapshot(jobId, event.id);
+            return;
         case "cancel": {
             if (heldChild?.event.id === event.id) {
                 retireHeldChild();
@@ -1508,6 +1579,7 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
             }
             // A cancelled request is finished: it can be forgotten, and a late duplicate stays dropped.
             const state = requests.get(event.id);
+            if (state) delete state.providerSnapshot;
             const running = outstanding.some((entry) => entry.id === event.id);
             if (state && !state.answer && !running) {
                 state.retired = true;
@@ -1638,8 +1710,11 @@ export function endJobChannel(jobId: string) {
     }
     resumeHeldChild();
     for (const [id, state] of requests) {
-        if (state.jobId === jobId && !state.answer && !outstanding.some((entry) => entry.id === id)) {
-            state.retired = true;
+        if (state.jobId === jobId) {
+            delete state.providerSnapshot;
+            if (!state.answer && !outstanding.some((entry) => entry.id === id)) {
+                state.retired = true;
+            }
         }
     }
     transports.delete(jobId);

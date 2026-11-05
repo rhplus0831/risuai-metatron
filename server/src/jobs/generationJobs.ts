@@ -1001,7 +1001,10 @@ export function createGenerationJobs(options: {
         const audience =
             event.type === "notice"
                 ? noticeAudience[event.kind]
-                : event.type === "callback" || event.type === "question" || event.type === "cancel"
+                : event.type === "callback" ||
+                    event.type === "question" ||
+                    event.type === "cancel" ||
+                    event.type === "chunkResync"
                   ? "owner"
                   : "all";
         return sendText(job, JSON.stringify(event), audience);

@@ -9,9 +9,11 @@ import type {
     GenerationQuestionEvent,
 } from "../../../shared/jobs.ts";
 import { MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
+import { createChannelHub } from "../../../server/src/jobs/channel.ts";
 import { createAlertQueue, type AlertQueue } from "../alertQueue";
 import { warmModules } from "../storage/tests/mutationStoresHarness";
 import type { MemoryProgressState } from "../stores.svelte";
+import type { ChannelTransport } from "./jobChannel";
 
 // The client dispatcher of the job channel (`jobChannel.ts`) with controlled persistence and plugin
 // dependencies and the real alert module over the real alert queue (a fresh queue per test, with no
@@ -2025,6 +2027,166 @@ describe("the provider callback", () => {
     /** A provider's byte stream (the tab's own path decodes it as `Response.text()` does). */
     const bytes = (stream: ReadableStream<Uint8Array>) => stream as unknown as ReadableStream<string>;
 
+    /** Both channel endpoints over JSON frames; delivery can drop chunks without notifying the tab. */
+    async function providerRoundTrip() {
+        const events: GenerationChannelEvent[] = [];
+        const frames: string[] = [];
+        const chunks: string[] = [];
+        const delivery = { dropChunks: false };
+        const hub = createChannelHub({ now: () => 1_000 });
+        const link = hub.open({
+            jobId: "J",
+            clientId: "tab",
+            epoch: EPOCH,
+            targets,
+            hooks: await channel.registeredHooks(),
+            hydrate: () => [],
+            ownerAttached: () => true,
+            send: (event) => {
+                events.push(JSON.parse(JSON.stringify(event)));
+                return true;
+            },
+        });
+        const connect = () => ({
+            send(message: Parameters<ChannelTransport["send"]>[0]) {
+                const frame = JSON.stringify(message);
+                frames.push(frame);
+                if (!delivery.dropChunks || message.type !== "chunk") link.handleMessage(JSON.parse(frame));
+                return true;
+            },
+        });
+        const pending = link.channel.callback(
+            "provider",
+            { name: "p", argument },
+            { onChunk: (text) => chunks.push(text) },
+        );
+        const event = events[0];
+        if (event.type !== "callback") throw new Error("Expected the provider callback");
+        return { link, events, frames, chunks, delivery, connect, pending, event };
+    }
+
+    it("sends 1,200 updates in linear JSON bytes and reconstructs cumulative text on the server", async () => {
+        const text = source<string>();
+        hooks.providers.set("p", async () => ({ success: true, content: text.stream }));
+        const h = await providerRoundTrip();
+        expect(h.event.chunks).toBe("append");
+        channel.handleChannelEvent("J", h.event, h.connect());
+        await pump(0);
+        const updates = Array.from({ length: 1_200 }, (_, index) => String(index).padStart(64, "x"));
+        for (const update of updates) {
+            text.push(update);
+            await pump(50);
+        }
+        text.close();
+        await pump(0);
+
+        const frames = h.frames.map((frame) => JSON.parse(frame));
+        const chunks = frames.filter((frame) => frame.type === "chunk");
+        const payloadBytes = 1_200 * 64;
+        const wireBytes = h.frames.reduce((sum, frame) => sum + new TextEncoder().encode(frame).byteLength, 0);
+        // A UUID, sequence and JSON keys fit in 128 bytes per frame, including the empty announcement and answer.
+        expect(wireBytes).toBeLessThanOrEqual(payloadBytes + (1_200 + 2) * 128);
+        expect(chunks).toHaveLength(1_201);
+        expect(chunks.map((frame) => frame.append).join("")).toBe(updates.join(""));
+        expect(chunks.every((frame) => !Object.hasOwn(frame, "text"))).toBe(true);
+        expect(chunks.map((frame) => frame.seq)).toEqual(Array.from({ length: 1_201 }, (_, index) => index + 1));
+        expect(frames.at(-1)).toEqual({
+            type: "answer",
+            id: h.event.id,
+            outcome: "answered",
+            value: { success: true, streamed: true, seq: 1_201 },
+        });
+        let cumulative = "";
+        expect(h.chunks).toEqual(["", ...updates.map((update) => (cumulative += update))]);
+        expect(await h.pending).toEqual({ outcome: "answered", value: { success: true, streamed: true, seq: 1_201 } });
+        expect(h.events.filter((event) => event.type === "chunkResync")).toEqual([]);
+        channel.endJobChannel("J");
+    });
+
+    it("sends snapshots after a failed send, a replaced transport, a callback replay, and an owner resync", async () => {
+        const text = source<string>();
+        const run = vi.fn(async () => ({ success: true, content: text.stream }));
+        hooks.providers.set("p", run);
+        const event = { ...provider("recover"), chunks: "append" as const };
+        send(event);
+        await pump(0);
+        expect(sent()).toEqual([{ type: "chunk", id: event.id, seq: 1, append: "" }]);
+
+        tx.send.mockImplementationOnce((message) => {
+            tx.answers.push(message);
+            return false;
+        });
+        text.push("Hello");
+        await pump(50);
+        expect(sent().at(-1)).toEqual({ type: "chunk", id: event.id, seq: 2, append: "Hello" });
+        text.push(" world");
+        await pump(50);
+        expect(sent().at(-1)).toEqual({ type: "chunk", id: event.id, seq: 3, text: "Hello world" });
+
+        const replacement = transport();
+        send(notice("reloadDisplay"), "J", replacement);
+        text.push("!");
+        await pump(50);
+        expect(replacement.answers).toEqual([{ type: "chunk", id: event.id, seq: 4, text: "Hello world!" }]);
+        send({ ...event, replay: true }, "J", replacement);
+        expect(replacement.answers.at(-1)).toEqual({ type: "chunk", id: event.id, seq: 5, text: "Hello world!" });
+        send({ type: "chunkResync", epoch: EPOCH, id: event.id }, "J", replacement);
+        expect(replacement.answers.at(-1)).toEqual({ type: "chunk", id: event.id, seq: 6, text: "Hello world!" });
+        text.push(" Again.");
+        await pump(50);
+        expect(replacement.answers.at(-1)).toEqual({ type: "chunk", id: event.id, seq: 7, append: " Again." });
+        text.close();
+        await pump(0);
+        expect(replacement.answers.at(-1)).toEqual({
+            type: "answer",
+            id: event.id,
+            outcome: "answered",
+            value: { success: true, streamed: true, seq: 7 },
+        });
+        expect(run).toHaveBeenCalledTimes(1);
+        channel.endJobChannel("J");
+    });
+
+    it("replays a finished stream's retained snapshot before its cached answer so the server can complete", async () => {
+        const text = source<string>();
+        const run = vi.fn(async () => ({ success: true, content: text.stream }));
+        hooks.providers.set("p", run);
+        const h = await providerRoundTrip();
+        channel.handleChannelEvent("J", h.event, h.connect());
+        await pump(0);
+        text.push("Hello");
+        await pump(50);
+        h.delivery.dropChunks = true;
+        text.push(" world");
+        text.close();
+        await pump(0);
+        let settled = false;
+        void h.pending.then(() => {
+            settled = true;
+        });
+        await pump(0);
+        expect(settled).toBe(false);
+        expect(h.chunks).toEqual(["", "Hello"]);
+        expect(text.stream.locked).toBe(false);
+        expect(h.events.at(-1)).toEqual({ type: "chunkResync", epoch: EPOCH, id: h.event.id });
+
+        // The resync request was lost too. Reattachment must repair the finished stream before replaying success.
+        h.delivery.dropChunks = false;
+        h.link.handleAttach();
+        const replay = h.events.at(-1)!;
+        expect(replay).toMatchObject({ type: "callback", id: h.event.id, replay: true, chunks: "append" });
+        h.frames.length = 0;
+        channel.handleChannelEvent("J", replay, h.connect());
+        expect(h.frames.map((frame) => JSON.parse(frame))).toEqual([
+            { type: "chunk", id: h.event.id, seq: 3, text: "Hello world" },
+            { type: "answer", id: h.event.id, outcome: "answered", value: { success: true, streamed: true, seq: 3 } },
+        ]);
+        expect(await h.pending).toEqual({ outcome: "answered", value: { success: true, streamed: true, seq: 3 } });
+        expect(h.chunks).toEqual(["", "Hello", "Hello world"]);
+        expect(run).toHaveBeenCalledTimes(1);
+        channel.endJobChannel("J");
+    });
+
     it("calls the provider with the server's argument, the job's targets, and an abort signal; a text answers `{ success, content }`, no answer `{ none: true }`; a throw, a text over the cap, and an unloaded provider are hook failures", async () => {
         const seen: { arg: unknown; signal: AbortSignal | undefined }[] = [];
         let impl: Provider = async () => ({ success: true, content: "hello" });
@@ -2075,7 +2237,7 @@ describe("the provider callback", () => {
         expect(deps.flush).toHaveBeenCalledTimes(14);
     });
 
-    it("streams a provider's text as cumulative chunks (the first at once, then the newest at most every 50 ms and at the end) before answering `{ success: true, streamed: true }`, and releases the stream", async () => {
+    it("sends cumulative snapshots and an unsequenced success without an append offer, then releases the stream", async () => {
         const text = source<string>();
         hooks.providers.set("p", async () => ({ success: true, content: text.stream }));
         send(provider("s"));

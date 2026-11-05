@@ -133,6 +133,11 @@ type Request = {
     onSettled: Set<() => void>;
     /** A streaming `provider` callback: the owner's `chunk` messages (the cumulative text) go here. */
     onChunk?: (text: string) => void;
+    chunkText: string;
+    chunkSeq: number;
+    chunkGap: boolean;
+    /** Success waits until the cumulative text includes the tab's final sequence. */
+    chunkAnswer: { seq: number; result: Extract<CallbackResult, { outcome: "answered" }> } | null;
     resolve: (result: QuestionResult | CallbackResult) => void;
     /** When it was asked, against the notices kept before the first attach (`earlyOrder`). */
     order: number;
@@ -337,6 +342,8 @@ export function createChannelHub(options: { now?: () => number } = {}) {
         request.channel.settling += 1;
         try {
             request.settled = true;
+            request.chunkText = "";
+            request.chunkAnswer = null;
             if (request.timer) {
                 clearTimeout(request.timer);
                 request.timer = null;
@@ -376,6 +383,19 @@ export function createChannelHub(options: { now?: () => number } = {}) {
             pump(request.laneClientId ?? request.channel.transport.clientId);
         } finally {
             request.channel.settling -= 1;
+        }
+    }
+
+    /** A gap or a held answer needs a snapshot from the owner, including after its reader finished. */
+    function resyncChunks(request: Request) {
+        try {
+            request.channel.transport.send({
+                type: "chunkResync",
+                epoch: request.channel.transport.epoch,
+                id: request.id,
+            });
+        } catch (error) {
+            console.error("[Channel]", error);
         }
     }
 
@@ -615,6 +635,10 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                 settled: false,
                 timer: null,
                 onSettled: new Set(),
+                chunkText: "",
+                chunkSeq: 0,
+                chunkGap: false,
+                chunkAnswer: null,
                 resolve,
                 order: ++earlyOrder,
                 ...(extra.onChunk ? { onChunk: extra.onChunk } : {}),
@@ -733,6 +757,7 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                             // The barrier: the job's changes so far reach the client first.
                             revisions: transport.hydrate(),
                             payload,
+                            ...(options.onChunk ? { chunks: "append" as const } : {}),
                             deadline,
                             ...(replay ? { replay: true as const } : {}),
                         }),
@@ -863,12 +888,33 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                         return;
                     }
                     if (message.type === "chunk") {
-                        // A streaming provider's text so far: only for a callback that takes chunks,
-                        // and bounded (anything else is ignored; a text too long fails the callback).
-                        if (!request.onChunk || typeof message.text !== "string") {
+                        // Validate the entire frame before changing reconstruction or gap state.
+                        const snapshot = Object.hasOwn(message, "text");
+                        const append = Object.hasOwn(message, "append");
+                        const sequenced = Object.hasOwn(message, "seq");
+                        if (
+                            !request.onChunk ||
+                            snapshot === append ||
+                            (snapshot ? typeof message.text !== "string" : typeof message.append !== "string") ||
+                            (append && !sequenced) ||
+                            (sequenced &&
+                                (typeof message.seq !== "number" ||
+                                    !Number.isSafeInteger(message.seq) ||
+                                    message.seq < 0))
+                        ) {
                             return;
                         }
-                        if (message.text.length > MAX_PROVIDER_TEXT_CHARS) {
+                        const seq = sequenced ? (message.seq as number) : request.chunkSeq;
+                        if (snapshot && seq < request.chunkSeq) return;
+                        if (append && (request.chunkGap || seq !== request.chunkSeq + 1)) {
+                            if (!request.chunkGap) {
+                                request.chunkGap = true;
+                                resyncChunks(request);
+                            }
+                            return;
+                        }
+                        const text = (snapshot ? message.text : message.append) as string;
+                        if ((snapshot ? 0 : request.chunkText.length) + text.length > MAX_PROVIDER_TEXT_CHARS) {
                             settle(
                                 request,
                                 { outcome: "failed", failure: "protocol", error: "The provider's text is too long" },
@@ -876,15 +922,37 @@ export function createChannelHub(options: { now?: () => number } = {}) {
                             );
                             return;
                         }
+                        request.chunkText = snapshot ? text : request.chunkText + text;
+                        request.chunkSeq = seq;
+                        request.chunkGap = false;
                         try {
-                            request.onChunk(message.text);
+                            request.onChunk(request.chunkText);
                         } catch (error) {
                             console.error("[Channel]", error);
+                        }
+                        if (request.chunkAnswer?.seq === request.chunkSeq) {
+                            settle(request, request.chunkAnswer.result, false);
                         }
                         return;
                     }
                     const result = readAnswer(request.kind, message);
                     if (result) {
+                        if (
+                            request.onChunk &&
+                            result.outcome === "answered" &&
+                            isPlainObject(result.value) &&
+                            result.value.success === true &&
+                            result.value.streamed === true &&
+                            Object.hasOwn(result.value, "seq")
+                        ) {
+                            const seq = result.value.seq;
+                            if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 0) return;
+                            if (request.chunkGap || seq !== request.chunkSeq) {
+                                request.chunkAnswer = { seq, result };
+                                resyncChunks(request);
+                                return;
+                            }
+                        }
                         settle(request, result, false);
                     }
                 },

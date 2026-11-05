@@ -688,9 +688,11 @@ export type CallbackPayloads = {
      * A plugin provider model's request: the tab calls the provider `name` with `argument` (the
      * prompt and the parameters, built on the server from the job's frozen settings). A provider
      * that answers text: the callback's answer is `{ success, content }`. One that answers a
-     * stream: the tab sends `chunk` messages with the cumulative text (the first one, possibly
-     * empty, as soon as the stream exists) and then answers `{ success: true, streamed: true }`. No
-     * answer from the provider at all: `{ none: true }`.
+     * stream: the tab sends `chunk` messages (the first one, possibly empty, as soon as the stream
+     * exists), then answers `{ success: true, streamed: true }`. With `chunks: "append"` offered,
+     * chunks are sequenced appends or snapshots and the answer also carries the final `seq`; the
+     * server reconstructs cumulative text and waits for that sequence before accepting success.
+     * Without the offer, chunks carry cumulative text. No answer at all: `{ none: true }`.
      */
     provider: { name: string; argument: Record<string, unknown> };
     /**
@@ -759,6 +761,8 @@ export type GenerationCallbackEvent = {
     /** Every record the job hydrated right before this callback. */
     revisions: HydrationReceipt[];
     payload: unknown;
+    /** Accepts sequenced append chunks and snapshots; omitted by older servers. */
+    chunks?: "append";
     /** Epoch milliseconds (server clock) after which the server stops waiting. */
     deadline: number;
     /** Sent again on a reattach: a page without this request's state must not run it. */
@@ -769,6 +773,8 @@ export type GenerationChannelEvent =
     | ({ type: "notice"; epoch: string } & GenerationNotice)
     | GenerationQuestionEvent
     | GenerationCallbackEvent
+    /** Owner only: resend the provider callback's cumulative text and its sequence. */
+    | { type: "chunkResync"; epoch: string; id: string }
     /** The server stopped waiting for a request (timeout, job end): close it and drop its answer. */
     | { type: "cancel"; epoch: string; id: string };
 
@@ -815,8 +821,13 @@ export const CANCELLED_CALLBACK_DRAIN_MS = 60_000;
  */
 export type ChannelDrainedBody = { callbackId: string };
 
-/** A streaming `provider` callback's text so far (client to server), before its answer. */
-export type ChannelChunk = { type: "chunk"; id: string; text: string };
+/**
+ * A streaming `provider` callback's text (client to server). Snapshots replace the cumulative text;
+ * appends extend sequence `seq - 1`. Sequenced forms require the callback's `chunks: "append"` offer.
+ */
+export type ChannelChunk = { type: "chunk"; id: string } & (
+    { text: string; seq?: number; append?: never } | { append: string; seq: number; text?: never }
+);
 
 /** The longest cumulative text a `provider` callback may stream, in characters. */
 export const MAX_PROVIDER_TEXT_CHARS = 4 * 1024 * 1024;

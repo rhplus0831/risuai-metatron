@@ -2170,7 +2170,7 @@ describe("the hub: provider chunks and the caller's signal", () => {
     const hooks = { providers: validHooks.providers };
     const payload = { name: "prov", argument: { prompt_chat: [], mode: "model" } };
 
-    it("routes an owner's `chunk` to the outstanding provider callback that takes chunks, ignores every other chunk, and fails the callback with a cancel when a text is too long", async () => {
+    it("accepts an old tab's unsequenced snapshots, ignores unrelated chunks, and rejects oversized text", async () => {
         const h = harness();
         const link = h.open("a", { hooks });
         const errors = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -2184,7 +2184,7 @@ describe("the hub: provider chunks and the caller's signal", () => {
             },
         });
         const dispatched = h.last("callback");
-        expect(dispatched).toMatchObject({ name: "provider", payload });
+        expect(dispatched).toMatchObject({ name: "provider", payload, chunks: "append" });
         const { id } = dispatched;
         // Ignored: another id, a text that is not a string, no text, a wrong message type.
         link.handleMessage({ type: "chunk", id: "nope", text: "x" });
@@ -2235,6 +2235,109 @@ describe("the hub: provider chunks and the caller's signal", () => {
         expect(link.drained(bigId)).toBe(true);
         expect(h.last("callback").name).toBe("editoutput");
         errors.mockRestore();
+    });
+
+    it("reconstructs appends, ignores malformed frames and stale snapshots, and requests one snapshot per gap", async () => {
+        const h = harness();
+        const link = h.open("a", { hooks });
+        const chunks: string[] = [];
+        const pending = link.channel.callback("provider", payload, { onChunk: (text) => chunks.push(text) });
+        const { id } = h.last("callback");
+        link.handleMessage({ type: "chunk", id, seq: 1, append: "Hello" });
+        link.handleMessage({ type: "chunk", id, seq: 2, append: " world" });
+        expect(chunks).toEqual(["Hello", "Hello world"]);
+
+        for (const frame of [
+            { seq: 3, append: "!", text: "wrong" },
+            { append: "missing sequence" },
+            { seq: -1, text: "negative" },
+            { seq: 2.5, append: "fraction" },
+            { seq: "3", append: "string sequence" },
+            { seq: Number.MAX_SAFE_INTEGER + 1, text: "unsafe" },
+            { seq: 3, append: 42 },
+            { seq: 3, text: null },
+            { seq: 1, text: "stale" },
+        ])
+            link.handleMessage({ type: "chunk", id, ...frame });
+        expect(chunks).toEqual(["Hello", "Hello world"]);
+        expect(h.ofType("chunkResync")).toEqual([]);
+
+        // Sequence 3 was lost. Later appends cannot be joined to the truncated prefix.
+        link.handleMessage({ type: "chunk", id, seq: 4, append: " Again" });
+        link.handleMessage({ type: "chunk", id, seq: 5, append: "." });
+        link.handleMessage({ type: "chunk", id, seq: 3, append: "!" });
+        expect(chunks).toEqual(["Hello", "Hello world"]);
+        expect(h.ofType("chunkResync")).toEqual([{ type: "chunkResync", epoch: "e", id, job: "a" }]);
+        link.handleMessage({ type: "chunk", id, seq: 5, text: "Hello world! Again." });
+        link.handleMessage({ type: "chunk", id, seq: 6, append: " Done." });
+        expect(chunks).toEqual(["Hello", "Hello world", "Hello world! Again.", "Hello world! Again. Done."]);
+
+        // Recovery resets the request so a separate loss can ask for its own snapshot.
+        link.handleMessage({ type: "chunk", id, seq: 8, append: "later" });
+        link.handleMessage({ type: "chunk", id, seq: 9, append: "still later" });
+        expect(h.ofType("chunkResync")).toHaveLength(2);
+        link.handleMessage({ type: "chunk", id, seq: 9, text: "Hello world! Again. Done. All recovered." });
+        h.answer(link, id, { success: true, streamed: true, seq: 9 });
+        expect(await pending).toEqual({ outcome: "answered", value: { success: true, streamed: true, seq: 9 } });
+        expect(chunks.at(-1)).toBe("Hello world! Again. Done. All recovered.");
+    });
+
+    it("holds streamed success until its final sequence arrives, while failures settle without missing chunks", async () => {
+        const h = harness();
+        const link = h.open("a", { hooks });
+        for (const recovery of ["snapshot", "append"] as const) {
+            const chunks: string[] = [];
+            const pending = link.channel.callback("provider", payload, { onChunk: (text) => chunks.push(text) });
+            const { id } = h.last("callback");
+            link.handleMessage({ type: "chunk", id, seq: 1, append: "Hello" });
+            h.answer(link, id, { success: true, streamed: true, seq: 3 });
+            expect(await h.state(pending)).toBe("pending");
+            expect(h.last("chunkResync")).toMatchObject({ epoch: "e", id });
+            link.handleMessage({ type: "chunk", id, seq: 2, append: " world" });
+            expect(await h.state(pending)).toBe("pending");
+            link.handleMessage({
+                type: "chunk",
+                id,
+                seq: 3,
+                ...(recovery === "snapshot" ? { text: "Hello world!" } : { append: "!" }),
+            });
+            expect(await pending).toEqual({ outcome: "answered", value: { success: true, streamed: true, seq: 3 } });
+            expect(chunks).toEqual(["Hello", "Hello world", "Hello world!"]);
+        }
+
+        for (const result of [
+            { outcome: "answered", value: { success: false, content: "provider failed" } },
+            { outcome: "failed", failure: "hook", error: "reader failed" },
+        ]) {
+            const pending = link.channel.callback("provider", payload, { onChunk: () => {} });
+            const { id } = h.last("callback");
+            link.handleMessage({ type: "chunk", id, seq: 2, append: "missing prefix" });
+            h.answer(link, id, { success: true, streamed: true, seq: 2 });
+            expect(await h.state(pending)).toBe("pending");
+            link.handleMessage({ type: "answer", id, ...result });
+            expect(await h.state(pending)).toEqual(result);
+        }
+    });
+
+    it("enforces the 4 Mi-character cap on reconstructed appends before delivering an oversized chunk", async () => {
+        const h = harness();
+        const link = h.open("a", { hooks });
+        const lengths: number[] = [];
+        const pending = link.channel.callback("provider", payload, { onChunk: (text) => lengths.push(text.length) });
+        const { id } = h.last("callback");
+        const limit = 4 * 1024 * 1024;
+        link.handleMessage({ type: "chunk", id, seq: 1, append: "x".repeat(limit - 1) });
+        link.handleMessage({ type: "chunk", id, seq: 2, append: "y" });
+        expect(lengths).toEqual([limit - 1, limit]);
+        expect(await h.state(pending)).toBe("pending");
+        link.handleMessage({ type: "chunk", id, seq: 3, append: "z" });
+        expect(await h.state(pending)).toEqual({
+            outcome: "failed",
+            failure: "protocol",
+            error: "The provider's text is too long",
+        });
+        expect(lengths).toEqual([limit - 1, limit]);
+        expect(h.last("cancel")).toMatchObject({ id });
     });
 
     it("ends a callback when the caller's signal aborts (a cancel to the tab), settles one whose signal already aborted without dispatching it, and ignores an abort after the answer", async () => {

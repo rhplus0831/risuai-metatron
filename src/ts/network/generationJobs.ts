@@ -1342,6 +1342,7 @@ export function applyGenerationEvent(
         case "notice":
         case "question":
         case "cancel":
+        case "chunkResync":
             if (transport) {
                 onChannel((channel) => channel.handleChannelEvent(jobId, event, transport));
             }
