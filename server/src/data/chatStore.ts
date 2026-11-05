@@ -1315,6 +1315,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         if (!own) entry.foreign = { value: after };
     }
     function recordMap(attempt: RerollAttempt | undefined, token: string | undefined, before: unknown, after: unknown) {
+        if (!attempt || before === after) return;
         const was = mapOf(before),
             now = mapOf(after);
         for (const key of new Set([...Object.keys(was), ...Object.keys(now)])) {
@@ -1421,9 +1422,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const selectCandidateRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND (
         json_type(data, '$.candidates') IS NOT NULL OR json_type(data, '$.selected') IS NOT NULL OR
         json_type(data, '$.candidatesRevision') IS NOT NULL)`);
-    // Appending reads only rows needing cleanup. Open generations clean their own carrier at finalize.
+    // Appending reads only rows needing cleanup. The append path's guard check skips rows a live job owns;
+    // an open generation fence with no live owner is cleaned.
     const selectCheckpointRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND id != ?
-        AND (generationId IS NULL OR generationFinal = 1) AND (
+        AND (
         json_type(data, '$.scriptstateCheckpoint') IS NOT NULL OR EXISTS (
             SELECT 1 FROM json_tree(messages.data, '$.candidates') WHERE key = 'scriptstateAfter'))`);
     const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");

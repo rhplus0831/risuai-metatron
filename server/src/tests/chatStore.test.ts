@@ -3,7 +3,7 @@ import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp, ChatRecord } from "../../../shared/chats.ts";
 import type { Message, MessageTranslation } from "../../../shared/database.ts";
@@ -2021,6 +2021,31 @@ describe("meta mergeUnset and scriptstate merge", () => {
     const meta = (store: ResourceStore) => chat(store, "k")!.data as unknown as Record<string, unknown>;
     const current = (store: ResourceStore) => chat(store, "k")!.revision!;
 
+    it("edits a note without comparing 100 variables when no reroll attempt is active", () => {
+        const store = memoryStore();
+        const variables = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`$v${i}`, `value-${i}`]));
+        store.applyChanges({
+            ops: [createCharacter("c")],
+            chats: [group("k", null, [{ op: "create", chat: { scriptstate: variables, message: [] } as never }])],
+        });
+        const values = new Set(Object.values(variables));
+        const revision = current(store);
+        const stringify = vi.spyOn(JSON, "stringify");
+        let variableSerializations = 0;
+        try {
+            store.applyChanges({ chats: [group("k", revision, [{ op: "meta", set: { note: "Edited" } }])] });
+            // Storage validation also uses a function replacer, but on whole records. Only
+            // variable comparisons serialize these individual values during this note edit.
+            variableSerializations = stringify.mock.calls.filter(
+                ([value, replacer]) => typeof replacer === "function" && typeof value === "string" && values.has(value),
+            ).length;
+        } finally {
+            stringify.mockRestore();
+        }
+        expect(variableSerializations).toBe(0);
+        expect(meta(store)).toMatchObject({ note: "Edited", scriptstate: variables });
+    });
+
     it("keeps both writers' scriptstate keys, removes one key and keeps the rest on an older revision, adds an id named in both halves, and leaves a non-map field alone for removals", () => {
         const store = memoryStore();
         const base = seed(store).chat;
@@ -3463,6 +3488,60 @@ describe("persisted reply candidates", () => {
                 .checkpoints,
         ).toEqual(["applied"]);
         expect(row(store).data).toBe("Finished");
+    });
+
+    it("clears checkpoint and candidate snapshots on append after a generation job ends without a final write", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        init(store);
+        const token = "ended-job-token";
+        lock.addToken(token);
+        lock.acquire({ characterId: "c", chatId: "k", messageId: "r" }, { token, jobId: "J", generationId: "g" });
+        store.applyChanges(
+            { chats: [group("k", store.chatRevision("c", "k"), [{ op: "begin", id: "r", generationId: "g" }])] },
+            { jobToken: token },
+        );
+        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        expect(row(store).candidates).toEqual(candidates);
+        expect(lock.holder("c", "k", "r")).toBe(token);
+
+        lock.endJob(token);
+        expect(lock.holder("c", "k", "r")).toBeNull();
+        write(store, [{ op: "append", anchor: { end: true }, messages: [m("next", "next question")] }]);
+
+        expect(row(store)).not.toHaveProperty("scriptstateCheckpoint");
+        expect(row(store).candidates).toEqual([
+            { id: "first", data: "First" },
+            { id: "second", data: "Second" },
+        ]);
+    });
+
+    it("preserves checkpoint and candidate snapshots when the live owner's begin follows the append in the same group", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        init(store);
+        const token = "live-job-token";
+        lock.addToken(token);
+        lock.acquire({ characterId: "c", chatId: "k", messageId: "r" }, { token, jobId: "J", generationId: "g" });
+        expect(lock.holder("c", "k", "r")).toBe(token);
+
+        store.applyChanges(
+            {
+                chats: [
+                    group("k", store.chatRevision("c", "k"), [
+                        { op: "append", anchor: { end: true }, messages: [m("next", "next question")] },
+                        { op: "begin", id: "r", generationId: "g" },
+                    ]),
+                ],
+            },
+            { jobToken: token },
+        );
+
+        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        expect(row(store).candidates).toEqual(candidates);
+        expect(lock.holder("c", "k", "r")).toBe(token);
     });
 
     it("rolls back only attempt-owned variables, preserves intervening writes even when overwritten or removed, and discards rolled-back ledger entries", () => {
