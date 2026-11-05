@@ -13,13 +13,11 @@
 
 ## Files
 
-Each module's contract is its doc comments: the module header of `chatStore.svelte.ts` holds the write protocol, locks,
-and projection rules, and each export's comment holds that export's rule. Read the comment with the code; the lists
-below are the identifiers to look up.
+Module headers and export comments hold the contracts; these lists give lookup identifiers.
 
-- `src/ts/storage/chatStore.svelte.ts`: the chat module. Per character it holds the chat ids in order (the membership)
-  and each chat loaded or as its summary, reactively; boot reads summaries only. Readers: `chatList`, `chatEntry`,
-  `selectedChat`, `currentChatRef`, `selectedChatLoad`, `findChat`, `chatCount`, `countChatEntries`.
+- `src/ts/storage/chatStore.svelte.ts`: chat membership, loaded chats and summaries; boot reads summaries only. Readers:
+  `chatList`, `chatEntry`, `selectedChat`, `currentChatRef`, `selectedChatLoad`, `findChat`, `chatCount`,
+  `countChatEntries`, `chatSummaryList` (read-only plugin summaries).
 - Loads and pins there: `ensureChatLoaded`, `loadChat`, `loadChats`, `pinChat`, `pinChats`, `trimLoadedChats`,
   `MAX_LOADED_CHATS`, `CHAT_READ_DEADLINE_MS`. Boundaries: `withChatsCopy`, `withCompatChats`, `seedChats`,
   `assembleChats`, `initializeChats`, `startChatDriftCheck` (dev only).
@@ -38,22 +36,23 @@ below are the identifiers to look up.
   `applyServerGenerationChunk`, `heldStreamText`, `endServerJob`, `hydrateChat`, `hydrateChatPatch`,
   `chatHydrationHold`, `prepareChatHydrationRefresh`, `deferredReloads`, `finishDeferredReload`.
 - `src/ts/storage/chatEdits.ts`: `editChat` (may await), `editChatSync`, `editCurrentChat`, `setCurrentChatMeta`, over a
-  whole chat copy; `readChatsDetached` (exports), `readChatRefsDetached` (plugins).
+  whole chat copy; `readChatsDetached` serves `src/ts/storage/exportAsDataset.ts` and `src/ts/characters.ts`;
+  `readChatRefsDetached` serves plugin `getDatabase` and `getChats` via `withDetachedDatabaseChats` in
+  `src/ts/plugins/apiV3/v3.svelte.ts`.
 - `src/ts/storage/chatFieldDraft.svelte.ts` (`createChatFieldDraft`, `loreWriteFenced`),
   `src/ts/storage/{localLoreDraft.svelte,loreOverridesDraft.svelte}.ts`: the editing copies of a selected chat's array
   fields and their send fence.
-- `src/ts/checkpoints/chatCheckpoints.svelte.ts`: the checkpoint client; its module header holds the request,
-  preparation, and answer rules. `chatCheckpointsDialog` is opened from `SideChatList.svelte`; while
-  `checkpointLoadBusy`, the dialog disables its controls and `hotkey.ts` swallows shortcuts behind it and keeps Escape
-  from closing it.
+- `src/ts/checkpoints/chatCheckpoints.svelte.ts`: checkpoint client (module header). `chatCheckpointsDialog` opens from
+  `SideChatList.svelte`; while `checkpointLoadBusy`, the dialog disables its controls and `hotkey.ts` swallows shortcuts
+  behind it and keeps Escape from closing it.
 - `src/ts/network/jobChannel.ts`: `rememberHydration`, `rememberJobStreaming`, `endJobChannel`, and the callback barrier
   (its module header); chat installation stays in `chatStore.svelte.ts`.
 
 ### Last chatted
 
-- `characterLastChattedAt` derives a character's time from its chats (its comment). The stored `lastInteraction` is
-  frozen: never in that maximum, written, or migrated; `applyPluginCharacter` preserves it for same-character setters,
-  and imports and new characters keep their input. `ChatEntryMeta.lastMessageAt` is derived and never written.
+- `characterLastChattedAt`'s JSDoc holds derived activity rules. `applyPluginCharacter` preserves frozen
+  `lastInteraction` for same-character setters; imports and new characters keep their input.
+  `ChatEntryMeta.lastMessageAt` is derived, never written.
 
 ### Pins and eviction
 

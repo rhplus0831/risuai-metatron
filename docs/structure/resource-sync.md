@@ -51,9 +51,8 @@
 
 ### Boot cache
 
-- `loadBootSnapshot` in `src/ts/storage/bootCache.ts` combines IndexedDB and `resourceClient.ts`'s `readBoot` into the
-  same plain `ResourceReadKindsResult` that installation consumes. Read its module header and `prepareBootRequest`,
-  `expandBootAnswer`, `loadBootSnapshot`, `BootCacheStore` for claims, validation, fallback and write fences.
+- `bootCache.ts` `loadBootSnapshot` combines IndexedDB and `resourceClient.ts`'s `readBoot` for installation; its module
+  header holds cache claims, validation, fallback and write fences.
 - `BOOT_CACHE_ELIGIBILITY` (`shared/resources.ts`) decides per kind; a server `project` vetoes caching regardless of the
   table. A character with a non-empty managed `oaiTTSConfig.apiKey` is excluded; secrets embedded in other cached
   content can remain.
@@ -121,8 +120,17 @@
 
 ### Record patches
 
-`updateOperation`, `baseParts` and `recordPatchText` in `src/ts/storage/resourceSync.svelte.ts` define patch selection
-and whole-record fallbacks. `llmSecrets` never has parts: the server refuses its patches, including readable siblings.
+- `resourceSync.svelte.ts` `updateOperation`, `baseParts`, `recordPatchText`: top-level field and array-item diffs.
+  Creates, records without parts (including JSON-hook fallbacks), incompatible parts/item keys, or patches no smaller
+  than whole data in UTF-8 bytes go whole. A changed top-level `__proto__` sends the object or affected item whole;
+  key-order-only changes can settle without a write. `llmSecrets` never has parts: the server refuses its patches,
+  readable siblings included.
+- `pluginStorage` adds entry-level `set`/`remove` one level down in `PLUGIN_STORAGE_DICTIONARIES`
+  (`shared/pluginStorage.ts`). A reserved field being set stays top-level when either side lacks entry spans (including
+  a non-dictionary), its `__proto__` entry changes, or nested ops cannot reproduce its key order.
+- `plugins` prefers unique nonempty ids, else unique nonempty names with explicit `itemKey: "name"`; duplicate/empty
+  names without usable ids go whole. Shared validation/application comments: `shared/recordPatch.ts`
+  `checkRecordWritePatch`, `applyFieldPatch`, `itemIds`, `checkItemPatch`, `applyItemPatch`.
 
 ### Lost answers
 
@@ -236,11 +244,8 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   defines the ten-attempt budget and relevant dependency reads; it does not wait for unrelated background reads.
 - Unanswered pagehide and stalled split-journal dependencies each wait at most 20 s. Timeout rejects without releasing
   the split prefix.
-- The result is `{ discarded, refused }`: discards since the call or `beginMutationScope` (a conservative time window),
-  and `refusedItems` at resolution. Keys are `<kind>/<id>`, `chats/<chaId>/<chatId>` or `chats/<chaId>` for an order. An
-  empty discard list does not guarantee all changes are durable; refused chats/orders are nonblocking. Refused records
-  reject via `quarantineReason`; generation-blocked work throws `GenerationBlockedError` (`generatingNoticeCount` tracks
-  whether the notice showed).
+- The result is `{ discarded, refused }` with `<kind>/<id>`, `chats/<chaId>/<chatId>` or order `chats/<chaId>` keys. Its
+  JSDoc holds time window, durability and refusal rules; `generatingNoticeCount` tracks whether the notice showed.
 - Send admission, `startMemoryTask` and `requestStoredTranslation` check the target chat and order in the refusal
   result. `readChatsDetached` also checks character keys. Refused records reject the flush itself. Backup export reports
   refused changes.

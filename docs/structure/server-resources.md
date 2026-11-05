@@ -24,8 +24,9 @@ headers and method comments.
 - `server/src/data/chatStore.ts` (`openChatSchema`, `createChatTables`, `chatSummary`, `applyGroup`, `copyStagedChats`)
   and `server/src/data/chats.ts` (`normalizeChatMeta`, `normalizeMessage`): the chat tables, their summaries and memos,
   and chat validation.
-- `server/src/data/kinds.ts` (`DEFAULT_RESOURCE_KINDS`, `ResourceKind`) and `server/src/data/normalize/` (one normalizer
-  per kind).
+- `server/src/data/kinds.ts`: kind declarations (`DEFAULT_RESOURCE_KINDS`, `ResourceKind`), with normalizers in
+  `server/src/data/normalize/`. `pluginStorage` declares `nestedFields: PLUGIN_STORAGE_DICTIONARIES`
+  (`shared/pluginStorage.ts`), still normalized by `requireObject`; `plugins` permits `itemKey: "name"`.
 - `server/src/data/checkpointStore.ts` (`createCheckpointTables`, `walkCheckpointSnapshot`) and
   `server/src/data/checkpointService.ts` (`createCheckpointService`: `save`, `load`, `autoSave`): checkpoints.
 - `server/src/data/snapshots.ts` (`createSnapshotManager`: the timer, `pin`, `withMaintenance`; `MaintenanceGate`),
@@ -61,6 +62,10 @@ reads included, do not. A reverse proxy must keep the encoded ids ([Gotchas](sel
   `GET /api/resources/:kind/:id`, all compressed per `Accept-Encoding` (`compressedJson`).
 - Writes, + epoch: `POST /api/resources/batch` (resource ops, chat groups, chat orders; a conflict applies nothing),
   `PUT` and `DELETE /api/resources/:kind/:id` (`baseRevision`; 409 with the current revision).
+- The store's `writePatch` uses `shared/recordPatch.ts` (`checkRecordWritePatch`, `applyFieldPatch`, `applyItemPatch`):
+  nested ops on other kinds, undeclared names, or a stored target that is not an own object dictionary are refused.
+  Older clients' top-level and id-keyed patches still apply; the feed stays top-level/id-keyed
+  ([client patches](resource-sync.md#record-patches)).
 
 ### Credential routes
 
@@ -302,12 +307,8 @@ snapshot with any of them has them checked and restored (`walkCheckpointSnapshot
 
 ### Store open and normalization
 
-- Opening the store runs the normalization pass in one transaction, unless it finds its own stamp: each record whose
-  normalized text or schema version differs is rewritten with its revision counter advanced (same `seq` and epoch), and
-  each missing `materialize` singleton is created; a stored record its normalizer rejects, or one of a newer schema
-  version than its kind, stops the start.
-- The pass writes `normalizationStamp` in that transaction ([Gotchas](#gotchas) has the skip). An [install](#install)
-  runs no pass.
+- `resourceStore.ts` `createResourceStore`, `normalizeStoredRecords`, `normalizationStamp`: normalization and stamp
+  contracts. Rewrites retain `seq` and epoch. An [install](#install) runs no pass.
 - A version-1 or version-2 file (settings in a `root` record) is refused at startup with a message naming it, and a
   snapshot or archive of another version is refused on restore; this server does not migrate those database versions.
 
