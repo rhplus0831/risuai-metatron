@@ -38,7 +38,7 @@ afterEach(async () => {
     vi.useRealTimers();
 });
 
-function fixture(options: AssetLifecycleOptions = {}) {
+function fixture(options: AssetLifecycleOptions & Pick<Parameters<typeof createAssetLifecycle>[0], "thumbnails"> = {}) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-asset-mark-"));
     const file = path.join(dir, "data", "resources.sqlite");
     const store = createResourceStore({ file, kinds });
