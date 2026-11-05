@@ -9,8 +9,8 @@ import { languageSpanish } from "./es";
 
 /**
  * Bundled UI locales. Manual selection needs a locale here, a `changeLanguage` branch, and an option
- * in `src/ts/setting/languageSettingsData.svelte.ts`; `BROWSER_UI_LANGUAGES` in `src/ts/bootstrap.ts`
- * only controls first-boot browser base-code matching.
+ * in `src/ts/setting/languageSettingsData.svelte.ts`; `BROWSER_UI_LANGUAGES` and
+ * `BROWSER_UI_LANGUAGE_MAP` in `src/ts/bootstrap.ts` only control first-boot browser-language matching.
  */
 
 /** Current UI strings, replaced by `changeLanguage`; English defines the complete type. */

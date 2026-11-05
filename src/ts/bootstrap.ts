@@ -265,21 +265,36 @@ export function installBootRecords(snapshot: ResourceReadKindsResult) {
     changeLanguage(settings.ui.language);
 }
 
-const BROWSER_UI_LANGUAGES = ["de", "en", "ko", "cn", "vi", "zh-Hant"];
+// Only browser base segments belong here; other UI codes need entries in the map below.
+const BROWSER_UI_LANGUAGES = ["de", "en", "ko", "vi"];
+const BROWSER_UI_LANGUAGE_MAP: Record<string, string> = {
+    zh: "cn",
+    "zh-cn": "cn",
+    "zh-sg": "cn",
+    "zh-hans": "cn",
+    "zh-tw": "zh-Hant",
+    "zh-hk": "zh-Hant",
+    "zh-hant": "zh-Hant",
+};
 
 /**
- * The first boot of a store (`didFirstSetup` unset): the UI language follows the browser's when it is
- * one the UI has, as the removed first-run wizard's language step did. Every other setting keeps the
- * server's default; the settings pages change them.
+ * The first boot of a store (`didFirstSetup` unset): match Chinese browser tags case-insensitively
+ * by their first two segments (bare zh, CN, SG, or Hans -> cn; TW, HK, or Hant -> zh-Hant), then fall
+ * back to a supported browser base segment. Every other setting keeps the server's default; the
+ * settings pages change them.
  */
 function applyFirstBootDefaults() {
     if (settings.ui.didFirstSetup) {
         return;
     }
-    const browserLang = navigator.language?.split("-")[0];
-    if (browserLang && BROWSER_UI_LANGUAGES.includes(browserLang)) {
-        settings.ui.language = browserLang;
-        changeLanguage(browserLang);
+    const browserSegments = navigator.language?.toLowerCase().split("-") ?? [];
+    const browserBase = browserSegments[0];
+    const uiLanguage =
+        BROWSER_UI_LANGUAGE_MAP[browserSegments.slice(0, 2).join("-")] ??
+        (BROWSER_UI_LANGUAGES.includes(browserBase) ? browserBase : undefined);
+    if (uiLanguage) {
+        settings.ui.language = uiLanguage;
+        changeLanguage(uiLanguage);
     }
     settings.ui.didFirstSetup = true;
 }

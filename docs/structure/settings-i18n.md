@@ -250,11 +250,10 @@ section.
 - Expose a new language:
   1. Add the locale file.
   2. Add a `changeLanguage` branch.
-  3. Add the option in `languageSettingsData.svelte.ts` and in `BROWSER_UI_LANGUAGES` (`src/ts/bootstrap.ts`, the first
-     boot's browser-language match).
-  4. No download step: locales are bundled. The `translang` option's download (`lang.uiLanguage`'s `onChange`) is an
-     export for translators; add the code to that handler's `langs` list only to offer the language for continued
-     translation.
+  3. Add the option in `languageSettingsData.svelte.ts`. For the first boot (`src/ts/bootstrap.ts`), add a base code to
+     `BROWSER_UI_LANGUAGES`, or map a code like `zh-Hant`'s browser tags in `BROWSER_UI_LANGUAGE_MAP`.
+  4. No download step: locales are bundled. The `translang` download (`lang.uiLanguage`'s `onChange`) exports for
+     translators; list the code in its `langs` only to offer it for translation.
 
 ## Tests
 
@@ -273,7 +272,7 @@ section.
   and Display pages real (the jump's consumers) and the other pages mocked.
 - `src/ts/setting/settingsPageSections.test.ts` `PAGES`: the sectioned-page inventory that the placement check runs
   over.
-- No focused test covers the manual `changeLanguage` branch or prompt-template editing.
+- No focused test covers the manual `changeLanguage` branch or prompt-template editing past a type switch.
 
 ## Known Hazards
 

@@ -70,7 +70,7 @@ function chooseOption(element: HTMLSelectElement, value: string) {
     const querySelector = element.querySelector.bind(element);
     (element as { querySelector: unknown }).querySelector = (selector: string) =>
         selector === ":checked" ? (element.options[element.selectedIndex] ?? null) : querySelector(selector);
-    element.dispatchEvent(new Event("change"));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 beforeEach(() => {
@@ -313,6 +313,24 @@ describe("custom model definitions", () => {
 });
 
 describe("the Prompt page", () => {
+    it("initializes text to an empty string when a persona item is switched to chatML through the type select", () => {
+        activePreset.promptTemplate = [{ type: "persona" }];
+        const page = render(PromptPresetSettings);
+        [...page.querySelectorAll("button")].find((button) => button.textContent?.trim() === language.prompt)!.click();
+        flushSync();
+        [...page.querySelectorAll<HTMLElement>('[draggable="true"]')]
+            .find((header) => header.textContent?.trim() === language.formating.personaPrompt)!
+            .click();
+        flushSync();
+        const typeSelect = [...page.querySelectorAll("select")].find((select) =>
+            [...select.options].some((option) => option.value === "chatML"),
+        )!;
+        expect(typeSelect.value).toBe("persona");
+        chooseOption(typeSelect, "chatML");
+        flushSync();
+        expect(activePreset.promptTemplate[0]).toMatchObject({ type: "chatML", text: "" });
+    });
+
     it("names the selected prompt preset, opens the prompt list, and shows no model selector", () => {
         const page = render(PromptPresetSettings);
         expect(page.querySelector("h2")?.textContent).toBe("Prompt");

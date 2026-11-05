@@ -270,6 +270,9 @@
                     promptItem.text = "";
                     promptItem.role = "system";
                 }
+                if (promptItem.type === "chatML" && typeof promptItem.text !== "string") {
+                    promptItem.text = "";
+                }
                 if (promptItem.type === "cache") {
                     promptItem.depth = 1;
                     promptItem.role = "all";

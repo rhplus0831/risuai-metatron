@@ -150,6 +150,8 @@ async function expectFallback(current: Awaited<ReturnType<typeof app>>, phase: s
 
 describe("loadData on a store's first boot", () => {
     async function firstBoot(browserLanguage: string) {
+        // main.ts installs these globals before boot; teardown removes the setup's global stubs.
+        await import("./polyfill");
         const current = await app({ firstBoot: true });
         vi.spyOn(navigator, "language", "get").mockReturnValue(browserLanguage);
         await current.loadData();
@@ -164,6 +166,15 @@ describe("loadData on a store's first boot", () => {
         expect(settings.ui).toMatchObject({ didFirstSetup: true, language: "ko" });
         expect(language.settings).toBe("설정");
         expect(mocks.importShare).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+        { browserLanguage: "zh-CN", uiLanguage: "cn" },
+        { browserLanguage: "zh-TW", uiLanguage: "zh-Hant" },
+    ])("matches $browserLanguage to the $uiLanguage UI language", async ({ browserLanguage, uiLanguage }) => {
+        const { current, settings } = await firstBoot(browserLanguage);
+        expect(get(current.stores.loadedStore)).toBe(true);
+        expect(settings.ui).toMatchObject({ didFirstSetup: true, language: uiLanguage });
     });
 
     it("keeps the default language for a browser language the UI lacks", async () => {

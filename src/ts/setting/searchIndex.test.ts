@@ -33,6 +33,7 @@ vi.mock("../translator/translator", () => ({
 
 import { changeLanguage } from "src/lang";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../shared/presets.ts";
+import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
 import { SETTINGS_PAGES } from "../router/routes";
 import { MODEL_PROFILES_SETTINGS_MENU } from "../settingsMenu";
 import { deleteModelProfile } from "../storage/collectionStore.svelte";
@@ -176,6 +177,20 @@ describe("searchSettings", () => {
         expect(remPunc()).toBe(true);
         media.supaModelType = "none";
         expect(remPunc()).toBe(false);
+    });
+
+    it("lists adv.remPunc as unavailable when Structured Memory takes precedence over SupaMemory", () => {
+        settings.ui.memoryAlgorithmType = STRUCTURED_MEMORY_ALGORITHM;
+        Object.assign(settings.memoryTranslateMedia, {
+            hanuraiEnable: false,
+            hypav2: false,
+            hypaV3: false,
+            supaModelType: "subModel",
+        });
+        expect(hit("Memory Punctuation Removal", "adv.remPunc")).toMatchObject({
+            available: false,
+            reason: "hidden",
+        });
     });
 
     it("lists a Connections item as unavailable when the main slot's profile was deleted", () => {

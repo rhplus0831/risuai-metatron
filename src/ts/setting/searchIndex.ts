@@ -1,4 +1,5 @@
 import type { SettingContext, SettingItem, SettingSection } from "./types";
+import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
 import { language } from "src/lang";
 import { languageEnglish } from "src/lang/en";
 import { matchText, prepareQuery, MATCH_SCORE, type PreparedQuery } from "../util/koreanSearch";
@@ -60,9 +61,9 @@ export interface SettingTarget {
 export interface SettingLocation extends SettingTarget {
     itemId: string;
     /**
-     * Parent gates absent from the registry: only `adv.remPunc`, matching the Hanurai/HypaV2/HypaV3/
-     * SupaMemory chain in `src/lib/Setting/Pages/MemorySettings.svelte`, excluding its leading Structured
-     * Memory gate. Voice's emotion method gates nothing.
+     * Parent gates absent from the registry: only `adv.remPunc`, matching the Structured Memory/
+     * Hanurai/HypaV2/HypaV3/SupaMemory chain in `src/lib/Setting/Pages/MemorySettings.svelte`, including
+     * its leading Structured Memory gate. Voice's emotion method gates nothing.
      */
     available?: (ctx: SettingContext) => boolean;
 }
@@ -121,11 +122,12 @@ function placeSections(sections: readonly SettingSection[], target: SettingTarge
     }
 }
 
-// `MemorySettings.svelte`'s chain: Hanurai, then HypaV2, then HypaV3, then the SupaMemory block
-// (the only renderer of `memorySupaMemoryItems`), whose own test is transcribed as written.
+// `MemorySettings.svelte`'s chain: Structured Memory, Hanurai, HypaV2, HypaV3, then the SupaMemory
+// block (the only renderer of `memorySupaMemoryItems`), whose own test is transcribed as written.
 const supaMemoryBranch = (ctx: SettingContext): boolean => {
     const media = ctx.settings.memoryTranslateMedia;
     return (
+        ctx.settings.ui.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM &&
         !media.hanuraiEnable &&
         !media.hypav2 &&
         !media.hypaV3 &&
