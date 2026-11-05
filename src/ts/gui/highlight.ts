@@ -358,7 +358,7 @@ const highlighterSyntax = [
 function simpleCBSHighlightParser(text: string) {
     let depth = 0;
     let pointer = 0;
-    let depthStarts = new Uint8Array(100);
+    let depthStarts = new Int32Array(100);
     let highlightMode = new Uint8Array(100);
 
     const ranges: HighlightInt[] = [];

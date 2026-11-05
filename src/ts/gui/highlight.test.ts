@@ -79,6 +79,17 @@ afterEach(async () => {
 });
 
 describe("editor highlight registry", () => {
+    it("highlights exactly {{char}} after 300 plain characters", () => {
+        const id = highlighting.getNewHighlightId();
+        const dom = editor("a".repeat(300) + "{{char}}");
+        highlighting.highlighter(dom, id);
+
+        const ranges = registeredRanges();
+        expect(ranges).toHaveLength(1);
+        expect(ranges[0].toString()).toBe("{{char}}");
+        expect(ranges[0].startOffset).toBe(300);
+    });
+
     it("deletes CBS categories when the same editor changes from {{user}} to plain text", () => {
         const id = highlighting.getNewHighlightId();
         const dom = editor("{{user}}");
