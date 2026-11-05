@@ -46,9 +46,9 @@ Identifiers the flows below name are not repeated here.
 
 ### Live updates
 
-- `noteRemoteChanges` sends `inlays` and `pluginPermissions` to their owners registered through
-  `setRemoteResourceOwner`. Mirrored entries take a fitting `applyRemotePatch` or wait for `applyRemoteUpdates`: the
-  refresh queue reads through `readRefs` beside writes, then installs through `applyToMirror`.
+- `noteRemoteChanges` sends `inlays` and `pluginPermissions` to owners set by `setRemoteResourceOwner`. Mirrored entries
+  take a fitting `applyRemotePatch` (`entryPatch ?? patch`) or wait for `applyRemoteUpdates`: the refresh queue reads
+  via `readRefs` beside writes, then installs via `applyToMirror`.
 - A new character arrives with its chat list through `applyRemoteCollection` in `src/ts/storage/chatStore.svelte.ts`;
   chat/order refs that beat insertion keep a list read pending. A remote character deletion calls
   `forgetCharacter({ discard: true })`: unsent chat work is discarded and reported, a fulfilled queued delete settles,

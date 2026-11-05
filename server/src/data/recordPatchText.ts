@@ -1,4 +1,4 @@
-import { diffFields, diffItems, itemIds } from "../../../shared/recordPatch.ts";
+import { diffFields, diffItems, itemIds, type RecordWritePatchOptions } from "../../../shared/recordPatch.ts";
 import type { RecordItemFieldPatch } from "../../../shared/resources.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 
@@ -54,7 +54,10 @@ function valueEnd(text: string, start: number): number {
 }
 
 /** Top-level field texts of a serialized object, parsing only its keys. */
-function fields(text: string): Map<string, string> {
+export function recordFieldTexts(text: string): Map<string, string> {
+    if (text[0] !== "{") {
+        throw new SyntaxError("Expected a JSON object");
+    }
     const parts = new Map<string, string>();
     let start = skipWhitespace(text, 1);
     while (text[start] !== "}") {
@@ -106,8 +109,8 @@ function items(text: string): string[] {
  * diffFields' semantics for nested key order and numeric spellings such as -0 versus 0.
  */
 function fieldDiff(before: string, after: string) {
-    const old = fields(before);
-    const next = fields(after);
+    const old = recordFieldTexts(before);
+    const next = recordFieldTexts(after);
     const changedOld: Record<string, unknown> = {};
     const changedNext: Record<string, unknown> = {};
     for (const key of new Set([...old.keys(), ...next.keys()])) {
@@ -130,30 +133,43 @@ function fieldDiff(before: string, after: string) {
 /**
  * The slow write path has already parsed both records, but normalization cloned their nested values.
  * Diff their stored texts so equal parts need neither another parse nor another serialization. Item
- * ids come from those already parsed values, including unchanged/reordered items; only changed field
- * values and whole new/replaced items are parsed for the feed. Text scanning is only an optimization:
- * if it cannot scan a representation, use the already parsed values, never fail the write for it.
- * The caller caps the final feed JSON.
+ * keys come from those already parsed values (unique ids first, else names when declared), including
+ * unchanged/reordered items; only changed field values and whole new/replaced items are parsed for
+ * the feed. Text scanning is only an optimization: if it cannot scan a representation, use the already
+ * parsed values, never fail the write for it. The caller caps the final feed JSON.
  */
-export function diffRecordText(oldText: string, nextText: string, old: unknown, next: unknown) {
+export function diffRecordText(
+    oldText: string,
+    nextText: string,
+    old: unknown,
+    next: unknown,
+    options: RecordWritePatchOptions = {},
+) {
     try {
         // trim returns compact texts unchanged and also accepts whitespace around the root value.
-        return scanRecordDiff(oldText.trim(), nextText.trim(), old, next);
+        return scanRecordDiff(oldText.trim(), nextText.trim(), old, next, options);
     } catch {
-        return isPlainObject(old) && isPlainObject(next) ? diffFields(old, next) : diffItems(old, next);
+        return isPlainObject(old) && isPlainObject(next) ? diffFields(old, next) : diffItems(old, next, options);
     }
 }
 
-function scanRecordDiff(oldText: string, nextText: string, old: unknown, next: unknown) {
+function scanRecordDiff(
+    oldText: string,
+    nextText: string,
+    old: unknown,
+    next: unknown,
+    options: RecordWritePatchOptions,
+) {
     if (oldText[0] === "{" && nextText[0] === "{") {
         return fieldDiff(oldText, nextText);
     }
     if (oldText[0] !== "[" || nextText[0] !== "[") {
         // Includes a kind whose normalizer changed the record's shape.
-        return isPlainObject(old) && isPlainObject(next) ? diffFields(old, next) : diffItems(old, next);
+        return isPlainObject(old) && isPlainObject(next) ? diffFields(old, next) : diffItems(old, next, options);
     }
-    const oldIds = itemIds(old);
-    const nextIds = itemIds(next);
+    const key = options.itemKey === "name" && itemIds(old) === null ? "name" : "id";
+    const oldIds = itemIds(old, key);
+    const nextIds = itemIds(next, key);
     if (!oldIds || !nextIds) {
         return null;
     }
@@ -169,12 +185,17 @@ function scanRecordDiff(oldText: string, nextText: string, old: unknown, next: u
             return;
         }
         const diff = before === undefined ? null : fieldDiff(before, after);
-        if (!diff) {
+        if (!diff || Object.hasOwn(diff.set, key) || diff.remove.includes(key)) {
             replaced.push(JSON.parse(after) as Record<string, unknown>);
         } else if (Object.keys(diff.set).length > 0 || diff.remove.length > 0) {
             changes.push({ id, ...diff });
         }
     });
     const reordered = oldIds.length !== nextIds.length || oldIds.some((id, index) => id !== nextIds[index]);
-    return { items: replaced, changes, ...(reordered ? { order: nextIds } : {}) };
+    return {
+        items: replaced,
+        changes,
+        ...(reordered ? { order: nextIds } : {}),
+        ...(key === "name" ? { itemKey: "name" as const } : {}),
+    };
 }

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MAX_FEED_PATCH_BYTES } from "../../../shared/resources.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
@@ -376,6 +377,231 @@ describe("a patch of a shallowNormalize kind", () => {
 
 // Observe both the stored result and its feed, including the work avoided by the fast path.
 describe("general record patch writes", () => {
+    it.each(["cold", "warm"] as const)(
+        "publishes only the changed dictionary entry with bounded JSON passes on a %s cache",
+        (cache) => {
+            const s = side(FAST);
+            const kind = FAST.get("pluginStorage")!;
+            const threshold = 2 * 1024 * 1024;
+            const history = "x".repeat(threshold);
+            s.store.put(kind, "main", { _ownedPluginStorage: { history, counter: 0 } }, null);
+            const write = (counter: number) =>
+                s.store.applyBatch([
+                    {
+                        kind,
+                        id: "main",
+                        baseRevision: s.store.revisionOf(kind, "main"),
+                        patch: { nested: { _ownedPluginStorage: { set: { counter } } } },
+                    },
+                ]);
+            if (cache === "warm") write(1);
+            const baseRevision = s.store.revisionOf(kind, "main");
+            const from = s.events.length;
+            const parse = vi.spyOn(JSON, "parse");
+            const stringify = vi.spyOn(JSON, "stringify");
+            let largeParses: number;
+            let largeSerializations: number;
+            try {
+                write(2);
+                largeParses = parse.mock.calls.filter(([text]) => Buffer.byteLength(text) >= threshold).length;
+                largeSerializations = stringify.mock.results.filter(
+                    (result) =>
+                        result.type === "return" &&
+                        typeof result.value === "string" &&
+                        Buffer.byteLength(result.value) >= threshold,
+                ).length;
+            } finally {
+                parse.mockRestore();
+                stringify.mockRestore();
+            }
+            expect(largeParses).toBeLessThanOrEqual(cache === "warm" ? 0 : 1);
+            expect(largeSerializations).toBeLessThanOrEqual(cache === "warm" ? 0 : 1);
+            expect(s.events.slice(from)).toHaveLength(1);
+            const event = s.events[from];
+            if (event.type !== "change") throw new Error("missing feed change");
+            expect(event.changes.resources).toEqual([
+                {
+                    kind: "pluginStorage",
+                    id: "main",
+                    revision: s.store.revisionOf(kind, "main"),
+                    entryPatch: {
+                        baseRevision,
+                        set: {},
+                        remove: [],
+                        nested: { _ownedPluginStorage: { set: { counter: 2 }, remove: [] } },
+                    },
+                },
+            ]);
+            expect(Buffer.byteLength(JSON.stringify(event.changes.resources[0].entryPatch))).toBeLessThan(
+                MAX_FEED_PATCH_BYTES,
+            );
+            expect(s.store.get(kind, "main")!.data).toEqual({ _ownedPluginStorage: { history, counter: 2 } });
+        },
+    );
+
+    it("publishes name-addressed plugin toggles only in entryPatch and unique-id toggles in the legacy patch", () => {
+        const s = side(FAST);
+        const kind = FAST.get("plugins")!;
+        for (const identified of [false, true]) {
+            const plugins = [
+                { name: "first", enabled: true, ...(identified ? { id: "one" } : {}) },
+                { name: "second", enabled: true, ...(identified ? { id: "two" } : {}) },
+            ];
+            s.store.put(kind, "main", plugins, s.store.revisionOf(kind, "main"));
+            const baseRevision = s.store.revisionOf(kind, "main");
+            // Even an explicit name-addressed write retains the legacy feed form when ids are unique.
+            s.store.applyBatch([
+                {
+                    kind,
+                    id: "main",
+                    baseRevision,
+                    patch: { itemKey: "name", changes: [{ id: "second", set: { enabled: false } }] },
+                },
+            ]);
+            const event = s.events.at(-1)!;
+            if (event.type !== "change") throw new Error("missing feed change");
+            expect(event.changes.resources).toEqual([
+                {
+                    kind: "plugins",
+                    id: "main",
+                    revision: s.store.revisionOf(kind, "main"),
+                    [identified ? "patch" : "entryPatch"]: {
+                        baseRevision,
+                        ...(identified ? {} : { itemKey: "name" }),
+                        items: [],
+                        changes: [{ id: identified ? "two" : "second", set: { enabled: false }, remove: [] }],
+                    },
+                },
+            ]);
+            expect(s.store.get(kind, "main")!.data).toEqual([plugins[0], { ...plugins[1], enabled: false }]);
+        }
+    });
+
+    it("stores nested entry writes byte-for-byte like whole writes, preserving key order, own __proto__, and canonical numbers", () => {
+        const kind = FAST.get("pluginStorage")!;
+        const patched = side(FAST);
+        const whole = side(FAST);
+        const initial = JSON.parse(
+            '{"__proto__":{"root":true},"_ownedPluginStorage":{"10":"ten","2":"two","z":0,"__proto__":{"own":true},"a":1}}',
+        );
+        for (const s of [patched, whole]) s.store.put(kind, "main", initial, null);
+        const write = (patch: unknown, expected: unknown, text: string) => {
+            patched.store.applyBatch([
+                { kind, id: "main", baseRevision: patched.store.revisionOf(kind, "main"), patch },
+            ]);
+            whole.store.put(kind, "main", expected, whole.store.revisionOf(kind, "main"));
+            expect(whole.text(kind, "main")).toBe(text);
+            expect(patched.text(kind, "main")).toBe(text);
+        };
+        const first =
+            '{"__proto__":{"root":true},"_ownedPluginStorage":{"1":"one","2":"two","10":"ten","z":0,"__proto__":{"own":true},"b":{"__proto__":{"entry":true},"minus":0,"hundred":100}}}';
+        write(
+            {
+                nested: {
+                    _ownedPluginStorage: {
+                        set: {
+                            b: { ["__proto__"]: { entry: true }, minus: rawJSON("-0"), hundred: rawJSON("1e2") },
+                            "1": "one",
+                            z: -0,
+                        },
+                        remove: ["a"],
+                    },
+                },
+            },
+            JSON.parse(first),
+            first,
+        );
+        const second =
+            '{"__proto__":{"root":true},"_ownedPluginStorage":{"1":"one","2":"two","10":"ten","__proto__":{"own":true},"b":{"__proto__":{"entry":true},"minus":0,"hundred":100},"a":100}}';
+        write(
+            { nested: { _ownedPluginStorage: { set: { a: rawJSON("1e2") }, remove: ["z"] } } },
+            JSON.parse(second),
+            second,
+        );
+        // Re-added string keys append; hooks see entry keys and run in the dictionary's order.
+        const hooks = () => {
+            const seen: string[] = [];
+            const value = {
+                toJSON: (key: string) => {
+                    seen.push(key);
+                    return seen.join(",");
+                },
+            };
+            return { b: value, "2": value, a: value, z: "last" };
+        };
+        const fields = hooks();
+        const expected = JSON.parse(second);
+        Object.assign(expected._ownedPluginStorage, hooks());
+        write(
+            { nested: { _ownedPluginStorage: { set: fields } } },
+            expected,
+            '{"__proto__":{"root":true},"_ownedPluginStorage":{"1":"one","2":"2","10":"ten","__proto__":{"own":true},"b":"2,b","a":"2,b,a","z":"last"}}',
+        );
+    });
+
+    it("checks nested entries at their real depth and preserves whole-write refusal order without committing", () => {
+        const kind = FAST.get("pluginStorage")!;
+        const patched = side(FAST);
+        const whole = side(FAST);
+        for (const s of [patched, whole])
+            s.store.put(kind, "main", { _ownedPluginStorage: { first: 0, second: 0 } }, null);
+        const nested = (levels: number): unknown => {
+            let value: unknown = {};
+            for (let level = 0; level < levels; level++) value = [value];
+            return value;
+        };
+        // Root depth 0, dictionary 1, entry 2: 253 arrays put the last object at depth 255.
+        const allowed = nested(253);
+        patched.store.applyBatch([
+            {
+                kind,
+                id: "main",
+                baseRevision: patched.store.revisionOf(kind, "main"),
+                patch: { nested: { _ownedPluginStorage: { set: { first: allowed } } } },
+            },
+        ]);
+        whole.store.put(
+            kind,
+            "main",
+            { _ownedPluginStorage: { first: allowed, second: 0 } },
+            whole.store.revisionOf(kind, "main"),
+        );
+        expect(patched.text(kind, "main")).toBe(whole.text(kind, "main"));
+        const cases = [
+            { set: () => ({ first: nested(254) }), error: "Resource data is nested deeper than 256 levels" },
+            // A later stringify refusal precedes an earlier entry's depth refusal.
+            { set: () => ({ first: nested(254), second: 1n }), error: "Resource data is not serializable as JSON" },
+            // Refusals follow stored entry order, not the order of the patch's set members.
+            { set: () => ({ second: 1n, first: Infinity }), error: "Resource data contains a non-finite number" },
+        ];
+        for (const { set, error } of cases) {
+            for (const s of [whole, patched]) {
+                const before = s.text(kind, "main");
+                const revision = s.store.revisionOf(kind, "main");
+                const count = s.events.length;
+                expect(() =>
+                    s.store.applyBatch([
+                        {
+                            kind,
+                            id: "main",
+                            baseRevision: revision,
+                            ...(s === patched
+                                ? { patch: { nested: { _ownedPluginStorage: { set: set() } } } }
+                                : {
+                                      data: {
+                                          _ownedPluginStorage: Object.assign({ first: allowed, second: 0 }, set()),
+                                      },
+                                  }),
+                        },
+                    ]),
+                ).toThrow(`ops[0]: ${error}`);
+                expect(s.text(kind, "main")).toBe(before);
+                expect(s.store.revisionOf(kind, "main")).toBe(revision);
+                expect(s.events).toHaveLength(count);
+            }
+        }
+    });
+
     it("patches pluginStorage without parsing or serializing its unchanged payload, and publishes a detached field diff", () => {
         const s = side(FAST);
         const kind = FAST.get("pluginStorage")!;

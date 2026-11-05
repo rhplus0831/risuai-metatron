@@ -4,7 +4,7 @@ import { isPlainObject } from "./valueKinds.ts";
 /**
  * The record patch helpers the store and the client share (`RecordPatch`, `RecordWritePatch` in
  * `shared/resources.ts`): write-patch validation and application, item identity rules, and the
- * top-level/id-keyed JSON diffs a change-feed patch is built from.
+ * field and keyed-item JSON diffs a change-feed patch is built from.
  */
 
 /** A record patch that cannot apply: a malformed patch, or a base it does not fit. */
@@ -57,7 +57,7 @@ export type RecordWritePatchOptions = { readonly nestedFields?: readonly string[
 /** Checked outer fields and entry patches for the declared dictionaries. */
 export type CheckedFieldPatch = CheckedFields & { nested: [string, CheckedFields][] };
 
-/** A checked batch write patch. The feed continues to use top-level fields and item ids. */
+/** A checked batch write patch; feed envelopes are validated separately with the same helpers. */
 export type CheckedRecordWritePatch =
     ({ type: "fields" } & CheckedFieldPatch) | ({ type: "items"; itemKey: "id" | "name" } & CheckedItemPatch);
 
@@ -125,8 +125,8 @@ export function checkRecordWritePatch(patch: unknown, options: RecordWritePatchO
 
 /**
  * Checks one field patch's `set` and `remove` (`what` names it in the message). `forbidden` fields may
- * not be named (an item's key). Refuses an empty patch unless explicitly allowed for the outer
- * fields of a nested patch; always refuses a field named twice and `__proto__`.
+ * not be named (an item's key). Refuses an empty patch unless explicitly allowed for a feed diff
+ * or the outer fields of a nested patch; always refuses a field named twice and `__proto__`.
  */
 export function checkFields(
     set: unknown,
@@ -329,16 +329,19 @@ export function diffFields(
 }
 
 /**
- * The item change from `old` to `next` (both lists with unique item ids, else null): an item that is
+ * The item change from `old` to `next` (both lists with unique item keys, else null): an item that is
  * new, or whose `__proto__` changed, goes whole in `items`; another changed item as a field patch in
- * `changes`; `order` when the id sequence differs.
+ * `changes`; `order` when the key sequence differs. Ids take priority; a declared name key is used
+ * only when the old list has no unique ids and both lists have unique names.
  */
 export function diffItems(
     old: unknown,
     next: unknown,
-): { items: Record<string, unknown>[]; changes: RecordItemFieldPatch[]; order?: string[] } | null {
-    const oldIds = itemIds(old);
-    const nextIds = itemIds(next);
+    options: RecordWritePatchOptions = {},
+): { items: Record<string, unknown>[]; changes: RecordItemFieldPatch[]; order?: string[]; itemKey?: "name" } | null {
+    const key = options.itemKey === "name" && itemIds(old) === null ? "name" : "id";
+    const oldIds = itemIds(old, key);
+    const nextIds = itemIds(next, key);
     if (!oldIds || !nextIds) {
         return null;
     }
@@ -349,12 +352,12 @@ export function diffItems(
         const id = nextIds[index];
         const before = oldById.get(id);
         const fields = before ? diffFields(before, item) : null;
-        if (!fields) {
+        if (!fields || Object.hasOwn(fields.set, key) || fields.remove.includes(key)) {
             items.push(item);
         } else if (Object.keys(fields.set).length > 0 || fields.remove.length > 0) {
             changes.push({ id, ...fields });
         }
     });
     const reordered = oldIds.length !== nextIds.length || oldIds.some((id, index) => id !== nextIds[index]);
-    return reordered ? { items, changes, order: nextIds } : { items, changes };
+    return { items, changes, ...(reordered ? { order: nextIds } : {}), ...(key === "name" ? { itemKey: key } : {}) };
 }

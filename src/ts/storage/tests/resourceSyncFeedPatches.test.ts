@@ -76,7 +76,14 @@ const refK = { chaId: "c", chatId: "k" };
  * with the change feed: presets `pa` and `pb`, character `c` (chats `k` with messages a, b, c and
  * `j`, empty) and character `d` (chat `m`), at home. Then live delivery starts.
  */
-async function boot(options: { summaries?: boolean; meta?: Record<string, unknown>; messages?: Message[] } = {}) {
+async function boot(
+    options: {
+        summaries?: boolean;
+        meta?: Record<string, unknown>;
+        messages?: Message[];
+        prepare?: (fake: StoreBackedServer) => void;
+    } = {},
+) {
     vi.resetModules();
     const fake = await StoreBackedServer.create({ lock: true, feed: true });
     fake.set("presets", "main", [
@@ -111,6 +118,7 @@ async function boot(options: { summaries?: boolean; meta?: Record<string, unknow
             },
         ]);
     }
+    options.prepare?.(fake);
     server.current = fake;
 
     const client: Client = await import("../resourceClient");
@@ -118,6 +126,8 @@ async function boot(options: { summaries?: boolean; meta?: Record<string, unknow
     const chatModule: ChatModule = await import("../chatStore.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
     const selection: Selection = await import("../selection.svelte");
+    const records = await import("../records.svelte");
+    const characters = await import("../characterStore.svelte");
 
     const snapshot = await client.readKinds(KINDS, options.summaries ? { chatSummaries: true } : { chats: true });
     sync.seedResources(snapshot);
@@ -157,7 +167,7 @@ async function boot(options: { summaries?: boolean; meta?: Record<string, unknow
         }
     };
 
-    return { fake, sync, client, chat: chatModule, live, flushFeed };
+    return { fake, sync, client, chat: chatModule, records, characters, live, flushFeed };
 }
 beforeAll(() => warmMutationGraph(), 60_000);
 
@@ -257,6 +267,160 @@ function rerollRows() {
     ];
     return { original, begun, restored, selected, begin, rollback, select };
 }
+
+describe("resource entry patches through the tab save adapter", () => {
+    it("applies another client's dictionary entry and name-keyed plugin toggle without reading either record", async () => {
+        const initial = {
+            pluginStorage: { _ownedPluginStorage: { history: ["kept"], counter: 0 } },
+            plugins: [
+                { name: "first", enabled: true },
+                { name: "second", enabled: true },
+            ],
+        };
+        const b = await boot({
+            prepare: (fake) => {
+                fake.set("pluginStorage", "main", initial.pluginStorage);
+                fake.set("plugins", "main", initial.plugins);
+            },
+        });
+        // A separate client's module state and epoch, talking to the same real store.
+        vi.resetModules();
+        const writer: Client = await import("../resourceClient");
+        expect(writer).not.toBe(b.client);
+        const snapshot = await writer.readKinds(["pluginStorage", "plugins"]);
+        writer.setResourceEpoch(snapshot.epoch);
+        b.fake.requests.length = 0;
+        await writer.applyBatchText(
+            JSON.stringify({
+                ops: [
+                    {
+                        kind: "pluginStorage",
+                        id: "main",
+                        baseRevision: snapshot.kinds.pluginStorage[0].revision,
+                        patch: { nested: { _ownedPluginStorage: { set: { counter: 1 } } } },
+                    },
+                    {
+                        kind: "plugins",
+                        id: "main",
+                        baseRevision: snapshot.kinds.plugins[0].revision,
+                        patch: { itemKey: "name", changes: [{ id: "second", set: { enabled: false } }] },
+                    },
+                ],
+            }),
+        );
+        const expected = {
+            pluginStorage: { _ownedPluginStorage: { history: ["kept"], counter: 1 } },
+            plugins: [initial.plugins[0], { name: "second", enabled: false }],
+        };
+        for (const kind of ["pluginStorage", "plugins"] as const) {
+            expect(b.records.recordData(kind)).toEqual(expected[kind]);
+            expect(b.records.recordData(kind)).toEqual(b.fake.record(kind, "main")!.data);
+            expect(b.sync.heldRecordRevision(kind, "main")).toBe(b.fake.record(kind, "main")!.revision);
+        }
+        const event = b.fake.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("missing feed change");
+        expect(event.changes.resources).toHaveLength(2);
+        for (const ref of event.changes.resources) {
+            expect(ref).toHaveProperty("entryPatch");
+            expect(ref).not.toHaveProperty("patch");
+        }
+        expect(reads(b)).toEqual([]);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toEqual([]);
+        expect(b.fake.batchCount()).toBe(1);
+        quiet(b);
+    });
+
+    it.each([
+        {
+            label: "an unknown field-patch member",
+            kind: "pluginStorage",
+            id: "main",
+            patch: { set: { counter: 99 }, remove: [], future: true },
+        },
+        {
+            label: "an unknown item-change member",
+            kind: "plugins",
+            id: "main",
+            patch: {
+                itemKey: "name",
+                items: [],
+                changes: [{ id: "first", set: { enabled: false }, remove: [], future: true }],
+            },
+        },
+        {
+            label: "an undeclared dictionary",
+            kind: "pluginStorage",
+            id: "main",
+            patch: { set: {}, remove: [], nested: { custom: { set: { counter: 99 }, remove: [] } } },
+        },
+        {
+            label: "a nested patch on a character",
+            kind: "characters",
+            id: "c",
+            patch: {
+                set: { name: "forged" },
+                remove: [],
+                nested: { _ownedPluginStorage: { set: { counter: 99 }, remove: [] } },
+            },
+        },
+        {
+            label: "itemKey on a non-plugin kind",
+            kind: "modules",
+            id: "main",
+            patch: { itemKey: "name", items: [], changes: [{ id: "first", set: { enabled: false }, remove: [] }] },
+        },
+    ] as const)(
+        "reads the whole record for $label without first advancing the saved revision",
+        async ({ kind, id, patch }) => {
+            const b = await boot({
+                prepare: (fake) => {
+                    fake.set("pluginStorage", "main", {
+                        counter: 0,
+                        custom: { counter: 0 },
+                        _ownedPluginStorage: { counter: 0 },
+                    });
+                    fake.set("plugins", "main", [{ name: "first", enabled: true }]);
+                    fake.set("modules", "main", [{ id: "module-id", name: "first", enabled: true }]);
+                },
+            });
+            b.live.paused = true;
+            const mirrorRecord = () =>
+                kind === "characters"
+                    ? b.characters.characterList().find((entry) => entry.chaId === id)
+                    : b.records.recordData(kind);
+            // Both envelopes must reject unsupported members, including messages from future servers.
+            for (const carrier of ["entryPatch", "patch"] as const) {
+                const before = JSON.stringify(mirrorRecord());
+                const held = b.sync.heldRecordSnapshot(kind, id)!;
+                const stored = b.fake.record(kind, id)!.data;
+                const data = Array.isArray(stored)
+                    ? stored.map((item) => ({ ...item, note: carrier }))
+                    : { ...stored, note: carrier };
+                b.fake.set(kind, id, data);
+                const revision = b.fake.record(kind, id)!.revision;
+                b.sync.noteRemoteChanges({
+                    resources: [{ kind, id, revision, [carrier]: { baseRevision: held.revision, ...patch } }],
+                    chats: [],
+                    chatOrders: [],
+                });
+                expect(b.sync.heldRecordSnapshot(kind, id)).toEqual(held);
+                expect(JSON.stringify(mirrorRecord())).toBe(before);
+                expect(reads(b)).toEqual([]);
+                await b.sync.flushResources();
+                await vi.advanceTimersByTimeAsync(1500);
+                expect(reads(b)).toEqual([expect.objectContaining({ refs: [{ kind, id }] })]);
+                expect(b.sync.heldRecordRevision(kind, id)).toBe(revision);
+                const saved = JSON.parse(b.sync.heldRecordSnapshot(kind, id)!.text);
+                expect(saved).toEqual(b.fake.record(kind, id)!.data);
+                expect(b.fake.batchCount()).toBe(0);
+                b.fake.requests.length = 0;
+            }
+            quiet(b);
+        },
+    );
+});
 
 describe("feed patches through the tab save adapter", () => {
     it("applies a filtered patch after an appended id is removed with base rows without rereading the chat", async () => {

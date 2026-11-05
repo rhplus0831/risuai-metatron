@@ -70,7 +70,14 @@ import { assignsInherited, CHARACTER_FIXED_FIELDS } from "./mutationValidation";
 import { OWNED_PLUGIN_STORAGE_KEY, PLUGIN_STORAGE_KEY } from "./pluginStorageStore.svelte";
 import { PLUGIN_STORAGE_DICTIONARIES } from "../../../shared/pluginStorage.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
-import { applyItemPatch, checkFields, checkItemPatch, itemIds, withFields } from "../../../shared/recordPatch.ts";
+import {
+    applyFieldPatch,
+    applyItemPatch,
+    checkFields,
+    checkItemPatch,
+    checkRecordWritePatch,
+    itemIds,
+} from "../../../shared/recordPatch.ts";
 import { CHARACTER_SHAPE_FIELDS, normalizeCharacter } from "../../../shared/characters.ts";
 import { reconcileSelection } from "./settingsViews.svelte";
 import {
@@ -4125,7 +4132,7 @@ function rebuildConflictRecord(conflict: { kind: string; id: string; revision: s
         held.revision === notice.patch.baseRevision &&
         matchesPatchRevision(notice.patch, conflict.revision)
     ) {
-        const data = patchedRecord(held.text, notice.patch);
+        const data = patchedRecord(conflict.kind, held.text, notice.patch);
         if (data !== null) {
             return { ...conflict, data };
         }
@@ -4838,7 +4845,8 @@ export function noteRemoteChanges(changes: ChangeSet) {
             // A singleton absent at boot can arrive later. A local create still waits for its save.
             continue;
         }
-        if (ref.patch && applyRemotePatch(ref)) {
+        const patch = ref.entryPatch ?? ref.patch;
+        if (patch && applyRemotePatch({ ...ref, patch })) {
             continue;
         }
         const waiting = remoteRecords.get(key);
@@ -4849,8 +4857,8 @@ export function noteRemoteChanges(changes: ChangeSet) {
             (compareRevision(ref.revision, waiting.revision) ?? 0) <= 0
         ) {
             // A revision listing may have named this revision first: keep the patch for the cycle.
-            if (ref.patch && !waiting.patch && waiting.revision === ref.revision) {
-                waiting.patch = ref.patch;
+            if (patch && !waiting.patch && waiting.revision === ref.revision) {
+                waiting.patch = patch;
             }
             continue;
         }
@@ -4858,7 +4866,7 @@ export function noteRemoteChanges(changes: ChangeSet) {
             kind: ref.kind,
             id: ref.id,
             revision: ref.revision,
-            ...(ref.patch ? { patch: ref.patch } : {}),
+            ...(patch ? { patch } : {}),
         });
         woke = true;
     }
@@ -4959,14 +4967,14 @@ export function reconcileRemote(listing: ResourceRevisionListing) {
  * in-doubt write may advance the saved base while preserving newer local mirror text. Sending,
  * quarantined and job-blocked records still refuse that echo. In the ordinary path, a character's
  * field patch (`RecordFieldPatch`) goes in raw (`patchRawCharacter`: no mark, no echo); another
- * mirrored record patch (except `llmSecrets`) is applied to a detached copy of the held text and
- * the result goes through the mirror's whole-record path (`applyToMirror`, as a read would). The
- * saved text is the mirror's projection afterwards, as for a whole update, and a waiting notice the
- * update covers is settled. The remote-change listeners hear of every changed field. Returns false,
- * changing nothing, for anything else (another kind or patch form, another base, a local change, a
- * malformed patch or one naming a field twice, a character's fixed or client-only field or one the
- * mirror object only inherits, an item patch that does not fit the held list): the update is then
- * read whole as before.
+ * mirrored record patch (except `llmSecrets`), including declared dictionary entries and name-keyed
+ * plugin items, is applied to a detached copy of the held text. The result goes through the mirror's
+ * whole-record path (`applyToMirror`, as a read would). The saved text is the mirror's projection
+ * afterwards, as for a whole update, and a waiting notice the update covers is settled. The remote-change
+ * listeners hear of every changed field. Returns false, changing nothing, for anything else (another
+ * kind or patch form, another base, a local change, a malformed patch or one naming a field twice, a
+ * character's fixed or client-only field or one the mirror object only inherits, an item patch that
+ * does not fit the held list): the update is then read whole as before.
  */
 function applyRemotePatch(ref: {
     kind: string;
@@ -4995,7 +5003,7 @@ function applyRemotePatch(ref: {
         if (sendingKeys.has(key) || recordQuarantine(key) || isRecordJobBlocked(key)) {
             return false;
         }
-        const data = patchedRecord(held.text, patch);
+        const data = patchedRecord(ref.kind, held.text, patch);
         if (data === null || !adoptInDoubt(key, ref.revision, recordText(ref.kind, data))) {
             return false;
         }
@@ -5036,7 +5044,7 @@ function applyCharacterPatch(id: string, patch: RecordPatch): boolean | null {
     const character = findMirrorCharacter(id);
     if (
         !character ||
-        Object.hasOwn(patch, "items") ||
+        Object.keys(patch).some((key) => !["baseRevision", "set", "remove"].includes(key)) ||
         !isPlainObject((patch as { set?: unknown }).set) ||
         !Array.isArray((patch as { remove?: unknown }).remove)
     ) {
@@ -5072,6 +5080,9 @@ function applyCharacterPatch(id: string, patch: RecordPatch): boolean | null {
 
 /** A patch must describe exactly the next write of the held incarnation, in this epoch. */
 function matchesPatchRevision(patch: RecordPatch, revision: string): boolean {
+    if (!isPlainObject(patch)) {
+        return false;
+    }
     const base = parseRevisionToken(patch.baseRevision);
     const next = parseRevisionToken(revision);
     return (
@@ -5084,8 +5095,12 @@ function matchesPatchRevision(patch: RecordPatch, revision: string): boolean {
     );
 }
 
-/** A detached server record reconstructed from held text; null for a malformed or inapplicable patch. */
+/**
+ * A detached server record reconstructed from held text with the kind's field, dictionary-entry,
+ * or item-key rules. Unknown members and malformed or inapplicable patches require a whole read.
+ */
 function patchedRecord(
+    kind: string,
     heldText: string,
     patch: RecordPatch,
 ): Record<string, unknown> | Record<string, unknown>[] | null {
@@ -5095,21 +5110,49 @@ function patchedRecord(
         if (!isPlainObject(copy)) {
             return null;
         }
-        if (["items", "changes", "order"].some((key) => Object.hasOwn(copy, key))) {
-            if (!Object.hasOwn(copy, "items") || Object.hasOwn(copy, "set") || Object.hasOwn(copy, "remove")) {
+        if (["items", "changes", "order", "itemKey"].some((key) => Object.hasOwn(copy, key))) {
+            if (
+                !Object.hasOwn(copy, "items") ||
+                Object.keys(copy).some((key) => !["baseRevision", "items", "changes", "order", "itemKey"].includes(key))
+            ) {
                 return null;
             }
-            return applyItemPatch(value, checkItemPatch(copy));
+            let key: "id" | "name" = "id";
+            if (Object.hasOwn(copy, "itemKey")) {
+                if (kind !== RESOURCE_KIND.plugins || copy.itemKey !== "name") {
+                    return null;
+                }
+                key = "name";
+            }
+            if (
+                Array.isArray(copy.changes) &&
+                copy.changes.some(
+                    (change) =>
+                        !isPlainObject(change) ||
+                        Object.keys(change).some((field) => !["id", "set", "remove"].includes(field)),
+                )
+            ) {
+                return null;
+            }
+            return applyItemPatch(value, checkItemPatch(copy, key), key);
         }
-        if (!isPlainObject(value) || !isPlainObject(copy.set) || !Array.isArray(copy.remove)) {
+        if (
+            !isPlainObject(value) ||
+            !isPlainObject(copy.set) ||
+            !Array.isArray(copy.remove) ||
+            Object.keys(copy).some((key) => !["baseRevision", "set", "remove", "nested"].includes(key))
+        ) {
             return null;
         }
-        // The feed can carry an empty diff after normalization kept every value.
-        if (Object.keys(copy.set).length === 0 && copy.remove.length === 0) {
-            return value;
+        delete copy.baseRevision;
+        if (Object.hasOwn(copy, "nested")) {
+            const checked = checkRecordWritePatch(copy, {
+                nestedFields: kind === RESOURCE_KIND.pluginStorage ? PLUGIN_STORAGE_DICTIONARIES : undefined,
+            });
+            return checked.type === "fields" ? applyFieldPatch(value, checked) : null;
         }
-        const checked = checkFields(copy.set, copy.remove, "a patch");
-        return withFields(value, checked.set, checked.remove);
+        // The feed can carry an empty diff after normalization kept every value.
+        return applyFieldPatch(value, { ...checkFields(copy.set, copy.remove, "a patch", [], true), nested: [] });
     } catch {
         return null;
     }
@@ -5117,7 +5160,7 @@ function patchedRecord(
 
 /** Apply a detached patch result through exactly the same mirror path as a whole read. */
 function applyCollectionPatch(kind: string, id: string, heldText: string, patch: RecordPatch): boolean | null {
-    const data = patchedRecord(heldText, patch);
+    const data = patchedRecord(kind, heldText, patch);
     if (data === null) {
         return null;
     }

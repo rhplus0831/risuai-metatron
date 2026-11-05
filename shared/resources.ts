@@ -368,15 +368,21 @@ export type ResourceBootResult = {
 };
 
 /**
- * The top-level field change of one write of an object record (a field patch): the record at the
+ * The field change of one write of an object record (a field patch): the record at the
  * entry's revision equals the record at `baseRevision` (the same incarnation, one write earlier) with
  * every `set` field assigned its stored value and every `remove` field deleted. Values compare as
  * JSON values; top-level key order is not part of it. A client saves a changed character with one
- * (a `patch` batch op).
+ * (a `patch` batch op). `nested` patches entries one level down in declared dictionaries; such a
+ * dictionary is never also in `set` or `remove`. This form travels only in `entryPatch`.
  */
-export type RecordFieldPatch = { baseRevision: string; set: Record<string, unknown>; remove: string[] };
+export type RecordFieldPatch = {
+    baseRevision: string;
+    set: Record<string, unknown>;
+    remove: string[];
+    nested?: Record<string, { set: Record<string, unknown>; remove: string[] }>;
+};
 
-/** One item's top-level field change inside a `RecordItemPatch` (the item keeps its `id`). */
+/** One item's top-level field change inside a `RecordItemPatch` (the item keeps its selected key). */
 export type RecordItemFieldPatch = { id: string; set: Record<string, unknown>; remove: string[] };
 
 /**
@@ -386,15 +392,18 @@ export type RecordItemFieldPatch = { id: string; set: Record<string, unknown>; r
  * entry applied to the base item of its id as a field patch. With `order` (also `[]`) the result is
  * exactly the items of `order` in that order (a base id it leaves out is removed); without it the ids
  * and their order are the base's. Values compare as JSON values; an item's key order is not part of it.
+ * With `itemKey: "name"`, unique names address items instead, including `changes[].id` and `order`;
+ * changes cannot set or remove `name`. This form travels only in `entryPatch`.
  */
 export type RecordItemPatch = {
     baseRevision: string;
     items: Record<string, unknown>[];
     changes: RecordItemFieldPatch[];
     order?: string[];
+    itemKey?: "name";
 };
 
-/** A record patch: by top-level field (object records) or by item id (array records). */
+/** A record patch: by field or declared dictionary entry, or by item id or declared alternative key. */
 export type RecordPatch = RecordFieldPatch | RecordItemPatch;
 
 /**
@@ -497,8 +506,8 @@ export const SMALL_FEED_PATCH_BYTES = 8 * 1024;
 
 /**
  * The most optional-payload bytes one `change` frame carries: the UTF-8 bytes of the JSON of each
- * record `patch`, chat `patch`, `delta`, `rowDelta`, `rows`, `summary`, and `summaryBase`, summed in wire
- * order. A chat carries at most one body or manifest, selected as `MAX_FEED_PATCH_BYTES` describes.
+ * record `patch` or `entryPatch`, chat `patch`, `delta`, `rowDelta`, `rows`, `summary`, and `summaryBase`,
+ * summed in wire order. A chat carries at most one body or manifest, selected as `MAX_FEED_PATCH_BYTES` describes.
  * A payload that would pass this budget is left out.
  */
 export const MAX_FEED_PUBLICATION_PATCH_BYTES = 256 * 1024;
@@ -519,17 +528,21 @@ export const MAX_FEED_PUBLICATION_PATCH_BYTES = 256 * 1024;
  * the entry's revision; a moved answer or apply miss reads the chat whole. These bodies and manifests
  * are optional for older clients and servers: a client that does not know `rowDelta` or `rows` takes
  * the notice and reads whole, without advancing its revision from a body it cannot apply.
+ * A record carries at most one of `patch` and `entryPatch`: nested dictionary and name-keyed item
+ * patches use only `entryPatch`, which older clients ignore and handle by reading the record whole.
+ * Legacy field and id-keyed item forms continue to use `patch`.
  *
  * A chat entry carries at most one of `summary` (the chat's summary at the entry's revision, when
  * the write changed it) and `summaryBase` (a revision, the stored one right before the write: the
  * summary, `revision` aside, is the same as at that revision). Neither means unknown: a whole-chat
  * write, a no-op group, a deletion, a payload left out, or a chat recorded twice without that proof.
  * The payloads of one publication share `MAX_FEED_PUBLICATION_PATCH_BYTES`: taken in wire order
- * (resources, then chats; within a chat entry `patch`, `delta`, `rowDelta`, `rows`, `summary`, `summaryBase`),
+ * (resources, then chats; within a resource `patch`, `entryPatch`; within a chat entry `patch`,
+ * `delta`, `rowDelta`, `rows`, `summary`, `summaryBase`),
  * one that does not fit is left out of its entry, and a later smaller one may still fit.
  */
 export type ChangeSet = {
-    resources: { kind: string; id: string; revision: string | null; patch?: RecordPatch }[];
+    resources: { kind: string; id: string; revision: string | null; patch?: RecordPatch; entryPatch?: RecordPatch }[];
     chats: {
         characterId: string;
         id: string;

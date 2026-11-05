@@ -84,8 +84,8 @@ base, row ids, removals, count, changed metadata field names).
 
 - One committed outermost publishing scope that recorded anything is one `change` frame (`feed.publish` once; a commit
   that records nothing, such as a cold checkpoint write, publishes none), and the optional payloads of that frame
-  (record `patch`es, chat bodies, each within `MAX_FEED_PATCH_BYTES`, 64 KiB, and chat `summary` and `summaryBase`
-  fields) total at most `MAX_FEED_PUBLICATION_PATCH_BYTES` (256 KiB of UTF-8 JSON).
+  (record patches, chat bodies, each within `MAX_FEED_PATCH_BYTES`, 64 KiB, and chat `summary` and `summaryBase` fields)
+  total at most `MAX_FEED_PUBLICATION_PATCH_BYTES` (256 KiB of UTF-8 JSON).
 - The store applies it once, when the outermost publishing scope publishes (`budgetedEntries` holds the walk order and
   the drop rule): a nested scope neither spends nor resets it, and a feed listener's own write is a later publication
   with a budget of its own. A dropped payload leaves its entry in place without it; a dropped `summary` leaves the

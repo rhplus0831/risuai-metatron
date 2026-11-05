@@ -26,7 +26,7 @@ headers and method comments.
   and chat validation.
 - `server/src/data/kinds.ts`: kind declarations (`DEFAULT_RESOURCE_KINDS`, `ResourceKind`), with normalizers in
   `server/src/data/normalize/`. `pluginStorage` declares `nestedFields: PLUGIN_STORAGE_DICTIONARIES`
-  (`shared/pluginStorage.ts`), still normalized by `requireObject`; `plugins` permits `itemKey: "name"`.
+  (`shared/pluginStorage.ts`); `plugins` permits `itemKey: "name"`.
 - `server/src/data/checkpointStore.ts` (`createCheckpointTables`, `walkCheckpointSnapshot`) and
   `server/src/data/checkpointService.ts` (`createCheckpointService`: `save`, `load`, `autoSave`): checkpoints.
 - `server/src/data/snapshots.ts` (`createSnapshotManager`: the timer, `stageCopy`, `withMaintenance`;
@@ -61,9 +61,9 @@ Proxies must preserve encoded ids ([Gotchas](self-host-server.md#gotchas)). Shap
   compressed per `Accept-Encoding` (`compressedJson`).
 - Writes, + epoch: `POST /api/resources/batch` (resource ops, chat groups, chat orders; a conflict applies nothing),
   `PUT` and `DELETE /api/resources/:kind/:id` (`baseRevision`; 409 with the current revision).
-- Write patches: `preparePatch` and `writePatch` check and apply nested and `itemKey` forms through
-  `shared/recordPatch.ts`; older clients' top-level and id-keyed patches still apply, and the feed stays
-  top-level/id-keyed ([client patches](resource-sync.md#record-patches)).
+- Write patches: `preparePatch` and `writePatch` apply nested and `itemKey` forms (`shared/recordPatch.ts`) and older
+  clients' top-level and id-keyed ones. The feed's `entryPatch`, which older tabs ignore, carries changed entries and
+  name-keyed item diffs ([client side](live-updates.md#live-updates)).
 - `revisions?since=&until=&epoch=`: coalesced refs/tombstones (`ResourceChangesSince`); no `since`: whole listing.
   Bounds require nonnegative safe integers and epoch nonempty (else 400). Coverage/expiry: `resourceStore.ts`
   `listChanges`; epoch checks match listings.

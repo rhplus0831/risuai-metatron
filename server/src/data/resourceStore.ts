@@ -62,7 +62,7 @@ import {
     createCheckpointTables,
     walkCheckpointSnapshot,
 } from "./checkpointStore.ts";
-import { diffRecordText } from "./recordPatchText.ts";
+import { diffRecordText, recordFieldTexts } from "./recordPatchText.ts";
 import type { StagedFileReport } from "./restore/stageValidatedSnapshot.ts";
 import {
     CHAT_OPEN_SCHEMA_SQL,
@@ -285,7 +285,8 @@ export function nextRevision(current: number, increment: number): number {
  * record patch applied to the record as stored at `baseRevision` (a string), whose result is normalized
  * and stored like any write (`RecordWritePatch`): outer fields plus entry patches of declared nested
  * dictionaries, or items addressed by id (by name only with explicit `itemKey: "name"` on a kind
- * allowing it). The change feed stays top-level/id-keyed (`RecordPatch`). A kind with `project` or
+ * allowing it). The change feed uses `entryPatch` for dictionary entries and name-keyed items,
+ * and `patch` for legacy forms (`RecordPatch`). A kind with `project` or
  * `prepareWrite` takes no patch.
  */
 export type ResourceBatchOperation = {
@@ -412,9 +413,17 @@ type PreparedPatch = CheckedRecordWritePatch;
  * it and the text of each field (an object record) or of each item (an array record, by the item). Only
  * made when the text is exactly its parts joined as `JSON.stringify` joins them (`cutRecord`).
  */
-type PatchBase =
-    | { text: string; value: Record<string, unknown>; fields: Map<string, string> }
-    | { text: string; value: unknown[]; items: Map<unknown, string> };
+type FieldPatchBase = {
+    text: string;
+    value: Record<string, unknown>;
+    fields: Map<string, string>;
+    /** Lazily cut declared dictionaries; values already live in `value`. */
+    nested?: Map<string, Map<string, string>>;
+};
+type PatchBase = FieldPatchBase | { text: string; value: unknown[]; items: Map<unknown, string> };
+
+/** Parts after a patch, and the dictionaries that retained entry-level serialization through normalization. */
+type PatchedParts = { base: PatchBase; entryFields: Set<string> };
 
 /** A batch op after the checks that need no stored row; a `patch` op is applied inside the transaction. */
 type PreparedOperation =
@@ -1268,14 +1277,14 @@ export function createResourceStore(options: {
      * A publication's record and chat entries in wire order, with their optional payloads within
      * `MAX_FEED_PUBLICATION_PATCH_BYTES` together. Called once per publication, on the outermost
      * write's final accumulator, so nested scopes have merged and coalescing has dropped repeated keys'
-     * patches, deltas, rowDeltas, and row manifests. Payloads are taken in wire order: resources,
-     * then chats, and within a chat entry `patch`, `delta`, `rowDelta`, `rows`, `summary`, then `summaryBase`. A
-     * payload stays while
-     * the running sum including it fits; one that does not fit is left out of a copy of its entry in
-     * the same place (a later, smaller payload may still fit), so a dropped `summary` leaves the entry
-     * with neither summary field. Every candidate payload is measured, rejected ones included, so the
-     * measuring work is proportional to the payloads the write built (each body or row manifest already
-     * within `MAX_FEED_PATCH_BYTES` when built), not to the frame. Refs are never dropped.
+     * patches, deltas, rowDeltas, and row manifests. Payloads are taken in wire order: resources (`patch`,
+     * then `entryPatch`), then chats. Within a chat entry: `patch`, `delta`, `rowDelta`, `rows`, `summary`,
+     * then `summaryBase`. A payload stays while the running sum including it fits; one that does not fit
+     * is left out of a copy of its entry in the same place (a later, smaller payload may still fit), so a
+     * dropped `summary` leaves the entry with neither summary field. Every candidate payload is measured,
+     * rejected ones included, so the measuring work is proportional to the payloads the write built (each
+     * body or row manifest already within `MAX_FEED_PATCH_BYTES` when built), not to the frame. Refs are
+     * never dropped.
      */
     function budgetedEntries(changes: ChangeAccumulator): Pick<ChangeSet, "resources" | "chats"> {
         let spent = 0;
@@ -1297,7 +1306,7 @@ export function createResourceStore(options: {
             return kept ?? entry;
         };
         return {
-            resources: [...changes.resources.values()].map((entry) => withinBudget(entry, ["patch"])),
+            resources: [...changes.resources.values()].map((entry) => withinBudget(entry, ["patch", "entryPatch"])),
             chats: [...changes.chats.values()].map((entry) =>
                 withinBudget(entry, ["patch", "delta", "rowDelta", "rows", "summary", "summaryBase"]),
             ),
@@ -1305,8 +1314,9 @@ export function createResourceStore(options: {
     }
 
     /**
-     * `patch`: the write was a field patch whose changes the feed may carry. A record already written
-     * in this scope loses it: its base would be a revision no client was told about.
+     * A patch op whose changes the feed may carry. New forms use only `entryPatch`, so older tabs
+     * read the record whole. A record already written in this scope loses either payload: its base
+     * would be a revision no client was told about.
      */
     function recordResource(kind: string, id: string, revision: string | null, patch?: RecordPatch) {
         transactionChanges?.set(JSON.stringify([kind, null, id]), { kind, characterId: null, id, revision });
@@ -1314,7 +1324,16 @@ export function createResourceStore(options: {
         const key = `${kind}\u0000${id}`;
         changes?.resources.set(
             key,
-            patch && !changes.resources.has(key) ? { kind, id, revision, patch } : { kind, id, revision },
+            patch && !changes.resources.has(key)
+                ? {
+                      kind,
+                      id,
+                      revision,
+                      ...(Object.hasOwn(patch, "nested") || Object.hasOwn(patch, "itemKey")
+                          ? { entryPatch: patch }
+                          : { patch }),
+                  }
+                : { kind, id, revision },
         );
     }
 
@@ -1515,9 +1534,9 @@ export function createResourceStore(options: {
                 const cut = patchBase(kind, id, row.data);
                 const written = cut && patchParts(kind, id, cut, patch);
                 if (written) {
-                    update.run(kind.schemaVersion, written.text, kind.name, id, base.seq, base.revision);
-                    rememberPatchBase(kind, id, written);
-                    return feedPatch(kind, token(base.seq, base.revision), cut.value, written.value);
+                    update.run(kind.schemaVersion, written.base.text, kind.name, id, base.seq, base.revision);
+                    rememberPatchBase(kind, id, written.base);
+                    return feedPartsPatch(kind, token(base.seq, base.revision), cut, written);
                 }
             }
             const old: unknown = JSON.parse(row.data);
@@ -1534,8 +1553,8 @@ export function createResourceStore(options: {
         }
     }
 
-    /** `writePatch`'s cut records by kind and id (`PatchBase`), least recently used first. */
-    const patchBases = new Map<string, PatchBase>();
+    /** `writePatch`'s cut records and their precomputed unit estimates, least recently used first. */
+    const patchBases = new Map<string, { base: PatchBase; units: number }>();
 
     /**
      * The record `text` cut into parts: the cached cut when it was made from this very text (a write
@@ -1546,23 +1565,23 @@ export function createResourceStore(options: {
         const key = `${kind.name}\u0000${id}`;
         const cached = patchBases.get(key);
         patchBases.delete(key);
-        return cached && cached.text === text ? cached : cutRecord(text);
+        return cached && cached.base.text === text ? cached.base : cutRecord(text);
     }
 
     function rememberPatchBase(kind: ResourceKind, id: string, cut: PatchBase) {
         const key = `${kind.name}\u0000${id}`;
         patchBases.delete(key);
-        patchBases.set(key, cut);
+        patchBases.set(key, { base: cut, units: patchBaseUnits(cut) });
         let units = 0;
         for (const entry of patchBases.values()) {
-            units += entry.text.length * PATCH_BASE_UNITS_PER_CHAR;
+            units += entry.units;
         }
         for (const [oldest, entry] of patchBases) {
             if (patchBases.size <= PATCH_BASES_MAX && units <= patchBaseMaxUnits) {
                 break;
             }
             patchBases.delete(oldest);
-            units -= entry.text.length * PATCH_BASE_UNITS_PER_CHAR;
+            units -= entry.units;
         }
     }
 
@@ -3252,6 +3271,47 @@ function cutRecord(text: string): PatchBase | null {
     return null;
 }
 
+/** Include the extra entry texts, keys and map overhead in the cache's conservative unit estimate. */
+function patchBaseUnits(base: PatchBase): number {
+    let units = base.text.length * PATCH_BASE_UNITS_PER_CHAR;
+    if ("fields" in base && base.nested) {
+        for (const [field, entries] of base.nested) {
+            units += field.length + 32;
+            for (const [key, text] of entries) {
+                units += key.length + text.length + 32;
+            }
+        }
+    }
+    return units;
+}
+
+/** Cut a declared dictionary only when it is first patched, parsing keys but no entry values. */
+function dictionaryParts(base: FieldPatchBase, field: string): Map<string, string> | null {
+    const value = base.value[field];
+    if (!isPlainObject(value) || Object.hasOwn(value, "toJSON")) {
+        return null;
+    }
+    const cached = base.nested?.get(field);
+    if (cached) {
+        return cached;
+    }
+    try {
+        const text = base.fields.get(field);
+        if (text === undefined) {
+            return null;
+        }
+        const parts = recordFieldTexts(text);
+        const keys = Object.keys(value);
+        if (parts.size !== keys.length || keys.some((key) => !parts.has(key))) {
+            return null;
+        }
+        (base.nested ??= new Map()).set(field, parts);
+        return parts;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * A patch applied to a cut record for a `shallowNormalize` kind, serializing only the parts the patch or
  * the normalizer replaced: the stored text, value, and parts that `serialize(normalizeInput(...))` of
@@ -3262,7 +3322,7 @@ function cutRecord(text: string): PatchBase | null {
  * `toJSON`, a result of another shape); the caller then takes the whole-record path, which also reports
  * the errors of a patch that does not fit the record.
  */
-function patchParts(kind: ResourceKind, id: string, cut: PatchBase, patch: PreparedPatch): PatchBase | null {
+function patchParts(kind: ResourceKind, id: string, cut: PatchBase, patch: PreparedPatch): PatchedParts | null {
     if (patch.type === "fields") {
         if (!("fields" in cut) || patch.set.some(([field]) => field === "toJSON")) {
             return null;
@@ -3270,17 +3330,71 @@ function patchParts(kind: ResourceKind, id: string, cut: PatchBase, patch: Prepa
         const input = applyFieldPatch(cut.value, patch);
         const named = new Set([...patch.set.map(([field]) => field), ...patch.nested.map(([field]) => field)]);
         const order = Object.keys(input).filter((field) => named.has(field));
-        const read = storedParts(order.map((field) => [field, input[field]]));
+        const nestedPatches = new Map(patch.nested);
+        const dictionaries = new Map<string, { entries: Map<string, string>; keys: string[]; offset: number }>();
+        const serialized: (readonly [string, unknown, number?])[] = [];
+        const offsets = new Map<string, number>();
+        for (const field of order) {
+            const nested = nestedPatches.get(field);
+            const dictionary = input[field];
+            const entries =
+                nested &&
+                kind.nestedFields?.includes(field) &&
+                isPlainObject(dictionary) &&
+                !Object.hasOwn(dictionary, "toJSON")
+                    ? dictionaryParts(cut, field)
+                    : null;
+            offsets.set(field, serialized.length);
+            if (entries && nested && isPlainObject(dictionary)) {
+                const changed = new Set(nested.set.map(([key]) => key));
+                const keys = Object.keys(dictionary).filter((key) => changed.has(key));
+                dictionaries.set(field, { entries, keys, offset: serialized.length });
+                for (const key of keys) {
+                    serialized.push([key, dictionary[key], 1]);
+                }
+            } else {
+                serialized.push([field, dictionary]);
+            }
+        }
+        // All hooks and stringify refusals precede all read/depth refusals, in whole-record order.
+        const read = storedParts(serialized);
         const patched = new Map<string, { text: string; stored: unknown }>();
-        order.forEach((field, index) => {
-            const part = read[index];
+        const patchedEntries = new Map<string, Map<string, string>>();
+        for (const field of order) {
+            const dictionary = dictionaries.get(field);
+            if (dictionary) {
+                const value = input[field] as Record<string, unknown>;
+                const stored = { ...value };
+                const entries = new Map(dictionary.entries);
+                dictionary.keys.forEach((key, index) => {
+                    const part = read[dictionary.offset + index];
+                    if (part) {
+                        defineField(value, key, part.stored);
+                        const canonical = canonicalPart(part);
+                        defineField(stored, key, canonical.stored);
+                        entries.set(key, canonical.text);
+                    } else {
+                        delete value[key];
+                        delete stored[key];
+                        entries.delete(key);
+                    }
+                });
+                for (const key of nestedPatches.get(field)!.remove) {
+                    entries.delete(key);
+                }
+                const parts = Object.keys(value).map((key) => `${JSON.stringify(key)}:${entries.get(key)!}`);
+                patched.set(field, { text: `{${parts.join(",")}}`, stored });
+                patchedEntries.set(field, entries);
+                continue;
+            }
+            const part = read[offsets.get(field)!];
             if (part) {
                 defineField(input, field, part.stored);
                 patched.set(field, canonicalPart(part));
             } else {
                 delete input[field];
             }
-        });
+        }
         const normalized = kind.normalize(input, { id });
         if (!isPlainObject(normalized) || typeof normalized.toJSON === "function") {
             return null;
@@ -3308,10 +3422,21 @@ function patchParts(kind: ResourceKind, id: string, cut: PatchBase, patch: Prepa
         const replacedParts = new Map(replaced.map(([field], index) => [field, replacedRead[index]]));
         const value: Record<string, unknown> = {};
         const fields = new Map<string, string>();
+        const nested = new Map<string, Map<string, string>>();
+        const entryFields = new Set<string>();
         const parts: string[] = [];
         keys.forEach((field, index) => {
             let text = texts[index];
             let stored = members[index];
+            if (text !== undefined) {
+                const entries = patchedEntries.get(field) ?? (!patched.has(field) ? cut.nested?.get(field) : undefined);
+                if (entries) {
+                    nested.set(field, entries);
+                    if (patchedEntries.has(field)) {
+                        entryFields.add(field);
+                    }
+                }
+            }
             if (text === undefined) {
                 const part = replacedParts.get(field);
                 if (!part) {
@@ -3323,7 +3448,7 @@ function patchParts(kind: ResourceKind, id: string, cut: PatchBase, patch: Prepa
             fields.set(field, text);
             parts.push(`${JSON.stringify(field)}:${text}`);
         });
-        return { text: `{${parts.join(",")}}`, value, fields };
+        return { base: { text: `{${parts.join(",")}}`, value, fields, nested }, entryFields };
     }
     if (!("items" in cut)) {
         return null;
@@ -3362,7 +3487,7 @@ function patchParts(kind: ResourceKind, id: string, cut: PatchBase, patch: Prepa
     });
     const items = new Map<unknown, string>();
     members.forEach((item, index) => items.set(item, texts[index]!));
-    return { text: `[${texts.join(",")}]`, value: members, items };
+    return { base: { text: `[${texts.join(",")}]`, value: members, items }, entryFields: new Set() };
 }
 
 /**
@@ -3381,12 +3506,15 @@ function canonicalPart(part: { text: string; stored: unknown }): { text: string;
  * own key), all of them before any is read back and checked from the record's root (`readStored`), so
  * hooks run and refusals come in the whole record's order. Per part its text and the value read back,
  * or null for a part `JSON.stringify` leaves out (an item that has no JSON is `null`, as in a list).
+ * A part's optional third member is the holder's depth: one for a dictionary entry, zero otherwise.
  */
-function storedParts(parts: readonly (readonly [string, unknown])[]): ({ text: string; stored: unknown } | null)[] {
+function storedParts(
+    parts: readonly (readonly [string, unknown, number?])[],
+): ({ text: string; stored: unknown } | null)[] {
     const texts = parts.map(([key, value]) => stringifyStored({ [key]: value }));
     return texts.map((text, index) => {
         const key = parts[index][0];
-        const holder = readStored(text) as Record<string, unknown>;
+        const holder = readStored(text, false, parts[index][2] ?? 0) as Record<string, unknown>;
         return Object.hasOwn(holder, key)
             ? { text: text.slice(JSON.stringify(key).length + 2, -1), stored: holder[key] }
             : null;
@@ -3398,12 +3526,81 @@ function defineField(target: Record<string, unknown>, field: string, value: unkn
 }
 
 /**
+ * A field fast path's feed diff from stored parts, including dictionaries patched by entry. Only
+ * changed texts count towards the early size bound; neither unchanged values nor an already
+ * oversized candidate are serialized for the feed. Array records retain the keyed-item diff.
+ */
+function feedPartsPatch(
+    kind: ResourceKind,
+    baseRevision: string,
+    old: PatchBase,
+    written: PatchedParts,
+): RecordPatch | undefined {
+    const next = written.base;
+    if (kind.project || HIDDEN_HYDRATION_KINDS.includes(kind.name)) {
+        return undefined;
+    }
+    if (!("fields" in old) || !("fields" in next)) {
+        return feedPatch(kind, baseRevision, old.value, next.value);
+    }
+    let bytes = 0;
+    const diff = (
+        before: Map<string, string>,
+        after: Map<string, string>,
+        value: Record<string, unknown>,
+        skip = new Set<string>(),
+    ) => {
+        const set: Record<string, unknown> = {};
+        const remove: string[] = [];
+        for (const field of new Set([...before.keys(), ...after.keys()])) {
+            if (skip.has(field) || before.get(field) === after.get(field)) {
+                continue;
+            }
+            if (field === "__proto__") {
+                return null;
+            }
+            const text = after.get(field);
+            bytes += Buffer.byteLength(field) + (text === undefined ? 0 : Buffer.byteLength(text));
+            if (bytes > MAX_FEED_PATCH_BYTES) {
+                return null;
+            }
+            if (text === undefined) {
+                remove.push(field);
+            } else {
+                set[field] = value[field];
+            }
+        }
+        return { set, remove };
+    };
+    const fields = diff(old.fields, next.fields, next.value, written.entryFields);
+    if (!fields) {
+        return undefined;
+    }
+    const nested: Record<string, { set: Record<string, unknown>; remove: string[] }> = {};
+    for (const field of written.entryFields) {
+        const entries = diff(
+            old.nested!.get(field)!,
+            next.nested!.get(field)!,
+            next.value[field] as Record<string, unknown>,
+        );
+        if (!entries) {
+            return undefined;
+        }
+        if (Object.keys(entries.set).length > 0 || entries.remove.length > 0) {
+            nested[field] = entries;
+        }
+    }
+    return copyFeedPatch({ baseRevision, ...fields, ...(Object.keys(nested).length ? { nested } : {}) });
+}
+
+/**
  * What the change feed carries for a patch op that stored `stored` over `old`: for an object record
  * every top-level field whose stored JSON value differs (`diffFields`, normalization included), for
- * an item list the changed items (`diffItems`). The slow path compares stored texts (`diffRecordText`),
- * since its normalizer clones even unchanged values. None (a plain ref) for a kind whose data does not
- * reach clients as stored, for a changed `__proto__` field, for a record that is neither shape before
- * and after, or for a patch over `MAX_FEED_PATCH_BYTES`.
+ * an item list the changed items (`diffItems`, by unique ids first, else names when the kind allows).
+ * The slow path compares stored texts (`diffRecordText`), since its normalizer clones even unchanged
+ * values. None (a plain ref) for a kind whose data does not reach clients as stored, for a changed
+ * `__proto__` field, for a record that is neither shape before and after, or for a patch over
+ * `MAX_FEED_PATCH_BYTES`.
  */
 function feedPatch(
     kind: ResourceKind,
@@ -3417,18 +3614,20 @@ function feedPatch(
     }
     let patch: RecordPatch | undefined;
     if (texts) {
-        const diff = diffRecordText(texts.old, texts.next, old, stored);
+        const diff = diffRecordText(texts.old, texts.next, old, stored, kind);
         patch = diff ? { baseRevision, ...diff } : undefined;
     } else if (isPlainObject(old) && isPlainObject(stored)) {
         const fields = diffFields(old, stored);
         patch = fields ? { baseRevision, ...fields } : undefined;
     } else if (Array.isArray(old) && Array.isArray(stored)) {
-        const items = diffItems(old, stored);
+        const items = diffItems(old, stored, kind);
         patch = items ? { baseRevision, ...items } : undefined;
     }
-    if (!patch) {
-        return undefined;
-    }
+    return patch && copyFeedPatch(patch);
+}
+
+/** Measure the built patch and detach its values from the cached base before publication. */
+function copyFeedPatch(patch: RecordPatch): RecordPatch | undefined {
     // A copy: the values it names are the store's own (`patchBases`), which a listener must not reach.
     const text = JSON.stringify(patch);
     return Buffer.byteLength(text) <= MAX_FEED_PATCH_BYTES ? (JSON.parse(text) as RecordPatch) : undefined;
@@ -3522,9 +3721,9 @@ function stringifyStored(value: unknown): string {
 }
 
 /** `serialize`'s second half: the value read back from the text, checked (`assertStoredJson`). */
-function readStored(text: string, arrayElementDepth = false): unknown {
+function readStored(text: string, arrayElementDepth = false, depth = 0): unknown {
     const stored: unknown = JSON.parse(text);
-    assertStoredJson(stored, arrayElementDepth && Array.isArray(stored) ? -1 : 0);
+    assertStoredJson(stored, arrayElementDepth && Array.isArray(stored) ? -1 : depth);
     return stored;
 }
 
