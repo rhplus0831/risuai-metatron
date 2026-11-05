@@ -142,7 +142,7 @@
     { "match": "src/ts/{assetList,exportBatches,personaImport}.test.ts", "guide": "characters-modules" },
     { "match": "src/ts/messageSearch.test.ts", "guide": "chat-pipeline" },
     { "match": "src/ts/bootstrap.journalRecovery.test.ts", "guide": "draft-recovery" },
-    { "match": "src/ts/{alertCardExport,alertQueue,alertTerminal,sourcemap}.test.ts", "guide": "global-api" },
+    { "match": "src/ts/{alertCardExport,alertQueue,alertTerminal,sourcemap,util}.test.ts", "guide": "global-api" },
     { "match": "src/ts/tokenizer.test.ts", "guide": "llm-requests" },
     { "match": "src/ts/globalApiNativeFetch.test.ts", "guide": "network-jobs" },
     { "match": "src/ts/{chatLoadPages,stores.popupEditorSession,tokenCountField}.test.ts", "guide": "ui-theming" },

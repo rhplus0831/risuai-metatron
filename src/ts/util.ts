@@ -64,9 +64,12 @@ export function checkNullish(data: any) {
     return data === undefined || data === null;
 }
 
-/** Reads the selected File into `{ name, data: Uint8Array }`; an empty eligible selection rejects. */
+/** Reads the selected File into `{ name, data: Uint8Array }`; null on cancel or an empty eligible selection. */
 export async function selectSingleFile(ext: string[]) {
     const file = await selectSingleFileHandle(ext);
+    if (!file) {
+        return null;
+    }
     return { name: file.name, data: await readFileAsUint8Array(file) };
 }
 
@@ -154,9 +157,9 @@ export function getUserIconProtrait(chatRef?: { chaId: string; chatId: string } 
 }
 
 /**
- * Resolves eligible Files in selection order on change, or [] for an empty eligible selection.
+ * Resolves eligible Files in selection order on change, or [] on cancel or an empty eligible selection.
  * Filtering is bypassed by allow-all, iOS, or `allowedExtensions[0] === "*"`.
- * Settles only on `change`: a native cancel without a change never settles.
+ * Removes the input before settling.
  */
 export function selectFileByDom(allowedExtensions: string[], multiple: "multiple" | "single" = "single") {
     return new Promise<null | File[]>((resolve) => {
@@ -172,7 +175,8 @@ export function selectFileByDom(allowedExtensions: string[], multiple: "multiple
             fileInput.accept = "*";
         }
 
-        fileInput.addEventListener("change", (event) => {
+        fileInput.addEventListener("change", () => {
+            fileInput.remove();
             if (fileInput.files.length === 0) {
                 resolve([]);
                 return;
@@ -185,8 +189,12 @@ export function selectFileByDom(allowedExtensions: string[], multiple: "multiple
                       return !allowedExtensions || allowedExtensions.includes(fileExtension);
                   });
 
-            fileInput.remove();
             resolve(files);
+        });
+
+        fileInput.addEventListener("cancel", () => {
+            fileInput.remove();
+            resolve([]);
         });
 
         document.body.appendChild(fileInput);
@@ -1060,17 +1068,18 @@ export const sortableOptions = {
     },
 } as const;
 
-/** Requires a global regexp with lastIndex 0. Replacers run concurrently; results are inserted in match order. */
+/** Requires a global regexp. Replacers run concurrently; results are inserted in match order. */
 export async function replaceAsync(
     string: string,
     regexp: RegExp,
     replacerFunction: (...args: string[]) => Promise<string>,
 ) {
+    const pattern = new RegExp(regexp);
     const replacements = await Promise.all(
-        Array.from(string.matchAll(regexp), (match) => replacerFunction(...(match as string[]))),
+        Array.from(string.matchAll(pattern), (match) => replacerFunction(...(match as string[]))),
     );
     let i = 0;
-    return string.replace(regexp, () => replacements[i++]);
+    return string.replace(pattern, () => replacements[i++]);
 }
 
 /**

@@ -133,13 +133,13 @@ Alerts:
 ## Tests
 
 - Vitest:
-  `pnpm --silent test:agent src/ts/alert{Queue,Terminal,CardExport}.test.ts src/ts/sourcemap.test.ts src/ts/util/koreanSearch.test.ts`.
+  `pnpm --silent test:agent src/ts/alert{Queue,Terminal,CardExport}.test.ts src/ts/{sourcemap,util}.test.ts src/ts/util/koreanSearch.test.ts`.
 - Typed shared doubles: `src/ts/tests/alertMock.ts` and `src/ts/tests/globalApiMock.ts`.
 - Browser specs:
   `pnpm --silent test:agent --e2e e2e/terminalNotice.spec.ts e2e/welcomeAndChatSettings.spec.ts e2e/personaBinding.spec.ts`
   ([test-harness](test-harness.md)). `slow`: none.
-- Not tested: the full alert protocol, and `util.ts`.
+- Not tested: the full alert protocol, and most `util.ts` helpers.
 
 ## Known Hazards
 
-None recorded: the asset and job hazards moved with [assets](assets.md) and [network-jobs](network-jobs.md).
+None recorded.

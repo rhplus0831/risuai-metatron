@@ -197,7 +197,11 @@ export async function importLoreBook(mode: "global" | "local") {
     const chatTarget = mode === "local" ? currentChatRef() : null;
     const chatOwner = chatTarget ? chatOwnerToken(chatTarget.chaId) : null;
     const lore: loreBook[] = [];
-    const lorebook = (await selectSingleFile(["json", "lorebook"])).data;
+    const file = await selectSingleFile(["json", "lorebook"]);
+    if (!file) {
+        return;
+    }
+    const lorebook = file.data;
     if (!lorebook) {
         return;
     }

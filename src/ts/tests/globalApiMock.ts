@@ -61,9 +61,6 @@ export function createGlobalApiMock(overrides: ModuleMockOverrides<GlobalApiModu
         loadInternalBackup: vi.fn(async () => {}),
         getLanguageCodes: vi.fn(() => []),
         getVersionString: vi.fn(() => ""),
-        toGetter: vi.fn(
-            (getter: () => object) => new Proxy({}, { get: (_target, prop) => Reflect.get(getter(), prop) }),
-        ) as unknown as GlobalApiModule["toGetter"],
         aiLawApplies: vi.fn(() => false),
         aiWatermarkingLawApplies: vi.fn(() => false),
         changeChatTo: vi.fn(),
