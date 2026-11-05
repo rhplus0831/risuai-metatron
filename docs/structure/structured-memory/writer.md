@@ -215,14 +215,14 @@ still rejects a second scene.
 
 ### The patch call
 
-`showTargets` supplies the accepted pages to `assemblePatchPrompt`, alongside the admitted event and no messages. An
-item whose quote failed admission cannot reach a page; its text must trace to the `provenance` event. Default inputs are
-bounded under `RUN_RECORD_MARGIN_BYTES`; custom frames get a separate pre-call size check.
+`showTargets` gives `assemblePatchPrompt` the admitted event, no messages, and the accepted pages that can take a write,
+so a run whose targets are all locked makes no patch call; its comment owns the budget order. An item whose quote failed
+admission cannot reach a page; its text traces to the `provenance` event. Default inputs are bounded under
+`RUN_RECORD_MARGIN_BYTES`; custom frames get a separate pre-call size check.
 
-`parsePatches` and `applyPatches` own operations, conflict classes, the refusal codes and whole-page admission. Their
-comments define each refusal code. Page refusal is a warning: other pages and the event still commit. The writer keeps
-the patch input with its closing run, without a separate pending write; a failed call leaves the window open for a retry
-from analysis.
+`parsePatches` and `applyPatches` own operations, conflict classes, the refusal codes and whole-page admission. Page
+refusal is a warning: other pages and the event still commit. The writer keeps the patch input with its closing run,
+without a separate pending write.
 
 ### Compaction
 

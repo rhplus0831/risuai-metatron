@@ -2670,6 +2670,7 @@ export const languageEnglish = {
             unknownPage: "it names no known page",
             sceneOwned: "the writer keeps the scene page itself",
             repeatedEvent: "this turn repeats the last event",
+            allLocked: "every section of the page is locked and it has no room for a new one",
             overBudget: "the page was too long to show the model",
         } as Record<string, string>,
         panel: {

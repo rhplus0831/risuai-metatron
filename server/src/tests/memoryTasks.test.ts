@@ -23,6 +23,7 @@ import { LLMFormat } from "../../../shared/llm.ts";
 import type { SerializableHypaV3Data } from "../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import {
+    CHARACTER_SECTION_SLOTS,
     MEMORY_SECTION_BUDGETS,
     type MemoryEventDraft,
     type MemoryPage,
@@ -2582,6 +2583,37 @@ describe("structured memory tasks", () => {
             "<|im_start|>user<|im_sep|>CUSTOM ANALYSIS {{user}}\n{{slot::scene}}\n{{slot::messages}}<|im_end|>",
         patchPrompt: "<|im_start|>user<|im_sep|>CUSTOM PATCH {{user}}\n{{slot::cast}}\n{{slot::previous}}<|im_end|>",
     };
+
+    it("records the event with only an analysis request when every character slot is locked", async () => {
+        const t = structuredHarness();
+        const page = memoryRecords(["cara"], "Cara").pages[0];
+        page.type = "character";
+        page.sections = CHARACTER_SECTION_SLOTS.map((heading) => ({
+            ...page.sections[0],
+            heading,
+            body: `Kept ${heading}`,
+            locked: true,
+        }));
+        writeMemory(t.store, "c", "k1", { pages: [page] });
+        const candidate = { targetId: page.id, reason: "New facts", confidence: 1 };
+        const draft = analysis();
+
+        await recordOnly(t, { ...draft, pageCandidates: [candidate] });
+
+        expect(t.provider.requests).toHaveLength(1);
+        expect(contents(t).events).toHaveLength(1);
+        const recorded = eventRecord(t);
+        expect(recorded).toMatchObject({ ...draft, status: "active", writerRun: runRecord(t).id });
+        expect(recorded.sources.map(({ messageId }) => messageId)).toEqual(["m1", "m2"]);
+        expect(runRecord(t)).toMatchObject({
+            result: "recorded",
+            receipt: {
+                state: "recorded",
+                refused: [{ candidate, refusal: "allLocked" }],
+            },
+        });
+        expect(t.store.memory.readRecord("c", "k1", "pages", page.id)!.data).toEqual(page);
+    });
 
     it("replaces both frames only in fine-tuning, validates both modes alike, and keeps compaction instructions", async () => {
         for (const fineTuning of [false, true]) {

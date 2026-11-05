@@ -61,7 +61,7 @@ import { eventVectorTexts } from "./retrieve.ts";
 import { windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./window.ts";
 
 /**
- * The Structured Memory writer: an analysis call per window, a patch call when an accepted target can
+ * The Structured Memory writer: an analysis call per window, a patch call when a writable target can
  * be shown, a compaction call for each section a patch left past its budget, and a `memory_runs` row
  * that shows how it went. The rows are the writer's whole state: a restart loses nothing, and pausing
  * needs no table of its own.

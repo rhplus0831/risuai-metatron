@@ -2536,6 +2536,7 @@ export const languageKorean = {
             unknownPage: "알려진 페이지를 가리키지 않습니다",
             sceneOwned: "장면 페이지는 기록기가 직접 관리합니다",
             repeatedEvent: "이 턴이 마지막 이벤트를 반복합니다",
+            allLocked: "페이지의 모든 섹션이 잠겨 있고 새 섹션을 추가할 여지도 없습니다",
             overBudget: "페이지가 너무 길어 모델에게 보여줄 수 없었습니다",
         },
         panel: {

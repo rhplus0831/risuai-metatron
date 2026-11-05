@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { expect, it } from "vitest";
 import {
+    CHARACTER_SECTION_SLOTS,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     type MemoryPage,
     type MemoryPatch,
@@ -164,6 +165,114 @@ it("shows whole sections within the patch budget and marks omitted headings", ()
     expect(result.seen.get("full")!.get("Omitted")).toBeNull();
     expect(result.seen.has("excluded")).toBe(false);
     expect(result.refused).toEqual([{ candidate: targets[1].candidate, refusal: "overBudget" }]);
+});
+
+it("refuses a fully locked character without spending the next page's patch budget", () => {
+    const locked = page("locked");
+    locked.type = "character";
+    locked.sections = CHARACTER_SECTION_SLOTS.map((heading) => ({
+        ...section(heading, "x".repeat(LIMITS.sectionBodyChars)),
+        locked: true,
+    }));
+    const editable = page("editable");
+    editable.sections = [section("Gate", "The gate is open.")];
+    const targets = [locked, editable].map((page) => ({
+        page,
+        candidate: { targetId: page.id, confidence: 1, reason: "Update" },
+    }));
+
+    const result = showTargets(targets);
+
+    expect(result.refused).toEqual([{ candidate: targets[0].candidate, refusal: "allLocked" }]);
+    expect(result.rows).toEqual([
+        {
+            id: "editable",
+            title: "editable",
+            type: "location",
+            sections: [{ heading: "Gate", body: "The gate is open." }],
+            notShown: [],
+        },
+    ]);
+    expect(result.seen).toEqual(new Map([["editable", new Map([["Gate", "The gate is open."]])]]));
+});
+
+it("shows editable bodies before compact locked context and still refuses locked patches", () => {
+    const locked = page("locked");
+    locked.type = "character";
+    locked.sections = CHARACTER_SECTION_SLOTS.slice(0, -1).map((heading) => ({
+        ...section(heading, "x".repeat(LIMITS.sectionBodyChars)),
+        locked: true,
+    }));
+    const editable = page("editable");
+    // Leave room for only one locked excerpt, so excerpts charged first would hide an editable body.
+    editable.sections = [
+        section("First", "a".repeat(LIMITS.sectionBodyChars)),
+        section("Second", "b".repeat(LIMITS.sectionBodyChars)),
+        section(
+            "Third",
+            "c".repeat(LIMITS.promptPatchChars - 2 * LIMITS.sectionBodyChars - LIMITS.promptSectionSummaryChars),
+        ),
+    ];
+    const targets = [locked, editable].map((page) => ({
+        page,
+        candidate: { targetId: page.id, confidence: 1, reason: "Update" },
+    }));
+
+    const result = showTargets(targets);
+
+    expect(result.refused).toEqual([]);
+    expect(result.rows).toEqual([
+        {
+            id: "locked",
+            title: "locked",
+            type: "character",
+            sections: [
+                ...locked.sections.map(({ heading }) => expect.objectContaining({ heading, locked: true })),
+                { heading: CHARACTER_SECTION_SLOTS.at(-1), empty: true },
+            ],
+            notShown: [],
+        },
+        {
+            id: "editable",
+            title: "editable",
+            type: "location",
+            sections: editable.sections.map(({ heading, body }) => ({ heading, body })),
+            notShown: [],
+        },
+    ]);
+    for (const row of result.rows[0].sections.slice(0, -1)) {
+        expect(row).not.toHaveProperty("body");
+        const excerpt = "excerpt" in row ? row.excerpt : undefined;
+        expect(excerpt?.length ?? 0).toBeLessThanOrEqual(LIMITS.promptSectionSummaryChars);
+    }
+    expect(result.seen).toEqual(
+        new Map<string, Map<string, string | null>>([
+            [locked.id, new Map(locked.sections.map(({ heading }) => [heading, null]))],
+            [editable.id, new Map(editable.sections.map(({ heading, body }) => [heading, body]))],
+        ]),
+    );
+
+    const before = structuredClone(locked);
+    const changes: PageChanges = new Map();
+    const warnings = applyPatches({
+        pages: new Map([locked, editable].map((page) => [page.id, page])),
+        changes,
+        patches: [
+            patch(CHARACTER_SECTION_SLOTS[0], { pageId: locked.id, body: "Overwrite lock" }),
+            patch("First", { pageId: editable.id, body: "Updated editable text" }),
+        ],
+        seen: result.seen,
+        stamp: stamp(),
+    });
+    expect(warnings).toEqual([
+        expect.objectContaining({ kind: "lockedSection", pageId: locked.id, heading: CHARACTER_SECTION_SLOTS[0] }),
+    ]);
+    expect(changes.has(locked.id)).toBe(false);
+    expect(locked).toEqual(before);
+    expect(changes.get(editable.id)!.page.sections).toEqual([
+        expect.objectContaining({ heading: "First", body: "Updated editable text" }),
+        ...editable.sections.slice(1),
+    ]);
 });
 
 it("preserves conflict history, disputes weak contradictions, and refuses overflowing joins", () => {
