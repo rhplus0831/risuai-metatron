@@ -1,7 +1,7 @@
 # Implementation Audit Fixes Plan
 
-Status: drafted 2026-11-05; no slice landed. The three open questions carry their recommendation until the
-owner answers.
+Status: drafted 2026-11-05; no slice landed. The owner confirmed the recommendation of all three questions on
+2026-11-05.
 
 Sources: the seven implementation audits of 2026-11-05 under `docs/manual-audit/`, all made against `dev` at
 `65e97f91f`: [Asset Lifecycle](../manual-audit/asset-lifecycle-code-audit-2026-11-05.md) (AL1–AL8, U1–U2),
@@ -54,11 +54,11 @@ Rules every slice checks, from the recurring blind spots of the
 - A `patchMessage` inside a job group closes an open generation fence: order the writes.
 - `sendSocket` counts any open socket as a delivery; a bound on queued bytes is `bufferedAmount`, never presence.
 
-## Open questions
+## Decisions
 
-Each gated slice carries the recommendation until the owner answers; none waits.
+The owner confirmed each recommendation on 2026-11-05; the gated slices implement the decision.
 
-| Q   | Question                                                                                                                                                                                                                                                                              | Recommendation                                                                                                                                                                                                                                          | Gates |
+| Q   | Question                                                                                                                                                                                                                                                                              | Decision                                                                                                                                                                                                                                                | Gates |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
 | Q1  | AL4: a File or Blob PNG import can replay an asset from a byte range, but a one-shot stream has no source to reread. Keep the whole encoded payload for streams (today's behavior, bounded only by the card), or add an operation-scoped server hold with explicit finalization?      | Range-backed replay for File/Blob now; streams keep the current retention and the assets guide records it as a Limitation. The server hold is a protocol addition for the rare one-shot path and is not worth a slice here.                             | A4    |
 | Q2  | JH6: with the creator watching, every socket gets one shared wire event, so the worker loses compact `streamed` checkpoints (122× bytes in the audit's fixture). Serialize an owner projection and a viewer projection of one `sentChat` baseline, or accept the documented behavior? | Two projections: the owner keeps stream references, viewers keep full rows. Creator-keeps-watching is the common handoff, and the cost grows with checkpoint count × reply length.                                                                      | H5    |
@@ -231,7 +231,7 @@ the order given (the runner puts them in separate waves).
   and `src/ts/characterCards.ts`'s PNG generator (~316–377) yields `load: () => Buffer.from(value, "base64")`
   over the whole chunk string. For File/Blob input, yield a loader that re-reads the chunk's byte range from
   the file (`Blob.slice`) and decodes on demand, so a replayed item holds offsets, not text; keep the final
-  presence guarantee. Q1 (recommended): a one-shot stream keeps today's retention; record it in `assets.md`
+  presence guarantee. Q1 (decided): a one-shot stream keeps today's retention; record it in `assets.md`
   Known Hazards > Limitations.
   _Done_: during a 24-asset PNG import, no uploaded asset's encoded payload is reachable from the queue after
   its upload settled; the final presence check still re-uploads a missing asset.

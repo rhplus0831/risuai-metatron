@@ -8,8 +8,8 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   implementation audits of 2026-11-05 (asset lifecycle, incremental chat transport, job handoff,
   plugin storage, render work budget, reroll candidates, structured memory) given a disposition; 45
   file-cluster slices fix the ordinary-path defects and costs, twelve edge-case findings are excluded
-  with their reason, one is deferred, and three open questions carry their recommendation. Landed:
-  none.
+  with their reason, one is deferred, and the owner decided all three questions on 2026-11-05.
+  Landed: none.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
