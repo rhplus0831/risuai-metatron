@@ -308,46 +308,46 @@ preview's included; a `done` terminal with a `messageId` clears only that chat's
 
 ### Limitations
 
-- `verified` reads the prompt assembly returned. Plugin replacers and `request` triggers run after it, on every attempt,
-  so a line they remove still reads as verified, and a provider that gathers system entries (Ooba mode) undoes the
-  placement. A tag the model echoed into a kept message verifies a lost line too. Decision: D8, plan.
-- A preview marks no record and asks nothing, but it runs the start trigger, whose result can be committed, and counts
-  in `statics.messages`, so it is not free of side effects. Decision: Structured Memory slice 3c, plan.
+- `verified` reads assembly's returned prompt. Plugin replacers and `request` triggers run later on every attempt, so
+  removed lines still read verified; a provider gathering system entries (Ooba mode) undoes placement. A tag echoed by
+  the model into a kept message also verifies a lost line. Decision: D8, archive.
+- A preview marks no record and asks nothing, but has side effects: it runs the start trigger, whose result can commit,
+  and counts in `statics.messages`. Decision: Structured Memory slice 3c, archive.
 - A tab older than the `structuredMemory` kind reads such a report as none and shows an older one.
 - The receipt line knows nothing of the hold. On a held chat a newest reply with no receipt still offers record now, and
   the press gets the 409. After the choice an `awaitingAdoption` receipt keeps its words with no button until a run
   replaces it, and Coverage reads it `skipped`. The panel's writer line is right throughout. Decision: Structured Memory
-  slice 6c, plan.
+  slice 6c, archive.
 - `genInfo` is not rendered in the `mobilechat` and `cardboard` themes, so they show no line.
 - Coverage's gap and leaving rows read stored text, where a send reads processed text and the greeting: a reply a script
   blanks counts as a turn here, and uncovered history that no longer fits also trims at send time. The panel says so,
-  and a preview is the exact form. Decision: Structured Memory D8, plan.
+  and a preview is the exact form. Decision: Structured Memory D8, archive.
 - A press that re-records an event also records the ordinary windows open under its message, as any press does, with no
-  cost preview. Decision: Structured Memory D3, plan.
+  cost preview. Decision: Structured Memory D3, archive.
 - Coverage counts tokens with the tab's scope, whose model settings fall back when a chat's binding is missing, and a
   refresh with unchanged texts does not recount after a tokenizer change.
 - A test run refuses a Plugin `memory` slot or a `request` trigger, because a tab callback saves its mutations even when
-  it throws. Decision: Structured Memory slice 7c, plan.
+  it throws. Decision: Structured Memory slice 7c, archive.
 - A test run leaves the request history row, its diagnostics event, and the job's generation receipt: the call's logs,
   as for a preview. The press also saves pending settings first, which is the settings save. Decision: Structured Memory
-  slice 7c, plan.
+  slice 7c, archive.
 - A test run replays over the records as they stand, so the window's own changes are already on the pages, and its
   answer can differ from what the run recorded. It costs up to two calls and asks first about neither.
 - A custom prompt may leave out `{{slot::rules}}`: `takenBack` still shows in the cast, without the rule that says to
   respect it. The test run lists the slot. `memoryWorkCost` does not know a custom prompt's size.
 - A seeded prompt is a copy: a later change of a default frame does not reach it, though a change of a slot's text does.
 - The badge is a last observation: memory writes publish nothing, so a writer run or another tab's repair shows at the
-  next read. Decision: Structured Memory slice 7e, plan.
+  next read. Decision: Structured Memory slice 7e, archive.
 - A chat not loaded knows no gap and only stored `stale` plus marks, because both need its messages. Only pinned chats
-  and the open chat have a state. Decision: Structured Memory slice 7e, plan.
+  and the open chat have a state. Decision: Structured Memory slice 7e, archive.
 - A reload loses the over-cap mark, and only the tab that followed the job holds it. Decision: Structured Memory slice
-  7e, plan.
+  7e, archive.
 - Gap is the last send's trimmed tokens, which a later recording does not rewrite, and a screened reply counts once it
-  trims. Decision: Structured Memory slice 7e, plan.
+  trims. Decision: Structured Memory slice 7e, archive.
 - `overBudgetSections` counts code points, not `memorySectionOverBudget`'s UTF-16 units, so a body with astral
   characters near its budget can read differently.
 - A screened reply can stay in the writer's context-only `previous` slot, and a user message strands when the next reply
-  is already recorded. Decision: Structured Memory slice 7e, plan.
+  is already recorded. Decision: Structured Memory slice 7e, archive.
 
 ### Gotchas
 

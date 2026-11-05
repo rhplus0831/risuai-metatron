@@ -62,10 +62,10 @@
 A run is a persisted row, outliving tasks and processes. The Structured Memory writer task kind works it through
 `rebuildWork`, with records in its own staged tables until [the one live write](#the-swap).
 
-1. The tab's `pressMemoryRebuild` or `pressMemoryRebuildResume` sends `memoryRebuild` through job admission. A job
-   supplies the tab's context, the chat's slot and full admission. `createGenerationRunner` dispatches to
-   `runMemoryRebuild` before `prepare`'s group-chat refusal; `admitRecord` still refuses an adoption-held chat.
-   `runMemoryRebuild` owns the remaining start/resume refusals.
+1. The tab's `pressMemoryRebuild` or `pressMemoryRebuildResume` sends `memoryRebuild` through job admission, supplying
+   tab context, chat slot and full admission. `createGenerationRunner` dispatches to `runMemoryRebuild` before
+   `prepare`'s group-chat refusal; `admitRecord` still refuses an adoption-held chat. `runMemoryRebuild` owns the
+   remaining start/resume refusals.
 2. `store.memory.rebuild.begin` and `MemoryTaskService.rebuild` share one synchronous step; a refused queue abandons the
    new run. The task gives the unchanged writer `rebuildStore` and `manual: true`, with `historical` for backfill.
    Reads, writes and [failed-window replay](writer.md#a-writer-run) all use staged records, including staged runs.
@@ -224,24 +224,24 @@ beside the rebuild buttons. The comparison starts no work; a person must press. 
 ### Limitations
 
 - A stopped run keeps the lock until a person resumes or abandons, across restarts too. Decision: Structured Memory
-  slice 6b, plan.
+  slice 6b, archive.
 - A backfill adds events and new pages and leaves current state alone: existing pages, the scene, and threads learn
-  nothing from it. A rebuild refreshes them. Decision: Structured Memory slice 6b, plan.
+  nothing from it. A rebuild refreshes them. Decision: Structured Memory slice 6b, archive.
 - A rebuild forgets reverts on sections with no mark: such a section is written anew, its history goes, and the writer
-  can propose the change again. Decision: Structured Memory slice 7b, plan.
+  can propose the change again. Decision: Structured Memory slice 7b, archive.
 - A person's state change on a writer's thread does not survive a rebuild: only `openedBy` says whose a thread is.
-  Decision: Structured Memory slice 6b, plan.
+  Decision: Structured Memory slice 6b, archive.
 - Old receipts stay on their messages, with their event and run ids, as on a copied chat. Decision: Structured Memory
-  slice 6b, plan.
+  slice 6b, archive.
 - Seeded and carried text stays in its language, and a resume under another language leaves a mix. Decision: Structured
-  Memory slice 6b, plan.
+  Memory slice 6b, archive.
 - A pin spreads to every staged event sharing a message, so an adopted summary's pin reaches all its turns' events.
-  Decision: Structured Memory slice 6b, plan.
+  Decision: Structured Memory slice 6b, archive.
 - The cost preview's `record` mode has no cadence, so `everyK` above 2 overstates calls. Decision: Structured Memory
-  slice 6b, plan.
+  slice 6b, archive.
 - A build from before these tables opens an upgraded database and ignores them: no lock, so a stopped run's later swap
   would lose what that build recorded. No snapshot refuses anything, and its restore drops them. Decision: Structured
-  Memory slice 6b, plan.
+  Memory slice 6b, archive.
 
 ### Gotchas
 

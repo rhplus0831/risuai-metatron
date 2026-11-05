@@ -62,8 +62,8 @@ can disappear at the swap; a branch could lose the source's half of a join or th
 ### Lorebook export
 
 `exportToLore` appends chat `localLore` through `setChatMeta` in `src/ts/storage/chatStore.svelte.ts`. The next writer's
-`aliasSeeds` reads its title and alias keys; `CCardLib.decorator.parse`, called from `shared/lore/activation.ts`, reads
-its inactive decorator. This is a chat write, outside the memory revision and fence.
+`aliasSeeds` reads its title and alias keys; `shared/lore/activation.ts` calls `CCardLib.decorator.parse` to read its
+inactive decorator. This chat write is outside the memory revision and fence.
 
 ### The import route
 
@@ -137,20 +137,21 @@ its inactive decorator. This is a chat write, outside the memory revision and fe
 - A rollback brings trash back quietly. An older build lists a `trashed` row in `contents.pages` and takes the true type
   from the record, so a trashed page reaches its sends and writer again, while its panel tree, which groups by known
   types, hides the row. A write there sets the column to the true type and keeps `trashedAt`; after rolling forward that
-  page reads as live until a tool writes it, and its detail shows Restore. Decision: Structured Memory slice 7d, plan.
+  page reads as live until a tool writes it, and its detail shows Restore. Decision: Structured Memory slice 7d,
+  archive.
 - An older build refuses a chat file holding a `merge` or `split` history entry whole, since its `restore.ts` checks the
-  closed list. Decision: Structured Memory slice 7d, plan.
+  closed list. Decision: Structured Memory slice 7d, archive.
 - Trash has no size limit or expiry: a page stays until a person deletes it forever. Decision: Structured Memory slice
-  7d, plan.
+  7d, archive.
 - After a rebuild or a merge, a restored page can cite events that no longer exist. An id naming no event is not
-  retracted, so nothing flags it. Decision: Structured Memory slice 7d, plan.
+  retracted, so nothing flags it. Decision: Structured Memory slice 7d, archive.
 - What a person took back on a merge's source stays on the trashed source, so the writer can propose it on the target.
-  Decision: Structured Memory slice 7d, plan.
+  Decision: Structured Memory slice 7d, archive.
 - A branch keeps a reshaped page's text from past the branch point, flagged `unsupported` where a section names a behind
-  event, and a send shows that text. Decision: Structured Memory slice 7d, plan.
+  event, and a send shows that text. Decision: Structured Memory slice 7d, archive.
 - The lorebook entry can be lost to a stale whole-array write of `localLore` from another tab, as any lore edit can.
-  Decision: Structured Memory slice 7d, plan.
+  Decision: Structured Memory slice 7d, archive.
 - A package past `MEMORY_RESTORE_BODY_BYTES` cannot be imported, though rounds can export it. Decision: Structured
-  Memory slice 7d, plan.
-- No round trip is promised for hand edits: a body whose line count no longer matches refuses that file. Decision:
-  Structured Memory D5, plan.
+  Memory slice 7d, archive.
+- Hand edits have no round-trip guarantee: a mismatched body line count refuses the file. Decision: Structured Memory
+  D5, archive.

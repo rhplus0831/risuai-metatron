@@ -35,7 +35,7 @@
 - `shared/chatCheckpoints.ts`: checkpoint memory manifest contract; `CHECKPOINT_MEMORY_FIELD`,
   `CheckpointMemoryManifest`.
 - `server/src/data/checkpointStore.ts`: memory capture and snapshot admission; `createCheckpointTables`, `save`,
-  `readMemory`, `walkCheckpointSnapshot`, `checkMemoryChunk`.
+  `readMemory`, `walkCheckpointSnapshot`, `checkMemoryChunk`. Owner: [server resources](../server-resources.md).
 - `server/src/data/resourceStore.ts`: checkpoint transaction access and message notices;
   `CheckpointTransaction.restoreMemory`, `onMessagesChanged`.
 - `server/src/data/memoryStore.ts`: record storage and replacement; `rows`, `replace`. Owner: [records](records.md).
@@ -51,7 +51,7 @@
 - `src/ts/process/chatMemoryInherit.svelte.ts`: creates' memory hand-off; `createInheritingChat`, `createSettled`,
   `restoreChatMemory`.
 - `src/ts/storage/chatStore.svelte.ts`: delete confirmation and marks; `removeMessages`, `removeAfterAsking`,
-  `removeMessagesUnasked`.
+  `removeMessagesUnasked`. Owner: [chat store](../chat-store.md).
 - `src/ts/characters.ts`: chat-file orchestration; `exportChat`, `exportAllChats`, `importChat`, `addChats`.
 - `server/src/prompt/memory/structured/writer.ts`: adoption hold shared with the routes; `adoptionHold`,
   `chatAdoptionHold`. Owner: [writer](writer.md).
@@ -107,9 +107,9 @@ a panel repair.
 ### A checkpoint
 
 A checkpoint captures all four kinds, runs included, so the loaded Log matches its events. `save` takes
-`memoryStore.ts`'s `rows`; the checkpoint module header defines the verbatim chunks. `fields` names their manifest under
-`CHECKPOINT_MEMORY_FIELD` (`CheckpointMemoryManifest`); `checkpointPageRefs` includes manifest and chunks. Changed
-chunks alone need new pages, treated like other pages by delete, prune and snapshot restore.
+`memoryStore.ts`'s `rows`; the checkpoint module header defines verbatim chunks. `fields` names their manifest under
+`CHECKPOINT_MEMORY_FIELD` (`CheckpointMemoryManifest`); `checkpointPageRefs` includes both. Only changed chunks need new
+pages, treated like other pages by delete, prune and snapshot restore.
 
 1. `server/src/data/checkpointService.ts`'s `load` reads `compose` and `readMemory`. Every new save writes the manifest,
    even empty; its absence identifies a legacy checkpoint whose load leaves memory and its revision alone.
@@ -147,9 +147,9 @@ or recovered chat inherits nothing; an import instead [restores its file](#chat-
    supported or none to build; `inherited` reports records only. Runs stay behind: the new Log is empty and coverage
    comes from event sources. The route header owns empty/repeat answers and HTTP refusals.
 
-There is one attempt, no retry. Every copy asks even under another algorithm; only a user of this one sees
-`structuredMemory.inherit.failed` on failure or a non-`epoch` refusal. `epoch` halts with its own notice. A failed
-response leaves inheritance unconfirmed: it can be lost after commit. Closing the tab before the request leaves no
+One attempt, no retry. Every copy asks, even under another algorithm; only this algorithm shows
+`structuredMemory.inherit.failed` on failure or non-`epoch` refusal. `epoch` halts with its own notice. A failed
+response leaves inheritance unconfirmed; it can be lost after commit. Closing the tab before the request leaves no
 records or notice.
 
 ### Chat files
@@ -201,8 +201,8 @@ fails; `epoch` halts with its own notice. `restoreChatMemory` names failed chats
 leaving the others to continue.
 
 The notice says restoration is unconfirmed and earlier messages may not be covered: an answer can be lost after commit,
-and a send reaching the chat first can leave it fenced or holding rows. Closing the tab before the request leaves no
-records or notice. Nothing retries it.
+and a send reaching the chat first can leave it fenced or holding rows. Tab closure before the request leaves no records
+or notice; no retry.
 
 ### Adopting HypaV3 summaries
 
@@ -327,53 +327,55 @@ takes over.
 
 - `moved` and `inserted` are structural readings, not move detection. A single source or a whole block moved reads as
   whole, and a repeat appended after an earlier deletion can read as `inserted`, which a keep answers. The stored
-  `index` holds no capture boundary. Decision: Structured Memory D4, plan.
+  `index` holds no capture boundary. Decision: Structured Memory D4, archive.
 - A confirmed delete lands after the coverage read and the question, so a send can start in that gap. Only a lock taken
   meanwhile refuses it; otherwise the reply can be built on the deleted message and the event retracted during the job.
   The read has no deadline of its own, so a hung read holds the delete with no question shown. Decision: Structured
-  Memory slice 5b, plan.
+  Memory slice 5b, archive.
 - A mark outlives an edit that was put back: the event reads active, spends no call, and shows as waiting until a press
   or retract; a keep of an already-active event is a no-op. A chat under a save refusal sends a whole `replace`, which
   loses `retract` and any `rewritten`, so the event reads `missing` or `changed` for the panel. Decision: Structured
-  Memory slice 5b, plan.
+  Memory slice 5b, archive.
 - A checkpoint save reads and hashes every record's text in one synchronous step, however little changed, and runs are
   never pruned while each holds whole prompts. So a save's event-loop hold grows with the chat's memory, on every
   automatic checkpoint and every load's safety checkpoint:
   [about 500 ms for 79 MB of runs](../../audit/structured-memory-2026-11-03.md). A load parses every record on top.
-  Decision: Structured Memory slice 5d, plan.
+  Decision: Structured Memory slice 5d, archive.
 - A tab closed before [the inherit](#copies-and-branches) posts leaves the new chat with no records and no notice:
-  nothing retries it. Decision: Structured Memory slice 5c, plan.
+  nothing retries it. Decision: Structured Memory slice 5c, archive.
 - A send that reaches the new chat before the inherit is fenced or finds records, so that chat keeps a gap. Decision:
-  Structured Memory slice 5c, plan.
+  Structured Memory slice 5c, archive.
 - A copied or branched chat's receipts still read as they did, with no run behind them ([Gotchas](read.md#gotchas)).
-  Decision: Structured Memory slice 5c, plan.
+  Decision: Structured Memory slice 5c, archive.
 - A change the bounded history no longer holds cannot be rewound, so that section keeps its text, which can still reach
   the prompt, flagged `unsupported`. Provenance is bounded too: a change `sectionEvidence` also dropped leaves nothing
   to flag it by. A page whose `create` entry aged out crosses too. A person's edit after the branch point has no place
-  in the message order, so it crosses unless it follows a behind change. Decision: Structured Memory slice 5c, plan.
+  in the message order, so it crosses unless it follows a behind change. Decision: Structured Memory slice 5c, archive.
 - A chat's records over [the restore](#chat-files)'s body cap cannot be restored, and the export does not warn: the file
-  holds them and the import shows the size notice. Decision: Structured Memory slice 5f, plan.
+  holds them and the import shows the size notice. Decision: Structured Memory slice 5f, archive.
 - HTML, TXT, and jsonl chat files carry no records, so a chat imported from one starts with a coverage gap. Decision:
-  Structured Memory slice 5f, plan.
+  Structured Memory slice 5f, archive.
 - [Adoption](#adopting-hypav3-summaries) refuses a chat that holds a record, such as one recorded before the hold or a
-  summary written after the first record: nothing merges them with events. Decision: Structured Memory slice 6a, plan.
+  summary written after the first record: nothing merges them with events. Decision: Structured Memory slice 6a,
+  archive.
 - Under `doNotSummarizeUserMessage` a summary cites only replies, so an adopted chat's user messages stay uncovered
-  until [a backfill](rebuild.md#backfill). Decision: Structured Memory slice 6a, plan.
+  until [a backfill](rebuild.md#backfill). Decision: Structured Memory slice 6a, archive.
 - A declined chat is never reset, since its summaries have no other copy, so its plugins keep reading them without any
   later event. Selecting HypaV3 and using its modal is the way out. A held chat's send has no summaries or card, so its
-  older history trims until the choice. Decision: Structured Memory slice 6c, plan.
+  older history trims until the choice. Decision: Structured Memory slice 6c, archive.
 - An adopted summary over the card's budget is left out whole (`budget`) while its messages leave the prompt and only
   its flow title goes. Retrieval embeds the whole text, so a provider that refuses it fails similarity for that send,
-  with no participants to fall back on, and compaction never touches events. Decision: Structured Memory slice 6a, plan.
+  with no participants to fall back on, and compaction never touches events. Decision: Structured Memory slice 6a,
+  archive.
 - `pinned` selects nothing in any lane, so an adopted important summary is no longer sent every time. Decision:
-  Structured Memory slice 6a, plan.
+  Structured Memory slice 6a, archive.
 - A stored-stale adopted event has narrower repairs. A keep reads active, but with no source present retrieval leaves it
   out as `not-relevant`. A re-record needs the newest cited message a send reads to be a reply. An edit of a surviving
   source spends no automatic call, because the event reads `missing`, not `changed`. A copy drops an event with an
-  unanchored source or none, kept or not. Decision: Structured Memory slice 6a, plan.
+  unanchored source or none, kept or not. Decision: Structured Memory slice 6a, archive.
 - An all-chats export reads the chats first and their records after, so a chat can be older than its records. Each
   chat's read has its own 60 s bound, so a server that hangs by then holds the file a minute per chat. Decision:
-  Structured Memory slice 5f, plan.
+  Structured Memory slice 5f, archive.
 - A send that reaches an imported chat before its restore leaves it unrestored: the chat then holds rows, or is fenced,
   and the notice shows. A tab closed before the restore posts leaves it the same with no notice: nothing retries it.
-  Decision: Structured Memory slice 5f, plan.
+  Decision: Structured Memory slice 5f, archive.

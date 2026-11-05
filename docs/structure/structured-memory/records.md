@@ -131,9 +131,9 @@ whole shape check of `parseRestoredRecords`, and only when the chat holds no row
 ### A memory write
 
 `store.memory.write(characterId, chatId, { epoch, baseRevision }, changes)` in `server/src/data/resourceStore.ts`
-commits one declarative change set in its own transaction, with nothing async inside. Its epoch check precedes
-`server/src/data/memoryStore.ts`'s synchronous `write`, which owns revision checks, validation, no-op behavior and write
-ordering; any failure rolls the transaction back. Inherit and restore use this same boundary.
+commits one declarative change set in its own synchronous transaction. After its epoch check,
+`server/src/data/memoryStore.ts`'s synchronous `write` owns revision checks, validation, no-ops and write ordering; any
+failure rolls back. Inherit and restore share this boundary.
 
 The write publishes nothing: the chat's revision and the change feed stay as they were, and a real write counts toward
 snapshots like a checkpoint write.
@@ -275,19 +275,19 @@ group: no walk reads them.
 
 ### Limitations
 
-- The `adoptionDeclined` column costs a rollback. A build from before it refuses a snapshot made by a later build whole
-  (`invalid memory table columns`), even with no decline in it. It opens an upgraded live database and writes to it, but
-  its own snapshots then hold the column too, so it refuses those as well. Their upstream export reads no memory events,
-  so a chat that needs the projection goes out as `memory-unreadable`. It ignores a decline, and can record or adopt
-  despite one. Decision: Structured Memory slice 6c, plan.
-- The package holds no runs and no page history. Decision: Structured Memory slice 1d, plan.
+- The `adoptionDeclined` column costs a rollback. Builds before it refuse later snapshots whole
+  (`invalid memory table columns`), even without a decline. They open and write upgraded live databases, but then refuse
+  their own snapshots because those include the column. Their upstream export reads no memory events, so a chat needing
+  the projection exports as `memory-unreadable`. They ignore declines and can record or adopt despite one. Decision:
+  Structured Memory slice 6c, archive.
+- The package holds no runs and no page history. Decision: Structured Memory slice 1d, archive.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
   has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
 - A page's creation cannot be reverted: that would delete the page and everything citing it. Decision: Structured Memory
-  slice 7b, plan.
+  slice 7b, archive.
 - Two reverts newest first and then a branch cut between them keep the older entry's `revertedBy`, though the cut
   brought its text back: the badge is wrong and the entry cannot be undone, and the writer is told nothing, since its
-  list comes from the `revert` entries the cut dropped. Decision: Structured Memory slice 7b, plan.
+  list comes from the `revert` entries the cut dropped. Decision: Structured Memory slice 7b, archive.
 
 ### Gotchas
 

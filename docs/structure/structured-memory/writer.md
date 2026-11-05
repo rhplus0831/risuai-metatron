@@ -67,8 +67,8 @@ The job captures `writerCeiling` before its reply. An automatic task uses that c
 
 A person's press re-records marked events ahead of ordinary work. An automatic task and assembly's `due` take only
 `automaticRerecords`, so a restored mark or one on unchanged text waits for a press. The windows count an adopted
-event's `sources` as recorded too, keeping [adoption](lifecycle.md#the-adoption-choice) from automatically recording
-them again. `rerecordWindows` and `confirmedWindows` own repair eligibility and ordering details.
+event's `sources` as recorded too, keeping [adoption](lifecycle.md#adopting-hypav3-summaries) from automatically
+recording them again. `rerecordWindows` and `confirmedWindows` own repair eligibility and ordering details.
 
 ### The writer task
 
@@ -77,12 +77,11 @@ them again. `rerecordWindows` and `confirmedWindows` own repair eligibility and 
 kind. The step [reads](read.md#the-read-path) before it returns the hand-off; `confirmedWindows` at `limit: 1` supplies
 `due`.
 
-An input job with a service and a source-generation-bound chat snapshot returns a hand-off even when not due:
-`handOffMemory` needs it for a waiting manual start. Unlike HypaV3 it does not precheck the blocking reason. The step
-asks `memoryGap` when trimming lost more than `gapConfirmTokens`, with the windows a manual start could run as
-`plannedCalls`; no question when there are none or the summarizer is local. History cited by stale or retracted events
-already counts as recorded, so a gap can offer no window. `generate` runs [the gap](#the-gap-run), then rereads and
-selects without asking again.
+An input job with a service and source-generation-bound chat snapshot returns a hand-off even when not due:
+`handOffMemory` needs it for waiting manual starts. Unlike HypaV3 it skips the blocking-reason precheck. The step asks
+`memoryGap` when trimmed tokens exceed `gapConfirmTokens`, using manual-start windows as `plannedCalls`; no windows or a
+local summarizer means no question. History cited by stale or retracted events counts as recorded, so a gap can offer no
+window. `generate` runs [the gap](#the-gap-run), then rereads and selects without asking again.
 
 A [held chat](lifecycle.md#the-adoption-choice), `MemoryRecords.adoptionHeld`, gets neither gap question nor hand-off,
 keeping a waiting manual start until after the choice. `writerNotice` gives its reply a `notAutomatic` receipt with
@@ -119,12 +118,12 @@ replacement commits. Reconciliation holds no fence; a running writer meets `revi
 the pre-call snapshot; the writer's comments own pause, request failures, custom prompts and dry runs. A `historical`
 write [leaves current state alone](rebuild.md#backfill).
 
-A held chat ends any run, manual included, `skipped awaitingAdoption` with no call or row. Automatic runs also honor
-`writerPaused`; a manual start bypasses that pause. The newest row that did not record supplies replay input only when
-message ids and hashes, `settingsFingerprint` and prompt mode match, and it includes the current scene's taken-back
-lines. A mismatch rebuilds the prompt.
+A held chat ends any run, including manual, `skipped awaitingAdoption` with no call or row. Automatic runs honor
+`writerPaused`; manual starts bypass it. The newest nonrecorded row supplies replay input only when message ids and
+hashes, `settingsFingerprint` and prompt mode match; that input includes the current scene's taken-back lines. A
+mismatch rebuilds the prompt.
 
-The calls cross the pure modules before one closing write:
+Calls cross pure modules before one closing write:
 
 1. `prompts` assembles input for `host.request` under `writerHostDeps`/`writerRequestDb` (temperature 0,
    `jsonSchemaEnabled` off, `extractJson` empty). `parseAnalysis` parses the answer; `planPages` establishes identities
@@ -181,7 +180,7 @@ around this run, restoring the reply's temperature and schema afterwards.
 A nonrecorded window ends the gap quietly and the send continues. Any run or receipt already written stays stored; a
 skipped window need not create either. Aborts and latched failures still end the job. It never calls `markStopped`,
 which would clear the `blockingReason` a reply's receipt reads. Assembly keeps its chat snapshot: a receipt changes no
-source hash, and an edit during the run can leave one send with a slightly stale prompt.
+source hash, and a message edit during the run can leave one send with a slightly stale prompt.
 
 ### Pages and calls
 
@@ -321,31 +320,30 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
 
 ### Limitations
 
-- A retried window replays its snapshot only while its messages group the same way: a failed manual partial window that
-  a cadence later regroups rebuilds its prompt. A replay resends the context as it was. Decision: Structured Memory D3,
-  plan.
+- A retried window replays its snapshot only with unchanged message grouping: cadence regrouping a failed manual partial
+  window rebuilds its prompt. Replay resends the original context. Decision: Structured Memory D3, archive.
 - An interrupted run never counts toward the pause, so a model that only ever overruns the task deadline does not pause
-  recording. Decision: Structured Memory D3, plan.
+  recording. Decision: Structured Memory D3, archive.
 - An edit during a reply is picked up by the send after it: `due` is read before the reply, and the marks wait.
-  Decision: Structured Memory slice 5b, plan.
+  Decision: Structured Memory slice 5b, archive.
 - A failed patch call costs the retry its analysis call again: the window replays from the start, because one page
-  refresh must not close a window. Decision: Structured Memory D3, plan.
+  refresh must not close a window. Decision: Structured Memory D3, archive.
 - A page locked or changed in a way a patch cannot apply is refused whole, so one bad patch delays that page's other
-  changes to a later window. Decision: Structured Memory D3, plan.
+  changes to a later window. Decision: Structured Memory D3, archive.
 - Section evidence keeps the newest `sectionEvidence`, so a section can read `unsupported` while an older dropped event
-  still supports it. Decision: Structured Memory slice 4a, plan.
+  still supports it. Decision: Structured Memory slice 4a, archive.
 - A section whose `userCorrected` stands is never compacted, and can grow by disputed joins until `sectionTooLong`
   refuses its page's patches. The person trims it. A section a failed or discarded compaction left long waits for its
-  next change. Decision: Structured Memory D13, plan.
+  next change. Decision: Structured Memory D13, archive.
 - `takenBack` is advice: code compares a patch with it nowhere, so a model can write the text again. Only a scene field
-  is held. Decision: Structured Memory slice 7b, plan.
+  is held. Decision: Structured Memory slice 7b, archive.
 - Budgets are per section in characters, so they do not keep the required lane under `requiredCap`. Compaction runs
   before the commit, so a deadline during one costs the run its analysis and patch calls, and a person pressing record
-  now waits for it. `compactionFailed` holds no provider text. Decision: Structured Memory D13, plan.
+  now waits for it. `compactionFailed` holds no provider text. Decision: Structured Memory D13, archive.
 - Recording in a job sets no `memoryTaskFenced` fence and no task status: only the pressing tab sees it, through its
   button and the `memoryProgress` overlay, as with a blocking HypaV3 summary. The job holds the chat's slot and the
   lease. A throw there leaves the run `pending` with no failed receipt, and the next run closes it `interrupted`.
-  Decision: Structured Memory slice 2d, plan.
+  Decision: Structured Memory slice 2d, archive.
 
 ### Gotchas
 
