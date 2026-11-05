@@ -13,7 +13,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
-- [Chat screen and input](#chat-screen-and-input) (8)
+- [Chat screen and input](#chat-screen-and-input) (6)
 - [Client and plugins](#client-and-plugins) (22)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
 - [Guides](#guides) (7)
@@ -262,22 +262,6 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 
 **Why it matters:** a few lines of a correction typed on one device vanish without a notice when another device writes the same message.
 **Suggested handling:** register open editor drafts as refresh holds (the read waits until the editor closes, as pending work does), or keep drafts by chat and message id across the remount and show the changed base explicitly.
-
-### The chat file picker offers mpeg and avi, which store nothing
-
-`src/ts/process/files/multisend.ts` `postChatFile` offers `mpeg` and `avi` (~241) and hands media to `postInlayAsset` in `src/ts/process/files/inlays.ts`, whose `inlayVideoExts` (~45) holds only `webm`, `mp4` and `mkv`: the pick returns null, and the user sees nothing attached and no error. `writeInlayImage` rejections (no pixels, a load failure) are also not caught on the screen's picker and paste path. The comment above `postChatFile` now states the gap; found in the Guides To Source run (2026-11-04). Owner: chat-pipeline.
-
-**Why it matters:** a silent failure on realistic input.
-
-**Suggested handling:** drop `mpeg`/`avi` from the picker, or add them to the stored video types and `shared/assetMime.ts`.
-
-### `/?` help omits two commands
-
-The hand-written help text of the `"?"` case in `src/ts/process/command.ts` `processCommand` (~278) lists neither `/multisend` nor `/test_lorebook`, which the same switch handles (~239, ~265). Found in the Guides To Source run (2026-11-04). Owner: chat-pipeline.
-
-**Why it matters:** users cannot discover those commands from `/?`.
-
-**Suggested handling:** add their entries to the help text.
 
 ### The screenshot peak grows with the row count
 
