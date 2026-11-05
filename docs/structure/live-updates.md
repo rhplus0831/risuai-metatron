@@ -33,13 +33,14 @@ Identifiers the flows below name are not repeated here.
   (`shared/events.ts`). Changes reach `noteRemoteChanges`: record patches apply or await reads; chat bodies and
   summaries follow [Chat live updates](#chat-live-updates).
 - A same-epoch `hello` installs `replaceFeedLocks` before `reconcileRemote`. A matching digest uses the advertised map.
-  Otherwise, with that map in the loaded epoch and both cursors plus digest, freeze its maps and held cursor before
-  awaiting `listChanges({ since: heldCursor, until: hello.cursor, epoch })`.
-- Replay only into the copy; reconcile from it if its digest matches. Expired coverage, a remaining mismatch or absent
-  cursors (including older servers) uses `listRevisions`. Both reads share the deadline and post-hello overlay.
+  Otherwise, with that map in the loaded epoch and both cursors plus digest, freeze its maps and held cursor, then await
+  `listChanges({ since: heldCursor, until: hello.cursor, epoch })`.
+- Replay only into the copy; reconcile from it on a digest match. Expired coverage, a remaining mismatch or absent
+  cursors (older servers) uses `listRevisions`. Both reads share the deadline and post-hello overlay.
 - The unoverlaid replay/listing reaches reconciliation and `src/ts/process/memoryTasks.svelte.ts` fences; only the
-  advertised map takes the overlay. Same-epoch frames advance the held cursor; success also takes `hello.cursor`.
-  Reconciliation routes listed and missing refs through the adapter and owners. Epoch mismatches [halt](#restore-halt).
+  advertised map takes the overlay. Frames advance the held cursor, mid-read the overlay's, committed on success with
+  `hello.cursor`. Reconciliation routes listed and missing refs via the adapter and owners. Epoch mismatches
+  [halt](#restore-halt).
 - Handoff offers and presence go to `src/ts/network/handoff.ts`; `register` timing: the `eventFeed.ts` header.
 - `watchSocket` abandons dead sockets; `watchResume` replaces the connection when the page returns
   (`src/ts/network/socketLiveness.ts`).

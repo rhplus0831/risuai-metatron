@@ -1172,6 +1172,55 @@ describe("bounded reconnect replay", () => {
         expect(mocks.listRevisions).not.toHaveBeenCalled();
     });
 
+    it("replays from the last complete cursor when a connection closes before its hello-time replay resolves", async () => {
+        mocks.listRevisions.mockResolvedValue(initial);
+        let ws = await started();
+        ws.open();
+        hello(ws, initial, 10);
+        await vi.advanceTimersByTimeAsync(0);
+
+        ws = await reconnect(ws);
+        let answer!: (value: unknown) => void;
+        mocks.listChanges.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+        hello(ws, away, 14);
+        expect(mocks.listChanges).toHaveBeenCalledExactlyOnceWith({
+            since: 10,
+            until: 14,
+            epoch: "E1",
+            signal: expect.any(AbortSignal),
+        });
+        const later = {
+            ...empty,
+            chats: [{ characterId: "d", id: "j", revision: "E1:9:1" }],
+        };
+        // This frame does not supply the away-time changes still missing from the pending replay.
+        ws.frame({ type: "change", epoch: "E1", cursor: 15, changes: later });
+        ws.close();
+        await vi.advanceTimersByTimeAsync(2000);
+        const next = FakeSocket.instances.at(-1)!;
+        expect(next).not.toBe(ws);
+        next.open();
+        const current = { ...away, chats: later.chats };
+        mocks.listChanges.mockResolvedValueOnce({
+            epoch: "E1",
+            cursor: 15,
+            changes: { ...replay, chats: [...replay.chats, ...later.chats] },
+        });
+        hello(next, current, 15);
+        expect(mocks.listChanges).toHaveBeenNthCalledWith(2, {
+            since: 10,
+            until: 15,
+            epoch: "E1",
+            signal: expect.any(AbortSignal),
+        });
+        answer({ epoch: "E1", cursor: 14, changes: replay });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.listChanges).toHaveBeenCalledTimes(2);
+        expect(mocks.listRevisions).toHaveBeenCalledTimes(1);
+        expect(mocks.reconcileRemote).toHaveBeenCalledTimes(2);
+        expect(mocks.reconcileRemote).toHaveBeenLastCalledWith(current);
+    });
+
     it("reads the whole listing once when replay expires or cannot explain the digest", async () => {
         let ws = await seed(10);
         for (const reason of ["expired", "digest mismatch"]) {

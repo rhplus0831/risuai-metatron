@@ -128,12 +128,17 @@ export function liveFeedCurrent(): boolean {
 type RevisionMap = {
     [K in keyof ChangeSet]: Map<string, ResourceRevisionListing[K][number] | null>;
 };
+type RevisionOverlay = { rows: RevisionMap; cursor: number | null };
 /** All rows at the server's advertised revisions, never this tab's held revisions. */
 let advertised: { epoch: string; rows: RevisionMap } | null = null;
-/** Newest cursor advertised with this map, cleared with it; absent on older servers. */
+/**
+ * Cursor through which the advertised map is complete, cleared with it; absent on older servers.
+ * Frames during a pending read advance only its overlay's cursor, committed with hello.cursor on
+ * success and dropped on retirement.
+ */
 let heldCursor: number | null = null;
 /** Changes since this connection's hello while replay or listing is pending; null rows are tombstones. */
-let listingOverlay: RevisionMap | null = null;
+let listingOverlay: RevisionOverlay | null = null;
 
 function emptyRevisionMap(): RevisionMap {
     return { resources: new Map(), chats: new Map(), chatOrders: new Map() };
@@ -297,7 +302,7 @@ async function reconcile(
     try {
         if (gen !== generation) return;
         let listing = advertised?.epoch === getResourceEpoch() ? advertisedListing() : null;
-        let overlay: RevisionMap | null = null;
+        let overlay: RevisionOverlay | null = null;
         if (!listing || typeof digest !== "string" || revisionDigest(listing) !== digest) {
             // Freeze before the first await: live frames keep changing advertised and the overlay,
             // but cannot enter the map whose digest must describe the hello's committed state.
@@ -312,7 +317,7 @@ async function reconcile(
                     : null;
             const epoch = listing?.epoch;
             listing = null;
-            overlay = emptyRevisionMap();
+            overlay = { rows: emptyRevisionMap(), cursor: null };
             listingOverlay = overlay;
             // A replaced connection's read is not aborted early: its epoch-mismatch error still counts.
             const abort = new AbortController();
@@ -355,7 +360,10 @@ async function reconcile(
             reconcileRemote(listing);
             // Only the advertised map takes post-hello changes; fences and reconciliation saw the
             // unoverlaid replay or listing, including the final incarnation of every recreated chat.
-            if (overlay) seedAdvertised(listing, overlay);
+            if (overlay) {
+                seedAdvertised(listing, overlay.rows);
+                if (overlay.cursor !== null) heldCursor = Math.max(heldCursor ?? 0, overlay.cursor);
+            }
             listingOverlay = null;
             if (isCursor(helloCursor)) heldCursor = Math.max(heldCursor ?? 0, helloCursor);
             // Digest match, replay, and full listing all reconcile here before the feed counts as current.
@@ -412,9 +420,12 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
             return;
         case "change":
             if (frame.epoch === loaded) {
-                if (isCursor(frame.cursor)) heldCursor = Math.max(heldCursor ?? 0, frame.cursor);
+                if (isCursor(frame.cursor)) {
+                    if (listingOverlay) listingOverlay.cursor = Math.max(listingOverlay.cursor ?? 0, frame.cursor);
+                    else heldCursor = Math.max(heldCursor ?? 0, frame.cursor);
+                }
                 if (advertised?.epoch === loaded) applyRevisionChanges(advertised.rows, frame.changes);
-                if (listingOverlay) applyRevisionChanges(listingOverlay, frame.changes, true);
+                if (listingOverlay) applyRevisionChanges(listingOverlay.rows, frame.changes, true);
                 noteRemoteChanges(frame.changes);
                 if (frame.streaming) {
                     noteRemoteStreaming(frame.streaming, frame.changes);
