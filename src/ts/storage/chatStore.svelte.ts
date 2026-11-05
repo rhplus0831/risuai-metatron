@@ -546,6 +546,16 @@ const slot = (id: string) => `#${id}`;
  */
 const held: Record<string, HeldChats> = $state({});
 
+// Positions are validated against unique row ids; invalidation controls rebuild cost, not correctness.
+const messagePositions = new Map<string, Map<string, number>>();
+let messagePositionBuilds = 0;
+let messagePositionLookups = 0;
+
+/** Counts index builds and lookups so tests can check work without timing it. */
+export function messagePositionStats(): Readonly<{ builds: number; lookups: number }> {
+    return { builds: messagePositionBuilds, lookups: messagePositionLookups };
+}
+
 /** The selected chat id per character (this tab; reactive). */
 const chosen: Record<string, string> = $state({});
 /** Per character, bumped by every change of its selected chat (`chatSelectionVersion`). */
@@ -1024,6 +1034,38 @@ function heldChat(ref: ChatRef): Chat | undefined {
     return holdingAt(ref.chaId)?.chats[slot(ref.chatId)];
 }
 
+function dropMessagePositions(key: string) {
+    messagePositions.delete(key);
+}
+
+function buildMessagePositions(key: string, chat: DeepReadonly<Chat>): Map<string, number> {
+    const positions = new Map<string, number>();
+    chat.message.forEach((message, position) => positions.set(message.chatId!, position));
+    messagePositions.set(key, positions);
+    messagePositionBuilds += 1;
+    return positions;
+}
+
+/** A stale or missing position rebuilds once; a newly built map never rebuilds again in this lookup. */
+function positionOf(key: string, chat: DeepReadonly<Chat>, id: string): number {
+    messagePositionLookups += 1;
+    let positions = messagePositions.get(key);
+    const built = positions === undefined;
+    positions ??= buildMessagePositions(key, chat);
+    let position = positions.get(id);
+    if (position !== undefined && chat.message[position]?.chatId === id) {
+        return position;
+    }
+    if (!built) {
+        positions = buildMessagePositions(key, chat);
+        position = positions.get(id);
+        if (position !== undefined && chat.message[position]?.chatId === id) {
+            return position;
+        }
+    }
+    return -1;
+}
+
 /** Whether a member chat is loaded (its whole chat is held, not only its summary). */
 function isLoaded(ref: ChatRef): boolean {
     return heldChat(ref) !== undefined;
@@ -1106,6 +1148,7 @@ function entryAt(chaId: string, id: string): ChatEntry | undefined {
 /** Puts a chat into a character's list at `index` (loaded and a member); returns the held copy. */
 function insertChat(chaId: string, index: number, chat: Chat): Chat {
     const holding = holdingOf(chaId);
+    dropMessagePositions(keyOf(chaId, chat.id!));
     loadedKeys.add(keyOf(chaId, chat.id!));
     holding.chats[slot(chat.id!)] = chat;
     delete holding.summaries[slot(chat.id!)];
@@ -1117,6 +1160,7 @@ function insertChat(chaId: string, index: number, chat: Chat): Chat {
 /** Puts a chat into a character's list at `index` as its summary (not loaded). */
 function insertSummary(chaId: string, index: number, id: string, meta: ChatEntryMeta) {
     const holding = holdingOf(chaId);
+    dropMessagePositions(keyOf(chaId, id));
     loadedKeys.delete(keyOf(chaId, id));
     holding.summaries[slot(id)] = meta;
     delete holding.chats[slot(id)];
@@ -1135,6 +1179,7 @@ function removeChat(chaId: string, chatId: string) {
         holding.ids.splice(index, 1);
     }
     loadedKeys.delete(keyOf(chaId, chatId));
+    dropMessagePositions(keyOf(chaId, chatId));
     delete holding.chats[slot(chatId)];
     delete holding.summaries[slot(chatId)];
     dirtyOrderJournal(chaId, "latest");
@@ -1145,6 +1190,7 @@ function removeChat(chaId: string, chatId: string) {
 function dropHeld(chaId: string) {
     for (const id of holdingAt(chaId)?.ids ?? []) {
         loadedKeys.delete(keyOf(chaId, id));
+        dropMessagePositions(keyOf(chaId, id));
     }
     delete held[slot(chaId)];
     dirtyOrderJournal(chaId, "latest");
@@ -1158,10 +1204,12 @@ function setChatList(chaId: string, entries: readonly ChatEntry[]) {
     const holding = holdingOf(chaId);
     for (const id of holding.ids) {
         loadedKeys.delete(keyOf(chaId, id));
+        dropMessagePositions(keyOf(chaId, id));
     }
     const chats: Record<string, Chat> = {};
     const summaries: Record<string, ChatEntryMeta> = {};
     for (const entry of entries) {
+        dropMessagePositions(keyOf(chaId, entry.id));
         if (entry.chat) {
             chats[slot(entry.id)] = entry.chat;
             loadedKeys.add(keyOf(chaId, entry.id));
@@ -1187,6 +1235,18 @@ function loadedEntries(chats: readonly Chat[]): ChatEntry[] {
 /** The loaded chat; read-only (change it through this module). Tracked when read reactively. */
 export function findChat(ref: ChatRef): DeepReadonly<Chat> | undefined {
     return heldChat(ref);
+}
+
+/** The held row by id, read-only and tracked when read reactively. */
+export function heldMessageById(ref: ChatRef, id: string): DeepReadonly<Message> | undefined {
+    const chat = heldChat(ref);
+    return chat?.message[positionOf(keyOf(ref.chaId, ref.chatId), chat, id)];
+}
+
+/** The message's current position in the held chat, or -1 when either is absent. */
+export function messagePositionOf(ref: ChatRef, id: string): number {
+    const chat = heldChat(ref);
+    return chat ? positionOf(keyOf(ref.chaId, ref.chatId), chat, id) : -1;
 }
 
 function requireChat(ref: ChatRef): Chat {
@@ -1794,7 +1854,8 @@ function showStreamText(target: ChatRef & { messageId: string }) {
     if (mark && mark.generationId === entry.generationId && entry.seq <= mark.seq) {
         return;
     }
-    const message = heldChat(target)?.message.find((candidate) => candidate.chatId === target.messageId);
+    const chat = heldChat(target);
+    const message = chat?.message[positionOf(keyOf(target.chaId, target.chatId), chat, target.messageId)];
     if (message && message.data !== entry.text) {
         message.data = entry.text;
         changed(keyOf(target.chaId, target.chatId));
@@ -1841,7 +1902,8 @@ export function applyServerGeneration(
     if (retiredGenerations.has(update.generationId)) {
         return false;
     }
-    const message = heldChat(ref)?.message.find((entry) => entry.chatId === update.messageId);
+    const chat = heldChat(ref);
+    const message = chat?.message[positionOf(keyOf(ref.chaId, ref.chatId), chat, update.messageId)];
     if (!message) {
         return false;
     }
@@ -1906,7 +1968,7 @@ export function applyServerGenerationChunk(ref: ChatRef, jobId: string, chunk: G
     }
     // A reply-only recovery cannot install a missing message. Wait for the job's chat copy;
     // its placeholder lock will make the next chunk request the full reply once it can apply.
-    if (!heldChat(ref)?.message.some((message) => message.chatId === chunk.messageId)) {
+    if (messagePositionOf(ref, chunk.messageId) === -1) {
         return true;
     }
     const held = serverGenerations.get(messageKeyOf(ref, chunk.messageId));
@@ -2346,9 +2408,8 @@ function settleJobHydration(
             // sequence is below every protocol sequence (the first `accepted`/`chunk` fills the raw
             // buffer whatever its claim; the watermark above keeps a covering copy shown), and the
             // buffer starts as the mirror's text.
-            const message = heldChat({ chaId: server.characterId, chatId: server.id })?.message.find(
-                (candidate) => candidate.chatId === entry.messageId,
-            );
+            const chat = heldChat({ chaId: server.characterId, chatId: server.id });
+            const message = chat?.message[positionOf(key, chat, entry.messageId)];
             if (
                 message &&
                 serverGenerations.get(messageKey)?.generationId !== entry.generationId &&
@@ -2374,9 +2435,8 @@ function settleJobHydration(
                 // The copy holds this text or a later one; the stream buffer is kept for a lower claim.
                 continue;
             }
-            const message = heldChat({ chaId: server.characterId, chatId: server.id })?.message.find(
-                (candidate) => candidate.chatId === messageKey.slice(prefix.length),
-            );
+            const chat = heldChat({ chaId: server.characterId, chatId: server.id });
+            const message = chat?.message[positionOf(key, chat, messageKey.slice(prefix.length))];
             if (message) {
                 message.data = entry.text;
             }
@@ -2433,6 +2493,7 @@ function applyChatHydration(server: {
         if (keepsProjection("hypaV3Data", heldData, copy.hypaV3Data)) {
             copy.hypaV3Data = heldData;
         }
+        dropMessagePositions(key);
         holdingOf(server.characterId).chats[slot(server.id)] = copy;
     } else {
         holdingOf(server.characterId).summaries[slot(server.id)] = metaOf(server.data);
@@ -2590,6 +2651,7 @@ function installChatPatch(
     // Only the positions that changed are written (an append writes one; a removal or insertion
     // writes the positions after it), never the whole list as call arguments.
     const { start, tail } = patched;
+    dropMessagePositions(keyOf(patch.characterId, patch.id));
     for (let index = 0; index < tail.length; index++) {
         if (chat.message[start + index] !== tail[index]) {
             chat.message[start + index] = tail[index];
@@ -3219,8 +3281,8 @@ onCharacterSelectionChanged(() => loadSelectedChat());
 // ---------------------------------------------------------------------------------------------
 // Messages and metadata
 
-function indexOfMessage(chat: Chat, id: string): number {
-    return chat.message.findIndex((message) => message.chatId === id);
+function indexOfMessage(ref: ChatRef, chat: Chat, id: string): number {
+    return positionOf(keyOf(ref.chaId, ref.chatId), chat, id);
 }
 
 /** An owned copy of an anchor (a caller may reuse its object). */
@@ -3253,13 +3315,14 @@ export function appendMessage(
     } else if ("end" in anchor) {
         position = chat.message.length;
     } else {
-        const after = indexOfMessage(chat, anchor.after);
+        const after = indexOfMessage(ref, chat, anchor.after);
         if (after === -1) {
             throw new Error(`No message ${anchor.after} to insert after`);
         }
         position = after + 1;
     }
     chat.message.splice(position, 0, ...messages);
+    dropMessagePositions(keyOf(ref.chaId, ref.chatId));
     changed(keyOf(ref.chaId, ref.chatId));
     enqueueLocalEdit(ref, { op: "append", messages: clone(messages), anchor }, { absent: true });
     return messages.map((message) => message.chatId!);
@@ -3274,7 +3337,7 @@ export function appendMessage(
 export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
     const chat = requireChat(ref);
     const message = clone<Message>(input);
-    const index = indexOfMessage(chat, message.chatId!);
+    const index = indexOfMessage(ref, chat, message.chatId!);
     if (index === -1) {
         throw new Error(`No message ${message.chatId}`);
     }
@@ -3287,6 +3350,7 @@ export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
     }
     const before = { value: clone(chat.message[index]) };
     chat.message[index] = message;
+    dropMessagePositions(keyOf(ref.chaId, ref.chatId));
     changed(keyOf(ref.chaId, ref.chatId));
     enqueueLocalEdit(ref, { op: "setMessage", message: clone(message) }, before);
 }
@@ -3388,7 +3452,7 @@ export function patchMessage(
     unset: readonly string[] = [],
 ) {
     const chat = requireChat(ref);
-    const index = indexOfMessage(chat, id);
+    const index = indexOfMessage(ref, chat, id);
     if (index === -1) {
         throw new Error(`No message ${id}`);
     }
@@ -3402,7 +3466,7 @@ export function patchMessage(
 /** Sets a message's text. */
 export function setMessageText(ref: ChatRef, id: string, text: string) {
     const chat = requireChat(ref);
-    const index = indexOfMessage(chat, id);
+    const index = indexOfMessage(ref, chat, id);
     if (index === -1) {
         throw new Error(`No message ${id}`);
     }
@@ -3427,7 +3491,7 @@ export function setMessageTranslation(
     translation: DeepReadonly<MessageTranslation> | null,
 ): boolean {
     const chat = requireChat(ref);
-    const index = indexOfMessage(chat, id);
+    const index = indexOfMessage(ref, chat, id);
     if (index === -1) {
         throw new Error(`No message ${id}`);
     }
@@ -3457,7 +3521,7 @@ export function setMessageTranslation(
 /** The chat of `ref` and which of `ids` it holds; throws for a chat not held or a message locked. */
 function removalTarget(ref: ChatRef, ids: readonly string[]): { chat: Chat; present: string[] } {
     const chat = requireChat(ref);
-    const present = ids.filter((id) => indexOfMessage(chat, id) !== -1);
+    const present = ids.filter((id) => indexOfMessage(ref, chat, id) !== -1);
     assertUnlocked(ref, present);
     return { chat, present };
 }
@@ -3528,7 +3592,7 @@ async function removeAfterAsking(ref: ChatRef, ids: readonly string[]): Promise<
             return;
         }
         const chat = lifetimeOf(ref.chaId) === owner && findCharacter(ref.chaId) ? heldChat(ref) : undefined;
-        const present = chat ? ids.filter((id) => indexOfMessage(chat, id) !== -1) : [];
+        const present = chat ? ids.filter((id) => indexOfMessage(ref, chat, id) !== -1) : [];
         if (present.length === 0) {
             return;
         }
@@ -3550,12 +3614,12 @@ async function removeAfterAsking(ref: ChatRef, ids: readonly string[]): Promise<
  */
 function applyRemoval(ref: ChatRef, chat: Chat, present: readonly string[], mark: { retract?: true } = {}) {
     const removing = new Set(present);
-    const before =
-        removing.size === 1
-            ? { value: clone(chat.message.find((message) => removing.has(message.chatId!))!) }
-            : undefined;
-    const kept = chat.message.filter((message) => !removing.has(message.chatId!));
+    const positions = [...removing].map((id) => indexOfMessage(ref, chat, id));
+    const before = removing.size === 1 ? { value: clone(chat.message[positions[0]]) } : undefined;
+    const removedPositions = new Set(positions);
+    const kept = chat.message.filter((_, position) => !removedPositions.has(position));
     chat.message.splice(0, chat.message.length, ...kept);
+    dropMessagePositions(keyOf(ref.chaId, ref.chatId));
     changed(keyOf(ref.chaId, ref.chatId));
     enqueueLocalEdit(ref, { op: "remove", ids: [...removing], ...mark }, before);
 }
@@ -3587,13 +3651,13 @@ export function restoreUnsentRemoval(
     const index = entry.ops.findLastIndex(
         (op) => op.op === "remove" && op.ids.length === ids.size && op.ids.every((id) => ids.has(id)),
     );
-    const anchorIndex = anchor === null ? -1 : indexOfMessage(chat, anchor);
+    const anchorIndex = anchor === null ? -1 : indexOfMessage(ref, chat, anchor);
     if (
         index === -1 ||
         index !== entry.ops.length - 1 ||
         (anchor !== null && anchorIndex === -1) ||
         anchorIndex !== chat.message.length - 1 ||
-        messages.some((message) => indexOfMessage(chat, message.chatId!) !== -1)
+        messages.some((message) => indexOfMessage(ref, chat, message.chatId!) !== -1)
     ) {
         return false;
     }
@@ -3602,6 +3666,7 @@ export function restoreUnsentRemoval(
     const restored = clone<Message[]>(messages);
     restored.forEach((message) => dropInvalidTranslation(message));
     chat.message.push(...restored);
+    dropMessagePositions(key);
     changed(key);
     staleChats.add(key);
     if (entry.ops.length === 0 && !entry.create && !entry.resend && !inflight.has(key)) {
@@ -3981,6 +4046,7 @@ export function replaceChat(ref: ChatRef, input: DeepReadonly<Chat>) {
     delete chat.isStreaming;
     delete chat.activeStreamingDisplayOptimizationMode;
     settleHypaV3Data(keyOf(ref.chaId, ref.chatId), chat, heldChat(ref));
+    dropMessagePositions(keyOf(ref.chaId, ref.chatId));
     holdingOf(ref.chaId).chats[slot(ref.chatId)] = chat;
     changed(keyOf(ref.chaId, ref.chatId));
     enqueueLocalEdit(ref, { op: "replace", chat: sendChat(chat) });
@@ -4036,14 +4102,14 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     prepareMessages(next.message, new Set());
     for (const message of next.message) {
         // A new message may not reuse an id the chat already has.
-        if (!baseMessages.has(message.chatId!) && indexOfMessage(current, message.chatId!) !== -1) {
+        if (!baseMessages.has(message.chatId!) && indexOfMessage(ref, current, message.chatId!) !== -1) {
             message.chatId = uuidv4();
         }
     }
     const resultIds = new Set(next.message.map((message) => message.chatId!));
     const removed = baseline.chat.message
         .map((message) => message.chatId!)
-        .filter((id) => !resultIds.has(id) && indexOfMessage(current, id) !== -1);
+        .filter((id) => !resultIds.has(id) && indexOfMessage(ref, current, id) !== -1);
     const changedMessages = next.message.filter((message) => {
         const before = baseMessages.get(message.chatId!);
         return before !== undefined && JSON.stringify(before) !== JSON.stringify(message);
@@ -4057,7 +4123,7 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     const patches: { id: string; patch: MessagePatch }[] = [];
     for (const message of changedMessages) {
         const id = message.chatId!;
-        if (indexOfMessage(current, id) === -1) {
+        if (indexOfMessage(ref, current, id) === -1) {
             continue;
         }
         const beforeFields = baseMessages.get(id)! as unknown as Record<string, unknown>;
@@ -4100,7 +4166,7 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
         applyRemoval(ref, current, removed);
     }
     for (const { id, patch } of patches) {
-        const index = indexOfMessage(current, id);
+        const index = indexOfMessage(ref, current, id);
         if (index !== -1) {
             applyMessagePatch(ref, current, index, id, patch);
         }
@@ -4112,12 +4178,12 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
             const anchor: MessageAnchor =
                 previous === null
                     ? { start: true }
-                    : indexOfMessage(current, previous) !== -1
+                    : indexOfMessage(ref, current, previous) !== -1
                       ? { after: previous }
                       : { end: true };
             appendMessage(ref, message, { anchor });
         }
-        if (indexOfMessage(current, id) !== -1) {
+        if (indexOfMessage(ref, current, id) !== -1) {
             previous = id;
         }
     }
@@ -4379,6 +4445,7 @@ export function assembleChats(
     for (const key of Object.keys(held)) {
         delete held[key];
     }
+    for (const key of messagePositions.keys()) dropMessagePositions(key);
     loadedKeys.clear();
     pins.clear();
     lastUse.clear();
@@ -4857,6 +4924,7 @@ export function normalizeNewCharacter(chaId: string) {
         insertChat(chaId, 0, { id: uuidv4(), message: [], note: "", name: "Chat 1", localLore: [] });
     }
     for (const chat of chatsOf(chaId)) {
+        dropMessagePositions(keyOf(chaId, chat.id!));
         prepareChatInput(chat, character);
         chat.message ??= [];
         prepareMessages(chat.message, new Set());
@@ -5503,6 +5571,7 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
     }
     const ref = { chaId: group.characterId, chatId: group.chatId };
     const chat = heldChat(ref);
+    dropMessagePositions(group.key);
     const firstRename = new Map([...renames].map(([id, values]) => [id, values[0]]));
     if (chat) {
         for (const message of chat.message) {
@@ -6030,6 +6099,7 @@ function applyRemoteChat(server: RemoteChat) {
         } else if (!isMember(ref)) {
             insertSummary(server.characterId, memberIds(server.characterId).length, server.id, metaOf(server.data));
         } else if (isLoaded(ref)) {
+            dropMessagePositions(key);
             holdingOf(server.characterId).chats[slot(server.id)] = server.data;
         } else {
             holdingOf(server.characterId).summaries[slot(server.id)] = metaOf(server.data);
@@ -7082,6 +7152,7 @@ function installRead(
     } else {
         staleChats.delete(key);
     }
+    dropMessagePositions(key);
     holding.chats[slot(id)] = chat;
     delete holding.summaries[slot(id)];
     loadedKeys.add(key);
@@ -7224,6 +7295,7 @@ export function trimLoadedChats() {
             const [chaId, id] = key.split("\u0000");
             const ref = { chaId, chatId: id };
             if (!heldChat(ref) || !isMember(ref)) {
+                dropMessagePositions(key);
                 loadedKeys.delete(key);
                 continue;
             }
@@ -7238,6 +7310,7 @@ export function trimLoadedChats() {
         for (const { chaId, id } of candidates.slice(0, candidates.length - MAX_LOADED_CHATS)) {
             const holding = holdingAt(chaId)!;
             holding.summaries[slot(id)] = metaOf(holding.chats[slot(id)]);
+            dropMessagePositions(keyOf(chaId, id));
             delete holding.chats[slot(id)];
             loadedKeys.delete(keyOf(chaId, id));
         }

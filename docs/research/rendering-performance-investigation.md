@@ -100,6 +100,16 @@ This is a development-module measurement with synthetic back-to-back calls, not 
 
 **Acceptance evidence.** A deterministic test should count message visits for updates to the tail of short and long histories, including multiple updates before a frame and a chat replacement between updates. A production trace should then compare equal incoming update rates at 2,000 and 10,000 messages with the same visible window.
 
+**After (2026-11-05).** The [Incremental Chat Transport plan](../plan/incremental-chat-transport.md) D1 landed: by-id lookups in the chat store, `heldMessage` and `activeStreamingIndex` go through `positionOf`, a lazily built per-chat position map that validates each hit by row id and is dropped on structural changes. `src/ts/storage/tests/chatStore.test.ts` ("message positions") counts index builds through `messagePositionStats`. The same F1 evaluate body, before (base code) and after, on one machine (Chrome 156, development modules):
+
+| Loaded messages | Before: median per 200 updates (min–max) | After: median per 200 updates (min–max) |
+| --------------: | ---------------------------------------: | --------------------------------------: |
+|             100 |                        7.2 ms (6.2–10.1) |                        0.6 ms (0.4–1.9) |
+|           2,000 |                   125.8 ms (115.2–147.7) |                        0.6 ms (0.6–0.7) |
+|          10,000 |             1,290.9 ms (1,200.3–1,365.6) |                        0.5 ms (0.4–0.7) |
+
+`measureChats.mjs` on the production build (`LONG_MESSAGES=2000` and `10000`, `CHUNKS=200`, `CHUNK_MS=20`; a temporary copy with an 11 s settle after seeding and between boots, because the committed driver trips automatic safe boot, as described below), streaming into Long with about 2,000 rows mounted. At 2,000 messages, before and after match (frame p95 16.8 ms both; one trim long task of 147 vs 118 ms). At 10,000 messages, three runs each: before, frame p95 66.7, 33.4 and 150 ms, long tasks 233, 187 and 1,897 ms in all; after, frame p95 16.8 ms in all three, long tasks 407, 193 and 435 ms (mostly the trim task at send). One whole stream into the 10,000-message chat counted 5 index builds and about 415 lookups. Time to first word dominates the stream's duration and varies between runs, so the frame count is not a duration comparison. The scrolled-up check fails in every run, before and after, from the harness's `scrollTop`-only input (below).
+
 ## F2. Stylesheet sharing occurs after repeated CSS preparation
 
 **Evidence.** [parser.svelte.ts](../../src/ts/parser/parser.svelte.ts) `decodeStyleContent`, lines 1269–1285, performs the following for every encoded style restored by a row:

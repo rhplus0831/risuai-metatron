@@ -88,6 +88,9 @@ entrypoint's comment.
 
 ### By-id ops
 
+- By-id reads and writes use `positionOf`'s lazy per-chat message index; `heldMessageById` and `messagePositionOf` share
+  it with translation and the transcript. A hit validates the row id; a miss or mismatch rebuilds once.
+- Structural paths drop the chat's map through `dropMessagePositions`; validation keeps stale positions safe.
 - Which ops apply on a stale revision and which need the current one is the `ChatOp` contract in `shared/chats.ts`,
   enforced by the server ([chat writes](server-resources.md#chat-writes-and-checkpoints)) and the
   [restore floor](#restore-floor). A `remove` may carry `retract`,
@@ -147,6 +150,8 @@ entrypoint's comment.
 
 ### Job chunks
 
+- Generation updates, frame flushes, and job hydration share the [by-id index](#by-id-ops): hits check the row id,
+  misses or mismatches rebuild once. Streaming text shares one build; structural paths call `dropMessagePositions`.
 - A chunk (`GenerationChunkEvent` in `shared/jobs.ts`) that `applyServerGenerationChunk` cannot apply asks
   `{ type: "resyncReply" }` once per follow until an `accepted` arrives or the follow ends
   (`network/generationJobs.ts`); the job answers only its current full-text `accepted` while live with a message id,

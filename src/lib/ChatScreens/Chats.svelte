@@ -11,6 +11,7 @@
         currentChatRef,
         isMessageLocked,
         isMessageStreamed,
+        messagePositionOf,
         selectedChatId,
         streamingEntry,
     } from "src/ts/storage/chatStore.svelte";
@@ -786,11 +787,14 @@
         }
     }
 
-    // Cache the id scan independently of the window/reload/context diff. Text is never an input.
+    // Track the array independently of the window/reload/context diff. Text is never an input.
     const activeStreamingIndex = $derived.by(() => {
+        void messages.length;
         const chatId = selectedChatId(currentCharacter.chaId);
         const entry = chatId === null ? null : streamingEntry({ chaId: currentCharacter.chaId, chatId });
         if (entry === null || entry.mode === "off") return -1;
+        const position = messagePositionOf({ chaId: currentCharacter.chaId, chatId }, entry.messageId);
+        if (messages[position]?.chatId === entry.messageId) return position;
         return messages.findIndex((message) => message.chatId === entry.messageId);
     });
 
