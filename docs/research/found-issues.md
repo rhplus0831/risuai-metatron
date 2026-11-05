@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (8)
-- [Client and plugins](#client-and-plugins) (23)
+- [Client and plugins](#client-and-plugins) (22)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
@@ -383,14 +383,6 @@ The document click listener `close` in `src/lib/UI/PopupList.svelte` (~33) clear
 **Why it matters:** a visible glitch on every `PopupButton` menu (character and chat menus) after an outside-click close.
 
 **Suggested handling:** confirm in `pnpm dev:agent`, then reset `openId` in `close` (or compare against `children` too).
-
-### CBS highlighting stops after the 255th character
-
-`src/ts/gui/highlight.ts` `simpleCBSHighlightParser` keeps each `{{` start offset in `depthStarts = new Uint8Array(100)` (~349), so an offset past 255 wraps: a CBS call after the 255th character of an editor's text is not highlighted, or is highlighted in the wrong place. Reproduced with a probe in the Guides To Source run (2026-11-05): `{{char}}` alone highlights, the same after 300 `x` does not. Owner: cbs-rendering; not yet in its Known Hazards.
-
-**Why it matters:** every long prompt or lorebook editor loses CBS highlighting past the first ~255 characters.
-
-**Suggested handling:** use an `Int32Array` or a plain array, and add a `highlight.ts` test (the file has none).
 
 ### util and globalApi helper gaps
 
