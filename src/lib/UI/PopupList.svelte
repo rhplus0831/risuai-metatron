@@ -4,9 +4,8 @@
     import { onDestroy, onMount } from "svelte";
 
     /**
-     * The fixed-position host of `popupStore`'s menu, mounted by `src/App.svelte` while the store holds one. It closes
-     * on the next document click; its listener is added after a zero-delay timer, so the click that opened it does
-     * not close it.
+     * The fixed-position menu host mounted by `src/App.svelte`. The next document click clears both `children`
+     * and `openId`; the listener is deferred so the opening click does not close the menu.
      */
 
     let styleString = $derived.by(() => {
@@ -31,6 +30,7 @@
 
     const close = () => {
         popupStore.children = null;
+        popupStore.openId = 0;
     };
 
     onMount(async () => {
