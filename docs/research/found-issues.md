@@ -9,12 +9,12 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (7)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
-- [Server routes and resource store](#server-routes-and-resource-store) (2)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (6)
+- [Server routes and resource store](#server-routes-and-resource-store) (1)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (2)
 - [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (12)
+- [Client and plugins](#client-and-plugins) (9)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (13)
 - [Guides](#guides) (7)
 - [Test timing](#test-timing) (1)
@@ -104,14 +104,6 @@ These client exports have no caller in `src/`, `shared/` or `server/`, while a s
 
 **Suggested handling:** delete them in a cleanup; `vi.mock("./process/inlayScreen")` in tests mocks only `updateInlayScreen`.
 
-### Server chat template comment narrows when it throws
-
-`server/src/llm/chatTemplate.ts` (~6–8) says a template that names the character with none selected throws, but `renderChatTemplate` in `shared/prompt/chatTemplate.ts` (~106) reads `characterName()` and `userName()` on every render, so with no character it throws whatever the template text. The client wrapper's comment (`src/ts/process/templates/chatTemplate.ts`) was corrected in the Guides To Source run (2026-11-04); this one was left. Owner: llm-requests.
-
-**Why it matters:** a source comment that is the file's contract states a narrower rule than the code.
-
-**Suggested handling:** fix the comment at the next edit of the file.
-
 ### `{{// ...}}` stays literal in rendered and prompt text
 
 `shared/cbs/registry.ts` registers `//` (~2483) as `doc_only`, so `shared/cbs/evaluator.ts`'s matcher finds no callback and `{{// note}}` is left in the text of any parse; the evaluator's `commentMode` (~793) is never set true. Only `shared/lore/activation.ts` strips `{{//...}}`, from lore key matching. Upstream behaves the same. Found in the Guides To Source run (2026-11-05), whose old guide claimed the scanner handles comments; intent unrecorded. Owner: cbs-rendering.
@@ -137,14 +129,6 @@ These client exports have no caller in `src/`, `shared/` or `server/`, while a s
 **Suggested handling:** write a nested-loop trigger test first; if it fails, match the break's indent the way the loop jump does.
 
 ## Server routes and resource store
-
-### The LLM answer route comment names one 404 and no cap
-
-The comment above `registerLlmRoutes` in `server/src/routes/llm.ts` (~236) says `POST /api/llm/request/:id/answer` is 404 "for an unknown request" and the request route 429 "past the per-client cap". In code, `answer` in `server/src/llm/requests.ts` also gives 404 for another client's request and for one that has ended, and the cap is `MAX_REQUESTS_PER_CLIENT` (32, ~40). Found in the Guides To Source run (2026-11-05); server-generation's guide keeps both facts in its LLM and token routes entry because llm-requests owns the file.
-
-**Why it matters:** a later trim of that guide entry would leave the narrower comment as the only statement.
-
-**Suggested handling:** at the next llm-requests edit, extend the comment and let server-generation's entry point there.
 
 ### The change log's bound is a row count, not 4 MB
 
@@ -264,18 +248,6 @@ About 11 test files mock `src/ts/rpack/rpack_js.js` with a comment that the real
 **Why it matters:** an author told to use a header cannot find it in the author guide.
 **Suggested handling:** add both headers to `plugins.md` with their parsing rules.
 
-### saveSecretHeader's declaration describes a feature that does nothing
-
-`src/ts/plugins/apiV3/risuai.d.ts` (~1633) tells plugin authors to save a header with `saveSecretHeader` and use it
-through `{ secretHeader: 'Header-Name' }` in `nativeFetch`'s headers. The host's `saveSecretHeader`
-(`src/ts/plugins/apiV3/v3.svelte.ts` ~2581) only logs a not-implemented warning and stores nothing, and `nativeFetch`
-has no `secretHeader` branch (`new Headers(options.headers ?? {})` would stringify the object). The declared
-`(key, prefix, value)` also differs from the implemented `(key, value)` (`plugins-mcp.md` notes the arity only). The
-declaration comes from upstream. Found by the stale-comment sweep of 2026-11-03.
-
-**Why it matters:** a plugin author following the declaration gets a request without the header and no error.
-**Suggested handling:** decide whether to keep upstream's declaration; if not, mark the API as not implemented there.
-
 ### Stop B leftovers
 
 Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until 2026-11-03; re-checked by identifier that day.
@@ -307,22 +279,6 @@ Three helpers misbehave on inputs no current caller is known to pass. Probed by 
 **Why it matters:** an image rendered from such a URL is broken until a reload.
 
 **Suggested handling:** reproduce with a lost controller and a cached entry, then check `navigator.serviceWorker.controller` before returning a `/sw/img` URL.
-
-### blockPlugins misses the legacy plugin format
-
-`src/ts/process/request/request.ts:647` refuses a `blockPlugins` request only when `targ.modelInfo.id` starts with `pluginmodel:::`. The legacy `custom` model ("Plugin Legacy", `LLMFormat.Plugin`, `shared/llm/models.ts` ~549) and a reverse-proxy profile whose `customAPIFormat` is the Plugin format pass and reach `requestPlugin`, which calls `currentPluginProvider`. So a v3 plugin's `runLLMModel` without `allowPlugins` can still invoke a plugin provider. Found by a control-flow probe in the Guides To Source run (2026-11-05), not an app run. Owner: llm-requests; plugin-sandbox's `runLLMModel` comment states the prefix-only scope.
-
-**Why it matters:** `blockPlugins` reads as "no plugin provider", and a provider re-entered from another plugin's call can recurse or surprise permissions.
-
-**Suggested handling:** check `LLMFormat.Plugin` after model resolution instead of the id prefix, with a test through `requestChatData`.
-
-### Custom models cannot set poolSupported
-
-The flag buttons of `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte` (~183–204) cover every `LLMFlags` value except `poolSupported` (11, `shared/llm.ts`), so an `xcustom:::` model can never declare it; llm-requests' Known Hazards bullet on missing options lists formats and tokenizers but not this flag. Found in the Guides To Source run (2026-11-05); intent unrecorded. Owner: llm-requests.
-
-**Why it matters:** a custom endpoint that supports pooling cannot say so, and the hazard list reads as complete.
-
-**Suggested handling:** confirm whether the flag is meant for custom models, then add the button or the hazard clause.
 
 ### getFileSrc never rejects, so asset reads are never retried
 
