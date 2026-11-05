@@ -40,6 +40,8 @@ export type EventSockets = ReturnType<typeof createEventSockets>;
  * A text `register` message sets this socket's presence. The newest registration per client id wins;
  * names use at most 64 UTF-16 units and the list keeps the newest 64 clients. Join, leave and change
  * publish the list through the same queue as feed events. Unregistered sockets still receive everything.
+ * `clientName` reads the newest registration for any client id, including those outside the published
+ * list; an empty name or no registration returns undefined, without falling back to an older name.
  * A client reconciles from its advertised map when the digest matches, otherwise from a log replay or
  * a fetched revision listing.
  * A failed `digest` logs only the error name (or the type of a non-Error throw) and omits only that
@@ -287,6 +289,17 @@ export function createEventSockets(options: {
 
     return {
         handleUpgrade,
+
+        /**
+         * The newest registration's name for this client id, read synchronously without the published
+         * list's cap. No registration or an empty newest name returns undefined, never an older name.
+         */
+        clientName(clientId: string): string | undefined {
+            for (const client of [...registrations.values()].reverse()) {
+                if (client.clientId === clientId) return client.name || undefined;
+            }
+            return undefined;
+        },
 
         /** How many clients are connected (tests). */
         size(): number {

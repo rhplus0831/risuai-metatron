@@ -404,7 +404,9 @@ export function registerGenerationRoutes(
 
     /**
      * POST GenerationTakeoverBody { clientId } with x-resource-epoch: 200 { ticket }, valid for
-     * one socket attach. 400 invalid clientId; 404 unknown job; 412 another epoch;
+     * one socket attach. The current owner can claim an eligible offer to reattach and replay its
+     * requests; another client waits as a pending viewer until a safe ownership switch.
+     * 400 invalid clientId; 404 unknown job; 412 another epoch;
      * 409 no open offer, another target, a reserved takeover, an ended job, or shutdown/maintenance.
      */
     app.post("/api/generations/:id/takeover", limiter, async (c) => {

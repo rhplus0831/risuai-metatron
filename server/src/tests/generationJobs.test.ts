@@ -92,7 +92,13 @@ afterEach(async () => {
  * job's own bookkeeping ran (a `CommittedWriteError`).
  */
 function setup(
-    options: { feed?: boolean; failCommitted?: { current: boolean }; now?: () => number; receipts?: boolean } = {},
+    options: {
+        feed?: boolean;
+        failCommitted?: { current: boolean };
+        now?: () => number;
+        receipts?: boolean;
+        clientName?: (clientId: string) => string | undefined;
+    } = {},
 ) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-generation-jobs-"));
     const lock = createGenerationLock();
@@ -141,6 +147,7 @@ function setup(
         hub: createChannelHub({ now: options.now }),
         receipts,
         publishHandoff: (event) => handoffs.push(event),
+        clientName: options.clientName,
     });
     cleanups.push(async () => {
         jobs.beginShutdown();
@@ -1506,9 +1513,15 @@ describe("generation ownership handoffs", () => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         vi.setSystemTime(0);
     };
-    async function live(options: { preferred?: boolean; receipts?: boolean } = {}) {
+    async function live(
+        options: {
+            preferred?: boolean;
+            receipts?: boolean;
+            clientName?: (clientId: string) => string | undefined;
+        } = {},
+    ) {
         clock();
-        const s = setup({ now: () => Date.now(), receipts: options.receipts });
+        const s = setup({ now: () => Date.now(), receipts: options.receipts, clientName: options.clientName });
         const entered = withResolvers<RunningJob>();
         const finish = withResolvers<void>();
         const completed = s.run(async (job) => {
@@ -1581,6 +1594,120 @@ describe("generation ownership handoffs", () => {
         await h.follow(h.job.id);
         expect(h.jobs.handoffSnapshot()).toEqual([]);
         expect(h.handoffs.at(-1)).toEqual({ type: "handoff", ...offer, state: "closed" });
+    });
+
+    it("reattaches the current owner through its absent offer and replays outstanding callbacks in order", async () => {
+        const h = await live();
+        const old = await h.follow(h.job.id, "tab", "&liveness=1");
+        await old.fence();
+        await vi.advanceTimersByTimeAsync(10_000);
+        const root = h.job.channel.callback("editoutput", { text: "root" });
+        await old.until((events) => callbacks(events).length === 1);
+        const rootId = callbacks(old.events)[0].id;
+        const child = h.job.channel.callback("editoutput", { text: "child" }, { parentId: rootId });
+        await old.until((events) => callbacks(events).length === 2);
+        const childId = callbacks(old.events)[1].id;
+
+        // Silence removes the owner at 45 seconds; its absent offer opens ten seconds later.
+        await vi.advanceTimersByTimeAsync(45_000);
+        expect(h.job.ownerAttached()).toBe(false);
+        expect(h.jobs.handoffSnapshot()).toEqual([expect.objectContaining({ reason: "absent", state: "open" })]);
+        const ticket = h.ticket("tab");
+        const returned = await h.follow(h.job.id, "tab", `&ticket=${ticket}`);
+        await returned.fence();
+        expect(roles(returned.events)).toEqual([{ type: "handoff", epoch: h.store.epoch(), owner: "self" }]);
+        expect(h.job.ownerAttached()).toBe(true);
+        expect(h.jobs.handoffSnapshot()).toEqual([]);
+        expect(callbacks(returned.events)).toMatchObject([
+            { id: rootId, name: "editoutput", payload: { text: "root" }, replay: true },
+            { id: childId, name: "editoutput", payload: { text: "child" }, replay: true },
+        ]);
+        await old.closed;
+        await answer(returned, childId, "child resumed");
+        await answer(returned, rootId, "root resumed");
+        expect(await child).toEqual({ outcome: "answered", value: "child resumed" });
+        expect(await root).toEqual({ outcome: "answered", value: "root resumed" });
+        await vi.advanceTimersByTimeAsync(10_001);
+        expect(h.jobs.handoffSnapshot()).toEqual([]);
+        expect(h.jobs.status(h.job.id, "tab")).toMatchObject({ state: "running" });
+    });
+
+    it("reattaches a reloaded worker owner through its absent offer", async () => {
+        const h = await live({ preferred: true });
+        const worker = await h.take();
+        await worker.fence();
+        const pending = h.job.channel.callback("editoutput", { text: "before reload" });
+        await worker.fence();
+        const id = callbacks(worker.events)[0].id;
+        await worker.close();
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(h.jobs.handoffSnapshot()).toEqual([expect.objectContaining({ reason: "absent", state: "open" })]);
+
+        const reloaded = await h.take("worker");
+        await reloaded.fence();
+        expect(roles(reloaded.events)).toEqual([{ type: "handoff", epoch: h.store.epoch(), owner: "self" }]);
+        expect(h.job.ownerAttached()).toBe(true);
+        expect(h.jobs.handoffSnapshot()).toEqual([]);
+        expect(callbacks(reloaded.events)).toMatchObject([{ id, payload: { text: "before reload" }, replay: true }]);
+        await answer(reloaded, id, "resumed after reload");
+        expect(await pending).toEqual({ outcome: "answered", value: "resumed after reload" });
+        expect(h.jobs.status(h.job.id, "worker")).toMatchObject({ state: "running", handedOff: true });
+        expect(h.offer("worker", "worker")).toEqual({ ok: false, status: 409, body: { error: "alreadyOwner" } });
+    });
+
+    it("names the current owner on self, viewer and pending roles and names the new owner after switching", async () => {
+        const names = new Map([
+            ["tab", "Creator"],
+            ["worker", "Desk worker"],
+        ]);
+        const h = await live({ preferred: true, clientName: (id) => names.get(id) });
+        const worker = await h.take();
+        await worker.fence();
+        const role = { type: "handoff", epoch: h.store.epoch(), clientName: "Desk worker" };
+        expect(roles(worker.events)).toEqual([{ ...role, owner: "self" }]);
+        const viewer = await h.follow(h.job.id, "tab", "&role=viewer");
+        await viewer.fence();
+        expect(roles(viewer.events)).toEqual([{ ...role, owner: "other" }]);
+
+        const pending = h.job.channel.callback("editoutput", { text: "worker's outstanding work" });
+        await worker.fence();
+        const id = callbacks(worker.events)[0].id;
+        await worker.close();
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(h.jobs.handoffSnapshot()).toEqual([expect.objectContaining({ reason: "absent", state: "open" })]);
+        // The creator is a different client from the current owner, so reclaiming still waits.
+        const creator = await h.take("tab");
+        await creator.fence();
+        expect(roles(creator.events)).toEqual([{ ...role, owner: "other", pending: true }]);
+        expect(callbacks(creator.events)).toEqual([]);
+
+        const returnedWorker = await h.follow(h.job.id, "worker");
+        await returnedWorker.fence();
+        expect(roles(returnedWorker.events)).toEqual([{ ...role, owner: "self" }]);
+        await answer(returnedWorker, id, "worker finished");
+        expect(await pending).toEqual({ outcome: "answered", value: "worker finished" });
+        await vi.advanceTimersByTimeAsync(0);
+        await creator.fence();
+        await returnedWorker.fence();
+        expect(roles(creator.events).at(-1)).toEqual({ ...role, owner: "self", clientName: "Creator" });
+        expect(roles(returnedWorker.events).at(-1)).toEqual({ ...role, owner: "other", clientName: "Creator" });
+    });
+
+    it.each([
+        { label: "no lookup", clientName: undefined },
+        { label: "unknown owner", clientName: () => undefined },
+        { label: "empty name", clientName: () => "" },
+        {
+            label: "throwing lookup",
+            clientName: () => {
+                throw new Error("presence unavailable");
+            },
+        },
+    ])("still sends an unnamed role with $label", async ({ clientName }) => {
+        const h = await live({ clientName });
+        const owner = await h.follow(h.job.id);
+        await owner.fence();
+        expect(roles(owner.events)).toEqual([{ type: "handoff", epoch: h.store.epoch(), owner: "self" }]);
     });
 
     it("binds one-use tickets to the job and client, reopens expired offers, and refuses ended or shutting-down jobs", async () => {

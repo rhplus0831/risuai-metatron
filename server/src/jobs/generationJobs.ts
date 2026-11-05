@@ -784,6 +784,8 @@ export function createGenerationJobs(options: {
     handoffTicketMs?: number;
     /** Publishes content-free open/closed offers to the live-update feed. */
     publishHandoff?: (event: { type: "handoff" } & HandoffOffer) => void;
+    /** Synchronous current-owner name lookup for role events; missing, empty or throwing lookups omit the name. */
+    clientName?: (clientId: string) => string | undefined;
     /** Clock for job timestamps, owner liveness, channel deadlines and identity retention (defaults to Date.now). */
     now?: () => number;
 }) {
@@ -937,11 +939,22 @@ export function createGenerationJobs(options: {
         return false;
     }
 
+    /**
+     * Every socket sees the current owner's name, including self and pending viewers before promotion.
+     * The synchronous presence lookup is best effort: an unavailable name never delays or prevents a role event.
+     */
     function roleEvent(job: Job, ws: WebSocket): GenerationEvent {
+        let clientName: string | undefined;
+        try {
+            clientName = options.clientName?.(job.ownerClientId);
+        } catch {
+            // Presence lookup failure must not interfere with ownership or callback delivery.
+        }
         return {
             type: "handoff",
             epoch: job.epoch,
             owner: job.sockets.has(ws) ? "self" : "other",
+            ...(typeof clientName === "string" && clientName ? { clientName } : {}),
             ...(job.pendingTakeover?.ws === ws ? { pending: true as const } : {}),
         };
     }
@@ -2393,8 +2406,11 @@ export function createGenerationJobs(options: {
 
     /**
      * Every attach begins with its role and a chat copy shared by all sockets, keeping one baseline.
-     * Ordinary reconnects replace only this client's sockets. Only an owner attach clears absence
-     * and replays requests; a ticket attaches as a pending viewer until a safe boundary promotes it.
+     * Reconnects replace only this client's sockets. A ticket is consumed on attach: the current
+     * owner's ticket reattaches it as owner, without a pending takeover or deferred transfer, even
+     * with role=viewer. Owner attaches clear absence, close an absent offer and replay outstanding
+     * requests in their original order. Another client's ticket attaches as a pending viewer until
+     * a safe boundary promotes it, including a creator taking back a worker's job.
      * Viewers accept only chat/reply resync; pings reach them but their silence does not affect work.
      * `takesStreamedRows` advertises `rows=streamed`, independently of callback hydration. Record
      * it and the optional protocol number before building the snapshot; log the number, never enforce it.
@@ -2413,11 +2429,14 @@ export function createGenerationJobs(options: {
         const deliveredBeforeExpiry = job.channelLink.hasDeliveredRequests();
         expireSilentOwners(job);
         job.channelLink.expireOverdue();
+        const takingOver = !!ticket && clientId !== job.ownerClientId;
         if (ticket) {
             if (ticket.timer) clearTimeout(ticket.timer);
             job.ticket = null;
-            job.pendingTakeover = { clientId, ws, offer: ticket.offer };
-            job.channelLink.deferTransfer(true);
+            if (takingOver) {
+                job.pendingTakeover = { clientId, ws, offer: ticket.offer };
+                job.channelLink.deferTransfer(true);
+            }
         }
         for (const old of allSockets(job)) {
             if (socketClients.get(old) !== clientId) continue;
@@ -2431,7 +2450,7 @@ export function createGenerationJobs(options: {
         if (takesStreamedRows) streamedRows.add(ws);
         socketFlags.set(ws, { proto });
         console.info(`[Generation socket] proto=${proto ?? "none"}`);
-        const owner = !ticket && !viewer && clientId === job.ownerClientId;
+        const owner = (!!ticket || !viewer) && clientId === job.ownerClientId;
         (owner ? job.sockets : job.viewers).add(ws);
         if (owner) {
             job.ownerAbsentSince = null;
@@ -2448,8 +2467,8 @@ export function createGenerationJobs(options: {
             if (current) events.push(current);
             for (const event of events) sendSocket(job, ws, JSON.stringify(event));
         };
-        const switched = !!ticket && !deliveredBeforeExpiry && switchOwner(job, snapshot);
-        if (ticket && !switched) scheduleSwitch(job);
+        const switched = takingOver && !deliveredBeforeExpiry && switchOwner(job, snapshot);
+        if (takingOver && !switched) scheduleSwitch(job);
         if (!switched) {
             sendSocket(job, ws, JSON.stringify(roleEvent(job, ws)));
             deliverJobChat(job, job.ended ? "whole" : "patch");
@@ -2657,7 +2676,7 @@ export function createGenerationJobs(options: {
         const job = participantJob(jobId, body.clientId);
         if (!job || job.epoch !== store.epoch())
             return { ok: false, status: 404, body: { error: "Generation not found" } };
-        // A ticket attach by the current owner would supersede its own callback-answering socket.
+        // A targeted handoff must name a different owner; open offers also let the owner reattach.
         if (body.target === job.ownerClientId) return { ok: false, status: 409, body: { error: "alreadyOwner" } };
         expireTicket(job);
         if (!canHandoff(job) || job.ticket || job.pendingTakeover)
@@ -2666,6 +2685,11 @@ export function createGenerationJobs(options: {
         return { ok: true, body: { offered: true } };
     }
 
+    /**
+     * Reserves an open offer for its eligible caller, including the current owner, with a one-use
+     * ticket. Attach consumes it: the current owner reconnects and replays its requests; another
+     * client waits as a pending viewer until the old owner's delivered requests settle.
+     */
     function takeover(
         jobId: string,
         body: GenerationTakeoverBody,

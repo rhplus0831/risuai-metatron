@@ -392,6 +392,7 @@ export function createServerContext(options: {
         diagnostics,
         receipts: generationReceipts,
         publishHandoff: (event) => changeFeed.publish(event),
+        clientName: (clientId) => eventSockets.clientName(clientId),
         abortGraceMs: options.generationAbortGraceMs,
         ownerAbsentMs: options.generationOwnerAbsentMs,
         ownerSilentMs: options.generationOwnerSilentMs,

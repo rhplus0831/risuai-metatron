@@ -594,12 +594,8 @@ try {
         await request(f);
         await role(B, f, "self");
         const viewing = await role(A, f, "other");
-        await toast(
-            A,
-            viewing.clientName
-                ? language.serverJob.handoff.takenBy.replace("{name}", viewing.clientName)
-                : language.serverJob.handoff.takenByOther,
-        );
+        assert.equal(viewing.clientName, B.tab);
+        await toast(A, language.serverJob.handoff.takenBy.replace("{name}", B.tab));
         (await providerCall(f)).chunk("viewer update ");
         await until("creator receives stream as viewer", () =>
             events(A, f).some((e) => e.type === "chunk" && e.at >= viewing.at),

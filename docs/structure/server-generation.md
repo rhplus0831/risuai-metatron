@@ -53,8 +53,7 @@ body, answer and statuses are the comment above its registration. "+ epoch" is t
   ([Chat-slot lookup and stop](#chat-slot-lookup-and-stop)). `POST /api/generations/cancel` + epoch: by `requestId`,
   whatever the owner.
 - `GET` and `DELETE /api/generations/:id`, `POST /api/generations/:id/memory-stop` + epoch, and
-  `POST /api/generations/:id/drained` (`ChannelDrainedBody`): scoped by `clientId` ([Job handoff](#job-handoff)); a
-  status read after the 60 s grace answers from the [kept outcome](#process-memory).
+  `POST /api/generations/:id/drained` (`ChannelDrainedBody`): scoped by `clientId` ([Job handoff](#job-handoff)).
 - `POST /api/generations/:id/handoff` and `/takeover` + epoch: [Job handoff](#job-handoff).
 - WS upgrade `/api/generations/:id/ws?clientId=&attach=&liveness=&hydration=&role=&ticket=&rows=&proto=`
   (`handleUpgrade`): JWT in the `risu-auth` query or header, no HTTP limiter; the job's `GenerationEvent` stream
@@ -145,10 +144,8 @@ refusal the memory step recovered from or outlived replaces no later error.
 
 ### Chat-slot lookup and stop
 
-`current` reads the chat slot (`chatSlots`) without attaching; `stop` aborts only the confirmed job id, and after 409
-`jobChanged` the tab looks the replacement up and confirms it again. The first stop's client (a participant's `DELETE`
-too) is attributed: `abortedBy: "other"` for the other participants (`projectTerminal`), `stoppedBy: "otherClient"` on
-the diagnostic end when it is not the creator; `stop`'s comment holds the rest.
+`current` reads the chat slot (`chatSlots`) without attaching; `stop` aborts only the confirmed job id. The first stop's
+client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the rules and the `jobChanged` retry.
 
 ### Generation channels
 
@@ -205,7 +202,8 @@ Rules: the comments of `participantJob`, `attach`, `switchOwner`, `takeover`, `a
 - A job keeps its creator (`clientId`: receipts, `owned`, device notices) and gains a current owner (`ownerClientId`:
   callbacks, lanes). Only owner sockets answer and count for `ownerAttached` (MCP included).
 - Offers go on the live-update feed (`HandoffOffer`). A ticketed attach takes one; the switch waits until nothing
-  delivered to the old owner is outstanding, and the old owner's sockets become viewers.
+  delivered to the old owner is outstanding, and the old owner's sockets become viewers. The owner's own ticket only
+  reattaches it. Role events carry the owner's registered name (`clientName`).
 - `skipped` reaches only the late-replay recipient; `done.missed` lists delivered `chatOutput` callbacks that settled
   `disconnected`.
 
@@ -320,6 +318,8 @@ Runtime limits of other subsystems live with their owners: [chat-pipeline](chat-
   shows `serverJob.endedAway` when no outcome receipt remains. Decision: Job Protocol D1, archive.
 - A callback delivered to an owner whose device then sleeps is not handed over; `handoff: "prefer"` only opens an offer.
   Decision: Job Handoff Q4, archive.
+- A callback cancelled before a switch can still run its hook on the old tab, writes included, beside the worker's next
+  callback: the drain hold (`holdDraining`) keeps only the old lane. Decision: Found Issues Sweep Q5.
 - An `absent` offer leaves a worker 50 s before the job's first undelivered callback expires, but a queued root that
   another job's expired root settles `disconnected` (the cascade in `createChannelHub`) can end sooner. Decision: Job
   Handoff D3.

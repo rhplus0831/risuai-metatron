@@ -899,7 +899,48 @@ describe("createEventSockets", () => {
         }
     });
 
-    it("caps presence snapshots at 64 registered clients in broadcasts and hello", async () => {
+    it("resolves the newest live registration's name, including re-registration, empty names and departure", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+        const { sockets, url } = await host(async () => true);
+        const first = connect(url);
+        const second = connect(url);
+        const observer = connect(url);
+        const clients = [first, second, observer];
+        try {
+            for (const client of clients) await frameAt(client, 0);
+            expect(sockets.clientName("desk")).toBeUndefined();
+            const register = async (client: Client, name: string) => {
+                client.ws.send(JSON.stringify({ type: "register", clientId: "desk", name, worker: true }));
+                await delivered(client);
+                await delivered(observer);
+            };
+            await register(first, "First");
+            expect(sockets.clientName("desk")).toBe("First");
+            expect(sockets.clientName("unknown")).toBeUndefined();
+            await register(second, "Second");
+            expect(sockets.clientName("desk")).toBe("Second");
+            await register(first, "Renamed");
+            expect(sockets.clientName("desk")).toBe("Renamed");
+            await register(first, "");
+            expect(sockets.clientName("desk")).toBeUndefined();
+
+            let nextFrame = observer.frames.length;
+            first.ws.close();
+            await first.closed;
+            await frameAt(observer, nextFrame);
+            expect(sockets.clientName("desk")).toBe("Second");
+            nextFrame = observer.frames.length;
+            second.ws.close();
+            await second.closed;
+            await frameAt(observer, nextFrame);
+            expect(sockets.clientName("desk")).toBeUndefined();
+        } finally {
+            for (const client of clients) client.ws.terminate();
+            sockets.close();
+        }
+    });
+
+    it("caps presence snapshots at 64 registered clients in broadcasts and hello but resolves names beyond the cap", async () => {
         vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
         const { sockets, url } = await host(async () => true);
         const clients: Client[] = [];
@@ -935,6 +976,10 @@ describe("createEventSockets", () => {
                 type: "hello",
                 clients: (observer.frames.at(-1) as Extract<EventFeedFrame, { type: "clients" }>).clients,
             });
+            expect(hello).toMatchObject({
+                clients: expect.not.arrayContaining([expect.objectContaining({ clientId: "tab-0" })]),
+            });
+            expect(sockets.clientName("tab-0")).toBe("Worker 0");
         } finally {
             for (const client of clients) client.ws.terminate();
             sockets.close();
