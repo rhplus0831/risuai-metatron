@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (9)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (7)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (10)
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -37,13 +37,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 **Why it matters:** a single bad subscriber (plugin or component) could silently freeze unrelated store notifications.
 **Suggested handling:** if store notifications mysteriously stop after an error, check for a throwing subscriber first; a fix would wrap subscribers or avoid svelte/store for hot paths.
 
-### discardRefusedChat reads without a deadline
-
-`discardRefusedChat` in `src/ts/storage/chatStore.svelte.ts` (the two reads near lines 4206 and 4215 on 2026-11-01) calls `readRefs` directly, with no `deadlineRead`, `deadlineChatRead` or `readWithDeadline` and no signal, while every other client read has a timer. Each read names one group, so it is one round and no regression from read continuation; it predates that work. Noticed by Server Byte Budgets slice 2 (2026-10-31).
-
-**Why it matters:** a stalled link leaves that discard waiting without a bound.
-**Suggested handling:** wrap both reads in the chat module's deadline helper.
-
 ### No guide states the restore floor's check order
 
 `docs/structure/chat-store.md` `### Restore floor` links to `server-resources.md#chat-writes-and-checkpoints` for the check, and `server-resources.md:424` sends floor details back to `chat-store.md#restore-floor`. Neither states the order of the checks, and `reason: "generating"` handling has no rule in any guide. Found by Guide Budgets slice 2.
@@ -65,14 +58,6 @@ Identifiers re-checked 2026-11-03 (`setCharacterChatView`, `installRead`, `adopt
 
 **Why it matters:** each is small; together they are the known soft spots of the store facade and its tests.
 **Suggested handling:** check the code when working nearby; an item confirmed with an owning guide moves to that guide's Known Hazards.
-
-### The feed's removed ids include ids the same group inserted
-
-`server/src/data/chatStore.ts` `applyGroup` builds the feed change with the raw `removedIds` (`chatFeedChange(..., removedIds, ...)`, ~2172 and ~2182), while `chatWriteChange` drops ids the group itself inserted (`!insertedHere.has(id)`, ~1603). An append and a removal of one id inside one group therefore lists that id in the feed's `patch`/`delta` `removed` but not in `ChatWriteChange.removed`, and neither comment says so. Found by a lookup trial of the Guides To Source run (2026-11-05); unconfirmed, since the client's patch apply in `src/ts/storage/chatStore.svelte.ts` was not checked. Owners: live-update-feed and server-resources.
-
-**Why it matters:** a client applying the patch removes an id its base never held; harmless if unknown ids are ignored, a spurious mismatch or wasted bytes otherwise.
-
-**Suggested handling:** check the client's patch apply, then either filter `insertedHere` for the feed too or document the asymmetry on `ChatFeedPayloads`.
 
 ### A retaken handoff job drops its live stream
 
