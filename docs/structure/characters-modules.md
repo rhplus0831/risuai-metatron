@@ -170,13 +170,12 @@ alerts. Keep the V2/V3 formats compatible with the existing readers (see [card-f
 
 ### Drops and deep links
 
-Both dispatch by name and send cards and modules as the `File` or `Blob` itself:
+A drop (`src/App.svelte` calls `importDroppedFile`) and `characterURLImport` (links and the launch queue) dispatch by
+name and send cards and modules as the `File` or `Blob` itself:
 
-- The drop handler of `src/App.svelte`: `.risup` → `importPreset`, `.risum` → `importModuleFile` then
-  `addImportedModule`, anything else (a CharX and a `.png` card included) → `importCharacterProcess`.
-- `characterURLImport` (the page address and the launch queue): `.charx`/`.jpg`/`.jpeg`/`.png` →
-  `importCharacterProcess`, `.risup`/`.risupreset` → `importPreset` (read into bytes), `.risum` as above; any other name
-  is ignored.
+- `.risup`/`.risupreset` → `importPreset` (read into bytes), `.risum` → `importModuleFile` then `addImportedModule`.
+- Any other dropped name, and a linked `.charx`/`.jpg`/`.jpeg`/`.png`, → `importCharacterProcess`; a link ignores the
+  rest.
 
 ### Module activation
 
@@ -243,7 +242,8 @@ and the prompt preset's `moduleIntergration` namespaces. The server's `jobModule
   signature, truncated structure, empty card, oversized card/asset text, or too many asset/total chunks.
 - Preserve byte compatibility among `exportModuleLegacy`, `readModule`, and the server's `decodeModuleMain`.
 - `createBaseV2` intentionally omits emotions and additional assets. V3 is the full-fidelity path.
-- Cards and modules with low-level access require confirmation on import; a `.risum` asks before its upload.
+- Cards and modules with low-level access require confirmation on import; a `.risum` asks before its upload, and a
+  declined card imports nothing (no off-spec JSON fallback).
 
 ### Asset list rows
 

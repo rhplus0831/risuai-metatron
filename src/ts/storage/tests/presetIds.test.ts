@@ -1,8 +1,9 @@
 import * as fflate from "fflate";
-import { decode as decodeMsgpack } from "msgpackr/index-no-eval";
+import { decode as decodeMsgpack, encode as encodeMsgpack } from "msgpackr/index-no-eval";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { language } from "src/lang";
 
 // The client preset paths that build on `normalizePreset`: `copyPreset` and every `importPreset`
 // path assign fresh ids, and `downloadPreset` strips the id. The preset fields are served from the
@@ -59,7 +60,8 @@ vi.mock("../../rpack/rpack_js", () => {
     return { encodeRPack: apply(encodeMap), decodeRPack: apply(decodeMap) };
 });
 
-import { decodeRPack } from "../../rpack/rpack_js";
+import { alertError, alertNormal } from "../../alert";
+import { decodeRPack, encodeRPack } from "../../rpack/rpack_js";
 import { decryptBuffer } from "../../util";
 import type { botPreset, Database } from "../database.svelte";
 import { changeToModelPreset, changeToPreset, copyPreset, downloadPreset, importPreset } from "../presets.svelte";
@@ -262,6 +264,29 @@ describe("copyPreset and importPreset", () => {
         // The selection store is module state: an empty id makes the installation select the first preset.
         selectPreset("");
     });
+
+    it.each([
+        { extension: "risup", presetVersion: 1, type: "preset" },
+        { extension: "risupreset", presetVersion: 2, type: "module" },
+    ])(
+        "refuses .$extension with presetVersion $presetVersion and type $type without importing or throwing",
+        async ({ extension, presetVersion, type }) => {
+            bootWith({ botPresets: [{ id: "source", name: "Source", temperature: 33 }] });
+            const exported = await downloadPreset("source", "return");
+            const container = decodeMsgpack(fflate.decompressSync(await decodeRPack(exported.buf as Uint8Array)));
+            const compressed = fflate.compressSync(encodeMsgpack({ ...container, presetVersion, type }));
+            const data = extension === "risup" ? await encodeRPack(compressed) : compressed;
+            const before = plainClone(settings.presets);
+            vi.mocked(alertError).mockClear();
+            vi.mocked(alertNormal).mockClear();
+
+            await importPreset({ name: `unsupported.${extension}`, data });
+
+            expect(alertError).toHaveBeenCalledExactlyOnceWith(language.errors.unsupportedPreset);
+            expect(alertNormal).not.toHaveBeenCalled();
+            expect(plainClone(settings.presets)).toEqual(before);
+        },
+    );
 
     it("copyPreset gives the copy a fresh id and the source's values", () => {
         bootWith({ botPresets: [{ id: "source", name: "Source", temperature: 33, min_p: null }] });

@@ -38,6 +38,8 @@ export const languageEnglish = {
         unknownModel: "Error: Unknown model selected",
         httpError: "Error: error in request:",
         noData: "The file is invalid, or it's data is corrupted.",
+        unsupportedPreset:
+            "This preset file is from an unsupported version or is not a prompt preset. Nothing was imported.",
         cardAssetsUnavailable:
             "The card's assets could not be verified or restored. Import the card again; no character was added.",
         assetReloadChanged: "An asset changed while it was being imported. Please import it again.",

@@ -125,8 +125,8 @@ section.
   mounts one list per store (`openPresetList`, `openModelPresetList`).
 - A pick uses `pickBinding` (`src/ts/storage/chatBindingPick.ts`): it binds the open chat, or changes the tab selection
   at home ([chat bindings](persistence.md)). Ctrl+1..9 and persona pickers use the same path.
-- `src/ts/storage/presets.svelte.ts` `importPreset` returns the new id after success, or no value if the picker is
-  cancelled. The share receiver consumes its cached preset only after success.
+- `src/ts/storage/presets.svelte.ts` `importPreset` returns the new id after success, or no value for a cancelled picker
+  or a refused file (alerted). The share receiver consumes its cached preset only after success.
 
 ### Prompt editors
 

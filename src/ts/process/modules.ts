@@ -555,8 +555,9 @@ export async function addImportedModule(module: unknown, { announce }: { announc
  * The module dialog's import of a picked `.charx`, `.risum`, or JSON file (`.json`, `.lorebook`). A `.risum` goes
  * through `importModuleFile`. A `.charx` is imported as a character without adding it (`importCharacterProcess` with
  * `returnCharacter`) and converted (`convertCharacterToModule`): `null` or `undefined` adds no alert (already
- * alerted), and `false` (a declined question) or a string is `noData`. A CharX whose embedded module `readModule`
- * refuses alerts `noData` and adds neither a module nor a character (the counted import and the stored assets stay).
+ * alerted), `false` (a declined question) cancels silently, and a string is `noData`. A CharX whose embedded module
+ * `readModule` refuses alerts `noData` and adds neither a module nor a character (the counted import and the stored
+ * assets stay).
  * The JSON branches (a `risuModule`, a risu or external lorebook, a regex list) stay silent: `addImportedModule` only
  * clears its wait alert. A file none of them reads is `noData`.
  */
@@ -577,8 +578,11 @@ export async function importModule() {
                 // Alerted already: no card, or the upload's failure (busy, too large, interrupted).
                 return;
             }
-            if (!char || typeof char === "string") {
+            if (typeof char === "string") {
                 alertError(language.errors.noData);
+                return;
+            }
+            if (!char) {
                 return;
             }
             const module = convertCharacterToModule(char);

@@ -99,6 +99,7 @@ export function createBootMock<K extends keyof BootModules>(
                 BootModules["characterCards"]["importCharacterProcess"]
             >() as BootModules["characterCards"]["importCharacterProcess"],
             characterURLImport: vi.fn<BootModules["characterCards"]["characterURLImport"]>(),
+            importDroppedFile: vi.fn<BootModules["characterCards"]["importDroppedFile"]>(),
             exportChar: vi.fn<BootModules["characterCards"]["exportChar"]>(),
             exportCharacterCard: vi.fn<BootModules["characterCards"]["exportCharacterCard"]>(),
             createBaseV3: vi.fn<BootModules["characterCards"]["createBaseV3"]>(),

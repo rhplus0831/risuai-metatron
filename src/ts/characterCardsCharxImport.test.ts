@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import * as fflate from "fflate";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import { cardV3, charx } from "./storage/tests/importFixtures";
@@ -124,6 +125,48 @@ afterEach(() => {
 });
 
 describe("CharX files through the server and real records", () => {
+    it.each(["risupreset", "risup"])(
+        "a dropped .%s imports a preset and announces success only for an accepted file",
+        async (extension) => {
+            const b = await boot();
+            const { encode: encodeMsgpack } = await import("msgpackr/index-no-eval");
+            const { encodeRPack } = await import("./rpack/rpack_js");
+            const preset = await b.util.encryptBuffer(
+                encodeMsgpack({ name: "Dropped preset", temperature: 37 }),
+                "risupreset",
+            );
+            const file = async (presetVersion: number) => {
+                const compressed = fflate.compressSync(encodeMsgpack({ presetVersion, type: "preset", preset }));
+                const bytes = extension === "risup" ? await encodeRPack(compressed) : compressed;
+                return new File([new Uint8Array(bytes)], `dropped.${extension}`);
+            };
+            const before = plain(b.settings.presets);
+            const characters = b.ids();
+
+            await b.cards.importDroppedFile(await file(2));
+
+            expect(plain(b.settings.presets)).toEqual([
+                ...before,
+                expect.objectContaining({ name: "Dropped preset", temperature: 37 }),
+            ]);
+            expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successImport);
+            expect(alerts.error).not.toHaveBeenCalled();
+            await b.sync.flushResources();
+            const accepted = plain(b.settings.presets);
+            expect(b.record("presets")).toEqual(accepted);
+            alerts.normal.mockClear();
+
+            await b.cards.importDroppedFile(await file(1));
+
+            expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.errors.unsupportedPreset);
+            expect(alerts.normal).not.toHaveBeenCalled();
+            expect(plain(b.settings.presets)).toEqual(accepted);
+            expect(b.ids()).toEqual(characters);
+            await b.sync.flushResources();
+            expect(b.record("presets")).toEqual(accepted);
+        },
+    );
+
     it.each([
         "character dialog",
         "dropped .charx",
@@ -416,6 +459,50 @@ describe("CharX files through the server and real records", () => {
         expect(b.record("characterOrder")).toEqual(order);
         expect(b.record("modules")).toEqual([]);
         expect(b.saveAsset).not.toHaveBeenCalled();
+    });
+
+    it.each(["character import", "module dialog"])(
+        "%s refuses a CharX with a bad embedded module with exactly one noData alert",
+        async (entry) => {
+            const b = await boot();
+            const before = b.ids();
+            const order = plain(b.settings.characterOrder);
+            const zip = charx(cardV3("Bad embedded module"), { "module.risum": new Uint8Array([0]) });
+            const file = new File([new Uint8Array(zip)], "bad-module.charx");
+
+            if (entry === "module dialog") {
+                vi.spyOn(b.util, "selectSingleFileHandle").mockResolvedValue(file);
+                await b.modules.importModule();
+            } else {
+                await b.cards.importCharacterProcess({ name: file.name, data: file });
+            }
+
+            expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.errors.noData);
+            expect(alerts.normal).not.toHaveBeenCalled();
+            expect(b.ids()).toEqual(before);
+            expect(plain(b.settings.modules)).toEqual([]);
+            await b.sync.flushResources();
+            expect(b.record("characterOrder")).toEqual(order);
+            expect(b.record("modules")).toEqual([]);
+        },
+    );
+
+    it("the module dialog silently cancels a CharX when its card's lowLevelAccess is declined", async () => {
+        const b = await boot();
+        const before = b.ids();
+        const zip = charx(cardV3("Declined", {}, { lowLevelAccess: true }));
+        vi.spyOn(b.util, "selectSingleFileHandle").mockResolvedValue(new File([new Uint8Array(zip)], "declined.charx"));
+        alerts.confirm.mockResolvedValueOnce(false);
+
+        await b.modules.importModule();
+
+        expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(b.ids()).toEqual(before);
+        expect(plain(b.settings.modules)).toEqual([]);
+        await b.sync.flushResources();
+        expect(b.record("modules")).toEqual([]);
     });
 
     it("the module dialog keeps the upload's alert without adding a second noData alert", async () => {

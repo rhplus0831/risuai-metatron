@@ -82,7 +82,7 @@ import {
  * Character cards: the import (`importCharacterProcess`, which every card file goes through; a Realm card goes
  * through `downloadRisuHub`), the export (`exportChar`, the editor's dialog, and `exportCharacterCard`), the Realm hub
  * helpers (`hubURL`, `getRisuHub`, `downloadRisuHub`), and the page-address and launch-queue import
- * (`characterURLImport`). A dropped file is dispatched by `src/App.svelte`'s drop handler, not here.
+ * (`characterURLImport`). `src/App.svelte` passes dropped files to `importDroppedFile` for dispatch.
  *
  * `statics.imports` (`incrementStatic("imports")`) counts a card file before it is parsed. `importCharacterProcess`
  * counts every file whose name does not end in `json` (PNG, JPG, CharX, and a name it then refuses), so a card refused
@@ -161,6 +161,37 @@ export async function importCharacter() {
 }
 
 /**
+ * Imports the first dropped file passed by `src/App.svelte`'s drop handler, using its lowercased name:
+ * `.risup`/`.risupreset` → `importPreset`, alerting `successImport` only when it returns the new preset id;
+ * `.risum` → `importModuleFile` then `addImportedModule`; anything else → `importCharacterProcess`,
+ * then `checkCharOrder`.
+ */
+export async function importDroppedFile(file: File) {
+    const name = file.name.toLowerCase();
+    if (name.endsWith(".risup") || name.endsWith(".risupreset")) {
+        const data = new Uint8Array(await file.arrayBuffer());
+        const id = await importPreset({ name: file.name, data });
+        if (id) {
+            alertNormal(language.successImport);
+        }
+    } else if (name.endsWith(".risum")) {
+        // The dropped `File` itself goes to the server; the module comes back prepared, or null
+        // when declined or failed (alerted). Success is alerted only once the save is acknowledged
+        // (`addImportedModule`).
+        const module = await importModuleFile(file);
+        if (module) {
+            await addImportedModule(module, { announce: true });
+        }
+    } else {
+        await importCharacterProcess({
+            name: file.name,
+            data: file,
+        });
+        checkCharOrder();
+    }
+}
+
+/**
  * Imports one card file, dispatched by its name (`.json`, `.charx`/`.jpg`/`.jpeg`, `.png`). A CharX
  * (or a `charxJpeg`) given as a `File` or `Blob` is uploaded as it is to the server's CharX import
  * (`importCharxOverServer`), so the tab never holds the file; one given as bytes or a stream is
@@ -169,11 +200,13 @@ export async function importCharacter() {
  * `Response.blob()` is not the environment's `Blob`). The PNG reader (`PngChunk.readGenerator`)
  * takes bytes, a stream, or a `Blob`, which it streams: a stream is read once (a running asset
  * count), bytes or a `Blob` are counted in a first pass. Returns the new character's id (with
- * `returnCharacter`, the character), or null/undefined once the failure is alerted.
+ * `returnCharacter`, the character), or null/undefined once the failure is alerted or the card's
+ * question is declined (`false` for a declined CharX with `returnCharacter`).
  *
  * A JSON card (a name ending in `json`) is read whole: `importCharacterCardSpec`, else `convertOffSpecCards` for an
  * off-spec card with a name, a description and a greeting, else `noData`; a stream under such a name returns null
- * without an alert. A CharX upload that fails is alerted (`serverImportErrorMessage`) and returns null.
+ * without an alert. Declining a v2/v3 JSON card's `lowLevelAccess` question returns null silently
+ * and skips the off-spec fallback. A CharX upload that fails is alerted (`serverImportErrorMessage`) and returns null.
  *
  * A PNG is streamed, not read into bytes first (only a `Blob` without `stream()` is read whole). Its `chara` (V2) and
  * `ccv3` (V3) text chunks are kept, `ccv3` winning when both exist; a later chunk of the same key replaces the text
@@ -197,7 +230,10 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
         if (imported) {
             return imported as any;
         }
-        if (imported === null) return null; // Asset handoff failed and was already alerted.
+        if (imported === null || imported === undefined) {
+            // A declined question or an alerted asset handoff failure ends the import.
+            return null;
+        }
         if ((da.char_name || da.name) && (da.char_persona || da.description) && (da.char_greeting || da.first_mes)) {
             const character = convertOffSpecCards(da);
             const chaId = addCharacter(character);
@@ -395,10 +431,11 @@ function readCharxCard(cardData: string | null | undefined): CharacterCardV3 | n
  * the new character's id (with `returnCharacter`, the character), or null/undefined/false once the
  * failure is alerted or the question declined.
  *
- * The embedded module is read by `readModule`, which stores its assets (a module it refuses, alerted, makes this
- * throw): its triggers and regex replace the card's (`extensions.risuai.triggerscript`/`customScripts`; a list the
- * module lacks empties them), and its lorebook, when it has one, replaces the `character_book` entries (the book's
- * settings still apply). Then `importCharacterCardSpec` runs with `readAssets`'s entry name → stored key map. The
+ * The embedded module is read by `readModule`, which stores its assets. If it refuses the module (already alerted),
+ * this returns null. The module's triggers and regex replace the card's
+ * (`extensions.risuai.triggerscript`/`customScripts`; a list the module lacks empties them), and its lorebook,
+ * when it has one, replaces the `character_book` entries (the book's settings still apply).
+ * Then `importCharacterCardSpec` runs with `readAssets`'s entry name → stored key map. The
  * character's gate is the card's `extensions.risuai.lowLevelAccess`; the embedded module's own `lowLevelAccess` is
  * not carried onto the character, so it is not asked.
  */
@@ -415,6 +452,9 @@ async function importCharxCard(
     let lorebook: loreBook[] = null;
     if (moduleData) {
         const md = await readModule(moduleData);
+        if (md === undefined) {
+            return null;
+        }
         card.data.extensions ??= {};
         card.data.extensions.risuai ??= {};
         card.data.extensions.risuai.triggerscript = md.trigger ?? [];
@@ -824,13 +864,15 @@ export async function characterURLImport() {
             return;
         }
         if (name.endsWith(".risupreset") || name.endsWith(".risup")) {
-            await importPreset({
+            const id = await importPreset({
                 name: name,
                 data: new Uint8Array(await data.arrayBuffer()),
             });
-            SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
-            settingsOpen.set(true);
-            alertNormal(language.successImport);
+            if (id) {
+                SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
+                settingsOpen.set(true);
+                alertNormal(language.successImport);
+            }
             return;
         }
         if (name.endsWith("risum")) {
@@ -1057,8 +1099,8 @@ async function saveEmbeddedAssets(
  * `addCharacter`, or with `returnValue` returns it unadded. It asks `lowLevelAccess` before it saves any asset, the
  * portrait included, so a declined card leaves none of its own behind; a caller that asked already passes
  * `lowLevelAccessAsked`. `img` as a string is the key the server stored the portrait under.
- * A failed asset handoff returns null (already alerted), distinct from other false refusals so the
- * JSON caller can preserve its existing off-spec fallback for those refusals.
+ * A declined question returns undefined silently; a failed asset handoff returns null (already
+ * alerted). The JSON caller ends the import for both; only false permits its off-spec fallback.
  *
  * V3 asset URIs: `__asset:<id>` and `embeded://<path>` resolve through `assetDict` (a key it lacks throws),
  * `ccdefault:` is the portrait as it is at that entry, and a `data:` URI is saved (one whose base64 text is
@@ -1078,13 +1120,13 @@ async function importCharacterCardSpec<T extends boolean = false>(
     returnValue: T = false as T,
     /** The caller asked the `lowLevelAccess` confirmation already (`confirmCardLowLevelAccess`). */
     lowLevelAccessAsked = false,
-): Promise<T extends true ? character | false | null : string | false | null> {
+): Promise<T extends true ? character | false | null | undefined : string | false | null | undefined> {
     if (!card || (card.spec !== "chara_card_v2" && card.spec !== "chara_card_v3")) {
         return false;
     }
     // Asked before anything is saved, so a declined card leaves no assets behind.
     if (!lowLevelAccessAsked && !(await confirmCardLowLevelAccess(card))) {
-        return false;
+        return undefined;
     }
 
     console.log(`Importing ${card.spec}, mode is ${mode}`);

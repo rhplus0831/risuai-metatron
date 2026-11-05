@@ -4,7 +4,7 @@ import * as fflate from "fflate";
 import { decodeRPack, encodeRPack } from "../rpack/rpack_js";
 import { decryptBuffer, encryptBuffer, selectSingleFile } from "../util";
 import { downloadFile } from "../globalApi.svelte";
-import { alertNormal } from "../alert";
+import { alertError, alertNormal } from "../alert";
 import { prebuiltPresets } from "../process/templates/templates";
 import {
     newPresetId,
@@ -176,7 +176,9 @@ export async function downloadPreset(id: string, type: "json" | "risupreset" | "
  * (`archived` dropped). A NovelAI preset (`presetVersion` 3 or later) and a SillyTavern preset are
  * converted. The file's model fields and a `proxyKey` are ignored (`normalizePreset` drops them),
  * except that a RisuAI file's `maxContext` seeds an unset `maxContextOverrideSize`; the override
- * stays off unless the file turns `maxContextOverride` on.
+ * stays off unless the file turns `maxContextOverride` on. Returns the new preset's id, or undefined
+ * when the picker is cancelled or a `.risup`/`.risupreset` has an unsupported version or type
+ * (alerted, with nothing imported).
  */
 export async function importPreset(
     f: {
@@ -191,18 +193,23 @@ export async function importPreset(
         return;
     }
     let pre: any;
-    if (f.name.endsWith(".risupreset") || f.name.endsWith(".risup")) {
+    const name = f.name.toLowerCase();
+    if (name.endsWith(".risupreset") || name.endsWith(".risup")) {
         let data = f.data;
-        if (f.name.endsWith(".risup")) {
+        if (name.endsWith(".risup")) {
             data = await decodeRPack(data);
         }
         const decoded = await decodeMsgpack(fflate.decompressSync(data));
         console.log(decoded);
-        if ((decoded.presetVersion === 0 || decoded.presetVersion === 2) && decoded.type === "preset") {
+        if ((decoded?.presetVersion === 0 || decoded?.presetVersion === 2) && decoded.type === "preset") {
             pre = {
                 ...presetTemplate,
                 ...decodeMsgpack(Buffer.from(await decryptBuffer(decoded.preset ?? decoded.pres, "risupreset"))),
             };
+        }
+        if (!pre) {
+            alertError(language.errors.unsupportedPreset);
+            return;
         }
     } else {
         pre = { ...presetTemplate, ...JSON.parse(Buffer.from(f.data).toString("utf-8")) };

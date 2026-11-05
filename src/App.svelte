@@ -36,18 +36,13 @@
     import BookmarkList from "./lib/Others/BookmarkList.svelte";
     import MessageSearch from "./lib/Others/MessageSearch.svelte";
     import Settings from "./lib/Setting/Settings.svelte";
-    import { showRealmInfoStore, importCharacterProcess } from "./ts/characterCards";
-    import { importPreset } from "./ts/storage/presets.svelte";
-    import { addImportedModule, importModuleFile } from "./ts/process/modules";
-    import { alertNormal } from "./ts/alert";
-    import { language } from "./lang";
+    import { showRealmInfoStore, importDroppedFile } from "./ts/characterCards";
     import SavePopupIconComp from "./lib/Others/SavePopupIcon.svelte";
     import Botpreset from "./lib/Setting/botpreset.svelte";
     import ListedPersona from "./lib/Setting/listedPersona.svelte";
     import ChatBindingDialog from "./lib/Others/ChatBindingDialog.svelte";
     import ChatCheckpointsDialog from "./lib/Others/ChatCheckpointsDialog.svelte";
     import { chatCheckpointsDialog } from "./ts/checkpoints/chatCheckpoints.svelte";
-    import { checkCharOrder } from "./ts/globalApi.svelte";
     import { ArrowUpIcon, GlobeIcon, PlusIcon } from "@lucide/svelte";
     import {
         hypaV3ModalOpen,
@@ -73,9 +68,9 @@
      * `GridChars`, else `Sidebar` and `ChatScreen`. The overlays (alerts, notices, the Realm popup, the chat dialogs,
      * picker lists, panels, popups, and modals) mount after the screen, over whichever one shows.
      *
-     * Only the first dropped file is imported, by its lowercased name (`.risup` a prompt preset, `.risum` a module,
-     * anything else a character card), and a drag that started inside the app (`RISU_APP_INTERNAL_DRAG_TYPE`) or from
-     * the sidebar (`RISU_SIDEBAR_DRAG_TYPE`) is refused.
+     * Only the first dropped file is imported, through `importDroppedFile` (`.risup`/`.risupreset` a prompt preset,
+     * `.risum` a module, anything else a character card), and a drag that started inside the app
+     * (`RISU_APP_INTERNAL_DRAG_TYPE`) or from the sidebar (`RISU_SIDEBAR_DRAG_TYPE`) is refused.
      *
      * "Keep Session Alive: Via Sound" uses one `createKeepAliveAudio` controller, held in `<script module>`. A click
      * that bubbles to the root `main` element calls `start()` while `settings.ui.keepSessionAlive` is `"sound"` (the
@@ -131,27 +126,7 @@
             return;
         }
         e.preventDefault();
-        const name = file.name.toLowerCase();
-
-        if (name.endsWith(".risup")) {
-            const data = new Uint8Array(await file.arrayBuffer());
-            await importPreset({ name: file.name, data });
-            alertNormal(language.successImport);
-        } else if (name.endsWith(".risum")) {
-            // The dropped `File` itself goes to the server; the module comes back prepared, or null
-            // when declined or failed (alerted). Success is alerted only once the save is acknowledged
-            // (`addImportedModule`).
-            const module = await importModuleFile(file);
-            if (module) {
-                await addImportedModule(module, { announce: true });
-            }
-        } else {
-            await importCharacterProcess({
-                name: file.name,
-                data: file,
-            });
-            checkCharOrder();
-        }
+        await importDroppedFile(file);
     }}
     onclick={() => {
         const aliveMode = settings.ui.keepSessionAlive;

@@ -223,6 +223,36 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(alerts.normal).toHaveBeenCalledWith(language.importedCharacter);
     });
 
+    it.each([
+        ["V2", cardV2],
+        ["V3", cardV3],
+    ] as const)(
+        "a declined %s JSON card with V1 fields imports nothing and alerts nothing",
+        async (_version, makeCard) => {
+            const { cards, ids, order, sync, record } = await boot();
+            const before = ids();
+            const beforeOrder = order();
+            const card = {
+                ...makeCard("Privileged", {}, { lowLevelAccess: true }),
+                name: "V1 fallback",
+                description: "V1 description",
+                first_mes: "V1 greeting",
+            };
+            alerts.confirm.mockResolvedValueOnce(false);
+
+            await cards.importCharacterProcess({ name: "declined.json", data: encode(card) });
+
+            expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+            expect(ids()).toEqual(before);
+            expect(order()).toEqual(beforeOrder);
+            expect(alerts.error).not.toHaveBeenCalled();
+            expect(alerts.normal).not.toHaveBeenCalled();
+            expect(alerts.normalWait).not.toHaveBeenCalled();
+            await sync.flushResources();
+            expect(record("characterOrder")).toEqual(beforeOrder);
+        },
+    );
+
     it("a PNG card (`chara` chunk): the image is saved, the stamp goes up by one, and the character is saved", async () => {
         const { cards, ids, added, imports } = await boot();
         const before = ids();
