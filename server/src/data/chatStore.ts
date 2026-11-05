@@ -346,6 +346,7 @@ type RememberedResult = {
     checkpoints?: number;
     translations?: TranslationOutcome[];
     selections?: ChatGroupResult["selections"];
+    candidateRows?: ChatGroupResult["candidateRows"];
     targets?: TargetOutcome[];
 };
 
@@ -1954,6 +1955,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             result.translations = remembered.translations;
         }
         if (remembered.selections) result.selections = remembered.selections;
+        if (remembered.candidateRows) result.candidateRows = remembered.candidateRows;
         if (remembered.targets) {
             result.targets = remembered.targets;
         }
@@ -1998,6 +2000,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             remembered.translations = result.translations;
         }
         if (result.selections) remembered.selections = result.selections;
+        if (result.candidateRows) remembered.candidateRows = result.candidateRows;
         if (result.targets) {
             remembered.targets = result.targets;
         }
@@ -2137,6 +2140,13 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         const checkpoints: CheckpointOutcome[] = [];
         const translations: TranslationOutcome[] = [];
         const selections: NonNullable<ChatGroupResult["selections"]> = [];
+        // Keep the writer's expected counter; cleanup survives later row writes.
+        const candidateWrites = new Map<string, { revision: number | null; cleaned: boolean }>();
+        const expectCandidateRevision = (id: string, revision: number | null) => {
+            const previous = candidateWrites.get(id);
+            if (previous) previous.revision = revision;
+            else candidateWrites.set(id, { revision, cleaned: false });
+        };
         // Per message-editing op: whether its message was there (reported only when one was not).
         const targets: TargetOutcome[] = [];
         let deleted = false;
@@ -2304,6 +2314,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         const existing = selectMessage.get(chatSeq, message.id) as MessageRow | undefined;
                         if (!existing) {
                             fresh.push({ ...message, text: withCandidateRevision(message.text) });
+                            expectCandidateRevision(
+                                message.id,
+                                (JSON.parse(message.text) as Message).candidatesRevision ?? null,
+                            );
                         } else if (!appendReplay(message.text, existing.data)) {
                             conflictHere(row);
                         }
@@ -2323,6 +2337,12 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                                 if (guard && guard.holder(characterId, chatId, message.chatId!) !== null) continue;
                                 const cleaned = withoutCandidateCheckpoints(message);
                                 if (data === JSON.stringify(cleaned)) continue;
+                                const candidateWrite = candidateWrites.get(message.chatId!) ?? {
+                                    revision: message.candidatesRevision ?? null,
+                                    cleaned: false,
+                                };
+                                candidateWrite.cleaned = true;
+                                candidateWrites.set(message.chatId!, candidateWrite);
                                 if (patchBase !== null && !rowsBefore.has(message.chatId!)) {
                                     rowsBefore.set(message.chatId!, data);
                                 }
@@ -2411,7 +2431,17 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         message.data = op.text;
                         text = serialize(message).text;
                     }
-                    if (op.op !== "setText") text = withCandidateRevision(text, existing!.data);
+                    if (op.op !== "setText") {
+                        // A field patch retains the counter the writer already holds from earlier ops.
+                        if (op.op === "setMessage" || !candidateWrites.has(id)) {
+                            expectCandidateRevision(
+                                id,
+                                (JSON.parse(op.op === "setMessage" ? op.message.text : existing!.data) as Message)
+                                    .candidatesRevision ?? null,
+                            );
+                        }
+                        text = withCandidateRevision(text, existing!.data);
+                    }
                     setMessageData.run(text, chatSeq, id);
                     if (text !== existing!.data) {
                         touched.add(id);
@@ -2494,7 +2524,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         break;
                     }
                     selections.push("applied");
+                    expectCandidateRevision(op.messageId, op.expect.candidatesRevision);
                     if (stored!.candidates?.[stored!.selected ?? 0]?.id === op.candidateId) break;
+                    expectCandidateRevision(op.messageId, op.expect.candidatesRevision + 1);
                     if (patchBase !== null && !rowsBefore.has(op.messageId)) {
                         rowsBefore.set(op.messageId, existing!.data);
                     }
@@ -2632,6 +2664,22 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             result.translations = translations;
         }
         if (selections.length) result.selections = selections;
+        if (!deleted && row) {
+            const candidateRows: NonNullable<ChatGroupResult["candidateRows"]> = [];
+            for (const [id, expected] of candidateWrites) {
+                const stored = selectMessage.get(row.seq, id) as MessageRow | undefined;
+                if (!stored) continue;
+                const message = JSON.parse(stored.data) as Message;
+                const candidatesRevision = message.candidatesRevision ?? null;
+                if (!expected.cleaned && candidatesRevision === expected.revision) continue;
+                const cleared =
+                    expected.cleaned &&
+                    message.scriptstateCheckpoint === undefined &&
+                    !message.candidates?.some((candidate) => candidate.scriptstateAfter !== undefined);
+                candidateRows.push({ id, candidatesRevision, ...(cleared ? { cleared: true as const } : {}) });
+            }
+            if (candidateRows.length) result.candidateRows = candidateRows;
+        }
         if (targets.includes("missing")) {
             result.targets = targets;
         }

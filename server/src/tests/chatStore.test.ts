@@ -3713,6 +3713,51 @@ describe("persisted reply candidates", () => {
         expect(row(store)).toMatchObject({ ...expected, data: "Edited" });
     });
 
+    it("acknowledges cleaned candidate rows, omits unchanged rows, and replays the original corrections", () => {
+        const store = memoryStore();
+        init(store);
+        const append = {
+            ...group("k", store.chatRevision("c", "k"), [
+                { op: "append", anchor: { end: true }, messages: [m("next", "Next question")] },
+            ]),
+            groupId: "clean-candidate-snapshots",
+        };
+        const answer = store.applyChanges({ chats: [append] }).chats[0];
+        expect(answer.candidateRows).toEqual([{ id: "r", candidatesRevision: 2, cleared: true }]);
+        expect(row(store)).not.toHaveProperty("scriptstateCheckpoint");
+        expect(row(store).candidates).toEqual([
+            { id: "first", data: "First" },
+            { id: "second", data: "Second" },
+        ]);
+        expect(row(store).candidatesRevision).toBe(2);
+
+        const plainAppend = write(store, [
+            { op: "append", anchor: { end: true }, messages: [m("plain", "Another question")] },
+        ]).chats[0];
+        expect(plainAppend).not.toHaveProperty("candidateRows");
+        write(store, [{ op: "setMessage", message: reply() }]);
+        expect(row(store).candidatesRevision).toBe(3);
+        const replay = store.applyChanges({ chats: [append] }).chats[0];
+        expect(replay.revision).toBe(answer.revision);
+        expect(replay.candidateRows).toEqual([{ id: "r", candidatesRevision: 2, cleared: true }]);
+        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        expect(row(store).candidatesRevision).toBe(3);
+    });
+
+    it("acknowledges the final candidate state when a later whole-row write restores snapshots in the same group", () => {
+        const store = memoryStore();
+        init(store);
+        const answer = write(store, [
+            { op: "append", anchor: { end: true }, messages: [m("next", "Next question")] },
+            { op: "setMessage", message: reply() },
+        ]).chats[0];
+
+        expect(answer.candidateRows).toEqual([{ id: "r", candidatesRevision: 3 }]);
+        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        expect(row(store).candidates).toEqual(candidates);
+        expect(row(store).candidatesRevision).toBe(3);
+    });
+
     it("clears older checkpoints on append, retains candidate texts, and admits the open carrier's later final write", () => {
         const lock = createGenerationLock();
         const store = createResourceStore({ file: ":memory:", kinds, guard: lock });

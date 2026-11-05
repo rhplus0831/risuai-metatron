@@ -5809,20 +5809,72 @@ function settleOrder(chaId: string, seq: number) {
     }
 }
 
-/** Other message writes leave the mirror's store-owned candidate counter to the next read. */
-function writesCandidateFields(op: ChatOp): boolean {
+/** Whole-chat writes still learn store-owned candidate counters through a read. */
+function writesWholeChatCandidateFields(op: ChatOp): boolean {
+    if (op.op !== "create" && op.op !== "replace") return false;
     if (candidateFieldRemovals.has(op)) return true;
-    const namesFields = (value: unknown) =>
-        isPlainRecord(value) && (Object.hasOwn(value, "candidates") || Object.hasOwn(value, "selected"));
-    if (op.op === "patchMessage")
-        return namesFields(op.set) || (op.unset ?? []).some((field) => field === "candidates" || field === "selected");
-    if (op.op === "setMessage") {
-        const before = beforeValues.get(op);
-        return namesFields(op.message) || !!(before && "value" in before && namesFields(before.value));
+    return op.chat.message.some(
+        (message) => Object.hasOwn(message, "candidates") || Object.hasOwn(message, "selected"),
+    );
+}
+
+function clearCandidateSnapshots(message: Pick<Message, "candidates" | "scriptstateCheckpoint">, checkpoint = true) {
+    if (checkpoint) delete message.scriptstateCheckpoint;
+    for (const candidate of message.candidates ?? []) delete candidate.scriptstateAfter;
+}
+
+/** Installs store-owned corrections without queuing work or changing a sent group's bytes. */
+function adoptCandidateRows(group: SentChatGroup, result: ChatGroupResult, previousRevision: string | undefined) {
+    if (!result.candidateRows?.length) return;
+    const chat = heldChat({ chaId: group.characterId, chatId: group.chatId });
+    const entry = pending.get(group.key);
+    const previous = parseRevisionToken(previousRevision);
+    const revision = parseRevisionToken(result.revision);
+    if (
+        result.stale ||
+        !chat ||
+        entry?.create ||
+        chatRevisions.get(group.key) !== result.revision ||
+        (previousRevision !== undefined && (previous?.epoch !== revision?.epoch || previous?.seq !== revision?.seq))
+    ) {
+        staleChats.add(group.key);
+        return;
     }
-    if (op.op === "append") return op.messages.some(namesFields);
-    if (op.op === "create" || op.op === "replace") return op.chat.message.some(namesFields);
-    return false;
+    const ops = entry?.ops ?? [];
+    const selecting = new Set(ops.filter((op) => op.op === "selectCandidate").map((op) => op.messageId));
+    let updated = false;
+    let queuedChanged = false;
+    for (const correction of result.candidateRows) {
+        const message = chat.message[positionOf(group.key, chat, correction.id)];
+        if (!message) continue;
+        if (correction.cleared) {
+            clearCandidateSnapshots(message);
+            for (const op of ops) {
+                if (op.op === "setMessage" && op.message.chatId === correction.id) {
+                    clearCandidateSnapshots(op.message);
+                } else if (op.op === "patchMessage" && op.id === correction.id) {
+                    // A patch's explicit checkpoint is intent; candidate snapshots are inherited copies.
+                    if (op.set) clearCandidateSnapshots(op.set, false);
+                } else {
+                    continue;
+                }
+                const before = beforeValues.get(op);
+                if (before && "value" in before && isPlainRecord(before.value)) {
+                    clearCandidateSnapshots(before.value as Pick<Message, "candidates" | "scriptstateCheckpoint">);
+                }
+                queuedChanged = true;
+            }
+            updated = true;
+        }
+        // A queued selection owns an optimistic increment and keeps its captured expectation.
+        if (!selecting.has(correction.id)) {
+            if (correction.candidatesRevision === null) delete message.candidatesRevision;
+            else message.candidatesRevision = correction.candidatesRevision;
+            updated = true;
+        }
+    }
+    if (updated) changed(group.key);
+    if (queuedChanged) dirtyChatJournal(group.key, "pending");
 }
 
 /**
@@ -5914,18 +5966,19 @@ export function ackChatWork(
                     result.stale ||
                     result.targets?.includes("missing") ||
                     result.selections?.includes("refused") ||
-                    group.ops.some(writesCandidateFields)) &&
+                    group.ops.some(writesWholeChatCandidateFields)) &&
                 result.revision !== null
             ) {
                 // A `missing` target changed nothing and is kept as a draft, without a discard:
                 // the idle read removes its local message. Recovered ops were never applied to the
                 // boot mirror, so even a fresh or duplicate acknowledgement needs the whole read.
-                // Refused selections and candidate counters from other writes also need that read.
+                // Refused selections and whole-chat candidate writes also need that read.
                 staleChats.add(group.key);
             }
             if (result.messageIds) {
                 adoptMessageIds(group, result.messageIds);
             }
+            adoptCandidateRows(group, result, previousRevision);
         }
         settleKey(group.key, group.seq);
         if (

@@ -114,6 +114,43 @@ afterEach(() => {
 });
 
 describe("background resource refreshes", () => {
+    it("saves a name-only whole-row edit of a candidate reply without a whole-chat read", async () => {
+        const { fake, chat, sync } = await boot();
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: fake.chat("c", "k")!.revision,
+                ops: [
+                    {
+                        op: "patchMessage",
+                        id: "c",
+                        set: {
+                            candidates: [
+                                { id: "first", data: "First" },
+                                { id: "second", data: "C" },
+                            ],
+                            selected: 1,
+                        },
+                    },
+                ],
+            },
+        ]);
+        chat.acceptRemoteChat(fake.chat("c", "k")!);
+        fake.requests.length = 0;
+        const before = plain(chat.findChat(refK)!.message.at(-1));
+        chat.replaceMessage(refK, { ...before, name: "Edited name" });
+        await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+
+        expect(fake.batchBodies().flatMap((body) => body.chats.flatMap((group: any) => group.ops))).toEqual([
+            { op: "setMessage", message: { ...before, name: "Edited name" } },
+        ]);
+        expect(fake.chat("c", "k")!.data.message.at(-1)).toEqual({ ...before, name: "Edited name" });
+        expect(plain(chat.findChat(refK))).toEqual(fake.chat("c", "k")!.data);
+        expect(reads(fake).flatMap((request) => request.body.chats ?? [])).toEqual([]);
+    });
+
     it("saves another chat and settings while a deferred chat reload is unanswered", async () => {
         const h = await boot();
         const { fake, sync, chat, settings } = h;

@@ -70,6 +70,29 @@ async function boot() {
 }
 
 describe("candidate switching through the save adapter", () => {
+    it("accepts the first candidate switch after an acknowledged append is deleted", async () => {
+        const { fake, chat, sync, switchCandidate, row } = await boot();
+        chat.appendMessage(refK, { chatId: "next", role: "user", data: "Next question" });
+        await sync.flushResources();
+        chat.removeMessages(refK, ["next"]);
+        await sync.flushResources();
+        fake.requests.length = 0;
+
+        await switchCandidate(refK, "c", "first");
+
+        expect(fake.chat("c", "k")!.data.message.at(-1)).toMatchObject({
+            chatId: "c",
+            data: "First",
+            selected: 0,
+            candidatesRevision: 3,
+        });
+        expect(row()).toMatchObject({ data: "First", selected: 0, candidatesRevision: 3 });
+        expect(fake.batchBodies().flatMap((body) => body.chats.flatMap((group: any) => group.ops))).toEqual([
+            { op: "selectCandidate", messageId: "c", candidateId: "first", expect: { candidatesRevision: 2 } },
+        ]);
+        expect(plain(chat.findChat(refK))).toEqual(fake.chat("c", "k")!.data);
+    });
+
     it("queues one stable-id switch with the mirror revision, applies it optimistically, and preserves the server's newer variable edit", async () => {
         const { fake, chat, sync, switchCandidate, row } = await boot();
         const revision = row().candidatesRevision!;

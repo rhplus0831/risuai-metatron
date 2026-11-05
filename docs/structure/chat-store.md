@@ -91,12 +91,13 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   enforced by the server ([chat writes](server-resources.md#chat-writes-and-checkpoints)) and the
   [restore floor](#restore-floor). A `remove` may carry `retract`,
   [a person's yes](structured-memory/lifecycle.md#retraction-and-edits).
-- A result on an older revision says `stale: true` and sets the acknowledged floor (`ackedRevisions`); an edit of a
-  message another writer removed answers `missing` and is kept as a recovery draft through the conflict listener
-  ([resource sync](resource-sync.md#conflicts)); an `append` whose anchor is gone is re-anchored and resent alone
-  (`reanchorGoneAppends`), and everything else takes the ordinary [recovery](resource-sync.md#chat-and-order-conflicts).
-- A refused `selectCandidate` (stale `candidatesRevision`, gone candidate, not the newest reply) reads `refused` in
-  `selections` and marks the chat stale.
+- A result on an older revision says `stale: true` and sets the acknowledged floor; an edit of a message another writer
+  removed answers `missing`, a recovery draft via the conflict listener ([resource sync](resource-sync.md#conflicts));
+  an `append` whose anchor is gone is re-anchored and resent alone; the rest take the ordinary
+  [recovery](resource-sync.md#chat-and-order-conflicts).
+- A result's `candidateRows` (counters, append-cleaned snapshots) reach the mirror and unsent ops
+  (`adoptCandidateRows`). A refused `selectCandidate` (stale counter, gone candidate, not the newest reply) marks the
+  chat stale.
 - An idle re-base can refresh a send still building its prompt without a lock: its baseline protects changes made
   meanwhile ([chat pipeline](chat-pipeline.md)).
 

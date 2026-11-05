@@ -400,6 +400,96 @@ describe("display install state", () => {
 });
 
 describe("mirror and queue", () => {
+    async function bootCandidateReply() {
+        const h = await boot(await StoreBackedServer.create({ feed: true }));
+        h.server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: h.server.chat("c", "k")!.revision,
+                ops: [
+                    {
+                        op: "patchMessage",
+                        id: "c",
+                        set: {
+                            data: "Second",
+                            candidates: [
+                                { id: "first", data: "First", scriptstateAfter: { $x: "1" } },
+                                { id: "second", data: "Second", scriptstateAfter: { $x: "2" } },
+                            ],
+                            selected: 1,
+                            scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "2" } },
+                        },
+                    },
+                ],
+            },
+        ]);
+        h.chat.acceptRemoteChat(h.server.chat("c", "k")!);
+        h.server.requests.length = 0;
+        return { ...h, row: () => h.chat.findChat(h.ref)!.message.find((message) => message.chatId === "c")! };
+    }
+
+    it("adopts append cleanup from the acknowledgement before ignoring its feed echo", async () => {
+        const { server, chat, ref, row, take, apply, ack } = await bootCandidateReply();
+        chat.appendMessage(ref, m("next", "Next question"));
+        const work = take();
+        const result = apply(work);
+        expect(row().scriptstateCheckpoint).toEqual({ before: { $x: "0" }, after: { $x: "2" } });
+        expect(row().candidatesRevision).toBe(1);
+
+        ack(work, result);
+        const expected = {
+            ...m("c", "Second", "char"),
+            candidates: [
+                { id: "first", data: "First" },
+                { id: "second", data: "Second" },
+            ],
+            selected: 1,
+            candidatesRevision: 2,
+        };
+        expect(clone(row())).toEqual(expected);
+        expect(server.chat("c", "k")!.data.message.find((message) => message.chatId === "c")).toEqual(expected);
+
+        const event = server.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("expected the committed append");
+        const change = event.changes.chats[0];
+        expect(change.revision).toBe(result.chats[0].revision);
+        expect(chat.noteRemoteChat(ref, change.revision, change.rowDelta ?? change.delta ?? change.patch)).toBe(
+            "ignored",
+        );
+        expect(clone(row())).toEqual(expected);
+        expect(
+            server.requests.filter((request) => request.path === "/api/resources/read" && request.body.chats?.length),
+        ).toEqual([]);
+    });
+
+    it.each(["after acknowledgement", "while append is in flight"] as const)(
+        "keeps cleaned snapshots out of a whole-row edit queued %s",
+        async (when) => {
+            const { server, chat, ref, row, take, apply, ack, commit } = await bootCandidateReply();
+            chat.appendMessage(ref, m("next", "Next question"));
+            const append = take();
+            const result = apply(append);
+            const edit = () => chat.replaceMessage(ref, { ...clone(row()), name: "Edited name" });
+            if (when === "while append is in flight") edit();
+            ack(append, result);
+            if (when === "after acknowledgement") edit();
+
+            const { work } = commit();
+            expect(work.groups[0].ops).toMatchObject([
+                { op: "setMessage", message: { chatId: "c", name: "Edited name" } },
+            ]);
+            const stored = server.chat("c", "k")!.data.message.find((message) => message.chatId === "c")!;
+            expect(stored).not.toHaveProperty("scriptstateCheckpoint");
+            expect(stored.candidates).toEqual([
+                { id: "first", data: "First" },
+                { id: "second", data: "Second" },
+            ]);
+            expect(stored).toMatchObject({ name: "Edited name", selected: 1, candidatesRevision: 2 });
+            expect(clone(row())).toEqual(stored);
+        },
+    );
+
     it("updates the mirror synchronously from detached copies of the input and the anchor", async () => {
         const { server, chat, ref, commit } = await boot();
         const input = m("x", "X");

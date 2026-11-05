@@ -152,7 +152,8 @@ export type TargetOutcome = "applied" | "missing";
 /**
  * A group's answer. For a group whose `groupId` the chat already applied, the answer that group got:
  * `revision` as of that group (older than the chat's current one when others wrote since), its
- * `stale`, `messageIds`, `translations`, `selections`, and `targets`, and every `checkpoints` entry `duplicate`.
+ * `stale`, `messageIds`, `translations`, `selections`, `candidateRows`, and `targets`, and every
+ * `checkpoints` entry `duplicate`.
  */
 export type ChatGroupResult = {
     characterId: string;
@@ -167,6 +168,13 @@ export type ChatGroupResult = {
     translations?: TranslationOutcome[];
     /** One entry per `selectCandidate` op, in op order; present whenever the group has one. */
     selections?: ("applied" | "refused")[];
+    /**
+     * Final candidate state for surviving rows cleaned by append or needing counter correction, in
+     * first-write order. `cleared` means append cleanup left no scriptstateCheckpoint or candidate
+     * scriptstateAfter after all ops. null means no stored counter; the writer drops its own.
+     * Omitted when empty; replayed unchanged at this group's revision.
+     */
+    candidateRows?: { id: string; candidatesRevision: number | null; cleared?: true }[];
     /**
      * One entry per `setText`, `setMessage`, `patchMessage`, and `setTranslation` op, in op order;
      * present only when one of them was `missing` (absent: every such op found its message).
