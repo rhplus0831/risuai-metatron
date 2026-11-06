@@ -221,14 +221,14 @@ hiding no `unseen`.
 | `requiredOverCap`     | It reads the tab's `memoryRequiredOverCap` failure mark.                    |
 | `pageOverBudget`      | It reads health's `overBudgetSections`.                                     |
 
-`watchChatVisibility` owns deferred read triggers and failed-read retention. `POST /health` can answer a prefix and the
-tab resumes ([routes](records.md#the-read-routes),
-[measurement](../../audit/structured-memory-health-read-2026-11-03.md)); contents' `health` feeds the same writer-line
-facts. A send's `writerState` gets `pending` with reason `repair` from in-hand `records.events`.
+`watchChatVisibility` owns read triggers. `readHealth` keeps facts on failure, drops a chat's answer older than its
+applied one, and resumes a prefix `POST /health` answers ([routes](records.md#the-read-routes),
+[measurement](../../audit/structured-memory-health-read-2026-11-03.md)); contents' `health` feeds the writer line. A
+send's `writerState` gets `pending` with reason `repair` from in-hand `records.events`.
 
-Job terminals reach `noteJobDone`. An `error` terminal with code `memoryRequiredOverCap` sets that chat's mark, a
-preview's included; a `done` terminal with a `messageId` clears only that chat's. `DefaultChatScreen` shows health under
-`ContextMeter` even with the meter off; pressing opens the panel. Character and folder badges use `groupHealthState` in
+In `noteJobDone`, an `error` terminal coded `memoryRequiredOverCap` sets that chat's mark, a preview's included; a
+`done` with a `messageId` clears only that chat's. `DefaultChatScreen` shows health under `ContextMeter` even with the
+meter off; pressing opens the panel. Character and folder badges use `groupHealthState` in
 `src/lib/SideBars/chatStatus.ts`.
 
 ## State

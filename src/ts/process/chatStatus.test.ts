@@ -764,6 +764,88 @@ async function settleHealth() {
     }
 }
 
+it("shares one walk of the characters' chats across reactive memory health readers", async () => {
+    await enableMemory();
+    view(a);
+    status.noteJobDone(b, { ...error, code: "memoryRequiredOverCap" });
+    const characters = await import("../storage/characterStore.svelte");
+    const { createProbe } = await import("../storage/tests/reactiveProbe.svelte");
+    const walk = vi.spyOn(characters, "characterList");
+    const readers = Array.from({ length: 3 }, () => {
+        const probe = createProbe(() => status.memoryHealthStates());
+        disposers.push(probe.dispose);
+        return probe;
+    });
+    for (const reader of readers) expect(reader.seen).toEqual([new Map()]);
+
+    walk.mockClear();
+    chat.setChatMeta(b, { pinned: true });
+    flushSync();
+    expect(walk).toHaveBeenCalledTimes(1);
+    for (const reader of readers) {
+        expect(reader.seen).toEqual([new Map(), new Map([[keyB, "requiredOverCap"]])]);
+    }
+});
+
+it("keeps newer health answers when a delayed boot read returns, applying request order per chat", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(100_000);
+    await enableMemory();
+    chat.setChatMeta(b, { pinned: true });
+    view(a);
+    const { hypaV3ModalOpen } = await import("../screenVisibility");
+    hypaV3ModalOpen.set(false);
+    const replies: ((response: Response) => void)[] = [];
+    stubs.healthFetch.mockImplementation((url) => {
+        expect(url).toBe("/api/memory/structured/health");
+        return new Promise((resolve) => replies.push(resolve));
+    });
+    const closePanel = async () => {
+        hypaV3ModalOpen.set(true);
+        await settleHealth();
+        hypaV3ModalOpen.set(false);
+        await settleHealth();
+    };
+    watch();
+    await settleHealth();
+    expect(replies).toHaveLength(1);
+    expect(JSON.parse(String(stubs.healthFetch.mock.calls[0][1]?.body))).toEqual({
+        chats: [
+            { characterId: "c", chatId: "k" },
+            { characterId: "c", chatId: "j" },
+        ],
+    });
+    await closePanel();
+    expect(replies).toHaveLength(2);
+    expect(JSON.parse(String(stubs.healthFetch.mock.calls[1][1]?.body))).toEqual({
+        chats: [{ characterId: "c", chatId: "k" }],
+    });
+    replies[1](Response.json({ health: [healthy] }));
+    await settleHealth();
+    expect(status.memoryHealthStates()).toEqual(new Map());
+    const stale = { ...healthy, storedStale: 1 };
+    replies[0](Response.json({ health: [stale, stale] }));
+    await settleHealth();
+    // Only the open chat has a newer answer; the pinned chat still takes its boot facts.
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyB, "staleEvents"]]));
+
+    // Starting a newer request must not discard an answer before the newer one has applied.
+    await closePanel();
+    await closePanel();
+    expect(replies).toHaveLength(4);
+    replies[2](Response.json({ health: [stale] }));
+    await settleHealth();
+    expect(status.memoryHealthStates()).toEqual(
+        new Map([
+            [keyA, "staleEvents"],
+            [keyB, "staleEvents"],
+        ]),
+    );
+    replies[3](Response.json({ health: [healthy] }));
+    await settleHealth();
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyB, "staleEvents"]]));
+});
+
 it("reads only pinned and open health on visibility triggers, resumes prefixes and keeps facts on failure", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(100_000);

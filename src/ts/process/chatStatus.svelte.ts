@@ -172,8 +172,9 @@ export function visibleChatKey(): string | null {
     return (selection.chatOpen || playground) && screen === (playground ? 2 : 0) ? chatStatusKey(ref) : null;
 }
 
-// The memory health badge. The facts are the server's last answer per chat status key, read for the
-// pinned chats and the open chat alone (`healthChatKeys`): after boot, for a chat newly pinned, for the
+// The memory health badge. Shared module-level deriveds select the chats (`healthChatKeys`) and compute
+// their states. Facts keep the newest applied request per chat status key; late older answers are ignored.
+// Reads cover the pinned chats and the open chat alone: after boot, for a chat newly pinned, for the
 // open chat as it opens and when the memory panel closes, and for every chat when the page comes back
 // after a minute. Never on a send or a task's end: the badge is a last observation. The open chat adds
 // what its newest report says, and this tab's mark of a send that failed because the required pages were
@@ -181,6 +182,9 @@ export function visibleChatKey(): string | null {
 
 /** The health facts last read per chat status key; null for a chat the server does not know. */
 const healthFacts = new SvelteMap<string, StructuredMemoryHealthFacts | null>();
+
+let healthReadGeneration = 0;
+const appliedHealthGenerations = new Map<string, number>();
 
 /** Chats whose last send failed because the required memory pages were over the cap, until their next good send. */
 const requiredOverCapChats = new SvelteSet<string>();
@@ -192,8 +196,8 @@ function structuredMemorySelected(): boolean {
     return settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
 }
 
-/** The chats that have a health state: the open chat first, then the pinned chats, by status key (reactive). */
-function healthChatKeys(): string[] {
+/** Shared derived keys for health states and reads: the open chat first, then the pinned chats. */
+const healthChatKeys = $derived.by((): string[] => {
     const keys: string[] = [];
     const open = currentChatRef();
     if (open && open.chaId !== "§playground") {
@@ -211,23 +215,31 @@ function healthChatKeys(): string[] {
         }
     }
     return keys;
-}
+});
 
 /**
- * Reads the health facts of `keys`, `MEMORY_HEALTH_CHATS_MAX` a request, and keeps each answer as it
- * comes. An answer is a prefix of its request, so the next request starts at the first key it left out.
- * A read that does not answer leaves what is held and throws nothing.
+ * Reads the health facts of `keys`, `MEMORY_HEALTH_CHATS_MAX` a request. A chat's answer applies only
+ * if its request is newer than that chat's last applied request. An answer is a prefix of its request,
+ * so the next request starts at the first key it left out. A failed read leaves what is held and throws nothing.
  */
 async function readHealth(keys: readonly string[]): Promise<void> {
     let start = 0;
     while (start < keys.length) {
         const chunk = keys.slice(start, start + MEMORY_HEALTH_CHATS_MAX);
+        const generation = ++healthReadGeneration;
         const result = await readStructuredMemoryHealth(chunk.map(keyRef));
         if (result.outcome !== "ok") {
             return;
         }
         const { health } = result.value;
-        health.forEach((facts, index) => healthFacts.set(chunk[index], facts));
+        health.forEach((facts, index) => {
+            const key = chunk[index];
+            if (generation <= (appliedHealthGenerations.get(key) ?? 0)) {
+                return;
+            }
+            healthFacts.set(key, facts);
+            appliedHealthGenerations.set(key, generation);
+        });
         start += health.length;
     }
 }
@@ -243,14 +255,7 @@ function newestMemoryReport(messages: readonly DeepReadonly<Message>[]): NonNull
     return null;
 }
 
-/**
- * The memory health state of each chat that has one (`memoryHealthState`), by status key: the pinned
- * chats and the open chat, while Structured Memory is the selected algorithm and the chat's character
- * has memory on (reactive). A chat not loaded is judged from its last read facts, so its stale count is
- * partial and it knows no gap; the open chat adds its newest report's gap against the preset's
- * `gapConfirmTokens`, its writer state, and its stale exclusions.
- */
-export function memoryHealthStates(): ReadonlyMap<string, MemoryHealthState> {
+const healthStates = $derived.by(() => {
     const states = new Map<string, MemoryHealthState>();
     if (!structuredMemorySelected()) {
         return states;
@@ -261,7 +266,7 @@ export function memoryHealthStates(): ReadonlyMap<string, MemoryHealthState> {
     })?.settings;
     const open = currentChatRef();
     const openKey = open ? chatStatusKey(open) : null;
-    for (const key of healthChatKeys()) {
+    for (const key of healthChatKeys) {
         const ref = keyRef(key);
         if (!findCharacter(ref.chaId)?.supaMemory) {
             continue;
@@ -282,6 +287,17 @@ export function memoryHealthStates(): ReadonlyMap<string, MemoryHealthState> {
         }
     }
     return states;
+});
+
+/**
+ * Returns the shared derived health states (`memoryHealthState`) by status key, current even outside
+ * a reactive context: the pinned chats and the open chat, while Structured Memory is selected and the
+ * chat's character has memory on. A chat not loaded is judged from its last read facts, so its stale
+ * count is partial and it knows no gap; the open chat adds its newest report's gap against the preset's
+ * `gapConfirmTokens`, its writer state, and its stale exclusions.
+ */
+export function memoryHealthStates(): ReadonlyMap<string, MemoryHealthState> {
+    return healthStates;
 }
 
 /**
@@ -365,7 +381,7 @@ export function watchChatVisibility(): () => void {
                 previousOpen = null;
                 return;
             }
-            const keys = healthChatKeys();
+            const keys = healthChatKeys;
             const ref = currentChatRef();
             const openKey = ref && ref.chaId !== "§playground" ? chatStatusKey(ref) : null;
             const opened = openKey !== null && openKey !== previousOpen ? openKey : null;
@@ -402,7 +418,7 @@ export function watchChatVisibility(): () => void {
                 return;
             }
             healthReadAt = Date.now();
-            const keys = untrack(healthChatKeys);
+            const keys = untrack(() => healthChatKeys);
             if (keys.length > 0) {
                 queueMicrotask(() => void readHealth(keys));
             }
@@ -451,6 +467,8 @@ export function resetChatStatusForTests(): void {
     unseenChatKeys.set(new Set());
     foreignJobs.set(new Map());
     healthFacts.clear();
+    healthReadGeneration = 0;
+    appliedHealthGenerations.clear();
     requiredOverCapChats.clear();
     healthReadAt = 0;
     foreignView = undefined;
