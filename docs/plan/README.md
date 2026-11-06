@@ -11,7 +11,7 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   base proof, pluginStorage client patches, the in-job memory task, panel freshness, receipts, writer
   provenance, rebuild threads, health reads, the late recheck gap), recorded and gone items leave the inbox
   in C1, and design-sized items are grouped for later plans. The sixteen open questions are answered (every recommendation accepted 2026-11-06).
-  Landed: A1, A3, A4, A5.
+  Landed: A1, A3, A4, A5, B1.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.

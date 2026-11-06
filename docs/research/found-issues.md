@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (15)
+- [Structured Memory](#structured-memory) (14)
 
 ## Chat store, sync, and change feeds
 
@@ -470,13 +470,6 @@ Untagged gate tests that depend on real wall-clock or scheduler time (invariant 
 
 Moved from the Structured Memory plan run on 2026-11-03. Each entry was re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here. The last five entries came from the Implementation Audit Fixes run (2026-11-05/06); the last two are its excluded audit findings.
 
-### Record now in a job is seen by one tab
-
-`server/src/prompt/memory/structured/recordJob.ts`: the blocking in-job path opens job-scoped progress only and sets no memory task status or `memoryTaskFenced` fence, so another tab's panel stays editable while it runs (the queued path does publish). `MemoryReceiptLine.svelte` `press` also shows "Recording requested" after any `done`, including one sent after the in-job run already finished, and a window that ends `skipped` puts its raw reason code into the English job error (`runWindows`). Slice 2d.
-
-**Why it matters:** D3 wants every tab read-only while the writer runs; the toast and the code read oddly.
-**Suggested handling:** publish a status for the in-job run, let `done` say which path ran, and map the reason through the language file.
-
 ### Receipt on a message with no generation info
 
 `writer.ts` `commitWindow` writes `generationInfo: { memory }` on a window message that had none, so with `requestInfoInsideChat` `Chat.svelte` shows a model button labelled "Unknown". `genInfo`, which holds `MemoryReceiptLine`, is not rendered in the `mobilechat` and `cardboard` themes, so no receipt line shows there. Slice 2d.
@@ -488,13 +481,12 @@ Moved from the Structured Memory plan run on 2026-11-03. Each entry was re-check
 
 In `src/ts/process/structuredMemory.svelte.ts` and `StructuredMemoryPanel.svelte`:
 
-- `memoryWriterNotice` reads `pluginModel` and `requestTrigger` only from the newest reply's receipt, because `jobMemoryBlockingReason` needs a job scope no route has, so before the first send the panel does not say "not recording automatically".
 - A checkpoint load refreshes the chat resource but not the panel's contents, so an open panel shows the records from before the load until refreshed. A stale edit is refused 409, so nothing is lost.
 - A copied or branched chat keeps `generationInfo.memory` while its runs stay behind (`structured/inherit.ts`), so a copied paused receipt can offer Resume on an empty Log.
 - `pressReset` reads the chat again only on `reset: true`. When the route committed but the answer was lost, the repeat answers `reset: false`, and the tab keeps the old value until the feed's notice comes.
 
 **Why it matters:** the panel says something untrue until a refresh or a send.
-**Suggested handling:** a scope-loading status read for the first item, a refresh on the chat's change frame, stripping copied receipts (or ignoring run-less ones), and reading on any reset answer.
+**Suggested handling:** a refresh on the chat's change frame, stripping copied receipts (or ignoring run-less ones), and reading on any reset answer.
 
 ### Cast slice matches substrings
 
