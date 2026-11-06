@@ -63,6 +63,7 @@ git show a72c5f736:docs/plan/render-work-budget.md
 git show f521f3d63:docs/plan/plugin-storage.md
 git show 7a4e8d113:docs/plan/reroll-candidates.md
 git show 607a33d74:docs/plan/implementation-audit-fixes.md
+git show e99fca9a7:docs/plan/store-memory-sweep.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -129,6 +130,7 @@ it is not a current architecture guide.
 | Reroll Candidates                        | `7a4e8d113`: `docs/plan/reroll-candidates.md`                             | [chat pipeline](../structure/chat-pipeline.md) (Reroll), [chat store](../structure/chat-store.md) (`selectCandidate`), [server generation](../structure/server-generation.md) (in-place reroll job), [memory](../structure/memory.md) (commit boundary), [backup sync hub](../structure/backup-sync-hub.md) (candidates on export and import)                                                                                                                                               |
 | Found Issues Sweep                       | `b37776a72`: `docs/plan/found-issues-sweep.md`                            | The owning guides' Known Hazards; the deferred groups and accepted notes stay in [found-issues](../research/found-issues.md)                                                                                                                                                                                                                                                                                                                                                                |
 | Implementation Audit Fixes               | `607a33d74`: `docs/plan/implementation-audit-fixes.md`                    | [server resources](../structure/server-resources.md), [server](../structure/self-host-server.md), [server generation](../structure/server-generation.md), [chat store](../structure/chat-store.md), [plugins](../structure/plugin-sandbox.md), [translation](../structure/translation.md), [CBS and rendering](../structure/cbs-rendering.md), [assets](../structure/assets.md) (Q1), the [structured memory](../structure/structured-memory/README.md) pages                               |
+| Chat Store and Structured Memory Sweep   | `e99fca9a7`: `docs/plan/store-memory-sweep.md`                            | [resource sync](../structure/resource-sync.md), [chat store](../structure/chat-store.md), [chat pipeline](../structure/chat-pipeline.md), [server resources](../structure/server-resources.md), [plugins](../structure/plugin-sandbox.md), [draft recovery](../structure/draft-recovery.md), the [structured memory](../structure/structured-memory/README.md) pages; the deferred groups' entries stay in [found-issues](../research/found-issues.md)                                      |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1218,6 +1220,24 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     copies, HypaV3 chunk scans, Lua image asset claims, transform snapshot aborts, the translator's status,
     eviction and provider switch, screenshot `@import` growth, embedded card base64 retention, bulk plugin
     character adds, the recheck trim's evidence, thread provenance, legacy window hashes).
+- Chat Store and Structured Memory Sweep:
+  - The 25 entries of the found-issues inbox's "Chat store, sync, and change feeds" and "Structured Memory" sections
+    (2026-11-06) each got a disposition; 21 file-cluster slices fixed the confirmed defects, and the owner accepted
+    every recommendation of Q1–Q16 the same day. All 21 landed on `dev` on 2026-11-06, from A1 (`54ee880aa`) to C1
+    (`40d47679e`); the archived Status line lists each slice's commit. B10 (memoizing token counts per selection)
+    is kept as an attempt and its revert (`de9e9ed21`, `2a0f07213`): only 9 of about 2,190 counts per send were
+    repeats, so `selectMemory` time did not drop; the cause is in found-issues "Evaluation findings".
+  - Deferred groups (read path budget, named-page matching, checkpoint save hold, plugin index reads, create-state
+    proof, Svelte's subscriber queue, refresh and trim costs) are in the archived plan's Deferred section; their
+    entries stay in `docs/research/found-issues.md`.
+  - Still open, browser checks: with two tabs on one chat, Record now inside a job shows the same memory task in
+    both (B1, `73b930395`); in the cardboard theme an expanded receipt's details overlap the bottom-right icon box
+    by about 3px (B3, `e3595f06f`); a follow lost to a dropped connection, then a same-page retake of that job,
+    shows the live stream (A2, `e295ee89b`; covered only by `generationJobs.test.ts`); the gray `unavailable`
+    health badge with its help icon (B8, `250932f90`).
+  - Found by the run: six entries in `docs/research/found-issues.md` (`6bdc08205`: the feed row base hash cost, two
+    more cyrb53 copies, pluginStorage plain-input adoption, boot replay sending a real `hypaV3Data`, preset
+    highlight settings in the writer fingerprint, `records.md`'s stale splitters sentence).
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.
