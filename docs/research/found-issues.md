@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (14)
+- [Structured Memory](#structured-memory) (13)
 
 ## Chat store, sync, and change feeds
 
@@ -525,10 +525,10 @@ Left by slice 7d. `splitPage` and `splitTimeline` in `src/ts/process/structuredM
 
 ### Health badge leftovers
 
-Left by slice 7e. `memoryHealthStates` (`src/ts/process/chatStatus.svelte.ts`) walks every character's chats on each recompute in three consumers (`Sidebar`, `MainMenu`, `DefaultChatScreen`). It does not exclude group chats; the `customPrompt` state that showed on them was removed on 2026-11-05, but nothing filters them out. The contents route calls `readHealth` with no byte budget.
+Left by slice 7e. The contents route calls `readHealth` with no byte budget.
 
-**Why it matters:** repeated walks, and a badge on a chat the writer never serves.
-**Suggested handling:** one shared derived, a group exclusion, and a budget on the contents read; measure first.
+**Why it matters:** a contents read of a huge chat is not bounded.
+**Suggested handling:** a budget on the contents read; measure first.
 
 ### Evaluation findings
 
@@ -571,10 +571,3 @@ Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it
 
 **Why it matters:** an imported personal thread stops reaching the prompt after a rebuild, and the panel cannot repair its `who`.
 **Suggested handling:** keep the identities retained threads need, or remap their references at the swap; test with a non-empty `who`.
-
-### A delayed health answer overwrites a newer badge
-
-Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): a reordered advisory read after a repair. `readHealth` in `src/ts/process/chatStatus.svelte.ts` (~220) accepts every answer, so a delayed boot or chat-open read that returns after a post-repair read puts the badge back to `staleEvents` until the next eligible refresh. Source: [C7](../manual-audit/archive/structured-memory-2026-11-05.md#c7--p3-a-delayed-health-response-can-undo-a-newer-post-repair-badge).
-
-**Why it matters:** the badge can claim stale memory right after a successful repair.
-**Suggested handling:** a request generation per chat in `readHealth` is cheap when that function is next touched; add a reordered-response test.
