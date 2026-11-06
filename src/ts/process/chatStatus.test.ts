@@ -1,6 +1,6 @@
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GenerationEvent, GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import type { GenerationCurrent, GenerationEvent, GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import type { ChatRef } from "../storage/chatStore.svelte";
 import { warmModules } from "../storage/tests/mutationStoresHarness";
 
@@ -100,6 +100,7 @@ vi.mock("./modules", () => ({
 
 let status: typeof import("./chatStatus.svelte");
 let commands: typeof import("./serverCommands");
+let generationJobs: typeof import("../network/generationJobs");
 let chat: typeof import("../storage/chatStore.svelte");
 let selection: typeof import("../storage/selection.svelte");
 let flushSync: (typeof import("svelte"))["flushSync"];
@@ -117,6 +118,13 @@ function view(ref: ChatRef) {
     chat.selectChat(ref.chaId, ref.chatId);
     selection.PlaygroundStore.set(ref.chaId === "§playground" ? 2 : 0);
     selection.setChatOpen(true);
+}
+
+async function settleForeignRead() {
+    flushSync();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
 }
 
 async function attach(jobId: string, ref: ChatRef) {
@@ -186,6 +194,8 @@ beforeEach(async () => {
     selection.selectCharacter(null);
     selection.PlaygroundStore.set(0);
     commands = await import("./serverCommands");
+    generationJobs = await import("../network/generationJobs");
+    vi.mocked(generationJobs.readChatGeneration).mockReset().mockResolvedValue(null);
     status = await import("./chatStatus.svelte");
     status.resetChatStatusForTests();
 });
@@ -318,6 +328,169 @@ describe("chat status sources", () => {
         chat.releaseFeedLocks();
         flushSync();
         expect(get(status.foreignJobs)).toEqual(new Map([[keyB, "lockless-command"]]));
+    });
+
+    it("clears an idle command's foreign mark on its next transcript visibility without rereading while visible", async () => {
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        const { settingsOpen } = await import("../screenVisibility");
+        view(a);
+        watch();
+        await settleForeignRead();
+        status.noteForeignJob(a, "command");
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+        expect(status.foreignJobChatKeys()).toEqual(new Set([keyA]));
+
+        settingsOpen.set(true);
+        await settleForeignRead();
+        expect(status.visibleChatKey()).toBeNull();
+        expect(read).not.toHaveBeenCalled();
+        settingsOpen.set(false);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledExactlyOnceWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map());
+        // This is the screen's source for offering its extra Stop button.
+        expect(status.foreignJobChatKeys()).toEqual(new Set());
+
+        status.noteForeignJob(a, "next-command");
+        chat.setMessageText(a, "m2", "updated transcript");
+        await settleForeignRead();
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "next-command"]]));
+        expect(read).toHaveBeenCalledTimes(1);
+    });
+
+    it("reconciles foreign and owned answers once per page return or visible online event", async () => {
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+        const showPage = (visible: boolean) => {
+            visibility.mockReturnValue(visible ? "visible" : "hidden");
+            document.dispatchEvent(new Event("visibilitychange"));
+        };
+        showPage(true);
+        view(a);
+        watch();
+        status.noteForeignJob(a, "command");
+        read.mockResolvedValue({ jobId: "command", kind: "command", owned: false });
+        showPage(false);
+        await settleForeignRead();
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+
+        showPage(true);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledExactlyOnceWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "command"]]));
+        showPage(true);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledTimes(1);
+
+        read.mockResolvedValue({ jobId: "replacement", kind: "command", owned: false });
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "replacement"]]));
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledTimes(2);
+
+        read.mockResolvedValue({ jobId: "owned", kind: "command", owned: true });
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledTimes(3);
+        expect(get(status.foreignJobs)).toEqual(new Map());
+        expect(read.mock.calls).toEqual([[a], [a], [a]]);
+    });
+
+    it("silently keeps a foreign mark after a failed read until the next online event", async () => {
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        const alerts = await import("../alert");
+        vi.mocked(alerts.alertError).mockClear();
+        vi.mocked(alerts.alertToast).mockClear();
+        status.noteForeignJob(a, "command");
+        read.mockRejectedValueOnce(new Error("offline"));
+        watch();
+        view(a);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledExactlyOnceWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "command"]]));
+        expect(alerts.alertError).not.toHaveBeenCalled();
+        expect(alerts.alertToast).not.toHaveBeenCalled();
+
+        chat.setMessageText(a, "m2", "still visible");
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledTimes(1);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "command"]]));
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(get(status.foreignJobs)).toEqual(new Map());
+    });
+
+    it("keeps a newer foreign mark when a late read would clear or replace the old mark", async () => {
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        watch();
+        const answers: (GenerationCurrent | null)[] = [
+            null,
+            { jobId: "owned", kind: "command", owned: true },
+            { jobId: "replacement", kind: "command", owned: false },
+        ];
+        for (const [index, answer] of answers.entries()) {
+            selection.setChatOpen(false);
+            await settleForeignRead();
+            status.noteForeignJob(a, `old-${index}`);
+            let resolve!: (current: GenerationCurrent | null) => void;
+            read.mockImplementationOnce(
+                () =>
+                    new Promise((settle) => {
+                        resolve = settle;
+                    }),
+            );
+            view(a);
+            await settleForeignRead();
+            expect(read).toHaveBeenCalledTimes(index + 1);
+            status.noteForeignJob(a, `new-${index}`);
+            resolve(answer);
+            await settleForeignRead();
+            expect(get(status.foreignJobs)).toEqual(new Map([[keyA, `new-${index}`]]));
+            expect(read).toHaveBeenCalledTimes(index + 1);
+        }
+    });
+
+    it("skips locked and followed chats and reads only on a later visibility event after they end", async () => {
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        chat.noteRemoteStreaming([
+            { characterId: a.chaId, id: a.chatId, streaming: [{ messageId: "m1", generationId: "g", seq: 0 }] },
+        ]);
+        commands.followedJobs.set(new Map([["followed", keyB]]));
+        watch();
+        status.noteForeignJob(a, "locked");
+        status.noteForeignJob(b, "followed");
+        view(a);
+        await settleForeignRead();
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+        expect(get(status.foreignJobs).get(keyA)).toBe("locked");
+        chat.releaseFeedLocks();
+        await settleForeignRead();
+        expect(get(status.foreignJobs).has(keyA)).toBe(false);
+        expect(read).not.toHaveBeenCalled();
+
+        view(b);
+        await settleForeignRead();
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+        commands.followedJobs.set(new Map());
+        status.noteForeignJob(b, "ended-command");
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+        view(a);
+        await settleForeignRead();
+        view(b);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledExactlyOnceWith(b);
+        expect(get(status.foreignJobs)).toEqual(new Map());
     });
 
     it("only a done reply outside the chat visible at completion becomes unseen", async () => {

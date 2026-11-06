@@ -180,7 +180,9 @@ stage.
   confirmation wait is not bounded.
 - A 409 `jobChanged` reads and confirms the replacement; 404 clears the mark and stops nothing.
 - A successful stop leaves the mark through abort grace; a later idle lookup, an owned/followed lookup, the release of
-  that chat's server lock, or a new local send/follow clears it.
+  that chat's server lock, or a new local send/follow clears it. `watchChatVisibility` looks up an unlocked, unfollowed
+  marked chat once as it becomes visible or the page comes back online, never polling; another foreign job replaces the
+  mark, a failed read keeps it.
 - Creator viewers and current workers use the followed-job Stop, with `HandoffControls.svelte` beside it (Take back for
   `viewingJobs`, Hand off to a worker); pending/former workers use the foreign-job Stop. Participant and chat stops
   attribute the stopper; request-id cancel remains an ordinary silent abort.
@@ -436,8 +438,6 @@ In `shared/lore/activation.ts`.
 
 ### Gotchas
 
-- A foreign-job mark of a job this tab never saw a lock for (a command without a generation lock, or a feed that lagged)
-  stays until a click looks the chat up. It only shows the extra Stop and never blocks Send.
 - `editChat`/`editChatSync` (`src/ts/storage/chatEdits.ts`) capture the baseline before their edit works on its copy, so
   they keep another writer's change to a field the edit left alone; where both changed one field, the edit's value wins.
   A plugin's whole-chat setter captures its baseline only at the call ([plugins](plugin-sandbox.md)).

@@ -30,7 +30,8 @@ import { readStructuredMemoryHealth } from "src/ts/process/structuredMemory.svel
 import { bookmarkListOpen, gridOpenStore, hypaV3ModalOpen, settingsOpen } from "src/ts/screenVisibility";
 import { messageSearchPanel } from "src/ts/messageSearch.svelte";
 import { popUpEditorStore } from "src/ts/popupEditorSession.svelte";
-import { isPageVisible } from "src/ts/pageVisibility.svelte";
+import { readChatGeneration } from "src/ts/network/generationJobs";
+import { isPageVisible, pageRecoveryVersion } from "src/ts/pageVisibility.svelte";
 
 const MAX_UNSEEN_CHATS = 256;
 
@@ -283,7 +284,12 @@ export function memoryHealthStates(): ReadonlyMap<string, MemoryHealthState> {
     return states;
 }
 
-/** Starts the tab's visibility and new-follow cleanup, and the health reads; the caller owns the returned disposer. */
+/**
+ * Starts the tab's visibility and new-follow cleanup, and the health reads; the caller owns the returned disposer.
+ * A lockless foreign mark is reconciled once when its chat becomes visible or the page comes back
+ * online while that chat is visible, unless this tab follows the chat. Mark changes do not trigger
+ * reads, overlapping reads of a chat are skipped, and failed reads keep the mark without retrying.
+ */
 export function watchChatVisibility(): () => void {
     return $effect.root(() => {
         $effect(() => {
@@ -306,6 +312,35 @@ export function watchChatVisibility(): () => void {
                 // is shown (outside the effect; `readChatAgain` writes chat state).
                 queueMicrotask(() => readChatAgain(keyRef(key)));
             }
+        });
+
+        const visibleKey = $derived(visibleChatKey());
+        const readingForeignJobs = new Set<string>();
+        $effect(() => {
+            const key = visibleKey;
+            pageRecoveryVersion();
+            if (key === null || readingForeignJobs.has(key)) return;
+            const expectedJobId = untrack(() => {
+                if (lockedChatKeys().has(key) || [...get(followedJobs).values()].includes(key)) return;
+                return get(foreignJobs).get(key);
+            });
+            if (expectedJobId === undefined) return;
+            readingForeignJobs.add(key);
+            queueMicrotask(async () => {
+                const ref = keyRef(key);
+                try {
+                    const current = await readChatGeneration(ref);
+                    if (!current || current.owned || get(followedJobs).has(current.jobId)) {
+                        clearForeignJob(ref, expectedJobId);
+                    } else if (current.jobId !== expectedJobId && get(foreignJobs).get(key) === expectedJobId) {
+                        noteForeignJob(ref, current.jobId);
+                    }
+                } catch {
+                    // A failed observation leaves the mark until the next visibility or online event.
+                } finally {
+                    readingForeignJobs.delete(key);
+                }
+            });
         });
 
         let previousLocks = lockedChatKeys();
