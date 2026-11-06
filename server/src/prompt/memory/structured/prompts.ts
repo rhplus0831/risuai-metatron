@@ -150,6 +150,7 @@ const PATCH_RULES = `Rules:
 - An upsert replaces the section's whole text, so repeat what stays true in it.
 - A locked section shows at most a short excerpt for context; never patch it or a section listed under notShown, and never leave a page with no text.
 - A character page uses only the headings it lists, and a heading marked empty has no text yet.
+- identity holds what lasts about the character: name, role, appearance, background, and defining traits. When the event reveals a new one or changes one for good, upsert identity with it; passing moods and situations belong in currentState.
 - knowledge holds only facts the character will act on later, one short line each, and need not repeat the event's knowledge items, which are already recorded.
 - relationships is one line per other character, - <name>: <current standing>, and a change replaces that character's line instead of adding another.
 - A section marked userCorrected holds a person's words: change it only when the event contradicts them.
