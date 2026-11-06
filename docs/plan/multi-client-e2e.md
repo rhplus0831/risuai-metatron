@@ -1,6 +1,6 @@
 # Multi-Client Data Safety Checks Plan
 
-Status: drafted 2026-11-06; landed: C (cd6a59c01). Source: the same day's review of how this app and the sibling forks (PocketRisu, RisuBard,
+Status: drafted 2026-11-06; landed: C (cd6a59c01), A (a6e31d33b). Source: the same day's review of how this app and the sibling forks (PocketRisu, RisuBard,
 HaejeokRisuai, RisuNest, risuai-fastify) handle clients that write the same data, against the guides
 [resource-sync](../structure/resource-sync.md), [live-updates](../structure/live-updates.md),
 [chat-store](../structure/chat-store.md), [server-resources](../structure/server-resources.md),
