@@ -362,8 +362,8 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   `warmVectors` caches them, so a cold cache (a model change, an import) loses semantic matches for a send.
 - `readMemoryRecords` parses every page whole on every send, up to 60 history entries each that the prompt never reads.
   The store has no read without them.
-- Name matching ignores `loreSettings.fullWordMatching`, so a short alias such as "Al" also finds "also": an extra
-  candidate, never a wrong record.
+- Writer cast and read path share `pageNamedInTexts`, which ignores `fullWordMatching`: alias "Al" finds "also", an
+  extra row, never a wrong record.
 - A copied or branched chat carries its receipts along with its messages.
 - The tab hashes on the main thread: about 230 ms for 14 MiB of cited messages once per tab mount, in a VM. A streaming
   reply costs nothing, because the memo hashes only what changed and an unrecorded reply is cited by nothing.

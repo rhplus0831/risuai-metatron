@@ -27,9 +27,10 @@ import { parseRestoredRecords, type RestoredRecords } from "./restore.ts";
  *   no second shape check. Before that, what the store would refuse whole is refused per file instead: an
  *   id that is no resource id, a stored text over `MAX_READ_RESPONSE_BYTES`, an id a file of the kind
  *   already used, a second scene page. Nothing is cut.
- * - Pages come back with an empty history, since the package holds none. A package before `threads.md`
- *   (`packageVersion` 1) imports with its events' `openThreads.close` and `transitions` dropped, under one
- *   `missingThreads` notice, because those name threads the package cannot hold.
+ * - Pages come back live, discarding any `trashedAt` metadata, and with an empty history, since the
+ *   package holds none. A package before `threads.md` (`packageVersion` 1) imports with its events'
+ *   `openThreads.close` and `transitions` dropped, under one `missingThreads` notice, because those name
+ *   threads the package cannot hold.
  */
 
 /** The records a package holds, ready for `store.memory.write`, and what stayed out. */
@@ -254,14 +255,19 @@ type Taken = { pages: Set<string>; events: Set<string>; threads: Set<string>; sc
 
 /**
  * `record` of `kind` as the store would take it, or the refusal it would make: an id that is no resource
- * id, one already taken, a second scene page, a scene page in the trash, a stored text over the read
- * budget, or a shape `parseRestoredRecords` refuses. A record that passes takes its id.
+ * id, one already taken, a second scene page, a stored text over the read budget, or a shape
+ * `parseRestoredRecords` refuses. Pages discard `trashedAt` on a copy before the checks, so every
+ * imported page is live. A record that passes takes its id.
  */
 function admitted(
     kind: keyof RestoredRecords,
     record: Record<string, unknown>,
     taken: Taken,
 ): MemoryPage | MemoryEventWrite | MemoryThread | Omit<StructuredMemoryImportRefusal, "file"> {
+    if (kind === "pages") {
+        const { trashedAt, ...live } = record;
+        record = live;
+    }
     const { id } = record;
     if (!isValidResourceId(id)) {
         return { reason: "invalidId" };
@@ -272,9 +278,6 @@ function admitted(
     const scene = kind === "pages" && record.type === "scene";
     if (scene && taken.scene) {
         return { reason: "secondScene", detail: id };
-    }
-    if (scene && record.trashedAt !== undefined) {
-        return { reason: "shape", detail: "the scene page cannot be in the trash" };
     }
     let text: string;
     try {

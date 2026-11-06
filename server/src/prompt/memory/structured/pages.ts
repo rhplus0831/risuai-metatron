@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { truncateCheckpointText as clampText } from "../../../../../shared/chatCheckpoints.ts";
 import type { Message } from "../../../../../shared/database.ts";
+import { type LoreSearchScope, searchMatch } from "../../../../../shared/lore/activation.ts";
 import {
     type MemoryEvent,
     type MemoryHistoryChangeKind,
@@ -29,7 +30,7 @@ import type { EditStamp } from "./edits.ts";
  * is in `patches.ts`.
  *
  * - Names: a name key is a name trimmed and lower-cased. A title and an alias match by whole key against
- *   a create, and as a substring of a window's messages for the cast.
+ *   a create, and by lore's plain-key matching against a window's messages for the cast.
  * - Seeds: lore entries and group members tie names together, but only code reads them and they never
  *   stand in for a model's confidence. A lore entry matches on its name alone: an entry named "Rivals"
  *   and keyed `Alice,Bob` says nothing about Alice and Bob being one subject.
@@ -158,6 +159,34 @@ function pageNames({ title, aliases }: Pick<MemoryPage, "title" | "aliases">): s
     return [title, ...aliases].map(nameKey).filter((key) => key !== "");
 }
 
+/** Whether a page's title or aliases name it in `texts`, by lore's plain-key matching. */
+export function pageNamedInTexts(
+    { title, aliases }: Pick<MemoryPage, "title" | "aliases">,
+    texts: readonly string[],
+): boolean {
+    const rows = texts.map((data) => ({ role: "char" as const, data }));
+    const scope: LoreSearchScope = {
+        host: { findCharacterName: () => undefined, testRegex: () => false },
+        userName: "",
+        charName: "",
+        recursivePrompt: [],
+        matchLog: [],
+    };
+    // Plain keys keep the search synchronous.
+    return (
+        searchMatch(
+            rows,
+            {
+                keys: [title, ...aliases],
+                searchDepth: rows.length,
+                fullWordMatching: false,
+                dontSearchWhenRecursive: true,
+            },
+            scope,
+        ) === true
+    );
+}
+
 /** Whether `page` goes by one of `names`. */
 function namedBy(page: MemoryPage, names: ReadonlySet<string>): boolean {
     return pageNames(page).some((key) => names.has(key));
@@ -216,19 +245,19 @@ function castRow(page: MemoryPage): CastRow {
 
 /**
  * The pages a recording's prompt lists, at most `promptPages`, in this order: `always` pages, the scene's
- * participants, then pages whose title or alias is a case-insensitive substring of `messages`. The
+ * participants, then pages named in `messages` by lore's plain-key matching (`pageNamedInTexts`). The
  * scene page itself is left out: it has its own slot. Each row holds id, type, title, aliases, last
  * state and section summaries; row count and text sizes are capped, so prompt cost stays bounded.
  */
 export function castSlice(pages: readonly MemoryPage[], messages: readonly Pick<Message, "data">[]): CastRow[] {
     const scene = pages.find(({ type }) => type === "scene");
     const listed = pages.filter((page) => page !== scene);
-    const texts = messages.map(({ data }) => data.toLowerCase());
+    const texts = messages.map(({ data }) => data);
     const present = new Set(scene?.participants ?? []);
     const picked = new Set([
         ...listed.filter(({ contextMode }) => contextMode === "always"),
         ...listed.filter(({ id }) => present.has(id)),
-        ...listed.filter((page) => pageNames(page).some((key) => texts.some((text) => text.includes(key)))),
+        ...listed.filter((page) => pageNamedInTexts(page, texts)),
     ]);
     return [...picked].slice(0, LIMITS.promptPages).map(castRow);
 }

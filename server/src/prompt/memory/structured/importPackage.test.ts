@@ -8,6 +8,42 @@ import { parseMemoryPackage } from "./importPackage.ts";
 const pageText =
     '---\nid: "place"\ntype: "location"\ntitle: "Place"\naliases: []\ncontextMode: "auto"\nlinks: []\nretrieval: {"keywords":[]}\nsections: [{"heading":"Facts","provenance":[],"sources":[],"locked":false,"updatedAt":1,"bodyLines":1}]\n---\n\n## Facts\n\nAt the harbor\n\n';
 
+it.each(["location", "scene"] as const)("imports a %s page with trashedAt metadata as a live page", (type) => {
+    const contextMode = type === "scene" ? "always" : "auto";
+    const text = pageText
+        .replace('type: "location"', `type: ${JSON.stringify(type)}`)
+        .replace('contextMode: "auto"', `contextMode: ${JSON.stringify(contextMode)}\ntrashedAt: 123`);
+    const parsed = parseMemoryPackage([{ path: `pages/${type}/place.md`, text }]);
+    expect(parsed).toStrictEqual({
+        pages: [
+            {
+                id: "place",
+                type,
+                title: "Place",
+                aliases: [],
+                contextMode,
+                links: [],
+                retrieval: { keywords: [] },
+                sections: [
+                    {
+                        heading: "Facts",
+                        body: "At the harbor",
+                        provenance: [],
+                        sources: [],
+                        locked: false,
+                        updatedAt: 1,
+                    },
+                ],
+                history: [],
+            },
+        ],
+        events: [],
+        threads: [],
+        refusals: [],
+    });
+    expect(parsed.pages[0]).not.toHaveProperty("trashedAt");
+});
+
 it("refuses bad files individually without losing valid pages or polluting prototypes", () => {
     const files = [
         { path: "pages/location/good.md", text: pageText.replace('id: "place"', 'id: "good"') },

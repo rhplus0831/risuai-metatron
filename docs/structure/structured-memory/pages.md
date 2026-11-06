@@ -70,8 +70,8 @@ inactive decorator. This chat write is outside the memory revision and fence.
 1. `importPackage` calls `importStructuredMemoryPackage`; `packageFiles` unzips with fflate in the tab, refusing
    `tooLarge` past `MEMORY_RESTORE_BODY_BYTES` (the server's `restoreBodyBytes` cap), and sends Markdown to
    `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/import`, so the server never sees a zip.
-2. The route calls `parseMemoryPackage`, which reads the renderers' grammar and validates each record through
-   `parseRestoredRecords` in `server/src/prompt/memory/structured/restore.ts`. File and event refusals return in
+2. The route calls `parseMemoryPackage`, which reads the renderers' grammar, drops `trashedAt` so every page imports
+   live, and validates each record through `parseRestoredRecords` in `restore.ts`. File and event refusals return in
    `StructuredMemoryImportAnswer`.
 3. After parsing, the route checks the epoch, fence, and emptiness, then commits what stands in one `store.memory.write`
    at the tab's revision, without yielding. Only a chat with no rows, trash and runs included, and no `chatAdoptionHold`
@@ -121,7 +121,8 @@ inactive decorator. This chat write is outside the memory revision and fence.
   and the fence, the revision, and the shared step, the last with a microtask queued from the fence's own read.
 - `structured/importPackage.test.ts` reads `server/src/tests/fixtures/memoryPackage.json`, literal rendered files with
   bodies that hold the grammar's own delimiters. A server test cannot import the tab's renderers, so
-  `src/ts/process/structuredMemory.test.ts` keeps the fixture true to them.
+  `src/ts/process/structuredMemory.test.ts` keeps the fixture true to them and reads their output back through
+  `parseMemoryPackage`. `structured/pages.test.ts` unit-tests the page tools.
 - `structured/rebuild.test.ts` and `structured/inherit.test.ts` drive a `reshaped` page through a seed and a branch.
 - `memoryStore.test.ts` and `restoreStage.test.ts` drive trash through a checkpoint, a snapshot, and a swap.
 - `src/ts/process/structuredMemory.test.ts` drives the client with `authFetch` scripted, and
@@ -134,24 +135,21 @@ inactive decorator. This chat write is outside the memory revision and fence.
 
 ### Limitations
 
+Decisions: Structured Memory slice 7d, archive, unless an entry names another.
+
 - A rollback brings trash back quietly. An older build lists a `trashed` row in `contents.pages` and takes the true type
   from the record, so a trashed page reaches its sends and writer again, while its panel tree, which groups by known
   types, hides the row. A write there sets the column to the true type and keeps `trashedAt`; after rolling forward that
-  page reads as live until a tool writes it, and its detail shows Restore. Decision: Structured Memory slice 7d,
-  archive.
+  page reads as live until a tool writes it, and its detail shows Restore.
 - An older build refuses a chat file holding a `merge` or `split` history entry whole, since its `restore.ts` checks the
-  closed list. Decision: Structured Memory slice 7d, archive.
-- Trash has no size limit or expiry: a page stays until a person deletes it forever. Decision: Structured Memory slice
-  7d, archive.
+  closed list.
+- Trash has no size limit or expiry: a page stays until a person deletes it forever.
 - After a rebuild or a merge, a restored page can cite events that no longer exist. An id naming no event is not
-  retracted, so nothing flags it. Decision: Structured Memory slice 7d, archive.
+  retracted, so nothing flags it.
 - What a person took back on a merge's source stays on the trashed source, so the writer can propose it on the target.
-  Decision: Structured Memory slice 7d, archive.
 - A branch keeps a reshaped page's text from past the branch point, flagged `unsupported` where a section names a behind
-  event, and a send shows that text. Decision: Structured Memory slice 7d, archive.
+  event, and a send shows that text.
 - The lorebook entry can be lost to a stale whole-array write of `localLore` from another tab, as any lore edit can.
-  Decision: Structured Memory slice 7d, archive.
-- A package past `MEMORY_RESTORE_BODY_BYTES` cannot be imported, though rounds can export it. Decision: Structured
-  Memory slice 7d, archive.
+- A package past `MEMORY_RESTORE_BODY_BYTES` cannot be imported, though rounds can export it.
 - Hand edits have no round-trip guarantee: a mismatched body line count refuses the file. Decision: Structured Memory
   D5, archive.

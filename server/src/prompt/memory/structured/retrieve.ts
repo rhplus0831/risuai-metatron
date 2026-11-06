@@ -1,5 +1,4 @@
 import { truncateCheckpointText as clampText } from "../../../../../shared/chatCheckpoints.ts";
-import { type LoreSearchScope, searchMatch } from "../../../../../shared/lore/activation.ts";
 import {
     type CharacterSectionSlot,
     MEMORY_STALE_REASONS,
@@ -22,7 +21,7 @@ import {
 import type { MemoryHost } from "../host.ts";
 import { eventLine, evidenceLine, flattened, flowLine, type PageKnowledge, pageLine, threadLine } from "./card.ts";
 import { type ExcludedItem, itemKey, type Lane, type LaneCandidate, type RawWindow, type ReadEntry } from "./lanes.ts";
-import { sectionVectorText } from "./pages.ts";
+import { pageNamedInTexts, sectionVectorText } from "./pages.ts";
 
 /**
  * What a send's lanes offer the card, from the records and the prompt's own entries.
@@ -771,39 +770,21 @@ function requiredPages(reading: PageReading): LaneOffer {
 }
 
 /** The pages found on stage or by name, and those one link from them, by id. */
-async function foundPages(
+function foundPages(
     { visible, stage }: Pick<PageReading, "visible" | "stage">,
     entries: readonly ReadEntry[],
-): Promise<Map<string, PageMatch>> {
-    // Keep the last pageNameMessages rows; `searchMatch` scans them all with their count as its depth.
-    const rows = entries
+): Map<string, PageMatch> {
+    // Keep the last pageNameMessages texts; `pageNamedInTexts` scans them all.
+    const texts = entries
         .filter(hasText)
         .slice(-RETRIEVAL_LIMITS.pageNameMessages)
-        .map(({ role, text }) => ({ role: role ?? ("char" as const), data: text }));
-    const scope: LoreSearchScope = {
-        host: { findCharacterName: () => undefined, testRegex: () => false },
-        userName: "",
-        charName: "",
-        recursivePrompt: [],
-        matchLog: [],
-    };
-    const named = ({ title, aliases }: MemoryPage) =>
-        searchMatch(
-            rows,
-            {
-                keys: [title, ...aliases],
-                searchDepth: rows.length,
-                fullWordMatching: false,
-                dontSearchWhenRecursive: true,
-            },
-            scope,
-        );
+        .map(({ text }) => text);
 
     const found = new Map<string, PageMatch>();
     for (const page of visible) {
         if (stage.has(page.id)) {
             found.set(page.id, "onStage");
-        } else if (await named(page)) {
+        } else if (pageNamedInTexts(page, texts)) {
             found.set(page.id, "named");
         }
     }
@@ -950,7 +931,7 @@ export async function prepareRetrieval(input: RetrievalInput) {
     );
     const scene = pages.find(({ type }) => type === "scene");
     const visible = pages.filter((page) => page !== scene && page.contextMode !== "never");
-    const found = await foundPages({ visible, stage }, entries);
+    const found = foundPages({ visible, stage }, entries);
     const reading: PageReading = {
         pages,
         scene,

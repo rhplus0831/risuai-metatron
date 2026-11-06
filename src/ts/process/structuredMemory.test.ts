@@ -5,7 +5,14 @@ import type { Message } from "../../../shared/database.ts";
 import { strFromU8, strToU8, zipSync, unzipSync } from "fflate";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
-import type { MemoryEvent, MemoryPage, MemorySource } from "../../../shared/structuredMemory.ts";
+import type {
+    MemoryEvent,
+    MemoryPage,
+    MemorySource,
+    MemoryThread,
+    StructuredMemoryImportFile,
+    StructuredMemoryImportRefusal,
+} from "../../../shared/structuredMemory.ts";
 import { setEpochMismatchListener, setResourceEpoch } from "../storage/resourceClient";
 import {
     readStructuredMemoryCost,
@@ -165,59 +172,17 @@ it("exports every Log round using decreasing inclusive seq cursors", async () =>
     ]);
 });
 
-/** Read only metadata and its advertised lengths; never search the bodies for Markdown delimiters. */
-function metadata(lines: string[], start: number, end: string) {
-    const fields: Record<string, any> = {};
-    let cursor = start;
-    while (cursor < lines.length && lines[cursor] !== end) {
-        const colon = lines[cursor].indexOf(": ");
-        expect(colon).toBeGreaterThan(0);
-        fields[lines[cursor].slice(0, colon)] = JSON.parse(lines[cursor].slice(colon + 2));
-        cursor++;
-    }
-    expect(lines[cursor]).toBe(end);
-    return { fields, next: cursor + 2 };
-}
-
-function splitPage(text: string) {
-    const lines = text.split("\n");
-    expect(lines[0]).toBe("---");
-    const header = metadata(lines, 1, "---");
-    let cursor = header.next;
-    const bodies: string[] = [];
-    for (const section of header.fields.sections) {
-        expect(lines[cursor]).toBe(`## ${section.heading}`);
-        expect(lines[cursor + 1]).toBe("");
-        bodies.push(lines.slice(cursor + 2, cursor + 2 + section.bodyLines).join("\n"));
-        cursor += 2 + section.bodyLines;
-        expect(lines[cursor++]).toBe("");
-    }
-    expect(lines.slice(cursor)).toEqual([""]);
-    return { fields: header.fields, bodies };
-}
-
-function splitTimeline(text: string) {
-    const lines = text.split("\n");
-    expect(lines[0]).toBe("---");
-    const header = metadata(lines, 1, "---");
-    let cursor = header.next;
-    const events: { fields: Record<string, any>; summary: string }[] = [];
-    while (cursor < lines.length - 1) {
-        expect(lines[cursor]).toMatch(/^## /);
-        expect(lines[cursor + 1]).toBe("");
-        expect(lines[cursor + 2]).toBe("```yaml");
-        const entry = metadata(lines, cursor + 3, "```");
-        cursor = entry.next;
-        events.push({
-            fields: entry.fields,
-            summary: lines.slice(cursor, cursor + entry.fields.summaryLines).join("\n"),
-        });
-        cursor += entry.fields.summaryLines;
-        expect(lines[cursor++]).toBe("");
-    }
-    expect(lines.slice(cursor)).toEqual([""]);
-    return { fields: header.fields, events };
-}
+// The import route's own reader, loaded by a computed path: a literal import would put the server's module
+// graph into the client type check, whose compiler options it does not build under.
+const importPackagePath = "../../../server/src/prompt/memory/structured/importPackage.ts";
+const { parseMemoryPackage } = (await import(/* @vite-ignore */ importPackagePath)) as {
+    parseMemoryPackage: (files: readonly StructuredMemoryImportFile[]) => {
+        pages: MemoryPage[];
+        events: Omit<MemoryEvent, "createdRevision">[];
+        threads: MemoryThread[];
+        refusals: StructuredMemoryImportRefusal[];
+    };
+};
 
 async function packageFiles() {
     const result = await buildStructuredMemoryPackage(ref);
@@ -259,21 +224,19 @@ it("reads with encoded ids and the epoch header and zips every round into Markdo
     });
     const files = await packageFiles();
     expect(Object.keys(files)).toHaveLength(4);
-    expect(splitTimeline(files["timeline.md"]).events.map(({ fields }) => fields.id)).toEqual([e.id]);
-    expect(splitTimeline(files["timeline.md"]).fields.revision).toBe(revision);
-    const exported = Object.entries(files)
-        .filter(([name]) => name.startsWith("pages/"))
-        .map(([name, text]) => {
-            expect(name.split("/").slice(0, 2)).toEqual(["pages", "location"]);
-            const parsed = splitPage(text);
-            expect(parsed.fields).not.toHaveProperty("history");
-            expect(text).not.toContain("HISTORY MUST STAY OUT");
-            return [parsed.fields.id, parsed.bodies];
-        });
-    expect(exported).toEqual([
-        ["a/b", ["Current body"]],
-        ["a%2Fb", ["Second body"]],
-    ]);
+    const parsed = parseMemoryPackage(Object.entries(files).map(([path, text]) => ({ path, text })));
+    const { createdRevision, ...exportedEvent } = e;
+    expect(parsed).toEqual({
+        pages: pages.map((page) => ({ ...page, history: [] })),
+        events: [exportedEvent],
+        threads: [],
+        refusals: [],
+    });
+    expect(files["timeline.md"]).toContain(`revision: "${revision}"\n`);
+    for (const [name, text] of Object.entries(files).filter(([name]) => name.startsWith("pages/"))) {
+        expect(name.split("/").slice(0, 2)).toEqual(["pages", "location"]);
+        expect(text).not.toContain("HISTORY MUST STAY OUT");
+    }
     expect(authFetch.mock.calls.map(([url]) => url)).toEqual([
         base,
         `${base}/records/pages/a%2Fb`,
@@ -307,11 +270,15 @@ it("discards partial pages and events on revision changes and can complete the t
         .mockResolvedValueOnce(noThreads("epoch:1:3"));
     const files = await packageFiles();
     expect(Object.keys(files)).toHaveLength(3);
-    const pageText = Object.entries(files).find(([name]) => name.startsWith("pages/"))![1];
-    expect(splitPage(pageText).fields.id).toBe("current");
-    const timeline = splitTimeline(files["timeline.md"]);
-    expect(timeline.fields.revision).toBe("epoch:1:3");
-    expect(timeline.events.map(({ fields }) => fields.id)).toEqual(["current"]);
+    const parsed = parseMemoryPackage(Object.entries(files).map(([path, text]) => ({ path, text })));
+    const { createdRevision, ...exportedEvent } = event("current");
+    expect(parsed).toEqual({
+        pages: [{ ...page("current"), history: [] }],
+        events: [exportedEvent],
+        threads: [],
+        refusals: [],
+    });
+    expect(files["timeline.md"]).toContain('revision: "epoch:1:3"\n');
     expect(JSON.stringify(files)).not.toContain("discarded");
     expect(authFetch.mock.calls.map(([url]) => url)).toEqual([
         `${base}/package`,
@@ -348,24 +315,49 @@ it("stops a partial package immediately on 412 and notifies the epoch mismatch l
     expect(replaced.mock.calls).toEqual([["replacement"]]);
 });
 
-it("splits verbatim section bodies and event summaries by exact metadata line counts and omits page history", () => {
+it("round trips section bodies and summaries containing headings and delimiters without page history", () => {
     const bodies = ["first\n## x\n```md\n---\n```\nlast\n\n", "", "tail\n"];
     const p = page("p");
-    p.sections = bodies.map((body, i) => ({ ...p.sections[0], heading: `Section ${i}`, body }));
+    p.sections = bodies.map((body, i) => ({
+        ...p.sections[0],
+        heading: i === 0 ? "  Section\t 0\n details  " : `Section ${i}`,
+        body,
+    }));
+    const events = bodies.map((body, i) => event(String(i), [], body));
     const text = renderMemoryPage(p);
-    const parsed = splitPage(text);
-    expect(parsed.fields.sections.map((section: { bodyLines: number }) => section.bodyLines)).toEqual([8, 1, 2]);
-    expect(parsed.bodies).toEqual(bodies);
-    expect(parsed.fields).not.toHaveProperty("history");
+    const parsed = parseMemoryPackage([
+        { path: memoryPagePath(p), text },
+        { path: "timeline.md", text: renderMemoryTimeline(events, "epoch:1:1") },
+        { path: "threads.md", text: renderMemoryThreads([], "epoch:1:1") },
+    ]);
+    expect(parsed).toEqual({
+        pages: [{ ...p, history: [] }],
+        events: events.map(({ createdRevision, ...event }) => event),
+        threads: [],
+        refusals: [],
+    });
     expect(text).not.toContain("HISTORY MUST STAY OUT");
-    const timeline = splitTimeline(
-        renderMemoryTimeline(
-            bodies.map((body, i) => event(String(i), [], body)),
-            "epoch:1:1",
-        ),
-    );
-    expect(timeline.events.map(({ fields }) => fields.summaryLines)).toEqual([8, 1, 2]);
-    expect(timeline.events.map(({ summary }) => summary)).toEqual(bodies);
+});
+
+it("round trips event key lines and quotes resembling metadata and fences without losing the next records", () => {
+    const quoted = event("quoted", [anchored(0)]);
+    quoted.title = "  Event\t with\n quotes  ";
+    quoted.keyLines = [
+        { speaker: "key", text: '{"id":"not an event","summaryLines":0}' },
+        { speaker: "  ```yaml\n ", text: 'id: "forged"\n```\n---\n## x' },
+    ];
+    const next = event("next", [anchored(1)]);
+    const threads = [{ id: "thread", title: "  Next\t step\n ", state: "open" as const, who: [], openedBy: "quoted" }];
+    const parsed = parseMemoryPackage([
+        { path: "timeline.md", text: renderMemoryTimeline([quoted, next], "r") },
+        { path: "threads.md", text: renderMemoryThreads(threads, "r") },
+    ]);
+    expect(parsed).toEqual({
+        pages: [],
+        events: [quoted, next].map(({ createdRevision, ...event }) => event),
+        threads,
+        refusals: [],
+    });
 });
 
 it("orders events by their smallest anchored source index, preserving arrival ties and placing unanchored events last", () => {
@@ -379,8 +371,12 @@ it("orders events by their smallest anchored source index, preserving arrival ti
     ];
     events[2].status = "retracted";
     events[4].status = "stale";
-    const timeline = splitTimeline(renderMemoryTimeline(events, "revision"));
-    expect(timeline.events.map(({ fields }) => fields.id)).toEqual([
+    const parsed = parseMemoryPackage([
+        { path: "timeline.md", text: renderMemoryTimeline(events, "revision") },
+        { path: "threads.md", text: renderMemoryThreads([], "revision") },
+    ]);
+    expect(parsed.refusals).toEqual([]);
+    expect(parsed.events.map(({ id }) => id)).toEqual([
         "earliest",
         "first-tie",
         "second-tie",
@@ -1028,6 +1024,13 @@ it("renders the literal import fixtures with exact bodies, whitespace headings a
     expect(files[2].text).toContain("packageVersion: 2\n");
     const fixture = new URL("../../../server/src/tests/fixtures/memoryPackage.json", import.meta.url);
     expect(files).toEqual(JSON.parse(readFileSync(fixture, "utf8")));
+    const { createdRevision, ...exportedEvent } = e;
+    expect(parseMemoryPackage(files)).toEqual({
+        pages: [{ ...p, history: [] }],
+        events: [exportedEvent],
+        threads,
+        refusals: [],
+    });
 });
 
 it("sends page tools and unzipped package files with the displayed revision and current epoch", async () => {
