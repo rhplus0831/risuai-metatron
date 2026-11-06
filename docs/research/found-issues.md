@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (5)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
 - [Server routes and resource store](#server-routes-and-resource-store) (5)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -65,13 +65,6 @@ The Plugin Storage and Data API run (2026-11-05, slice 2) made the upload of a `
 
 **Why it matters:** the server no longer runs 2 MiB passes for a one-key counter write, but each observing tab still pays about one parse and one or more stringifies of the whole record per write: the client twin of the server fix.
 **Suggested handling:** if pluginStorage feed cost comes up again, keep the held text cut by entry on the client (like the server's patch base) instead of reparsing the record.
-
-### Feed row text diffs check the held length, not the prefix
-
-`stagedRowDiffs` in `src/ts/storage/chatStore.svelte.ts` (~2900, text branch ~2946) rebuilds a row's text as `held.data.slice(0, keep) + text` and checks only `keep <= held.data.length`. Stream updates write `message.data` without moving the stored revision, so a path that leaves streamed text in the mirror after the job stops feeding it turns the next feed text diff into wrong text with no error (a probe: stored 6,000 "A", shown 6,000 "B", the server appends "!", the client shows "B…B!"). Today every such path marks the chat stale or restores the proven stored text first (`endServerJob`, `detachServerJob`), so it is latent. Found in the Implementation Audit Fixes run (2026-11-05, slice H3).
-
-**Why it matters:** a future caller that skips that restore corrupts a message silently instead of failing into a fenced read.
-**Suggested handling:** when touching `stagedRowDiffs` or the feed row-diff format, carry a base text hash (or length plus a sample) in `rowDiffs` so a wrong base is a `mismatch`.
 
 ## Server jobs and prompt assembly
 
