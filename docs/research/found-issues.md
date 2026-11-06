@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (8)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
 - [Server routes and resource store](#server-routes-and-resource-store) (5)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -66,26 +66,12 @@ The Plugin Storage and Data API run (2026-11-05, slice 2) made the upload of a `
 **Why it matters:** the server no longer runs 2 MiB passes for a one-key counter write, but each observing tab still pays about one parse and one or more stringifies of the whole record per write: the client twin of the server fix.
 **Suggested handling:** if pluginStorage feed cost comes up again, keep the held text cut by entry on the client (like the server's patch base) instead of reparsing the record.
 
-### Append checkpoint cleanup depends on coalescing and group order
-
-The server's append checkpoint cleanup (`server/src/data/chatStore.ts`, `case "append"` ~2369, the `selectCheckpointRows` loop ~2404) skips only the group's last fresh non-comment id. Two end appends coalesce on the client (`coalesce` in `src/ts/storage/chatStore.svelte.ts` ~1828), so a non-comment append followed by a checkpoint-bearing comment keeps the comment's checkpoint when sent as two ops and loses it when coalesced into one, depending on save timing. Also, a group holding an `append` and then a `setMessage` of an older reply cloned before the cleanup (both queued before the flush) cleans and then restores that reply's snapshots in the same group; mirror and server agree (`candidateRows` reports no `cleared`), but the snapshots stay until the next append, since `adoptCandidateRows` (~5860) strips only ops still queued after the acknowledgement. Found in the Implementation Audit Fixes run (2026-11-06, slice C2).
-
-**Why it matters:** retention and save-timing-dependent results on an ordinary send path; not a divergence, so low priority.
-**Suggested handling:** if append cleanup is touched again, strip inherited snapshots from later ops of the same group at `takeChatWork`, and make the comment rule independent of coalescing.
-
 ### Feed row text diffs check the held length, not the prefix
 
 `stagedRowDiffs` in `src/ts/storage/chatStore.svelte.ts` (~2900, text branch ~2946) rebuilds a row's text as `held.data.slice(0, keep) + text` and checks only `keep <= held.data.length`. Stream updates write `message.data` without moving the stored revision, so a path that leaves streamed text in the mirror after the job stops feeding it turns the next feed text diff into wrong text with no error (a probe: stored 6,000 "A", shown 6,000 "B", the server appends "!", the client shows "B…B!"). Today every such path marks the chat stale or restores the proven stored text first (`endServerJob`, `detachServerJob`), so it is latent. Found in the Implementation Audit Fixes run (2026-11-05, slice H3).
 
 **Why it matters:** a future caller that skips that restore corrupts a message silently instead of failing into a fenced read.
 **Suggested handling:** when touching `stagedRowDiffs` or the feed row-diff format, carry a base text hash (or length plus a sample) in `rowDiffs` so a wrong base is a `mismatch`.
-
-### An insertion before the reroll carrier drops its variable snapshots
-
-Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it follows the Reroll Candidates plan's recorded D6 rule, and a position-aware commit boundary is a design change for an uncommon insertion. The append checkpoint cleanup in `server/src/data/chatStore.ts` (`case "append"`, the `selectCheckpointRows` loop ~2404) clears other messages' snapshots on any non-comment append, insertions included. Inserting a user message at `anchor: { start: true }` leaves the latest reply eligible as the reroll carrier but removes its checkpoint and every candidate's `scriptstateAfter`; selecting another candidate then shows its text while the variables stay at the first candidate's values. Source: [OTHER-03](../manual-audit/archive/incremental-chat-transport-2026-11-05.md#other-03--earlier-insertion-discards-a-still-selectable-carriers-variable-snapshots-existing-limitation). Related: "Append checkpoint cleanup depends on coalescing and group order".
-
-**Why it matters:** after an insertion at the chat start, switching candidates on the last reply restores text but not variables.
-**Suggested handling:** decide whether candidate-variable restoration should survive an insertion before the carrier; if so, make the commit boundary consider position, otherwise state the text-only selection in the chat-pipeline guide.
 
 ## Server jobs and prompt assembly
 
