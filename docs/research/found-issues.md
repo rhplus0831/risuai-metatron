@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (8)
+- [Structured Memory](#structured-memory) (7)
 
 ## Chat store, sync, and change feeds
 
@@ -514,10 +514,3 @@ Measured by slice 8 on scripted fixtures (`docs/audit/structured-memory-2026-11-
 
 **Why it matters:** cost previews people pay by, and stalls on long chats.
 **Suggested handling:** take each as a proposal when Structured Memory is next touched, and re-run `node util/memoryEval.mjs` after a read-path change.
-
-### Rebuild drops retained imported threads' participants
-
-Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it needs imported or manual thread data with a `who` list, and no screen creates threads. A rebuild (`server/src/prompt/memory/structured/rebuild.ts`) omits an unmarked page from its seed but keeps an imported thread verbatim, and the swap removes the old page without remapping the thread's `who`; retrieval (`retrieve.ts`) then rejects the thread as `not-relevant`, since it names the old page id. The existing preservation test uses `who: []`. Source: [C6](../manual-audit/archive/structured-memory-2026-11-05.md#c6--p3-retained-imported-threads-lose-their-participant-identities-during-rebuild).
-
-**Why it matters:** an imported personal thread stops reaching the prompt after a rebuild, and the panel cannot repair its `who`.
-**Suggested handling:** keep the identities retained threads need, or remap their references at the swap; test with a non-empty `who`.
