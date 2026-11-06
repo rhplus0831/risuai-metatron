@@ -259,9 +259,11 @@ type RoundRead = {
  * - `GET /api/memory/structured/:characterId/:chatId`: the table of contents, answered
  *   `StructuredMemoryContentsAnswer`, with `adoption`, what the panel offers for the chat's stored HypaV3
  *   summaries as the server sees them, `rebuild`, the chat's rebuild if it holds one, `recordedLanguage`,
- *   the language of the newest recorded run, one record read, and `health`, the chat's health facts as the
- *   health route answers them; 404 `chatGone`. Pages in the trash are listed apart (`trash`), so every
- *   round and route that starts from `pages` leaves them out; the record route still reads one by id.
+ *   the language of the newest recorded run, one record read, and `health`, the chat's health entry as the
+ *   health route answers it: facts, or `"unavailable"` when its live pages, events, and runs exceed
+ *   `MEMORY_HEALTH_ROUND_BYTES` in stored bytes; 404 `chatGone`. Pages in the trash are listed apart
+ *   (`trash`), so every round and route that starts from `pages` leaves them out; the record route still
+ *   reads one by id.
  * - `GET /api/memory/structured/:characterId/:chatId/records/:kind/:id`: one record as stored, answered
  *   `StructuredMemoryRecordAnswer`; 400 for an unknown kind, 404 `chatGone` or `recordGone`.
  * - `GET /api/memory/structured/:characterId/:chatId/package?cursor=N&revision=R`: one round of the
@@ -299,12 +301,14 @@ type RoundRead = {
  *   past the cap, or an id that is not a resource id. The body is read after authentication and capped at
  *   256 KiB.
  * - `POST /api/memory/structured/health` `{ chats: { characterId, chatId }[] }`: at most
- *   `MEMORY_HEALTH_CHATS_MAX` chats' health facts (`StructuredMemoryHealthFacts`), answered
+ *   `MEMORY_HEALTH_CHATS_MAX` chats' health entries (`StructuredMemoryHealthEntry`), answered
  *   `StructuredMemoryHealthAnswer`: a prefix of the request, by position, null for a chat that does not
- *   exist. The first chat is always answered, and the list stops before the chat whose live pages would
- *   take the stored bytes scanned past `MEMORY_HEALTH_ROUND_BYTES`, so a tab asks again from there. Live
- *   tables only, pages in the trash left out, and no message read: what the memory health badge shows for
- *   the pinned chats and the open one. Refusals and the body cap are the revisions route's.
+ *   exist. Each chat is charged the stored bytes of its live pages, events, and runs. A chat over
+ *   `MEMORY_HEALTH_ROUND_BYTES` answers `"unavailable"` without a scan or charge, and the round continues.
+ *   After at least one entry, the list stops before the chat whose charge would take the scan past that
+ *   budget, so a tab asks again from there. Live tables only, pages in the trash left out, and no message
+ *   read: what the memory health badge shows for the pinned chats and the open one. Refusals and the
+ *   body cap are the revisions route's.
  * - `GET /api/memory/structured/:characterId/:chatId/projection`: the chat's projection as a whole read
  *   would overlay it, reconciled against its stored messages, answered
  *   `StructuredMemoryProjectionAnswer`; `hypaV3Data` is null for a chat that read leaves as stored, and
@@ -491,7 +495,7 @@ export function registerStructuredMemoryRoutes(
                 },
                 rebuild: store.memory.rebuild.status(characterId, chatId),
                 recordedLanguage: (recorded && listedRecord(characterId, chatId, "runs", recorded.id).language) ?? null,
-                health: store.memory.readHealth([{ characterId, chatId }])[0]!,
+                health: store.memory.readHealth([{ characterId, chatId }], MEMORY_HEALTH_ROUND_BYTES)[0]!,
                 writerBlockingReason: writerBlockingReason(store, kinds, characterId, chatId),
             } satisfies StructuredMemoryContentsAnswer);
         } catch (error) {

@@ -293,6 +293,33 @@ describe("PinnedChatsRail memory badges", () => {
     });
 });
 
+it("renders unavailable health with refused's neutral look and a help icon in both badge layouts", () => {
+    for (const inline of [false, true]) {
+        const target = document.createElement("div");
+        document.body.append(target);
+        for (const props of [
+            { status: "health", health: "unavailable" },
+            { status: "refused" },
+            { status: "health", health: "gap" },
+        ] as const) {
+            mounted.push(mount(ChatStatusBadge, { target, props: { ...props, label: "Health", inline } }));
+        }
+        flushSync();
+        const [unavailable, refused, gap] = [...target.querySelectorAll<HTMLElement>(badgeSelector)];
+        expect(unavailable.dataset.risuChatHealth).toBe("unavailable");
+        for (const neutralClass of inline ? ["border-darkborderc", "text-textcolor2"] : ["bg-neutral-500"]) {
+            expect(unavailable.classList.contains(neutralClass)).toBe(true);
+            expect(refused.classList.contains(neutralClass)).toBe(true);
+            expect(gap.classList.contains(neutralClass)).toBe(false);
+        }
+        expect(unavailable.className).not.toMatch(/(?:bg|border|text)-danger-500/);
+        expect(unavailable.querySelector("svg.lucide-circle-help")).not.toBeNull();
+        expect(unavailable.querySelector("svg.lucide-heart-pulse")).toBeNull();
+        expect(gap.className).toMatch(/(?:bg|text)-danger-500/);
+        expect(gap.querySelector("svg.lucide-heart-pulse")).not.toBeNull();
+    }
+});
+
 it("shows the worst health state on chats and groups as a fault, with unseen ahead", () => {
     const order: MemoryHealthState[] = [
         "writerPaused",

@@ -3275,7 +3275,7 @@ it("returns compact ordered live health at the chat limit without messages or re
     }
 });
 
-it("bounds health scans by live page bytes and always answers the first chat", async () => {
+it("bounds health scans by stored bytes and answers a chat over the cap unavailable", async () => {
     const s = await server();
     const first = page("first", "문😀");
     const second = page("second", "Another body");
@@ -3284,9 +3284,48 @@ it("bounds health scans by live page bytes and always answers the first chat", a
     stageRun(s);
     const refs = [chatId, "other"].map((chatId) => ({ characterId, chatId }));
     const empty = { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 };
-    expect(s.store.memory.readHealth(refs, 1)).toEqual([empty]);
+    expect(s.store.memory.readHealth(refs, 1)).toEqual(["unavailable", "unavailable"]);
     expect(s.store.memory.readHealth(refs, bytes(first) + bytes(second) - 1)).toEqual([empty]);
     expect(s.store.memory.readHealth(refs, bytes(first) + bytes(second))).toEqual([empty, empty]);
+});
+
+it("charges event and run bytes for health caps and stops a prefix before event bytes exceed the round budget", async () => {
+    const s = await server();
+    const first = page("first", "");
+    const second = page("second", "");
+    const later = page("later", "");
+    const e = event("large-event", "문😀".repeat(100));
+    const r = { ...run("large-run", "recorded"), input: "문😀".repeat(100) };
+    s.write({ pages: [first], events: [e] });
+    writeMemory(s.store, characterId, "other", { pages: [second], runs: [r] });
+    s.store.applyChanges({
+        chats: [{ characterId, chatId: "later", baseRevision: null, ops: [{ op: "create", chat }] }],
+    });
+    writeMemory(s.store, characterId, "later", { pages: [later] });
+    const ref = (chatId: string) => ({ characterId, chatId });
+    const empty = { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 };
+    const eventCharge = bytes(first) + bytes(e);
+    const runCharge = bytes(second) + bytes(r);
+    for (const [id, charge] of [
+        [chatId, eventCharge],
+        ["other", runCharge],
+    ] as const) {
+        expect(s.store.memory.readHealth([ref(id), ref("missing"), ref("later")], charge - 1)).toEqual([
+            "unavailable",
+            null,
+            empty,
+        ]);
+        expect(s.store.memory.readHealth([ref(id)], charge)).toEqual([empty]);
+    }
+    const refs = [ref("later"), ref(chatId)];
+    expect(s.store.memory.readHealth(refs, bytes(later) + eventCharge - 1)).toEqual([empty]);
+    expect(s.store.memory.readHealth(refs, bytes(later) + eventCharge)).toEqual([empty, empty]);
+    expect(s.store.memory.readHealth([ref(chatId), ref("other"), ref("missing"), ref("later")])).toEqual([
+        empty,
+        empty,
+        null,
+        empty,
+    ]);
 });
 
 it("screens rebuild, backfill and record cost previews against current preset lists", async () => {

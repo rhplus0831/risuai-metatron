@@ -846,6 +846,45 @@ it("keeps newer health answers when a delayed boot read returns, applying reques
     expect(status.memoryHealthStates()).toEqual(new Map([[keyB, "staleEvents"]]));
 });
 
+it("shows unavailable health below the open report's gap and the tab's required-over-cap mark", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(100_000);
+    await enableMemory();
+    view(a);
+    const { hypaV3ModalOpen } = await import("../screenVisibility");
+    hypaV3ModalOpen.set(false);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    stubs.healthFetch.mockResolvedValue(Response.json({ health: ["unavailable"] }));
+    watch();
+    await settleHealth();
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "unavailable"]]));
+
+    chat.patchMessage(a, "m2", {
+        generationInfo: {
+            context: {
+                v: 1,
+                maxContext: 1000,
+                maxResponse: 100,
+                input: 300,
+                sections: [],
+                adjustment: 300,
+                attributionExact: true,
+                history: { total: 2, kept: 1, totalUser: 1, keptUser: 1, droppedTokens: 20 },
+                lore: { budgetUsed: 0, budget: 0, rejectedCount: 0, rejectedTokens: 0, active: 0 },
+                tokenScope: "scope",
+                historyDigest: "digest",
+                memory: { kind: "structuredMemory", tokens: 0, coverage: "gap", gapTokens: 11 },
+            },
+        },
+    });
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "gap"]]));
+    chat.patchMessage(a, "m2", { generationInfo: {} });
+    status.noteJobDone(a, { ...error, code: "memoryRequiredOverCap" });
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "requiredOverCap"]]));
+    status.noteJobDone(a, done({ messageId: "reply" }));
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "unavailable"]]));
+});
+
 it("reads only pinned and open health on visibility triggers, resumes prefixes and keeps facts on failure", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(100_000);

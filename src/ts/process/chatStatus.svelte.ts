@@ -11,7 +11,7 @@ import {
     memoryHealthState,
     STRUCTURED_MEMORY_ALGORITHM,
     type MemoryHealthState,
-    type StructuredMemoryHealthFacts,
+    type StructuredMemoryHealthEntry,
 } from "../../../shared/structuredMemory.ts";
 import { characterList, findCharacter } from "src/ts/storage/characterStore.svelte";
 import {
@@ -173,15 +173,16 @@ export function visibleChatKey(): string | null {
 }
 
 // The memory health badge. Shared module-level deriveds select the chats (`healthChatKeys`) and compute
-// their states. Facts keep the newest applied request per chat status key; late older answers are ignored.
+// their states. Entries keep the newest applied request per chat status key; late older answers are ignored.
 // Reads cover the pinned chats and the open chat alone: after boot, for a chat newly pinned, for the
 // open chat as it opens and when the memory panel closes, and for every chat when the page comes back
 // after a minute. Never on a send or a task's end: the badge is a last observation. The open chat adds
 // what its newest report says, and this tab's mark of a send that failed because the required pages were
-// over the cap, which only a reload or the chat's next good send clears.
+// over the cap, which only a reload or the chat's next good send clears. An unavailable entry supplies
+// no facts; the report and over-cap mark still apply and outrank that unknown state.
 
-/** The health facts last read per chat status key; null for a chat the server does not know. */
-const healthFacts = new SvelteMap<string, StructuredMemoryHealthFacts | null>();
+/** The health entry last read per chat status key; null for a chat the server does not know. */
+const healthFacts = new SvelteMap<string, StructuredMemoryHealthEntry | null>();
 
 let healthReadGeneration = 0;
 const appliedHealthGenerations = new Map<string, number>();
@@ -218,7 +219,7 @@ const healthChatKeys = $derived.by((): string[] => {
 });
 
 /**
- * Reads the health facts of `keys`, `MEMORY_HEALTH_CHATS_MAX` a request. A chat's answer applies only
+ * Reads the health entries of `keys`, `MEMORY_HEALTH_CHATS_MAX` a request. A chat's answer applies only
  * if its request is newer than that chat's last applied request. An answer is a prefix of its request,
  * so the next request starts at the first key it left out. A failed read leaves what is held and throws nothing.
  */
@@ -271,7 +272,8 @@ const healthStates = $derived.by(() => {
         if (!findCharacter(ref.chaId)?.supaMemory) {
             continue;
         }
-        const facts = healthFacts.get(key) ?? null;
+        const entry = healthFacts.get(key) ?? null;
+        const facts = entry === "unavailable" ? null : entry;
         const memory = key === openKey ? newestMemoryReport(findChat(ref)?.message ?? []) : null;
         const staleExcluded = memory?.excluded?.filter(({ reason }) => reason === "stale").length ?? 0;
         const state = memoryHealthState({
@@ -281,6 +283,7 @@ const healthStates = $derived.by(() => {
             unsupportedSections: (facts?.unsupportedSections ?? 0) > 0,
             requiredOverCap: requiredOverCapChats.has(key),
             pageOverBudget: (facts?.overBudgetSections ?? 0) > 0,
+            unavailable: entry === "unavailable",
         });
         if (state) {
             states.set(key, state);
@@ -294,7 +297,8 @@ const healthStates = $derived.by(() => {
  * a reactive context: the pinned chats and the open chat, while Structured Memory is selected and the
  * chat's character has memory on. A chat not loaded is judged from its last read facts, so its stale
  * count is partial and it knows no gap; the open chat adds its newest report's gap against the preset's
- * `gapConfirmTokens`, its writer state, and its stale exclusions.
+ * `gapConfirmTokens`, its writer state, and its stale exclusions. An unavailable entry contributes no
+ * facts, but those report inputs and the tab's required-over-cap mark still apply and take priority.
  */
 export function memoryHealthStates(): ReadonlyMap<string, MemoryHealthState> {
     return healthStates;

@@ -1,6 +1,7 @@
 <script lang="ts">
     import {
         BrainIcon,
+        CircleHelpIcon,
         HeartPulseIcon,
         LoaderCircleIcon,
         MailIcon,
@@ -23,7 +24,7 @@
 
     let { status, label, count = null, health = null, inline = false }: Props = $props();
     const countText = $derived(status === "memory" && count ? memoryCountText(count) : null);
-    const neutral = $derived(status === "refused");
+    const neutral = $derived(status === "refused" || (status === "health" && health === "unavailable"));
 </script>
 
 {#snippet icon()}
@@ -40,7 +41,11 @@
             <BrainIcon size={12} aria-hidden="true" />
         {/if}
     {:else if status === "health"}
-        <HeartPulseIcon size={12} aria-hidden="true" />
+        {#if health === "unavailable"}
+            <CircleHelpIcon size={12} aria-hidden="true" />
+        {:else}
+            <HeartPulseIcon size={12} aria-hidden="true" />
+        {/if}
     {:else}
         <MailIcon size={12} aria-hidden="true" />
     {/if}

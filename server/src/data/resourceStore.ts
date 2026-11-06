@@ -22,7 +22,7 @@ import {
     sealHypaV3Data,
     STRUCTURED_MEMORY_ALGORITHM,
     type SealedHypaV3Data,
-    type StructuredMemoryHealthFacts,
+    type StructuredMemoryHealthEntry,
     type StructuredMemorySettings,
 } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
@@ -2259,11 +2259,12 @@ export function createResourceStore(options: {
                 return structuredMemorySelected() ? memoryTables.readProjectionRevisions(refs) : refs.map(() => null);
             },
             /**
-             * The health facts of each chat's live records (`memoryTables.readHealth`), in request order, no
-             * message read; null for a missing chat. With `budgetBytes`, a prefix of `refs` that stops before
-             * the chat whose live pages would take the scan past it, the first chat always answered.
+             * The health entries of each chat's live records (`memoryTables.readHealth`), in request order,
+             * no message read; null for a missing chat. A chat whose live pages, events, and runs exceed
+             * `budgetBytes` answers `"unavailable"` without a scan or charge. After at least one entry,
+             * the prefix stops before the chat whose charge would take the scan past the budget.
              */
-            readHealth(refs: readonly MemoryChatRef[], budgetBytes?: number): (StructuredMemoryHealthFacts | null)[] {
+            readHealth(refs: readonly MemoryChatRef[], budgetBytes?: number): (StructuredMemoryHealthEntry | null)[] {
                 assertOpen();
                 return memoryTables.readHealth(refs, budgetBytes);
             },

@@ -2128,14 +2128,38 @@ it("writes and clears the chat language through chat edits and locks both Settin
 it("shows pending repairs from health on the writer line below paused", async () => {
     const contents = serveAdoptionContents();
     contents.adoption.adoptable = 0;
-    contents.health.pendingRepairs = 1;
+    const health = { paused: false, storedStale: 0, pendingRepairs: 1, unsupportedSections: 0, overBudgetSections: 0 };
+    contents.health = health;
     await open();
     expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("repair");
     expect(query("[data-memory-writer-action]")?.dataset.memoryWriterAction).toBe("record");
-    contents.health.paused = true;
+    health.paused = true;
     click("[data-memory-panel-refresh]");
     await settle();
     expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("paused");
+});
+
+it("shows the paused writer from contents runs when health is unavailable", async () => {
+    const contents = serveAdoptionContents();
+    contents.adoption.adoptable = 0;
+    contents.health = "unavailable";
+    contents.runs = Array.from({ length: STRUCTURED_MEMORY_LIMITS.consecutiveFailures }, (_, i) => ({
+        id: `failed-${i}`,
+        result: "failed",
+        bytes: 100,
+    }));
+    await open();
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("paused");
+    expect(query("[data-memory-writer-line]")?.textContent).toContain(language.structuredMemory.receipt.paused);
+    expect(query("[data-memory-writer-action]")?.dataset.memoryWriterAction).toBe("resume");
+
+    contents.runs.push({ id: "recorded", result: "recorded", bytes: 100 });
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("none");
+    expect(query("[data-memory-writer-line]")?.textContent).not.toContain(
+        language.structuredMemory.receipt.repairPending,
+    );
 });
 
 it("shows a new chat's request-trigger writer warning from contents before its first send", async () => {

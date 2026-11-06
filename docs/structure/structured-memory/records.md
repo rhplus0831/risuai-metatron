@@ -64,8 +64,8 @@
 
 The tab's reads reach `server/src/routes/structuredMemory.ts` through `STRUCTURED_MEMORY_PATH`. Routes authenticate,
 rate-limit and check the epoch (412 `EpochMismatch`). The route header owns paths, answers, round ordering, limits and
-refusals. Epoch check and store reads share one synchronous step: each round is one snapshot, and only the opaque
-`revision` comparison ties separate rounds together.
+refusals. Epoch check and store reads share one synchronous step: each round is one snapshot; only the opaque `revision`
+comparison ties rounds together.
 
 - The panel reads contents (`adoption`, `rebuild`, `recordedLanguage` included) and records through
   `store.memory.readContents` and `store.memory.readRecord`. A tab joins the panel's in-flight contents read unless a
@@ -76,9 +76,9 @@ refusals. Epoch check and store reads share one synchronous step: each round is 
   by position. The byte budget comes from `RouteLimits.memoryPackageRoundBytes` in `server/src/app.ts`, default
   `MAX_READ_RESPONSE_BYTES`; `roundOf` defines charging before body reads and the soft first-record rule. `/runs` feeds
   the Log; `/cost` is [rebuild's cost preview](rebuild.md#the-cost-preview), with no record sent.
-- `readStructuredMemoryHealth` calls `POST /health` for [the badge](read.md#the-health-badge), reading live tables and
-  no messages. An answer can be a prefix of the requested chats, which the tab resumes; the route header defines the
-  caps.
+- `readStructuredMemoryHealth` calls `POST /health` for [the badge](read.md#the-health-badge), charging live pages,
+  events and runs, reading no messages. An answer can be a prefix the tab resumes; a chat over the round budget answers
+  `unavailable`, in contents too. The route header defines the caps.
 
 ### The edit route
 
@@ -184,11 +184,11 @@ group: no walk reads them.
 - The tables follow the [epoch rules](../server-resources.md#epoch-and-response-rules) and the snapshot walk of
   [server resources](../server-resources.md#snapshots-and-restore); the export's walk of them is
   [projection](projection.md#the-upstream-export)'s.
-- The memory revision says nothing about the chat's messages. A whole-chat `replace` keeps `chats.seq`, so the rows and
-  the revision survive it, and only the memory task's fence stops a writer working from the old messages
+- The memory revision says nothing about the chat's messages. A whole-chat `replace` keeps `chats.seq`, so rows and
+  revision survive it; only the memory task's fence stops a writer working from the old messages
   ([memory](../memory.md)). A checkpoint load replaces the rows too ([A checkpoint](lifecycle.md#a-checkpoint)).
-- The route answers are shared types because tab code never imports `server/`; each route answers with `satisfies`, so a
-  store type that drifts fails `pnpm check`.
+- Route answers are shared types since tab code never imports `server/`; each answers with `satisfies`, so a drifting
+  store type fails `pnpm check`.
 - `app.ts` admits the routes as resource handlers: tracked, refused during shutdown, and `no-store`. `ROUTE_TEMPLATES`
   in `shared/diagnostics.ts` lists each route.
 
@@ -251,13 +251,13 @@ group: no walk reads them.
 
 ## Tests
 
-- `shared/structuredMemory.test.ts` drives `projectHypaV3Data` with plain records; it needs no fakes.
+- `shared/structuredMemory.test.ts` drives `projectHypaV3Data` with plain records, no fakes.
 - `server/src/tests/memoryStore.test.ts` drives `createResourceStore` on a real file, with a read-only second connection
   to see the rows, a SQLite trigger to fail a write midway, and `installSnapshot` for restores.
-- `server/src/tests/restoreStage.test.ts` drives a crafted source through the real staging and install, and
-  `backups.test.ts` drives the snapshot and archive routes. Both take their records from `tests/memoryFixtures.ts`.
-- `server/src/tests/structuredMemoryRoutes.test.ts` drives the routes on a real app, and seeds them through a second
-  store on the same file, because the app does not export its own. A frozen `Date` holds the rate limit window.
+- `server/src/tests/restoreStage.test.ts` drives a crafted source through the real staging and install;
+  `backups.test.ts` the snapshot and archive routes. Both take their records from `tests/memoryFixtures.ts`.
+- `server/src/tests/structuredMemoryRoutes.test.ts` drives the routes on a real app, seeded through a second store on
+  the same file, since the app does not export its own. A frozen `Date` holds the rate limit window.
 - `src/ts/process/structuredMemory.test.ts` runs in Node with `authFetch` scripted. Its splitters read a file only by
   metadata and line counts, as a reader must. It cannot use `testSupport.ts`: a `src/` test puts its imports under the
   root `tsconfig.json`, where the server routes do not type-check.

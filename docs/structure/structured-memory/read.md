@@ -123,7 +123,7 @@ rules. `Chat.svelte`'s `memoryReceipt` snippet also renders in the `mobilechat` 
 `src/App.svelte` selects `StructuredMemoryPanel` under `hypaV3ModalOpen`, so `chatStatus.svelte.ts` still treats the
 transcript as hidden. The menu in `src/lib/ChatScreens/DefaultChatScreen.svelte` and button in
 `src/lib/SideBars/CharConfig.svelte` prefer it over older memory flags. The panel contract holds tab mounting and
-refresh. Preview runs only on its button because its local send moves `refresh`.
+refresh. Preview runs only on its button since its local send moves `refresh`.
 
 Contents from `server/src/routes/structuredMemory.ts` supplies `adoption`, `rebuild`, `recordedLanguage`, and `health`;
 the tab's HypaV3 mirror decides none. A [held chat](lifecycle.md#the-adoption-choice) offers adoption of HypaV3
@@ -213,19 +213,21 @@ report, and tab-held over-cap marks for open and pinned chats while the algorith
 comment owns selection; `MEMORY_HEALTH_STATES` gives the worst state, and `health` is last in `CHAT_STATUS_PRIORITY`,
 hiding no `unseen`.
 
-| State                 | Input                                                                       |
-| --------------------- | --------------------------------------------------------------------------- |
-| `writerPaused`        | Health `paused` or the open report sets it; a receipt does not.             |
-| `gap`                 | The open report's `gapTokens` exceeds `gapConfirmTokens`.                   |
-| `staleEvents`         | It combines `storedStale`, `pendingRepairs`, and report `stale` exclusions. |
-| `unsupportedSections` | It reads health's `unsupportedSections`.                                    |
-| `requiredOverCap`     | It reads the tab's `memoryRequiredOverCap` failure mark.                    |
-| `pageOverBudget`      | It reads health's `overBudgetSections`.                                     |
+| State                 | Input                                                       |
+| --------------------- | ----------------------------------------------------------- |
+| `writerPaused`        | Health `paused` or the open report; not a receipt.          |
+| `gap`                 | Open report `gapTokens` over `gapConfirmTokens`.            |
+| `staleEvents`         | `storedStale`, `pendingRepairs`, report `stale` exclusions. |
+| `unsupportedSections` | Health's `unsupportedSections`.                             |
+| `requiredOverCap`     | The tab's `memoryRequiredOverCap` failure mark.             |
+| `pageOverBudget`      | Health's `overBudgetSections`.                              |
+| `unavailable`         | Health `unavailable`: a neutral chip with a help icon.      |
 
 `watchChatVisibility` owns read triggers. `readHealth` keeps facts on failure, drops a chat's answer older than its
 applied one, and resumes a prefix `POST /health` answers ([routes](records.md#the-read-routes),
-[measurement](../../audit/structured-memory-health-read-2026-11-03.md)); contents' `health` feeds the writer line. A
-send's `writerState` gets `pending` with reason `repair` from in-hand `records.events`.
+[measurement](../../audit/structured-memory-health-read-2026-11-03.md)); contents' `health` feeds the writer line,
+`paused` from contents runs when `unavailable`. A send's `writerState` gets `pending` with reason `repair` from in-hand
+`records.events`.
 
 In `noteJobDone`, an `error` terminal coded `memoryRequiredOverCap` sets that chat's mark, a preview's included; a
 `done` with a `messageId` clears only that chat's. `DefaultChatScreen` shows health under `ContextMeter` even with the
@@ -285,8 +287,7 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 - The panel: `structuredMemoryRoutes.test.ts` poisons a run's stored `data` through a second connection, so a read that
   should not happen fails the request. `structuredMemory.test.ts` drives the join and the restarts.
   `StructuredMemoryPanel.test.ts` mounts the real panel and `App.svelte` on fake timers with `authFetch` scripted, edits
-  and refusals included, and the two openers are in `DefaultChatScreen.drafts.test.ts` and
-  `CharConfig.emotions.test.ts`.
+  and refusals included; the two openers are in `DefaultChatScreen.drafts.test.ts` and `CharConfig.emotions.test.ts`.
 - Selection and the meter: `MemorySettings.structuredMemory.test.ts` compares the page's editable controls with the list
   it may expose, so a new control fails it until something reads the field. `Toggles.test.ts` holds the toggle and
   `alwaysToggleOn`, `ContextMeter.svelte.test.ts` the line and the popover's one read.

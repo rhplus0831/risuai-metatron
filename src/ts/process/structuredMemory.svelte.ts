@@ -608,7 +608,7 @@ function parseContents(body: AnswerBody): StructuredMemoryContentsAnswer | null 
             writerBlockingReason === null ||
             writerBlockingReason === "pluginModel" ||
             writerBlockingReason === "requestTrigger") &&
-        isHealthFacts(health)
+        (health === "unavailable" || isHealthFacts(health))
         ? ({ ...body, trash, adoption, rebuild, recordedLanguage, health } as StructuredMemoryContentsAnswer)
         : null;
 }
@@ -762,7 +762,7 @@ function parseHealth(body: AnswerBody, length: number): StructuredMemoryHealthAn
     return Array.isArray(health) &&
         health.length >= Math.min(1, length) &&
         health.length <= length &&
-        health.every((entry) => entry === null || isHealthFacts(entry))
+        health.every((entry) => entry === null || entry === "unavailable" || isHealthFacts(entry))
         ? (body as StructuredMemoryHealthAnswer)
         : null;
 }
@@ -1052,10 +1052,11 @@ export function readStructuredMemoryRevisions(
 }
 
 /**
- * The health facts of a prefix of `refs`, by position, in one request (`MEMORY_HEALTH_CHATS_MAX` at
- * most), reading no message: the server stops before the chat that would take its scan past
- * `MEMORY_HEALTH_ROUND_BYTES`, so a caller asks again from the first entry it did not get. A null entry
- * is an answer: the chat does not exist.
+ * The health entries of a prefix of `refs`, by position, in one request (`MEMORY_HEALTH_CHATS_MAX` at
+ * most), reading no message. Each chat is charged the stored bytes of its live pages, events, and runs;
+ * one over `MEMORY_HEALTH_ROUND_BYTES` answers `"unavailable"` without a scan or charge. After at least
+ * one entry, the server stops before the chat whose charge would take its scan past the budget, so a
+ * caller asks again from the first entry it did not get. A null entry means the chat does not exist.
  */
 export function readStructuredMemoryHealth(
     refs: readonly ChatRef[],

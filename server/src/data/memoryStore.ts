@@ -26,7 +26,7 @@ import type {
     MemoryRun,
     MemoryThread,
     StructuredMemoryContents,
-    StructuredMemoryHealthFacts,
+    StructuredMemoryHealthEntry,
     StructuredMemoryRebuild,
     StructuredMemoryRebuildMode,
     StructuredMemoryRecordKind,
@@ -642,8 +642,8 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
     // sections of the pages out of the trash for their `unsupported` flags and the bodies past their
     // type and slot's budget (`memorySectionBudget`). SQLite's `length` counts code points where
     // `memorySectionOverBudget` counts UTF-16 units, so only a body with astral characters near its budget
-    // can read differently here; the badge this feeds is advisory. The live pages' stored bytes bound what
-    // one health request scans.
+    // can read differently here; the badge this feeds is advisory. The live pages', events', and runs'
+    // stored bytes bound what one health request scans.
     const selectRunResults = db.prepare(
         `SELECT result FROM ${MEMORY_TABLES.runs.table} WHERE chatSeq = ? ORDER BY seq`,
     );
@@ -670,9 +670,11 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             `FROM ${MEMORY_TABLES.pages.table} p, json_each(p.data, '$.sections') s ` +
             `WHERE p.chatSeq = ? AND p.type != '${TRASHED_PAGE_COLUMN}'`,
     );
-    const sumLivePageBytes = db.prepare(
-        `SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM ${MEMORY_TABLES.pages.table} ` +
-            `WHERE chatSeq = ? AND type != '${TRASHED_PAGE_COLUMN}'`,
+    const sumChatHealthBytes = db.prepare(
+        `SELECT (SELECT COALESCE(SUM(octet_length(data)), 0) FROM ${MEMORY_TABLES.pages.table} ` +
+            `WHERE chatSeq = ? AND type != '${TRASHED_PAGE_COLUMN}') + ` +
+            `(SELECT COALESCE(SUM(octet_length(data)), 0) FROM ${MEMORY_TABLES.events.table} WHERE chatSeq = ?) + ` +
+            `(SELECT COALESCE(SUM(octet_length(data)), 0) FROM ${MEMORY_TABLES.runs.table} WHERE chatSeq = ?) AS bytes`,
     );
     const selectRun = db.prepare(
         "SELECT mode, revision, sourceReplaced, cursor, total, reason, error FROM memory_rebuilds WHERE chatSeq = ?",
@@ -912,14 +914,15 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
         },
 
         /**
-         * The health facts of each chat's live records (`StructuredMemoryHealthFacts`), in request order, a
+         * The health entry of each chat's live records (`StructuredMemoryHealthEntry`), in request order, a
          * handful of statements each and no message read; null for a missing chat. The staged tables of a
-         * rebuild count for nothing. `budgetBytes` bounds the stored bytes of live pages one call scans: the
-         * first chat is always answered, and the list stops before the chat that would pass the budget, so
-         * it is a prefix of `refs`; with no budget every ref is answered.
+         * rebuild count for nothing. `budgetBytes` bounds the stored bytes of live pages, events, and runs
+         * one call scans. A chat over that per-chat cap answers `"unavailable"` without a scan or charge.
+         * After at least one entry, the list stops before the chat whose charge would pass the budget,
+         * so it is a prefix of `refs`; with no budget every ref is answered and none is unavailable.
          */
-        readHealth(refs: readonly MemoryChatRef[], budgetBytes = Infinity): (StructuredMemoryHealthFacts | null)[] {
-            const facts: (StructuredMemoryHealthFacts | null)[] = [];
+        readHealth(refs: readonly MemoryChatRef[], budgetBytes = Infinity): (StructuredMemoryHealthEntry | null)[] {
+            const facts: (StructuredMemoryHealthEntry | null)[] = [];
             let scanned = 0;
             for (const { characterId, chatId } of refs) {
                 const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
@@ -927,7 +930,11 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                     facts.push(null);
                     continue;
                 }
-                const { bytes } = sumLivePageBytes.get(chat.seq) as { bytes: number };
+                const { bytes } = sumChatHealthBytes.get(chat.seq, chat.seq, chat.seq) as { bytes: number };
+                if (bytes > budgetBytes) {
+                    facts.push("unavailable");
+                    continue;
+                }
                 if (facts.length > 0 && scanned + bytes > budgetBytes) {
                     break;
                 }

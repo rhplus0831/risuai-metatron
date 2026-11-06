@@ -756,6 +756,7 @@ export const languageKorean = {
             unsupportedSections: "근거 메시지가 사라진 메모리 섹션이 있음",
             requiredOverCap: "필수 메모리 페이지가 토큰 한도를 초과함",
             pageOverBudget: "토큰 예산을 초과한 메모리 섹션이 있음",
+            unavailable: "메모리 상태를 확인하기에는 너무 큼",
         },
     },
     refusedData: {

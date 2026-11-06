@@ -38,6 +38,7 @@
     import {
         normalizeStructuredMemorySettings,
         structuredMemoryWriterLanguage,
+        writerPaused,
         type StructuredMemoryRebuild,
         type StructuredMemoryRebuildMode,
     } from "../../../../shared/structuredMemory.ts";
@@ -171,8 +172,12 @@
                 result?.outcome === "ok"
                     ? {
                           chatKey: key,
-                          paused: result.value.health.paused,
-                          pendingRepairs: result.value.health.pendingRepairs,
+                          paused:
+                              result.value.health === "unavailable"
+                                  ? writerPaused(result.value.runs)
+                                  : result.value.health.paused,
+                          pendingRepairs:
+                              result.value.health === "unavailable" ? 0 : result.value.health.pendingRepairs,
                           adoptable: result.value.adoption.adoptable,
                           resettable: result.value.adoption.resettable,
                           rebuild: result.value.rebuild,

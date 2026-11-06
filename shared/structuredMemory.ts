@@ -687,24 +687,30 @@ export type StructuredMemoryHealthFacts = {
     overBudgetSections: number;
 };
 
+/** A chat's health facts, or an entry whose stored byte charge exceeds the per-chat cap. */
+export type StructuredMemoryHealthEntry = StructuredMemoryHealthFacts | "unavailable";
+
 /** The most chats one request of the health route names. */
 export const MEMORY_HEALTH_CHATS_MAX = 64;
 
-/** The stored bytes of live pages one health request may scan; the first chat is always answered. */
+/** The stored bytes of live pages, events, and runs one health request may scan, also the per-chat cap. */
 export const MEMORY_HEALTH_ROUND_BYTES = 16 * 1024 * 1024;
 
 /**
- * The health route's answer: a prefix of the request, in its order, each entry the chat's facts or null
- * for a chat that does not exist. The prefix holds the first chat and stops before the chat whose live
- * pages would take the scan past `MEMORY_HEALTH_ROUND_BYTES`; the rest goes in another request.
+ * The health route's answer: a prefix of the request, in its order, each entry the chat's facts,
+ * `"unavailable"` for a chat whose live pages, events, and runs exceed `MEMORY_HEALTH_ROUND_BYTES`, or
+ * null for a chat that does not exist. Unavailable chats are not scanned or charged. After at least one
+ * entry, the prefix stops before a chat whose charge would take the scan past that budget; the rest
+ * goes in another request.
  */
-export type StructuredMemoryHealthAnswer = { health: (StructuredMemoryHealthFacts | null)[] };
+export type StructuredMemoryHealthAnswer = { health: (StructuredMemoryHealthEntry | null)[] };
 
 /**
  * The states of the memory health badge, worst first. The badge shows the first that holds:
  * `writerPaused` from the runs, `gap` and `staleEvents` from the last send's report and the stored
  * events, `unsupportedSections` and `pageOverBudget` from the live pages, `requiredOverCap` from the
- * last send's failure. A custom writer prompt is not a health state: the run receipts show it.
+ * last send's failure, and `unavailable` when the chat is too large to check. Known problems outrank
+ * unavailable health. A custom writer prompt is not a health state: the run receipts show it.
  */
 export const MEMORY_HEALTH_STATES = [
     "writerPaused",
@@ -713,6 +719,7 @@ export const MEMORY_HEALTH_STATES = [
     "unsupportedSections",
     "requiredOverCap",
     "pageOverBudget",
+    "unavailable",
 ] as const;
 export type MemoryHealthState = (typeof MEMORY_HEALTH_STATES)[number];
 
@@ -724,13 +731,13 @@ export function memoryHealthState(holds: Readonly<Record<MemoryHealthState, bool
 /**
  * The contents route's answer: a chat's records without their bodies, what the panel offers for its
  * summaries, its rebuild, the language of its newest recorded run, null with none or from before runs
- * kept one, its health facts, and the current tab-bound writer reason when its binding resolves.
+ * kept one, its health entry, and the current tab-bound writer reason when its binding resolves.
  */
 export type StructuredMemoryContentsAnswer = StructuredMemoryContents & {
     adoption: StructuredMemoryAdoption;
     rebuild: StructuredMemoryRebuild | null;
     recordedLanguage: string | null;
-    health: StructuredMemoryHealthFacts;
+    health: StructuredMemoryHealthEntry;
     writerBlockingReason?: "pluginModel" | "requestTrigger" | null;
 };
 
