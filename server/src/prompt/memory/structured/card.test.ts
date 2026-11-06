@@ -170,13 +170,15 @@ describe("structured memory card", () => {
         ]);
     });
 
-    it("recounts each rendered part as one system chat and removes whole items until the maximum holds", async () => {
+    it("recounts each rendered part as one system chat, each distinct text once, and removes whole items until the maximum holds", async () => {
         // Independent line costs undercount a rendered part: combining two tagged lines costs 70.
         const cost = (content: string) =>
             content.startsWith("[m:") ? 1 : 10 + 15 * (content.match(/\[m:/g)?.length ?? 0) ** 2;
+        const counted: string[] = [];
         const tokenizer: MemoryTokenizer = {
             tokenizeChat: async (chat) => {
                 expect(chat.role).toBe("system");
+                counted.push(chat.content);
                 return cost(chat.content);
             },
         };
@@ -204,6 +206,9 @@ describe("structured memory card", () => {
         expect(cost(result.stable) + cost(result.volatile)).toBeLessThanOrEqual(70);
         expect(result.excluded).toEqual([{ id: "u", kind: "evidence", lane: "evidence", reason: "budget" }]);
         expect(result.spend.find(({ lane }) => lane === "evidence")?.spent).toBe(0);
+        expect(counted).toContain(result.stable);
+        expect(counted).toHaveLength(new Set(counted).size);
+        counted.length = 0;
         const empty = await spentCard(tokenizer, { maximum: 5, lanes });
         expect({ stable: empty.stable, volatile: empty.volatile, tokens: empty.tokens, items: empty.items }).toEqual({
             stable: "",
@@ -211,5 +216,7 @@ describe("structured memory card", () => {
             tokens: 0,
             items: [],
         });
+        expect(counted).toContain(lanes[0].items[0].line);
+        expect(counted).toHaveLength(new Set(counted).size);
     });
 });
