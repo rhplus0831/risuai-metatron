@@ -58,8 +58,11 @@ import {
  * keyed by the chat's incarnation `seq` and `Message.chatId`, ordered by `position`), each
  * character's chat order (`chatOrders`), and each chat's stored summary projection (`chatSummaries`).
  * The resource store owns the connection, the epoch, and the transactions; this module prepares,
- * applies, reads, and validates chat changes inside them. Candidate revisions and append-time
- * checkpoint cleanup are store-owned. Reroll variable provenance is staged with the same transaction.
+ * applies, reads, and validates chat changes inside them. Candidate revisions and checkpoint retention
+ * are store-owned: appends keep snapshots on the newest non-comment message and live job rows;
+ * appended comments never keep them. By-id writes cannot restore absent snapshots unless admitted
+ * by a generation fence or made by the row's lock owner. Reroll variable provenance is staged with
+ * the same transaction.
  *
  * Positions: an insert shifts the rows after its anchor by the number of inserted messages; a
  * removal leaves a gap. Positions are distinct within a chat but not unique-constrained, because
@@ -355,9 +358,10 @@ const MESSAGE_ROLE_INDEX_SQL = `CREATE INDEX IF NOT EXISTS messages_role ON mess
 const MESSAGE_CHECKPOINT_PREDICATE_SQL = `(instr(data, '"scriptstateCheckpoint":') > 0 OR instr(data, '"scriptstateAfter":') > 0)`;
 
 /**
- * Messages that may need candidate checkpoint cleanup, indexed by chat without pruning candidate
- * history. Created when missing (`openChatSchema`), outside the snapshot layout (`CHAT_TABLE_COLUMNS`);
- * SQLite maintains it on every write of a message's `data`, including staged imports and restores.
+ * Messages that may need checkpoint cleanup after any fresh append, indexed by chat without pruning
+ * candidate history. Retention follows the newest non-comment message's stored position. Created when
+ * missing (`openChatSchema`), outside the snapshot layout (`CHAT_TABLE_COLUMNS`); SQLite maintains it
+ * on every write of a message's `data`, including staged imports and restores.
  */
 const MESSAGE_CHECKPOINT_INDEX_SQL = `CREATE INDEX IF NOT EXISTS messages_checkpoints ON messages (chatSeq) WHERE ${MESSAGE_CHECKPOINT_PREDICATE_SQL};`;
 
@@ -1339,6 +1343,13 @@ function readMessage(text: string): Message {
     return normalizeCandidateFields(JSON.parse(text)) as Message;
 }
 
+function hasCandidateCheckpoints(message: Message): boolean {
+    return (
+        message.scriptstateCheckpoint !== undefined ||
+        !!message.candidates?.some((candidate) => candidate.scriptstateAfter !== undefined)
+    );
+}
+
 /** The counter is assigned after admission. Writers can neither reset it nor choose its next value. */
 function withCandidateRevision(text: string, previous?: string): string {
     const message = JSON.parse(text) as Message;
@@ -1513,10 +1524,10 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const selectCandidateRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND (
         json_type(data, '$.candidates') IS NOT NULL OR json_type(data, '$.selected') IS NOT NULL OR
         json_type(data, '$.candidatesRevision') IS NOT NULL)`);
-    // The partial index finds possible checkpoints without traversing historical candidate arrays.
-    // The append loop skips unchanged false positives and rows a live job owns; an open generation
-    // fence with no live owner is cleaned.
-    const selectCheckpointRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND id != ?
+    // The partial index finds possible checkpoints outside the newest non-comment row (null if none)
+    // without traversing historical candidate arrays. After any fresh append, skip unchanged false
+    // positives and rows a live job owns; an open generation fence with no live owner is cleaned.
+    const selectCheckpointRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND id IS NOT ?
         AND ${MESSAGE_CHECKPOINT_PREDICATE_SQL}`);
     const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");
     const countUserTurns = db.prepare(COUNT_USER_TURNS_SQL);
@@ -2386,11 +2397,15 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     for (const message of op.messages) {
                         const existing = selectMessage.get(chatSeq, message.id) as MessageRow | undefined;
                         if (!existing) {
-                            fresh.push({ ...message, text: withCandidateRevision(message.text) });
-                            expectCandidateRevision(
-                                message.id,
-                                (JSON.parse(message.text) as Message).candidatesRevision ?? null,
-                            );
+                            const incoming = JSON.parse(message.text) as Message;
+                            expectCandidateRevision(message.id, incoming.candidatesRevision ?? null);
+                            let text = message.text;
+                            // Comments never carry snapshots, even when a job owns their new ids.
+                            if (incoming.isComment && hasCandidateCheckpoints(incoming)) {
+                                text = serialize(withoutCandidateCheckpoints(incoming)).text;
+                                candidateWrites.get(message.id)!.cleaned = true;
+                            }
+                            fresh.push({ ...message, text: withCandidateRevision(text) });
                         } else if (!appendReplay(message.text, existing.data)) {
                             conflictHere(row);
                         }
@@ -2402,30 +2417,35 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         }
                         fresh.forEach((message) => insertedHere.add(message.id));
                         insertAt(chatSeq, after, fresh);
-                        if (fresh.some(({ text }) => !JSON.parse(text).isComment)) {
-                            const newest = fresh.findLast(({ text }) => !JSON.parse(text).isComment)!.id;
-                            for (const { data } of selectCheckpointRows.all(chatSeq, newest) as { data: string }[]) {
-                                const message = readMessage(data);
-                                // A job may already own a row whose begin comes later in this group.
-                                if (guard && guard.holder(characterId, chatId, message.chatId!) !== null) continue;
-                                const cleaned = withoutCandidateCheckpoints(message);
-                                if (data === JSON.stringify(cleaned)) continue;
-                                const candidateWrite = candidateWrites.get(message.chatId!) ?? {
-                                    revision: message.candidatesRevision ?? null,
-                                    cleaned: false,
-                                };
-                                candidateWrite.cleaned = true;
-                                candidateWrites.set(message.chatId!, candidateWrite);
-                                if (patchBase !== null && !rowsBefore.has(message.chatId!)) {
-                                    rowsBefore.set(message.chatId!, data);
-                                }
-                                setMessageData.run(
-                                    withCandidateRevision(serialize(cleaned).text, data),
-                                    chatSeq,
-                                    message.chatId!,
-                                );
-                                touched.add(message.chatId!);
+                        // Match isLatestReply: stop at the first non-comment, regardless of role.
+                        // Read the current order so earlier ops and insertions before the tail count.
+                        let newest: string | null = null;
+                        for (const message of selectCarrierMessages.iterate(chatSeq)) {
+                            if (message.isComment) continue;
+                            newest = message.chatId as string;
+                            break;
+                        }
+                        for (const { data } of selectCheckpointRows.all(chatSeq, newest) as { data: string }[]) {
+                            const message = readMessage(data);
+                            // A job may already own a row whose begin comes later in this group.
+                            if (guard && guard.holder(characterId, chatId, message.chatId!) !== null) continue;
+                            const cleaned = withoutCandidateCheckpoints(message);
+                            if (data === JSON.stringify(cleaned)) continue;
+                            const candidateWrite = candidateWrites.get(message.chatId!) ?? {
+                                revision: message.candidatesRevision ?? null,
+                                cleaned: false,
+                            };
+                            candidateWrite.cleaned = true;
+                            candidateWrites.set(message.chatId!, candidateWrite);
+                            if (patchBase !== null && !rowsBefore.has(message.chatId!)) {
+                                rowsBefore.set(message.chatId!, data);
                             }
+                            setMessageData.run(
+                                withCandidateRevision(serialize(cleaned).text, data),
+                                chatSeq,
+                                message.chatId!,
+                            );
+                            touched.add(message.chatId!);
                         }
                         applied += 1;
                     }
@@ -2448,12 +2468,14 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         rowsBefore.set(id, existing.data);
                     }
                     targets.push("applied");
+                    let admittedGeneration = false;
                     if (op.op !== "patchMessage" && op.generation) {
                         const outcome = admitGeneration(chatSeq, id, existing!, op.generation);
                         checkpoints.push(outcome);
                         if (outcome !== "applied") {
                             break;
                         }
+                        admittedGeneration = true;
                         if (
                             op.generation.final &&
                             attempt &&
@@ -2517,6 +2539,19 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                                 (JSON.parse(op.op === "setMessage" ? op.message.text : existing!.data) as Message)
                                     .candidatesRevision ?? null,
                             );
+                        }
+                        if (
+                            !admittedGeneration &&
+                            !(jobToken !== undefined && guard?.holder(characterId, chatId, id) === jobToken) &&
+                            !hasCandidateCheckpoints(JSON.parse(existing.data) as Message)
+                        ) {
+                            const message = JSON.parse(text) as Message;
+                            if (hasCandidateCheckpoints(message)) {
+                                text = serialize(withoutCandidateCheckpoints(message)).text;
+                                // A stale whole-row write or journal replay must clear the writer's
+                                // copies even when stripping leaves the stored bytes unchanged.
+                                candidateWrites.get(id)!.cleaned = true;
+                            }
                         }
                         text = withCandidateRevision(text, existing!.data);
                     }
@@ -2750,10 +2785,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 const message = JSON.parse(stored.data) as Message;
                 const candidatesRevision = message.candidatesRevision ?? null;
                 if (!expected.cleaned && candidatesRevision === expected.revision) continue;
-                const cleared =
-                    expected.cleaned &&
-                    message.scriptstateCheckpoint === undefined &&
-                    !message.candidates?.some((candidate) => candidate.scriptstateAfter !== undefined);
+                const cleared = expected.cleaned && !hasCandidateCheckpoints(message);
                 candidateRows.push({ id, candidatesRevision, ...(cleared ? { cleared: true as const } : {}) });
             }
             if (candidateRows.length) result.candidateRows = candidateRows;

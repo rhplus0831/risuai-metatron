@@ -447,8 +447,27 @@ test("switching back restores the output trigger variable rendered by a CBS comm
         { $replyValue: "First variable value." },
         { $replyValue: "Second variable value." },
     ]);
+    const insertedId = randomUUID();
+    await s.page.evaluate(
+        async ({ chaId, chatId, insertedId }) => {
+            const { appendMessage } = await import("/src/ts/storage/chatStore.svelte.ts");
+            appendMessage(
+                { chaId, chatId },
+                { role: "user", data: "Earlier context.", chatId: insertedId },
+                { anchor: { start: true } },
+            );
+        },
+        { ...ref, insertedId },
+    );
+    await settle(s.page);
+    expect((await stored(s, ref)).message[0]).toMatchObject({
+        chatId: insertedId,
+        role: "user",
+        data: "Earlier context.",
+    });
     await switchLeft(s, id);
     await shows(s.page, id, "First variable value.", "1/2");
+    expect((await stored(s, ref)).scriptstate).toMatchObject({ $replyValue: "First variable value." });
     // Real note messages use role char + isComment, and run the display CBS pre-pass.
     // Append after the switch so the rendered note reads the restored state immediately.
     const commentId = randomUUID();

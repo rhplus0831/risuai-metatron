@@ -144,6 +144,8 @@ In `DefaultChatScreen.svelte`: `send`/`sendContinue` → `sendMain` → `sendCha
 - `reroll`/`unReroll` (their comments) switch the newest reply's `candidates`, then the bundle history; past the last, a
   one-reply tail rerolls [in place](server-generation.md#reroll-in-place) while the current `hello` allows it
   (`serverRerollsInPlace`), else the tail is removed and sent again.
+- An insertion before the carrier keeps its variable snapshots
+  ([chat writes](server-resources.md#chat-writes-and-checkpoints)).
 - A send that brought no reply puts the removed tail back (`restoreRerolledReplies`; its comment has the conditions). A
   refusal first withdraws the matching removal while it still owns the end of the save queue; after an ambiguous
   response that restoration is provisional ([store](chat-store.md#chat-writes)).

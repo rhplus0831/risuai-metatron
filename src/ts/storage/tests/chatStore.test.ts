@@ -402,23 +402,32 @@ describe("display install state", () => {
 describe("mirror and queue", () => {
     async function bootCandidateReply() {
         const h = await boot(await StoreBackedServer.create({ feed: true }));
+        // A by-id write cannot add snapshots to a row holding none; a whole-chat write can.
+        const stored = h.server.chat("c", "k")!;
         h.server.chatBatch([
             {
                 characterId: "c",
                 chatId: "k",
-                baseRevision: h.server.chat("c", "k")!.revision,
+                baseRevision: stored.revision,
                 ops: [
                     {
-                        op: "patchMessage",
-                        id: "c",
-                        set: {
-                            data: "Second",
-                            candidates: [
-                                { id: "first", data: "First", scriptstateAfter: { $x: "1" } },
-                                { id: "second", data: "Second", scriptstateAfter: { $x: "2" } },
-                            ],
-                            selected: 1,
-                            scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "2" } },
+                        op: "replace",
+                        chat: {
+                            ...stored.data,
+                            message: stored.data.message.map((message) =>
+                                message.chatId === "c"
+                                    ? {
+                                          ...message,
+                                          data: "Second",
+                                          candidates: [
+                                              { id: "first", data: "First", scriptstateAfter: { $x: "1" } },
+                                              { id: "second", data: "Second", scriptstateAfter: { $x: "2" } },
+                                          ],
+                                          selected: 1,
+                                          scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "2" } },
+                                      }
+                                    : message,
+                            ),
                         },
                     },
                 ],
@@ -489,6 +498,37 @@ describe("mirror and queue", () => {
             expect(clone(row())).toEqual(stored);
         },
     );
+
+    it("clears server and mirror snapshots when an append and an older whole-row edit share a sent group", async () => {
+        const { server, chat, ref, row, take, apply, ack } = await bootCandidateReply();
+        const old = clone(row());
+        chat.appendMessage(ref, m("next", "Next question"));
+        chat.replaceMessage(ref, { ...old, name: "Edited name" });
+        const work = take();
+        expect(work.groups).toHaveLength(1);
+        expect(work.groups[0].ops).toEqual([
+            { op: "append", anchor: { end: true }, messages: [m("next", "Next question")] },
+            { op: "setMessage", message: { ...old, name: "Edited name" } },
+        ]);
+
+        const result = apply(work);
+        expect(row().scriptstateCheckpoint).toEqual({ before: { $x: "0" }, after: { $x: "2" } });
+        expect(result.chats[0].candidateRows).toEqual([{ id: "c", candidatesRevision: 2, cleared: true }]);
+        ack(work, result);
+
+        const expected = {
+            ...m("c", "Second", "char"),
+            name: "Edited name",
+            candidates: [
+                { id: "first", data: "First" },
+                { id: "second", data: "Second" },
+            ],
+            selected: 1,
+            candidatesRevision: 2,
+        };
+        expect(server.chat("c", "k")!.data.message.find((message) => message.chatId === "c")).toEqual(expected);
+        expect(clone(row())).toEqual(expected);
+    });
 
     it("updates the mirror synchronously from detached copies of the input and the anchor", async () => {
         const { server, chat, ref, commit } = await boot();

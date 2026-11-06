@@ -1344,7 +1344,7 @@ export interface Message {
     selected?: number;
     /** Store-owned, monotonic across list changes and removal; absent means zero. */
     candidatesRevision?: number;
-    /** Only the newest reply retains variable checkpoints. */
+    /** After append, only the newest non-comment message and live job rows retain variable checkpoints. */
     scriptstateCheckpoint?: { before: ScriptstateSnapshot; after?: ScriptstateSnapshot };
 }
 

@@ -96,9 +96,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   removed answers `missing`, a recovery draft via the conflict listener ([resource sync](resource-sync.md#conflicts));
   an `append` whose anchor is gone is re-anchored and resent alone; the rest take the ordinary
   [recovery](resource-sync.md#chat-and-order-conflicts).
-- A result's `candidateRows` (counters, append-cleaned snapshots) reach the mirror and unsent ops
-  (`adoptCandidateRows`). A refused `selectCandidate` (stale counter, gone candidate, not the newest reply) marks the
-  chat stale.
+- A result's `candidateRows` (counters, cleaned snapshots) reach the mirror and unsent ops (`adoptCandidateRows`). A
+  refused `selectCandidate` (stale counter, gone candidate, not the newest reply) marks the chat stale.
 - An idle re-base can refresh a send still building its prompt without a lock: its baseline protects changes made
   meanwhile ([chat pipeline](chat-pipeline.md)).
 

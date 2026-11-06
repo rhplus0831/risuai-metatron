@@ -40,26 +40,39 @@ async function boot() {
     const harness = await bootMutations((server) => (io.server = server));
     sync = harness.sync;
     const { fake, chat } = harness;
+    // A by-id write cannot add snapshots to a row holding none; a whole-chat write can.
+    const stored = fake.chat("c", "k")!;
     fake.chatBatch([
         {
             characterId: "c",
             chatId: "k",
-            baseRevision: fake.chat("c", "k")!.revision,
+            baseRevision: stored.revision,
             ops: [
                 {
-                    op: "patchMessage",
-                    id: "c",
-                    set: {
-                        data: "Second",
-                        candidates: [
-                            { id: "first", data: "First", scriptstateAfter: { $x: "1", $foreign: "1" } },
-                            { id: "second", data: "Second", scriptstateAfter: { $x: "2", $foreign: "2" } },
-                        ],
-                        selected: 1,
-                        scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "2", $foreign: "2" } },
+                    op: "replace",
+                    chat: {
+                        ...stored.data,
+                        scriptstate: { $x: "2", $foreign: "2" },
+                        message: stored.data.message.map((message) =>
+                            message.chatId === "c"
+                                ? {
+                                      ...message,
+                                      data: "Second",
+                                      candidates: [
+                                          { id: "first", data: "First", scriptstateAfter: { $x: "1", $foreign: "1" } },
+                                          {
+                                              id: "second",
+                                              data: "Second",
+                                              scriptstateAfter: { $x: "2", $foreign: "2" },
+                                          },
+                                      ],
+                                      selected: 1,
+                                      scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "2", $foreign: "2" } },
+                                  }
+                                : message,
+                        ),
                     },
                 },
-                { op: "meta", set: { scriptstate: { $x: "2", $foreign: "2" } } },
             ],
         },
     ]);

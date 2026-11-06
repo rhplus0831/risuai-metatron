@@ -169,9 +169,10 @@ export type ChatGroupResult = {
     /** One entry per `selectCandidate` op, in op order; present whenever the group has one. */
     selections?: ("applied" | "refused")[];
     /**
-     * Final candidate state for surviving rows cleaned by append or needing counter correction, in
-     * first-write order. `cleared` means append cleanup left no scriptstateCheckpoint or candidate
-     * scriptstateAfter after all ops. null means no stored counter; the writer drops its own.
+     * Final candidate state for surviving rows cleaned by append, refusing snapshot reintroduction,
+     * or needing counter correction, in first-write order. `cleared` means append cleanup or a refused
+     * reintroduction left no scriptstateCheckpoint or candidate scriptstateAfter after all ops,
+     * even when the stored row did not change. null means no stored counter; the writer drops its own.
      * Omitted when empty; replayed unchanged at this group's revision.
      */
     candidateRows?: { id: string; candidatesRevision: number | null; cleared?: true }[];

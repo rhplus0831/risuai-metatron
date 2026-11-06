@@ -178,6 +178,9 @@ absence as absence (upstream reads it as now).
 - Automatic checkpoints (`autoSave`) run only after a job ends with a final `done`, when the chat policy's user-turn
   threshold is met (`countUserTurns`, no message row read).
 - By-id writes read touched rows by id (`TOUCHED_ROWS_SQL`) and counts from the `messageCounts` memo, not `COUNT(*)`.
+- Reroll snapshots (`scriptstateCheckpoint`, candidates' `scriptstateAfter`) follow position: after an `append`, only
+  the newest non-comment message or a live job's row keeps them. A `setMessage` or `patchMessage` cannot restore them on
+  a row holding none unless an admitted generation or the lock owner writes; `candidateRows` reports it `cleared`.
 
 ### Snapshots and restore
 

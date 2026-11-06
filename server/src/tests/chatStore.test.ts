@@ -3763,6 +3763,101 @@ describe("persisted reply candidates", () => {
         expect(row(store)).toMatchObject({ ...expected, data: "Edited" });
     });
 
+    it("retains the same snapshots for separate and coalesced end appends, stripping comments", () => {
+        const saved = [false, true].map((coalesced) => {
+            const store = memoryStore();
+            init(store);
+            const newest = { ...reply(), chatId: "newest" };
+            const comment = { ...reply(), chatId: "comment", isComment: true };
+            write(
+                store,
+                coalesced
+                    ? [{ op: "append", anchor: { end: true }, messages: [newest, comment] }]
+                    : [
+                          { op: "append", anchor: { end: true }, messages: [newest] },
+                          { op: "append", anchor: { end: true }, messages: [comment] },
+                      ],
+            );
+            return chat(store, "k")!.data.message.map(({ candidatesRevision: _revision, ...message }) => message);
+        });
+        const cleaned = {
+            ...m("r", "Second", "char"),
+            candidates: [
+                { id: "first", data: "First" },
+                { id: "second", data: "Second" },
+            ],
+            selected: 1,
+        };
+        const expected = [
+            m("u", "q"),
+            cleaned,
+            { ...reply(), chatId: "newest" },
+            { ...cleaned, chatId: "comment", isComment: true },
+        ];
+        expect(saved).toEqual([expected, expected]);
+    });
+
+    it("keeps the newest reply's snapshots after a start insertion and restores the selected candidate's variables", () => {
+        const store = memoryStore();
+        init(store);
+        write(store, [{ op: "meta", set: { scriptstate: { $x: "2" } } }]);
+
+        write(store, [{ op: "append", anchor: { start: true }, messages: [m("earlier", "Earlier question")] }]);
+
+        expect(messageIds(store, "k")).toEqual(["earlier", "u", "r"]);
+        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        expect(row(store).candidates).toEqual(candidates);
+        expect(chat(store, "k")!.data.scriptstate).toEqual({ $x: "2" });
+
+        const answer = write(store, [select("first", row(store).candidatesRevision!)]);
+        expect(answer.chats[0].selections).toEqual(["applied"]);
+        expect(row(store)).toMatchObject({
+            data: "First",
+            selected: 0,
+            scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "1" } },
+        });
+        expect(chat(store, "k")!.data.scriptstate).toEqual({ $x: "1" });
+    });
+
+    it.each(["setMessage", "patchMessage"] as const)(
+        "acknowledges refused snapshot replay through %s in a later group and permits the lock owner",
+        (op) => {
+            const lock = createGenerationLock();
+            const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+            stores.push(store);
+            init(store);
+            const old = structuredClone(row(store));
+            write(store, [{ op: "append", anchor: { end: true }, messages: [m("next", "Next question")] }]);
+            const cleaned = row(store);
+            expect(cleaned).not.toHaveProperty("scriptstateCheckpoint");
+            expect(cleaned.candidates).toEqual([
+                { id: "first", data: "First" },
+                { id: "second", data: "Second" },
+            ]);
+            const replay: ChatOp =
+                op === "setMessage"
+                    ? { op, message: old }
+                    : {
+                          op,
+                          id: "r",
+                          set: { scriptstateCheckpoint: old.scriptstateCheckpoint, candidates: old.candidates },
+                      };
+
+            const answer = write(store, [replay]).chats[0];
+            expect(answer.candidateRows).toEqual([
+                { id: "r", candidatesRevision: cleaned.candidatesRevision, cleared: true },
+            ]);
+            expect(row(store)).toEqual(cleaned);
+
+            const token = "snapshot-owner";
+            lock.addToken(token);
+            lock.acquire({ characterId: "c", chatId: "k", messageId: "r" }, { token, jobId: "J", generationId: "g" });
+            store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), [replay])] }, { jobToken: token });
+            expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+            expect(row(store).candidates).toEqual(candidates);
+        },
+    );
+
     it("acknowledges cleaned candidate rows, omits unchanged rows, and replays the original corrections", () => {
         const store = memoryStore();
         init(store);
@@ -3785,16 +3880,20 @@ describe("persisted reply candidates", () => {
             { op: "append", anchor: { end: true }, messages: [m("plain", "Another question")] },
         ]).chats[0];
         expect(plainAppend).not.toHaveProperty("candidateRows");
-        write(store, [{ op: "setMessage", message: reply() }]);
+        const edited = candidates.map(({ scriptstateAfter: _after, ...entry }) => ({
+            ...entry,
+            data: `${entry.data}!`,
+        }));
+        write(store, [{ op: "setMessage", message: { ...reply(), candidates: edited } }]);
         expect(row(store).candidatesRevision).toBe(3);
         const replay = store.applyChanges({ chats: [append] }).chats[0];
         expect(replay.revision).toBe(answer.revision);
         expect(replay.candidateRows).toEqual([{ id: "r", candidatesRevision: 2, cleared: true }]);
-        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        expect(row(store).candidates).toEqual(edited);
         expect(row(store).candidatesRevision).toBe(3);
     });
 
-    it("acknowledges the final candidate state when a later whole-row write restores snapshots in the same group", () => {
+    it("refuses a later whole-row write in the same group that would restore cleaned snapshots", () => {
         const store = memoryStore();
         init(store);
         const answer = write(store, [
@@ -3802,10 +3901,10 @@ describe("persisted reply candidates", () => {
             { op: "setMessage", message: reply() },
         ]).chats[0];
 
-        expect(answer.candidateRows).toEqual([{ id: "r", candidatesRevision: 3 }]);
-        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
-        expect(row(store).candidates).toEqual(candidates);
-        expect(row(store).candidatesRevision).toBe(3);
+        expect(answer.candidateRows).toEqual([{ id: "r", candidatesRevision: 2, cleared: true }]);
+        expect(row(store)).not.toHaveProperty("scriptstateCheckpoint");
+        expect(row(store).candidates).toEqual(candidates.map(({ scriptstateAfter: _after, ...entry }) => entry));
+        expect(row(store).candidatesRevision).toBe(2);
     });
 
     it("clears older checkpoints on append, retains candidate texts, and admits the open carrier's later final write", () => {
@@ -3819,12 +3918,13 @@ describe("persisted reply candidates", () => {
         expect(row(store).scriptstateCheckpoint).toBeUndefined();
         expect(row(store).candidates).toEqual(candidates.map(({ scriptstateAfter: _after, ...entry }) => entry));
         expect(row(store).candidatesRevision).toBe(2);
-        write(store, [{ op: "setMessage", message: reply() }]);
         const token = "reroll-token";
         lock.addToken(token);
         lock.acquire({ characterId: "c", chatId: "k", messageId: "r" }, { token, jobId: "J", generationId: "g" });
         const own = (ops: ChatOp[]) =>
             store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), ops)] }, { jobToken: token });
+        // Only the row's lock owner may put snapshots back on a cleaned row.
+        own([{ op: "setMessage", message: reply() }]);
         own([{ op: "begin", id: "r", generationId: "g" }]);
         own([{ op: "append", anchor: { end: true }, messages: [m("trigger", "from Lua", "char")] }]);
         expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
