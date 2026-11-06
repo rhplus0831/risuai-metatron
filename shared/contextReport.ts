@@ -176,7 +176,8 @@ export type ContextReport = {
          * history trimmed without a summary, else "unknown" when the stored summaries run ahead of the
          * history, else "covered"; Structured Memory starts as `selectMemory`
          * (`server/src/prompt/memory/structured/step.ts`) sets it. Raw history the prompt lost afterwards
-         * demotes only "covered" (to "unknown"). For those two, memory sent with no traced memory-only
+         * demotes only "covered" (to "unknown"), except Structured Memory's final recheck loss of
+         * non-blank history makes it "gap". For those two, memory sent with no traced memory-only
          * entry in the final prompt, an untraced memory entry there, or a manifest item whose tag is not in
          * it forces "unknown".
          */
@@ -216,9 +217,9 @@ export type ContextReport = {
         /** Structured Memory: each lane's target and spend. */
         lanes?: readonly ContextMemoryLane[];
         /**
-         * Structured Memory: the tokens of the history the trim dropped, 0 with none; absent in reports
-         * written before a send kept it. The health badge's gap state reads it against the preset's
-         * `gapConfirmTokens`.
+         * Structured Memory: the tokens of history the selection's trim dropped plus non-blank history
+         * the final recheck dropped, 0 with none; absent in reports written before a send kept it. The
+         * health badge's gap state reads it against the preset's `gapConfirmTokens`.
          */
         gapTokens?: number;
         /**

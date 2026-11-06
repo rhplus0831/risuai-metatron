@@ -2498,10 +2498,11 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         promptInfo.promptText = promptBodyformatedForChatStore;
     }
 
-    // token rechecking
+    // Recount the final prompt and record removals for Structured Memory's gap report.
     let inputTokens = 0;
     /** Each entry's count in the recheck, before any removal. */
     const recheckTokens = new Map<OpenAIChat, number>();
+    const recheckCleared = new Set<OpenAIChat>();
     for (const chat of formated) {
         const tokens = await tokenizeChat(chat);
         inputTokens += tokens;
@@ -2530,6 +2531,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 if (!provenance || provenance.untraced) {
                     attributionExact = false;
                 }
+                recheckCleared.add(formated[pointer]);
                 formated[pointer].content = "";
                 delete formated[pointer].multimodals;
                 inputTokens = keptTokens();
@@ -2558,6 +2560,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
             formated,
             provenanceOf,
             recheckTokens,
+            recheckCleared,
             attributionExact,
             sectionTokens,
             historySources,
@@ -2857,7 +2860,8 @@ function traceEditedEntries(
 /**
  * The context report of an assembled prompt (`MessageGenerationInfo.context`): sections from the
  * counts assembly made, history kept by the sources in the final prompt, the trim ledger's next
- * entries, the memory step's kind and coverage, and the lore budget.
+ * entries, the memory step's kind and coverage, and the lore budget. Structured Memory's gap
+ * includes non-blank history lost in the final token recheck.
  */
 function buildContextReport(arg: {
     db: Database;
@@ -2869,6 +2873,8 @@ function buildContextReport(arg: {
     provenanceOf: (chat: OpenAIChat) => EntryProvenance | null;
     /** Each entry's count in the recheck, before any removal. */
     recheckTokens: ReadonlyMap<OpenAIChat, number>;
+    /** Entries the final token recheck cleared. */
+    recheckCleared: ReadonlySet<OpenAIChat>;
     attributionExact: boolean;
     sectionTokens: ReadonlyMap<ContextSectionKind, number>;
     historySources: readonly ContextSource[];
@@ -2972,6 +2978,28 @@ function buildContextReport(arg: {
             (source) => source.kind !== "example" && source.kind !== "marker" && !source.empty && !kept.has(source),
         );
         const manifest = arg.memoryRun.manifest;
+        let lateGapTokens = 0;
+        if (arg.memoryRun.kind === "structuredMemory" && manifest) {
+            const lateGapSources = new Set<ContextSource>();
+            for (const chat of arg.recheckCleared) {
+                const provenance = arg.provenanceOf(chat);
+                if (!provenance || provenance.memory) {
+                    continue;
+                }
+                for (const source of provenance.sources) {
+                    if (
+                        (source.kind === "greeting" || source.kind === "message") &&
+                        !source.empty &&
+                        !kept.has(source)
+                    ) {
+                        lateGapSources.add(source);
+                    }
+                }
+            }
+            for (const source of lateGapSources) {
+                lateGapTokens += source.tokens;
+            }
+        }
         const items = manifest ? verifiedItems(manifest.items, arg.formated) : [];
         // Two card parts can be lost apart, so another traced memory entry proves nothing about an item.
         const lostMemory =
@@ -2993,8 +3021,12 @@ function buildContextReport(arg: {
                   }
                 : {}),
             coverage:
-                lostMemory || (arg.memoryRun.coverage === "covered" && lostAfter) ? "unknown" : arg.memoryRun.coverage,
-            ...(manifest ? memoryManifestFields(manifest, items) : {}),
+                lateGapTokens > 0 && !lostMemory
+                    ? "gap"
+                    : lostMemory || (arg.memoryRun.coverage === "covered" && lostAfter)
+                      ? "unknown"
+                      : arg.memoryRun.coverage,
+            ...(manifest ? memoryManifestFields(manifest, items, lateGapTokens) : {}),
         };
         const meter = arg.memoryRun.meter;
         if (meter) {
@@ -3038,6 +3070,7 @@ function verifiedItems(items: readonly MemoryManifestItem[], formated: readonly 
 function memoryManifestFields(
     manifest: MemorySendManifest,
     items: readonly MemoryManifestItem[],
+    lateGapTokens: number,
 ): Partial<NonNullable<ContextReport["memory"]>> {
     const { excluded, excludedTotal, lanes, gapTokens, writer, stages, writerStage } = manifest;
     const found = items.filter(({ verified }) => verified).length;
@@ -3048,11 +3081,14 @@ function memoryManifestFields(
         excluded,
         excludedTotal,
         lanes,
-        gapTokens,
+        gapTokens: gapTokens + lateGapTokens,
         ...(manifest.confirmedThrough !== undefined ? { confirmedThrough: manifest.confirmedThrough } : {}),
         writer,
         stages: [
             ...stages,
+            ...(lateGapTokens > 0 && !stages.some(({ stage }) => stage === "gap")
+                ? [{ stage: "gap" as const, reason: "unasked" }]
+                : []),
             { stage: "card", reason: card },
             ...(writerStage !== undefined ? [{ stage: "writer" as const, reason: writerStage }] : []),
         ],

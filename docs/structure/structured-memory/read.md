@@ -88,12 +88,12 @@ Both page lanes keep character relationship lines naming another visible on-stag
 no visible page. Titles and aliases match case-insensitive substrings with collapsed whitespace; `never` names do not
 match. Single nonblank lines stay whole.
 
-After scripts, `editRequest`, and recheck, `buildContextReport` writes `ContextReport.memory`, kind `structuredMemory`.
-It verifies included `items` by `itemTag` anywhere in the final prompt; a lost tag makes `coverage` unknown.
-`shared/structuredMemory.ts` owns the shared tag. `reportedMemoryExclusions` keeps at most `CONTEXT_MEMORY_EXCLUDED`
-exclusion rows, worst reason first; `excludedTotal` retains the full count. Neither producer bounds its list.
-`sendManifest` and `writerState` hold the stage and state rules; `confirmedThrough` is the writer ceiling's newest
-confirmed reply. The writer stage `due` promises no queue: hand-off follows the reply and can be skipped.
+After scripts, `editRequest`, and recheck, `buildContextReport` writes `ContextReport.memory`. Messages the recheck
+drops join `gapTokens` and make `coverage` gap (no reselection). It finds each item's `itemTag`
+(`shared/structuredMemory.ts`) in the final prompt; a lost tag makes `coverage` unknown. `reportedMemoryExclusions`
+keeps at most `CONTEXT_MEMORY_EXCLUDED` rows, worst reason first; `excludedTotal` counts all. Neither producer bounds
+its list. `sendManifest` and `writerState` hold the stage and state rules; `confirmedThrough` is the writer ceiling's
+newest confirmed reply. The writer stage `due` promises no queue: hand-off follows the reply and can be skipped.
 
 The meter reads tokens and `memoryStatusWord`; on opening, its popover reads contents for titles, retaining untitled
 rows on failure, and shares `MemoryManifest` with Preview.
@@ -345,7 +345,7 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   and the open chat have a state. Decision: Structured Memory slice 7e, archive.
 - A reload loses the over-cap mark, and only the tab that followed the job holds it. Decision: Structured Memory slice
   7e, archive.
-- Gap is the last send's trimmed tokens, which a later recording does not rewrite, and a screened reply counts once it
+- Gap is the last send's dropped tokens, which a later recording does not rewrite, and a screened reply counts once it
   trims. Decision: Structured Memory slice 7e, archive.
 - `overBudgetSections` counts code points, not `memorySectionOverBudget`'s UTF-16 units, so a body with astral
   characters near its budget can read differently.

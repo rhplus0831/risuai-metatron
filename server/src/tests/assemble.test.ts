@@ -1299,6 +1299,87 @@ describe("the context report", () => {
             expect(report.memory!.budgetReduced).toEqual([{ field: "memory", configured: 900, applied: 495 }]);
         });
 
+        it("reports a late recheck gap once per lost history source, excluding surviving copies, examples and the marker", async () => {
+            const options = {
+                messages: fiveMessages,
+                maxContext: 600,
+                examples: "{{user}}: ex u\n{{char}}: ex c",
+                promptSettings: { trimStartNewChat: false },
+                template: [CHAT_CARD, CHAT_CARD],
+            };
+            const baseline = await structuredAssembly(options).run();
+            expect(baseline.report.memory).toMatchObject({ coverage: "covered", gapTokens: 0 });
+            expect(baseline.report.memory!.stages).toEqual([
+                { stage: "window", reason: "chosen" },
+                { stage: "lanes", reason: "empty" },
+                { stage: "card", reason: "empty" },
+                { stage: "writer", reason: "due" },
+            ]);
+
+            const padding = "x".repeat(410);
+            const assembly = structuredAssembly({
+                ...options,
+                editRequest: (entries) => [
+                    ...entries,
+                    { ...entries.find(({ memo }) => memo === "m2")!, removable: false },
+                    { role: "system", content: padding },
+                ],
+            });
+            const { report, texts } = await assembly.run();
+            // Selection counts 50 + response 10 + examples 2*7 + greeting 6 + history 5*23 = 195 < 600.
+            // Two ranges cost 2*(14 + marker 21 + 6 + 5*23) = 312; the hook adds m2 (23) and
+            // padding (410+3): 748 > 600-10. Clearing both occurrences of examples, marker,
+            // greeting, m1 and m2 frees 2*(14+21+6+23+23) = 174, leaving 574.
+            // Only greeting (3+3) and m1 (20+3) are lost sources: gap = 6+23 = 29, not doubled.
+            // The separate m2 copy still carries m2; examples and the marker never count as gap.
+            expect(texts).toEqual([
+                ...fiveMessages.slice(2).map(({ data }) => data),
+                ...fiveMessages.slice(2).map(({ data }) => data),
+                fiveMessages[1].data,
+                padding,
+            ]);
+            expect(report.memory).toMatchObject({ coverage: "gap", gapTokens: 29 });
+            expect(report.memory!.stages).toEqual([
+                { stage: "window", reason: "chosen" },
+                { stage: "lanes", reason: "empty" },
+                { stage: "gap", reason: "unasked" },
+                { stage: "card", reason: "empty" },
+                { stage: "writer", reason: "due" },
+            ]);
+            expect(assembly.confirmGap).not.toHaveBeenCalled();
+            expect(assembly.recordGap).not.toHaveBeenCalled();
+        });
+
+        it("adds a late recheck gap to the selection gap without asking again or replacing its stage reason", async () => {
+            const options = { messages: fiveMessages, maxContext: 160 };
+            const baseline = await structuredAssembly(options).run();
+            expect(baseline.texts).toEqual(fiveMessages.slice(1).map(({ data }) => data));
+            expect(baseline.report.memory).toMatchObject({ coverage: "gap", gapTokens: 29 });
+
+            const padding = "x".repeat(60);
+            const assembly = structuredAssembly({
+                ...options,
+                editRequest: (entries) => [...entries, { role: "system", content: padding }],
+            });
+            const { report, texts } = await assembly.run();
+            // Selection: 50 + response 10 + greeting 6 + 5*23 = 181 > 160.
+            // It drops greeting (6) and m1 (23), leaving 152: selection gap = 29.
+            // The hook adds 60+3 to the four remaining messages: 4*23+63 = 155 > 160-10.
+            // Recheck drops m2 (23), leaving 132; total gap = 29+23 = 52.
+            expect(texts).toEqual([...fiveMessages.slice(2).map(({ data }) => data), padding]);
+            expect(report.memory).toMatchObject({ coverage: "gap", gapTokens: 52 });
+            expect(report.memory!.stages).toEqual([
+                { stage: "window", reason: "chosen" },
+                { stage: "lanes", reason: "empty" },
+                { stage: "gap", reason: "continued" },
+                { stage: "card", reason: "empty" },
+                { stage: "writer", reason: "due" },
+            ]);
+            expect(assembly.confirmGap).toHaveBeenCalledTimes(1);
+            expect(assembly.confirmGap).toHaveBeenCalledWith(expect.objectContaining({ gapTokens: 29 }));
+            expect(assembly.recordGap).not.toHaveBeenCalled();
+        });
+
         it("trims uncovered history oldest first, without charging examples or the marker to the gap or emitting an empty card", async () => {
             for (const maxContext of [175, 130]) {
                 const assembly = structuredAssembly({
