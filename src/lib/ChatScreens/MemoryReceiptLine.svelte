@@ -25,7 +25,8 @@
      * src/ts/process/structuredMemory.svelte.ts's `memoryReceiptView`; all model text stays plain.
      *
      * Changes open page history through `requestMemoryPanelTarget` before the panel mounts. Highlighted
-     * changes also revert through `revertStructuredMemoryChange`, which obtains a current revision first.
+     * changes with a history id also revert through `revertStructuredMemoryChange`, which obtains a current
+     * revision first. Created-page rows have no history id and show their kind without a revert button.
      * A revert never rewrites the stored receipt: reverted markers belong to this mount alone, and a later
      * press can report that nothing remains to undo. Record and resume share `pressMemoryRecord` with
      * src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte.
@@ -206,7 +207,7 @@
                                 </span>
                                 {#if change.historyId !== undefined && revertedHere.has(change.historyId)}
                                     <span data-memory-receipt-reverted>{revertText.reverted}</span>
-                                {:else}
+                                {:else if change.historyId !== undefined}
                                     <button
                                         class={"shrink-0 rounded-md border border-darkborderc px-2 py-0.5 transition-all " +
                                             (busy ? "opacity-50 cursor-not-allowed" : "hover:text-textcolor")}

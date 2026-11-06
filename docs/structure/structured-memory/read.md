@@ -115,7 +115,8 @@ rows on failure, and shares `MemoryManifest` with Preview.
 text, so `MemoryReceiptLine` reads the held chat to follow receipt-only feed patches. `receiptChanges` links reach page
 diffs through `requestMemoryPanelTarget` before panel mount; highlighted changes and writer section-history rows both
 use `revertStructuredMemoryChange`, which reads the page's revision first. The component contract holds revert display
-rules.
+rules. `Chat.svelte`'s `memoryReceipt` snippet also renders in the `mobilechat` and `cardboard` footers; a receipt-only
+`generationInfo` shows no model button. A created page's row carries its highlighted `create`, with no revert.
 
 ### The memory panel
 
@@ -320,7 +321,6 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   the press gets the 409. After the choice an `awaitingAdoption` receipt keeps its words with no button until a run
   replaces it, and Coverage reads it `skipped`. The panel's writer line is right throughout. Decision: Structured Memory
   slice 6c, archive.
-- `genInfo` is not rendered in the `mobilechat` and `cardboard` themes, so they show no line.
 - Coverage's gap and leaving rows read stored text, where a send reads processed text and the greeting: a reply a script
   blanks counts as a turn here, and uncovered history that no longer fits also trims at send time. The panel says so,
   and a preview is the exact form. Decision: Structured Memory D8, archive.
@@ -364,8 +364,6 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   The store has no read without them.
 - Name matching ignores `loreSettings.fullWordMatching`, so a short alias such as "Al" also finds "also": an extra
   candidate, never a wrong record.
-- A window message with no `generationInfo` (an imported chat) gains `{ memory }` alone, so with `requestInfoInsideChat`
-  its row shows an "Unknown" model button after its next mount.
 - A copied or branched chat carries its receipts along with its messages.
 - The tab hashes on the main thread: about 230 ms for 14 MiB of cited messages once per tab mount, in a VM. A streaming
   reply costs nothing, because the memo hashes only what changed and an unrecorded reply is cited by nothing.

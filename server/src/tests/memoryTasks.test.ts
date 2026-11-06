@@ -2891,6 +2891,30 @@ describe("structured memory tasks", () => {
         }
     });
 
+    it.each([
+        { mode: "all", kinds: [], highlighted: true },
+        { mode: "important", kinds: ["contradiction"], highlighted: false },
+    ])("stores page creation highlights for $mode with kinds $kinds", async ({ mode, kinds, highlighted }) => {
+        const t = structuredHarness({
+            hypaSettings: { structured: { cadence: "everyTurn", highlightMode: mode, highlightKinds: kinds } },
+        });
+        await recordOnly(t, {
+            ...analysis(),
+            scene: { place: "Harbor", time: "Dawn", state: "Arriving", participants: [] },
+        });
+        const scene = pageRecords(t).find(({ type }) => type === "scene")!;
+        const pages = runRecord(t).receipt!.pages;
+        const created = pages.find(({ pageId }) => pageId === scene.id)!;
+        // Creating the scene and filling its sections in one commit must retain the page's highlight.
+        expect(created).toMatchObject({ pageId: scene.id, created: true });
+        expect(created.sections.length).toBeGreaterThan(0);
+        if (highlighted) expect(created).toHaveProperty("highlighted", "create");
+        else expect(created).not.toHaveProperty("highlighted");
+        expect(t.chat("k1")!.message.find(({ chatId }) => chatId === "m2")!.generationInfo!.memory!.pages).toEqual(
+            pages,
+        );
+    });
+
     it("compacts a replacement of a personal correction and highlights it even when highlights are off", async () => {
         const t = structuredHarness({
             hypaSettings: { structured: { cadence: "everyTurn", highlightMode: "none", highlightKinds: [] } },

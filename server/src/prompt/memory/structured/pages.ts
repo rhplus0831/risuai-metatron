@@ -110,7 +110,13 @@ export type PageStamp = {
 };
 
 /** What one commit does to one page. */
-type PageChange = { page: MemoryPage; created: boolean; sections: ReceiptSection[] };
+type PageChange = {
+    page: MemoryPage;
+    created: boolean;
+    /** Whether this commit highlighted the page's create entry. */
+    highlighted?: boolean;
+    sections: ReceiptSection[];
+};
 
 /** All of a commit's page changes by page id, because the store refuses an id written twice in a change set. */
 export type PageChanges = Map<string, PageChange>;
@@ -446,6 +452,7 @@ function putPage(changes: PageChanges, page: MemoryPage, sections: readonly Rece
     changes.set(page.id, {
         page,
         created: change?.created ?? false,
+        ...(change?.highlighted ? { highlighted: true } : {}),
         sections: [...(change?.sections ?? []), ...sections],
     });
 }
@@ -453,8 +460,9 @@ function putPage(changes: PageChanges, page: MemoryPage, sections: readonly Rece
 /** Records `page` as new, with its one `create` entry, and answers it as written. */
 export function addPage(changes: PageChanges, page: MemoryPage, stamp: PageStamp): MemoryPage {
     const edit = { heading: null, before: null, kind: "create" } as const;
-    const added = { ...page, history: [historyEntry(stamp, edit, ruleHighlights(stamp, "create", page))] };
-    changes.set(page.id, { page: added, created: true, sections: [] });
+    const highlighted = ruleHighlights(stamp, "create", page);
+    const added = { ...page, history: [historyEntry(stamp, edit, highlighted)] };
+    changes.set(page.id, { page: added, created: true, highlighted, sections: [] });
     return added;
 }
 
@@ -606,12 +614,13 @@ export function rewriteScene(
     return warnings;
 }
 
-/** The pages `changes` lists as a receipt lists them. */
+/** The receipt's pages, including highlights from create entries and section changes in this commit. */
 export function receiptPages(changes: PageChanges): MemoryReceipt["pages"] {
-    return [...changes.values()].map(({ page, created, sections }) => ({
+    return [...changes.values()].map(({ page, created, highlighted, sections }) => ({
         pageId: page.id,
         title: clampText(page.title, LIMITS.labelChars),
         created,
+        ...(created && highlighted ? { highlighted: "create" as const } : {}),
         sections,
     }));
 }

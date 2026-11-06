@@ -4,6 +4,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import type { MemoryReceipt } from "../../../shared/structuredMemory.ts";
 import type { TransformRequest } from "../../../shared/transform.ts";
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
@@ -29,6 +30,7 @@ import {
     appendMessage,
     createChat,
     findChat,
+    patchMessage,
     selectChat,
     seedChats,
     setChatMeta,
@@ -205,6 +207,68 @@ afterEach(async () => {
 });
 
 describe("chat message interactions", () => {
+    const memory: MemoryReceipt = { state: "recorded", pages: [], refused: [], unverified: [], warnings: [] };
+
+    it("hides the model button for a receipt-only generation info and keeps it for a model", async () => {
+        updateCharacter(ref.chaId, { supaMemory: true });
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        settings.ui.requestInfoInsideChat = true;
+        patchMessage(ref, "message", { generationInfo: { memory } });
+        const { element: transcript, instance } = renderChats();
+        await settle(10);
+        await instance.whenRendered();
+        const element = transcript.querySelector('[data-chat-id="message"]')!;
+        const buttonLabels = () => [...element.querySelectorAll("button")].map((button) => button.textContent?.trim());
+        expect(element.querySelector("[data-memory-receipt]")?.textContent).toContain("Recorded");
+        expect(buttonLabels()).not.toContain("Unknown");
+        expect(buttonLabels()).not.toContain("GPT-4o");
+
+        patchMessage(ref, "message", { generationInfo: { memory, model: "gpt4o" } });
+        flushSync();
+        await instance.whenRendered();
+        expect(buttonLabels()).toContain("GPT-4o");
+    });
+
+    it.each(["mobilechat", "cardboard"])("shows a receipt-only footer in the %s theme", async (theme) => {
+        updateCharacter(ref.chaId, { supaMemory: true });
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        settings.ui.requestInfoInsideChat = true;
+        settings.memoryTranslateMedia.translatorType = "llm";
+        settings.memoryTranslateMedia.translator = "ko";
+        settings.memoryTranslateMedia.llmTranslationTarget = "message";
+        setChatMeta(ref, { autoTranslate: true });
+        patchMessage(ref, "message", { generationInfo: { memory, model: "gpt4o" } });
+        setMessageTranslation(ref, "message", {
+            text: "Stored translation",
+            sourceHash: translationSourceHash(markup),
+            targetLanguage: "ko",
+            translatedAt: 1,
+        });
+        const { element: transcript, instance } = renderChats();
+        await settle(10);
+        await instance.whenRendered();
+        const element = transcript.querySelector('[data-chat-id="message"]')!;
+        const buttonLabels = () => [...element.querySelectorAll("button")].map((button) => button.textContent?.trim());
+        expect(buttonLabels()).toContain("GPT-4o");
+        expect(buttonLabels()).toContain(language.retranslate);
+        expect(buttonLabels()).toContain(language.editTranslation);
+
+        settings.ui.theme = theme;
+        flushSync();
+        await settle(10);
+        await instance.whenRendered();
+        const receipts = element.querySelectorAll("[data-memory-receipt]");
+        expect(receipts).toHaveLength(1);
+        expect(receipts[0].textContent).toContain("Recorded");
+        expect(
+            element.querySelector(".chattext")!.compareDocumentPosition(receipts[0]) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+        expect(buttonLabels()).not.toContain("GPT-4o");
+        expect(buttonLabels()).not.toContain("Unknown");
+        expect(buttonLabels()).not.toContain(language.retranslate);
+        expect(buttonLabels()).not.toContain(language.editTranslation);
+    });
+
     it("shows memory receipts only when Structured Memory is selected for the live assistant row", async () => {
         updateCharacter(ref.chaId, { supaMemory: true });
         settings.ui.memoryAlgorithmType = "structuredMemory";

@@ -210,7 +210,7 @@ it("records one-call work immediately and asks before multiple calls or an unrea
     });
 });
 
-it("links every changed section to its history and offers receipt reverts only for highlighted rows, including old receipts", async () => {
+it("labels highlighted creates without a revert and links sections to history with reverts only for highlighted sections", async () => {
     const fetch = vi
         .mocked(authFetch)
         .mockReset()
@@ -241,23 +241,27 @@ it("links every changed section to its history and offers receipt reverts only f
                     ],
                 },
                 { pageId: "legacy", created: false, sections: [{ heading: "Old facts", historyId: "old" }] },
+                { pageId: "created", title: "Lighthouse", created: true, highlighted: "create", sections: [] },
             ],
         }),
     );
     target.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click();
     flushSync();
     const rows = [...target.querySelectorAll<HTMLElement>("[data-memory-receipt-change]")];
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
     expect(rows.map((row) => row.querySelector("button")!.textContent?.trim())).toEqual([
         "Harbor: Gate",
         "Harbor: Hearth",
         "Old facts",
+        "Lighthouse",
     ]);
-    expect(rows.map((row) => !!row.querySelector("[data-memory-receipt-revert]"))).toEqual([true, false, false]);
+    expect(rows[3].querySelector('[data-memory-receipt-kind="create"]')?.textContent?.trim()).toBe("Created");
+    expect(rows.map((row) => !!row.querySelector("[data-memory-receipt-revert]"))).toEqual([true, false, false, false]);
     for (const [index, expected] of [
         { tab: "pages", id: "p", historyId: "highlighted" },
         { tab: "pages", id: "p", historyId: "ordinary" },
         { tab: "pages", id: "legacy", historyId: "old" },
+        { tab: "pages", id: "created" },
     ].entries()) {
         hypaV3ModalOpen.set(false);
         rows[index].querySelector<HTMLButtonElement>("button")!.click();

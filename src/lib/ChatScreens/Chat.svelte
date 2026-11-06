@@ -1252,9 +1252,15 @@
     }
 </script>
 
+{#snippet memoryReceipt()}
+    {#if settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM && role === "char" && idx >= 0 && messageId !== undefined && displayedChat && !disabled && currentCharacter?.supaMemory}
+        <MemoryReceiptLine chatRef={displayedChat} {messageId} {idx} {locked} owner={currentCharacter} />
+    {/if}
+{/snippet}
+
 {#snippet genInfo()}
     <div class="flex flex-col items-end">
-        {#if messageGenerationInfo && (settings.ui.requestInfoInsideChat || aiLawApplies())}
+        {#if messageGenerationInfo?.model && (settings.ui.requestInfoInsideChat || aiLawApplies())}
             <button
                 class="text-sm p-1 text-textcolor2 border-darkborderc float-end mr-2 my-1
                     hover:ring-darkbutton hover:ring-3 rounded-md hover:text-textcolor transition-all flex justify-center items-center"
@@ -1277,9 +1283,7 @@
                 </span>
             </button>
         {/if}
-        {#if settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM && role === "char" && idx >= 0 && messageId !== undefined && displayedChat && !disabled && currentCharacter?.supaMemory}
-            <MemoryReceiptLine chatRef={displayedChat} {messageId} {idx} {locked} owner={currentCharacter} />
-        {/if}
+        {@render memoryReceipt()}
         <!-- An open translation editor keeps its Save and Cancel whatever the settings do meanwhile (it writes to its captured target). -->
         {#if editTranslationMode || (settings.memoryTranslateMedia.translatorType === "llm" && (storedPath ? storedWanted : translated))}
             {#if editTranslationMode}
@@ -1415,7 +1419,9 @@
                     {bodyRoot}
                     renderRevision={chatBodyRevision}
                     {onMixedRender}
-                    modelShortName={messageGenerationInfo ? getModelInfo(messageGenerationInfo?.model).shortName : ""}
+                    modelShortName={messageGenerationInfo?.model
+                        ? getModelInfo(messageGenerationInfo.model).shortName
+                        : ""}
                     role={role ?? null}
                     bind:translated
                     bind:translating
@@ -1674,7 +1680,7 @@
 
                         const isUserMessage = role === "user";
                         const displayName = isUserMessage ? copyUserName : name;
-                        const modelInfo = messageGenerationInfo
+                        const modelInfo = messageGenerationInfo?.model
                             ? capitalize(getModelInfo(messageGenerationInfo.model).shortName)
                             : isUserMessage
                               ? "User"
@@ -2291,6 +2297,7 @@
                             }).format(currentChat.message[idx].time)}
                         </span>
                     {/if}
+                    {@render memoryReceipt()}
                 </div>
                 {#if role === "user"}
                     {@render senderIcon({ rounded: true })}
@@ -2320,6 +2327,7 @@
                             </div>
                         {/if}
                     </div>
+                    {@render memoryReceipt()}
                 </div>
                 <div
                     class="absolute bottom-0 right-0 bg-linear-to-b from-gray-200 to-gray-300 p-2 rounded-md border border-gray-400 text-gray-400"

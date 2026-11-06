@@ -352,7 +352,9 @@ function receiptChanges(pages: unknown): MemoryReceiptChange[] {
                 ? []
                 : [{ pageId, title, heading, historyId, ...present("kind", storedText(section.highlighted)) }];
         });
-        return page.created === true ? [{ pageId, title }, ...sections] : sections;
+        return page.created === true
+            ? [{ pageId, title, ...present("kind", storedText(page.highlighted)) }, ...sections]
+            : sections;
     });
 }
 

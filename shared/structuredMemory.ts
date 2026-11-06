@@ -501,7 +501,7 @@ export interface MemoryThread {
     closedBy?: string;
 }
 
-/** What one window's recording did, kept so every change can be seen and undone. */
+/** What one window's recording did, kept so its changes can be inspected. */
 export interface MemoryReceipt {
     state: MemoryReceiptState;
     /** Why it was skipped, failed, or is not recording automatically. */
@@ -513,6 +513,8 @@ export interface MemoryReceipt {
         /** The page's title then, at most `labelChars`; absent on a receipt from before this was kept. */
         title?: string;
         created: boolean;
+        /** Present only on a created page whose `create` entry was highlighted. */
+        highlighted?: MemoryHistoryChangeKind;
         sections: {
             heading: string;
             beforeHash?: string;
