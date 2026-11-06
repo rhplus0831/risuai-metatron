@@ -239,7 +239,7 @@ it("keeps unsupported bodies when history is lost or no standing evidence crosse
     const late = event("late", [anchor(sourceMessages[1], 1)]);
     const retracted = { ...event("retracted", early.sources), status: "retracted" as const };
     let p = change(page("p"), "mixed", "Earlier account", early, 1);
-    p = change(p, "mixed", "Later account", late, 2);
+    p = change(p, "mixed", "Earlier account", late, 2); // A repeat adds to the evidence; a new text replaces it.
     p = change(p, "retracted", "Retracted account", retracted, 3);
     p = change(p, "only-late", "Only later evidence", late, 4);
     p.history = []; // A bounded history can no longer hold the changes needed for a rewind.
@@ -320,7 +320,7 @@ it("keeps a reshaped page's text and later creation across a branch while ordina
     expect(inherited.pages?.map(({ id }) => id)).toEqual(["ordinary", "merged", "split"]);
     expect(inherited.pages?.[0].sections[0].body).toBe("Before");
     expect(inherited.pages?.slice(1).map(({ sections }) => sections)).toEqual([
-        [{ ...original.sections[0], provenance: ["early"], sources: early.sources, unsupported: true }],
+        [{ ...original.sections[0], provenance: [], sources: [], unsupported: true }],
         [{ ...created.sections[0], provenance: [], sources: [], unsupported: true }],
     ]);
 });

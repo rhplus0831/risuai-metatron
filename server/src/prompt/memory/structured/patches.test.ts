@@ -8,7 +8,7 @@ import {
     type MemorySection,
 } from "../../../../../shared/structuredMemory.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
-import { type PageChanges, type PageStamp } from "./pages.ts";
+import { changeSection, type PageChanges, type PageStamp } from "./pages.ts";
 import { applyPatches, commitPages, parsePatches, showTargets } from "./patches.ts";
 
 const section = (heading: string, body = `Old ${heading}`): MemorySection => ({
@@ -367,6 +367,44 @@ it("preserves conflict history, disputes weak contradictions, and refuses overfl
     }
 });
 
+it("starts a replaced section's evidence afresh and adds to it where the old text stays", () => {
+    const old = { provenance: ["old-event"], sources: section("Gate").sources };
+    const added = { provenance: ["event"], sources: stamp().sources };
+    const both = { provenance: [...old.provenance, "event"], sources: [...old.sources, ...added.sources] };
+    const cases = [
+        { name: "replacement", fields: { body: "New Gate" }, evidence: added },
+        { name: "replacement with a was line", fields: { body: "New Gate", was: "Old Gate" }, evidence: added },
+        {
+            name: "confident contradiction",
+            fields: { body: "New Gate", conflict: "contradiction", confidence: 0.9 },
+            evidence: added,
+        },
+        { name: "identical upsert", fields: { body: "Old Gate" }, evidence: both },
+        {
+            name: "disputed join",
+            fields: { body: "New Gate", conflict: "contradiction", confidence: 0 },
+            evidence: both,
+        },
+    ] as const;
+    for (const row of cases) {
+        const before = page();
+        const changes: PageChanges = new Map();
+        applyPatches({
+            pages: new Map([[before.id, before]]),
+            changes,
+            patches: [patch("Gate", row.fields)],
+            seen: shown([before]),
+            stamp: stamp(),
+        });
+        const { provenance, sources } = changes.get("bad")!.page.sections[0];
+        expect({ provenance, sources }, row.name).toEqual(row.evidence);
+    }
+    const changes: PageChanges = new Map();
+    changeSection(changes, page(), { heading: "Gate", body: "Gate", kind: "compact" }, stamp());
+    const { provenance, sources } = changes.get("bad")!.page.sections[0];
+    expect({ provenance, sources }, "compaction").toEqual(both);
+});
+
 it("bounds section evidence and replacement history while preserving untouched bytes", () => {
     const before = page();
     before.sections.push(section("Untouched", " \r\n  exact 한글 😀\t "));
@@ -390,7 +428,7 @@ it("bounds section evidence and replacement history while preserving untouched b
         applyPatches({
             pages: new Map([[before.id, before]]),
             changes,
-            patches: [patch("Gate"), patch("Hearth", { op: "delete" })],
+            patches: [patch("Gate", { body: "Old Gate" }), patch("Hearth", { op: "delete" })],
             seen: shown([before]),
             stamp: stamp(),
         }),
@@ -399,7 +437,7 @@ it("bounds section evidence and replacement history while preserving untouched b
     expect(after.sections).toEqual([
         expect.objectContaining({
             heading: "Gate",
-            body: "New text",
+            body: "Old Gate",
             provenance: [...before.sections[0].provenance.slice(1), "event"],
             sources: [...before.sections[0].sources.slice(1), { messageId: "message", hash: "hash", index: 100 }],
         }),

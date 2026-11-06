@@ -502,10 +502,13 @@ export function addPage(changes: PageChanges, page: MemoryPage, stamp: PageStamp
  * text or a delete replaces a person's words, which highlights the entry whatever the rule says, and
  * stays on an identical upsert and on a disputed join, whose text keeps them. An identical upsert is
  * never highlighted, though it keeps its entry and its receipt row. The history keeps what was replaced,
- * marks included, with one entry, bounded by `pageHistoryEntries`. Evidence keeps the newest
- * `sectionEvidence` ids and sources. Under `all` every changed writer entry highlights; `important`
- * needs a listed kind, and `change` also needs the higher of the event's and page's grade to reach
- * `highlightChangeGrade`. No writer page-history entry has kind `retract`.
+ * marks included, with one entry, bounded by `pageHistoryEntries`. A body that replaces the old text,
+ * a `(was: ...)` line included, starts its evidence afresh with this event and window: the older events
+ * no longer answer for it, and the history entry keeps their evidence with the text it replaced. An
+ * identical upsert, a disputed join, and a compaction keep the old text, so they add to its evidence,
+ * which keeps the newest `sectionEvidence` ids and sources. Under `all` every changed writer entry
+ * highlights; `important` needs a listed kind, and `change` also needs the higher of the event's and
+ * page's grade to reach `highlightChangeGrade`. No writer page-history entry has kind `retract`.
  */
 export function changeSection(
     changes: PageChanges,
@@ -524,13 +527,14 @@ export function changeSection(
     );
     let sections = page.sections.filter((section) => section !== before);
     if (body !== null) {
+        const kept = before && (sameText || disputed || kind === "compact") ? before : undefined;
         const written: MemorySection = {
             locked: false,
             ...before,
             heading,
             body,
-            provenance: newestEvidence(before?.provenance ?? [], [stamp.eventId], (id) => id),
-            sources: newestEvidence(before?.sources ?? [], stamp.sources, ({ messageId }) => messageId),
+            provenance: newestEvidence(kept?.provenance ?? [], [stamp.eventId], (id) => id),
+            sources: newestEvidence(kept?.sources ?? [], stamp.sources, ({ messageId }) => messageId),
             updatedAt: stamp.at,
         };
         delete written.unsupported;

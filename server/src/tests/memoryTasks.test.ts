@@ -4555,7 +4555,7 @@ describe("structured memory tasks", () => {
                 expect.objectContaining({
                     heading: "state",
                     body: "Mira arrives",
-                    provenance: [eventRecord(t, 0).id, eventRecord(t).id],
+                    provenance: [eventRecord(t).id],
                 }),
             ],
         });

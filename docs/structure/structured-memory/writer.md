@@ -196,11 +196,11 @@ references, threads and repeat admission; `castSlice`/`planPages` for cast selec
 group speaker.
 
 `commitPages` gathers created pages, patches, compactions, relationship links and scene changes into one map by page id,
-because the store refuses duplicate writes of an id in one change set. `changeSection` stamps bounded evidence, history,
-marks and highlights; the chat-or-preset rule comes from the writer's `highlightRule`, with rebuilds using `none`. An
-empty patch result still leaves a created identity so admitted references remain valid. Repeat planning creates no
-candidate pages or patch targets and refuses candidates `repeatedEvent`; `commitPages` still creates a missing scene
-page and applies the scene rewrite.
+because the store refuses duplicate writes of an id in one change set. `changeSection` stamps bounded evidence (afresh
+for a replaced body), history, marks and highlights; the chat-or-preset rule comes from the writer's `highlightRule`,
+with rebuilds using `none`. An empty patch result still leaves a created identity so admitted references remain valid.
+Repeat planning creates no candidate pages or patch targets and refuses candidates `repeatedEvent`; `commitPages` still
+creates a missing scene page and applies the scene rewrite.
 
 ### The scene page
 
