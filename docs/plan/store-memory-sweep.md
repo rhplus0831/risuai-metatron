@@ -1,6 +1,6 @@
 # Chat Store and Structured Memory Sweep Plan
 
-Status: drafted 2026-11-06; the owner accepted every open question's recommendation the same day; landed: A1 (54ee880aa), A3 (ff3164f85), A4 (844dab99f), A5 (043c75e2f), B1 (73b930395), B7 (09c03e40b), B3 (e3595f06f), B11 (d0e198cc3), A6 (ec1c2f2ab). Source: the 25 entries
+Status: drafted 2026-11-06; the owner accepted every open question's recommendation the same day; landed: A1 (54ee880aa), A3 (ff3164f85), A4 (844dab99f), A5 (043c75e2f), B1 (73b930395), B7 (09c03e40b), B3 (e3595f06f), B11 (d0e198cc3), A6 (ec1c2f2ab), B4 (8c51c1fe5). Source: the 25 entries
 of the [found-issues](../research/found-issues.md) sections "Chat store, sync, and change feeds" (10) and
 "Structured Memory" (15) as of `8cc6d3093`, each sub-item re-checked against that tree the same day by ten
 read-only workers; the file and line evidence behind every slice and every "gone" verdict was spot-checked

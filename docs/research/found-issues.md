@@ -476,10 +476,10 @@ In `src/ts/process/structuredMemory.svelte.ts` and `StructuredMemoryPanel.svelte
 
 ### Cast slice matches substrings
 
-`castSlice` (`server/src/prompt/memory/structured/pages.ts`) lists a page when its title or alias is a case-insensitive substring of a window message, so an alias "Al" matches "also". The read path uses `searchMatch`.
+Narrowed by the Chat Store and Structured Memory Sweep's B4: the writer's cast (`castSlice`) and the read path now share `pageNamedInTexts` (`server/src/prompt/memory/structured/pages.ts`, lore's plain-key matching), so they agree on "named". Neither has a word-boundary rule: an alias "Al" still matches "also", and `searchMatch`'s `fullWordMatching` misses multi-word titles and punctuation.
 
-**Why it matters:** an extra prompt row, never a wrong record; the writer and the read path disagree on "named".
-**Suggested handling:** use `searchMatch` in `castSlice`.
+**Why it matters:** an extra prompt row, never a wrong record.
+**Suggested handling:** a word-boundary rule for both paths together (the sweep plan's Deferred "Named-page matching").
 
 ### Projection refresh leftovers
 
@@ -504,10 +504,10 @@ Left by slice 7b; the dead `retract` kind left in the Found Issues Sweep (I3). A
 
 ### Page tool leftovers
 
-Left by slice 7d. `splitPage` and `splitTimeline` in `src/ts/process/structuredMemory.test.ts` are not whole package readers (key-line quote lines and collapsed headings break them); `parseMemoryPackage` is. `parseMemoryPackage` accepts `trashedAt` on a non-scene page, which the package never writes. `contents.trash` has no budget or expiry and the table of contents grows with it. `pages.test.ts` has no test of the page tools; they run only through `structuredMemoryRoutes.test.ts`.
+Left by slice 7d. `contents.trash` has no budget or expiry and the table of contents grows with it.
 
-**Why it matters:** test helpers that pass by luck, and a trash that only grows.
-**Suggested handling:** test through `parseMemoryPackage`, drop `trashedAt` on import, and decide on a trash bound.
+**Why it matters:** a trash that only grows.
+**Suggested handling:** decide on a trash bound.
 
 ### Health badge leftovers
 
