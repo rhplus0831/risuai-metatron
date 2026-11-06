@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (9)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (8)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
 - [Server routes and resource store](#server-routes-and-resource-store) (5)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -79,13 +79,6 @@ The server's append checkpoint cleanup (`server/src/data/chatStore.ts`, `case "a
 
 **Why it matters:** a future caller that skips that restore corrupts a message silently instead of failing into a fenced read.
 **Suggested handling:** when touching `stagedRowDiffs` or the feed row-diff format, carry a base text hash (or length plus a sample) in `rowDiffs` so a wrong base is a `mismatch`.
-
-### A foreign Stop mark lingers for lockless jobs
-
-`watchChatVisibility` in `src/ts/process/chatStatus.svelte.ts` (~287, the lock effect ~311–319) clears a `foreignJobs` mark when a chat goes from locked to unlocked, which covers reply jobs. A command job holds no lock, so a mark noted for it (`noteForeignJob`, e.g. a detached former worker or a pending worker's follow) stays until a new send or follow, or a Stop lookup (`stopChatJob` reads `/current`), clears it; the chat screen shows the foreign Stop button meanwhile (it does not block sending). Found in the Implementation Audit Fixes run (2026-11-05, slice H3).
-
-**Why it matters:** a stale Stop button that answers "idle" when pressed; confusing but harmless.
-**Suggested handling:** if `chatStatus` is touched, reconcile marks for lockless jobs with a bounded `/current` check while the chat is visible, clearing by the expected job id.
 
 ### An insertion before the reroll carrier drops its variable snapshots
 
