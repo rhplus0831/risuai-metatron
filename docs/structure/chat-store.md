@@ -268,9 +268,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 ### Issues
 
 - Folder moves touch the character (`chatFolders`), the chat (`folderId`), and the chat order, each saved on its own. A
-  conflict on one can leave a `folderId` naming no folder of its character. No repair clears it, on boot or later; an
-  explicit write still can (a move, a plugin's chat copy without it, a branch with "Create Folder on Branch", deleting a
-  folder of that id).
+  conflict on one can leave a `folderId` naming no folder of its character. Nothing repairs it; an explicit write clears
+  it (a move, a plugin's chat copy without it, a branch with "Create Folder on Branch", deleting a folder of that id).
 
 ### Limitations
 
@@ -278,8 +277,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   plus a summary list read. Decision: U1, [durable drafts audit](../manual-audit/archive/durable-drafts-2026-10-29.md).
 - A same-id recreation reconciles only the chats this client knows: a chat another tab created survives, and a reused
   id's `replace` on a changed base conflicts through the usual 409 path, with eligible content captured as a recovery
-  draft. Explicit recreation releases old chat refusals, so they do not hold the reorder. Decision: reconciliation can
-  delete only chats this client knows (`chatStore.svelte.ts` re-add reconciliation).
+  draft. Explicit recreation releases old chat refusals, so they do not hold the reorder. Decision:
+  `chatStore.svelte.ts` re-add reconciliation.
 - A same-id re-add after a failed or generating-refused deletion reconciles like one before the deletion was sent: a
   whole `replace` per reused chat, also for an undo; a replace of a chat the job still locks waits behind its retry
   block (the flush rejects until then). Decision: Durable Drafts Out of scope (no server create tombstone), archive.
@@ -292,10 +291,9 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   ([compatibility rule](persistence.md#invariants)).
 - A callback can fail as `barrier` while the job channel dispatcher loads (`onChannel`): a job's chat event moves
   `jobMetadata` at once and `rememberJobStreaming` waits on the socket-ordered chain, so a callback from that chain can
-  find metadata newer than its list, and the read is refused. The send ends with its job error: the hook did not run,
-  what the job stored stays, and sending again works. Decision: a barrier that cannot show its `streaming` list is
-  current fails instead of installing a read with an older one, which could retire live generations (`jobChannel.ts`
-  `recoverJobChat`).
+  find metadata newer than its list and is refused. The send ends with its job error (the hook did not run, the job's
+  writes stay; sending again works). Decision: a barrier that cannot prove its `streaming` list current fails rather
+  than install an older read that could retire live generations (`jobChannel.ts` `recoverJobChat`).
 
 ### Gotchas
 

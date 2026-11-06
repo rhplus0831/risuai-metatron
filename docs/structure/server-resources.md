@@ -155,12 +155,11 @@ exactly its revision, else `moved` with the current one (null: gone), never `una
 ### Chat activity
 
 Ordinary send, continue, reroll, and group jobs write chat activity without changing the character or group resource
-revision; explicit character effects (memory enable, triggers, Lua setters) still write it. Streamed continue refreshes
-the continued message's time in its existing final write; non-streamed continue sets its time when writing the reply.
-Preview and previewPrompt change neither activity nor character revision. The stored `lastInteraction` remains a frozen
-legacy fallback; the client derives last-chatted ordering from chats ([chat store](chat-store.md#last-chatted)).
-Upstream export keeps its own cold-storage rule: raise a numeric legacy value to the newest chat `lastDate`, but leave
-absence as absence (upstream reads it as now).
+revision; explicit character effects (memory enable, triggers, Lua setters) still write it. Continue sets the continued
+message's time in its final write (the existing one when streamed); preview and previewPrompt change neither activity
+nor character revision. The stored `lastInteraction` remains a frozen legacy fallback; the client derives last-chatted
+ordering from chats ([chat store](chat-store.md#last-chatted)). Upstream export keeps its own cold-storage rule: raise a
+numeric legacy value to the newest chat `lastDate`, but leave absence as absence (upstream reads it as now).
 
 ### Chat writes and checkpoints
 
@@ -178,9 +177,9 @@ absence as absence (upstream reads it as now).
 - Automatic checkpoints (`autoSave`) run only after a job ends with a final `done`, when the chat policy's user-turn
   threshold is met (`countUserTurns`, no message row read).
 - By-id writes read touched rows by id (`TOUCHED_ROWS_SQL`) and counts from the `messageCounts` memo, not `COUNT(*)`.
-- Reroll snapshots (`scriptstateCheckpoint`, candidates' `scriptstateAfter`) follow position: after an `append`, only
-  the newest non-comment message or a live job's row keeps them. A `setMessage` or `patchMessage` cannot restore them on
-  a row holding none unless an admitted generation or the lock owner writes; `candidateRows` reports it `cleared`.
+- Reroll snapshots (`scriptstateCheckpoint`, candidates' `scriptstateAfter`) follow position: after an `append` only the
+  newest non-comment message or a live job's row keeps them; `setMessage`/`patchMessage` cannot restore them on a row
+  holding none unless an admitted generation or the lock owner writes (`candidateRows` reports `cleared`).
 
 ### Snapshots and restore
 
@@ -408,11 +407,10 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 - The SQLite resource store assumes one server process and a local filesystem
   ([Invariants](self-host-server.md#invariants)). Network filesystems are unsupported. Decision: Server Byte Budgets Q1,
   archive.
-- `RISU_SQLITE_SYNCHRONOUS=normal` trades the resource store's durability for its commit time: a commit no longer waits
-  for an fsync of the WAL, so after a power failure or an OS crash the latest acknowledged commits may be lost, and how
-  many is not a fixed window. The database stays consistent, and a process crash loses nothing. The client's draft
-  journal takes a server acknowledgment as saved, so it no longer holds what a lost commit carried. Decision: Server
-  Byte Budgets Q1, archive.
+- `RISU_SQLITE_SYNCHRONOUS=normal` trades durability for commit time: commits skip the WAL fsync, so a power failure or
+  OS crash may lose the latest acknowledged commits (no fixed window); the database stays consistent and a process crash
+  loses nothing. The client's draft journal drops what an acknowledged commit carried, so a lost commit is not
+  recovered. Decision: Server Byte Budgets Q1, archive.
 - A restore keeps four things on the serving thread: the install's SQL copy, one synchronous transaction that blocks
   every request for its length, reads included (and leaves a WAL about the size of the database for the checkpoint after
   it); the safety snapshot's `backupTo`; the asset links; and the re-hash, whose chunks yield. The install's time grows
@@ -426,18 +424,16 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
   empties the staging. At the default 2048 no row the 100 MiB request cap admits reaches it; a much lower limit can.
   Decision: a ceiling against a runaway file, not process isolation (`server/src/data/restore/validateRunner.ts` header;
   V8-only scope, Server Byte Budgets D5, archive).
-- Validation reads as it checks, so of a refused row and a later row SQLite cannot read, the refused row is the one
-  reported, and a walk stops at the first refusal in reading order: a walk over the source never holds a whole table
-  (`walkSnapshotFile`).
+- Validation reads as it checks and stops at the first refusal in reading order (a refused row is reported before a
+  later unreadable one); a walk never holds a whole table (`walkSnapshotFile`).
 - The upstream import stages on the default kinds, as the export reads with them, so a store with custom kinds is
   supported by neither. Decision: `data/upstream/importStage.ts` and `exportStage.ts` headers.
 - Upstream export holds its records, projected database, and encoded save in memory; staged exports are capped at four
   (`shared/upstreamExportReport.ts`). An asset of 4 GiB or more cannot fit an archive record
   (`server/src/data/archive.ts`) and is reported as missing. Decision: Upstream .bin Compatibility S7, archive.
 - `GET /api/resources?kinds=…` (the boot-cache miss path and the boot fallback) and `GET /api/resources/:kind` answer
-  whole kinds, and the read budget does not apply to them (no `unanswered`); their cost grows with the data. One read
-  must stay one committed state for the boot; a paged form needs the read budget's `unanswered` contract, and has no
-  design yet.
+  whole kinds outside the read budget (no `unanswered`), at a cost that grows with the data. One read must stay one
+  committed state for the boot; a paged form would need `unanswered` and has no design yet.
 - The [read budget](#read-budget) is soft: a chat or a collection past 16 MiB answers whole (append groups grow a chat
   with no lifetime ceiling; the 100 MiB cap is per request), a client without `continue` is answered whole, and the
   budget charges stored bytes, not wire bytes or heap. Nothing bounds how many large answers are in flight, and
@@ -455,8 +451,7 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
   dirty identity and injected kinds disable the skip and remove the old stamp. Every open still removes retired kinds,
   creates missing materialized singletons, and runs `openChatSchema`.
 - A record its normalizer would now refuse stops startup, with its kind and id, only on a run of the pass.
-- Normalizers are assumed to depend on code and the registry only, not on configuration or the environment. Bump
-  `NORMALIZATION_VERSION` for a change to what normalization produces that git cannot see; every commit already changes
-  the stamp.
+- Normalizers depend only on code and the registry, not configuration or the environment; bump `NORMALIZATION_VERSION`
+  for an output change git cannot see (every commit changes the stamp).
 - A server from before the stamp ignores it, so running one and then returning to the very commit that wrote the stamp
   skips the pass until the next commit.

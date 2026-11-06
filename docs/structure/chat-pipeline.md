@@ -406,15 +406,14 @@ In `shared/lore/activation.ts`.
 - `renderChatTemplate` calls Jinja's `Template.render` synchronously with no work or time limit; a costly custom
   template occupies its caller's thread.
 - The screen's per-chat reroll history (multi-reply tails) is in memory only.
-- Composer recovery depends on the browser journal. The hide flush lands only while the page lives on after it: Chrome
-  aborts IndexedDB writes begun in `pagehide` when the page unloads, so a reload, close, or navigation within 500 ms of
-  the last edit loses that edit.
+- Composer recovery depends on the browser journal. Chrome aborts IndexedDB writes begun in `pagehide` on unload, so a
+  reload, close, or navigation within 500 ms of the last edit loses it.
 - In-page send recovery restores the serialized send text without its translation draft; journal recovery restores the
   pre-consumption composer. Neither restores a send whose job ended `done` (`ok`) after a script removed its user
   message.
 - Lore keys keep the inherited grammar: every key is split on commas before the `/pattern/flags` parse, so `/a{1,2}/`
   becomes two malformed keys; the last slash closes a pattern, and a bare or unclosed slash, an invalid flag, or a
-  malformed later entry ends that key search instead of being skipped. Kept for parity as a candidate for a later fix.
+  malformed later entry ends that key search instead of being skipped. Kept for parity.
 
 ### Limitations
 
@@ -423,8 +422,7 @@ In `shared/lore/activation.ts`.
 - Accepted limits of sends in different chats at once (each chat has one local send and one server job; different chats
   of a tab run together). Decision: Per-Chat Send D1 and D6, [archive](../archived-plan/README.md).
   - Ordinary send, continue, reroll, and group jobs leave the character revision unchanged: last-chatted activity is
-    derived from the chats' final-message times (`ChatSummary.lastMessageAt` for unloaded chats). Streamed continue
-    refreshes the message time in its existing final write; previews move neither.
+    derived from the chats' final-message times (`ChatSummary.lastMessageAt` for unloaded chats).
   - Explicit character effects (memory enable, triggers, Lua setters) patch the character without a character lock:
     simultaneous writes of the same field are last writer wins, and a group job and a member's own chat can patch that
     member the same way.
@@ -432,8 +430,8 @@ In `shared/lore/activation.ts`.
     `stopTTS()` (`tts.ts`) stops every chat's speech; `alertWait`'s single status slot and the legacy `progress` overlay
     (`jobChannel.ts` `progressJobId`) show the newest job.
   - Plugin hooks and providers of one tab stay serialized by the server's per-client channel lane
-    (`server-generation.md`): a slow provider in one chat delays the other chat's hooks. A queued callback's deadline
-    starts at its dispatch, so the wait does not time it out.
+    (`server-generation.md`): a slow provider in one chat delays another chat's hooks; a queued callback's deadline
+    starts at dispatch.
 - The server's `refreshChat` (`server/src/jobs/jobScope.ts`) reloads the stored chat after job writes and callbacks that
   may write, so an unrelated edit to that chat while the job runs can enter a later prompt stage. Decision: that file's
   header.
