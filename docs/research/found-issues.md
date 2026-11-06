@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (10)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (9)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
 - [Server routes and resource store](#server-routes-and-resource-store) (5)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -65,13 +65,6 @@ The Plugin Storage and Data API run (2026-11-05, slice 2) made the upload of a `
 
 **Why it matters:** the server no longer runs 2 MiB passes for a one-key counter write, but each observing tab still pays about one parse and one or more stringifies of the whole record per write: the client twin of the server fix.
 **Suggested handling:** if pluginStorage feed cost comes up again, keep the held text cut by entry on the client (like the server's patch base) instead of reparsing the record.
-
-### flushResources resolves after a restore halt
-
-`flushResources` in `src/ts/storage/resourceSync.svelte.ts` checks `halted` only inside its `while (pending() ...)` loop, so with nothing pending it resolves normally after `haltForRestore`. `readRefs` (`src/ts/storage/resourceClient.ts`) is not gated by mutation admission, and the detached reads (`readChatRefsDetached` in `src/ts/storage/chatEdits.ts`) use their own deadline controller outside the save adapter's halt-aborted `readControllers`, so a late answer from the old epoch can still land. Found in the Plugin Storage and Data API run (2026-11-05, slice 5); the detached chat cache guards itself with `assertSaveAdmission` and the terminal notice.
-
-**Why it matters:** a caller that treats a resolved flush as "the server copy matches this tab" (plugin `getDatabase`, exports through `readChatsDetached`) keeps going while the restore notice is open; small today, since the page reloads after the notice.
-**Suggested handling:** if a later change relies on `flushResources` refusing after a halt, add `assertSaveAdmission()` before its first return.
 
 ### Append checkpoint cleanup depends on coalescing and group order
 

@@ -1,6 +1,6 @@
 # Chat Store and Structured Memory Sweep Plan
 
-Status: drafted 2026-11-06; the owner accepted every open question's recommendation the same day; landed: none. Source: the 25 entries
+Status: drafted 2026-11-06; the owner accepted every open question's recommendation the same day; landed: A1 (54ee880aa). Source: the 25 entries
 of the [found-issues](../research/found-issues.md) sections "Chat store, sync, and change feeds" (10) and
 "Structured Memory" (15) as of `8cc6d3093`, each sub-item re-checked against that tree the same day by ten
 read-only workers; the file and line evidence behind every slice and every "gone" verdict was spot-checked
