@@ -23,7 +23,8 @@
 - `shared/structuredMemory.ts`: compatibility shapes and seals; `projectHypaV3Data`, `sealHypaV3Data`,
   `isSealedHypaV3Data`, `sealedHypaV3DataIntact`, `sealedHypaV3DataRevision`, `SealedHypaV3Data`,
   `hypaV3DataHoldsSummaries`, `MEMORY_REVISION_CHATS_MAX`, `StructuredMemoryRevisionsAnswer`,
-  `StructuredMemoryProjectionAnswer`.
+  `StructuredMemoryProjectionAnswer`, `MEMORY_PROJECTIONS_PER_READ`, `MEMORY_RECHECK_WINDOW_MS`,
+  `MEMORY_REFRESH_DEADLINE_MS`.
 - `server/src/data/memoryStore.ts`: stored-record projection; `projectChatMemory`, `lastMemoryManifest`,
   `readProjectionRevisions`, `revisionToken`.
 - `server/src/data/resourceStore.ts`: read overlays and projection reads; `sealedMemoryProjection`,
@@ -34,8 +35,7 @@
   [records' Files](records.md#files).
 - `src/ts/storage/chatStore.svelte.ts`: the held field and its write guard; `keepsHeldHypaV3Data`, `keepsProjection`,
   `sendChat`, `noticeRefusedProjection`, `ChatProjectionState`, `chatProjectionState`, `installChatProjection`.
-- `src/ts/plugins/apiV3/v3.svelte.ts`: plugin-read refresh; `refreshChatProjections`, `rotatingWindow`, `chatsOfRead`,
-  `MEMORY_PROJECTIONS_PER_READ`, `MEMORY_RECHECK_WINDOW_MS`, `MEMORY_REFRESH_DEADLINE_MS`.
+- `src/ts/plugins/apiV3/v3.svelte.ts`: plugin-read refresh; `refreshChatProjections`, `rotatingWindow`, `chatsOfRead`.
 - `src/ts/process/structuredMemory.svelte.ts`: the tab's route client; `readStructuredMemoryRevisions`,
   `readStructuredMemoryProjection`, `resetStructuredMemorySummaries`.
 - `server/src/data/upstream/exportDatabase.ts`: upstream compatibility projection; `projectUpstreamMemory`.

@@ -151,6 +151,9 @@ import { plainClone } from "../../../../shared/presets.ts";
 import { mergeOwnerLore } from "../../../../shared/lore/overrides.ts";
 import {
     isSealedHypaV3Data,
+    MEMORY_PROJECTIONS_PER_READ,
+    MEMORY_RECHECK_WINDOW_MS,
+    MEMORY_REFRESH_DEADLINE_MS,
     MEMORY_REVISION_CHATS_MAX,
     STRUCTURED_MEMORY_ALGORITHM,
 } from "../../../../shared/structuredMemory.ts";
@@ -984,19 +987,6 @@ function contextMember(context: PluginCallContext) {
     }
     return { characterIndex, character, chatIndex };
 }
-
-/** The most projections one read fetches, one after another. */
-const MEMORY_PROJECTIONS_PER_READ = 8;
-
-/** The bound of one read's refresh, which the read waits for: `authFetch` has none of its own. */
-const MEMORY_REFRESH_DEADLINE_MS = 5000;
-
-/**
- * How long a chat's check stands from its answer, failed or not: a read inside it takes what is held. A
- * `display` handler reads on every rendered row and streamed render, and these requests count against a
- * rate limit the whole app shares.
- */
-const MEMORY_RECHECK_WINDOW_MS = 2000;
 
 /** The run asking about each chat now, by chat key: a read of that chat joins it instead of asking too. */
 const chatChecksInFlight = new Map<string, Promise<void>>();

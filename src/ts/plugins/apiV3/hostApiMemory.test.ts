@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { MEMORY_REVISION_CHATS_MAX, sealHypaV3Data } from "../../../../shared/structuredMemory.ts";
+import {
+    MEMORY_PROJECTIONS_PER_READ as projectionLimit,
+    MEMORY_RECHECK_WINDOW_MS as recheckWindow,
+    MEMORY_REFRESH_DEADLINE_MS as deadline,
+    MEMORY_REVISION_CHATS_MAX,
+    sealHypaV3Data,
+} from "../../../../shared/structuredMemory.ts";
 import type { Chat } from "../../../../shared/database.ts";
 
 type Api = Record<string, (...args: any[]) => any>;
@@ -62,11 +67,6 @@ const chat = (id: string, hypaV3Data?: Chat["hypaV3Data"]): Chat => ({
     message: [{ chatId: "m", role: "char", data: "Stored message" }],
     ...(hypaV3Data ? { hypaV3Data } : {}),
 });
-// Read these private budgets from source so the tests can drive their exact boundaries without exporting test API.
-const source = readFileSync("src/ts/plugins/apiV3/v3.svelte.ts", "utf8");
-const deadline = Number(source.match(/const MEMORY_REFRESH_DEADLINE_MS = (\d+)/)![1]);
-const projectionLimit = Number(source.match(/const MEMORY_PROJECTIONS_PER_READ = (\d+)/)![1]);
-const recheckWindow = Number(source.match(/const MEMORY_RECHECK_WINDOW_MS = (\d+)/)![1]);
 // Marks survive install() and fake-timer resets; this clock only moves forward, including between tests.
 let memoryNow = 0;
 function passRecheckWindow() {

@@ -1015,6 +1015,19 @@ export const MEMORY_RUNS_ROUND_ROWS = 50;
 /** The most chats one request of the revisions route names. */
 export const MEMORY_REVISION_CHATS_MAX = 2000;
 
+/** The most projections one plugin read fetches, one after another (`src/ts/plugins/apiV3/v3.svelte.ts`). */
+export const MEMORY_PROJECTIONS_PER_READ = 8;
+
+/** The bound of one plugin read's refresh, which the read waits for: `authFetch` has none of its own. */
+export const MEMORY_REFRESH_DEADLINE_MS = 5000;
+
+/**
+ * How long a chat's check stands from its answer, failed or not: a read inside it takes what is held. A
+ * `display` handler reads on every rendered row and streamed render, and these requests count against a
+ * rate limit the whole app shares.
+ */
+export const MEMORY_RECHECK_WINDOW_MS = 2000;
+
 /**
  * The revisions route's answer, in the order the request named the chats: each chat's memory revision, or
  * null for a chat a whole read leaves as stored, so that it holds no projection.

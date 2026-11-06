@@ -777,8 +777,8 @@ export function createServerContext(options: {
     // resource read's, the login, crypto, and set-password routes', the message search's, the memory
     // task start's, the structured memory POSTs', the checkpoint POSTs' and policy PUT's, the token
     // routes', and the missing asset check's bodies are capped by those routes (8 MiB, 16 KiB, 16 KiB,
-    // 1 MiB, 4 KiB, 4 KiB, 2 MiB, 32 MiB, 16 KiB, 4 KiB, 4 KiB, 64 KiB and a restore's 32 MiB, 16 KiB,
-    // 2 MiB, 64 KiB).
+    // 1 MiB, 4 KiB, 4 KiB, 2 MiB, 32 MiB, 16 KiB, 4 KiB, 4 KiB, 64 KiB (256 KiB for revisions and health)
+    // and a restore's 32 MiB, 16 KiB, 2 MiB, 64 KiB).
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
