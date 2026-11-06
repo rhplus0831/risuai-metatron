@@ -5596,6 +5596,7 @@ export function resourceSyncIdle(): boolean {
  * Settles changes queued before this call. Reports keys discarded since the call (with `scope`,
  * since the scope began), and every key still refused locally when the flush resolves;
  * rejects when saving fails or when a character that must be saved is still being generated.
+ * A restore halt rejects even when no changes are pending.
  * Writes and dependency reads that leave their dependency pending share a ten-attempt limit;
  * outstanding unload answers and split journal dependencies each have a twenty-second wait bound;
  * a split timeout rejects without releasing its prefix. Captures record generations, membership,
@@ -5611,6 +5612,7 @@ export async function flushResources(
     options: { scope?: MutationScope } = {},
 ): Promise<{ discarded: string[]; refused: string[] }> {
     await tick();
+    assertSaveAdmission();
     const refused = quarantineReason();
     if (refused) {
         throw refused;

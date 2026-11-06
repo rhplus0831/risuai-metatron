@@ -433,6 +433,52 @@ describe("membership of the store", () => {
 });
 
 describe("detached reads", () => {
+    it("readChatsDetached rejects an old-epoch export answer and new exports while the restore notice is open", async () => {
+        const { fake, chatEdits } = await boot();
+        const client = await import("../resourceClient");
+        const { alertTerminal } = await import("../../alert");
+        const reload = vi.spyOn(location, "reload").mockImplementation(() => {});
+        const notice = gate();
+        vi.mocked(alertTerminal).mockImplementationOnce(() => notice.promise);
+        const entered = gate();
+        const release = gate();
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                // The answer belongs to the old epoch even though it is delivered after the halt.
+                const response = await fake.fetch(path, init);
+                if (path === "/api/resources/read") {
+                    entered.resolve();
+                    await release.promise;
+                }
+                return response;
+            },
+        };
+        const reading = chatEdits.readChatsDetached(["c"]);
+        const rejected = expect(reading).rejects.toThrow(/restored/);
+        try {
+            await entered.promise;
+            fake.failNext = {
+                status: 412,
+                body: { error: "EpochMismatch", epoch: "restored-epoch" },
+                times: 1,
+                match: (path) => path === "/api/resources/ui/main",
+            };
+            await expect(client.getResource("ui", "main")).rejects.toBeInstanceOf(client.ResourceEpochMismatchError);
+            expect(alertTerminal).toHaveBeenCalledTimes(1);
+            expect(reload).not.toHaveBeenCalled();
+
+            release.resolve();
+            await rejected;
+            await expect(chatEdits.readChatsDetached(["c"])).rejects.toThrow(/restored/);
+            expect(reload).not.toHaveBeenCalled();
+        } finally {
+            release.resolve();
+            await Promise.allSettled([rejected]);
+            server.current = fake;
+            notice.resolve();
+        }
+    });
+
     it("readChatsDetached saves first and answers every chat of several characters in the server order; an empty request reads nothing; a character without an order gets []", async () => {
         const { chat, characterStore, chatEdits, sync, fake, ids } = await boot();
         characterStore.addCharacter({ chaId: "d", name: "D", chats: [newChat("kd", "KD")] });

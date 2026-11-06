@@ -872,6 +872,25 @@ describe("the restore watch of a job ended by maintenance", () => {
     const watchReads = (fake: FakeResourceServer) =>
         fake.requests.filter((request) => request.method === "GET" && request.path === "/api/resources/ui/main").length;
 
+    it("rejects an empty flush while the restore notice is open", async () => {
+        const { fake, sync, client } = await boot();
+        let acknowledge!: () => void;
+        alerts.terminal.mockImplementationOnce(
+            () => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))),
+        );
+        try {
+            fake.restore("epoch-2");
+            await expect(client.getResource("ui", "main")).rejects.toBeInstanceOf(client.ResourceEpochMismatchError);
+            expect(alerts.terminal).toHaveBeenCalledWith("restored");
+            expect(location.reload).not.toHaveBeenCalled();
+
+            await expect(sync.flushResources()).rejects.toThrow(/restored/);
+            expect(fake.batchCount()).toBe(0);
+        } finally {
+            acknowledge?.();
+        }
+    });
+
     it("keeps waiting through old-epoch answers, a 503, and a network failure, then halts with the notice and the reload once the epoch changes", async () => {
         const { fake, sync, settings } = await boot();
         let settled: boolean | undefined;

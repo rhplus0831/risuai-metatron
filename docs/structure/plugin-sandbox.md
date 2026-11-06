@@ -315,7 +315,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - Full character reads use `withChatsCopy`; records hold no chats. Outside hooks, `getDatabase` and `getChats` use
   `withDetachedDatabaseChats`: flush, then shared unloaded reads or `src/ts/plugins/apiV3/detachedChatCache.ts`, never
   installed; held chats stay pinned until the synchronous copy. A fully held page skips the flush. Unsafe copies and
-  hooks load (a page, its members: `withHeldChatPage`).
+  hooks load (a page, its members: `withHeldChatPage`). A failed flush or read falls back to that loading; after a
+  restore halt every such call rejects, a fully held page included.
 - `getDatabase(keys, { chats: "summaries" })` reads, flushes, pins, and loads no chat (`chatSummaryList` in
   `src/ts/storage/chatStore.svelte.ts`); every plugin character setter strips `chatSummaries`.
 - `getChatFromIndex`, `setChatToIndex`, `parseRisuChat`, and `sendChat` capture their chat by id first and await

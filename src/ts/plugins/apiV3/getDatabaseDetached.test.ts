@@ -630,6 +630,55 @@ it("settles queued writes before detached reads and includes loaded edits made w
     expect(b.chat.findChat(other)).toBeUndefined();
 });
 
+it("rejects a detached database answer across a restore halt and later database or held chat reads while the notice is open", async () => {
+    const b = await boot(await fixture({ c: [chatData("held"), chatData("other")] }));
+    await b.chat.ensureChatLoaded(held);
+    const client = await import("src/ts/storage/resourceClient");
+    const { alertTerminal } = await import("src/ts/alert");
+    const notice = deferred();
+    vi.mocked(alertTerminal).mockImplementationOnce(() => notice.promise);
+    const entered = deferred();
+    const release = deferred();
+    let first = true;
+    boundary.fetch = async (path, init) => {
+        // Capture an old-epoch success before the halt, then delay only its delivery.
+        const response = await b.fake.fetch(path, init);
+        if (path === readPath && first) {
+            first = false;
+            entered.resolve();
+            await release.promise;
+        }
+        return response;
+    };
+    const reading = b.api.getDatabase(["characters"]);
+    const rejected = expect(reading).rejects.toThrow(/restored/);
+    try {
+        await entered.promise;
+        // A complete held copy is available if the plugin incorrectly falls back after the halt.
+        await b.chat.ensureChatLoaded(other);
+        b.fake.failNext = {
+            status: 412,
+            body: { error: "EpochMismatch", epoch: "restored-epoch" },
+            times: 1,
+            match: (path) => path === "/api/resources/ui/main",
+        };
+        await expect(client.getResource("ui", "main")).rejects.toBeInstanceOf(client.ResourceEpochMismatchError);
+        expect(alertTerminal).toHaveBeenCalledTimes(1);
+        expect(location.reload).not.toHaveBeenCalled();
+
+        release.resolve();
+        await rejected;
+        await expect(b.api.getDatabase(["characters"])).rejects.toThrow(/restored/);
+        await expect(b.api.getChats("c", { limit: 1 })).rejects.toThrow(/restored/);
+        expect(b.chat.findChat(held)?.message[0].data).toBe("Saved held");
+        expect(location.reload).not.toHaveBeenCalled();
+    } finally {
+        release.resolve();
+        await Promise.allSettled([rejected]);
+        notice.resolve();
+    }
+});
+
 it("uses the loaded path inside a hook without flushing queued work", async () => {
     const b = await boot(await fixture());
     await b.chat.ensureChatLoaded(held);

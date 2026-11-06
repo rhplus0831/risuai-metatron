@@ -56,7 +56,7 @@ import {
     setPluginCustomValue,
     setOwnedPluginStorageItem,
 } from "src/ts/storage/pluginStorageStore.svelte";
-import { flushResources, onPluginStorageDiscarded } from "src/ts/storage/resourceSync.svelte";
+import { assertSaveAdmission, flushResources, onPluginStorageDiscarded } from "src/ts/storage/resourceSync.svelte";
 import { selectPersona, selectedIndex } from "src/ts/storage/selection.svelte";
 import { batchRecordWrites } from "src/ts/storage/records.svelte";
 import { isForwardedPresetRoot, missingPresetTarget } from "src/ts/storage/settingsViews.svelte";
@@ -1359,6 +1359,7 @@ async function readSharedDetachedChats(refs: readonly ChatRef[]): Promise<Map<Ch
  * Each caller rechecks owners, local work, cache hits and membership after awaits, with a few assembly
  * attempts before held-state fallback. The optional selector names one character's page and limits
  * its reads and refreshes to those members.
+ * A restore halt refuses every result, including fully held pages and held-state fallbacks.
  */
 async function withDetachedDatabaseChats<T>(
     chaIds: readonly (string | undefined)[],
@@ -1384,6 +1385,7 @@ async function withDetachedDatabaseChats<T>(
     };
     pinLoadedMembers();
     const checkOwners = () => {
+        assertSaveAdmission();
         for (const character of characterList()) {
             const owner = owners.get(character.chaId);
             if (owner !== undefined && chatOwnerToken(character.chaId) !== owner) {
@@ -1433,6 +1435,7 @@ async function withDetachedDatabaseChats<T>(
         try {
             flushed = await flushResources();
         } catch {
+            assertSaveAdmission();
             return await loaded();
         }
         const fallback = new Set(
@@ -1506,6 +1509,7 @@ async function withDetachedDatabaseChats<T>(
                         if (needsSnapshot) fallback.add(ref.chaId);
                     }
                 } catch {
+                    assertSaveAdmission();
                     return await loaded();
                 }
             }

@@ -236,7 +236,8 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 ### flushResources
 
 - `flushResources` captures queued record generations, membership, chat/order sequences and credential ops. Its comment
-  defines the ten-attempt budget and relevant dependency reads; it does not wait for unrelated background reads.
+  defines the ten-attempt budget and relevant dependency reads; it does not wait for unrelated background reads. After a
+  [restore halt](live-updates.md#restore-halt) it rejects (`assertSaveAdmission`) even with nothing pending.
 - Unanswered pagehide and stalled split-journal dependencies each wait at most 20 s. Timeout rejects without releasing
   the split prefix.
 - The result is `{ discarded, refused }` with `<kind>/<id>`, `chats/<chaId>/<chatId>` or order `chats/<chaId>` keys. Its

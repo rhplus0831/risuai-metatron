@@ -37,7 +37,8 @@ Module headers and export comments hold the contracts; these lists give lookup i
 - `src/ts/storage/chatEdits.ts`: `editChat` (may await), `editChatSync`, `editCurrentChat`, `setCurrentChatMeta`, over a
   whole chat copy; `readChatsDetached` serves `src/ts/storage/exportAsDataset.ts` and `src/ts/characters.ts`;
   `readChatRefsDetached` serves plugin `getDatabase` and `getChats` via `withDetachedDatabaseChats` in
-  `src/ts/plugins/apiV3/v3.svelte.ts`.
+  `src/ts/plugins/apiV3/v3.svelte.ts`. Both check `assertSaveAdmission` before and after each chunk read, so after a
+  restore halt an old-epoch answer is refused.
 - `src/ts/storage/chatFieldDraft.svelte.ts` (`createChatFieldDraft`, `loreWriteFenced`),
   `src/ts/storage/{localLoreDraft.svelte,loreOverridesDraft.svelte}.ts`: the editing copies of a selected chat's array
   fields and their send fence.

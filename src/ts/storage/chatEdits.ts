@@ -14,7 +14,7 @@ import {
 } from "./chatStore.svelte";
 import { readWithDeadline } from "./readDeadline";
 import { readRefs } from "./resourceClient";
-import { flushResources } from "./resourceSync.svelte";
+import { assertSaveAdmission, flushResources } from "./resourceSync.svelte";
 
 /**
  * Helpers over the chat module for writers that work on a whole chat: they edit a detached copy,
@@ -86,6 +86,7 @@ export type DetachedChatRead = { revision: string; data: Chat } | "gone" | "abse
  * Reads named chats across characters as plain server copies, without installing or pinning them.
  * The caller settles queued saves first. Each chunk has its own deadline, including continuations;
  * a missing answer is distinct from a chat the server says is gone. No store state is written.
+ * A restore halt rejects before each chunk's read and after its answer, so old-epoch copies never return.
  */
 export async function readChatRefsDetached(
     refs: readonly ChatRef[],
@@ -104,9 +105,11 @@ export async function readChatRefsDetached(
         }
     }
     for (let start = 0; start < wanted.length; start += DETACHED_READ_CHUNK) {
+        assertSaveAdmission();
         const read = await readWithDeadline(DETACHED_READ_DEADLINE_MS, language.chatLoadTimedOut, (signal) =>
             readRefs([], { chats: wanted.slice(start, start + DETACHED_READ_CHUNK), signal }),
         );
+        assertSaveAdmission();
         for (const chat of read.chats ?? []) {
             const chats = result.get(chat.characterId);
             if (chats?.has(chat.id)) {
@@ -127,6 +130,7 @@ export async function readChatRefsDetached(
  * discarded a local change of one of these characters or their chats, or such a change remains refused,
  * nothing is read and this throws (a stale server copy is never returned instead). A character the
  * server has no chat order for gets `[]`.
+ * A restore halt rejects before each chunk's read and after its answer, so old-epoch copies never return.
  */
 export async function readChatsDetached(chaIds: readonly string[]): Promise<Map<string, Chat[]>> {
     const wanted = [...new Set(chaIds)];
@@ -150,9 +154,11 @@ export async function readChatsDetached(chaIds: readonly string[]): Promise<Map<
         throw new Error(`The server refused local changes that are not saved yet: ${refusedKeys.join(", ")}`);
     }
     for (let start = 0; start < wanted.length; start += DETACHED_READ_CHUNK) {
+        assertSaveAdmission();
         const read = await readWithDeadline(DETACHED_READ_DEADLINE_MS, "The export's chat read timed out", (signal) =>
             readRefs([], { chatCollections: wanted.slice(start, start + DETACHED_READ_CHUNK), signal }),
         );
+        assertSaveAdmission();
         for (const collection of read.chatCollections ?? []) {
             result.set(
                 collection.characterId,
