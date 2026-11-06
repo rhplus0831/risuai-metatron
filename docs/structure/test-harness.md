@@ -83,8 +83,8 @@ None is in the gate; all are in `util/playwright/`.
 
 - Against the dev stack: `checkLiveUpdates.mjs`, `checkCredentialTraffic.mjs`, `checkLlmTransport.mjs`,
   `checkStreamingModes.mjs`, `checkServerTransform.mjs`, `checkMcpFixes.mjs`, `checkDurableDrafts.mjs`,
-  `checkAssetLifecycle.mjs` (the asset sweep, through the development clock offset), `checkSidebarChatStatus.mjs`,
-  `checkBootCache.mjs`, and, with real v3 plugins under `offline.sh`, `checkJobProtocol.mjs` (a plugin provider) and
+  `checkAssetLifecycle.mjs` (asset sweep via the dev clock offset), `checkSidebarChatStatus.mjs`, `checkBootCache.mjs`,
+  `checkServerRestartRaces.mjs`, and, with real v3 plugins under `offline.sh`, `checkJobProtocol.mjs` and
   `checkJobHandoff.mjs` (two tabs hand a job off).
 - `measurePluginData.mjs`: dev-stack database reads, storage/toggle write bytes, unchanged `getDatabase` → `setDatabase`
   setter costs, then the developer recorder check.

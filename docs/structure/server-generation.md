@@ -276,15 +276,16 @@ mode); like the request history, in no snapshot or archive.
 
 ## Tests
 
-The in-process harness and the slow table are in the [shell's Tests](self-host-server.md#tests).
+In-process harness, slow table: [shell's Tests](self-host-server.md#tests).
 
-- Browser checks: `util/playwright/checkJobProtocol.mjs` and `checkJobHandoff.mjs` ([test-harness](test-harness.md)).
+- Browser checks: `util/playwright/checkJobProtocol.mjs`, `checkJobHandoff.mjs`, and `checkServerRestartRaces.mjs`
+  ([test-harness](test-harness.md)).
 - Jobs:
   `pnpm --silent test:agent server/src/tests/{generationJobs,generationReceipts,generationDeltaChunks,generations,commandSequences,generationBarrier,jobChannel,promptRunner}.test.ts`.
 - Transform and translation: `pnpm --silent test:agent server/src/tests/{transform,transformService,translate}.test.ts`.
 - LLM and tokens: `pnpm --silent test:agent server/src/tests/{llmRoutes,llmRequests,tokenRoutes,tokens}.test.ts`.
 - Job modules and CBS: `pnpm --silent test:agent server/src/tests/{jobModules,dynamicAssets,cbs}.test.ts`.
-- Other scripts, memory, MCP, and CBS tests are anchored in their owner guides.
+- Other scripts, memory, MCP, and CBS tests: their owner guides.
 
 ## Known Hazards
 
