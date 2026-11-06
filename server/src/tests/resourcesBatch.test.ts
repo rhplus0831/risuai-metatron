@@ -443,7 +443,11 @@ describe("multi-kind and ref reads", () => {
             ["empty", { refs: [] }, envelope],
             ["missing", {}, envelope],
             ["too many", { refs: Array.from({ length: 5001 }, () => ({ kind: "characters", id: "a" })) }, envelope],
-            ["not arrays", { refs: {} }, "Body must be { refs?, chats?, chatCollections? } of arrays"],
+            [
+                "not arrays",
+                { refs: {} },
+                "Body must be { refs?, chats?, chatCollections?, chatSummaryCollections? } of arrays",
+            ],
             ["unknown kind", { refs: [{ kind: "nope", id: "a" }] }, "refs[0] must name a known kind and a valid id"],
             [
                 "invalid id",

@@ -612,10 +612,10 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
     const db = arg.ctx.db;
     const isV3Model = arg.aiModel.startsWith("pluginmodel:::");
     const responseModel = isV3Model ? arg.aiModel : "custom";
+    const model = isV3Model ? arg.aiModel.replace("pluginmodel:::", "") : db.currentPluginProvider;
     try {
         const formated = arg.formated;
         const maxTokens = arg.maxTokens;
-        const model = isV3Model ? arg.aiModel.replace("pluginmodel:::", "") : db.currentPluginProvider;
 
         if (arg.previewBody) {
             return {
@@ -683,9 +683,7 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
         }
         return {
             type: "fail",
-            result:
-                `Plugin Error from ${db.currentPluginProvider}: ` +
-                (error instanceof Error ? error.message : JSON.stringify(error)),
+            result: `Plugin Error from ${model}: ` + (error instanceof Error ? error.message : JSON.stringify(error)),
             model: responseModel,
         };
     }

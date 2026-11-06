@@ -173,6 +173,20 @@ describe("a tab-run request's captured presets", () => {
         expect(selection.modelPresetId).toBe("mp-2");
     });
 
+    it("names a throwing V3 provider instead of the captured profile's legacy provider", async () => {
+        const profile = trackedRecord<ModelProfile[]>("modelProfiles")!.find((entry) => entry.id === "prof-1")!;
+        profile.modelId = "pluginmodel:::prov-v3";
+        stubs.hooks.providers.set("prov-v3", async () => {
+            throw new Error("boom");
+        });
+
+        expect(await requestChatData(argOf(), "model")).toEqual({
+            type: "fail",
+            result: expect.stringMatching(/^Plugin Error from prov-v3: /),
+            model: "pluginmodel:::prov-v3",
+        });
+    });
+
     it("blocks the legacy custom plugin model when blockPlugins is true and permits it otherwise", async () => {
         expect(await requestChatDataMain(argOf({ blockPlugins: true }), "model")).toEqual({
             type: "fail",

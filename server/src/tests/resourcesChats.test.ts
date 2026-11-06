@@ -201,11 +201,15 @@ describe("POST /api/resources/batch with chats", () => {
             ],
             ["collection not an id", { chatCollections: [1] }, "chatCollections must be character ids"],
             ["collection invalid id", { chatCollections: [".."] }, "chatCollections must be character ids"],
-            ["chats not an array", { chats: {} }, "Body must be { refs?, chats?, chatCollections? } of arrays"],
+            [
+                "chats not an array",
+                { chats: {} },
+                "Body must be { refs?, chats?, chatCollections?, chatSummaryCollections? } of arrays",
+            ],
             [
                 "collections not an array",
                 { chatCollections: "c" },
-                "Body must be { refs?, chats?, chatCollections? } of arrays",
+                "Body must be { refs?, chats?, chatCollections?, chatSummaryCollections? } of arrays",
             ],
             ["nothing named", { refs: [], chats: [], chatCollections: [] }, "Body must name 1 to 5000 entries"],
             [

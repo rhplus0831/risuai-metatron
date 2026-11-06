@@ -216,7 +216,10 @@ export function registerResourceRoutes(
             continue: canContinue,
         } = parsed.body as Record<string, unknown>;
         if (!Array.isArray(refs) || !Array.isArray(chats) || !Array.isArray(chatCollections)) {
-            return c.json({ error: "Body must be { refs?, chats?, chatCollections? } of arrays" }, 400);
+            return c.json(
+                { error: "Body must be { refs?, chats?, chatCollections?, chatSummaryCollections? } of arrays" },
+                400,
+            );
         }
         if (!Array.isArray(chatRows)) {
             return c.json({ error: "chatRows must be an array" }, 400);

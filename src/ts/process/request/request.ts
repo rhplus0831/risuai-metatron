@@ -702,12 +702,12 @@ export async function requestChatDataMain(
 async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const isV3Model = arg.aiModel.startsWith("pluginmodel:::");
     const responseModel = isV3Model ? arg.aiModel : "custom";
+    const model = isV3Model
+        ? arg.aiModel.replace("pluginmodel:::", "")
+        : (presetFieldValue(arg.modelProfile, "currentPluginProvider") as string);
     try {
         const formated = arg.formated;
         const maxTokens = arg.maxTokens;
-        const model = isV3Model
-            ? arg.aiModel.replace("pluginmodel:::", "")
-            : (presetFieldValue(arg.modelProfile, "currentPluginProvider") as string);
         const providerFunction = pluginHooks.providers.get(model);
 
         if (arg.previewBody) {
@@ -791,9 +791,7 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
         console.error(error);
         return {
             type: "fail",
-            result:
-                `Plugin Error from ${presetFieldValue(arg.modelProfile, "currentPluginProvider")}: ` +
-                JSON.stringify(error),
+            result: `Plugin Error from ${model}: ` + JSON.stringify(error),
             model: responseModel,
         };
     }

@@ -2213,7 +2213,7 @@ describe("a job's plugin provider model (runInJob)", () => {
             [{ outcome: "answered", value: { none: true } }, { type: "fail", result: messages.errors.unknownModel }, 0],
             [
                 { outcome: "failed", failure: "hook", error: "boom" },
-                { type: "fail", result: expect.stringMatching(/^Plugin Error from .*: boom$/) },
+                { type: "fail", result: "Plugin Error from prov: boom" },
                 0,
             ],
             [
@@ -2243,7 +2243,9 @@ describe("a job's plugin provider model (runInJob)", () => {
             ],
         ] as [CallbackResult, Record<string, unknown>, number][]) {
             const label = JSON.stringify(result).slice(0, 80);
-            const { registry, pending, call, ended } = await startProvider(pluginRecords());
+            const { registry, pending, call, ended } = await startProvider(
+                makeRecords({ preset: { aiModel: "pluginmodel:::prov", currentPluginProvider: "legacy" } }),
+            );
             call.settle(result);
             expect(await pending, label).toMatchObject(expected);
             expect(ended, label).toHaveLength(ends);
