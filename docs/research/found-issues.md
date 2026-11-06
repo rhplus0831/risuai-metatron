@@ -10,7 +10,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
-- [Server routes and resource store](#server-routes-and-resource-store) (7)
+- [Server routes and resource store](#server-routes-and-resource-store) (6)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (8)
 - [Chat screen and input](#chat-screen-and-input) (5)
@@ -124,13 +124,6 @@ The `changes` table in `resources.sqlite` (Incremental Chat Transport D5, `serve
 **Why it matters:** with typical UUID ids the log is a few MB, but the Asset Lifecycle snapshot budget counts 40 copies of it at a byte size the code does not bound.
 
 **Suggested handling:** size snapshot storage as rows × id length; add a VACUUM or a byte bound if a real store comes near it.
-
-### Other server write paths still fail a job on a non-finite number
-
-The Lua chat-variable setters store a non-finite number as text (2026-11-07), but other writes still fail validation or serialization (`serialize`, `server/src/data/resourceStore.ts`) on one and end the job; binding and metadata-flush failures are latched. Reproduced by a Sol review the same day (scripts in `/home/codex/review-reports/lua-chatvar-nonfinite-2026-11-07/scratch/`): Lua `setChat`, `addChat`, `insertChat` (`server/src/lua/bindings.ts` ~1308–1447) pass message text through a cast, so `addChat(id, "char", 0/0)` fails the job, and a finite number fails `setChat`'s text check the same way; `upsertLocalLoreBook`'s `name` and `content` (~1581–1618) likewise; trigger `v2CreateLorebook`/`v2ModifyLorebookByIndex` (`server/src/prompt/triggers.ts` ~1702–1758) check only `NaN`, so an `Infinity` insert order (from `"1e400"` or a variable Lua set to `math.huge`) fails the character patch; and `v2GetArrayVar`/`v2PopArrayVar`/`v2ShiftArrayVar` (~1299–1350) and `v2GetDictVar` (~1834–1843) store the parsed JSON value raw, so `{"score":1e400}` from an LLM answer fails the metadata flush. CBS `arrayelement`/`dictelement` stringify their results and are safe.
-
-**Why it matters:** a script or trigger fed an unusual number ends its whole job; earlier effects stay committed.
-**Suggested handling:** check text arguments at the Lua boundary as `setDescription` does, use `Number.isFinite` at the two lore order sites, and stringify extracted scalars as CBS does (a nested object holding one needs its own handling).
 
 ### Lua image shortcuts reuse an asset key without a claim
 

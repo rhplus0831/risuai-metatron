@@ -278,6 +278,51 @@ describe("chat metadata coalescing", () => {
         ]);
     });
 
+    it("stores a number or boolean Lua passes as message or local-lore text as its text", async () => {
+        const h = setup();
+        const sync = h.run.bindings.host.sync!;
+        const lore = (name: unknown, content: unknown) =>
+            sync.upsertLocalLoreBookMain(["id", name, content, "{}"], h.run.nativeCtx);
+        // Lua's 0/0 and math.huge arrive as JS numbers, which the store refuses as message text.
+        sync.setChat(["id", 0, NaN], h.run.nativeCtx);
+        sync.addChat(["id", "char", 42], h.run.nativeCtx);
+        sync.insertChat(["id", 0, "user", true], h.run.nativeCtx);
+        sync.addChat(["id", "char", -Infinity], h.run.nativeCtx);
+        lore("test", NaN);
+        lore(7, "first");
+        // The same number names the same entry, so it is replaced.
+        lore(7, Infinity);
+        await Promise.resolve();
+        expect(h.services.fence).not.toThrow();
+        const data = h.store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data as {
+            message: { data: unknown }[];
+            localLore: { comment: unknown; content: unknown }[];
+        };
+        expect(data.message.map((message) => message.data)).toEqual(["true", "NaN", "42", "-Infinity"]);
+        expect(data.localLore.map((book) => [book.comment, book.content])).toEqual([
+            ["test", "NaN"],
+            ["7", "Infinity"],
+        ]);
+
+        // A trigger's triggerlua run writes the working copy, which the trigger applies at its end.
+        const chat = structuredClone(scopeChat(h.run.scope)!);
+        await h.run.bindings.withWorking({ chat, getVar: () => "", setVar: () => true }, async () => {
+            sync.setChat(["id", 0, Infinity], h.run.nativeCtx);
+            sync.insertChat(["id", 0, "user", NaN], h.run.nativeCtx);
+            sync.addChat(["id", "char", false], h.run.nativeCtx);
+            lore(NaN, 5);
+        });
+        expect(chat.message.map((message) => message.data)).toEqual([
+            "NaN",
+            "Infinity",
+            "NaN",
+            "42",
+            "-Infinity",
+            "false",
+        ]);
+        expect(chat.localLore?.map((book) => [book.comment, book.content])).toContainEqual(["NaN", "5"]);
+    });
+
     it("coalesces one CBS evaluation and separates awaited command segments", async () => {
         const h = setup();
         const before = h.stored().revision;

@@ -284,6 +284,15 @@ function chatVarText(value: unknown): string {
     return typeof value === "number" && !Number.isFinite(value) ? String(value) : (value as string);
 }
 
+/**
+ * Message or lore text from Lua: a number or boolean becomes its JavaScript text (`42` as "42", `0/0`
+ * as "NaN", `math.huge` as "Infinity"), since the store takes only text there and a script printing a
+ * score expects it shown. A string, nil, or anything else passes as it is.
+ */
+function luaText(value: unknown): string {
+    return typeof value === "number" || typeof value === "boolean" ? String(value) : (value as string);
+}
+
 /** Rejects with the signal's reason when it aborts first. */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     if (signal.aborted) {
@@ -1313,13 +1322,13 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (working) {
                 const message = working.chat.message?.at(index as number);
                 if (message) {
-                    replaceCopyMessage(working.chat, index as number, { ...message, data: (value as string) ?? "" });
+                    replaceCopyMessage(working.chat, index as number, { ...message, data: luaText(value) ?? "" });
                 }
                 return undefined;
             }
             writeChat((chat) => {
                 const message = scopeHistoryMessages(scope, chat).at(index as number);
-                return message?.chatId ? [{ op: "setText", id: message.chatId, text: (value as string) ?? "" }] : null;
+                return message?.chatId ? [{ op: "setText", id: message.chatId, text: luaText(value) ?? "" }] : null;
             }, ctx);
             return undefined;
         },
@@ -1377,14 +1386,14 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             if (working) {
-                working.chat.message.push({ role: roleOf(role), data: (value as string) ?? "" });
+                working.chat.message.push({ role: roleOf(role), data: luaText(value) ?? "" });
                 return undefined;
             }
             writeChat(
                 () => [
                     {
                         op: "append",
-                        messages: [{ role: roleOf(role), data: (value as string) ?? "", chatId: randomUUID() }],
+                        messages: [{ role: roleOf(role), data: luaText(value) ?? "", chatId: randomUUID() }],
                         anchor: { end: true },
                     },
                 ],
@@ -1397,7 +1406,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             if (working) {
-                working.chat.message.splice(index as number, 0, { role: roleOf(role), data: (value as string) ?? "" });
+                working.chat.message.splice(index as number, 0, { role: roleOf(role), data: luaText(value) ?? "" });
                 return undefined;
             }
             writeChat((chat) => {
@@ -1415,7 +1424,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return [
                     {
                         op: "append",
-                        messages: [{ role: roleOf(role), data: (value as string) ?? "", chatId: randomUUID() }],
+                        messages: [{ role: roleOf(role), data: luaText(value) ?? "", chatId: randomUUID() }],
                         anchor,
                     },
                 ];
@@ -1434,14 +1443,14 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 // The copy's list: the final application gives the messages new ids.
                 working.chat.message = realValue.map((v) => ({
                     role: v.role as Message["role"],
-                    data: v.data as string,
+                    data: luaText(v.data),
                 }));
                 return undefined;
             }
             // A whole-list replacement: the messages get new ids, as before.
             const replaced: Message[] = realValue.map((v) => ({
                 role: v.role as Message["role"],
-                data: v.data as string,
+                data: luaText(v.data),
                 chatId: randomUUID(),
             }));
             writeChat((chat) => [{ op: "replace", chat: { ...structuredClone(chat), message: replaced } }], ctx);
@@ -1594,14 +1603,16 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 regex?: boolean;
             };
             const { alwaysActive = false, insertOrder = 100, key = "", regex = false, secondKey = "" } = options;
+            const loreName = luaText(name);
+            const loreContent = luaText(content);
             const upserted = (localLore: loreBook[] | undefined): loreBook[] => {
                 const newLocalLoreBooks = (structuredClone(localLore ?? []) as loreBook[]).filter(
-                    (book) => book.comment !== name,
+                    (book) => book.comment !== loreName,
                 );
                 newLocalLoreBooks.push({
                     alwaysActive,
-                    comment: name as string,
-                    content: content as string,
+                    comment: loreName,
+                    content: loreContent,
                     insertorder: insertOrder,
                     mode: "normal",
                     key,

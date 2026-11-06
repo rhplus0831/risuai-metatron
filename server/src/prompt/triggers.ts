@@ -254,6 +254,28 @@ function triggerCopy(source: character): character {
     ) as unknown as character;
 }
 
+/**
+ * A value an effect stores in a variable. The JSON extraction effects (`v2GetArrayVar`, `v2GetDictVar`,
+ * pop, shift) pass the parsed element as it is, as upstream does; one holding a non-finite number
+ * anywhere (JSON `1e400` parses to Infinity), which the store refuses, becomes the text a read
+ * returns (`getVar` answers `toString()`). Every other value passes unchanged.
+ */
+function storableVar(value: string): string {
+    const pending: unknown[] = [value];
+    while (pending.length > 0) {
+        const item = pending.pop();
+        if (typeof item === "number" && !Number.isFinite(item)) {
+            return String(value);
+        }
+        if (item !== null && typeof item === "object") {
+            for (const child of Object.values(item)) {
+                pending.push(child);
+            }
+        }
+    }
+    return value;
+}
+
 /** One turn of the event loop, so a long run or a deep recursion lets other work in. */
 const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -553,8 +575,9 @@ export function createTriggerRuntime(host: TriggerHost) {
             return state.toString();
         }
 
-        function setVar(key: string, value: string): boolean {
+        function setVar(key: string, raw: string): boolean {
             services.fence(ctx);
+            const value = storableVar(raw);
             if (arg.displayMode) {
                 if (tempVars[key] === value) {
                     return false;
@@ -1714,7 +1737,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                             comment: name,
                             content: content,
                             mode: "normal",
-                            insertorder: Number.isNaN(insertOrder) ? 100 : insertOrder,
+                            insertorder: Number.isFinite(insertOrder) ? insertOrder : 100,
                             alwaysActive: false,
                             secondkey: "",
                             selective: false,
@@ -1751,7 +1774,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                         let insertOrder = operand(effect.insertOrderType, effect.insertOrder);
                         insertOrder = insertOrder.replace(/{{slot}}/g, (currentLore.insertorder || 100).toString());
                         const insertOrderNum = Number(insertOrder);
-                        if (!Number.isNaN(insertOrderNum)) {
+                        if (Number.isFinite(insertOrderNum)) {
                             char.globalLore[at].insertorder = insertOrderNum;
                         }
 

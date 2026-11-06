@@ -927,6 +927,82 @@ describe("arrays, dictionaries, strings, and the calculator", () => {
         expect(s.$ignored).toBeUndefined();
     });
 
+    it("stores an extracted value holding a non-finite number as the text a read returns, other values raw", async () => {
+        const get = (name: string, key: string) =>
+            out("v2GetDictVar", name, { var: "d", varType: "var", key, keyType: "value" });
+        const h = harness({
+            triggers: [
+                trig([
+                    // JSON `1e400` parses to Infinity, which the store refuses.
+                    setVar("d", "=", '{"score":1e400,"ok":5,"nest":{"a":[1,-1e400]},"fine":{"a":1}}'),
+                    get("score", "score"),
+                    get("ok", "ok"),
+                    get("nest", "nest"),
+                    get("fine", "fine"),
+                    setVar("a", "=", "[1e400,2]"),
+                    out("v2GetArrayVar", "at0", { var: "a", index: "0", indexType: "value" }),
+                    out("v2GetArrayVar", "at1", { var: "a", index: "1", indexType: "value" }),
+                    setVar("p", "=", "[1,-1e400]"),
+                    out("v2PopArrayVar", "popped", { var: "p" }),
+                    setVar("q", "=", "[1e400,1]"),
+                    out("v2ShiftArrayVar", "shifted", { var: "q" }),
+                ]),
+            ],
+        });
+        const s = (await h.run())?.chat.scriptstate ?? {};
+        expect(s).toMatchObject({
+            $score: "Infinity",
+            $ok: 5,
+            $nest: "[object Object]",
+            $fine: { a: 1 },
+            $at0: "Infinity",
+            $at1: 2,
+            $popped: "-Infinity",
+            $shifted: "Infinity",
+        });
+        // The store's side gets the same values.
+        expect(h.varWrites).toEqual(
+            expect.arrayContaining([
+                ["score", "Infinity"],
+                ["nest", "[object Object]"],
+                ["popped", "-Infinity"],
+                ["shifted", "Infinity"],
+            ]),
+        );
+    });
+
+    it("takes only a finite lorebook insert order: a create defaults to 100 and a modify keeps the previous one", async () => {
+        const lore = (name: string, insertOrder: string, insertOrderType = "value") => ({
+            name,
+            nameType: "value",
+            key: name,
+            keyType: "value",
+            content: name,
+            contentType: "value",
+            insertOrder,
+            insertOrderType,
+        });
+        const h = harness({
+            triggers: [
+                trig([
+                    setVar("order", "=", "1e400"),
+                    ef("v2CreateLorebook", lore("A", "1e400")),
+                    ef("v2CreateLorebook", lore("B", "order", "var")),
+                    ef("v2CreateLorebook", lore("C", "-Infinity")),
+                    ef("v2CreateLorebook", lore("D", "7")),
+                    ef("v2ModifyLorebookByIndex", { index: "3", indexType: "value", ...lore("{{slot}}", "Infinity") }),
+                ]),
+            ],
+        });
+        await h.run();
+        expect(h.stored.globalLore.map((book) => [book.comment, book.insertorder])).toEqual([
+            ["A", 100],
+            ["B", 100],
+            ["C", 100],
+            ["D", 7],
+        ]);
+    });
+
     it("runs the string effects and the calculator with `$var` substitution (an unparsable variable counts 0)", async () => {
         const h = harness({
             triggers: [
