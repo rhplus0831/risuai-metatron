@@ -279,7 +279,7 @@ mode); like the request history, in no snapshot or archive.
 In-process harness, slow table: [shell's Tests](self-host-server.md#tests).
 
 - Browser checks: `util/playwright/checkJobProtocol.mjs`, `checkJobHandoff.mjs`, and `checkServerRestartRaces.mjs`
-  ([test-harness](test-harness.md)).
+  ([test-harness](test-harness.md)); `e2e`: `e2e/multiClientGeneration.spec.ts`, two-client lock.
 - Jobs:
   `pnpm --silent test:agent server/src/tests/{generationJobs,generationReceipts,generationDeltaChunks,generations,commandSequences,generationBarrier,jobChannel,promptRunner}.test.ts`.
 - Transform and translation: `pnpm --silent test:agent server/src/tests/{transform,transformService,translate}.test.ts`.
@@ -289,19 +289,17 @@ In-process harness, slow table: [shell's Tests](self-host-server.md#tests).
 
 ## Known Hazards
 
-Runtime limits of other subsystems live with their owners: [chat-pipeline](chat-pipeline.md),
+Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pipeline.md),
 [LLM requests](llm-requests.md), [memory](memory.md) (the vector cache included),
 [scripts and triggers](scripts-triggers.md), [plugins](plugin-sandbox.md), and [CBS/rendering](cbs-rendering.md).
 
 ### Issues
 
-- Server CBS evaluation runs on the main thread under cooperative limits, with no hard deadline or heap bound. Some
-  surrounding prompt work, including Jinja rendering, tokenizer calls after model load, and non-worker lore matching,
-  also runs there.
+- Server CBS evaluation runs on the main thread under cooperative limits, with no hard deadline or heap bound. Other
+  prompt work (Jinja rendering, tokenizer calls after model load, non-worker lore matching) also runs there.
 - Unconfirmed: a provider callback that ends `disconnected` fails its job through `endWith` and the runner's finalize
   (`jobs/runSetup.ts`), not the registry's `abort()`, so `JOB_ABORT_GRACE_MS` does not bound that end (the
-  maximum-duration watchdog still does). The chat can stay busy longer than owner absence plus abort grace; inspected in
-  source, not reproduced.
+  maximum-duration watchdog still does). The chat can stay busy longer than owner absence plus abort grace.
 
 ### Limitations
 

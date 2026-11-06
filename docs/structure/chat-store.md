@@ -256,17 +256,17 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 - `src/ts/checkpoints/tests/checkpointServer.ts` wraps that store with the real checkpoint service and controls load
   admission, commit, and lost answers; its policy routes are real too.
 - `slow`: `src/ts/storage/tests/resourceSyncHydration.test.ts`, patches on a chat longer than a call's argument list.
-- `e2e`: `e2e/lazyChats.spec.ts`, lazy loading; `e2e/multiClient.spec.ts`, two clients.
-- Not tested: the client's two-round gone-anchor repair after a checkpoint load
-  (`src/ts/storage/tests/resourceSyncChats.test.ts` exercises it for another cause); checkpoint preparation after a
-  conflicting reorder is reported by `markOrderDiscarded`. `src/lib/Others/ChatCheckpointsDialog.test.ts` mocks the
-  client module.
+- `e2e`: `e2e/lazyChats.spec.ts`, lazy loading; `e2e/multiClient.spec.ts`, two clients;
+  `e2e/multiClientGeneration.spec.ts`, lock readers.
+- Not tested: the client's two-round gone-anchor repair after a checkpoint load (`resourceSyncChats.test.ts` exercises
+  it for another cause); checkpoint preparation after a conflicting reorder is reported by `markOrderDiscarded`.
+  `ChatCheckpointsDialog.test.ts` mocks the client module.
 
 ## Known Hazards
 
 ### Issues
 
-- Folder moves touch the character (`chatFolders`), the chat (`folderId`), and the chat order, each saved on its own. A
+- Folder moves touch the character (`chatFolders`), the chat (`folderId`), and the chat order, each saved alone. A
   conflict on one can leave a `folderId` naming no folder of its character. Nothing repairs it; an explicit write clears
   it (a move, a plugin's chat copy without it, a branch with "Create Folder on Branch", deleting a folder of that id).
 
@@ -280,9 +280,9 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 - A same-id re-add after a failed or generating-refused deletion reconciles like one before the deletion was sent: a
   whole `replace` per reused chat, also for an undo; a replace of a chat the job still locks waits behind its retry
   block (the flush rejects until then). Decision: Durable Drafts Out of scope (no server create tombstone), archive.
-- A deletion whose answer was lost and that landed is not known as such: a same-id re-add conflicts or meets a missing
-  parent, and the recovery removes it with the notice. Another writer deleting a character between the conflict read
-  that adopts its lost create and the summary-list read leaves no order to learn; that refresh ends. Decision: as above.
+- A lost-answer deletion that landed is not known as such: a same-id re-add conflicts or meets a missing parent, and the
+  recovery removes it with the notice. Another writer deleting a character between the conflict read that adopts its
+  lost create and the summary-list read leaves no order to learn; that refresh ends. Decision: as above.
 - A stored chat row without `fmIndex` is not backfilled: a summary reads `-1`, a whole read can omit it. Decision:
   metatron-only formats are owed no migration ([compatibility rule](persistence.md#invariants)).
 - A callback can fail as `barrier` while the job channel dispatcher loads (`onChannel`): a job's chat event moves

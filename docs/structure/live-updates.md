@@ -85,7 +85,7 @@ Identifiers the flows below name are not repeated here.
   fences count feed locks. Refresh, conflict deferral, `acceptRemoteCollection` and deferred reloads use
   `isChatStreamedHere`, list recovery `isCharacterStreamedHere` (this tab's job locks only), so an observer keeps taking
   checkpoint patches.
-- An edit sent before the lock frame is handled by the server's generating refusal and the client's
+- An edit sent before the lock frame meets the server's generating refusal and the client's
   [conflict fallback](resource-sync.md#generating-refusals): edits of the named locked messages are dropped with the
   reload notice and read back; remaining work retries. The first-frame window remains an [issue](#issues).
 
@@ -146,12 +146,12 @@ Identifiers the flows below name are not repeated here.
 
 - Focused:
   `pnpm --silent test:agent src/ts/network/eventFeed.test.ts src/ts/storage/tests/resourceSync{Live,FeedPatches,Patches,Notices,Refresh,Chats}.test.ts`.
-  `slow`: none of its own. `e2e`: `e2e/terminalNotice.spec.ts` (the restore halt's notice).
-- The adapter tests and their fakes are [resource-sync](resource-sync.md#tests)'s: `FakeResourceServer`, and
-  `StoreBackedServer`, whose `streamingForChat` supplies whole-read lock lists, none by default to model an older
-  server.
+  `slow`: none of its own. `e2e`: `e2e/terminalNotice.spec.ts`, restore halt; `e2e/multiClientGeneration.spec.ts`, feed
+  locks.
+- The adapter tests and fakes are [resource-sync](resource-sync.md#tests)'s: `FakeResourceServer`, and
+  `StoreBackedServer`, whose `streamingForChat` supplies whole-read lock lists (none by default: an older server).
 - `src/ts/network/tests/eventSocket.ts` (`FakeSocket`): the shared fake browser socket.
-- Not tested: none recorded beyond the adapter tests' gaps ([resource-sync](resource-sync.md#tests)).
+- Not tested: only the adapter tests' gaps ([resource-sync](resource-sync.md#tests)).
 
 ## Known Hazards
 
