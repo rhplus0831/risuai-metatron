@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import { sealHypaV3Data } from "../../../shared/structuredMemory.ts";
+import { sealHypaV3Data, type MemoryReceipt } from "../../../shared/structuredMemory.ts";
 import type { Chat } from "../../../shared/database.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 
@@ -277,4 +277,81 @@ it("copies and branches without carrying a projection into the new chat or its c
     } finally {
         warn.mockRestore();
     }
+});
+
+it("copies and branches without message or candidate memory receipts, preserving other fields and the caller's input", async () => {
+    const retainedMessages: Chat["message"] = [
+        {
+            chatId: "reply",
+            role: "char",
+            data: "The gate opens",
+            name: "Gatekeeper",
+            saying: "gatekeeper",
+            time: 123,
+            generationInfo: {
+                model: "reply-model",
+                generationId: "reply-generation",
+                inputTokens: 30,
+                outputTokens: 12,
+                maxContext: 4096,
+                stageTiming: { stage1: 2, stage4: 9 },
+            },
+            promptInfo: { promptName: "Story" },
+            candidates: [
+                {
+                    id: "closed",
+                    data: "The gate stays closed",
+                    generationInfo: { model: "first-model", inputTokens: 20, outputTokens: 8 },
+                    promptInfo: { promptName: "First attempt" },
+                    scriptstateAfter: { $gate: "closed" },
+                },
+                {
+                    id: "open",
+                    data: "The gate opens",
+                    generationInfo: { model: "second-model", generationId: "second-generation", outputTokens: 12 },
+                    scriptstateAfter: { $gate: "open" },
+                },
+            ],
+            selected: 1,
+            candidatesRevision: 4,
+            scriptstateCheckpoint: { before: { $gate: "closed" }, after: { $gate: "open" } },
+        },
+        { chatId: "question", role: "user", data: "What is beyond the gate?", disabled: false },
+    ];
+    const receipt: MemoryReceipt = {
+        state: "skipped",
+        reason: "writerPaused",
+        runId: "source-run",
+        pages: [],
+        refused: [],
+        unverified: [],
+        warnings: [],
+    };
+    const retained = retainedMessages;
+    const copied: Chat = {
+        ...input,
+        message: retained.map((message) =>
+            message.generationInfo
+                ? {
+                      ...message,
+                      generationInfo: { ...message.generationInfo, memory: receipt },
+                      candidates: message.candidates!.map((candidate) => ({
+                          ...candidate,
+                          generationInfo: { ...candidate.generationInfo, memory: receipt },
+                      })),
+                  }
+                : { ...message },
+        ),
+    };
+    const original = structuredClone(copied);
+    const created = m.inherit.createInheritingChat(source, copied, {});
+    expect(copied).toStrictEqual(original);
+    expect(m.chat.findChat({ chaId: source.chaId, chatId: created.id! })?.message).toStrictEqual(retained);
+    const work = m.chat.takeChatWork(new Set());
+    const body = m.chat.chatWorkBody(work).chats.map((chat) => JSON.parse(chat));
+    expect(body.find(({ chatId }) => chatId === created.id)?.ops).toEqual([
+        expect.objectContaining({ op: "create", chat: expect.objectContaining({ message: retained }) }),
+    ]);
+    await settle();
+    expect(copied).toStrictEqual(original);
 });

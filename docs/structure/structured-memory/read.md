@@ -365,6 +365,5 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   The store has no read without them.
 - Writer cast and read path share `pageNamedInTexts`, which ignores `fullWordMatching`: alias "Al" finds "also", an
   extra row, never a wrong record.
-- A copied or branched chat carries its receipts along with its messages.
 - The tab hashes on the main thread: about 230 ms for 14 MiB of cited messages once per tab mount, in a VM. A streaming
   reply costs nothing, because the memo hashes only what changed and an unrecorded reply is cited by nothing.

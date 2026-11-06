@@ -27,7 +27,13 @@
         type StructuredMemoryResult,
     } from "src/ts/process/structuredMemory.svelte";
     import { characterList, findCharacter, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
-    import { currentChatRef, findChat, markChatStale, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import {
+        chatInstallVersion,
+        currentChatRef,
+        findChat,
+        markChatStale,
+        type ChatRef,
+    } from "src/ts/storage/chatStore.svelte";
     import { refreshStaleChat } from "src/ts/storage/resourceSync.svelte";
     import { setChatOpen } from "src/ts/storage/selection.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -59,8 +65,9 @@
      * between tabs; `jump` opens the chat before requesting its message and closing the panel. Receipt links
      * arrive before mount through src/ts/process/structuredMemory.svelte.ts's `requestMemoryPanelTarget`.
      *
-     * A tab rereads when `refresh` moves: on demand, when read-only falls, and when a rebuild's task ends
-     * while its run still holds read-only up. This catches record-now work inside a generation job too.
+     * A tab rereads when `refresh` moves: on demand, on an install of the chat (a checkpoint load, another
+     * tab's edit), when read-only falls, and when a rebuild's task ends while its run still holds read-only
+     * up. This catches record-now work inside a generation job too.
      * Held-message edits need no read. Preview alone runs on its button, since its local send moves refresh.
      * The fence's wait for a held revision notifies nothing, so that wait is checked each second.
      *
@@ -99,6 +106,7 @@
     const activeTab = $derived(TABS.find(({ value }) => value === tab) ?? TABS[0]);
     const chatRef = $derived(currentChatRef());
     const chatKey = $derived(chatRef ? chatStatusKey(chatRef) : null);
+    const installVersion = $derived(chatRef ? chatInstallVersion(chatRef) : 0);
 
     // A held revision catching up notifies nothing: while the fence only waits for it, check again
     // every second so the read-only state follows.
@@ -152,11 +160,14 @@
 
     // The chat the last check saw: another chat's tab reads on its own, as it mounts. A run holds read-only
     // up past its task's end, so that end reads the contents too, which is what lets read-only fall.
-    let seen: { chatKey: string | null; readOnly: boolean; taskLive: boolean } | null = null;
+    let seen: { chatKey: string | null; installVersion: number; readOnly: boolean; taskLive: boolean } | null = null;
     $effect(() => {
-        const now = { chatKey, readOnly, taskLive };
+        const now = { chatKey, installVersion, readOnly, taskLive };
         const runTaskEnded = seen?.taskLive === true && !now.taskLive && untrack(() => rebuild !== null);
-        if (seen?.chatKey === now.chatKey && ((seen.readOnly && !now.readOnly) || runTaskEnded)) {
+        if (
+            seen?.chatKey === now.chatKey &&
+            (seen.installVersion !== now.installVersion || (seen.readOnly && !now.readOnly) || runTaskEnded)
+        ) {
             untrack(() => (refresh += 1));
         }
         seen = now;
@@ -344,9 +355,10 @@
     }
 
     /**
-     * The reset is a write of the server's, so the tab's held summaries go with a read and it writes nothing
-     * back. The chat is marked first: the idle refresh then reads it once local work is done, or after a
-     * read that failed, and a whole read brings the projection in their place.
+     * Every successful reset answer reads the chat, including a repeat after a lost answer to a committed
+     * reset. The reset is a write of the server's, so the tab's held summaries go with a read and it writes
+     * nothing back. The chat is marked first: the idle refresh then reads it once local work is done, or
+     * after a read that failed, and a whole read brings the projection in their place.
      */
     async function readResetChat(ref: ChatRef) {
         try {
@@ -363,9 +375,7 @@
             resetStructuredMemorySummaries,
             async ({ reset }, ref) => {
                 alertToast(reset ? adoptText.resetDone : adoptText.resetNothing);
-                if (reset) {
-                    await readResetChat(ref);
-                }
+                await readResetChat(ref);
             },
             adoptText.resetConfirm,
         );

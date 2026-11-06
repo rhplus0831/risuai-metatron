@@ -144,8 +144,9 @@ or recovered chat inherits nothing; an import instead [restores its file](#chat-
    records, builds through `inheritedRecords`, and calls `store.memory.write` at the target's read revision. This is
    synchronous, so a source writer cannot enter between the reads; only the target needs a fence.
 3. Any target row, runs included, prevents inheritance. The source's decline crosses with the records, even with none
-   supported or none to build; `inherited` reports records only. Runs stay behind: the new Log is empty and coverage
-   comes from event sources. The route header owns empty/repeat answers and HTTP refusals.
+   supported or none to build; `inherited` reports records only. Runs stay behind, so `createInheritingChat` strips the
+   copied receipts (`generationInfo.memory`): the new Log is empty and coverage comes from event sources. The route
+   header owns empty/repeat answers and HTTP refusals.
 
 One attempt, no retry. Every copy asks, even under another algorithm; only this algorithm shows
 `structuredMemory.inherit.failed` on failure or non-`epoch` refusal. `epoch` halts with its own notice. A failed
@@ -345,8 +346,6 @@ takes over.
   nothing retries it. Decision: Structured Memory slice 5c, archive.
 - A send that reaches the new chat before the inherit is fenced or finds records, so that chat keeps a gap. Decision:
   Structured Memory slice 5c, archive.
-- A copied or branched chat's receipts still read as they did, with no run behind them ([Gotchas](read.md#gotchas)).
-  Decision: Structured Memory slice 5c, archive.
 - A change the bounded history no longer holds cannot be rewound, so that section keeps its text, which can still reach
   the prompt, flagged `unsupported`. Provenance is bounded too: a change `sectionEvidence` also dropped leaves nothing
   to flag it by. A page whose `create` entry aged out crosses too. A person's edit after the branch point has no place

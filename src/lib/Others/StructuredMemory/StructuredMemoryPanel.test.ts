@@ -12,6 +12,7 @@ import { characterList } from "src/ts/storage/characterStore.svelte";
 import {
     findChat,
     hydrateChat,
+    loadChat,
     seedChats,
     selectChat,
     setMessageText,
@@ -804,6 +805,68 @@ it.each(["pages", "threads"] as const)("makes exactly one contents request per r
     );
 });
 
+it("rereads contents and the active tab when the open chat is installed, and when switching chats", async () => {
+    // As with an idle checkpoint load, the fixture's local work has already been saved.
+    const pending = takeChatWork(new Set());
+    ackChatWork(
+        pending,
+        pending.groups.map(({ characterId, chatId }) => ({ characterId, id: chatId, revision: revision(1) })),
+        [],
+    );
+    seedChats(
+        [{ characterId: "c", id: "k", revision: revision(1) }],
+        [{ characterId: "c", revision: revision(1), ids: ["k", "other"] }],
+    );
+    const contents = serveAdoptionContents();
+    const contentsPath = "/api/memory/structured/c/k";
+    const contentsRequests = (path = contentsPath) => io.authFetch.mock.calls.filter(([url]) => url === path);
+    let runId = "before-load";
+    const loadedChat = { ...JSON.parse(JSON.stringify(findChat(ref))), note: "Loaded checkpoint" };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) => {
+        if (url.includes("/runs")) return Promise.resolve(Response.json(logRound(runId)));
+        if (url === "/api/memory/structured/c/other") return Promise.resolve(Response.json(contents));
+        if (url === "/api/resources/read")
+            return Promise.resolve(
+                Response.json({
+                    epoch,
+                    items: [],
+                    chats: [{ characterId: "c", id: "k", revision: revision(2), data: loadedChat }],
+                }),
+            );
+        return fetch(url, init, options);
+    });
+    await open();
+    expect(contentsRequests()).toHaveLength(1);
+    expect(reads("coverage")).toHaveLength(1);
+    click("[data-segment-btn]:nth-of-type(6)");
+    await settle();
+    expect(contentsRequests()).toHaveLength(1);
+    expect(reads("runs")).toHaveLength(1);
+    expect(query('[data-memory-panel="log"]')?.textContent).toContain("before-load");
+    expect(query("[data-memory-adopt]")).not.toBeNull();
+
+    runId = "loaded-record";
+    contents.revision = revision(2);
+    contents.adoption.adoptable = 0;
+    await loadChat(ref);
+    await settle();
+    expect(findChat(ref)?.note).toBe("Loaded checkpoint");
+    expect(contentsRequests()).toHaveLength(2);
+    expect(reads("runs")).toHaveLength(2);
+    expect(query('[data-memory-panel="log"]')?.textContent).toContain("loaded-record");
+    expect(target.textContent).not.toContain("before-load");
+    expect(query("[data-memory-adopt]")).toBeNull();
+
+    runId = "other-chat-record";
+    selectChat("c", "other");
+    await settle();
+    expect(contentsRequests("/api/memory/structured/c/other")).toHaveLength(1);
+    expect(reads("runs")).toHaveLength(3);
+    expect(query('[data-memory-panel="log"]')?.textContent).toContain("other-chat-record");
+    expect(target.textContent).not.toContain("loaded-record");
+});
+
 function press(selector: string) {
     const button = query(selector)?.closest("button");
     expect(button).toBeDefined();
@@ -1543,8 +1606,12 @@ it("places the adoption choice above the writer line and confirms decline before
     expect(findChat(ref)?.hypaV3Data).toEqual(heldSummaries());
 });
 
-it("shows Reset only on the server's offer, confirms it and refreshes held summaries without a chat write", async () => {
-    for (const newerSummary of [false, true]) {
+it("shows Reset only on the server's offer, confirms it and rereads held summaries after every successful answer without a chat write", async () => {
+    for (const [reset, newerSummary] of [
+        [true, false],
+        [true, true],
+        [false, false],
+    ]) {
         holdHypaV3Data(heldSummaries());
         // Settle the fixture's previous edits as a completed server save before testing an idle refresh.
         const pending = takeChatWork(new Set());
@@ -1567,7 +1634,7 @@ it("shows Reset only on the server's offer, confirms it and refreshes held summa
         io.authFetch.mockImplementation((url, init, options) => {
             if (url.endsWith("/reset-summaries")) {
                 contents.adoption.resettable = false;
-                return Promise.resolve(Response.json({ chatRevision: revision(2), reset: true }));
+                return Promise.resolve(Response.json({ chatRevision: revision(2), reset }));
             }
             if (url === "/api/resources/read")
                 return Promise.resolve(
@@ -1600,12 +1667,14 @@ it("shows Reset only on the server's offer, confirms it and refreshes held summa
         expect(reads("reset-summaries")).toHaveLength(requests);
         expect(findChat(ref)?.hypaV3Data).toEqual(heldSummaries());
         expect(hasChatWork()).toBe(false);
+        const chatReads = reads("resources/read").length;
         vi.mocked(alertConfirm).mockResolvedValueOnce(true);
         press("[data-memory-reset-action]");
         await settle();
         expect(reads("reset-summaries")).toHaveLength(requests + 1);
         expect(reads("reset-summaries").at(-1)![1]).toMatchObject({ method: "POST" });
         expect(reads("reset-summaries").at(-1)![1]?.body).toBeUndefined();
+        expect(reads("resources/read")).toHaveLength(chatReads + 1);
         expect(findChat(ref)?.hypaV3Data).toEqual(replacement);
         expect(hasChatWork()).toBe(false);
         expect(io.authFetch.mock.calls.filter(([url]) => url === "/api/resources/batch")).toEqual([]);

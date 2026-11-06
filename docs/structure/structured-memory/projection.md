@@ -111,7 +111,8 @@ the feed publishes it to other tabs.
 The tab calls `resetStructuredMemorySummaries` and writes nothing back: echoing `unset` would move the revision and
 could delete a newer value because `meta` applies on a stale revision. `markChatStale` and `refreshStaleChat` bring a
 whole read with the projection: `hypaV3Owned` becomes false, and the next plugin read past `MEMORY_RECHECK_WINDOW_MS`
-refreshes from records. Local work delays the whole read without losing the mark.
+refreshes from records. Local work delays the whole read without losing the mark. Any `ok` answer reads, since a repeat
+of a committed reset whose answer was lost says `reset: false`.
 
 ## State
 

@@ -7,7 +7,7 @@ import {
 } from "../../../shared/structuredMemory.ts";
 import { alertError } from "../alert";
 import { chatHasUnackedWork, createChat, type ChatRef } from "../storage/chatStore.svelte";
-import type { Chat } from "../storage/database.svelte";
+import type { Chat, MessageGenerationInfo } from "../storage/database.svelte";
 import {
     beginMutationScope,
     flushResources,
@@ -66,11 +66,22 @@ async function inheritMemory(ref: ChatRef, sourceChatId: string, scope: Mutation
     return result.outcome === "ok" || (result.outcome === "refused" && result.reason === "epoch");
 }
 
+/** Keeps a message or candidate's other generation metadata without its source chat's receipt. */
+function withoutMemoryReceipt<T extends { generationInfo?: DeepReadonly<MessageGenerationInfo> }>(entry: T): T {
+    if (!entry.generationInfo) {
+        return entry;
+    }
+    const generationInfo = { ...entry.generationInfo };
+    delete generationInfo.memory;
+    return { ...entry, generationInfo };
+}
+
 /**
  * `createChat` for a copy or a branch of the chat `source`, which answers as `createChat` does, with the
  * inherit under way behind it. The id comes from `createChat`'s answer, because it may replace the one in
- * `input`. Every copy asks, because a chat can hold records under another algorithm, and one with none
- * answers at once; only a user of this algorithm reads about it when that fails.
+ * `input`. Copied message and candidate receipts are stripped because their runs stay behind in the source
+ * chat. Every copy asks, because a chat can hold records under another algorithm, and one with none answers
+ * at once; only a user of this algorithm reads about it when that fails.
  */
 export function createInheritingChat(
     source: ChatRef,
@@ -78,7 +89,17 @@ export function createInheritingChat(
     options: { index?: number; select?: boolean },
 ): DeepReadonly<Chat> {
     const scope = beginMutationScope();
-    const created = createChat(source.chaId, input, options);
+    const created = createChat(
+        source.chaId,
+        {
+            ...input,
+            message: input.message.map((message) => ({
+                ...withoutMemoryReceipt(message),
+                ...(message.candidates ? { candidates: message.candidates.map(withoutMemoryReceipt) } : {}),
+            })),
+        },
+        options,
+    );
     const { id, name } = created;
     void inheritMemory({ chaId: source.chaId, chatId: id }, source.chatId, scope).then((inherited) => {
         if (!inherited && settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM) {
