@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (6)
+- [Structured Memory](#structured-memory) (1)
 
 ## Chat store, sync, and change feeds
 
@@ -39,18 +39,10 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ### Phase 6 review leftovers
 
-Raised in the Phase 6 slice 6–11 reviews (2026-10-05..07) and judged out of scope or pre-existing; kept in memory until 2026-11-03. The `stores.svelte.ts` ↔ `parser/transformClient.ts` import cycle is in `app-shell.md` Known Hazards and is not repeated here.
+Raised in the Phase 6 slice 9b review (2026-10-07) and judged out of scope; narrowed by the Chat Store and Structured Memory Sweep's C1 (2026-11-06) to two refresh costs, after its other items moved to their guides' Known Hazards or were fixed. The own-save echo of an unloaded chat's list field costs one summary-list read, and a noticed loaded idle chat is read whole before the trim may evict it (`chatStore.svelte.ts`). The timings were not re-measured.
 
-- Vitest-only module-effect race: when `database.svelte` or `stores.svelte` loads first in a test, their module-level effects read state that is not initialized yet; native ESM in the app is not affected. A test that reaches the settings views cannot use `@vitest-environment node` (the records need Svelte's client `$state`); flat fixtures use `src/ts/storage/tests/installFlatDatabase.ts`.
-- Preset reorder criterion missed: reordering 50 presets took 17.9 ms against a 16.0 ms baseline (+12 %, target within 10 %); a plain-row projection was not tried (`docs/audit/preset-reorder-2026-10-05.md`).
-- Slice 9a: the facade's `chats` view (`setCharacterChatView`, `records.svelte.ts`) builds a fresh array per read, so loops go through `findChat`.
-- Slice 9b: the own-save echo of an unloaded chat's list field costs one summary-list read; a noticed loaded idle chat is read whole before the trim may evict it; `installRead` and `adoptChatRead` (`chatStore.svelte.ts`) disagree on incomparable revisions (only test tokens like `"r1"`); store-backed test harness boots still read `{ chats: true }`.
-- Hazard-entry notes: `llm-requests.md` leaves three OpenAI-format credential sends untested (key map, preset proxy key, custom model key); the M16 "stale module" can be a different module when a replacement reorders the list.
-
-Identifiers re-checked 2026-11-03 (`setCharacterChatView`, `installRead`, `adoptChatRead`); the timings were not re-measured.
-
-**Why it matters:** each is small; together they are the known soft spots of the store facade and its tests.
-**Suggested handling:** check the code when working nearby; an item confirmed with an owning guide moves to that guide's Known Hazards.
+**Why it matters:** each costs one avoidable read.
+**Suggested handling:** decide whether an own-save echo should install the acknowledged summary, and whether an idle refresh counts as recent use for the trim (the sweep plan's Deferred "Refresh and trim costs").
 
 ## Server jobs and prompt assembly
 
@@ -454,51 +446,16 @@ Untagged gate tests that depend on real wall-clock or scheduler time (invariant 
 
 ## Structured Memory
 
-Moved from the Structured Memory plan run on 2026-11-03. Each entry was re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here. The last five entries came from the Implementation Audit Fixes run (2026-11-05/06); the last two are its excluded audit findings.
-
-### Cast slice matches substrings
-
-Narrowed by the Chat Store and Structured Memory Sweep's B4: the writer's cast (`castSlice`) and the read path now share `pageNamedInTexts` (`server/src/prompt/memory/structured/pages.ts`, lore's plain-key matching), so they agree on "named". Neither has a word-boundary rule: an alias "Al" still matches "also", and `searchMatch`'s `fullWordMatching` misses multi-word titles and punctuation.
-
-**Why it matters:** an extra prompt row, never a wrong record.
-**Suggested handling:** a word-boundary rule for both paths together (the sweep plan's Deferred "Named-page matching").
-
-### Projection refresh leftovers
-
-Left by slice 5g. The `chatOutput` payload (`src/ts/network/jobChannel.ts`) copies held chats with no projection refresh.
-
-**Why it matters:** a stale payload.
-**Suggested handling:** recorded in `structured-memory/projection.md` by the sweep plan's C1.
-
-### Adopted summaries
-
-Left by slice 6a. An adopted summary's `pinned` selects nothing in any lane (`adopt.ts` maps `isImportant` to it; `retrieve.ts` and `step.ts` never read it). A summary over the card budget is excluded while its messages still leave the prompt. A stored-stale adopted event kept by a person reads active while retrieval answers `not-relevant`, and a copy drops any event with an unanchored source.
-
-**Why it matters:** an important HypaV3 summary stops being sent every time.
-**Suggested handling:** decide what `pinned` means for an adopted event before changing the lanes.
-
-### Highlight and revert leftovers
-
-Left by slice 7b; the dead `retract` kind left in the Found Issues Sweep (I3). A new page's receipt row has no revert.
-
-**Why it matters:** a receipt row whose change cannot be undone from the receipt.
-**Suggested handling:** recorded in the guides by the sweep plan's C1.
-
-### Page tool leftovers
-
-Left by slice 7d. `contents.trash` has no budget or expiry and the table of contents grows with it.
-
-**Why it matters:** a trash that only grows.
-**Suggested handling:** decide on a trash bound.
+Moved from the Structured Memory plan run on 2026-11-03 and re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here.
 
 ### Evaluation findings
 
-Measured by slice 8 on scripted fixtures (`docs/audit/structured-memory-2026-11-03.md`); nothing was changed, and Q2 stays open until a real A/B.
+Measured by slice 8 on scripted fixtures (`docs/audit/structured-memory-2026-11-03.md`); Q2 stays open until a real A/B. The sweep plan's B8 bounded `readHealth`, and `addText`'s quadratic scan is gone (a set since 2a8e9fdd1); the rest are the plan's Deferred groups.
 
 - `MEMORY_CALL_OVERHEAD_TOKENS` (1,500) is low: overhead was about 2,100 per call in English and 2,800–3,700 in Korean, and actual analysis input was 1.13–2.32 times the preview. Proposal: 3,000, bytes÷3 kept, after a real-model check.
-- `selectMemory` takes 520–584 ms on a 1,000-turn send, mostly tokenizing (296–356 ms) and cache reads; `addText`'s quadratic scan costs 60 ms at 4,000 texts. The sweep plan's B10 tried counting each text once per selection (de9e9ed21, reverted in 2a0f07213): only 9 of about 2,190 counts per send were repeats and the time did not drop. The rest are distinct history entries `assemble.ts` already counted for `currentTokens`, so the gain needs `selectMemory` to reuse those counts.
+- `selectMemory` takes 520–584 ms on a 1,000-turn send, mostly tokenizing (296–356 ms) and cache reads. The sweep plan's B10 tried counting each text once per selection (de9e9ed21, reverted in 2a0f07213): only 9 of about 2,190 counts per send were repeats and the time did not drop. The rest are distinct history entries `assemble.ts` already counted for `currentTokens`, so the gain needs `selectMemory` to reuse those counts.
 - An unchanged checkpoint save holds about 500 ms on a 2,000-run chat. A hash cache is not worth it; dropping `input` from recorded runs is (whole-row readers not traced).
-- `getChatFromIndex` over 67 or more loaded chats spends the shared per-IP authenticated bucket, and a neighbour route was refused until the reset (loopback surrogate only).
+- `getChatFromIndex` over 67 or more loaded chats spends the shared per-IP authenticated bucket, and a neighbour route was refused until the reset (loopback surrogate only). The bucket is now 2,000 a minute (`server/src/app.ts`), so this is cost, not a near refusal: coalesce adjacent refreshes into one revisions batch.
 - At a 16k context the `threads` lane starves once events carry three quotes, and a two-event comparison loses one event in a long chat, also at 32k.
 
 **Why it matters:** cost previews people pay by, and stalls on long chats.

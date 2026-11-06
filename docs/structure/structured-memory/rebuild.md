@@ -221,25 +221,20 @@ beside the rebuild buttons. The comparison starts no work; a person must press. 
 
 ### Limitations
 
-- A stopped run keeps the lock until a person resumes or abandons, across restarts too. Decision: Structured Memory
-  slice 6b, archive.
+Decisions: Structured Memory slice 6b, archive, unless an entry names another.
+
+- A stopped run keeps the lock until a person resumes or abandons, across restarts too.
 - A backfill adds events and new pages and leaves current state alone: existing pages, the scene, and threads learn
-  nothing from it. A rebuild refreshes them. Decision: Structured Memory slice 6b, archive.
+  nothing from it. A rebuild refreshes them.
 - A rebuild forgets reverts on sections with no mark: such a section is written anew, its history goes, and the writer
   can propose the change again. Decision: Structured Memory slice 7b, archive.
 - A person's state change on a writer's thread does not survive a rebuild: only `openedBy` says whose a thread is.
-  Decision: Structured Memory slice 6b, archive.
-- Old receipts stay on their messages, with their event and run ids, as on a copied chat. Decision: Structured Memory
-  slice 6b, archive.
-- Seeded and carried text stays in its language, and a resume under another language leaves a mix. Decision: Structured
-  Memory slice 6b, archive.
+- Old receipts stay on their messages, with their event and run ids.
+- Seeded and carried text stays in its language, and a resume under another language leaves a mix.
 - A pin spreads to every staged event sharing a message, so an adopted summary's pin reaches all its turns' events.
-  Decision: Structured Memory slice 6b, archive.
-- The cost preview's `record` mode has no cadence, so `everyK` above 2 overstates calls. Decision: Structured Memory
-  slice 6b, archive.
+- The cost preview's `record` mode has no cadence, so `everyK` above 2 overstates calls.
 - A build from before these tables opens an upgraded database and ignores them: no lock, so a stopped run's later swap
-  would lose what that build recorded. No snapshot refuses anything, and its restore drops them. Decision: Structured
-  Memory slice 6b, archive.
+  would lose what that build recorded. No snapshot refuses anything, and its restore drops them.
 
 ### Gotchas
 
