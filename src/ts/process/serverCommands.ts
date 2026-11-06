@@ -318,11 +318,10 @@ export async function stopChatJob(ref: ChatRef): Promise<void> {
  * `serverJob.lost`. A job the server no longer knows shows no alert: its chat is read again, then
  * `serverJob.endedAway`. After a lost or gone follow, and after an end from the status that this
  * tab's copy may lack, the chat is marked stale and read again (`recoverJobChat`). Returns the
- * terminal event, or `"lost"` (also for a gone job or a detached follow); a lost job is released as
- * its end would release it. The job's chat is
- * pinned and loaded before the follow attaches (a load that keeps failing makes the job lost) and
- * stays pinned through every reconnect, the terminal's hydration, and the chat's read again, so no
- * event of the job finds its chat evicted.
+ * terminal event, or `"lost"` (also for a gone job or detached follow). Lost follows detach, keeping
+ * generations unretired so a later retake in this page streams; gone jobs release as their end would.
+ * Its chat is pinned and loaded before attaching (a load that keeps failing makes it lost) and stays
+ * pinned through reconnects, terminal hydration and recovery reads, so no event finds its chat evicted.
  *
  * A ticket wakes the same lifecycle and replaces its socket without spending retries. Socket or
  * replay terminals take precedence. Each ticket attempt must reach owner:self: losing it earlier
@@ -433,7 +432,8 @@ export function followJobToEnd(
             const end = typeof result === "string" ? "lost" : result.terminal;
             if (typeof result === "string") {
                 recordClientEvent({ kind: "jobLink", phase: result, jobId });
-                releaseGenerationJob(jobId);
+                if (result === "lost") detachGenerationJob(jobId);
+                else releaseGenerationJob(jobId);
                 // No longer a follow that covers its chat: a completion push for the chat during
                 // the read below must read it again (`refreshChatAfterPush`).
                 followedJobs.update((jobs) => {

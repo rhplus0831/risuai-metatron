@@ -30,9 +30,6 @@
 
 ## Files
 
-Entries name the path, its role, and identifiers to look up; the rules are those identifiers' doc comments and the
-module headers.
-
 ### Send client and registries
 
 - `src/ts/process/index.svelte.ts`: the send API (`sendChat`, `previewChat`, `previewChatReport`); `OpenAIChat` and
@@ -235,9 +232,9 @@ takeovers, viewer boot resume and creator warnings. Kept receipts and shutdown o
 
 ### Recovery reads
 
-- After a lost or gone follow, and after a status end this tab's copy may lack, `recoverJobChat` marks the chat stale
-  and awaits `refreshStaleChat` while the chat is still pinned (`followJobToEnd`'s comment). The read never discards
-  local work.
+- A lost follow detaches (`detachGenerationJob`), so a same-page retake streams; a gone one retires its generations.
+  After either, and after a status end this tab's copy may lack, `recoverJobChat` marks the chat stale and awaits
+  `refreshStaleChat` while the chat is still pinned. The read never discards local work.
 - The whole read carries the chat's lock list, so a feed lock whose release frame was missed is released once the job
   has ended; only a feed frame or `hello` that arrived while the read was out keeps the feed's locks instead
   ([locks](live-updates.md#feed-locks)).

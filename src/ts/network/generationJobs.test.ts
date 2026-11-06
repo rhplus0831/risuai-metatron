@@ -53,6 +53,7 @@ vi.mock("../storage/serverAuth", async () =>
             }),
     }),
 );
+vi.mock("../alert", async () => (await import("../tests/alertMock")).createAlertMock());
 vi.mock("../storage/chatStore.svelte", async () =>
     (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
         applyServerGeneration: stubs.applyServerGeneration,
@@ -1028,7 +1029,7 @@ describe("following a job", () => {
 describe("the event dispatcher and the resume", () => {
     const ref = { chaId: "c", chatId: "k" };
 
-    it("retakes a lost pending takeover and streams three compact checkpoints without requesting a whole-chat resync", async () => {
+    const retakeAndStreamCheckpoints = async (loss: "pending takeover" | "follow") => {
         vi.useFakeTimers();
         const chat = await vi.importActual<typeof import("../storage/chatStore.svelte")>("../storage/chatStore.svelte");
         const mockedChat = await import("../storage/chatStore.svelte");
@@ -1052,7 +1053,12 @@ describe("the event dispatcher and the resume", () => {
             client.setResourceEpoch(epoch);
             server.store.applyChanges({
                 ops: [
-                    { kind: server.kind("characters"), id: "c", baseRevision: null, data: { chaId: "c", name: "C" } },
+                    {
+                        kind: server.kind("characters"),
+                        id: "c",
+                        baseRevision: null,
+                        data: { chaId: "c", name: "C" },
+                    },
                 ],
                 chats: [
                     {
@@ -1110,20 +1116,49 @@ describe("the event dispatcher and the resume", () => {
                 socket.open();
                 return { follow, socket };
             };
-            const pending = await attach("lost-ticket");
-            pending.socket.message({ type: "handoff", epoch, owner: "other", pending: true });
-            pending.socket.message(whole(0));
-            pending.socket.message(accepted(1, "pending stream"));
-            expect(chat.findChat(ref)!.message[0].data).toBe("pending stream");
-            expect(pending.follow.role).toBe("pending");
-            pending.follow.close();
-            await pending.follow.closed;
-            transport.detachGenerationJob("j");
+            if (loss === "pending takeover") {
+                const pending = await attach("lost-ticket");
+                pending.socket.message({ type: "handoff", epoch, owner: "other", pending: true });
+                pending.socket.message(whole(0));
+                pending.socket.message(accepted(1, "pending stream"));
+                expect(chat.findChat(ref)!.message[0].data).toBe("pending stream");
+                expect(pending.follow.role).toBe("pending");
+                pending.follow.close();
+                await pending.follow.closed;
+                transport.detachGenerationJob("j");
+            } else {
+                vi.spyOn(mockedChat, "ensureChatLoaded").mockImplementation(chat.ensureChatLoaded);
+                vi.spyOn(mockedChat, "pinChat").mockImplementation(chat.pinChat);
+                vi.spyOn(mockedChat, "markChatStale").mockImplementation(chat.markChatStale);
+                const mockedSync = await import("../storage/resourceSync.svelte");
+                vi.spyOn(mockedSync, "refreshStaleChat").mockResolvedValue(true);
+                const { followJobToEnd } = await import("../process/serverCommands");
+                const end = followJobToEnd("j", ref, undefined, { ticket: "lost-ticket" });
+                await vi.advanceTimersByTimeAsync(0);
+                stubs.auth.at(-1)!.resolve("jwt");
+                await vi.advanceTimersByTimeAsync(0);
+                const socket = FakeSocket.instances.at(-1)!;
+                socket.open();
+                socket.message({ type: "handoff", epoch, owner: "self" });
+                socket.message(whole(0));
+                socket.message(accepted(1, "worker stream"));
+                expect(chat.findChat(ref)!.message[0].data).toBe("worker stream");
+
+                // The worker loses the server, then exhausts its reconnects in this page.
+                stubs.fetch.mockRejectedValue(new Error("offline"));
+                const auth = await import("../storage/serverAuth");
+                const authenticate = vi.spyOn(auth, "getNodeServerProxyAuth").mockRejectedValue(new Error("offline"));
+                socket.close();
+                await vi.runAllTimersAsync();
+                expect(await end).toBe("lost");
+                authenticate.mockRestore();
+            }
 
             const retaken = await attach("new-ticket");
             retaken.socket.message({ type: "handoff", epoch, owner: "self" });
             retaken.socket.message(whole(0));
             retaken.socket.message(accepted(1, "retaken"));
+            expect(chat.findChat(ref)!.message[0].data).toBe("retaken");
             let previous = "retaken";
             for (const [step, suffix] of [" one", " two", " three"].entries()) {
                 const seq = step + 2;
@@ -1167,6 +1202,14 @@ describe("the event dispatcher and the resume", () => {
         } finally {
             server.store.close();
         }
+    };
+
+    it("retakes a lost pending takeover and streams three compact checkpoints without requesting a whole-chat resync", async () => {
+        await retakeAndStreamCheckpoints("pending takeover");
+    });
+
+    it("retakes a lost follow in the same page and applies accepted and chunk events through three compact checkpoints", async () => {
+        await retakeAndStreamCheckpoints("follow");
     });
 
     it("shows preparing on accepted until the first stage event, preserves that stage on reaccept, and removes it on release", async () => {

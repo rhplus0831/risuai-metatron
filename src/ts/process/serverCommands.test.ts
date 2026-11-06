@@ -424,7 +424,28 @@ describe("followJobToEnd", () => {
         expect(stubs.refresh).toHaveBeenCalledTimes(2);
     });
 
-    it("gives up after the bounded number of attaches, waiting 1, 2, 4, then 8 s between them, releases the job as lost with its alert, and reads the chat again", async () => {
+    it("detaches an unreachable job as lost but releases a gone job, keeping the lost diagnostic, alert and recovery read", async () => {
+        vi.useFakeTimers();
+        // Every attach closes without an answer; only the status read distinguishes lost from gone.
+        stubs.attached = () => follows().at(-1)!.end(null);
+        stubs.read.mockRejectedValue(new Error("offline"));
+        expect(await commands.followJobToEnd("unreachable", ref)).toBe("lost");
+        expect(get(commands.followedJobs).has("unreachable")).toBe(false);
+
+        const goneRef = { chaId: "c", chatId: "gone-chat" };
+        stubs.read.mockResolvedValue(null);
+        expect(await commands.followJobToEnd("gone", goneRef)).toBe("lost");
+
+        expect(stubs.detach.mock.calls).toEqual([["unreachable"]]);
+        expect(stubs.release.mock.calls).toEqual([["gone"]]);
+        expect(stubs.record).toHaveBeenCalledWith({ kind: "jobLink", phase: "lost", jobId: "unreachable" });
+        expect(stubs.record).toHaveBeenCalledWith({ kind: "jobLink", phase: "gone", jobId: "gone" });
+        expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh.mock.calls).toEqual([[ref], [goneRef]]);
+    });
+
+    it("gives up after the bounded number of attaches, waiting 1, 2, 4, then 8 s between them, detaches the job as lost with its alert, and reads the chat again", async () => {
         stubs.read.mockResolvedValue(status);
         const end = commands.followJobToEnd("j", ref);
         for (let attach = 0; attach < 5; attach++) {
@@ -438,7 +459,8 @@ describe("followJobToEnd", () => {
         // Each status read is bounded.
         expect(stubs.read).toHaveBeenCalledTimes(5);
         expect(stubs.read).toHaveBeenCalledWith("j", { deadlineMs: 10_000 });
-        expect(stubs.release).toHaveBeenCalledWith("j");
+        expect(stubs.detach).toHaveBeenCalledWith("j");
+        expect(stubs.release).not.toHaveBeenCalledWith("j");
         expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
         expect(stubs.markStale).toHaveBeenCalledWith(ref);
         expect(stubs.refresh).toHaveBeenCalledWith(ref);
@@ -501,7 +523,7 @@ describe("followJobToEnd", () => {
 });
 
 describe("resumeServerJobs (boot)", () => {
-    it("discovers a saved job's chat from its status, retrying a failed read inside the shared lifecycle with growing waits, and releases it as lost when the reads keep failing", async () => {
+    it("discovers a saved job's chat from its status, retrying a failed read inside the shared lifecycle with growing waits, and detaches it as lost when the reads keep failing", async () => {
         stubs.saved.mockReturnValue(["j"]);
         stubs.read.mockRejectedValue(new Error("offline"));
         await commands.resumeServerJobs();
@@ -509,7 +531,8 @@ describe("resumeServerJobs (boot)", () => {
         expect(stubs.read).toHaveBeenCalledWith("j", { deadlineMs: 10_000 });
         expect(sleeps()).toEqual([1000, 2000, 4000, 8000]);
         expect(follows()).toHaveLength(0);
-        expect(stubs.release).toHaveBeenCalledWith("j");
+        expect(stubs.detach).toHaveBeenCalledWith("j");
+        expect(stubs.release).not.toHaveBeenCalledWith("j");
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
         // No chat is known: nothing to read again.
         expect(stubs.refresh).not.toHaveBeenCalled();
@@ -1683,7 +1706,8 @@ describe("the end read from the job's status, and the chat read after the follow
         expect(follows()).toHaveLength(9);
         expect(stubs.read).toHaveBeenCalledTimes(9);
         expect(sleeps()).toEqual([1000, 2000, 4000, 8000]);
-        expect(stubs.release).toHaveBeenCalledWith("j");
+        expect(stubs.detach).toHaveBeenCalledWith("j");
+        expect(stubs.release).not.toHaveBeenCalledWith("j");
         expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
     });
 
@@ -1780,8 +1804,9 @@ describe("the end read from the job's status, and the chat read after the follow
         }
         await flush();
         await flush();
-        // Lost: released and no longer listed while its recovery read is still out.
-        expect(stubs.release).toHaveBeenCalledWith("j");
+        // Lost: detached and no longer listed while its recovery read is still out.
+        expect(stubs.detach).toHaveBeenCalledWith("j");
+        expect(stubs.release).not.toHaveBeenCalledWith("j");
         expect(commands.followedJobsOf(get(commands.followedJobs), ref)).toEqual([]);
         expect(stubs.refresh).toHaveBeenCalledTimes(1);
         // The push of the job that finished meanwhile: read again, after the pending read.
@@ -2067,7 +2092,7 @@ describe("the job's chat", () => {
         expect(pinsBalanced()).toBe(true);
     });
 
-    it("followJobToEnd loads the job's chat before attaching, retrying a failed load; a load that keeps failing, or a chat that is not listed, releases the job as lost", async () => {
+    it("followJobToEnd loads the job's chat before attaching, retrying a failed load; a load that keeps failing, or a chat that is not listed, detaches the job as lost", async () => {
         stubs.load.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({});
         const end = commands.followJobToEnd("j", ref);
         await settle();
@@ -2086,7 +2111,8 @@ describe("the job's chat", () => {
         expect(stubs.load).toHaveBeenCalledTimes(5);
         expect(sleeps()).toEqual([1000, 2000, 4000, 8000]);
         expect(follows()).toHaveLength(1);
-        expect(stubs.release).toHaveBeenCalledWith("j2");
+        expect(stubs.detach).toHaveBeenCalledWith("j2");
+        expect(stubs.release).not.toHaveBeenCalledWith("j2");
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
         expect(stubs.alertError.mock.calls[0][0]).toBe("job lost");
         expect(pinsBalanced()).toBe(true);
@@ -2094,7 +2120,8 @@ describe("the job's chat", () => {
         stubs.load.mockReset().mockResolvedValue(undefined);
         expect(await commands.followJobToEnd("j3", ref)).toBe("lost");
         expect(stubs.load).toHaveBeenCalledTimes(1);
-        expect(stubs.release).toHaveBeenCalledWith("j3");
+        expect(stubs.detach).toHaveBeenCalledWith("j3");
+        expect(stubs.release).not.toHaveBeenCalledWith("j3");
         expect(pinsBalanced()).toBe(true);
     });
 

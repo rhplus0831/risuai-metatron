@@ -1366,7 +1366,7 @@ export function applyGenerationEvent(
 }
 
 /**
- * Releases a terminal or lost job: cancels channel questions and callbacks, retires its held
+ * Releases a terminal or gone job: cancels channel questions and callbacks, retires its held
  * generations, and drops its saved job, presentation stage and plugin work. A tab that only lost
  * participation in a running job uses `detachGenerationJob` instead.
  */
@@ -1375,8 +1375,8 @@ export function releaseGenerationJob(jobId: string) {
 }
 
 /**
- * Drops this tab's channel, saved job, stage and plugin work after losing participation. Its chat
- * drops stream overlays without retiring generations, allowing a later follow of the same job.
+ * Drops this tab's channel, saved job, stage and plugin work after lost participation, including a
+ * lost follow. Its chat drops stream overlays without retiring generations, allowing a later follow.
  */
 export function detachGenerationJob(jobId: string) {
     clearGenerationJob(jobId, detachServerJob);
