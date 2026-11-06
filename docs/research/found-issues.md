@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
 - [Server routes and resource store](#server-routes-and-resource-store) (5)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -51,13 +51,6 @@ Identifiers re-checked 2026-11-03 (`setCharacterChatView`, `installRead`, `adopt
 
 **Why it matters:** each is small; together they are the known soft spots of the store facade and its tests.
 **Suggested handling:** check the code when working nearby; an item confirmed with an owning guide moves to that guide's Known Hazards.
-
-### A retaken handoff job drops its live stream
-
-Found 2026-11-05 in Job Handoff Slice 2; narrowed 2026-11-06. The Implementation Audit Fixes run's H3 (6d317482d) made a lost takeover and a demoted non-creator end their follow through `detachGenerationJob` (`src/ts/network/generationJobs.ts` ~1381, `detachServerJob` in `src/ts/storage/chatStore.svelte.ts`), which leaves the job's generation ids unretired. What is left: `followJobToEnd` in `src/ts/process/serverCommands.ts` still ends an exhausted `"lost"` follow (server out of reach, ~433–436) and a `"gone"` one (~384–388) through `releaseGenerationJob` → `endServerJob`, which adds the ids to `retiredGenerations`; `applyServerGeneration` / `applyServerGenerationChunk` then drop every later `accepted`/`chunk` for them for the rest of the page's life. A worker whose server was briefly unreachable and that later takes the reopened offer for the same job in the same page shows no live stream and resyncs every compact checkpoint. Chat patches, the final copy, and callbacks still arrive. Unreachable is not proof the generation ended; H3 kept the `"lost"` reporting as it was.
-
-**Why it matters:** today it only affects what the worker displays and costs extra checkpoint reads; it becomes a real problem once anything relies on the worker's stream view.
-**Suggested handling:** split reporting from retirement on the lost path too: release a `"lost"` follow with the detach release and keep its notices.
 
 ## Server jobs and prompt assembly
 
