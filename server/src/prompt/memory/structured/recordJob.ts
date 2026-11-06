@@ -1,9 +1,12 @@
 import { eligibleHistory } from "../../../../../shared/contextReport.ts";
 import { summarizesLocally } from "../../../../../shared/hypaV3Presets.ts";
 import type {
+    JobMemoryTaskStatus,
     MemoryBlockingReason,
+    MemoryRecordResult,
     MemoryTaskRecordAnswer,
     StructuredMemoryTaskInput,
+    SummaryWriterLease,
 } from "../../../../../shared/jobs.ts";
 import { STRUCTURED_MEMORY_ALGORITHM } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryChanges } from "../../../data/memoryStore.ts";
@@ -65,8 +68,8 @@ import { chatAdoptionHold, commitWindow, createStructuredWriter, writerRequestDb
  *   provider and the trigger. Repair windows run first, then ordinary windows oldest first, up to
  *   `maxWriterWindows` with a task's request policy. The first nonrecorded window ends the job; any run
  *   or receipt already written stays stored, and a skipped window need not create either.
- *   Windows left past the cap are an ordinary `done`. No task fence applies: the job holds the chat's
- *   slot and the lease, and a panel write checks the memory revision.
+ *   Windows left past the cap are an ordinary `done`. With a service, the job publishes its writer's
+ *   status through that registry, so every tab is fenced through the terminal's chat revision.
  * - A press also re-records the marked events, here as on the service: their windows come first
  *   (`confirmedWindows`), and a commit retires what each replaces (`retireRerecorded`), refused
  *   `windowChanged` when that event no longer wants it.
@@ -148,6 +151,9 @@ async function runWindows(
         phase: "blocking" | "initial";
         reason: MemoryBlockingReason | null;
         rerecords: boolean;
+        /** Record now holds the lease through its metadata flush and task terminal. */
+        lease?: SummaryWriterLease;
+        taskStatus?: JobMemoryTaskStatus | null;
     },
 ): Promise<WindowsEnd> {
     const { store } = deps;
@@ -196,7 +202,7 @@ async function runWindows(
             });
         };
 
-    const lease = await acquireJobWriter(job, deps, setup);
+    const lease = arg.lease ?? (await acquireJobWriter(job, deps, setup));
     const run = openJobMemoryRun(job, setup, arg.phase, arg.reason);
     let stop: MemoryControl | null = null;
     try {
@@ -219,6 +225,7 @@ async function runWindows(
         if (!windows) {
             return { outcome: "gone", recorded: 0 };
         }
+        arg.taskStatus?.progress(0, windows.length);
         const writer = createStructuredWriter(store);
         let recorded = 0;
         for (const [index, window] of windows.entries()) {
@@ -226,6 +233,7 @@ async function runWindows(
                 break;
             }
             run.update({ done: index, total: windows.length });
+            setup.check();
             refreshed();
             const historical = historicalWindow(store, characterId, chatId, scopeChat(scope)?.message ?? [], window);
             const result = await writer({
@@ -243,6 +251,7 @@ async function runWindows(
                 return { ...result, recorded };
             }
             recorded++;
+            arg.taskStatus?.progress(recorded, windows.length);
         }
         return { outcome: "done", recorded };
     } finally {
@@ -250,7 +259,7 @@ async function runWindows(
             stop?.release();
         } finally {
             try {
-                lease.release();
+                if (!arg.lease) lease.release();
             } finally {
                 run.close();
             }
@@ -280,23 +289,55 @@ async function recordInJob(
         chatRef: arg.input.chatRef,
         embeddingEnv: setup.bindings.services.embeddings(setup.nativeCtx),
     });
+    let lease: SummaryWriterLease | undefined;
+    let taskStatus: JobMemoryTaskStatus | null | undefined;
+    // Job finalization can precede a suspended runner settling. Its aborted write fence makes this
+    // revision final now; pending metadata cannot write after abort either.
+    const aborted = () => {
+        taskStatus?.end("cancelled", { reason: "cancelled" });
+        lease?.release();
+    };
     try {
         job.emit({ type: "stage", stage: "memory" });
-        const ended = await runWindows(job, deps, setup, host, { ...arg, phase: "blocking", rerecords: true });
+        lease = await acquireJobWriter(job, deps, setup);
+        taskStatus = deps.memoryTasks?.openJobStatus?.(arg.input);
+        job.signal.addEventListener("abort", aborted, { once: true });
+        if (job.signal.aborted) aborted();
+        setup.check();
+        const ended = await runWindows(job, deps, setup, host, {
+            ...arg,
+            phase: "blocking",
+            rerecords: true,
+            lease,
+            taskStatus,
+        });
         if (ended.outcome === "gone") {
+            taskStatus?.end("skipped", { reason: "windowChanged" });
             throw new GenerationRunnerError(409, "This message can no longer be recorded", { stage: "persist" });
         }
         if (ended.outcome === "failed") {
             throw new GenerationRunnerError(500, host.redact(ended.error), { stage: "request" });
         }
         if (ended.outcome === "skipped") {
-            throw new GenerationRunnerError(409, `The recording stopped: ${ended.reason}`, { stage: "persist" });
+            taskStatus?.end("skipped", { reason: ended.reason });
+            throw new GenerationRunnerError(409, ended.reason, { stage: "persist", code: "memoryRecordSkipped" });
         }
+        flushChatMetadata(job);
+        taskStatus?.end("done");
     } catch (error) {
         // A latched failure is the job's own, whatever surfaced first.
-        throw markFailure(setup.bindings.fatal() ?? error, { stage: "request" });
+        const failure = setup.bindings.fatal() ?? error;
+        if (job.signal.aborted) aborted();
+        else
+            taskStatus?.end("failed", {
+                error: host.redact(failure instanceof Error ? failure.message : String(failure)),
+            });
+        throw markFailure(failure, { stage: "request" });
+    } finally {
+        job.signal.removeEventListener("abort", aborted);
+        // The terminal precedes release, so no queued successor can publish or start ahead of it.
+        lease?.release();
     }
-    flushChatMetadata(job);
 }
 
 /**
@@ -337,9 +378,10 @@ export async function runMemoryRecord(
     const { store } = deps;
     const { characterId, chatId } = job.context;
     const scope = admitRecord(job, deps, messageId);
+    const result: MemoryRecordResult = { memoryRecord: "completed" };
     const confirmedBefore = messageId ?? writerCeiling(scopeChat(scope)?.message ?? []);
     if (confirmedBefore === null) {
-        job.emit({ type: "done", revision: store.chatRevision(characterId, chatId) });
+        job.emit({ type: "done", revision: store.chatRevision(characterId, chatId), result });
         return;
     }
     const owner = scope.db.characters.find((entry) => entry?.chaId === characterId);
@@ -365,7 +407,8 @@ export async function runMemoryRecord(
             const { status, message } = RECORD_REFUSALS[answer.reason];
             throw new GenerationRunnerError(status, message, { stage: "setup" });
         }
+        result.memoryRecord = "queued";
     }
     // Synchronous after queueing: the service starts a queued input on a later turn, so after this terminal.
-    job.emit({ type: "done", revision: store.chatRevision(characterId, chatId) });
+    job.emit({ type: "done", revision: store.chatRevision(characterId, chatId), result });
 }

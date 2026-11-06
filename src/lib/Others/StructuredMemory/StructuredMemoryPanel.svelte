@@ -124,6 +124,7 @@
         resettable: boolean;
         rebuild: StructuredMemoryRebuild | null;
         recordedLanguage: string | null;
+        writerBlockingReason?: "pluginModel" | "requestTrigger" | null;
     } | null>(null);
     let contentsRead = 0;
     const heldFacts = $derived(contentsFacts?.chatKey === chatKey ? contentsFacts : null);
@@ -176,6 +177,7 @@
                           resettable: result.value.adoption.resettable,
                           rebuild: result.value.rebuild,
                           recordedLanguage: result.value.recordedLanguage,
+                          writerBlockingReason: result.value.writerBlockingReason,
                       }
                     : null;
         }
@@ -209,6 +211,7 @@
             adoptionHeld: adoptable > 0,
             receipt: newestMemoryReceipt(messages),
             taskLive,
+            writerBlockingReason: heldFacts?.writerBlockingReason,
         }),
     );
     /** Record names the newest reply, so a chat without one has nothing to press, and a rebuild's run holds the chat. */

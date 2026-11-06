@@ -141,14 +141,21 @@ export function alertError(msg: string | Error) {
  * `at`: when the tab received the job's end.
  */
 export function alertJobError(jobId: string, end: JobFailureInfo["end"], at: number = Date.now()) {
+    let translated = end.message;
+    if (end.code === "memoryRecordSkipped") {
+        const reasons = language.memoryTasks.reasons;
+        translated = language.structuredMemory.receipt.recordSkipped(
+            Object.hasOwn(reasons, end.message) ? reasons[end.message] : "",
+        );
+    }
     const message =
         end.sequence && end.reason !== "aborted"
             ? language.serverJob.sequenceStopped.replace(
                   /\{(sent|total|reason)\}/g,
                   (_, key: "sent" | "total" | "reason") =>
-                      String({ sent: end.sequence!.sent, total: end.sequence!.total, reason: end.message }[key]),
+                      String({ sent: end.sequence!.sent, total: end.sequence!.total, reason: translated }[key]),
               )
-            : end.message;
+            : translated;
     const data = errorAlert(message);
     if (data) {
         void openDialog({ ...data, jobFailure: { jobId, at, end } });

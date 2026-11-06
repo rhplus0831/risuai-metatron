@@ -896,11 +896,12 @@ export function createServerContext(options: {
         generationJobs.chatBusy(characterId, chatId) || generationLock.chatHolders(characterId, chatId).size > 0;
     registerStructuredMemoryRoutes(app, {
         store: resources,
+        kinds: resourceKinds,
         auth,
         limiter: authenticatedRouteLimiter.middleware,
         packageRoundBytes: options.routeLimits?.memoryPackageRoundBytes ?? MAX_READ_RESPONSE_BYTES,
         restoreBodyBytes: options.routeLimits?.memoryRestoreBodyBytes ?? MEMORY_RESTORE_BODY_BYTES,
-        // The chat's task, and a job too: a record-now job or a send's gap run writes with no task, and
+        // The chat's task, and a job too: a send's gap run writes with no task status, and
         // the writer's retry after a revision conflict reapplies an old answer over a person's edit. A
         // rebuild's run too, stopped or not: the swap would lose what such a write leaves.
         fenced: (characterId, chatId) => {

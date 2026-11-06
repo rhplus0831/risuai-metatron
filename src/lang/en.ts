@@ -2604,6 +2604,10 @@ export const languageEnglish = {
             recordNow: "Record now",
             resume: "Resume",
             requested: "Recording requested",
+            finished: "Recording finished",
+            queued: "Recording queued",
+            recordSkipped: (reason: string) =>
+                reason ? `Recording stopped: ${reason}` : "Recording stopped before it could finish.",
             recordCost: (calls: number, tokens: number) => `Record now? ${memoryCostText(calls, tokens)}`,
             recordCostUnknown: "Record now? The cost could not be read, so it is unknown.",
             busy: "This chat is busy. Try again when the running job ends.",

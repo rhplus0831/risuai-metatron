@@ -158,9 +158,10 @@ through `setChatMeta` in `src/ts/storage/chatStore.svelte.ts`.
 
 ### The writer line
 
-`memoryWriterNotice` combines the contents' current pause state and `health.pendingRepairs`, current settings, and the
-newest receipt; its comment owns priority and adoption-receipt handling. The panel and receipt line share
-`pressMemoryRecord`.
+`memoryWriterNotice` combines contents, current settings, and the newest receipt; its comment owns priority. Contents'
+`writerBlockingReason` (`jobMemoryBlockingReason` over the chat's binding, no message read) overrides a receipt's
+reason; it is absent for an unresolved binding and current only as of the contents read. The panel and receipt line
+share `pressMemoryRecord`.
 
 ### Prompt fine-tuning
 
@@ -306,9 +307,6 @@ preview's included; a `done` terminal with a `messageId` clears only that chat's
 - A paraphrase of an old message that shares no query term is not found: in the evidence lane semantic scoring only
   reranks lexical matches, to keep embedding at `lexicalCandidates` texts a pass. The pages lane has similarity as a
   channel of its own.
-- The writer line learns a tab-bound reason (`pluginModel`, `requestTrigger`) only from the newest reply's receipt: the
-  rule needs a job's scope, which a route does not load. So it says nothing before the first send, or right after a
-  record now replaced that receipt, until the next send. Record now still works there.
 
 ### Limitations
 

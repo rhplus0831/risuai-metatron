@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolveChatBinding } from "../../../shared/chatBinding.ts";
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import type { Chat, Message } from "../../../shared/database.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
@@ -47,10 +48,14 @@ import {
     type StructuredMemoryThreadsRound,
 } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
+import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { messageSourceHash, type MemoryChatRef, type MemoryContents } from "../data/memoryStore.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
 import { readJsonBody } from "../http/body.ts";
 import { compressedJson } from "../http/compressedJson.ts";
+import { readChatBindingLookup } from "../jobs/chatBinding.ts";
+import { loadJobScope } from "../jobs/jobScope.ts";
+import { jobMemoryBlockingReason } from "../prompt/runner.ts";
 import { adoptedEvents } from "../prompt/memory/structured/adopt.ts";
 import {
     applyEventRepair,
@@ -96,6 +101,41 @@ const REFUSAL_TEXT = {
     tooLarge: "The chat's memory is too large to project",
     trashed: "This page is in the trash",
 } as const;
+
+/** The current bound writer rule, without message reads; an unresolvable binding leaves contents readable. */
+function writerBlockingReason(
+    store: ResourceStore,
+    kinds: ResourceKindRegistry,
+    characterId: string,
+    chatId: string,
+): StructuredMemoryContentsAnswer["writerBlockingReason"] {
+    try {
+        const chat = store.chatMeta(characterId, chatId);
+        if (!chat) return undefined;
+        const binding = resolveChatBinding(chat.data, readChatBindingLookup(store, kinds));
+        if (!binding.ok) return undefined;
+        const { promptPresetId: presetId, modelPresetId, personaId } = binding.ids;
+        const scope = loadJobScope(
+            store,
+            kinds,
+            {
+                characterId,
+                chatId,
+                presetId,
+                modelPresetId,
+                personaId,
+                chatRevision: chat.revision,
+                mode: "manual",
+                input: "",
+            },
+            { metadataOnly: true, chatMetadata: chat },
+        );
+        return jobMemoryBlockingReason(scope);
+    } catch {
+        // This optional settings observation must not prevent reading the chat's memory records.
+        return undefined;
+    }
+}
 
 /** The files an import request holds, or null for a body of another shape. */
 function parseImportFiles(value: unknown): StructuredMemoryImportFile[] | null {
@@ -389,6 +429,7 @@ export function registerStructuredMemoryRoutes(
     app: Hono<AppEnv>,
     arg: {
         store: ResourceStore;
+        kinds: ResourceKindRegistry;
         auth: AuthStore;
         limiter: MiddlewareHandler<AppEnv>;
         packageRoundBytes: number;
@@ -406,7 +447,7 @@ export function registerStructuredMemoryRoutes(
         cancelTask: (characterId: string, chatId: string) => void;
     },
 ) {
-    const { store, auth, limiter, packageRoundBytes, restoreBodyBytes, fenced, chatHeld, cancelTask } = arg;
+    const { store, kinds, auth, limiter, packageRoundBytes, restoreBodyBytes, fenced, chatHeld, cancelTask } = arg;
     const limitBody = limitedBody(MAX_EDIT_BODY_BYTES);
     const limitRevisionsBody = limitedBody(MAX_REVISIONS_BODY_BYTES);
     const limitRestoreBody = limitedBody(restoreBodyBytes);
@@ -451,6 +492,7 @@ export function registerStructuredMemoryRoutes(
                 rebuild: store.memory.rebuild.status(characterId, chatId),
                 recordedLanguage: (recorded && listedRecord(characterId, chatId, "runs", recorded.id).language) ?? null,
                 health: store.memory.readHealth([{ characterId, chatId }])[0]!,
+                writerBlockingReason: writerBlockingReason(store, kinds, characterId, chatId),
             } satisfies StructuredMemoryContentsAnswer);
         } catch (error) {
             return storeErrorResponse(c, error);

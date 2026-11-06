@@ -465,7 +465,7 @@ async function job(
         onEvent?: (event: any) => void;
         answer?: (event: any) => unknown | Promise<unknown>;
         hooks?: Record<string, unknown>;
-        answerCallback?: (event: any) => Record<string, unknown>;
+        answerCallback?: (event: any) => Record<string, unknown> | Promise<Record<string, unknown>>;
     } = {},
 ): Promise<{ status: number; body: any; events: any[]; terminal: GenerationTerminalEvent | undefined }> {
     const chat = await readChat(chaId, (extra.chatId as string | undefined) ?? "k");
@@ -542,7 +542,7 @@ async function job(
                 }
             }
             if (event.type === "callback" && options.answerCallback) {
-                ws.send(JSON.stringify({ type: "answer", id: event.id, ...options.answerCallback(event) }));
+                ws.send(JSON.stringify({ type: "answer", id: event.id, ...(await options.answerCallback(event)) }));
             }
         };
     });
@@ -2500,6 +2500,82 @@ describe("HypaV3 with a memory task service", () => {
     );
 });
 
+const requestTrigger = {
+    comment: "Record request",
+    type: "request",
+    conditions: [],
+    lowLevelAccess: true,
+    effect: [
+        {
+            type: "v2SetRequestState",
+            indent: 0,
+            index: "0",
+            indexType: "value",
+            value: "Request trigger reached the memory writer",
+            valueType: "value",
+        },
+    ],
+};
+const analysis = (index: number) =>
+    JSON.stringify({
+        title: index === 0 ? "The promise" : "The storm",
+        summary: index === 0 ? "Cara promises to return." : "Lightning destroys the harbor.",
+        participants: [],
+        storyTime: { text: "" },
+        keyLines: [],
+        stateChanges: [],
+        knowledge: [],
+        relationshipShifts: [],
+        openThreads: { add: [], close: [], transitions: [] },
+    });
+const pluginHooks = {
+    ...NO_GENERATION_HOOKS,
+    providers: [
+        {
+            name: "receipt-provider",
+            model: {
+                id: "pluginmodel:::receipt-provider",
+                name: "receipt-provider",
+                shortName: "receipt-provider",
+                fullName: "receipt-provider",
+                internalID: "pluginmodel:::receipt-provider",
+                provider: LLMProvider.AsIs,
+                format: LLMFormat.Plugin,
+                flags: [LLMFlags.hasFullSystemPrompt],
+                parameters: ["temperature"],
+                tokenizer: LLMTokenizer.Unknown,
+            } satisfies LLMModel,
+        },
+    ],
+};
+
+async function installReceiptPlugin() {
+    const profiles = await single("modelProfiles");
+    expect(
+        (
+            await batch({
+                ops: [
+                    {
+                        kind: "modelProfiles",
+                        id: "main",
+                        baseRevision: profiles.revision,
+                        data: [
+                            ...profiles.data,
+                            {
+                                ...profiles.data[0],
+                                id: "receipt-plugin",
+                                name: "Receipt Plugin",
+                                customAPIFormat: LLMFormat.Plugin,
+                                currentPluginProvider: "receipt-provider",
+                            },
+                        ],
+                    },
+                ],
+            })
+        ).status,
+    ).toBe(200);
+}
+
 // The server's own memory task service, as in production: a send over the lookahead line selects the
 // stored summaries and hands its chat to the service, whose task writes the summaries after the job
 // ended; the manual routes are open.
@@ -2528,6 +2604,7 @@ describe("HypaV3 with the server's memory task service", () => {
 
     beforeAll(async () => {
         serviceStack = await startStack();
+        await installReceiptPlugin();
         // A small recent share leaves summaries for the similarity search (their chunks embedded).
         await patchHypaV3({ recentMemoryRatio: 0.1, similarMemoryRatio: 0.6 });
     }, SLOW);
@@ -2538,6 +2615,241 @@ describe("HypaV3 with the server's memory task service", () => {
     // The file's `afterEach` turns memory off again: on before each test.
     beforeEach(async () => {
         await patchSettings({ hypaV3: true });
+    });
+
+    describe("Record now task visibility", () => {
+        const messages = [
+            { chatId: "u1", role: "user", data: "Make a promise." },
+            { chatId: "a1", role: "char", data: "Cara promises to return." },
+            { chatId: "u2", role: "user", data: "What happens next?" },
+            { chatId: "a2", role: "char", data: "Lightning destroys the harbor." },
+        ];
+        const trigger = requestTrigger;
+        let previousAlgorithm: string;
+        beforeEach(async () => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            previousAlgorithm = (await single("ui")).data.memoryAlgorithmType;
+            await patchSettings({ hypaV3: false, memoryAlgorithmType: "structuredMemory" });
+            await patchHypaV3({ structured: { cadence: "manual", windowTurns: 1 } });
+        });
+        afterEach(async () => {
+            await patchPreset("modelPresets", { seperateModelsForAxModels: false, auxSlots: {} });
+            await patchSettings({ memoryAlgorithmType: previousAlgorithm });
+            vi.useRealTimers();
+        });
+        const observe = (chaId: string) => {
+            const statuses: MemoryTaskStatus[] = [];
+            const off = tasks().onStatus(({ chatRef, status }) => {
+                if (chatRef.chaId === chaId && chatRef.chatId === "k") statuses.push(status);
+            });
+            onTestFinished(off);
+            return statuses;
+        };
+        const record = (chaId: string, options: Parameters<typeof job>[3] = {}) =>
+            job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryRecord", messageId: "a2" }, ...options },
+            );
+
+        it.each(["Plugin memory model", "request trigger"] as const)(
+            "publishes %s Record now progress and a mid-run hello, then done after receipts and metadata",
+            async (mode) => {
+                const plugin = mode === "Plugin memory model";
+                await patchPreset("modelPresets", {
+                    seperateModelsForAxModels: plugin,
+                    auxSlots: plugin ? { memory: { profileId: "receipt-plugin" } } : {},
+                });
+                const chaId = await seedCharacter({
+                    messages,
+                    extra: plugin ? {} : { lowLevelAccess: true, triggerscript: [trigger] },
+                });
+                const statuses = observe(chaId);
+                let calls = 0;
+                let hello: any;
+                const during: (MemoryTaskStatus | undefined)[] = [];
+                let ws: WebSocket | undefined;
+                const duringRequest = async () => {
+                    const index = calls++;
+                    during.push(statuses.at(-1));
+                    if (index === 0) {
+                        ws = new WebSocket(
+                            `${base.replace("http", "ws")}/api/events/ws?risu-auth=${encodeURIComponent(await signer.jwt())}`,
+                        );
+                        hello = await new Promise<any>((resolve, reject) => {
+                            ws!.onerror = () => reject(new Error("feed socket failed"));
+                            ws!.onmessage = (event) => {
+                                const frame = JSON.parse(String(event.data));
+                                if (frame.type === "hello") resolve(frame);
+                            };
+                        });
+                    }
+                    await setChatMeta(chaId, { note: `Metadata during window ${index + 1}` });
+                    return { outcome: "answered", value: { success: true, content: analysis(index) } };
+                };
+                state.summaries = [analysis(0), analysis(1)];
+                if (!plugin)
+                    state.holdSummary = async () => {
+                        await duringRequest();
+                    };
+                try {
+                    const result = await record(chaId, { hooks: pluginHooks, answerCallback: duringRequest });
+                    expect(result.terminal?.type === "done" && result.terminal.result).toEqual({
+                        memoryRecord: "completed",
+                    });
+                    expect(calls).toBe(2);
+                    expect(during).toEqual([
+                        expect.objectContaining({ kind: "structuredMemory", state: "running", done: 0, total: 2 }),
+                        expect.objectContaining({ kind: "structuredMemory", state: "running", done: 1, total: 2 }),
+                    ]);
+                    expect(hello.memoryTasks).toContainEqual({ characterId: chaId, chatId: "k", status: during[0] });
+
+                    const stored = await readChat(chaId);
+                    expect(
+                        stored.data.message
+                            .filter((m: any) => m.role === "char")
+                            .map((m: any) => m.generationInfo?.memory?.state),
+                    ).toEqual(["recorded", "recorded"]);
+                    expect(stored.data.note).toBe("Metadata during window 2");
+                    expect(statuses.filter(({ state }) => TERMINAL_STATES.has(state))).toEqual([
+                        expect.objectContaining({
+                            state: "done",
+                            done: 2,
+                            total: 2,
+                            terminalRevision: stored.revision,
+                        }),
+                    ]);
+                    expect(new Set(statuses.map(({ taskId }) => taskId)).size).toBe(1);
+                    expect(statuses.at(-1)).toMatchObject({ terminalRevision: stored.revision });
+                } finally {
+                    ws?.close();
+                    state.holdSummary = null;
+                }
+            },
+        );
+
+        it.each(["skipped", "failed"] as const)(
+            "ends Record now %s after its first recorded window and fails the command",
+            async (outcome) => {
+                const chaId = await seedCharacter({
+                    messages,
+                    extra: { lowLevelAccess: true, triggerscript: [trigger] },
+                });
+                const statuses = observe(chaId);
+                const store = createResourceStore({
+                    file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                    kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+                });
+                state.summaries = [analysis(0), outcome === "failed" ? "" : analysis(1)];
+                state.holdSummary = async () => {
+                    if (outcome === "skipped" && state.summaryIndex === 1) {
+                        store.applyChanges({
+                            chats: [
+                                {
+                                    characterId: chaId,
+                                    chatId: "k",
+                                    baseRevision: store.chatRevision(chaId, "k"),
+                                    ops: [{ op: "setText", id: "a2", text: "The storm never happened." }],
+                                },
+                            ],
+                        });
+                    }
+                };
+                try {
+                    const result = await record(chaId);
+                    expect(result.terminal).toMatchObject({
+                        type: "error",
+                        ...(outcome === "skipped" ? { code: "memoryRecordSkipped", message: "windowChanged" } : {}),
+                    });
+                    const stored = await readChat(chaId);
+                    expect(stored.data.message[1].generationInfo.memory.state).toBe("recorded");
+                    expect(statuses.at(-1)).toMatchObject({
+                        kind: "structuredMemory",
+                        state: outcome,
+                        done: 1,
+                        total: 2,
+                        terminalRevision: stored.revision,
+                        ...(outcome === "skipped" ? { reason: "windowChanged" } : { error: expect.any(String) }),
+                    });
+                    expect(statuses.filter(({ state }) => TERMINAL_STATES.has(state))).toHaveLength(1);
+                } finally {
+                    state.holdSummary = null;
+                    store.close();
+                }
+            },
+        );
+
+        it("cancels the visible Record now task while its runner is still suspended on provider I/O", async () => {
+            const chaId = await seedCharacter({ messages, extra: { lowLevelAccess: true, triggerscript: [trigger] } });
+            const statuses = observe(chaId);
+            const entered = deferred();
+            const release = deferred();
+            const fetch = globalThis.fetch;
+            let suspended = false;
+            const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+                if (String(url) === providerUrl) {
+                    suspended = true;
+                    entered.resolve();
+                    await release.promise;
+                    suspended = false;
+                    return Response.json({ choices: [{ message: { role: "assistant", content: analysis(0) } }] });
+                }
+                return fetch(url, init);
+            });
+            const attached = deferred();
+            const pending = record(chaId, {
+                onEvent: () => attached.resolve(),
+            });
+            onTestFinished(() => {
+                release.resolve();
+                spy.mockRestore();
+            });
+            try {
+                await Promise.race([
+                    entered.promise,
+                    pending.then((result) => {
+                        throw new Error(`Runner did not suspend: ${JSON.stringify(result.terminal)}`);
+                    }),
+                ]);
+                await attached.promise;
+                expect(statuses.at(-1)).toMatchObject({ kind: "structuredMemory", state: "running" });
+                expect((await api(`/api/generations/${currentJobId}?clientId=tab`, { method: "DELETE" })).status).toBe(
+                    200,
+                );
+                expect(suspended).toBe(true);
+                const stored = await readChat(chaId);
+                expect(statuses.at(-1)).toMatchObject({
+                    kind: "structuredMemory",
+                    state: "cancelled",
+                    reason: "cancelled",
+                    terminalRevision: stored.revision,
+                });
+                expect(tasks().snapshot()).toContainEqual({ chatRef: { chaId, chatId: "k" }, status: statuses.at(-1) });
+                expect(summaries()).toEqual([]);
+            } finally {
+                release.resolve();
+                spy.mockRestore();
+                expect((await pending).terminal).toMatchObject({ type: "error", reason: "aborted" });
+            }
+        });
+
+        it("returns completed when there is nothing to record and queued when the service accepts the press", async () => {
+            const empty = await seedCharacter({ messages: [] });
+            const nothing = await job("command", empty, { mode: "manual" }, { command: { type: "memoryRecord" } });
+            expect(nothing.terminal?.type === "done" && nothing.terminal.result).toEqual({ memoryRecord: "completed" });
+            const chaId = await seedCharacter({ messages: messages.slice(0, 2) });
+            const terminal = nextTerminal(chaId);
+            state.summaries = [analysis(0)];
+            const result = await job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryRecord", messageId: "a1" } },
+            );
+            expect(result.terminal?.type === "done" && result.terminal.result).toEqual({ memoryRecord: "queued" });
+            expect(await terminal).toMatchObject({ state: "done", done: 1, total: 1 });
+        });
     });
 
     it.each(["task service", "request trigger"] as const)(
@@ -3739,80 +4051,7 @@ describe("structured memory job hand-offs", () => {
         expect(fake.handOffs[0]).toMatchObject({ kind: "structuredMemory", confirmedBefore: "a2" });
     });
     describe("recording receipts and commands", () => {
-        const requestTrigger = {
-            comment: "Record request",
-            type: "request",
-            conditions: [],
-            lowLevelAccess: true,
-            effect: [
-                {
-                    type: "v2SetRequestState",
-                    indent: 0,
-                    index: "0",
-                    indexType: "value",
-                    value: "Request trigger reached the memory writer",
-                    valueType: "value",
-                },
-            ],
-        };
-        const analysis = (index: number) =>
-            JSON.stringify({
-                title: index === 0 ? "The promise" : "The storm",
-                summary: index === 0 ? "Cara promises to return." : "Lightning destroys the harbor.",
-                participants: [],
-                storyTime: { text: "" },
-                keyLines: [],
-                stateChanges: [],
-                knowledge: [],
-                relationshipShifts: [],
-                openThreads: { add: [], close: [], transitions: [] },
-            });
-        const pluginHooks = {
-            ...NO_GENERATION_HOOKS,
-            providers: [
-                {
-                    name: "receipt-provider",
-                    model: {
-                        id: "pluginmodel:::receipt-provider",
-                        name: "receipt-provider",
-                        shortName: "receipt-provider",
-                        fullName: "receipt-provider",
-                        internalID: "pluginmodel:::receipt-provider",
-                        provider: LLMProvider.AsIs,
-                        format: LLMFormat.Plugin,
-                        flags: [LLMFlags.hasFullSystemPrompt],
-                        parameters: ["temperature"],
-                        tokenizer: LLMTokenizer.Unknown,
-                    } satisfies LLMModel,
-                },
-            ],
-        };
-        beforeAll(async () => {
-            const profiles = await single("modelProfiles");
-            expect(
-                (
-                    await batch({
-                        ops: [
-                            {
-                                kind: "modelProfiles",
-                                id: "main",
-                                baseRevision: profiles.revision,
-                                data: [
-                                    ...profiles.data,
-                                    {
-                                        ...profiles.data[0],
-                                        id: "receipt-plugin",
-                                        name: "Receipt Plugin",
-                                        customAPIFormat: LLMFormat.Plugin,
-                                        currentPluginProvider: "receipt-provider",
-                                    },
-                                ],
-                            },
-                        ],
-                    })
-                ).status,
-            ).toBe(200);
-        });
+        beforeAll(installReceiptPlugin);
         beforeEach(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }));
         afterEach(async () => {
             vi.useRealTimers();

@@ -11,6 +11,7 @@ import type { ChatRef } from "src/ts/storage/chatStore.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import type { GenerationCommand } from "../../../../shared/jobs.ts";
+import { isPlainObject } from "../../../../shared/valueKinds.ts";
 import {
     normalizeStructuredMemorySettings,
     type StructuredMemoryRebuildMode,
@@ -68,7 +69,8 @@ export async function pressMemoryRecord(owner: AnyClientCharacter, chatRef: Chat
     if (outcome === "followed") {
         alertToast(text.busy);
     } else if (terminal !== null && terminal !== "lost" && terminal.type === "done") {
-        alertToast(text.requested);
+        const result = isPlainObject(terminal.result) ? terminal.result.memoryRecord : undefined;
+        alertToast(result === "completed" ? text.finished : result === "queued" ? text.queued : text.requested);
     }
 }
 

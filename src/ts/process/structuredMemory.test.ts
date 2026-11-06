@@ -1114,3 +1114,37 @@ it("keeps citations above live screening and screening above runs and receipts w
     expect(join().gap).toEqual([1]);
     expect(facts).toEqual(before);
 });
+
+it("prefers the current writer rule, clears old tab-bound warnings on null, and keeps receipt fallback when absent", () => {
+    const current = {
+        memoryOn: true,
+        cadence: "everyTurn" as const,
+        paused: false,
+        pendingRepairs: 0,
+        adoptionHeld: false,
+        taskLive: false,
+    };
+    for (const reason of ["pluginModel", "requestTrigger"] as const) {
+        const receipt = { state: "notAutomatic", reason };
+        const other = reason === "pluginModel" ? "requestTrigger" : "pluginModel";
+        expect(memoryWriterNotice({ ...current, receipt, writerBlockingReason: other })).toEqual({
+            kind: "notAutomatic",
+            reason: other,
+            action: "record",
+        });
+        expect(memoryWriterNotice({ ...current, receipt, writerBlockingReason: null })).toEqual({
+            kind: null,
+            action: "record",
+        });
+        expect(memoryWriterNotice({ ...current, receipt })).toEqual({
+            kind: "notAutomatic",
+            reason,
+            action: "record",
+        });
+        expect(memoryWriterNotice({ ...current, receipt: undefined, writerBlockingReason: reason })).toEqual({
+            kind: "notAutomatic",
+            reason,
+            action: "record",
+        });
+    }
+});

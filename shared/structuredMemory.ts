@@ -722,13 +722,14 @@ export function memoryHealthState(holds: Readonly<Record<MemoryHealthState, bool
 /**
  * The contents route's answer: a chat's records without their bodies, what the panel offers for its
  * summaries, its rebuild, the language of its newest recorded run, null with none or from before runs
- * kept one, and its health facts.
+ * kept one, its health facts, and the current tab-bound writer reason when its binding resolves.
  */
 export type StructuredMemoryContentsAnswer = StructuredMemoryContents & {
     adoption: StructuredMemoryAdoption;
     rebuild: StructuredMemoryRebuild | null;
     recordedLanguage: string | null;
     health: StructuredMemoryHealthFacts;
+    writerBlockingReason?: "pluginModel" | "requestTrigger" | null;
 };
 
 /** The abandon route's answer: the chat's memory revision, which it left alone, and whether a run went. */

@@ -486,7 +486,9 @@ function awaitedAdoption(receipt: unknown): boolean {
  * so `paused` is the chat's runs as they stand now, and a newest receipt only adds to it. The first of
  * these holds. With memory off the command refuses, so there is no action. A chat held for its adoption
  * choice (`adoptionHeld`, as the server last said) says so, and its choice is the only thing to press.
- * Paused, by the runs or by `receipt`, offers resume. A `notAutomatic` receipt gives its reason, and a
+ * Paused, by the runs or by `receipt`, offers resume. The contents' `writerBlockingReason` overrides a
+ * receipt's tab-bound reason, including null clearing an old warning; absent falls back to the receipt.
+ * Other `notAutomatic` receipts give their reason, and a
  * `manual` cadence its own. Under paused, a chat with an event waiting for a re-record (`pendingRepairs`,
  * as the server last said) says so, with the action the newest message would have. Past those, and in
  * the `manual` case, the action is `memoryReceiptView`'s for the newest message. `receipt` is
@@ -501,6 +503,7 @@ export function memoryWriterNotice({
     adoptionHeld,
     receipt,
     taskLive,
+    writerBlockingReason,
 }: {
     memoryOn: boolean;
     cadence: StructuredMemoryCadence;
@@ -509,6 +512,7 @@ export function memoryWriterNotice({
     adoptionHeld: boolean;
     receipt: unknown;
     taskLive: boolean;
+    writerBlockingReason?: StructuredMemoryContentsAnswer["writerBlockingReason"];
 }): MemoryWriterNotice {
     if (!memoryOn) {
         return { kind: "memoryOff", action: null };
@@ -526,7 +530,13 @@ export function memoryWriterNotice({
     if (pendingRepairs > 0) {
         return { kind: "repair", action };
     }
-    if (kind === "notAutomatic") {
+    if (writerBlockingReason) {
+        return { kind: "notAutomatic", reason: writerBlockingReason, action };
+    }
+    if (
+        kind === "notAutomatic" &&
+        !(writerBlockingReason === null && (reason === "pluginModel" || reason === "requestTrigger"))
+    ) {
         return { kind, ...present("reason", reason), action };
     }
     return cadence === "manual" ? { kind: "notAutomatic", reason: "manual", action } : { kind: null, action };
@@ -579,18 +589,23 @@ function isHealthFacts(value: unknown): value is StructuredMemoryHealthFacts {
 }
 
 /**
- * A reader of the lists does not fail over `adoption`, `rebuild`, `recordedLanguage`, or `health`, which
+ * A reader of the lists does not fail over absent panel facts, including `writerBlockingReason`, which
  * only the panel reads; a malformed one is refused. Contents without a `trash` list, from before pages
  * could be trashed, hold none.
  */
 function parseContents(body: AnswerBody): StructuredMemoryContentsAnswer | null {
     const { revision, pages, events, threads, runs, trash = [], adoption = NO_ADOPTION } = body;
     const { rebuild = null, recordedLanguage = null, health = NO_HEALTH } = body;
+    const { writerBlockingReason } = body;
     return typeof revision === "string" &&
         [pages, trash, events, threads, runs].every((list) => Array.isArray(list)) &&
         isAdoption(adoption) &&
         (rebuild === null || isRebuild(rebuild)) &&
         (recordedLanguage === null || typeof recordedLanguage === "string") &&
+        (writerBlockingReason === undefined ||
+            writerBlockingReason === null ||
+            writerBlockingReason === "pluginModel" ||
+            writerBlockingReason === "requestTrigger") &&
         isHealthFacts(health)
         ? ({ ...body, trash, adoption, rebuild, recordedLanguage, health } as StructuredMemoryContentsAnswer)
         : null;

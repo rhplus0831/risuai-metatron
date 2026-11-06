@@ -211,9 +211,10 @@ export type GenerationErrorStage = (typeof GENERATION_ERROR_STAGES)[number];
 
 /**
  * A failure a tab tells apart from the rest by code, not by text: a send whose required memory pages did
- * not fit under the preset's cap (`memoryRequiredOverCap`), which the memory health badge shows.
+ * not fit under the preset's cap (`memoryRequiredOverCap`), which the memory health badge shows, or a
+ * record-now window skipped (`memoryRecordSkipped`), whose message is a reason token the tab translates.
  */
-export const GENERATION_ERROR_CODES = ["memoryRequiredOverCap"] as const;
+export const GENERATION_ERROR_CODES = ["memoryRequiredOverCap", "memoryRecordSkipped"] as const;
 
 export type GenerationErrorCode = (typeof GENERATION_ERROR_CODES)[number];
 
@@ -331,13 +332,16 @@ export type GenerationPong = { type: "pong"; ts: number };
 /** A `preview` job's `done.result`: the final prompt, and the report a send of it stores on its reply. */
 export type GenerationPreviewResult = { messages: OpenAIChat[]; context: MessageGenerationInfo["context"] };
 
+/** A `memoryRecord` command's `done.result`: work finished in the job, or accepted by the task queue. */
+export type MemoryRecordResult = { memoryRecord: "completed" | "queued" };
+
 export type GenerationTerminalEvent =
     | {
           type: "done";
           epoch: string;
           revision: string | null;
           messageId?: string;
-          /** A preview's result (`preview`: a `GenerationPreviewResult`; `previewPrompt`: the provider body). */
+          /** A preview or command result, including `GenerationPreviewResult` and `MemoryRecordResult`. */
           result?: unknown;
           /**
            * A send that ended without counting as sent (a trigger's stop, an error written into the
@@ -623,6 +627,12 @@ export type MemoryTaskStatus =
 /** A held summary writer lease (`MemoryTaskService.acquireSummaryWriter`). */
 export type SummaryWriterLease = { release(): void };
 
+/** Status for a writer owned by a job; the caller closes it after its final write, including on abort. */
+export type JobMemoryTaskStatus = {
+    progress(done: number, total: number): void;
+    end(state: Exclude<MemoryTaskState, "queued" | "running">, details?: { reason?: string; error?: string }): void;
+};
+
 /** `MemoryTaskService.record`'s answer: the chat's queued task, or why it could not be queued. */
 export type MemoryTaskRecordAnswer =
     | { outcome: "queued"; status: MemoryTaskStatus }
@@ -636,9 +646,11 @@ export type MemoryTaskRecordAnswer =
  * chat's running task, waits (bounded) for its last write to settle, and resolves the lease `ownerId`
  * (the job) holds until `release` (hand-offs and manual starts for the chat only queue meanwhile);
  * `pendingManual` tells whether a manual start waits for the chat's next input. `rebuild` queues the
- * task of the chat's rebuild run as `record` does.
+ * task of the chat's rebuild run as `record` does. A service with a status registry exposes
+ * `openJobStatus`: the lease-holding job publishes its own writer through that registry.
  */
 export interface MemoryTaskService {
+    openJobStatus?(input: Pick<StructuredMemoryTaskInput, "epoch" | "chatRef">): JobMemoryTaskStatus | null;
     handOff(input: AnyMemoryTaskInput): void;
     record(input: StructuredMemoryTaskInput, options?: { through?: string }): MemoryTaskRecordAnswer;
     rebuild(input: StructuredMemoryTaskInput): MemoryTaskRecordAnswer;

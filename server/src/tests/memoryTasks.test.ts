@@ -5403,6 +5403,37 @@ describe("structured memory tasks", () => {
         expect(seen).toHaveLength(2);
     });
 
+    it.each(["hand-off", "press"] as const)(
+        "keeps a %s behind the job's visible writer until its terminal",
+        async (mode) => {
+            const t = structuredHarness();
+            const input = writerInput(t, "m3");
+            const lease = await t.service.acquireSummaryWriter(ref("k1"), "record-job");
+            const job = t.service.openJobStatus(input)!;
+            job.progress(1, 2);
+            const running = t.service.status(ref("k1"));
+            expect(running).toMatchObject({ kind: "structuredMemory", state: "running", done: 1, total: 2 });
+            if (mode === "hand-off") t.service.handOff(input);
+            else expect(t.service.record(input, { through: "m2" }).outcome).toBe("queued");
+            const before = [...t.events];
+            lease.release();
+            await turns();
+            expect(t.provider.requests).toEqual([]);
+            expect(t.events).toEqual(before);
+            expect(t.states("k1")).toEqual(["running", "running"]);
+            expect(t.service.snapshot()).toEqual([{ chatRef: ref("k1"), status: running }]);
+            t.write("k1", [{ op: "meta", set: { note: "Writer metadata saved" } }]);
+            job.end("done");
+            expect(t.events.slice(-2).map(({ status }) => status)).toEqual([
+                { ...running, state: "done", terminalRevision: t.revision("k1") },
+                expect.objectContaining({ kind: "structuredMemory", state: "queued" }),
+            ]);
+            const terminal = t.nextTerminal("k1");
+            (await t.provider.request(0)).answer(JSON.stringify(analysis()));
+            expect((await terminal).status).toMatchObject({ state: "done", done: 1 });
+        },
+    );
+
     it("stops at the first skipped or failed window and retries it without letting a later user extend the automatic ceiling", async () => {
         for (const outcome of ["skipped", "failed"] as const) {
             const seen: (string | undefined)[][] = [];

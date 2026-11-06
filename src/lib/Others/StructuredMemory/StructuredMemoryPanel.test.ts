@@ -2137,3 +2137,26 @@ it("shows pending repairs from health on the writer line below paused", async ()
     await settle();
     expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("paused");
 });
+
+it("shows a new chat's request-trigger writer warning from contents before its first send", async () => {
+    install([]);
+    const fetch = io.authFetch.getMockImplementation()!;
+    let writerBlockingReason: "requestTrigger" | null = "requestTrigger";
+    io.authFetch.mockImplementation(async (url, init, options) =>
+        url === "/api/memory/structured/c/k"
+            ? Response.json({ revision: "r1", pages: [], events: [], threads: [], runs: [], writerBlockingReason })
+            : fetch(url, init, options),
+    );
+    await open();
+    expect(query("[data-memory-writer-line]")?.textContent ?? "").toContain(
+        language.structuredMemory.notAutomaticReasons.requestTrigger,
+    );
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("notAutomatic");
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    writerBlockingReason = null;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-writer-line]")?.textContent ?? "").not.toContain(
+        language.structuredMemory.notAutomaticReasons.requestTrigger,
+    );
+});

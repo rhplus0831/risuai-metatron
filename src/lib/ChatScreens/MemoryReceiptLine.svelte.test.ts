@@ -288,3 +288,25 @@ it("shows the stored custom prompt label and failure as text on the receipt", ()
     expect(target.textContent).not.toContain("Custom prompt");
     expect(target.textContent).not.toContain(error);
 });
+
+it("reports finished, queued, or requested recording from the command result on a receipt press", async () => {
+    vi.mocked(authFetch).mockImplementation(async () =>
+        Response.json({ calls: 1, messages: 2, estimatedTokens: 1700 }),
+    );
+    render();
+    for (const [result, text] of [
+        [{ memoryRecord: "completed" }, "Recording finished"],
+        [{ memoryRecord: "queued" }, "Recording queued"],
+        [undefined, "Recording requested"],
+        [{ memoryRecord: "future-result" }, "Recording requested"],
+    ] as const) {
+        vi.mocked(runServerJob).mockResolvedValue({
+            outcome: "started",
+            terminal: { type: "done", epoch: "e", revision: null, ...(result === undefined ? {} : { result }) },
+        });
+        vi.mocked(alertToast).mockClear();
+        button("Record now").click();
+        for (let i = 0; i < 30; i++) await tick();
+        expect(alertToast).toHaveBeenCalledExactlyOnceWith(text);
+    }
+});

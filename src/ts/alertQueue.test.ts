@@ -20,7 +20,15 @@ vi.mock("./stores.svelte", async () =>
     }),
 );
 vi.mock("./storage/database.svelte", () => ({ getDatabase: () => ({}) }));
-vi.mock("../lang", () => ({ language: { errors: {}, addCharacter: "add", chatOptions: "options" } }));
+vi.mock("../lang", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../lang")>()),
+    language: {
+        ...(await import("../lang/en")).languageEnglish,
+        errors: {},
+        addCharacter: "add",
+        chatOptions: "options",
+    },
+}));
 
 import {
     alertCardExport,
@@ -431,6 +439,31 @@ describe("alert helpers over the queue", () => {
     });
     afterEach(() => {
         vi.restoreAllMocks();
+    });
+
+    it("translates skipped recording reasons in the job-error dialog and hides unknown tokens", async () => {
+        for (const [reason, message] of [
+            ["windowChanged", "Recording stopped: the chat changed during recording"],
+            ["writerPaused", "Recording stopped: recording is paused after repeated failures"],
+            ["futureSkipReason", "Recording stopped before it could finish."],
+        ]) {
+            const end = {
+                type: "error" as const,
+                epoch: "e",
+                message: reason,
+                status: 409,
+                reason: "failed" as const,
+                code: "memoryRecordSkipped" as const,
+            };
+            alertJobError("record-job", end, 123);
+            expect(current()).toMatchObject({
+                type: "error",
+                msg: message,
+                jobFailure: { jobId: "record-job", at: 123, end },
+            });
+            expect(current().msg).not.toContain(reason);
+            await answer("");
+        }
     });
 
     it("resolves each awaited helper with its own dialog's answer, parsed as before, in order", async () => {

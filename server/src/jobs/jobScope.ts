@@ -12,7 +12,7 @@ import type {
 } from "../../../shared/database.ts";
 import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { GenerationContext, MemoryTokenPolicy } from "../../../shared/jobs.ts";
-import type { ChatGroupResult, ChatOp } from "../../../shared/chats.ts";
+import type { ChatGroupResult, ChatOp, ChatRecord } from "../../../shared/chats.ts";
 import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import type { HypaV3Preset } from "../../../shared/memory.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
@@ -209,6 +209,8 @@ export function readCharacters(
  * Of the characters, only the chat's owner and those `chatCharacters` names are read, plus the ids
  * `characters` returns for the chat and the owner's record (a transform's target sources); a
  * character read later (`refreshCharacter`) joins the projection then.
+ * `metadataOnly` reads `chatMeta` with an empty message list, for read-only checks of bound settings
+ * and modules that need no history. It keeps the chat's module selections and persona intact.
  */
 export function loadJobScope(
     store: ResourceStore,
@@ -217,11 +219,23 @@ export function loadJobScope(
     options: {
         binding?: ChatBindingMode;
         characters?: (chat: Chat, owner: character | groupChat) => Iterable<string>;
+        metadataOnly?: boolean;
+        /** A `chatMeta` read from this synchronous operation, reused only with `metadataOnly`. */
+        chatMetadata?: ChatRecord;
     } = {},
 ): JobScope {
     const charactersKind = kindOf(kinds, RESOURCE_KIND.characters);
     const read = store.readKinds(jobScopeKinds(kinds).filter((kind) => kind !== charactersKind));
-    const chatRecord = store.readChatSource(context.characterId, context.chatId);
+    const chatRecord = options.metadataOnly
+        ? {
+              ...(options.chatMetadata ??
+                  store.chatMeta(context.characterId, context.chatId) ?? {
+                      data: null,
+                      revision: null,
+                  }),
+              sourceGeneration: store.chatSourceGeneration(context.characterId, context.chatId),
+          }
+        : store.readChatSource(context.characterId, context.chatId);
     const characterRevisions = new Map<string, string | null>();
     read.kinds[RESOURCE_KIND.characters] = readCharacters(
         store,

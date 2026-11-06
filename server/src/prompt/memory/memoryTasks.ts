@@ -5,6 +5,7 @@ import { selectedHypaV3Preset, summarizesLocally } from "../../../../shared/hypa
 import type {
     AnyMemoryTaskInput,
     GenerationContext,
+    JobMemoryTaskStatus,
     MemoryChatRef,
     MemoryTaskBase,
     MemoryTaskInput,
@@ -238,6 +239,7 @@ type ChatEntry = {
     key: string;
     chatRef: MemoryChatRef;
     running: Task | null;
+    job: { taskId: string; kind: "structuredMemory"; state: "running"; done: number; total: number } | null;
     pending: Pending | null;
     /** The newest accepted input: idle when only `"latest"` holds it. */
     latest: Retained | null;
@@ -252,7 +254,7 @@ const keyOf = (chatRef: MemoryChatRef) => `${chatRef.chaId}\u0000${chatRef.chatI
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** The status field of `input`'s kind: none for a HypaV3 task, whose frames stay as they were. */
-const statusKind = (input: AnyMemoryTaskInput) =>
+const statusKind = (input: Pick<AnyMemoryTaskInput, "kind">) =>
     input.kind === "structuredMemory" ? { kind: "structuredMemory" as const } : {};
 
 /**
@@ -286,6 +288,10 @@ const statusKind = (input: AnyMemoryTaskInput) =>
  * - A person's press (`record`, the `memoryRecord` command): queues its input with the mark, and with
  *   `through`, the message the press confirmed, which replaces the ceiling. The latest press wins, and
  *   one naming no message clears it. Unlike a hand-off it answers why it could not queue.
+ * - A job's writer (`openJobStatus`) holds its own lease and publishes through this registry, including
+ *   hello snapshots. Its status takes precedence; queued work publishes and starts only after its
+ *   terminal. The job ends it after its last write, or immediately on abort. Service cancellation,
+ *   invalidation, maintenance and shutdown leave it to the job; an epoch reset drops it silently.
  * - A rebuild (`rebuild`, the `memoryRebuild` command): queues the same way, for the chat's run (`rebuild.ts`).
  * - Start checks (synchronous, before anything is awaited; a failure ends the task `skipped` with the
  *   reason): the chat exists (`chatGone`); the epoch and source generation are the input's
@@ -456,6 +462,7 @@ export function createMemoryTasks(deps: {
                 key,
                 chatRef: { chaId: chatRef.chaId, chatId: chatRef.chatId },
                 running: null,
+                job: null,
                 pending: null,
                 latest: null,
                 pendingManual: null,
@@ -478,6 +485,7 @@ export function createMemoryTasks(deps: {
     const prune = (entry: ChatEntry) => {
         if (
             !entry.running &&
+            !entry.job &&
             !entry.pending &&
             !entry.latest &&
             !entry.pendingManual &&
@@ -505,6 +513,9 @@ export function createMemoryTasks(deps: {
 
     /** The chat's running task, else its queued one, else its last terminal (while retained). */
     const effectiveStatus = (entry: ChatEntry): MemoryTaskStatus | null => {
+        if (entry.job) {
+            return { ...entry.job };
+        }
         if (entry.running) {
             return runningStatus(entry.running);
         }
@@ -558,7 +569,7 @@ export function createMemoryTasks(deps: {
     const terminalStatus = (
         taskId: string,
         chatRef: MemoryChatRef,
-        input: AnyMemoryTaskInput,
+        input: Pick<AnyMemoryTaskInput, "kind">,
         state: TerminalState,
         counts: { done: number; total: number; lastCommittedRevision?: string },
         details: TerminalDetails,
@@ -648,7 +659,7 @@ export function createMemoryTasks(deps: {
             dispatchNotifications();
         }
         if (entry && entries.get(task.key) === entry && task.epoch === registryEpoch) {
-            if (!entry.running && entry.pending && entry.pending.retained.input.epoch === registryEpoch) {
+            if (!entry.running && !entry.job && entry.pending && entry.pending.retained.input.epoch === registryEpoch) {
                 publish(entry.pending.retained.input.epoch, entry.chatRef, queuedStatus(entry.pending));
             }
             prune(entry);
@@ -674,10 +685,10 @@ export function createMemoryTasks(deps: {
             { done: 0, total: 0 },
             details,
         );
-        if (!entry.running) {
+        if (!entry.running && !entry.job) {
             entry.last = { status, at: now() };
         }
-        publish(pending.retained.input.epoch, entry.chatRef, status);
+        if (!entry.job) publish(pending.retained.input.epoch, entry.chatRef, status);
         prune(entry);
     };
 
@@ -1476,7 +1487,7 @@ export function createMemoryTasks(deps: {
                 queue.delete(key);
                 continue;
             }
-            if (entry.running || (leases.get(key)?.size ?? 0) > 0) {
+            if (entry.running || entry.job || (leases.get(key)?.size ?? 0) > 0) {
                 continue;
             }
             if (alive.size + warmAlive.size >= limits.maxRunning) {
@@ -1509,7 +1520,7 @@ export function createMemoryTasks(deps: {
         });
     }
 
-    /** Ends every running and queued task with `reason` (maintenance, shutdown). */
+    /** Ends service work with `reason` (maintenance, shutdown); jobs end their own statuses. */
     const endAll = (reason: string) => {
         for (const key of new Set([...warmPending.keys(), ...[...warmAlive].map((task) => task.key)])) cancelWarm(key);
         for (const entry of [...entries.values()]) {
@@ -1556,7 +1567,7 @@ export function createMemoryTasks(deps: {
         entry.latest = retained;
         entry.pendingManual = null;
         entry.lru = ++lruClock;
-        if (queued && !entry.running) {
+        if (queued && !entry.running && !entry.job) {
             publish(owned.epoch, entry.chatRef, queuedStatus(entry.pending));
         }
         schedulePump();
@@ -1588,6 +1599,49 @@ export function createMemoryTasks(deps: {
     // The service
 
     const service = {
+        /**
+         * Publishes a lease-holding job's writer without retaining its input or owning its work.
+         * The job must end this handle after its final write and on abort, even if its work hangs.
+         */
+        openJobStatus(input: Pick<StructuredMemoryTaskInput, "epoch" | "chatRef">): JobMemoryTaskStatus | null {
+            const { epoch } = input;
+            if (epoch !== registryEpoch || epoch !== store.epoch()) return null;
+            const entry = entryOf(input.chatRef);
+            if (entry.job || entry.running) throw new Error("The chat already has a memory writer");
+            const status = {
+                taskId: randomUUID(),
+                kind: "structuredMemory",
+                state: "running",
+                done: 0,
+                total: 0,
+            } as const;
+            entry.job = { ...status };
+            const owned = entry.job;
+            const current = () => entries.get(entry.key) === entry && entry.job === owned && epoch === registryEpoch;
+            publish(epoch, entry.chatRef, { ...owned });
+            return {
+                progress(done, total) {
+                    if (!current() || (owned.done === done && owned.total === total)) return;
+                    owned.done = done;
+                    owned.total = total;
+                    publish(epoch, entry.chatRef, { ...owned });
+                },
+                end(state, details = {}) {
+                    if (!current()) return;
+                    const terminal = terminalStatus(owned.taskId, entry.chatRef, owned, state, owned, details);
+                    entry.job = null;
+                    entry.last = { status: terminal, at: now() };
+                    publish(epoch, entry.chatRef, terminal);
+                    if (entries.get(entry.key) === entry && epoch === registryEpoch) {
+                        if (!entry.job && !entry.running && entry.pending) {
+                            publish(epoch, entry.chatRef, queuedStatus(entry.pending));
+                        }
+                        prune(entry);
+                    }
+                    schedulePump();
+                },
+            };
+        },
         /** Retains only the latest cache-only request per chat; no status or writer-only start checks. */
         warmVectors(input: MemoryTaskBase): void {
             if (closed || paused || gate.active || !inputCurrent(input)) return;
@@ -1700,6 +1754,10 @@ export function createMemoryTasks(deps: {
          * input job hands off).
          */
         start(chatRef: MemoryChatRef): MemoryTaskStartResult {
+            const job = entries.get(keyOf(chatRef))?.job;
+            if (job) {
+                return { outcome: "running", status: { ...job } };
+            }
             if (closed) {
                 return { outcome: "refused", reason: "shuttingDown" };
             }
@@ -1748,7 +1806,10 @@ export function createMemoryTasks(deps: {
             return { outcome: "pendingManual" };
         },
 
-        /** Cancels writer and warm work; answers whether the writer registry had work to cancel. */
+        /**
+         * Cancels service writer and warm work, including queued work behind a job. A job-owned writer
+         * is left alone: only that job's Stop controls it. Answers whether service writer work existed.
+         */
         cancel(chatRef: MemoryChatRef): boolean {
             cancelWarm(keyOf(chatRef));
             const entry = entries.get(keyOf(chatRef));
@@ -1820,7 +1881,7 @@ export function createMemoryTasks(deps: {
             };
         },
 
-        /** Maintenance began: running and queued tasks end `cancelled` (`maintenance`); nothing starts until `resume`. */
+        /** Maintenance began: service tasks end `cancelled` (`maintenance`); nothing starts until `resume`. */
         pause() {
             paused = true;
             endAll("maintenance");
@@ -1832,7 +1893,7 @@ export function createMemoryTasks(deps: {
             schedulePump();
         },
 
-        /** Refuses hand-offs and starts; running and queued tasks end `cancelled` (`shutdown`). */
+        /** Refuses new work; service tasks end `cancelled` (`shutdown`). Jobs end their own statuses. */
         beginShutdown() {
             closed = true;
             endAll("shutdown");
@@ -1882,6 +1943,7 @@ export function createMemoryTasks(deps: {
                     drop(entry.latest, "latest");
                 }
                 entry.running = null;
+                entry.job = null;
                 entry.pending = null;
                 entry.latest = null;
                 entry.pendingManual = null;

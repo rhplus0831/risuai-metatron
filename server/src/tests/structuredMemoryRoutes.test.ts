@@ -3,6 +3,7 @@ import path from "node:path";
 import type http from "node:http";
 import { serve } from "@hono/node-server";
 import { WebSocket } from "ws";
+import { LLMFormat } from "../../../shared/llm.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
 import fs from "node:fs/promises";
 import { DatabaseSync, StatementSync } from "node:sqlite";
@@ -3327,4 +3328,126 @@ it("counts character knowledge by its slot budget in health reads", async () => 
     const result = await answer(await s.json("/api/memory/structured/health", { chats: [{ characterId, chatId }] }));
     expect(result.health[0].overBudgetSections).toBe(1);
     expect((await answer(await s.request(base))).health.overBudgetSections).toBe(1);
+});
+
+it("reads the bound writer model, persona and chat modules, and omits unresolved bindings", async () => {
+    const s = await server();
+    const binding = bindChat(s);
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const replace = (name: string, update: (data: any) => any) => {
+        const kind = kinds.get(name)!;
+        const record = s.store.get(kind, "main")!;
+        s.store.put(kind, "main", update(record.data), record.revision);
+    };
+    const meta = (set: Record<string, unknown>) =>
+        s.store.applyChanges({
+            chats: [
+                {
+                    characterId,
+                    chatId,
+                    baseRevision: s.store.chatRevision(characterId, chatId),
+                    ops: [{ op: "meta", set }],
+                },
+            ],
+        });
+    const triggerModule = {
+        id: "writer-trigger",
+        name: "Writer trigger",
+        description: "",
+        lowLevelAccess: true,
+        trigger: [
+            {
+                comment: "Writer request",
+                type: "request",
+                conditions: [],
+                lowLevelAccess: true,
+                effect: [{ type: "v2SetVar", indent: 0, var: "seen", operator: "=", value: "1", valueType: "value" }],
+            },
+        ],
+    };
+    s.store.put(kinds.get("modules")!, "main", [triggerModule], null);
+    replace("modelProfiles", (data) => [
+        ...data,
+        {
+            ...data[0],
+            modelId: "reverse_proxy",
+            id: "bound-plugin",
+            customAPIFormat: LLMFormat.Plugin,
+            currentPluginProvider: "writer-provider",
+        },
+    ]);
+    replace("modelPresets", (data) => [
+        ...data,
+        {
+            ...data[0],
+            id: "bound-model",
+            seperateModelsForAxModels: true,
+            auxSlots: { memory: { profileId: "bound-plugin" } },
+        },
+    ]);
+    replace("personas", (data) => [...data, { ...data[0], id: "bound-persona", modules: [] }]);
+    replace("presets", (data) => [...data, { ...data[0], id: "bound-prompt" }]);
+    meta({ modelPresetId: "bound-model", promptPresetId: "bound-prompt", bindedPersona: "bound-persona" });
+    const read = async (expected: "pluginModel" | "requestTrigger" | null | undefined) => {
+        const contents = await answer(await s.request(base));
+        expect(contents).toMatchObject({ pages: [], events: [], threads: [], runs: [] });
+        if (expected === undefined) expect(contents).not.toHaveProperty("writerBlockingReason");
+        else expect(contents).toHaveProperty("writerBlockingReason", expected);
+    };
+    await read("pluginModel");
+    // Selected settings may differ: only this chat's bound records decide its warning.
+    replace("modelPresets", (data) =>
+        data.map((preset: any) => ({
+            ...preset,
+            seperateModelsForAxModels: preset.id === binding.modelPresetId,
+            auxSlots: preset.id === binding.modelPresetId ? { memory: { profileId: "bound-plugin" } } : {},
+        })),
+    );
+    replace("personas", (data) =>
+        data.map((persona: any) => ({
+            ...persona,
+            modules: persona.id === binding.personaId ? [triggerModule.id] : [],
+        })),
+    );
+    replace("presets", (data) =>
+        data.map((preset: any) => ({
+            ...preset,
+            moduleIntergration: preset.id === binding.presetId ? triggerModule.id : "",
+        })),
+    );
+    await read(null);
+    replace("presets", (data) => data.map((preset: any) => ({ ...preset, moduleIntergration: triggerModule.id })));
+    await read("requestTrigger");
+    replace("presets", (data) => data.map((preset: any) => ({ ...preset, moduleIntergration: "" })));
+    replace("personas", (data) => data.map((persona: any) => ({ ...persona, modules: [triggerModule.id] })));
+    await read("requestTrigger");
+    replace("personas", (data) => data.map((persona: any) => ({ ...persona, modules: [] })));
+    meta({ modules: [triggerModule.id] });
+    await read("requestTrigger");
+    meta({ modules: [] });
+    await read(null);
+    meta({ promptPresetId: "deleted-prompt" });
+    await read(undefined);
+});
+
+it("answers the bound writer rule without reading any chat messages", async () => {
+    const s = await server();
+    bindChat(s);
+    const queries: string[] = [];
+    const spies = (["get", "all", "iterate"] as const).map((method) => {
+        const original = StatementSync.prototype[method];
+        return vi.spyOn(StatementSync.prototype, method).mockImplementation(function (
+            this: StatementSync,
+            ...args: unknown[]
+        ) {
+            queries.push(this.sourceSQL);
+            return Reflect.apply(original, this, args);
+        });
+    });
+    try {
+        expect(await answer(await s.request(base))).toHaveProperty("writerBlockingReason", null);
+        expect(queries.filter((sql) => /\bmessages\b/i.test(sql))).toEqual([]);
+    } finally {
+        spies.forEach((spy) => spy.mockRestore());
+    }
 });

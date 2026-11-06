@@ -157,6 +157,7 @@ refuses group chats.
 
 `runMemoryRecord` admits through `admitRecord` while the job holds the chat slot; its module header owns algorithm,
 memory-off, local-model, adoption and eligible-message refusals. No ceiling and no target ends `done` without work.
+`done.result.memoryRecord` (`completed`, `queued`) picks the toast.
 
 - With a service and no tab-bound request, `MemoryTasks.record` queues a fresh manual input with `through`; the latest
   press replaces that target and a press without one clears it. A later hand-off retains the manual start and target.
@@ -166,9 +167,11 @@ memory-off, local-model, adoption and eligible-message refusals. No ceiling and 
   requests. `scope.request.db` takes `writerRequestDb`; windows run in order up to `maxWriterWindows`, the first
   nonrecorded window ends the job with an error, and windows beyond the cap leave an ordinary `done`.
 
-A target is an inclusive `WriterCeiling`: pressing confirms that reply, newest included. Re-record windows (events
-marked `rerecord`) run first, then ordinary windows oldest first; naming a target never records it ahead of older open
-ordinary windows.
+In the job, `openJobStatus` (contract in `createMemoryTasks`) fences every tab, hello included, through the terminal's
+chat revision; a skipped window fails the job with `memoryRecordSkipped`, translated by `alertJobError`.
+
+An inclusive `WriterCeiling` confirms the target reply, newest included. Re-record windows (events marked `rerecord`)
+run first, then ordinary windows oldest first; naming a target never records it ahead of older open ordinary windows.
 
 ### The gap run
 
@@ -344,10 +347,8 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
 - Budgets are per section in characters, so they do not keep the required lane under `requiredCap`. Compaction runs
   before the commit, so a deadline during one costs the run its analysis and patch calls, and a person pressing record
   now waits for it. `compactionFailed` holds no provider text. Decision: Structured Memory D13, archive.
-- Recording in a job sets no `memoryTaskFenced` fence and no task status: only the pressing tab sees it, through its
-  button and the `memoryProgress` overlay, as with a blocking HypaV3 summary. The job holds the chat's slot and the
-  lease. A throw there leaves the run `pending` with no failed receipt, and the next run closes it `interrupted`.
-  Decision: Structured Memory slice 2d, archive.
+- A throw while recording in a job leaves the run `pending` with no failed receipt; the next run closes it
+  `interrupted`. Without a service it publishes no task status. Decision: Structured Memory slice 2d, archive.
 - A repair never carries an edit into later state; a rebuild from that point does. A later event with every cited
   message deleted no longer counts. Decision: Implementation Audit Fixes Q3.
 
