@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (11)
+- [Structured Memory](#structured-memory) (9)
 
 ## Chat store, sync, and change feeds
 
@@ -490,10 +490,10 @@ Left by slice 6a. An adopted summary's `pinned` selects nothing in any lane (`ad
 
 ### Highlight and revert leftovers
 
-Left by slice 7b; the dead `retract` kind left in the Found Issues Sweep (I3). A new page's receipt row has no revert. Changing a chat's highlight mode moves `memorySettingsFingerprint`, so a queued writer input ends `skipped` (`staleInput`).
+Left by slice 7b; the dead `retract` kind left in the Found Issues Sweep (I3). A new page's receipt row has no revert.
 
-**Why it matters:** one lost queued run per mode change.
-**Suggested handling:** leave highlight out of the fingerprint if a replay may ignore it (the sweep plan's Structured Memory follow-up).
+**Why it matters:** a receipt row whose change cannot be undone from the receipt.
+**Suggested handling:** recorded in the guides by the sweep plan's C1.
 
 ### Page tool leftovers
 
@@ -521,20 +521,6 @@ The "token rechecking" step of `server/src/prompt/assemble.ts` (~2501–2538, af
 
 **Why it matters:** a silent loss of the kind M5 fixed, on a later path; it needs scripts or `editRequest` to grow the prompt past what selection measured.
 **Suggested handling:** raise when the recheck or the read path is next touched; the recheck could hand its removals back to the evidence lane or count them as a gap.
-
-### Thread provenance after a re-record or a repeat
-
-Two gaps beside thread reconciliation on retraction (`withReconciledThreads` in `server/src/prompt/memory/structured/reconcile.ts` ~150). `retireRerecorded` (~262) skips thread reconciliation by design, but also does not re-point `openedBy`/`closedBy` from the retired event to its replacement, so the Threads tab shows "Opened by"/"Closed by" a retracted event and a later retraction of the replacement cannot find the thread through those fields. A repeated event (the `repeatsEvent` path in `analysis.ts`, ~593–630) names thread moves (`closedBy` is the repeated id) but keeps the original event's `openThreads`, so the replay cannot explain the stored state and leaves such a thread untouched when that event is retracted. Found in the Implementation Audit Fixes run (2026-11-05) while landing thread reconciliation on retraction.
-
-**Why it matters:** thread provenance points at evidence that no longer supports it; low frequency.
-**Suggested handling:** re-point the fields in `retireRerecorded`, and record a repeat's thread moves on the event.
-
-### Pre-version-2 run windows never confirm in a test run
-
-`windowStillConfirmed` in `server/src/prompt/memory/structured/window.ts` (~390, the comparison at ~403) compares `messageSourceHash(message) === source.hash` without the version-aware `like` argument. Its caller in `testRun.ts` (~116) passes the newest stored run's `window` sources, which keep version-1 (bare hex) hashes for runs recorded before source-hash version 2, so the check is always false for them and the prompt test run takes the cadence window instead of the newest run's window. It heals after the chat's next run; the `writer.ts` call (~413) uses fresh windows and is unaffected. Found in the Implementation Audit Fixes run (2026-11-06) while landing source-hash version 2, which could not touch `window.ts`.
-
-**Why it matters:** a test run on an older chat previews a different window than the writer recorded, until the next run.
-**Suggested handling:** compare `messageSourceHash(message, source.hash) === source.hash`.
 
 ### Rebuild drops retained imported threads' participants
 
