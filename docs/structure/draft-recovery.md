@@ -139,6 +139,10 @@
   installations retain their reservations. Committed whole-row moves to drafts and expiry cleanup also free
   reservations; partial moves keep remaining layers reserved. A whole chat/order move that yields no draft aborts
   recovery, and expiry purges reservations even when `readOwn` omits those rows.
+- A replay whose ops carry a real `hypaV3Data` under Structured Memory (as held, or as a replayed `ui` row selects it),
+  to a chat holding a sealed projection or not loaded, first files that value as a memory-only draft
+  (`replayedHypaV3Data`, `keepRecoveryMemory`), as Apply does for a refused one: the server drops it from a chat its
+  projection answers for, and the ops are sent unchanged. A filing that fails leaves the row a draft whole.
 
 ### Recovery drafts
 

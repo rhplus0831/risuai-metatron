@@ -302,6 +302,8 @@ export function createCheckpointService({
                         },
                         {
                             epoch,
+                            // The chat's fields come back as captured, the projection's guard aside.
+                            restoredFields: true,
                             inTransaction: {
                                 before(tx) {
                                     const safety = tx.save(

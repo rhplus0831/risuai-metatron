@@ -436,12 +436,22 @@ export function memorySettingsFingerprint(scope: JobScope): string {
     return createHash("sha256").update(JSON.stringify(projection)).digest("base64url");
 }
 
-/** What Structured Memory's writer adds to `memorySettingsFingerprint`. */
+/**
+ * What Structured Memory's writer adds to `memorySettingsFingerprint`. The preset's highlight fields
+ * stay out, as the chat's highlight override does: a highlight only marks a commit's history, so a
+ * change to one need not end a queued run.
+ */
 function structuredMemoryFingerprint(scope: JobScope, preset: HypaV3Preset | undefined): unknown {
     const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
     const chat = scopeChat(scope);
+    const structured = preset?.settings?.structured;
+    const settings = structured
+        ? (({ highlightMode: _mode, highlightKinds: _kinds, highlightChangeGrade: _grade, ...rest }) => rest)(
+              structured,
+          )
+        : null;
     return {
-        settings: preset?.settings?.structured ?? null,
+        settings,
         ownerLanguage: structuredMemoryLanguageOverride(owner) ?? null,
         chatLanguage: structuredMemoryLanguageOverride(chat) ?? null,
         uiLanguage: scope.db.language ?? null,

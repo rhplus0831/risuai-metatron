@@ -32,7 +32,7 @@ import {
     SMALL_FEED_PATCH_BYTES,
     RESOURCE_KIND,
 } from "../../../shared/resources.ts";
-import { isSealedHypaV3Data, memorySourceSpeaker } from "../../../shared/structuredMemory.ts";
+import { hypaV3DataHoldsSummaries, isSealedHypaV3Data, memorySourceSpeaker } from "../../../shared/structuredMemory.ts";
 import { textHash } from "../../../shared/textHash.ts";
 import { chatTranslationSummary } from "../../../shared/translation/chatSettings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
@@ -797,7 +797,8 @@ function prepareMessage(input: unknown): PreparedMessage {
 
 /**
  * `fields` without a sealed `hypaV3Data`: a projection a tab carried over from a read (a recovered
- * resend, a stale tab) is never stored. An unsealed value is a real HypaV3 write and stays.
+ * resend, a stale tab) is never stored. An unsealed value is a real HypaV3 write and stays here; one
+ * written while the projection owns the field goes at apply time (`refusesHypaV3Data`).
  */
 function withoutProjection(fields: Record<string, unknown>): Record<string, unknown> {
     if (!isSealedHypaV3Data(fields.hypaV3Data)) {
@@ -1384,8 +1385,28 @@ function appendReplay(text: string, stored: string): boolean {
  * Prepares the chat statements and returns the methods over them. The tables must exist:
  * `openChatSchema` and `createCheckpointTables` (`chatRestoreFloors`) run first.
  */
-export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard?: MessageGuard) {
+export function createChatTables(
+    db: DatabaseSync,
+    tokens: TokenFunctions,
+    guard?: MessageGuard,
+    /** Whether the memory projection answers for the chat with this `seq`: the algorithm is selected and it has event rows. */
+    memory?: { projectsChat(chatSeq: number): boolean },
+) {
     let attempts = new Map<string, RerollAttempt>();
+    /**
+     * Whether a write's unsealed `hypaV3Data` is refused because the projection owns the chat's field:
+     * the projection answers for the chat (`memory.projectsChat`) and the value stored in `meta` does not
+     * hold summaries, the one thing that means HypaV3 owns it (`hypaV3DataHoldsSummaries`). A boot replay,
+     * a quarantine retry, or a tab from before the switch sends its ops as they were, so the field goes
+     * here and the rest of the write applies, as a stale tab's sealed value does in `withoutProjection`;
+     * otherwise a replayed value would stand the projection aside with no choice offered, since the
+     * adoption hold is for a chat with no records. A chat with no event rows takes the value: it is what
+     * the adoption choice is about, and a create is a new chat with none. A checkpoint load restores the
+     * chat's fields as captured, with the captured memory rows after them (`restoredFields`), so it is
+     * no write of a tab's and keeps the field.
+     */
+    const refusesHypaV3Data = (chatSeq: number, meta: Record<string, unknown>, restored: boolean) =>
+        !restored && memory?.projectsChat(chatSeq) === true && !hypaV3DataHoldsSummaries(meta.hypaV3Data);
     let stagedAttempts: Map<string, RerollAttempt> | null = null;
     const attemptKey = (characterId: string, chatId: string) => `${characterId}\u0000${chatId}`;
     const liveAttempt = (characterId: string, chatId: string) => {
@@ -2112,6 +2133,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         jobToken: string | undefined,
         changes: boolean,
         attemptWrite?: RerollAttemptWrite,
+        restoredFields = false,
     ): {
         result: ChatGroupResult;
         applied: number;
@@ -2296,14 +2318,22 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         generationSeq: number;
                         generationHistory: string | null;
                     }[];
-                    recordMap(attempt, jobToken, JSON.parse(row!.meta).scriptstate, JSON.parse(op.meta).scriptstate);
+                    const stored = JSON.parse(row!.meta) as Record<string, unknown>;
+                    const incoming = JSON.parse(op.meta) as Record<string, unknown>;
+                    recordMap(attempt, jobToken, stored.scriptstate, incoming.scriptstate);
+                    let { meta, summary } = op;
+                    if (Object.hasOwn(incoming, "hypaV3Data") && refusesHypaV3Data(chatSeq, stored, restoredFields)) {
+                        const { hypaV3Data: _refused, ...kept } = incoming;
+                        meta = serialize(kept).text;
+                        summary = summaryText(kept);
+                    }
                     const previous = new Map(
                         (selectCandidateRows.all(chatSeq) as { id: string; data: string }[]).map(({ id, data }) => [
                             id,
                             data,
                         ]),
                     );
-                    writeChatMeta({ kind: "update", seq: chatSeq, revision: row!.revision, meta: op.meta }, op.summary);
+                    writeChatMeta({ kind: "update", seq: chatSeq, revision: row!.revision, meta }, summary);
                     deleteMessages.run(chatSeq);
                     setMessageCount(chatSeq, 0);
                     insertAt(
@@ -2326,7 +2356,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                             );
                         }
                     }
-                    row = { ...row!, meta: op.meta };
+                    row = { ...row!, meta };
                     messageIds = op.messages.map((message) => message.id);
                     messageIdsRenamed = op.renamed;
                     invalidated = true;
@@ -2339,10 +2369,15 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     }
                     const current = JSON.parse(row!.meta) as Record<string, unknown>;
                     const previousVariables = current.scriptstate;
+                    const { hypaV3Data: _refused, ...kept } = op.set;
+                    const set =
+                        Object.hasOwn(op.set, "hypaV3Data") && refusesHypaV3Data(chatSeq, current, restoredFields)
+                            ? kept
+                            : op.set;
                     for (const key of op.unset) {
                         delete current[key];
                     }
-                    Object.assign(current, op.set);
+                    Object.assign(current, set);
                     recordMap(attempt, jobToken, previousVariables, current.scriptstate);
                     for (const key of new Set([...Object.keys(op.mergeUnset), ...Object.keys(op.merge)])) {
                         // Onto the entries as stored now: another writer's entries stay.
@@ -3190,6 +3225,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             jobToken?: string,
             changes = false,
             attemptWrite?: RerollAttemptWrite,
+            /** A checkpoint load: the groups restore a chat's fields as captured (`refusesHypaV3Data`). */
+            restoredFields = false,
         ) {
             const conflicts: (ChatConflict | ChatOrderConflict)[] = [];
             const results: ChatGroupResult[] = [];
@@ -3205,7 +3242,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             for (const [index, group] of groups.entries()) {
                 applyingOp = -1;
                 try {
-                    const outcome = applyGroup(group, changedOrders, jobToken, changes, attemptWrite);
+                    const outcome = applyGroup(group, changedOrders, jobToken, changes, attemptWrite, restoredFields);
                     results.push(outcome.result);
                     written?.push(outcome.change);
                     if (outcome.duplicate) {

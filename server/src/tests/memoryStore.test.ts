@@ -1108,6 +1108,69 @@ it("drops sealed fields from creates, replacements and stale metadata writes whi
     expect(store.readChatSource("c", "real").data!.hypaV3Data).toEqual(real);
 });
 
+it("drops a real hypaV3Data a replay or stale tab writes while the projection owns the field, and keeps one HypaV3 owns", () => {
+    const { store } = fileStore();
+    seed(store);
+    const ui = kinds.get("ui")!;
+    store.put(ui, "main", { memoryAlgorithmType: "structuredMemory" }, store.get(ui, "main")!.revision);
+    write(store, contents(store).revision, { events: records(["event"]).events });
+    const real = { summaries: [{ text: "Replayed HypaV3", chatMemos: [], isImportant: false }] };
+    const options = { memoryProjection: true, chats: [{ characterId: "c", id: "k" }] };
+    store.applyChanges({
+        chats: [
+            group(store.chatRevision("c", "k"), [{ op: "meta", set: { hypaV3Data: real, note: "Replayed note" } }]),
+        ],
+    });
+    expect(store.readChatSource("c", "k").data).toMatchObject({ note: "Replayed note" });
+    expect(store.readChatSource("c", "k").data).not.toHaveProperty("hypaV3Data");
+    store.applyChanges({
+        chats: [
+            group(store.chatRevision("c", "k"), [
+                { op: "replace", chat: { ...chat, hypaV3Data: real, note: "Replaced" } },
+            ]),
+        ],
+    });
+    expect(store.readChatSource("c", "k").data).toMatchObject({ note: "Replaced", message: chat.message });
+    expect(store.readChatSource("c", "k").data).not.toHaveProperty("hypaV3Data");
+    expect(store.readRefs([], options).chats[0].data!.hypaV3Data).toMatchObject({ summaries: expect.any(Array) });
+    // A chat with no event rows takes the value: it is what the adoption choice is about.
+    seed(store, "d");
+    store.applyChanges({
+        chats: [group(store.chatRevision("d", "k"), [{ op: "meta", set: { hypaV3Data: real } }], "d")],
+    });
+    expect(store.readChatSource("d", "k").data!.hypaV3Data).toEqual(real);
+    // A create is a new chat, so its summaries stay for adoption, and HypaV3 then owns the field.
+    store.applyChanges({ chats: [group(null, [{ op: "create", chat: { ...chat, hypaV3Data: real } }], "c", "owned")] });
+    const later = { summaries: [{ text: "Later HypaV3", chatMemos: [], isImportant: false }] };
+    store.applyChanges({
+        chats: [group(store.chatRevision("c", "owned"), [{ op: "meta", set: { hypaV3Data: later } }], "c", "owned")],
+    });
+    expect(store.readChatSource("c", "owned").data!.hypaV3Data).toEqual(later);
+    store.put(ui, "main", { memoryAlgorithmType: "hypaV3" }, store.get(ui, "main")!.revision);
+    store.applyChanges({ chats: [group(store.chatRevision("c", "k"), [{ op: "meta", set: { hypaV3Data: real } }])] });
+    expect(store.readChatSource("c", "k").data!.hypaV3Data).toEqual(real);
+});
+
+it("restores a checkpoint's real summaries to a chat the projection answers for", () => {
+    const { store } = fileStore();
+    seed(store);
+    const real = { summaries: [{ text: "Captured HypaV3 memory", chatMemos: ["m"], isImportant: false }] };
+    store.applyChanges({ chats: [group(store.chatRevision("c", "k"), [{ op: "meta", set: { hypaV3Data: real } }])] });
+    const checkpoint = store.checkpoints.save("c", "k", "Before adoption", "manual")!;
+    write(store, contents(store).revision, { events: records(["adopted"]).events });
+    const ui = kinds.get("ui")!;
+    store.put(ui, "main", { memoryAlgorithmType: "structuredMemory" }, store.get(ui, "main")!.revision);
+    store.applyChanges({ chats: [group(store.chatRevision("c", "k"), [{ op: "meta", unset: ["hypaV3Data"] }])] });
+    expect(store.readChatSource("c", "k").data).not.toHaveProperty("hypaV3Data");
+    const loaded = createCheckpointService({ store, busy: () => false, memoryTasks: null }).load({
+        epoch: store.epoch(),
+        body: { characterId: "c", chatId: "k", id: checkpoint.id, chatBaseRevision: store.chatRevision("c", "k") },
+    });
+    expect(loaded.status).toBe(200);
+    expect(store.readChatSource("c", "k").data!.hypaV3Data).toEqual(real);
+    expect(store.memory.readContents("c", "k")!.events).toEqual([]);
+});
+
 it("does not read memory tables for resource reads under another algorithm", () => {
     const { store } = fileStore();
     seed(store);

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { decideChatRecovery, decideRecordRecovery } from "../journalRecovery";
+import type { Chat } from "../../../../shared/database.ts";
+import { sealHypaV3Data } from "../../../../shared/structuredMemory.ts";
+import { decideChatRecovery, decideRecordRecovery, replayedHypaV3Data } from "../journalRecovery";
 import type { RecordLayerValues, StoredLayers } from "../draftJournal";
 
 const A = JSON.stringify({ name: "sent" });
@@ -117,5 +119,30 @@ describe("whole-chat recovery decisions", () => {
             groupId: "original-group",
         });
         expect(decideChatRecovery(layers, { revision: "remote-base" }, context)).toEqual({ action: "draft" });
+    });
+});
+
+describe("replayed HypaV3 memory", () => {
+    it("finds the last real unsealed hypaV3Data a replay would store", () => {
+        const real = { summaries: [{ text: "Kept", chatMemos: [], isImportant: false }] };
+        const later = { summaries: [{ text: "Later", chatMemos: [], isImportant: false }] };
+        const chat = { name: "chat", message: [] } as unknown as Chat;
+        expect(replayedHypaV3Data([{ op: "meta", set: { hypaV3Data: real } }])).toEqual(real);
+        expect(
+            replayedHypaV3Data([
+                { op: "meta", set: { hypaV3Data: real } },
+                { op: "replace", chat: { ...chat, hypaV3Data: later } },
+            ]),
+        ).toEqual(later);
+        expect(
+            replayedHypaV3Data([
+                { op: "meta", set: { hypaV3Data: real } },
+                { op: "meta", unset: ["hypaV3Data"] },
+            ]),
+        ).toBeUndefined();
+        expect(replayedHypaV3Data([{ op: "meta", set: { hypaV3Data: sealHypaV3Data(real) } }])).toBeUndefined();
+        expect(replayedHypaV3Data([{ op: "meta", set: { hypaV3Data: { summaries: [] } } }])).toBeUndefined();
+        expect(replayedHypaV3Data([{ op: "create", chat: { ...chat, hypaV3Data: real } }])).toBeUndefined();
+        expect(replayedHypaV3Data([{ op: "meta", set: { name: "Renamed" } }])).toBeUndefined();
     });
 });

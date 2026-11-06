@@ -359,6 +359,11 @@ type ApplyChangesOptions = {
     /** Job-only attempt control; provenance changes commit or roll back with the chat writes. */
     rerollAttempt?: RerollAttemptWrite;
     inTransaction?: ApplyChangesTransaction;
+    /**
+     * A checkpoint load: its `replace` restores a chat's fields as captured, so the projection's field
+     * guard (`refusesHypaV3Data` in `chatStore.ts`) stands aside. Never set for a client's batch.
+     */
+    restoredFields?: boolean;
     /** Also build the write's own chat changes, for `committed`. */
     changes?: boolean;
     /**
@@ -1451,7 +1456,9 @@ export function createResourceStore(options: {
 
     const memoryTables = createMemoryTables(db, { token, parse: parseToken });
     const checkpointTables = createCheckpointTables(db, { token, parse: parseToken }, memoryTables.rows);
-    const chatTables = createChatTables(db, { token, parse: parseToken }, guard);
+    const chatTables = createChatTables(db, { token, parse: parseToken }, guard, {
+        projectsChat: (chatSeq) => structuredMemorySelected() && memoryTables.hasEvents(chatSeq),
+    });
     if (checkpointTables.sweep() > 0) {
         countWrite();
     }
@@ -1734,6 +1741,7 @@ export function createResourceStore(options: {
             jobToken?: string;
             rerollAttempt?: RerollAttemptWrite;
             inTransaction?: ApplyChangesTransaction;
+            restoredFields?: boolean;
         },
         written?: WrittenChanges,
     ): AppliedChanges {
@@ -1937,6 +1945,7 @@ export function createResourceStore(options: {
                 options.jobToken,
                 written !== undefined,
                 options.rerollAttempt,
+                options.restoredFields,
             );
             conflicts.push(...chatOutcome.conflicts);
             if (conflicts.length > 0) {

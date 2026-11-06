@@ -70,9 +70,11 @@ non-cryptographic seal identifies an unchanged projection and authorizes nothing
 through `setChatToIndex`, `applyChatResult`, and `settleHypaV3Data`. A recovery draft's Apply passes `setChatMeta` a
 recovery source: no plugin notice, and the refused value is filed as a draft ([Apply](../draft-recovery.md#apply)).
 `sendChat` omits projections from mirror-built writes and journal snapshots. `server/src/data/chatStore.ts`'s
-`withoutProjection` strips sealed values a stale tab or recovered resend carries, in `prepareWholeChat` and `prepareOp`.
-A job's copy and a patch's `meta` leave a held projection in place unless they bring summaries (`keepsProjection`). A
-whole read (`applyRemoteChat`, `installRead`) takes the field as answered; without it, the held projection goes.
+`withoutProjection` strips sealed values a stale tab or recovered resend carries, in `prepareWholeChat` and `prepareOp`,
+and `refusesHypaV3Data` drops an unsealed one at apply time from a chat the projection answers for, except under a
+checkpoint load (`restoredFields`); [Chat recovery](../draft-recovery.md#chat-recovery) drafts a replayed one. A job's
+copy and a patch's `meta` leave a held projection in place unless they bring summaries (`keepsProjection`). A whole read
+(`applyRemoteChat`, `installRead`) takes the field as answered; without it, the held projection goes.
 `installChatProjection` is the field's one change outside a write.
 
 ### A plugin's read
@@ -139,6 +141,8 @@ of a committed reset whose answer was lost says `reset: false`.
   scope, a memory task, the HypaV3 baseline, `chatBaseline`, and a checkpoint's capture read stored data.
 - A write never takes a sealed value, and a sealed value authorizes nothing. `installChatProjection` is the one change
   of the held field outside a write, and only for a chat as it found it before its first await.
+- A chat the projection answers for takes no unsealed `hypaV3Data` from a write but a checkpoint load's; a chat with no
+  event rows does, which is what the adoption choice is about.
 - Metric indices are positions in the projected `summaries`, never in `events`.
 
 ## Recipes

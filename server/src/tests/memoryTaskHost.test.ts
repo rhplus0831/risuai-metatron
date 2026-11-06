@@ -493,10 +493,8 @@ describe("memorySettingsFingerprint Structured Memory settings", () => {
         analysisPrompt: "Analyze this",
         patchPrompt: "Patch this",
         fineTuning: true,
-        highlightMode: "none",
-        highlightKinds: [],
-        highlightChangeGrade: 6,
     };
+    const highlightChanges = { highlightMode: "none", highlightKinds: [], highlightChangeGrade: 6 };
     const changes: [string, (scope: JobScope) => void][] = [
         ...Object.entries(writerChanges).map(([key, value]): [string, (scope: JobScope) => void] => [
             `structured.${key}`,
@@ -550,7 +548,7 @@ describe("memorySettingsFingerprint Structured Memory settings", () => {
         }
     });
 
-    it("keeps queued writer fingerprints across chat highlight modes", () => {
+    it("keeps queued writer fingerprints across chat and preset highlight settings", () => {
         const h = openStore();
         cleanups.push(() => h.dispose());
         for (const ownerId of ["c", "g"]) {
@@ -559,6 +557,11 @@ describe("memorySettingsFingerprint Structured Memory settings", () => {
             for (const mode of ["none", "important", "all"] as const) {
                 scopeChat(scope)!.structuredMemoryHighlight = mode;
                 expect(memorySettingsFingerprint(scope), `${ownerId}: chat highlight ${mode}`).toBe(queuedFingerprint);
+            }
+            for (const [key, value] of Object.entries(highlightChanges)) {
+                const changed = freshScope(h, ownerId, "structuredMemory");
+                Object.assign(changed.db.hypaV3Presets[1].settings.structured, { [key]: value });
+                expect(memorySettingsFingerprint(changed), `${ownerId}: preset ${key}`).toBe(queuedFingerprint);
             }
         }
     });

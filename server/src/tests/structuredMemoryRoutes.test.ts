@@ -2188,7 +2188,7 @@ it("leaves decline out of chat files while restoring records leaves an existing 
     expect((await answer(await source.request(base))).adoption).toMatchObject({ adoptable: 0, declined: true });
 });
 
-it("resets only adopted real summaries, publishes the chat revision and preserves a later summary", async () => {
+it("resets only adopted real summaries, publishes the chat revision and refuses a later summary the projection owns", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     const s = await server();
     const ui = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("ui")!;
@@ -2252,10 +2252,13 @@ it("resets only adopted real summaries, publishes the chat revision and preserve
         "Adopted memory.",
     ]);
     await refuse();
+    // After the reset the projection answers for the chat, so a real value a write brings (a tab from
+    // before the switch, a replay) is dropped with the rest of the write kept, and no hold follows.
     const newer = { summaries: [{ text: "New summary after reset", chatMemos: ["m1"], isImportant: true }] };
     storeAdoptionChat(s, newer);
-    expect((await answer(await s.request(`${base}/projection`))).hypaV3Data).toBeNull();
-    expect(s.store.readChatSource(characterId, chatId).data?.hypaV3Data).toEqual(newer);
+    expect(isSealedHypaV3Data((await answer(await s.request(`${base}/projection`))).hypaV3Data)).toBe(true);
+    expect(s.store.readChatSource(characterId, chatId).data).not.toHaveProperty("hypaV3Data");
+    expect(s.store.readChatSource(characterId, chatId).data?.message.map(({ chatId }) => chatId)).toEqual(["m0", "m1"]);
     s.write({ adoptionDeclined: true });
     await refuse();
 });

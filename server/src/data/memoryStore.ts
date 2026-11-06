@@ -895,6 +895,11 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             });
         },
 
+        /** Whether the chat with this `seq` has an event row, in any status: one count, no body read. */
+        hasEvents(chatSeq: number): boolean {
+            return (tables.events.count.get(chatSeq) as { count: number }).count > 0;
+        },
+
         /** The memory revision of the chat with this `seq`, one row: what a projection is sealed with. */
         revisionToken(chatSeq: number): string {
             return tokens.token(chatSeq, revisionOf(chatSeq));

@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
 - [Guides](#guides) (2)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (3)
+- [Structured Memory](#structured-memory) (1)
 
 ## Chat store, sync, and change feeds
 
@@ -482,20 +482,6 @@ Untagged gate tests that depend on real wall-clock or scheduler time (invariant 
 ## Structured Memory
 
 Moved from the Structured Memory plan run on 2026-11-03 and re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here.
-
-### Boot replay sends a real hypaV3Data past the Structured Memory guard
-
-The sweep's B11 (d0e198cc3) fixed only an explicit recovery Apply (`applyChatOps` in `src/ts/storage/journalRecovery.ts`). A resend's original ops (`installRecoveredChat` in `src/ts/storage/chatStore.svelte.ts` ~4739), an unchanged-revision whole-chat replay (`journalRecovery.ts` ~541) and a quarantine retry (`releaseChatRefusal`, `chatStore.svelte.ts` ~5059) reach the server without `keepsHeldHypaV3Data`. The server's `withoutProjection` (`server/src/data/chatStore.ts` ~798) strips only sealed values, so with Structured Memory selected a retry group stored a real `hypaV3Data` and reads stopped projecting. Found 2026-11-06 while doing B11.
-
-**Why it matters:** a journal row written under HypaV3 and replayed after a switch to Structured Memory silently hands the field back to HypaV3.
-**Suggested handling:** a design: filtering resends would break the exact-ops, base and group-id retry contract (`draft-recovery.md` Chat recovery).
-
-### Preset highlight settings still stale a queued writer input
-
-`structuredMemoryFingerprint` in `server/src/jobs/jobScope.ts` (~443) digests the preset's whole `settings.structured`, so a preset `highlightMode`, `highlightKinds` or `highlightChangeGrade` change still ends a queued writer input `skipped` (`staleInput`). The sweep's B5 (f3b7ad0d1, Q11) dropped only the chat's highlight override, because highlight only marks committed history; the same reason covers the preset fields. Found 2026-11-06.
-
-**Why it matters:** one lost queued run per preset highlight change.
-**Suggested handling:** digest `structured` without the highlight fields; `memoryTaskHost.test.ts` "digests every writer setting" lists them as fingerprint changes today.
 
 ### Evaluation findings
 
