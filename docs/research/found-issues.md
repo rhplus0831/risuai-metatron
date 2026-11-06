@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (9)
+- [Structured Memory](#structured-memory) (8)
 
 ## Chat store, sync, and change feeds
 
@@ -514,13 +514,6 @@ Measured by slice 8 on scripted fixtures (`docs/audit/structured-memory-2026-11-
 
 **Why it matters:** cost previews people pay by, and stalls on long chats.
 **Suggested handling:** take each as a proposal when Structured Memory is next touched, and re-run `node util/memoryEval.mjs` after a read-path change.
-
-### The final token recheck drops history evidence never sees
-
-The "token rechecking" step of `server/src/prompt/assemble.ts` (~2501–2538, after scripts and `editRequest`) can remove further removable raw history entries when the formatted prompt is over `maxContextTokens - maxResponse`. Structured Memory's evidence lane widens its pool only to what `selectMemory` (`server/src/prompt/memory/structured/step.ts` ~308–363) itself trimmed, so an uncovered message the later recheck drops leaves with no excerpt, and its gap is not in `gapTokens`. Found by the M5 challenger of the Implementation Audit Fixes run (2026-11-06); not reproduced on a real send. Related: the late removable-message cleanup in "No-memory trim question gaps".
-
-**Why it matters:** a silent loss of the kind M5 fixed, on a later path; it needs scripts or `editRequest` to grow the prompt past what selection measured.
-**Suggested handling:** raise when the recheck or the read path is next touched; the recheck could hand its removals back to the evidence lane or count them as a gap.
 
 ### Rebuild drops retained imported threads' participants
 
