@@ -223,6 +223,57 @@ it("keeps personal sections and history, chosen pages and threads, and carries e
     expect(later?.events?.[0]).toMatchObject({ adoptedSummaries: true });
 });
 
+it("keeps live page ids named by retained threads through the rebuild seed and swap", () => {
+    const base = memoryRecords(["place"]).pages[0];
+    const page: MemoryPage = {
+        ...base,
+        links: ["writer-place"],
+        history: [
+            {
+                id: "earlier",
+                kind: "change",
+                heading: base.sections[0].heading,
+                before: { ...base.sections[0], body: "Earlier text" },
+                at: 1,
+                highlighted: false,
+            },
+        ],
+    };
+    const scene: MemoryPage = {
+        ...page,
+        id: "scene",
+        type: "scene",
+        contextMode: "always",
+        participants: ["place"],
+    };
+    const threads = [
+        { id: "personal", title: "Find the key", state: "open" as const, who: ["place", "scene", "missing"] },
+        { id: "automatic", title: "Writer's thread", state: "open" as const, who: ["writer-place"], openedBy: "old" },
+    ];
+    const live = {
+        // The writer-only page shares a title with the retained page; references are ids.
+        pages: [page, scene, { ...base, id: "writer-place" }],
+        threads,
+        events: [],
+    };
+    const expectedPages = [
+        { ...page, sections: [], history: [], links: [] },
+        { ...scene, sections: [], history: [], links: [], participants: [] },
+    ];
+    const seed = rebuildSeed("rebuild", live);
+    expect(seed).toEqual({ pages: expectedPages, threads: [threads[0]] });
+
+    const changes = rebuildChanges("rebuild", live, {
+        pages: seed.pages!,
+        threads: seed.threads!,
+        events: [event("new", ["u1", "a1"])],
+    });
+    expect(changes?.pages).toEqual(expectedPages);
+    expect(changes?.threads).toEqual([threads[0]]);
+    expect(changes?.remove).toEqual({ events: [], pages: ["writer-place"], threads: ["automatic"] });
+    expect(rebuildSeed("backfill", live)).toEqual({ pages: live.pages });
+});
+
 it("seeds every unmarked section and history entry of merged and split pages", () => {
     const base = memoryRecords(["ordinary"]).pages[0];
     const pages = ["merged", "split"].map((id): MemoryPage => ({

@@ -144,18 +144,19 @@ const sectionMarked = ({ locked, pinned, suppressed, userCorrected }: MemorySect
     locked || !!pinned || !!suppressed || !!userCorrected;
 
 /**
- * What a rebuild keeps of `page` at its start, or null when nothing of it is a person's: its identity,
- * its marked sections whole, those headings' history, and no links, and of the scene no attendance. Only
- * a marked section seeds the scene page: its `always` is code's, not a choice. A page a person merged or
+ * What a rebuild keeps of `page` at its start, or null when nothing of it is a person's and no retained
+ * thread names it: its identity, its marked sections whole, those headings' history, and no links, and of
+ * the scene no attendance. The scene's `always` is code's, not a choice. A page a person merged or
  * split (`reshaped`) seeds with all of its sections and history: the arrangement is theirs, and a page
  * seeded without it would be written anew or, with nothing marked, removed at the swap.
  * A non-scene page also seeds when its grade is a person's (`gradeByUser`) or its `contextMode` is not
  * `auto`, even with no marked section: these are choices the rebuild must not discard.
+ * A page named by a retained thread also seeds, keeping the id its `who` stores.
  */
-function seededPage(page: MemoryPage): MemoryPage | null {
+function seededPage(page: MemoryPage, namedByThread: boolean): MemoryPage | null {
     const sections = page.reshaped ? page.sections : page.sections.filter(sectionMarked);
     const chosen = page.type !== "scene" && (page.gradeByUser === true || page.contextMode !== "auto");
-    if (sections.length === 0 && !chosen && !page.reshaped) {
+    if (sections.length === 0 && !chosen && !page.reshaped && !namedByThread) {
         return null;
     }
     const headings = new Set(sections.map(({ heading }) => heading));
@@ -173,9 +174,9 @@ function seededPage(page: MemoryPage): MemoryPage | null {
 
 /**
  * The staged records a run starts from. A rebuild keeps the pages with a person's work on them
- * (`seededPage`) and the threads a person added, so a page it does not name is written anew and a language
- * change retitles it. A backfill takes the live pages verbatim, so its cast is real, and no thread, since it
- * moves none.
+ * (`seededPage`), the threads a person added, and the live pages their `who` names, keeping those ids.
+ * Other pages are written anew and a language change retitles them. A backfill takes the live pages
+ * verbatim, so its cast is real, and no thread, since it moves none.
  * Seeded pages keep their ids for patches by `server/src/prompt/memory/structured/writer.ts`; their locks
  * still bind that writer.
  */
@@ -183,12 +184,15 @@ export function rebuildSeed(
     mode: StructuredMemoryRebuildMode,
     { pages, threads }: Pick<MemoryRecordSet, "pages" | "threads">,
 ): Pick<MemoryChanges, "pages" | "threads"> {
-    return mode === "backfill"
-        ? { pages }
-        : {
-              pages: pages.flatMap((page) => seededPage(page) ?? []),
-              threads: threads.filter(({ openedBy }) => openedBy === undefined),
-          };
+    if (mode === "backfill") {
+        return { pages };
+    }
+    const retainedThreads = threads.filter(({ openedBy }) => openedBy === undefined);
+    const namedPages = new Set(retainedThreads.flatMap(({ who }) => who));
+    return {
+        pages: pages.flatMap((page) => seededPage(page, namedPages.has(page.id)) ?? []),
+        threads: retainedThreads,
+    };
 }
 
 /** A window of the plan as the chat stands now, with the ceiling its commit reads it under. */

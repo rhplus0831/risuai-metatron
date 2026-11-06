@@ -92,10 +92,10 @@ Read `rebuildPlan` in `server/src/prompt/memory/structured/rebuild.ts`.
 
 ### What a rebuild keeps
 
-`rebuildSeed` supplies `begin` before the writer starts; `seededPage` owns preservation of a person's page choices and
-`rebuildChanges` owns replacement and carry rules. Events are not seeded: carry is decided against live records at the
-swap, so a retraction during the run counts. See [page tools](pages.md#what-a-merge-or-split-does-to-history) for the
-`reshaped` mark.
+`rebuildSeed` supplies `begin` before the writer starts; `seededPage` keeps a person's page choices and, by id, the
+pages a retained thread's `who` names; `rebuildChanges` owns replacement and carry rules. Events are not seeded: carry
+is decided against live records at the swap, so a retraction during the run counts. See
+[page tools](pages.md#what-a-merge-or-split-does-to-history) for the `reshaped` mark.
 
 No chat or `hypaV3Data` is written. An adopted chat's stored summaries stay until [reset](projection.md#the-reset), and
 the projection stands aside while they remain. The live store's write also preserves an adoption decline.
@@ -105,8 +105,7 @@ the projection stands aside while they remain. The live store's write also prese
 Backfill includes an adopted chat's user messages that summaries left uncovered, even when their replies were recorded.
 Its windows precede existing records, so `rebuildWork` gives the staged writer `historical: { frozenPages }`:
 `admissionState`, `historicalAnalysis`, `withoutFrozenTargets` and `commitPages` leave existing pages, their links, the
-scene and threads alone while adding events and new pages. `rebuildSeed` and `rebuildChanges` own the seed and swap
-preservation rules.
+scene and threads alone while adding events and new pages.
 
 ### The swap
 
