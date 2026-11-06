@@ -45,6 +45,7 @@ import {
     type ChatTranslationFields,
 } from "../../../shared/translation/chatSettings.ts";
 import { selectCandidateChange } from "../../../shared/rerollCandidates.ts";
+import { textHash } from "../../../shared/textHash.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { language } from "src/lang";
@@ -2893,7 +2894,8 @@ function stagedMetaFields(chat: Chat, fields: unknown): { remove: string[]; set:
 /**
  * A feed body's row diffs, checked and prepared before installation. Every id must be held once in
  * the diff list and absent from the body's whole rows and removals. Field changes exclude identity,
- * text, and `__proto__`; text reconstructs from the held UTF-16 prefix at exactly the body's base.
+ * text, and `__proto__`; text reconstructs from the held UTF-16 prefix only when the held text is
+ * the body's base, proven by length and hash when the body carries them.
  * New row objects own copies of changed values and share unchanged values with the outgoing held
  * rows. The shallow copy preserves own keys, including `__proto__`, and nested reactive proxies.
  */
@@ -2952,6 +2954,18 @@ function stagedRowDiffs(
                 held.data.length < diff.text.keep
             )
                 return null;
+            if (Object.hasOwn(diff.text, "base")) {
+                const base = diff.text.base;
+                if (
+                    !isPlainRecord(base) ||
+                    typeof base.length !== "number" ||
+                    !Number.isSafeInteger(base.length) ||
+                    base.length < 0 ||
+                    typeof base.hash !== "string"
+                )
+                    return null;
+                if (held.data.length !== base.length || textHash(held.data) !== base.hash) return null;
+            }
             data = held.data.slice(0, diff.text.keep) + diff.text.text;
         }
         const message = { ...held };

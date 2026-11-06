@@ -1,6 +1,7 @@
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { textHash } from "../../../../shared/textHash.ts";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
@@ -305,7 +306,16 @@ describe("live updates of chats that are not loaded", () => {
                 rowDelta: {
                     baseRevision,
                     count: 3,
-                    rowDiffs: [{ id: "b", text: { keep: data.length, text: " appended" } }],
+                    rowDiffs: [
+                        {
+                            id: "b",
+                            text: {
+                                keep: data.length,
+                                text: " appended",
+                                base: { length: data.length, hash: textHash(data) },
+                            },
+                        },
+                    ],
                 },
             },
         ]);

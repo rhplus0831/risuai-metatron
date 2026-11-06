@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Chat, Message, MessageTranslation } from "../../../shared/database.ts";
 import type { ChatGroup, ChatOp } from "../../../shared/chats.ts";
 import { MAX_FEED_PATCH_BYTES, SMALL_FEED_PATCH_BYTES, type ResourceBatchResult } from "../../../shared/resources.ts";
+import { textHash } from "../../../shared/textHash.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { CHAT_TABLES_SQL, TOUCHED_ROWS_SQL, type ChatWriteChange } from "../data/chatStore.ts";
@@ -204,7 +205,7 @@ describe("by-id chat feed patches", () => {
             rowDiffs: [
                 {
                     id: "c",
-                    text: { keep: data.length, text: "!" },
+                    text: { keep: data.length, text: "!", base: { length: data.length, hash: textHash(data) } },
                     fields: {
                         set: {
                             candidates: refreshed,
@@ -322,7 +323,16 @@ describe("by-id chat feed patches", () => {
         const rowDelta = {
             baseRevision,
             count: 3,
-            rowDiffs: [{ id: "b", text: { keep: before.length, text: suffix } }],
+            rowDiffs: [
+                {
+                    id: "b",
+                    text: {
+                        keep: before.length,
+                        text: suffix,
+                        base: { length: before.length, hash: textHash(before) },
+                    },
+                },
+            ],
         };
         b.write([{ op: "setText", id: "b", text: before + suffix }]);
         expect(b.notice()).toEqual({
@@ -413,7 +423,11 @@ describe("by-id chat feed patches", () => {
                     {
                         id: "b",
                         fields: { set: { role: "user" }, unset: ["saying"] },
-                        text: { keep: prefix.length, text: "new" },
+                        text: {
+                            keep: prefix.length,
+                            text: "new",
+                            base: { length: (prefix + "old").length, hash: textHash(prefix + "old") },
+                        },
                     },
                 ],
             },
@@ -451,15 +465,20 @@ describe("by-id chat feed patches", () => {
                 baseRevision,
                 count: 3,
                 messages: [{ after: "b", message: after }],
-                rowDiffs: [{ id: "b", text: { keep: data.length, text: "!" } }],
+                rowDiffs: [
+                    {
+                        id: "b",
+                        text: { keep: data.length, text: "!", base: { length: data.length, hash: textHash(data) } },
+                    },
+                ],
             },
         });
         expect(b.read().data.message).toEqual([m("a", "A"), m("b", data + "!"), after]);
     });
 
     it.each([
-        { comparison: "equal in size", saying: "s".repeat(8), excess: 0 },
-        { comparison: "larger", saying: undefined, excess: 20 },
+        { comparison: "equal in size", saying: "s".repeat(52), excess: 0 },
+        { comparison: "larger", saying: undefined, excess: 64 },
     ])("keeps a fitting whole-row patch when the row diff would be $comparison", ({ saying, excess }) => {
         const b = setup();
         const unchanged = saying === undefined ? {} : { saying };
@@ -471,7 +490,11 @@ describe("by-id chat feed patches", () => {
             baseRevision,
             count: 3,
             rowDiffs: [
-                { id: "b", fields: { set: { role: "user" }, unset: [] }, text: { keep: 0, text: message.data } },
+                {
+                    id: "b",
+                    fields: { set: { role: "user" }, unset: [] },
+                    text: { keep: 0, text: message.data, base: { length: 1, hash: textHash("B") } },
+                },
             ],
         };
         expect(Buffer.byteLength(JSON.stringify(rowDelta)) - Buffer.byteLength(JSON.stringify(patch))).toBe(excess);

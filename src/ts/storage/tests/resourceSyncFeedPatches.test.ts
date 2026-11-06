@@ -3,6 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { ChatOp } from "../../../../shared/chats.ts";
 import type { Message } from "../../../../shared/database.ts";
 import { MAX_FEED_PATCH_BYTES, SMALL_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { textHash } from "../../../../shared/textHash.ts";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
@@ -594,7 +595,7 @@ describe("feed patches through the tab save adapter", () => {
             rowDiffs: [
                 {
                     id: "b",
-                    text: { keep: data.length, text: "!" },
+                    text: { keep: data.length, text: "!", base: { length: data.length, hash: textHash(data) } },
                     fields: { set: { candidates: cleaned, candidatesRevision: 2 }, unset: ["scriptstateCheckpoint"] },
                 },
             ],
@@ -834,6 +835,82 @@ describe("feed patches through the tab save adapter", () => {
         await b.sync.flushResources();
         await vi.advanceTimersByTimeAsync(1500);
         expect(reads(b)).toEqual([]);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it("reloads a row diff whose held text has the stored base's length but a different hash", async () => {
+        const stored = "A".repeat(9000);
+        const held = "B".repeat(9000);
+        const b = await boot({ messages: [m("b", stored, "char")] });
+        const record = b.fake.chat("c", "k")!;
+        const baseRevision = b.chat.heldChatRevision(refK)!;
+        // Install a different mirror at the same revision without queuing a save.
+        b.chat.acceptRemoteChat({ ...record, data: { ...record.data, message: [m("b", held, "char")] } });
+        expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+        expect(mirror(b).message[0].data).toBe(held);
+        quiet(b);
+
+        b.live.paused = true;
+        remote(b, [{ op: "setText", id: "b", text: stored + "!" }]);
+        const event = b.live.queue[0];
+        if (event.type !== "change") throw new Error("expected a committed change");
+        const entry = event.changes.chats[0];
+        expect(entry.rowDelta).toEqual({
+            baseRevision,
+            count: 1,
+            rowDiffs: [
+                {
+                    id: "b",
+                    text: { keep: stored.length, text: "!", base: { length: stored.length, hash: textHash(stored) } },
+                },
+            ],
+        });
+        expect(entry).not.toHaveProperty("patch");
+        b.flushFeed();
+        expect(b.chat.isChatBehind(refK)).toBe(true);
+        expect(mirror(b).message[0].data).toBe(held);
+        expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+        expect(reads(b)).toEqual([]);
+
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toEqual([expect.objectContaining({ chats: [{ characterId: "c", id: "k" }] })]);
+        expect(mirror(b).message).toEqual([m("b", stored + "!", "char")]);
+        expect(b.chat.heldChatRevision(refK)).toBe(entry.revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it.each([
+        { label: "absent", base: undefined, outcome: "ignored" },
+        { label: "non-integer length", base: { length: 1.5, hash: textHash("B") }, outcome: "noticed" },
+        { label: "non-string hash", base: { length: 1, hash: 42 }, outcome: "noticed" },
+    ] as const)("accepts an absent text base and rejects malformed bases: $label", async ({ base, outcome }) => {
+        const b = await boot();
+        const baseRevision = b.chat.heldChatRevision(refK)!;
+        b.live.paused = true;
+        remote(b, [{ op: "setText", id: "b", text: "B!" }]);
+        const revision = b.fake.chat("c", "k")!.revision;
+        // Model an older server or a malformed feed body at the public admission boundary.
+        const body = {
+            baseRevision,
+            count: 3,
+            rowDiffs: [{ id: "b", text: { keep: 1, text: "!", ...(base === undefined ? {} : { base }) } }],
+        } as Parameters<ChatModule["noteRemoteChat"]>[2];
+        expect(b.chat.noteRemoteChat(refK, revision, body)).toBe(outcome);
+        const applied = outcome === "ignored";
+        expect(mirror(b).message[1].data).toBe(applied ? "B!" : "B");
+        expect(b.chat.heldChatRevision(refK)).toBe(applied ? revision : baseRevision);
+        expect(b.chat.isChatBehind(refK)).toBe(!applied);
+
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toEqual(applied ? [] : [expect.objectContaining({ chats: [{ characterId: "c", id: "k" }] })]);
+        expect(mirror(b).message[1].data).toBe("B!");
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
         expect(b.fake.batchCount()).toBe(0);
         quiet(b);
     });

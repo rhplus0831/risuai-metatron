@@ -33,6 +33,7 @@ import {
     RESOURCE_KIND,
 } from "../../../shared/resources.ts";
 import { isSealedHypaV3Data, memorySourceSpeaker } from "../../../shared/structuredMemory.ts";
+import { textHash } from "../../../shared/textHash.ts";
 import { chatTranslationSummary } from "../../../shared/translation/chatSettings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
@@ -771,7 +772,11 @@ function chatRowDiff(id: string, before: Record<string, unknown>, after: Record<
                 keep += 1;
             }
         }
-        diff.text = { keep, text: after.data.slice(keep) };
+        diff.text = {
+            keep,
+            text: after.data.slice(keep),
+            base: { length: before.data.length, hash: textHash(before.data) },
+        };
     }
     return diff;
 }

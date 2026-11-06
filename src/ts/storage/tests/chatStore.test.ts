@@ -4,6 +4,7 @@ import type { MessageTranslation } from "../../../../shared/database.ts";
 import { translationSourceHash } from "../../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../../shared/translation/messageTranslation.ts";
 import { SMALL_FEED_PATCH_BYTES } from "../../../../shared/resources.ts";
+import { textHash } from "../../../../shared/textHash.ts";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
@@ -2567,7 +2568,16 @@ describe("stream updates per frame", () => {
         const event = server.feedEvents.at(-1)!;
         if (event.type !== "change") throw new Error("expected the committed text change");
         const change = event.changes.chats[0];
-        expect(change.rowDelta?.rowDiffs).toEqual([{ id: "a", text: { keep: stored.length, text: "server suffix" } }]);
+        expect(change.rowDelta?.rowDiffs).toEqual([
+            {
+                id: "a",
+                text: {
+                    keep: stored.length,
+                    text: "server suffix",
+                    base: { length: stored.length, hash: textHash(stored) },
+                },
+            },
+        ]);
         expect(chat.noteRemoteChat(ref, change.revision, change.rowDelta)).toBe("ignored");
         expect(chat.findChat(ref)!.message[0].data).toBe(stored + "server suffix");
         expect(server.texts("c", "k")).toEqual([stored + "server suffix", "B", "C"]);

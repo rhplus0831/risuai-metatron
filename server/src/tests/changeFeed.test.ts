@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../shared/chats.ts";
 import { HIDDEN_HYDRATION_KINDS } from "../../../shared/jobs.ts";
 import { MAX_FEED_PATCH_BYTES, MAX_FEED_PUBLICATION_PATCH_BYTES } from "../../../shared/resources.ts";
+import { textHash } from "../../../shared/textHash.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import {
@@ -1233,7 +1234,9 @@ describe("the publication patch budget", () => {
         const rowDelta = sizedPatch(remainder + excess, (text) => ({
             baseRevision,
             count: 1,
-            rowDiffs: [{ id: "m", text: { keep: data.length, text } }],
+            rowDiffs: [
+                { id: "m", text: { keep: data.length, text, base: { length: data.length, hash: textHash(data) } } },
+            ],
         }));
         const records = ["a", "b", "c", "d"].map((id) => field(store, id));
         events.length = 0;

@@ -464,13 +464,16 @@ export type ChatDeltaBody = Omit<ChatPatchBody, "meta"> & { metaFields?: ChatMet
  * One existing row's change from the stored base to the group's result. Fields compare as JSON
  * values, without key order: `set` holds added or changed values whole, `unset` names fields gone.
  * `data` comes separately as its common prefix length in UTF-16 code units and the remaining text.
+ * `text.base` is the stored text's UTF-16 length and `textHash` at the entry's base revision. A
+ * client whose held text differs treats the body as a miss. Older servers omit `base`; without
+ * it, only `keep <= held length` is checked against the held text.
  * Optional feed-only data for older clients: `fields` and `text` are independently absent when
  * unchanged; the id needs no anchor because surviving existing rows never reorder in a by-id group.
  */
 export type ChatRowDiff = {
     id: string;
     fields?: { set: Record<string, unknown>; unset: string[] };
-    text?: { keep: number; text: string };
+    text?: { keep: number; text: string; base?: { length: number; hash: string } };
 };
 
 /**

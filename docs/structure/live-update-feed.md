@@ -2,9 +2,9 @@
 
 ## Scope
 
-- Owns the server's change feed and the live-update socket: the `hello` a socket starts with, how frames are admitted
-  per socket, what a chat write publishes (the writer's own change, and the feed's chat entries with their summary and
-  by-id body), how a publishing scope coalesces entries, and the publication budget one frame spends.
+- Owns the server's change feed and the live-update socket: the `hello`, per-socket frame admission, what a chat write
+  publishes (the writer's own change; the feed's chat entries with summary and by-id body), coalescing per publishing
+  scope, and one frame's publication budget.
 - Not here: the socket's client and the save loop it feeds ([live updates](live-updates.md#feed-connection)); the
   store's commits, chat summaries, and the epoch ([server resources](server-resources.md)); jobs, the job socket and
   channel ([server generation](server-generation.md)); the memory tasks of `memoryTask` frames
@@ -61,7 +61,7 @@ the tab side is [feed connection](live-updates.md#feed-connection).
 - The writer is a generation job; `refreshChatAfterWrite` (`jobs/jobScope.ts`) lays the change onto the job's chat
   ([server generation](server-generation.md)).
 - The feed's capped body is taken from the same change; the [publication budget](#publication-budget) and the HTTP batch
-  body leave `written` as it is.
+  body leave `written` unchanged.
 
 ### Feed chat entries
 
@@ -69,27 +69,28 @@ the tab side is [feed connection](live-updates.md#feed-connection).
 group result, never in `ChatGroupResult`, the HTTP body, or `ChatWriteChange`. An entry carries the group's summary
 knowledge (`ChatFeedPayloads`) and at most one body, chosen by size in `chatFeedChange` (rule: `ChangeSet`): a whole-row
 `patch` under `SMALL_FEED_PATCH_BYTES`, else a smaller `rowDelta` (per-row field and text diffs against the group's
-first read, `chatRowDiff`), else a fitting `patch`, else a `delta`, else a fitting `rows` manifest (`ChatRowsManifest`:
-base, row ids, removals, count, changed metadata field names).
+first read, `chatRowDiff`; a text diff names that read's length and `textHash`: a tab holding other text misses; without
+them (older servers) only the length is checked), else a fitting `patch`, else a `delta`, else a fitting `rows` manifest
+(`ChatRowsManifest`: base, row ids, removals, count, changed metadata field names).
 
 ### Coalescing and publish order
 
 - A chat recorded again in one publishing scope, or merged from a nested scope, keeps one entry: the later ref without a
   body, and only the summary knowledge both entries prove (`recordChat`, `mergeChanges`, `coalescedChat`).
-- Change feed events reach listeners, the socket fan-out among them, in publish order, including events a listener
-  publishes while handling another; a listener that throws is logged and the feed goes on. Committed nested writes still
-  publish their refs when an enclosing write fails during input evaluation (`publishing`).
+- Listeners, the socket fan-out among them, get change feed events in publish order, also those a listener publishes
+  while handling another; one that throws is logged and the feed goes on. Committed nested writes still publish their
+  refs when an enclosing write fails during input evaluation (`publishing`).
 
 ### Publication budget
 
 - One committed outermost publishing scope that recorded anything is one `change` frame (`feed.publish` once; a commit
-  that records nothing, such as a cold checkpoint write, publishes none), and the optional payloads of that frame
-  (record patches, chat bodies, each within `MAX_FEED_PATCH_BYTES`, 64 KiB, and chat `summary` and `summaryBase` fields)
-  total at most `MAX_FEED_PUBLICATION_PATCH_BYTES` (256 KiB of UTF-8 JSON).
+  recording nothing, such as a cold checkpoint write, publishes none), and the optional payloads of that frame (record
+  patches, chat bodies, each within `MAX_FEED_PATCH_BYTES`, 64 KiB, and chat `summary` and `summaryBase` fields) total
+  at most `MAX_FEED_PUBLICATION_PATCH_BYTES` (256 KiB of UTF-8 JSON).
 - The store applies it once, when the outermost publishing scope publishes (`budgetedEntries` holds the walk order and
   the drop rule): a nested scope neither spends nor resets it, and a feed listener's own write is a later publication
-  with a budget of its own. A dropped payload leaves its entry in place without it; a dropped `summary` leaves the
-  entry's summary unknown.
+  with its own budget. A dropped payload leaves its entry in place without it; a dropped `summary` leaves the entry's
+  summary unknown.
 - Refs, chat-order entries, and `streaming` lock lists are never dropped, reordered, or split, so a chat's locks stay in
   the frame of its chat ref and a lock release with no refs (`publishStreaming`) is still published.
 
@@ -100,9 +101,8 @@ base, row ids, removals, count, changed metadata field names).
 
 ## Coupling
 
-- [Server resources](server-resources.md): the store publishes each commit to the feed
-  ([Publication budget](#publication-budget)), and [chat summaries](server-resources.md#chat-summaries) are what an
-  entry carries.
+- [Server resources](server-resources.md): the store publishes each commit to the feed, and
+  [chat summaries](server-resources.md#chat-summaries) are what an entry carries.
 - [Server generation](server-generation.md): the job socket's `chatPatch` keeps the whole `meta`, a lock release with no
   refs (`publishStreaming`) is a frame of its own, and the memory task registry supplies the `memoryTask` frames.
 - The client, [live updates](live-updates.md#feed-connection), reconciles on reconnect and applies the entry forms.
@@ -110,8 +110,8 @@ base, row ids, removals, count, changed metadata field names).
 ## Invariants
 
 - The feed publishes only what the resource store committed ([Invariants](server-resources.md#invariants)).
-- A frame is never split: refs, chat-order entries, and lock lists travel whole, and a frame a socket cannot take closes
-  that socket ([Frame admission](#frame-admission)).
+- A frame is never split ([Publication budget](#publication-budget)); a frame a socket cannot take closes that socket
+  ([Frame admission](#frame-admission)).
 
 ## Recipes
 
@@ -127,7 +127,7 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 - `chatMetadataCoalescingEvents.test.ts` identifies the job fixture's SQLite connection by its epoch and counts
   transactions on it, so background writes in other stores cannot alter the coalescing assertion.
 - Feed: `pnpm --silent test:agent server/src/tests/{changeFeed,events,chatMetadataCoalescingEvents}.test.ts`.
-- Not tested: none recorded here; the client's reconnect and replay are [live-updates](live-updates.md)'s.
+- Not tested: none here; the client's reconnect and replay are [live-updates](live-updates.md)'s.
 
 ## Known Hazards
 
