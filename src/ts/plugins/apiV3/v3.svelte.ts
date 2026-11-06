@@ -40,10 +40,11 @@ import {
     setModules,
     setPersonas,
     setPluginArgument,
+    settingsWriteScope,
     updateSettings,
     upsertPlugin,
 } from "src/ts/storage/collectionStore.svelte";
-import { MutationValidationError, requireArray } from "src/ts/storage/mutationValidation";
+import { MutationTargetGoneError, MutationValidationError, requireArray } from "src/ts/storage/mutationValidation";
 import {
     clearOwnedPluginStorage,
     getOwnedPluginStorageValue,
@@ -59,7 +60,7 @@ import {
 import { assertSaveAdmission, flushResources, onPluginStorageDiscarded } from "src/ts/storage/resourceSync.svelte";
 import { selectPersona, selectedIndex } from "src/ts/storage/selection.svelte";
 import { batchRecordWrites } from "src/ts/storage/records.svelte";
-import { isForwardedPresetRoot, missingPresetTarget } from "src/ts/storage/settingsViews.svelte";
+import { isForwardedPresetRoot, missingPresetTarget, type PresetScope } from "src/ts/storage/settingsViews.svelte";
 import { buildDatabaseSubset } from "src/ts/storage/snapshots.svelte";
 import {
     currentContext,
@@ -1865,7 +1866,7 @@ function selectPersonaAt(index: unknown) {
 function applyPluginKey(
     key: string,
     value: unknown,
-    context: PluginCallContext | undefined,
+    scope: PresetScope,
     vanished: ReadonlySet<string> = new Set(),
     unchangedChats: ReadonlySet<string> = new Set(),
 ) {
@@ -1893,7 +1894,7 @@ function applyPluginKey(
     if (allowedDbKeys.includes(key)) {
         // Validation stays in the mutation module; model roots then use `writeModelRoot` with this
         // captured scope, including its unchanged-value check before matching profiles.
-        updateSettings({ [key]: value }, { presetId: context?.presetId, modelPresetId: context?.modelPresetId });
+        updateSettings({ [key]: value }, scope);
     } else {
         setPluginCustomValue(key, value);
     }
@@ -1902,31 +1903,33 @@ function applyPluginKey(
 /**
  * Both database setters: the lite setter has already dropped `plugins`, and the full setter has
  * confirmed the plugins to install. Each key is applied on its own, so a refused value (warned
- * about) keeps that key's previous value and the other keys still apply. A preset that is gone
- * (`MutationTargetGoneError`) and unexpected errors reach the plugin. Inside a hook (`context`), a
- * forwarded preset key goes to the hook's preset; when that preset is gone, nothing is applied
- * (`PluginTargetGoneError`).
+ * about) keeps that key's previous value and the other keys still apply. Forwarded preset keys use
+ * the captured scope. Before any key applies, a missing preset needed by those keys refuses the
+ * entire call: `PluginTargetGoneError` inside a hook (`context`), `MutationTargetGoneError` otherwise.
+ * With no forwarded preset keys, missing presets do not refuse the call. Unexpected errors reach the plugin.
  */
 function applyPluginDatabase(
     newDb: Record<string, unknown>,
     context: PluginCallContext | undefined,
+    scope: PresetScope,
     vanished: ReadonlySet<string> = new Set(),
     unchangedChats: ReadonlySet<string> = new Set(),
 ) {
-    if (context) {
-        const missing = missingPresetTarget(
-            context,
-            Object.keys(newDb).filter((key) => allowedDbKeys.includes(key) && isForwardedPresetRoot(key)),
-        );
-        if (missing !== undefined) {
+    const missing = missingPresetTarget(
+        scope,
+        Object.keys(newDb).filter((key) => allowedDbKeys.includes(key) && isForwardedPresetRoot(key)),
+    );
+    if (missing !== undefined) {
+        if (context) {
             throw new PluginTargetGoneError(missing);
         }
+        throw new MutationTargetGoneError(`${missing} ${missing === "preset" ? scope.presetId : scope.modelPresetId}`);
     }
     // One queued write per settings record the call changed (`records.svelte.ts`).
     batchRecordWrites(() => {
         for (const key of pluginKeyOrder(newDb)) {
             warnRefused(`the database key ${key}`, () =>
-                applyPluginKey(key, newDb[key], context, vanished, unchangedChats),
+                applyPluginKey(key, newDb[key], scope, vanished, unchangedChats),
             );
         }
     });
@@ -1995,7 +1998,11 @@ function pluginChatsMatch(
  * pinned while other characters load; all matches and original owners are checked synchronously
  * before applying. A changed match falls back once to loading targets that supply chats before any key applies.
  */
-async function applyPluginDatabaseWithChats(newDb: Record<string, unknown>, context: PluginCallContext | undefined) {
+async function applyPluginDatabaseWithChats(
+    newDb: Record<string, unknown>,
+    context: PluginCallContext | undefined,
+    scope: PresetScope,
+) {
     const targets = charactersReconciled(newDb);
     const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
     const matches = new Map<string, { chats: unknown; hits: Map<string, DetachedChatCacheHit> }>();
@@ -2037,13 +2044,13 @@ async function applyPluginDatabaseWithChats(newDb: Record<string, unknown>, cont
             for (const [chaId, { chats, hits }] of matches) {
                 if (!vanished.has(chaId) && !pluginChatsMatch(chaId, chats, hits, true)) return false;
             }
-            applyPluginDatabase(newDb, context, vanished, new Set([...omitted, ...matches.keys()]));
+            applyPluginDatabase(newDb, context, scope, vanished, new Set([...omitted, ...matches.keys()]));
             return true;
         });
         if (!applied) {
             await withChatsLoaded(chatTargets, () => {
                 checkOwners();
-                applyPluginDatabase(newDb, context, vanishedOf(targets), omitted);
+                applyPluginDatabase(newDb, context, scope, vanishedOf(targets), omitted);
             });
         }
     } finally {
@@ -2054,24 +2061,29 @@ async function applyPluginDatabaseWithChats(newDb: Record<string, unknown>, cont
 /**
  * Plugin installation needs the full setter's consent flow, so this setter drops `plugins`.
  * Omitted chats and exact chat round trips skip loading and reconciliation; other targets load before applying.
- * Character fields and a numeric `chatPage` still apply for unchanged chats.
+ * Character fields and a numeric `chatPage` still apply for unchanged chats. Preset fields use the hook's
+ * captured ids, or the settings write scope captured at call start. A missing target needed by those
+ * fields refuses the whole call before any key applies.
  */
 const setPluginDatabaseLite = async (newDb: any, context: PluginCallContext | undefined) => {
+    const scope = context ?? settingsWriteScope();
     if (newDb && typeof newDb === "object" && Object.hasOwn(newDb, "plugins")) {
         newDb = { ...newDb };
         delete newDb.plugins;
     }
-    await applyPluginDatabaseWithChats(newDb, context);
+    await applyPluginDatabaseWithChats(newDb, context, scope);
 };
 
 /**
  * Preflights every supplied plugin and awaits all installation prompts before assigning any key,
  * then loads supplied chats except for exact round trips and applies keys synchronously. Unchanged chats
  * skip reconciliation while character fields and a numeric `chatPage` still apply. Preset fields target
- * the hook's captured ids; without context they resolve through the settings views after all waits
- * (`src/ts/storage/collectionStore.svelte.ts:updateSettings`), including any selection repair then.
+ * the hook's captured ids; without context they use the settings write scope captured at call start
+ * (`src/ts/storage/collectionStore.svelte.ts:settingsWriteScope`), before any waits. A missing target
+ * needed by those fields refuses the whole call before any key applies.
  */
 const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefined) => {
+    const scope = context ?? settingsWriteScope();
     if (Object.hasOwn(newDb, "plugins")) {
         console.warn(
             "[WARN] Plugin attempted to access plugin directly. this would be blocked in future versions. Instead, use the provided APIs to manage plugins. Attempting to handle plugin installation via plugin for new plugins in the provided database object.",
@@ -2087,8 +2099,8 @@ const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefi
         // Only the plugins the user confirms are installed; the installed ones stay.
         newDb = { ...newDb, plugins: await handlePluginInstallViaPlugin(plugins) };
     }
-    // After chats load, no await: preset fields use the hook's ids, else the current settings views.
-    await applyPluginDatabaseWithChats(newDb, context);
+    // After chats load, no await: preflight the captured scope and apply every key synchronously.
+    await applyPluginDatabaseWithChats(newDb, context, scope);
 };
 
 const readAssetImage = (path: string) => {

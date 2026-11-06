@@ -596,15 +596,16 @@ describe("the per-key contract", () => {
         ]);
     });
 
-    it("a preset field written while the selected preset is gone throws MutationTargetGoneError to the plugin", async () => {
+    it("a preset field written while the selected preset is gone refuses the whole call with MutationTargetGoneError", async () => {
         const api = await makeApi();
+        const theme = ui().theme;
         selectPreset("gone");
         await expect(api.setDatabaseLite({ theme: "first", temperature: 1 })).rejects.toBeInstanceOf(
             MutationTargetGoneError,
         );
-        expect(ui().theme).toBe("first");
-        // The setters are async (they load the chats first): the selection's repair ran during the
-        // first call's awaits, so the preset is gone again for the second.
+        // The preset is checked before any key applies, so the section field did not land either.
+        expect(ui().theme).toBe(theme);
+        // The selection's repair may have run during the first call's awaits; select the gone preset again.
         selectPreset("gone");
         await expect(api.setDatabase({ temperature: 2 })).rejects.toBeInstanceOf(MutationTargetGoneError);
         expect(preset("a").temperature).toBeUndefined();

@@ -59,11 +59,11 @@ entrypoints.
 - Lookup in `v3.svelte.ts`: `addProvider` (permission per call), `nativeFetch` (its response body is bridged:
   [Sandbox host](#sandbox-host)), `onStorageDiscarded`, `parseRisuChat`, `runLLMModel`, `loadV3Plugins`,
   `unloadV3Plugin`, `pluginWorkIdle`, `onPluginWorkChange`, `customV3ProviderMetaStore`.
-- Database setters: `setPluginDatabase`, `setPluginDatabaseLite`, `applyPluginDatabaseWithChats` (loading JSDoc),
-  `applyPluginKey`, `pluginKeyOrder`, `warnRefused` (`[Plugin] Refused ...`). Model roots go to `writeModelRoot`
+- Database setters: `setPluginDatabase`, `setPluginDatabaseLite`, `applyPluginDatabaseWithChats`, `applyPluginKey`,
+  `pluginKeyOrder`, `warnRefused` (`[Plugin] Refused ...`). Model roots go to `writeModelRoot`
   ([compatibility model-root write rules](llm-requests.md#compatibility-model-root-writes)); a refusal warns
-  `[Settings] Refused ...`. Outside a hook, a preset field lands where the settings views resolve when the waits end
-  (the open chat's bound preset, else this tab's selection).
+  `[Settings] Refused ...`. Preset fields go to the hook's ids, else `settingsWriteScope` taken at call start; a target
+  gone by the apply refuses the whole call.
 
 ## Flows
 

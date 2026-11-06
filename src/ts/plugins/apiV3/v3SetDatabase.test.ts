@@ -5,8 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // The plugin `setDatabase` host setter over the settings records. A forwarded key of
 // `allowedDbKeys` (`temperature`, `maxContext`, ...) lands in the preset this client has selected.
 // When the object also carries `plugins`, the install prompt is awaited before anything is
-// assigned, so every field lands in the preset selected when the prompt is answered, not in two
-// different presets depending on the key order.
+// assigned, and every field lands in the presets selected when the call started, whatever the
+// user selects while the prompt is open.
 
 const captured = vi.hoisted(() => ({
     api: null as null | Record<string, any>,
@@ -43,11 +43,14 @@ vi.mock("src/ts/process/index.svelte", () => ({
 
 import { llmSecretState, setMaskedSecrets } from "src/ts/storage/llmSecrets.svelte";
 import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
-import { changeToModelPreset, changeToPreset } from "src/ts/storage/presets.svelte";
-import { selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
+import { changeToModelPreset, changeToPreset, removeModelPreset } from "src/ts/storage/presets.svelte";
+import { selection, selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
 import { activeMainProfile, activePreset, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets.ts";
+import { assembleChats, seedChats } from "src/ts/storage/chatStore.svelte";
+import { MutationTargetGoneError } from "src/ts/storage/mutationValidation";
+import * as resourceClient from "src/ts/storage/resourceClient";
 import { executePluginV3 } from "./v3.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { seedPluginPermissions } from "./permissionStore";
@@ -155,7 +158,7 @@ describe("the plugin setDatabase host setter", () => {
         expect(mainProfile("a").maxContext).toBe(9200);
     });
 
-    it("awaits the plugin install prompt before assigning anything, so every field lands in the preset selected then", async () => {
+    it("awaits the plugin install prompt before assigning anything, and every field lands in the presets selected at the call", async () => {
         const pending = captured.api!.setDatabase({
             temperature: 91,
             plugins: [{ name: "installed-via-plugin", script: "", version: "3.0" }],
@@ -173,10 +176,118 @@ describe("the plugin setDatabase host setter", () => {
         captured.confirm[0](true);
         await pending;
 
-        expect(preset("b")).toMatchObject({ temperature: 91 });
-        expect(preset("a")).toMatchObject({ temperature: 80 });
-        expect(mainProfile("b")).toMatchObject({ maxContext: 9100 });
-        expect(mainProfile("a")).toMatchObject({ maxContext: 4000 });
+        expect(preset("a")).toMatchObject({ temperature: 91 });
+        expect(preset("b")).toMatchObject({ temperature: 50 });
+        expect(mainProfile("a")).toMatchObject({ maxContext: 9100 });
+        expect(mainProfile("b")).toMatchObject({ maxContext: 5000 });
         expect(settings.plugins.map((plugin: { name: string }) => plugin.name)).toEqual(["installed-via-plugin"]);
+    });
+
+    it("refuses the whole call when the selected model preset is deleted during plugin consent", async () => {
+        const theme = settings.ui.theme;
+        const presets = JSON.parse(JSON.stringify(settings.presets));
+        const survivingModels = JSON.parse(JSON.stringify(settings.modelPresets.filter((entry) => entry.id === "b")));
+        const profiles = JSON.parse(JSON.stringify(settings.modelProfiles));
+        const pending = captured.api!.setDatabase({
+            theme: "from-plugin",
+            plugins: [{ name: "installed-via-plugin", script: "", version: "3.0" }],
+            temperature: 91,
+            maxContext: 9100,
+        });
+        const rejected = expect(pending).rejects.toBeInstanceOf(MutationTargetGoneError);
+        await Promise.resolve();
+        expect(captured.confirm).toHaveLength(1);
+
+        expect(removeModelPreset("a")).toBe(true);
+        expect(selection.modelPresetId).toBe("b");
+        captured.confirm[0](true);
+        await rejected;
+
+        expect(settings.presets).toEqual(presets);
+        expect(settings.modelPresets).toEqual(survivingModels);
+        expect(settings.modelProfiles).toEqual(profiles);
+        expect(settings.ui.theme).toBe(theme);
+        expect(settings.plugins).toEqual([]);
+    });
+
+    it("accepts a call without preset fields when the selected model preset is deleted during plugin consent", async () => {
+        const plugin = { name: "installed-via-plugin", script: "", version: "3.0" };
+        const pending = captured.api!.setDatabase({ theme: "from-plugin", plugins: [plugin] });
+        await Promise.resolve();
+        expect(captured.confirm).toHaveLength(1);
+
+        expect(removeModelPreset("a")).toBe(true);
+        expect(selection.modelPresetId).toBe("b");
+        captured.confirm[0](true);
+        await expect(pending).resolves.toBeUndefined();
+
+        expect(settings.ui.theme).toBe("from-plugin");
+        expect(settings.plugins).toEqual([plugin]);
+    });
+
+    it("setDatabaseLite writes to the presets selected at call start after chat loading and a selection change", async () => {
+        vi.useFakeTimers();
+        const chat = { id: "chat", name: "Chat", message: [], note: "", localLore: [], fmIndex: -1 };
+        const character = { chaId: "loading", name: "Loading", type: "character" };
+        const revision = "00000000-0000-4000-8000-000000000000:1:1";
+        const summaries = [{ characterId: "loading", id: chat.id, revision, name: chat.name, fmIndex: -1 }];
+        const orders = [{ characterId: "loading", revision, ids: [chat.id] }];
+        let signalRead!: () => void;
+        let resumeRead!: () => void;
+        const entered = new Promise<void>((resolve) => (signalRead = resolve));
+        const release = new Promise<void>((resolve) => (resumeRead = resolve));
+        const read = vi.spyOn(resourceClient, "readRefs").mockImplementation(async () => {
+            signalRead();
+            await release;
+            return {
+                epoch: "",
+                items: [],
+                chats: [{ characterId: "loading", id: chat.id, revision, data: chat }],
+            };
+        });
+        let pending: Promise<void> | undefined;
+        try {
+            installFlatDatabase({
+                characters: [character],
+                botPresets: [
+                    { id: "a", name: "A", temperature: 80 },
+                    { id: "b", name: "B", temperature: 50 },
+                ],
+                modelPresets: [
+                    normalizeModelPreset({ mainSlot: { profileId: "m-a" } }, { id: "a" }),
+                    normalizeModelPreset({ mainSlot: { profileId: "m-b" } }, { id: "b" }),
+                ],
+                modelProfiles: [
+                    normalizeModelProfile({ id: "m-a", maxContext: 4000 }),
+                    normalizeModelProfile({ id: "m-b", maxContext: 5000 }),
+                ],
+            });
+            assembleChats([character], summaries, orders);
+            seedChats(summaries, orders);
+            pending = captured.api!.setDatabaseLite({
+                characters: [{ ...character, name: "Updated", chats: [chat] }],
+                temperature: 91,
+                maxContext: 9100,
+            });
+            await entered;
+            expect(preset("a").temperature).toBe(80);
+            expect(mainProfile("a").maxContext).toBe(4000);
+            changeToPreset("b");
+            changeToModelPreset("b");
+            resumeRead();
+            await pending;
+
+            expect(preset("a").temperature).toBe(91);
+            expect(preset("b").temperature).toBe(50);
+            expect(mainProfile("a").maxContext).toBe(9100);
+            expect(mainProfile("b").maxContext).toBe(5000);
+            expect(characterList()[0].name).toBe("Updated");
+        } finally {
+            resumeRead();
+            if (pending) await Promise.allSettled([pending]);
+            read.mockRestore();
+            assembleChats([], [], []);
+            vi.useRealTimers();
+        }
     });
 });
