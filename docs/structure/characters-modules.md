@@ -59,16 +59,11 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 ### Module import
 
-- `importModuleFile(file: Blob)` (`src/ts/process/modules.ts`, as the rest of this heading) is every `.risum` entry
-  point's import: it reads the header, asks `lowLevelAccessConfirm` and runs `prepareModuleImport` before anything is
-  sent, then uploads the file once ([import transports](#import-transports)). `serverImportErrorMessage` picks both file
-  imports' alert.
-- Every module file or data import adds through `addImportedModule` (the MCP URL import, `importMCPModule`, adds
-  directly), which waits under `moduleImportSaving` for `flushResources({ scope })`, a save of every pending change:
-  `successImport`, `moduleImportDiscarded` (`modules/main` in the scope's `discarded`; an add alone is
-  [rebased](resource-sync.md#record-merge)), or `moduleImportUnconfirmed`.
-- `importModule` is the module dialog (`.risum`, JSON, lore, regex, `.charx`). `characterURLImport` opens the module
-  settings only when the helper reports the save, and consumes `#share_module` once the module was added.
+- `src/ts/process/modules.ts`: `importModuleFile`, `prepareModuleImport`, `addImportedModule`, `importModule`, and
+  `serverImportErrorMessage`. File imports go through `importModuleFile`; the MCP URL path `importMCPModule` adds
+  directly. `addImportedModule` waits for the save acknowledgement before reporting success.
+- `characterURLImport` opens module settings after a saved import and consumes `#share_module` once the module was
+  added. Upload paths and response handling are in [Import transports](#import-transports).
 
 ### Personas and conversion
 
@@ -88,16 +83,12 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 ### Lorebook editor
 
 - `src/lib/SideBars/LoreBook/LoreBookSetting.svelte` (the lore tabs), `src/lib/SideBars/LoreBook/LoreBookList.svelte`
-  (`removeEntry`, open details, the filter), `src/lib/SideBars/LoreBook/LoreBookData.svelte` (`activateLocally`, the
-  delete cascade), `src/lib/SideBars/LoreBook/LoreEntryFields.svelte` (fields and token counter).
+  (`removeEntry`, open details, `LORE_FILTER`, `filterMatches`), `src/lib/SideBars/LoreBook/LoreBookData.svelte`
+  (`activateLocally`, the delete cascade), `src/lib/SideBars/LoreBook/LoreEntryFields.svelte` (fields and token
+  counter).
 - The editor and the lorebook file codecs (`importLoreBook`/`exportLoreBook`, `src/ts/process/lorebook.svelte.ts`)
   support character and chat lore only; persisted global lore pages remain for snapshots and upstream backups, without a
   UI entry.
-
-### Lorebook filter
-
-- `src/lib/SideBars/LoreBook/LoreBookList.svelte` holds the recursive filter: the outermost list owns the query and the
-  match set (`LORE_FILTER`, `filterMatches`, `filterOpens`, `filtering`).
 
 ### Chat lore overrides
 
@@ -126,27 +117,19 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 ### Import transports
 
-- `src/ts/storage/serverImportClient.ts` `importFileOverServer(path, file, readResult, { onProgress })`: the upload of
-  both file imports, the `File`/`Blob` itself as the body of one request, never retried, the NDJSON answer read as it
-  streams. Errors: `ServerImportRequestError`, `ServerImportFailedError`, `ServerImportAnswerError`.
-- `src/ts/storage/moduleImportClient.ts` `importModuleOverServer` (`POST /api/import/module`, the error classes
-  re-exported as `ModuleImport*`) and `src/ts/storage/charxImportClient.ts` `importCharxOverServer`
-  (`POST /api/import/charx`, `CharxImportResult`) wrap it.
+- `src/ts/storage/serverImportClient.ts` `importFileOverServer` uploads the file and reads the NDJSON answer.
+  `src/ts/storage/moduleImportClient.ts` `importModuleOverServer` and the `ModuleImport*` error classes, and
+  `src/ts/storage/charxImportClient.ts` `importCharxOverServer` select the routes; their response contracts are in
+  `src/ts/process/modules.ts` and `shared/charxImport.ts`.
 
 ## Flows
 
 ### Card import
 
-`importCharacterProcess` dispatches by extension; the readers' JSDoc holds each format's rules.
-
-- `.json`: read whole, in the tab.
-- `.png`: `PngChunk.readGenerator` streams the chunks; `chara-ext-asset_<id>` chunks go to the server in batches
-  (`saveAssets`, `POST /api/assets/write`) while the card is read; then `importPngCard`.
-- `.charx` and `.jpg`/`.jpeg` (a `charxJpeg`): a `File` or `Blob` is uploaded once (`importCharxOverServer`); the server
-  stores the assets and answers the card (`server/src/routes/importCharx.ts`'s route comment). Bytes or a stream (tests)
-  go to the in-tab `CharXImporter`. Either way `importCharxCard` follows.
-- When `lowLevelAccess` is asked relative to the asset saves, and the key check right before `addCharacter`
-  ([characters and chats](#characters-and-chats)), are the header of `src/ts/characterCards.ts`.
+`importCharacterProcess` dispatches by extension; format details stay in its source and reader comments. PNG imports
+stream chunks and upload assets in batches. A CharX/JPEG `File` or `Blob` goes to the server once; bytes or a stream use
+the in-tab importer in tests. Low-level-access confirmation and the final asset-key check happen before the character is
+added (`src/ts/characterCards.ts`).
 
 ### Realm download
 
@@ -161,44 +144,23 @@ and commit contract is owned by [backup-sync-hub](backup-sync-hub.md#realm-downl
 
 ### Card export
 
-`exportChar` (groups are not exportable) and `exportModuleLegacy` read the assets from the server through
-`loadAssetsInBatches` (`src/ts/storage/assetQueue.ts`, `POST /api/assets/read`) and write through a `LocalWriter`
-(`src/ts/globalApi.svelte.ts`). `exportChar` picks the format and delegates to `exportCharacterCard`; the JSDoc of
-`exportCharacterCard` and `exportModuleLegacy` holds the asset reads, the JSON cap, missing assets, and which function
-alerts. Keep the V2/V3 formats compatible with the existing readers (see [card-format invariants](#card-formats)).
+`exportChar` chooses the card format; `exportCharacterCard` and `exportModuleLegacy` read assets in batches and write
+through a `LocalWriter`. Their source comments own the size, missing-asset, and failure contracts. Keep V2/V3 output
+compatible with existing readers ([card formats](#card-formats)).
 
 ### Drops and deep links
 
-A drop (`src/App.svelte` calls `importDroppedFile`) and `characterURLImport` (links and the launch queue) dispatch by
-name and send cards and modules as the `File` or `Blob` itself:
-
-- `.risup`/`.risupreset` → `importPreset` (read into bytes), `.risum` → `importModuleFile` then `addImportedModule`.
-- Any other dropped name, and a linked `.charx`/`.jpg`/`.jpeg`/`.png`, → `importCharacterProcess`; a link ignores the
-  rest.
-
-### Module activation
-
-`getModules` resolves the effective set: `db.enabledModules`, the chat's and the character's modules, the bound
-persona's embedded module (by id, [Issues](#issues)) and linked modules (`personaLinksModule`, `shared/personas.ts`),
-and the prompt preset's `moduleIntergration` namespaces. The server's `jobModules` resolves it alike
-([personas](#personas)).
+`src/App.svelte` passes drops to `importDroppedFile`; `characterURLImport` handles links, shares, and launch-queue
+files. Cards and modules upload as `File`/`Blob`, while preset imports read bytes. Module shares are consumed after the
+module is added ([module import](#module-import)).
 
 ## State
 
-- `character`: identity and content fields plus `emotionImages`, `additionalAssets` (`[name, path, ext][]`), `ccAssets`,
-  `customscript`, `triggerscript`, `globalLore`, `loreSettings`, `modules`, `lowLevelAccess`, the TTS fields, and
-  `trashTime`.
-- `lastInteraction` is frozen stored data, never written or migrated: `characterLastChattedAt` uses it only when no chat
-  has a time, `withChatsCopy` fills a positive derived time into plugin snapshots, and same-character
-  `applyPluginCharacter` setters (`src/ts/plugins/apiV3/v3.svelte.ts`) preserve the stored field, absence included, so a
-  round trip never saves the derived value. New characters and imports keep their input value. Upstream export has its
-  own cold-storage rule ([backups](backup-sync-hub.md#upstream-database-export)).
-- `groupChat`: `type:'group'`, `characters: string[]`, `characterTalks`, `characterActive`, `useCharacterLore`.
-- `loreBook`: `key`/`secondkey` (comma-separated), `content`, `mode` (`normal|folder|child|...`), `id`, `folder`,
-  `bookVersion`.
-- `RisuPersona`: `embeddedModule`, `modules` (linked module ids, canonical by `normalizePersonaModules`: non-blank
-  strings, each once; kept when no module has them, and not carried by the persona PNG export). The active persona is
-  mirrored into the legacy DB fields `username`, `userIcon`, `personaPrompt`, `userNote`.
+- Character, group, and persona fields belong to resource records; chats live in the chat module, not on the character
+  record ([persistence](persistence.md)). `shared/personas.ts` owns persona defaults and canonical module links.
+- `lastInteraction` is preserved stored data; home ordering derives from it only when no chat has a timestamp. Plugin
+  snapshots may expose that derived value without saving it back (`src/ts/plugins/apiV3/v3.svelte.ts`); upstream export
+  has its own cold-storage rule ([backups](backup-sync-hub.md#upstream-database-export)).
 
 ## Coupling
 
@@ -211,89 +173,47 @@ and the prompt preset's `moduleIntergration` namespaces. The server's `jobModule
 
 ### Card formats
 
-- Keep both the V2 `chara` and V3 `ccv3` readers, and the off-spec Tavern heuristics, `convertCharbook` migrations, and
-  V2 `character_version` handling.
-- Exporters walk the original asset lists for `assetIndex`, `__asset:N`, the `ccdefault:`/`isKnownUri` branches, and
-  CharX member names; fetched bytes match positions in the per-kind key list, and a fetched index never determines
-  original-list numbering.
-- `StreamChunkWriter.end()` awaits the writer's close, and `CharXWriter` rethrows a zip callback error at the next
-  `write`/`end`, so output failures reach the exporter's cleanup.
-- CharX: always await `CharXImporter.done()`. Never drop `module.risum`. Keep the two readers' entry rules alike
-  (`shared/charxImport.ts`), and never hand the in-tab reader a file. The server delimits entries by the central
-  directory and the in-tab reader by fflate's streaming signature scan: the intended difference (D5 in `STRUCTURE.md`).
-- CharX sizes: the in-tab reader skips a declared size of at least 50 MiB when known before inflation and otherwise
-  excludes decoded entries over 50 MiB (`excludedFiles`); the server also skips oversized central-directory declarations
-  and compressed entries before reading.
-- `CharXWriter.write` sanitizes the member name and renames a collision; it returns the name it wrote, and an
-  `embeded://` reference in the card is set from that return value, never from the name asked for.
-- The PNG card writer (`StreamChunkWriter`) copies every chunk of the portrait whole except the `chara` and `ccv3` text
-  chunks it replaces; a keyword is read from the chunk's own start, so other `tEXt` chunks (`Comment`, `parameters`)
-  survive with valid CRCs.
-- `importCharacterCardSpec` copies a well-formed `extensions.depth_prompt` (`{ depth: number, prompt: string }`) into
-  the native field before it drops the duplicate from the extensions bag.
-- Asset references in cards and modules are storage IDs or protocol URIs, never local filesystem paths.
-- In-tab PNG reads let a later `chara`/`ccv3` chunk replace the text only while the text held is shorter than 5 Mi
-  characters; there is no size cap on a chunk. No production caller asks for the CRC check (`checkCrc`).
-- The server PNG reader (`importPng.ts`) walks chunks from the 8-byte signature and keeps the tab's `tEXt` key/value,
-  `chara`/`ccv3` preference and 5 MiB, and asset-index rules. It decodes asset text with the tab's `buffer` package so
-  stored asset bytes and keys match; its image bytes match `PngChunk.trim` byte-for-byte.
-- It deliberately refuses more malformed or oversized files than the tab reader, before writing anything: a missing PNG
-  signature, truncated structure, empty card, oversized card/asset text, or too many asset/total chunks.
-- Preserve byte compatibility among `exportModuleLegacy`, `readModule`, and the server's `decodeModuleMain`.
-- `createBaseV2` intentionally omits emotions and additional assets. V3 is the full-fidelity path.
-- Cards and modules with low-level access require confirmation on import; a `.risum` asks before its upload, and a
-  declined card imports nothing (no off-spec JSON fallback).
+- Keep the V2 `chara` and V3 `ccv3` readers, off-spec Tavern handling, `convertCharbook` migrations, and V2
+  `character_version` behavior. `src/ts/characterCards.ts` owns the client import/export details.
+- The client and server CharX readers share entry rules in `shared/charxImport.ts`; the server parses the central
+  directory and the test-only in-tab reader scans signatures, the intended D5 difference in `STRUCTURE.md`. Always await
+  `CharXImporter.done()` and preserve an embedded `module.risum`.
+- Keep client/server PNG card and asset-index behavior aligned; the server reader intentionally refuses more malformed
+  or oversized input before writing. Reader details live in `src/ts/pngChunk.ts` and `server/src/routes/importPng.ts`.
+- Card asset references are storage IDs or protocol URIs, never local filesystem paths; exporter numbering follows the
+  original asset lists, not the order assets were fetched.
+- `importCharacterCardSpec` maps a well-formed `extensions.depth_prompt` to the native field. `createBaseV2` omits
+  emotions and additional assets; V3 is the full-fidelity export.
+- Cards and modules with low-level access require confirmation on import. A `.risum` asks before upload, and declining a
+  card imports nothing without falling through to the off-spec JSON reader.
 
 ### Asset list rows
 
-- The three asset lists (`CharConfig`, `ModuleMenu`, `AssetInput`) match only the name (`asset[0]`), using a trimmed,
-  case-insensitive substring. Empty search skips the name cache and scan. Search resets per owner; paging resets per
-  owner/query to `ASSET_LIST_PAGE` (100), and Load More adds 100 matching rows.
-- Match sets track only the owner, query, field read and length, so a renamed row stays visible until the query, list
-  identity or length changes. `ModuleMenu` and `CharConfig` keep the previous matches only while the live list is the
-  one their own rename stored, under the same owner and query.
-- A module's list and a character's `additionalAssets`, `emotionImages` and `ccAssets` are immutable (`persistence.md`),
-  so every editor replaces them whole (`ModuleMenu`, `CharConfig`, and `characters.ts` `dumpCharImage`,
-  `changeCharImage`, `addCharEmotion`, `rmCharEmotion`), a rename copying only its tuple.
-- Adds re-resolve the character by `chaId` after their awaits and append to its latest list (`CharConfig`,
-  `AssetInput`).
-- Rows stay unkeyed and read the live list by matched source index: inputs and deletes write the record, previews and
-  prebuilt-exclude use its path, and sticker selection receives its live tuple.
-- Never mutate or render editor rows from the shared `moduleFieldPlain`/`characterFieldPlain` values; lowercase names
-  live in separate arrays. `characterData()` exposes the raw list untracked: use it only for synchronous, read-only
-  lookups or projections, capture a stable `chaId` before awaiting, and write UI edits through record wrappers or
-  collection mutations.
+- `src/ts/assetList.ts` matches trimmed, case-insensitive substrings in asset names and supplies paging indices;
+  `CharConfig` and `ModuleMenu` keep rename rows visible while their own list replacement is current.
+- Module assets and character asset/emotion lists are immutable: editors replace the whole list, and a rename copies its
+  tuple. New file picks append to the latest character list after resolving `chaId` again.
+- The editor rows address source indices. Never carry a row index across an owner or list replacement; the sticker
+  picker reads the current tuple. `AssetInput` selects but does not rename rows.
+- `moduleFieldPlain` and `characterFieldPlain` return detached read copies; `characterData()` is an untracked raw list
+  for synchronous lookups only. Write through record wrappers or collection mutations.
 
 ### Effective modules
 
-- The `getModules` memo is keyed by `JSON.stringify([ids, [...personaIds]])` plus the tracked
-  `moduleMembershipRevision()`, which every call reads, including a cache hit. Whole-record replacements (local or
-  remote, including remote item patches through `applyRaw`), list writes/moves, element rebuilds, and writes under
-  `id`/`namespace`/`mcp` advance it synchronously, even inside a write batch.
-- Initialization/reset never reuses that revision, and the next call resolves the current list without an effect flush
-  or a detached-wrapper read. Asset/lore/trigger edits leave membership alone. `moduleUpdate` uses this same memo and
-  publishes its stores under `untrack`.
-- `getModuleAssets` returns plain tuples from `moduleFieldPlain(module, "assets")`: never mutate these copies, edit the
-  module's record wrapper. A weak tree keyed by the copies preserves each aggregate's identity across other chats' reads
-  and disabled-module edits, and its tracked assets revision observes writes immediately.
-- `ModuleChatMenu` toggles only the chat/character list. `moduleUpdate` reloads once when the resolved id array or
-  element wrappers change (duplicate ids can select a different element via namespaces or persona links). Toggling a
-  module already enabled through another source leaves the effective set unchanged unless ids or namespaces collide
-  (chat and character tokens also match namespaces, persona links only ids).
-- `getModuleTriggers` mutates the triggers' `lowLevelAccess`. Aggregate order follows the DB module order.
-- Keep `character.modules`, `chat.modules`, `enabledModules`, and `moduleIntergration` (which matches namespaces)
-  distinct.
+- `getModules` combines global, character, chat, bound-persona, and prompt-preset sources. Id/namespace matching and
+  persona-link matching differ; the server's `jobModules` in `server/src/jobs/cbsHost.ts` must stay aligned.
+- Persona links use the chat's bound persona, match stored modules by id, and skip MCP modules. The bound persona's
+  embedded-module id resolves against stored modules; an un-stored embedded object contributes nothing (see Issues).
+- Keep `character.modules`, `chat.modules`, `enabledModules`, and `moduleIntergration` distinct. Membership revisions
+  invalidate the `getModules` memo synchronously; `getModuleAssets` returns detached tuples and must not be mutated.
 
 ### Lorebook rows and writers
 
-- Rows over a list that can change under a focused input (`LoreBookList`'s three branches) are keyed by entry and bind
-  to the entry captured at mount through getter/setter functions; a read or write whose entry the shown list no longer
-  holds is answered with a throwaway value and dropped. `CharConfig`'s emotion and additional-asset tables stay unkeyed
-  and write through index-checked rename helpers.
-- Never `bind:` `list[i]` in an unkeyed `#each` there: Chrome fires `change` on a focused, edited control while removing
-  it, and a lazily resolved index binding then writes into whatever sits at that index now. A removed entry's record
-  wrapper throws when read, so never read a captured entry before checking membership.
-- `LoreBookList` must rebuild its Svelte arrays after SortableJS DOM moves.
+- `LoreBookList` rows are keyed by entry and guard reads/writes against live-list membership; a remote replacement or
+  removal drops the old row's write. Its tests cover focused-field removal. `CharConfig` and `ModuleMenu` asset/emotion
+  name rows remain index-addressed; see [Issues](#issues).
+- `LoreBookList` rebuilds its Svelte arrays after SortableJS DOM moves. Avoid `bind:list[i]` in any other unkeyed list
+  that can change while a focused input is removed.
 - Old lorebook entries (below `bookVersion` 2) are converted only as they enter: a character's creation
   (`prepareNewCharacter`), a lorebook file imported into a character (`importLoreBook`), and the module import paths
   (`upgradeLorebook`, `shared/modules.ts`); later updates keep their content.
@@ -306,26 +226,17 @@ and the prompt preset's `moduleIntergration` namespaces. The server's `jobModule
 
 ### Characters and chats
 
-- `chaId` and chat IDs must be unique. The installation (`initializeRecords`) gives a character without a valid or
-  unique id a new one, and a character's id never changes afterwards; chat and message ids are assigned by the chat
-  module (`createChat`, `appendMessage`) and kept unique by the server.
-- An import path adds a character only through `addCharacter` (and modules, personas, and presets through the collection
-  module). The core-app creators (`createNewCharacter`, `createNewGroup`) add through it too.
-- A character's chats are created through the chat module once it is in the mirror: `importChat` calls `createChat` (a
-  copy gets a fresh chat id and keeps its message ids), and `changeChar` calls `ensureChat` for a character without one.
-- A character not yet added (a new card, an import) carries its initial chats in its input. `prepareNewCharacter` gives
-  it a first chat when it has none, each chat its `fmIndex` (the character's `firstMsgIndex`) and `localLore`
-  (`prepareChatInput`), and moves `postHistoryInstructions` into the note of the chat at `chatPage`.
-  `addCharacter`/`replaceCharacterAt` hand the chats to the chat module (`installCharacterChats`: the record holds
-  none), and the save loop creates them with the character.
+- Character identity is `chaId`; imports and core creators add through `characterStore`. Create, copy, or ensure chats
+  through the chat module after the character is in its mirror. See [persistence](persistence.md) and
+  [chat store](chat-store.md#chat-writes) for chat ownership.
+- Before insertion, `prepareNewCharacter` supplies a first chat when needed, moves `postHistoryInstructions` into the
+  selected chat note, and prepares `fmIndex` and `localLore`; the character record itself holds no chats.
 
 ### Personas
 
-- Persona module links activate only through the chat's bound persona (`checkPersonaBinded`, `chat.bindedPersona` on the
-  server), never the tab's selected persona; the tab's `getModules` and the server's `jobModules` resolve them alike
-  (`personaModuleIdSet`, `personaLinksModule`). `PersonaSettings.svelte` edits the links of the persona the editor shows
-  (`currentPersonaRecord`). Deleting a module leaves its id in persona links, as in `chat.modules` and
-  `character.modules`.
+- Module links resolve from the chat's bound persona, never the tab's selected persona; client `getModules` and server
+  `jobModules` share `personaModuleIdSet`/`personaLinksModule`. Persona settings edit the shown record, and deleting a
+  module leaves its id in the persona, character, or chat list.
 - `changeUserPersona(id)` with an id that is not in `settings.personas`, or for a chat that is gone, does nothing and
   returns false. `PersonaSettings.svelte` creation captures its target before its dialog; a deletion moves only the
   tab's selection, never a chat's binding.
@@ -373,11 +284,9 @@ and the prompt preset's `moduleIntergration` namespaces. The server's `jobModule
   contributes nothing. Kept for parity as a candidate for a later fix.
 - `addModule` does not refuse a duplicate module id, so two modules can share one; `removeModule` removes the module but
   leaves its id in `enabledModules` until that list changes.
-- The keyed lore editor rows (`LoreBookList`) key record entries by their wrapper, which follows an element through
-  local moves but, across a remote raw replacement, stands for whatever element now sits at its old index. A row kept
-  across such a replacement edits the entry now at its index, and a delayed write from it (the prompt's popup editor)
-  lands there. `CharConfig`'s emotion and asset tables and `ModuleMenu`'s and `AssetInput`'s asset rows are unkeyed
-  index bindings, with the same exposure.
+- Unconfirmed: a same-length remote replacement while an emotion or asset name field is focused may let the next input
+  write to the new row at the old index. `CharConfig.renameAsset`/`renameEmotion` and `ModuleMenu.renameAsset` address
+  the live list by index; existing `ModuleMenu.assets` tests cover a reorder but not a focused input event after one.
 
 ### Limitations
 
@@ -393,12 +302,11 @@ and the prompt preset's `moduleIntergration` namespaces. The server's `jobModule
 - Pinning a duplicate-id original assigns it a fresh id. This can detach another chat's `child` link or make another
   chat's override match a different entry; the previously ambiguous link is not migrated. Decision: Chat Lore Override
   States, duplicate owner ids out of scope, [archive](../archived-plan/README.md).
-- The lorebook filter's query resets only on an owner change: a module's list keeps it when a remote replacement
-  retargets `ModuleMenu`'s module wrapper while the menu stays mounted.
 
 ### Gotchas
 
 - There is no dedicated "duplicate character" API. Copies come from module→character conversion or re-import.
+- The lorebook filter query resets on an owner change, not a same-owner module replacement (`LoreBookList.filterOwner`).
 - The drag sort of the keyed lore rows stores a copy of the moved entry (that row gets a new key), and its `recreateStb`
   bumps `sorted`, which recreates every row of that list instance through `{#key sorted}`.
 - `characterStore.svelte.ts` imports `./selection.svelte` before anything that loads `../stores.svelte`; the other order

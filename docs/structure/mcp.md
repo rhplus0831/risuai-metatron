@@ -139,8 +139,8 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
 ## Tests
 
 - Focused: `pnpm --silent test:agent src/ts/process/mcp src/ts/process/request/tests/transport.test.ts` for the tab;
-  `pnpm --silent test:agent server/src/tests/mcp{,Internal,Sse}.test.ts` for the server. Provider adapter tool loops:
-  [LLM requests](llm-requests.md).
+  `pnpm --silent test:agent server/src/tests/{mcp,mcpInternal,mcpSse}.test.ts` for the server. Provider adapter tool
+  loops: [LLM requests](llm-requests.md).
 - `slow`: none. `e2e`: `e2e/lazyChats.spec.ts` (RisuAccess history).
 - `mcplib.test.ts`: a fake `fetchNative`. `mcpLeases.test.ts`: a fake `MCPClient` with gated calls.
 - `server/src/tests/mcp.test.ts`: injected `fetch`. `mcpInternal.test.ts`: the job tool set over a real store.
@@ -176,10 +176,11 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
 
 ### Gotchas
 
-- Remote MCP, in both clients (`mcplib.ts` and the server's port): over streamable HTTP, a 404 with a session or a 401
-  with a token resets the session and repeats the request without them (the call after that handshakes again); the
-  server repeats it once, the tab again if concurrent work restored a session or token. A legacy SSE POST answered above
-  299 settles its pending answer with that status as the RPC error code instead.
+- Streamable HTTP, both remote MCP clients: a 404 with a session or a 401 with a token resets the session and retries
+  that request once without the old session or token. If refused, that call gets an error; the next call handshakes. The
+  tab may retry again if concurrent work restored a session or token. In `util/playwright/checkMcpFixes.mjs`, the mock
+  refuses the unauthenticated retry. The check logs that reply and asserts the next call succeeds after refresh.
+- Legacy SSE: a POST answered above 299 settles its pending answer with that status as the RPC error code.
 - A server MCP OAuth code question is tied to the MCP client's closing signal, while the caller's abort only rejects
   that caller. It can stay open until the client closes, the job channel ends, or it times out; a queued question has no
   timeout until dispatch.

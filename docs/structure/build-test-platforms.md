@@ -4,19 +4,6 @@
 
 - Owns package/build config, the `dev:agent` / `dev:human` runner, documentation checks, the PWA worker and manifest,
   the userscript bridge, release identifiers, and repo dotfiles.
-- Paths:
-  - Root config: `package.json`, `vite.config.ts`, `tsconfig.json`, `tsconfig.node.json`, `version.json`
-  - Build id: `shared/buildInfo.ts` (`BuildInfo`, `formatBuildId`), `server/src/buildInfo.ts` (`resolveBuildInfo`,
-    `readServerBuildInfo`, `resolveNormalizationIdentity`), `src/ts/buildInfo.ts` (`buildInfo`, `buildId`)
-  - Dotfiles: `.gitignore`, `.ignore`, `.gitattributes`, `.npmrc`, `.prettierrc.json`, `.prettierignore`, `.vscode/`
-  - PWA files: `public/sw.js`, `public/manifest.json`, `public/logo_{16,32,192,256,512}.png`
-  - `util/risuUserscript.user.js`
-  - `util/agentDev.mjs`, `util/agentDevHost.mjs`, `util/agentDataSandbox.mjs` (the `dev:agent` / `dev:human` full-stack
-    runner)
-  - `util/docsBudget.mjs` (the `check:docs` documentation check), `util/docsRead.mjs` (the `docs:read` guide reader)
-  - `util/ci/check.sh` and `.github/workflows/ci.yml` (the CI gate and its GitHub Actions workflow)
-  - `util/heap/` (V8 heap snapshot analysis)
-  - `util/upstream/` (the upstream RisuAI `.bin` compatibility check)
 - Not here:
   - Test commands, Vitest/Playwright, and browser checks → [test-harness](test-harness.md).
   - `globalApi.svelte.ts` `fetchNative` → [network-jobs](network-jobs.md).
@@ -295,6 +282,9 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
 
 ### Issues
 
+- When a backticked path mixes source and Git-ignored runtime files in one brace expression, check each alternative. An
+  ignored missing path can end validation early. See the
+  [reproduction](../research/found-issues.md#an-ignored-path-can-hide-a-broken-sibling-in-a-guide).
 - `tsconfig.node.json` pairs `module: ESNext` with `moduleResolution: nodenext`, producing TS5110 when checked directly.
   `pnpm check` does not include this project.
 

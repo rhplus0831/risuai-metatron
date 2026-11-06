@@ -56,19 +56,13 @@
 
 ### The writer's windows
 
-`confirmedWindows` derives work from stored messages and events, so losing the task queue on restart loses no work;
-there is no startup scan. Its comment owns eligibility, turns, cadence, token thresholds and manual partial windows.
-`WriterWindow` and `windowOf` own the paired messages and source anchors. Reroll candidates enter no window: windows
-read `data`, the selected candidate.
+`confirmedWindows` derives pending work from stored messages and events, so a restart loses no work. The `window.ts`
+header owns confirmation, turns, cadence, screening and manual partial-window rules; `WriterWindow` and `windowOf` pair
+message data with fresh source anchors.
 
-The job captures `writerCeiling` before its reply. An automatic task uses that captured ceiling; a manual task uses
-`through` inclusively, else the stored chat's ceiling, else the captured one. A missing, disabled or
-`allBefore`-excluded ceiling ends a task `skipped staleInput`; commit revalidation refuses `windowChanged`.
-
-A person's press re-records marked events ahead of ordinary work. An automatic task and assembly's `due` take only
-`automaticRerecords`, so a restored mark or one on unchanged text waits for a press. The windows count an adopted
-event's `sources` as recorded too, keeping [adoption](lifecycle.md#adopting-hypav3-summaries) from automatically
-recording them again. `rerecordWindows` and `confirmedWindows` own repair eligibility and ordering details.
+A person's press takes every repair mark before ordinary work. Automatic work takes only marks explained by an edit
+(`automaticRerecords`), so a restored mark or one whose text was put back waits for a press. Adopted event sources count
+as recorded, keeping [adoption](lifecycle.md#adopting-hypav3-summaries) from automatically recording them again.
 
 ### The writer task
 
@@ -77,23 +71,17 @@ recording them again. `rerecordWindows` and `confirmedWindows` own repair eligib
 kind. The step [reads](read.md#the-read-path) before it returns the hand-off; `confirmedWindows` at `limit: 1` supplies
 `due`.
 
-An input job with a service and source-generation-bound chat snapshot returns a hand-off even when not due:
-`handOffMemory` needs it for waiting manual starts. Unlike HypaV3 it skips the blocking-reason precheck. The step asks
-`memoryGap` when trimmed tokens exceed `gapConfirmTokens`, using manual-start windows as `plannedCalls`; no windows or a
-local summarizer means no question. History cited by stale or retracted events counts as recorded, so a gap can offer no
-window. `generate` runs [the gap](#the-gap-run), then rereads and selects without asking again.
+An input job with a service and source-generation-bound chat snapshot can hand off even when not due: `handOffMemory`
+needs it for a waiting manual start. Unlike HypaV3, the step skips the blocking-reason precheck. It asks `memoryGap`
+when trimmed tokens exceed `gapConfirmTokens`; [the gap run](#the-gap-run) records an accepted answer and the next
+selection does not ask again. The assembly comment owns the question's window and refusal rules.
 
-A [held chat](lifecycle.md#the-adoption-choice), `MemoryRecords.adoptionHeld`, gets neither gap question nor hand-off,
-keeping a waiting manual start until after the choice. `writerNotice` gives its reply a `notAutomatic` receipt with
-`awaitingAdoption` ahead of other reasons. The send also owns the plugin, trigger, local-model and pause
-[notices](read.md#receipts), independently of whether a task will run.
+A [held chat](lifecycle.md#the-adoption-choice) gets neither a gap question nor hand-off, keeping the manual start until
+after the choice. Send notices and `writerNotice` receipts are described in [read](read.md#receipts).
 
-`createMemoryTasks` applies its shared start checks, including `notStructuredMemory` if the algorithm changed. A Plugin
-`memory` slot, a `request` trigger or a local summarizer ends `skipped` with `pluginModel`, `requestTrigger` or
-`localSummarization`. The fresh scope's chat and stored events give windows up to `maxWriterWindows`; each goes to
-`createStructuredWriter` in order. The first skipped or failed window ends the task, keeping events in message order; a
-throw uses `endFromError`. `total` counts allowed windows, `done` recorded windows, and no work ends `done` 0 of 0. The
-service comment owns cap continuation (`windowsLeft`, another manual start under `manual`) and `warmingFailed`.
+`createMemoryTasks` owns shared start checks, skip codes, caps, status and continuation. It plans up to
+`maxWriterWindows` from a fresh scope and runs them in order; the first non-recorded result ends the task. The service
+comment defines `total`, `done`, zero-work and cap behavior.
 
 The synchronous `commit(baseRevision, changes)` crosses the service, repair logic and writer in this order:
 
@@ -113,143 +101,72 @@ replacement commits. Reconciliation holds no fence; a running writer meets `revi
 
 ### A writer run
 
-`createStructuredWriter` reads and writes through the `memory` it is given: live records or
-[a rebuild's staged set](rebuild.md#a-run), including staged runs for replay. `openRun` owns interrupted-row cleanup and
-the pre-call snapshot; the writer's comments own pause, request failures, custom prompts and dry runs. A `historical`
-write [leaves current state alone](rebuild.md#backfill).
+`createStructuredWriter` reads and writes through the `memory` it receives: live records or a
+[rebuild's staged set](rebuild.md#a-run). `writer.ts` owns replay eligibility, the run row, pause and failure behavior,
+custom prompts, dry runs and warming. A historical write [leaves current state alone](rebuild.md#backfill).
 
-The task loop and `runWindows` ask `historicalWindow` per live window: another event, in any status, citing a later
-message makes it historical, with every existing page frozen.
-
-A held chat ends any run, including manual, `skipped awaitingAdoption` with no call or row. Automatic runs honor
-`writerPaused`; manual starts bypass it. The newest nonrecorded row supplies replay input only when message ids and
-hashes, `settingsFingerprint` and prompt mode match; that input includes the current scene's taken-back lines. A
-mismatch rebuilds the prompt.
-
-Calls cross pure modules before one closing write:
-
-1. `prompts` assembles input for `host.request` under `writerHostDeps`/`writerRequestDb` (temperature 0,
-   `jsonSchemaEnabled` off, `extractJson` empty). `parseAnalysis` parses the answer; `planPages` establishes identities
-   before `admitAnalysis` resolves references and admits evidence. A repeat is replanned and admitted again.
-2. Shown targets go through [the patch call](#the-patch-call), then [compaction](#compaction). An analysis or patch
-   failure before the closing commit leaves no event, keeping the window open. The writer's comment owns retained
-   `analysis`, `patchInput`, redacted errors, failed receipts and token accounting.
-3. Event, threads, pages and the recorded run commit together, first on the opening revision. `revisionConflict` repeats
-   planning and admission from fresh records without another call, three attempts total. Three conflicts end
-   `skipped revisionConflict`; that, `staleInput` and `windowChanged` leave the opening row pending for the next start.
-   Before the closing commit, a deadline or abort also leaves a pending row; the caller's ended-write check discards
-   late output.
-4. After the recorded commit, warming sends `eventVectorTexts` and changed non-scene `sectionVectorText` through
-   `HypaProcesser.addText`, unless the respective `laneTargets.events` or `laneTargets.pages` is 0. A returned
-   `warmingError` or a throw preserves the recorded row. Thrown aborts and `MemoryHostFailure` propagate to the
-   service's `endFromError`. A retrieval must embed the same text to hit that cache.
-
-During model calls before the closing commit, a `MemoryHostFailure` attempts a failed-row write before propagating;
-other throws leave the pending row. A compaction call's returned failure or unusable answer is a warning and the run
-continues; throws still propagate.
+Across modules, each window opens a `pending` run with its exact analysis input, then parses and admits the analysis
+before deciding whether to call the patcher. Compaction follows only after patches; event, threads, pages and run close
+in one memory write. A revision conflict rebuilds planning against fresh records without another model call, up to three
+attempts. Only a recorded commit warms vectors, using the same event and section text that retrieval embeds. Returned
+compaction failures are warnings; an analysis or patch failure leaves no event.
 
 ### Record now
 
 A press past one window asks first, with [the cost preview](rebuild.md#the-cost-preview). Record now and resume use the
-`memoryRecord` command, with `messageId` or none. It is a job: the service retains no input across restart, and only a
-job's fresh scope knows which requests need the tab. The tab calls `runServerJob` directly because `runServerCommand`
-refuses group chats.
+`memoryRecord` command with a target message or none. A target is an inclusive `WriterCeiling`; the window planner still
+runs marked events first, then older ordinary work. The `recordJob.ts` header owns admission and the two execution
+paths. The tab calls `runServerJob` because `runServerCommand` refuses group chats.
 
-`runMemoryRecord` admits through `admitRecord` while the job holds the chat slot; its module header owns algorithm,
-memory-off, local-model, adoption and eligible-message refusals. No ceiling and no target ends `done` without work.
-`done.result.memoryRecord` (`completed`, `queued`) picks the toast.
-
-- With a service and no tab-bound request, `MemoryTasks.record` queues a fresh manual input with `through`; the latest
-  press replaces that target and a press without one clears it. A later hand-off retains the manual start and target.
-  Unlike `handOff`, this returns a refusal to the job. The job ends before the task starts.
-- With a Plugin `memory` slot, a `request` trigger (`jobMemoryBlockingReason` in `server/src/prompt/runner.ts`) or no
-  service, the writer runs inside the job on the chat's writer lease, because `services.request` reaches those tab-bound
-  requests. `scope.request.db` takes `writerRequestDb`; windows run in order up to `maxWriterWindows`, the first
-  nonrecorded window ends the job with an error, and windows beyond the cap leave an ordinary `done`.
-
-In the job, `openJobStatus` (contract in `createMemoryTasks`) fences every tab, hello included, through the terminal's
-chat revision; a skipped window fails the job with `memoryRecordSkipped`, translated by `alertJobError`.
-
-An inclusive `WriterCeiling` confirms the target reply, newest included. Re-record windows (events marked `rerecord`)
-run first, then ordinary windows oldest first; naming a target never records it ahead of older open ordinary windows.
+Without a tab-bound request, the job queues a fresh manual input and ends before the service starts; a later hand-off
+retains that manual start and target. With a Plugin `memory` slot, a `request` trigger, or no service, the job holds the
+writer lease and runs the windows itself because those requests need the job's tab context. `openJobStatus` publishes
+the job writer through the service registry, fencing tabs through the terminal chat revision. The command's
+`done.result.memoryRecord` selects the `completed` or `queued` toast; a skipped window is translated by `alertJobError`
+from `memoryRecordSkipped`.
 
 ### The gap run
 
-`recordGapInJob` shares `runWindows` with record now inside a send's job. This is the one recording that holds up a
-send: a person accepted a question promising it before the reply. `confirmMemoryGap` in `server/src/prompt/runner.ts`
-reuses `generate` for later rounds and speakers, while `JobRunState.memoryGapRecorded` permits only the first recording.
-
-It runs manual on the chat's lease, bypassing pause, up to `maxWriterWindows`, with the input's exclusive ceiling and
-the `initial` run's stop control between windows. It takes no repair marks. `scope.request` takes `writerRequestDb` only
-around this run, restoring the reply's temperature and schema afterwards.
-
-A nonrecorded window ends the gap quietly and the send continues. Any run or receipt already written stays stored; a
-skipped window need not create either. Aborts and latched failures still end the job. It never calls `markStopped`,
-which would clear the `blockingReason` a reply's receipt reads. Assembly keeps its chat snapshot: a receipt changes no
-source hash, and a message edit during the run can leave one send with a slightly stale prompt.
+`recordGapInJob` shares the window runner with record now, but it is the one recording that holds up a send: a person
+accepted the gap question before the reply. `confirmMemoryGap` can reuse generation for later rounds and speakers;
+`JobRunState.memoryGapRecorded` allows only the first record. It runs under the send's exclusive ceiling and stop
+control, takes no repair marks, and restores the reply's request settings afterwards. A non-recorded window ends the gap
+quietly and the send continues; completed run and receipt writes stay stored. The send keeps its original chat snapshot,
+so edits made during the run can leave its prompt stale.
 
 ### Pages and calls
 
-The module comments own the per-call rules: `assembleAnalysisPrompt` and `parseCustomFrame` for safe ChatML/CBS slot
-filling and [fine-tuning](read.md#prompt-fine-tuning); `parseAnalysis`/`admitAnalysis` for bounded parsing, quotes,
-references, threads and repeat admission; `castSlice`/`planPages` for cast selection, identities, alias seeds and the
-group speaker.
+The module comments own each call's rules: `assembleAnalysisPrompt` and `parseCustomFrame` for prompt construction and
+[fine-tuning](read.md#prompt-fine-tuning); `parseAnalysis`/`admitAnalysis` for answer admission; `castSlice`/`planPages`
+for cast and page identities. Across them, planning and admission precede target selection, and `commitPages` gathers
+page, scene and link changes by id for one store write.
 
-`commitPages` gathers created pages, patches, compactions, relationship links (`addLinks`, the newest `pageRefsPerItem`)
-and scene changes into one map by page id, because the store refuses duplicate writes of an id in one change set.
-`changeSection` stamps bounded evidence (afresh for a replaced body), history, marks and highlights, and keeps
-`disputed` while a body still holds the join; the chat-or-preset rule comes from the writer's `highlightRule`, with
-rebuilds using `none`. An empty patch result still leaves a created identity so admitted references remain valid.
-`promptThreads` picks threads about who is on stage before older ones and counts the rest. Repeat planning creates no
-candidate pages or patch targets and refuses candidates `repeatedEvent`; `commitPages` still creates a missing scene
-page and applies the scene rewrite.
+`changeSection` starts evidence afresh for a replaced body, retains it when a disputed join or identical text remains,
+and keeps `disputed` while the body still holds the join. Highlights follow the chat-or-preset rule, with rebuilds using
+`none`; `addLinks` puts shift destinations first and keeps the newest `pageRefsPerItem` links. `promptThreads` gives
+threads about people on stage priority over older ones. Repeat planning refuses candidate pages but still creates a
+missing scene page and applies the scene rewrite.
 
 ### The scene page
 
-`commitPages` creates the first scene even when analysis returned none: `newScenePage` gives it type `scene`, title
-`Scene` and `contextMode: "always"`. Candidates cannot target it. Analysis can rewrite `place`, `time`, `state` and
-attendance without a patch call; `rewriteScene` owns blank/identical fields, per-section locks, reverted text and
-history (`create` on first text, otherwise `change`). `readMemoryRecords` exposes `participants` as `stage` to the read
-path. The prompt's taken-back lines survive the scene clamp and gate replay, so a revert is seen on the next call.
-
-`server/src/data/memoryStore.ts` holds the store rule: partial unique index `memory_pages_scene`, plus pre-write
-`ResourceValidationError` for two scene pages in a set or a new one while another remains outside `remove.pages`.
-`walkMemorySnapshot` also refuses duplicate scenes before the staged store. A live write refuses losing or retyping the
-scene it has; replacing it in one set is legal. Restore may load a snapshot with no scene, predating that page, but
-still rejects a second scene.
+The scene is created by `commitPages` even when analysis returns none; its fields are rewritten without a patch call.
+`newScenePage` and `rewriteScene` own the page rules, while the store's `memory_pages_scene` index and snapshot walk
+enforce one scene page. The read path exposes scene attendance as `stage`.
 
 ### The patch call
 
-`showTargets` gives `assemblePatchPrompt` the admitted event, no messages, and the accepted pages that can take a write,
-so a run whose targets are all locked makes no patch call; its comment owns the budget order. An item whose quote failed
-admission cannot reach a page; its text traces to the `provenance` event. Default inputs are bounded under
-`RUN_RECORD_MARGIN_BYTES`; custom frames get a separate pre-call size check.
-
-`parsePatches` and `applyPatches` own operations, conflict classes, the refusal codes and whole-page admission. A body
-loses its "(was: ...)" lines before admission; the rules name every character slot and the disputed mark the row shows.
-Page refusal is a warning: other pages and the event still commit. The writer keeps the patch input with its closing
-run, without a separate pending write.
+`showTargets` passes the admitted event and writable pages to `assemblePatchPrompt`; no writable targets means no call.
+`parsePatches` and `applyPatches` own operation, conflict and whole-page admission rules. `PATCH_RULES` in `prompts.ts`
+distinguishes durable character `identity` facts from passing `currentState` and asks the model to update identity when
+a lasting trait changes. A page refusal is a warning: other pages and the event still commit.
 
 ### Compaction
 
-`MEMORY_SECTION_BUDGETS` in `shared/structuredMemory.ts` sets each type's `body.length` budget below `sectionBodyChars`.
-`MEMORY_CHARACTER_SLOT_BUDGETS` sets character `knowledge` to 1000 and `relationships` to 1200; other slots keep 1600.
-After patches, the writer uses a dry `commitPages` result to ask `compactionTargets` for changed, over-budget non-scene
-sections. Its comments own target exclusions; `readCompaction` and `applyCompactions` own shorter-body validation and
-the warning codes. The closing write recomputes changes rather than committing the dry result; planned new-page ids and
-`sceneId` stay stable across attempts. Events never enter compaction.
-
-Each target gets one call through `assembleCompactPrompt`, whose slot filling keeps section text out of CBS; there are
-no messages, and fine-tuning keeps this default frame. Knowledge keeps secrets, facts unknown to others, and facts
-affecting future action, one per line; past and implied details stay on the timeline. Relationships keep one
-current-standing line per other character, without history or `(was: ...)`. Other sections keep every true fact; all add
-nothing. The run stores neither its prompt nor its answer. Returned failures warn without failing the run;
-`MemoryHostFailure` and other throws propagate as for the patch call.
-
-`applyCompactions` runs inside `commitPages` after patches, through `changeSection` with kind `compact`. A patch and its
-compaction thus leave two history entries and two receipt rows in one commit, with the long body as the second `before`,
-and hashes and `historyId` on each row. The Pages tab shows the history diff; the receipt shows the warning.
-`changedSectionTexts` warms the final shorter body.
+`MEMORY_SECTION_BUDGETS` and `MEMORY_CHARACTER_SLOT_BUDGETS` set the section limits. After patches, a dry `commitPages`
+identifies changed sections past budget; each eligible non-scene section gets one default-frame call. `compact.ts` owns
+target exclusions and answer warnings. The final commit recomputes pages with stable new-page and scene ids, then
+applies shorter bodies through `changeSection` so the patch and compaction each get a history entry in one write.
+Compaction changes no event, and a warning does not fail the run.
 
 ## State
 
@@ -341,8 +258,9 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
   refresh must not close a window. Decision: Structured Memory D3, archive.
 - A page locked or changed in a way a patch cannot apply is refused whole, so one bad patch delays that page's other
   changes to a later window. Decision: Structured Memory D3, archive.
-- Section evidence keeps the newest `sectionEvidence`, so a section can read `unsupported` while an older dropped event
-  still supports it. Decision: Structured Memory slice 4a, archive.
+- A section whose text is retained by an identical upsert, disputed join, or compaction keeps only the newest
+  `sectionEvidence`; an older dropped event can still support it while the section reads `unsupported`. Decision:
+  Structured Memory slice 4a, archive.
 - A section whose `userCorrected` stands is never compacted, and can grow by disputed joins until `sectionTooLong`
   refuses only that section's patch; the page's other edits can still apply. The person trims it. A section a failed or
   discarded compaction left long waits for its next change. Decision: Structured Memory D13, archive.
@@ -351,8 +269,9 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
 - Budgets are per section in characters, so they do not keep the required lane under `requiredCap`. Compaction runs
   before the commit, so a deadline during one costs the run its analysis and patch calls, and a person pressing record
   now waits for it. `compactionFailed` holds no provider text. Decision: Structured Memory D13, archive.
-- A throw while recording in a job leaves the run `pending` with no failed receipt; the next run closes it
-  `interrupted`. Without a service it publishes no task status. Decision: Structured Memory slice 2d, archive.
+- An abort or unexpected non-`MemoryHostFailure` throw before the closing write can leave a job's run `pending` with no
+  failed receipt; the next start closes it `interrupted`. A `MemoryHostFailure` attempts a failed-row write. Without a
+  service the job publishes no task status. Decision: Structured Memory slice 2d, archive.
 - A repair never carries an edit into later state; a rebuild from that point does. A later event with every cited
   message deleted no longer counts. Decision: Implementation Audit Fixes Q3.
 

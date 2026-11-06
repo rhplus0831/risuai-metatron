@@ -258,8 +258,9 @@ group: no walk reads them.
   `backups.test.ts` the snapshot and archive routes. Both take their records from `tests/memoryFixtures.ts`.
 - `server/src/tests/structuredMemoryRoutes.test.ts` drives the routes on a real app, seeded through a second store on
   the same file, since the app does not export its own. A frozen `Date` holds the rate limit window.
-- `src/ts/process/structuredMemory.test.ts` runs in Node with `authFetch` scripted. Its splitters read a file only by
-  metadata and line counts, as a reader must. It cannot use `testSupport.ts`: a `src/` test puts its imports under the
+- `src/ts/process/structuredMemory.test.ts` runs in Node with `authFetch` scripted. It dynamically imports
+  `parseMemoryPackage` by computed path, keeping the server module graph out of the client type check, and round-trips
+  the tab's rendered files through that parser. It cannot use `testSupport.ts`: a `src/` test puts its imports under the
   root `tsconfig.json`, where the server routes do not type-check.
 - `structured/edits.test.ts` drives the edit rules with plain records. `structuredMemoryRoutes.test.ts` drives the real
   fence on a real app, holding a task on a tokenizer read and a job on its runner.

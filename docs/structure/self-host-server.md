@@ -12,8 +12,7 @@
 - Neighbors: [server resources](server-resources.md) owns the resource store, chats, checkpoints, snapshots, backups,
   file imports, and their routes; [server generation and live channels](server-generation.md) owns jobs, transforms, the
   LLM and token routes, and the live-update feed.
-- Paths: `server/{src/**,tsconfig.json,ssl/*}`, `Dockerfile`, `.dockerignore`, `server.sh`, `server.bat`.
-  Domain-specific runtime semantics stay with their owner guides; request history and diagnostics have a dedicated
+- Domain-specific runtime semantics stay with their owner guides; request history and diagnostics have a dedicated
   [owner](diagnostics.md).
 - Client counterparts, owned by other guides:
   - `src/ts/storage/serverAuth.ts` → `persistence.md`; `src/ts/storage/assetClient.ts` → `assets.md`.
@@ -78,16 +77,12 @@ and the named route module before changing a path or its admission policy. In re
    `serveCachedIndex`, with no auth and no limiter.
 4. `createStaticCache`, then `serveStatic`, for every other GET/HEAD of `dist/*`, with no auth and no limiter. HTML (the
    injected index included) and requests carrying `Range` or `If-Range` are never negotiated: they get identity.
-5. The route families, each documented in one place:
+5. The route families, with paths and request contracts documented by their owners:
    - This guide: [proxy](#proxy-routes), [push](#push-routes),
      [request history and diagnostics](#request-history-and-diagnostics-routes), [auth](#auth-routes), and
      [storage](#storage-routes).
-   - [Server resources](server-resources.md#files): `/api/resources*`, `/api/llm-secrets/*`, `/api/chats/search`,
-     `/api/chat-checkpoints*`, `/api/backups*`, and `/api/import/*`.
-   - [Server generation](server-generation.md#files): `/api/generations*`, `/api/transform*`, `/api/translate/message`,
-     `/api/memory/tasks*`, `/api/llm/*`, and `/api/tokens/*`.
-   - [Live-update feed](live-update-feed.md#files): `/api/events/ws`.
-   - [Structured memory](structured-memory/records.md#the-read-routes): `/api/memory/structured/*`.
+   - [Server resources](server-resources.md#files), [server generation](server-generation.md#files),
+     [live-update feed](live-update-feed.md#files), and [structured memory](structured-memory/README.md).
 
 ### Rate limits
 
@@ -255,8 +250,8 @@ Everything lives under `save/`. `data/`, `backups/`, and `cache/thumbnails/` are
 
 A logical key `assets/<name>` lives at `save/assets/<encodeFileName(name)>`, e.g. `assets/<sha>.png` or
 `assets/inlay_<sha256>.png`. The legacy `save/database` and `save/remotes` folders are left in place and never read, and
-files of the flat layout (hex file names and `__password` directly in `save/`) are neither read nor migrated. Only the
-[sweep](#asset-mark) deletes an asset.
+files of the flat layout (hex file names and `__password` directly in `save/`) are neither read nor migrated. The
+[sweep](#asset-mark) deletes unreferenced assets; `/api/remove` handles explicit deletions.
 
 - `encodeFileName` keeps `a-z 0-9 . _ -` readable and writes every other UTF-8 byte (uppercase letters, `/`, `%`,
   spaces, non-ASCII) as `%XX`. It also escapes a trailing dot and the first character of a Windows device name

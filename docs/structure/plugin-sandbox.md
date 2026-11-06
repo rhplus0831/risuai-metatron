@@ -132,8 +132,6 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 - Hooks may run on a worker showing another chat: `getRootDocument` finds no message DOM there. Targets remain the
   job's; device-local keys are the worker's. A delivered callback never runs on a second tab, even if its device sleeps.
-- A hidden worker tab answered a hook in 19 ms (`checkJobHandoff.mjs`); Chrome's intensive timer throttling after 5
-  minutes hidden, which can delay a hook that waits on a timer, is unmeasured.
 - MCP excludes silent owners; a live tab answering pings keeps a long provider call alive. Absence failure saves partial
   text and ends the job. Completed-reply transforms keep text; undelivered listeners run late, delivered ones are
   missed.
@@ -254,17 +252,23 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   `getChats`) over `StoreBackedServer`.
 - `permissionStore.test.ts`: grants over `FakeResourceServer`.
 - Browser checks, not in the gate ([test-harness](test-harness.md)): `util/playwright/checkJobProtocol.mjs` (a real v3
-  plugin provider answers job callbacks from the sandbox) and `checkJobHandoff.mjs` (hooks move between two tabs).
+  plugin provider answers job callbacks from the sandbox) and `checkJobHandoff.mjs` (hooks move between two tabs). Its
+  hidden-worker case covers a newly hidden tab. Hooks waiting on timers after prolonged background throttling still need
+  a browser check.
 - Not tested: hot reload, and the remaining sandbox RPC surface.
 
 ## Known Hazards
 
 ### Issues
 
+- Unconfirmed: two installed plugins with the same name and textarea argument share the same popup editor context. A
+  reorder could apply an open draft to the other plugin. See the
+  [caller and reproduction conditions](../research/found-issues.md#duplicate-plugin-names-can-share-a-popup-editor-target).
 - The declarations and runtime disagree:
   - `risuFetch` and `setChatPanel` are implemented but not declared.
   - The arity of `saveSecretHeader` differs.
-  - The `SafeDocument.createElement` declarations are synchronous.
+  - `SafeDocument.createElement` is declared synchronous, but plugin calls cross the iframe bridge and return a
+    `Promise<SafeElement>`; the host method itself is synchronous.
 - Consented capabilities reach further than their names suggest (never reviewed): `mainDom` lets a plugin listen on
   `document` through `getRootDocument` and forwards keys (except from the terminal notice's opening until reload), so a
   plugin could observe typing in the password or credential prompts; `mainDom` also allows document-wide queries and

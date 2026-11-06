@@ -13,18 +13,22 @@
   - `src/lib/Setting/**`, except the files other guides own (`pnpm docs:owner <path>`):
     - [characters-modules](characters-modules.md): `Pages/Module/` (the module catalog, its share button's export and
       alert handling, and the editor), `Pages/PersonaSettings.svelte`, `listedPersona.svelte`;
-    - `llm-requests.md`: `Pages/Advanced/CustomModelsSettings.svelte`, `Pages/ApiKeysSettings.svelte`;
+    - `llm-requests.md`: `Pages/Advanced/CustomModelsSettings.svelte`, `Pages/ApiKeysSettings.svelte`,
+      `Pages/ModelProfilesSettings.svelte`, `Pages/Model/ModelProfileEditor.svelte`,
+      `Pages/Model/ProfileSlotSelect.svelte`;
     - `backup-sync-hub.md`: `Pages/Advanced/SettingsExportButtons.svelte`; `diagnostics.md`:
       `Pages/Advanced/DiagnosticsPanel.svelte`; `plugin-sandbox.md`: `Pages/PluginSettings.svelte`;
-    - [translation](translation.md): `Pages/Translation/TranslatorPresetSettings.svelte`; [media-aux](media-aux.md):
-      `Pages/Model/AuxModelSelectors.svelte`; structured memory: `Pages/StructuredMemoryPrompts.svelte`.
+    - [translation](translation.md): `Pages/TranslationSettings.svelte`,
+      `Pages/Translation/TranslatorStepEditor.svelte`, `Pages/Translation/TranslatorPresetSettings.svelte`;
+      [media-aux](media-aux.md): `Pages/Model/AuxModelSelectors.svelte`; structured memory:
+      `Pages/StructuredMemoryPrompts.svelte`.
   - `src/lang/*`
   - `src/lib/UI/PromptDataItem.svelte`
   - `src/lib/Others/PromptDiffModal.svelte`
 - Not here:
   - DB defaults and migration rules → `persistence.md`.
   - The prompt item runtime → `chat-pipeline.md`.
-  - Translator presets → `translation.md`.
+  - Translator settings and provider steps → `translation.md`.
 
 ## Files
 
@@ -53,8 +57,7 @@ Each module's rules are in its header or on its exports, and each component's in
   `currentJump`, `finishJump`, `scrollToSetting`, `scrollToSection`, `SETTING_HIGHLIGHT_MS`.
 - A jump's mount-time consumers: `src/lib/Setting/Settings.svelte` (keys the page, runs the jump),
   `src/lib/Setting/SettingsSections.svelte` (a collapsible section), `src/lib/Setting/Pages/ModelSettings.svelte` and
-  `src/lib/Setting/Pages/Model/ModelProfileEditor.svelte` (an `opener` accordion),
-  `src/lib/Setting/Pages/ModelProfilesSettings.svelte` (the profile),
+  the Model profile editor and Connections page ([LLM](llm-requests.md)),
   `src/lib/Setting/Pages/PromptPresetSettings.svelte` (the tab), and `src/lib/Setting/Pages/DisplaySettings.svelte` (the
   tab, through `requestDisplayTab`).
 
@@ -101,13 +104,12 @@ These live in `src/lib/Setting/Pages/`. `Display/HandoffToggles.svelte` edits de
 `src/ts/network/handoff.ts`, using `serverJob.handoff` strings; its custom registry item belongs to the notification
 section.
 
-- Declarative: `AccessibilitySettings`, `InteractionSettings`, `AdvancedSettings`, and `TranslationSettings` (the header
-  array, then `SettingsSections`), `DisplaySettings` (sectioned per tab), `ChatFormatSettings`, and `LanguageSettings`
-  (the UI language only).
-- Hybrids of handwritten controls and registry items: `ModelSettings` (the model preset, `Model/ProfileSlotSelect`,
-  `Model/AuxModelSelectors`), `ModelProfilesSettings` (Connections, `MODEL_PROFILES_SETTINGS_MENU`),
-  `Model/ModelProfileEditor` ([model profiles and slots](llm-requests.md)), and `PromptPresetSettings` (the prompt
-  preset).
+- Declarative: `AccessibilitySettings`, `InteractionSettings`, and `AdvancedSettings` (the header array, then
+  `SettingsSections`), `DisplaySettings` (sectioned per tab), `ChatFormatSettings`, and `LanguageSettings` (the UI
+  language only).
+- Hybrid handwritten/registry pages: `ModelSettings` (the model preset and the aux selector owned by
+  [media-aux](media-aux.md)) and `PromptPresetSettings` (the prompt preset). Connections, profile editing, and slot
+  selection belong to [LLM requests](llm-requests.md).
 - `MemorySettings`: memory providers, presets, the embedding model, `supaMemoryKey`, and the HypaV3 budget controls.
   Summarization, budget, and task behavior belong to [memory](memory.md), the structured-memory branch to
   [writer settings](structured-memory/writer.md#state); the prompt-preset max-context override it reads is in
@@ -116,8 +118,7 @@ section.
   Images): runtime behavior is in [media](media-aux.md).
 - `HotkeySettings` (menu 15): `activeHotkeys` (`src/ts/hotkey.ts`) hides `quickSettings` ([app-shell](app-shell.md)).
 - Other handwritten pages: `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `UserSettings`, `ThanksPage`,
-  `Translation/TranslatorStepEditor`, `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`,
-  `Advanced/StoragePanel`, and `Display/*`.
+  `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, `Advanced/StoragePanel`, and `Display/*`.
 
 ### Preset lists
 
@@ -280,14 +281,16 @@ section.
 
 ### Issues
 
-- `changeLanguage` supports `es`, but the language selector does not offer it.
-- Some accessibility labels are computed from `language` at module load and do not update after a language switch.
-- A conflict reload or live update of a settings record replaces its fields and resolves the selection, but runs no
-  presentation update: the language (`changeLanguage`), the theme and custom CSS, the animation, and the sizes stay as
-  they were until the next local change of that setting or a reload.
-- Some settings controls materialize missing values when they first mount (`bindPath` creates missing containers).
-  `e2e/settingsPages.spec.ts` opens every page/accordion and asserts that a second traversal writes nothing; it does not
-  pin which first visits write. Collapsible sections mount only when opened.
+- `src/lang/index.ts` supports Spanish through `changeLanguage`, but `src/ts/setting/languageSettingsData.svelte.ts`
+  does not offer `es` in the UI-language selector.
+- The new-message button style labels in `src/ts/setting/accessibilitySettingsData.ts` are copied from `language` at
+  module load, so they stay in the original language after a switch.
+- A remote or conflict replacement of the `ui` record does not apply a new `settings.ui.language`: `src/ts/bootstrap.ts`
+  `watchRemoteRecords` reapplies the color scheme, text theme/CSS, animation, and sizes, but does not call
+  `changeLanguage`.
+- Unconfirmed: some settings controls may materialize missing values when first mounted (`bindPath` creates missing
+  containers). `e2e/settingsPages.spec.ts` checks that a second traversal writes nothing, but does not identify any
+  first-visit writes. Collapsible sections mount only when opened.
 
 ### Gotchas
 

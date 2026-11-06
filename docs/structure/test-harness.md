@@ -5,14 +5,6 @@
 - Owns the `test:agent` wrapper, its reporter, the human gate, the overload runner, the Vitest config and setup, the
   test inventory (`check:tests`), the Playwright config, the `e2e/` harness, the `util/playwright/` scripts, and the
   rules every test follows: test rules, mock factories, the network guard, timeouts, the slow-test table.
-- Paths:
-  - `vitest.config.ts`, `vitest.setup.ts`, `vitest.lucideImports.ts`, `vitest.testNetwork.ts`, their `*.test.ts` files,
-    `playwright.config.ts`
-  - `util/agentTest.mjs`, `util/agentTestReporter.ts`, `util/agentTestResults.mjs` (the `test:agent` wrapper, its
-    reporter, and their shared summary line and rerun of failed files), `util/agentE2e.mjs` (which specs
-    `test:agent --e2e` selects), `util/requireHuman.mjs` (the human gate), `util/overloadTest.mjs` (`test:overload`)
-  - `util/testInventory.mjs` (`check:tests`)
-  - `util/playwright/` (browser automation helpers and capture scripts), `e2e/` (Playwright specs)
 - Not here:
   - Build scripts, Vite, TypeScript, CI, the `dev:agent` runner, and the service worker's harness →
     [build-test-platforms](build-test-platforms.md).
@@ -66,6 +58,8 @@ codes; the entries name the role and the identifiers to look up.
   (one stack per run on `E2E_SERVER_PORT`/`E2E_VITE_PORT`).
 - `e2e/fixtures.ts`: the specs' `test` (clears safe boot's counter per page load), `expect`, and `settle` (waits for
   `resourceSyncIdle`).
+- `e2e/multiClient.ts`: the reusable two-client harness (`session`, `holdBatch`, `expectState`) used by
+  `e2e/multiClient.spec.ts` and `e2e/multiClientGeneration.spec.ts`.
 - `util/playwright/stack.mjs`: `startStack` (server in a temporary working directory plus Vite, `restartServer` with an
   optional server environment; `deniedEgress` lists what the server's `fetch` tripwire refused, and a
   `serverEnv.NODE_OPTIONS` of the check's own replaces that tripwire), `isolateContext`, `unexpectedEgress`, `openApp`,
@@ -143,6 +137,9 @@ the change reaches, not the whole set.
 
 - The wrapper asks `util/agentE2e.mjs` which specs the changed files reach; when none, it lists the specs and exits with
   2, so the agent names the specs that cover the behavior it changed.
+- After editing `e2e/multiClient.ts`, name both importing specs:
+  `pnpm --silent test:agent --e2e e2e/multiClient.spec.ts e2e/multiClientGeneration.spec.ts`. For `e2e/fixtures.ts`,
+  every spec uses the fixture, so run `pnpm --silent test:agent --e2e --all`. See the [selection issue](#issues).
 - Selection is by name, not coverage: a component no spec names (a chat screen file, say) selects nothing even when a
   spec drives it.
 - One e2e run at a time per machine: the run holds the e2e lock port, then waits for the stack's ports, and Playwright's
@@ -383,6 +380,12 @@ test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` ha
 `triggerRuntime.test.ts` "ends an endless loop with the limit" still covers the effect limit in the default agent suite.
 
 ## Known Hazards
+
+### Issues
+
+- `staticImports` in `util/agentE2e.mjs` leaves extensionless relative imports unresolved. A change to a TypeScript
+  harness can select zero specs. See the [explicit commands](#browser-specs) and
+  [reproduction](../research/found-issues.md#automatic-browser-spec-selection-misses-extensionless-imports).
 
 ### Gotchas
 

@@ -59,12 +59,9 @@ and keeps what spans files.
 - `shared/upstreamExportReport.ts`: the export report and routes (`UpstreamExportReport`, `UpstreamExportRequest`),
   codes mapped to `language.upstreamExport`. `shared/backups.ts`: `selectPartialBackupAssets`.
 - `src/ts/globalApi.svelte.ts` `loadInternalBackup` ("Load Internal Backup" in `UserSettings.svelte`; the file is
-  [global-api](global-api.md)'s): lists the server snapshots (taken every 10 minutes while data changes, 20 kept),
-  restores the chosen one, reloads.
-  - The server validates the snapshot off its serving thread before anything closes, and a second restore waits for the
-    first, then answers 412 when the first went through. A restore replaces the chat checkpoints (and auto-checkpoint
-    policies) with the snapshot's: a checkpoint saved after that snapshot is gone, and the safety snapshot taken before
-    the restore still holds it.
+  [global-api](global-api.md)'s): client entry for restoring and reloading a server snapshot. Snapshot retention,
+  validation, and restore ordering are in [server-resources](server-resources.md#snapshots-and-restore); checkpoint
+  tables are in its [Checkpoint tables](server-resources.md#checkpoint-tables).
 - Realm, the Realm part of `src/ts/characterCards.ts`: `hubURL`, `getRisuHub`, `hubAdditionalHTML`, `hubType`,
   `getRealmInfo`, `showRealmInfoStore`, `downloadRisuHub`, `commitRealmCard`, `getHubResources`; its staged import
   client `src/ts/storage/realmImportClient.ts` (`prepareRealmImport`, `commitRealmImport`, `cancelRealmImport`).
@@ -206,25 +203,9 @@ and keeps what spans files.
   - A Risu Account backup (`encryption.risudat`) is refused with a message.
 - The upstream import reads plugin storage (`pluginCustomStorage`, converted by
   `server/src/data/upstream/importCollections.ts` `convertPluginStorage` into the `pluginStorage` record, v3 values
-  under `_pluginStorage`) in each form upstream wrote: inline top-level values (copied into `_pluginStorage` only in a
-  file without one), the older per-key `_coldplugin` pointers, and current upstream's `_coldpluginIndex`.
-  - `_coldpluginIndex` is the id of one cold-storage record
-    `{ type: "risu-plugin-storage-index", entries: [{ k, s?, l? }], trash }` whose `s` is a small value's JSON text and
-    whose `l` names another cold record holding a large value of any JSON type (`trash` is dropped).
-  - Cold records are read as `data` (a list, or an object with `character` or `message`) or `plugin` (any other JSON;
-    `archive.ts` `readColdRecord`), and when both name forms of one key exist, character and chat restores read the last
-    `data` record while plugin storage reads the last `plugin` one, as upstream's restore does.
-  - With an index, inline copies override index values, which override `_coldplugin` (used only for keys no index entry
-    claims, a failed one included); without one, `_coldplugin` takes precedence over inline values.
-  - Index entries are decided before their values are read: `l` beats `s`, and a later entry of a key replaces an
-    earlier one even when it then fails.
-  - Problems are listed in the report and the rest imports: a missing or unreadable index record (`cold-missing`,
-    `_coldpluginIndex`: the keys cannot be named without it), a record that is not an index (`invalid-setting`), an
-    entry without a key or value or a displaced duplicate or unparsable `s` (`invalid-data`), a large value whose record
-    is missing, over the per-record cap, or not JSON (`cold-missing`, by key).
-  - The commit stays all-or-nothing, so plugins never run against a half-restored store.
-- Tested end to end on a version-3 store: an archive import undoes changes made after the export (a plugin
-  `setCharacter`, an MCP tool); restoring the import's safety snapshot brings them back.
+  under `_pluginStorage`): preserve the upstream forms and precedence documented on `convertPluginStorage`; cold-record
+  classification and selection are documented on `server/src/data/upstream/archive.ts` `readColdRecord`/`readColdEntry`.
+  The prepared import commits as a staged full replacement ([server-resources](server-resources.md#upstream-backups)).
 - A backup restore replaces every resource and only adds assets that do not exist yet; the app reloads afterwards
   because every revision the tab held is void (new epoch).
 - A refused snapshot or archive, one over the server's restore memory limit (`RISU_RESTORE_HEAP_MB`) included, is

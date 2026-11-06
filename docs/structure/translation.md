@@ -25,6 +25,8 @@
   `applyEdittransRegex`, `applyEdittransToStoredTranslation`; the `runTranslator` comment owns chunking, Exclude
   Chain-of-Thought, prepared-chunk cache keys and failures; the `translateHTML` comment owns signals, permits, attempt
   failure, shared flights and LLM regeneration/cache-write rules.
+- `src/ts/characters.ts` `exportChat`: translated chat exports also call `translateHTML` with the export's captured
+  transform ([characters-modules](characters-modules.md)).
 - `server/src/data/normalize/memoryTranslateMedia.ts`: persisted translator normalization;
   `normalizeMemoryTranslateMedia`. Stored `translatorType: "bergamot"` becomes `"google"` with `translator` empty and
   `useAutoTranslateInput` off: translation and chat auto-translate remain inactive until the user enables translation
@@ -134,14 +136,13 @@ on the rendered path; cache buttons remain for LLM. Auto-translate is a [chat se
 
 1. `src/lib/ChatScreens/ChatBody.svelte` calls `translateHTML` according to chat settings. Streaming rows show the
    original until streaming ends. Normally `ParseMarkdown` runs first; LLM's `translateBeforeHTMLFormatting` sends raw
-   text first. On the HTML path `<Thoughts>` is already `<details>`, so Exclude Chain-of-Thought only strips remaining
-   raw tags.
+   text first. `src/ts/characters.ts` `exportChat` also translates parsed chat text with a captured export transform.
 2. `src/ts/translator/translator.ts` uses the selected chat's preset, falling back to global; the playground passes
    `globalPreset`. Its LLM adapter runs `shared/translation/pipeline.ts` through `requestChatData` in translate mode.
-3. Combined DOM paragraph jobs rerun `editdisplay` through the server transform (`serverProcessScript`, target kind
-   `translation`) when a captured context exists, then apply Markdown. All DOM jobs finish before `applyEdittransRegex`;
-   LLM results go directly to that regex. The regex remains in the tab; see [Invariants](#invariants).
-4. The translation editors in `src/lib/ChatScreens/Chat.svelte` capture `llmTranslationCacheKey(text)`, then read and
+   With a captured context, combined paragraphs rerun `editdisplay` through `serverProcessScript` (target `translation`)
+   before Markdown. DOM jobs finish before `applyEdittransRegex`. LLM results go directly to that regex. See
+   `translateHTML` for traversal, cancellation, queue, and cache rules.
+3. The translation editors in `src/lib/ChatScreens/Chat.svelte` capture `llmTranslationCacheKey(text)`, then read and
    write that full key with `readLLMCacheEntry`/`writeLLMCacheEntry`, so a later settings switch cannot redirect the
    edit.
 
@@ -278,4 +279,5 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 
 ### Issues
 
-- `translatorType: 'none'` has no branch in `translateMain` and falls through to Google.
+- `src/ts/translator/translator.ts` `translateMain` has no `translatorType: "none"` branch, so an older save retaining
+  that accepted value falls through to Google (`shared/database.ts` still includes `"none"` in the field type).

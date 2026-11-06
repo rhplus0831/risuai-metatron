@@ -20,58 +20,37 @@ and the module headers.
 
 ### Shared shapes
 
-`shared/` compiles in the client and the strict server (`server/tsconfig.json`). Node runs it directly, and the
-`Dockerfile` runtime stage copies it. Old client modules re-export what moved here (`src/ts/storage/database.svelte.ts`,
-`src/ts/storage/mutationValidation.ts`, `src/ts/chatLoadPages.ts`), so importers keep their paths.
+`shared/` is consumed by the client and strict server; its runtime restrictions are in
+[STRUCTURE T2](../../STRUCTURE.md#repository-wide-invariants). The shared modules are the contracts to read with their
+callers:
 
-- Rules: STRUCTURE T2, and only type declarations, `as const` objects, primitive constants, plain constant arrays, and
-  small pure functions with no runtime dependencies; imports only between `shared/` files.
-- Exception: the runtime modules `cbs/`, `scripts/regex.ts`, `lore/`,
-  `prompt/{chatTemplate,templateCheck,chatTokens}.ts`, and `tokenizerChoice.ts` reach application state only through an
-  injected object and may import pure packages that run in both runtimes (`@risuai/ccardlib`, `@huggingface/jinja`).
-  Domain guides own their semantics.
-- `shared/chats.ts`: the chat wire contract (`ChatMeta`, the conflict `reason`). `shared/chatCheckpoints.ts`:
-  `CHECKPOINT_CHAT_FIELDS`. `shared/jobs.ts`: the generation job contract ([server](server-generation.md)).
-- `shared/resources.ts`: the resource wire types (`compareRevision`, `parseRevisionToken`, `revisionDigest`); which kind
-  holds what is under [Resources](#resources).
-- `shared/sections.ts`: the [field-to-resource map](#invariants); `modelPresetRootValue`, `forwardPresetRoots`,
-  `maxContextOverrideOf`.
-- `shared/presets.ts`: the schema of both preset records: `PRESET_DEFAULTS`, `PRESET_FIELD_KINDS`,
-  `PRESET_NULLABLE_FIELDS`, the partition `MODEL_PRESET_FIELDS`, `MODEL_PROFILE_FIELDS`, `PROMPT_PRESET_FIELDS`,
-  `PRESET_RECORD_FIELDS`, and `PROMPT_PRESET_LOCAL_FIELDS`; `normalizePreset`, `normalizeModelPreset`,
-  `normalizeModelProfiles`, `presetFieldValue` (shared with the server; [profiles and slots](llm-requests.md)).
-- Normalizers and helpers: `shared/personas.ts` (`normalizePersonas`, `PERSONA_DEFAULTS`), `shared/ids.ts` (`newId`),
-  `shared/translatorPresets.ts` (`normalizeTranslatorSteps`, `createTranslatorPreset`), `shared/togglePresets.ts`
-  (`normalizeTogglePresets`, `captureToggleValues`, `toggleValuesForChat`, `compareTogglePreset`),
-  `shared/characters.ts` (`normalizeCharacter`), `shared/chatBinding.ts` (`resolveChatBinding`),
-  `shared/chatLoadPages.ts`.
-- `shared/mutationValidation.ts`: the checks and errors of the mutation modules and the server's RisuAccess host
-  (`requireJsonData`, `writeEntries`, `MutationValidationError`, `MutationTargetGoneError`).
+- Runtime exceptions (`cbs/`, `scripts/regex.ts`, `lore/`, `prompt/{chatTemplate,templateCheck,chatTokens}.ts`,
+  `tokenizerChoice.ts`) reach application state through an injected object and may import the pure packages
+  `@risuai/ccardlib` and `@huggingface/jinja`; their domain guides own the behavior.
+- `shared/sections.ts`: `SECTION_FIELDS`, `COLLECTION_FIELDS`, `FORWARDED_ROOT_KEYS`, `DROPPED_FIELDS`.
+- `shared/resources.ts` and `shared/chats.ts`: resource and chat wire types and revision helpers.
+- `shared/presets.ts`, `shared/characters.ts`, `shared/personas.ts`, `shared/translatorPresets.ts`,
+  `shared/togglePresets.ts`: record schemas and normalizers.
+- `shared/recordPatch.ts`, `shared/mutationValidation.ts`: patch validation/application and mutation errors.
+- `shared/chatCheckpoints.ts`, `shared/jobs.ts`, `shared/chatBinding.ts`, `shared/chatLoadPages.ts`, `shared/ids.ts`:
+  checkpoint, job, binding, paging, and id helpers; their domain guides own semantics.
+
+Client compatibility modules re-export moved shapes from `shared/` (`src/ts/storage/database.svelte.ts`,
+`src/ts/storage/mutationValidation.ts`, `src/ts/chatLoadPages.ts`).
 
 ### Settings records
 
-- `src/ts/storage/selection.svelte.ts`: this client's preset, model preset, persona, and lore page selection, in the
-  browser only (`selection`, `loadSelection`, `persistSelection`); the character and the open chat are per tab, in the
-  URL.
-- `src/ts/storage/settingsViews.svelte.ts`: the selected presets and persona over the records (`settings`,
-  `activePreset`, `activeModelPreset`, `activePersona`, `profileForSlot`, `activeMainProfile`, `activeSubProfile`). The
-  active preset and persona views follow the open chat's [binding](#chat-binding) first, then the tab's selection, so a
-  settings page edits what the open chat uses; the chat module registers that reader (`setOpenChatBindingSource`). A
-  preset field the record lacks, or holds as `null`, reads through `presetFieldValue` (`shared/presets.ts`).
-- Record lookups in `settingsViews.svelte.ts`: `currentPresetRecord` (falls back to the first record) and
-  `presetRecordForWrite` (no fallback), `tabSelectionIds`, `tabPersonaRecord`, `selectedPresetIndex`,
-  `selectedPersonaIndex`, the captured `PresetScope` (`readPresetFieldOf`, `writePresetField`, `missingPresetTarget`,
-  `scopedPresetRoot`), `readSettingsRoot`, `writeSettingsRoot`, and `writeModelRoot` (the plugin
-  [write rules](llm-requests.md#invariants)).
+- `src/ts/storage/selection.svelte.ts`: client selection (`selection`, `loadSelection`, `persistSelection`); character
+  and chat selection are per tab.
+- `src/ts/storage/settingsViews.svelte.ts`: record views and lookup/write helpers (`settings`, `activePreset`,
+  `activeModelPreset`, `activePersona`, `profileForSlot`, `PresetScope`, `writeModelRoot`). The open-chat binding and
+  fallback rules are in [Chat binding](#chat-binding).
 - `src/ts/storage/presets.svelte.ts`: the preset list operations (`changeToPreset`, `copyPreset`, `importPreset`,
   `downloadPreset`, `applyPresetTemplate`, `copyModelPreset`, `removeModelPreset`).
-- `src/ts/storage/llmSecrets.svelte.ts`: the tab's side of the write-only `llmSecrets` record: the masked status and the
-  queue of credential writes (`llmSecretState`, `setSecret`, `clearSecret`, `deleteEntrySecret`, `secretStatus`,
-  `setMaskedSecrets`, `mirrorFields`, `llmSecretsText`).
-- `src/ts/storage/snapshots.svelte.ts`: the legacy flat-shape builders (`rootSnapshot`, `buildDatabaseSubset`,
-  `buildSettingsReport`, `buildBackupInventory`).
-- `src/ts/storage/serverAuth.ts`: the tab's ES256 JWT auth (`authFetch`). `src/ts/storage/exportAsDataset.ts`: chats and
-  lore as `dataset.json`.
+- `src/ts/storage/llmSecrets.svelte.ts`: masked state and credential write queue (`setSecret`, `clearSecret`,
+  `deleteEntrySecret`, `setMaskedSecrets`, `mirrorFields`).
+- `src/ts/storage/snapshots.svelte.ts`: legacy shape builders and reports. `src/ts/storage/serverAuth.ts`: `authFetch`.
+  `src/ts/storage/exportAsDataset.ts`: `dataset.json` export.
 
 ### Mutation modules
 
@@ -89,20 +68,16 @@ refusal changes nothing (`shared/mutationValidation.ts`).
 
 ### Record wrappers
 
-`src/ts/storage/records.svelte.ts` is the source of truth of the sections, the settings collections, `presets`,
-`modules`, `plugins`, `pluginStorage`, and the characters, each a deep write-through record; its module header holds the
-wrapper rules.
+`src/ts/storage/records.svelte.ts` owns settings and character record wrappers. Its module header is the wrapper
+contract; use these identifiers to trace installation, writes, and save-loop coupling:
 
-- Writes and saving: `trackedRecord`, `hasRecord`, `setRecordWriteListener` (the adapter's `markKey`),
-  `initializeRecords` and `applyRaw` (never queue), `replaceRecord`, `batchRecordWrites`, `moveRecordListItem`,
-  `replaceRecordList`.
-- Identity and retention: `BY_ID_FIELDS`, `DetachedWrapperError`, `DuplicateIdError`, `trimRootList`, `unpinBelow`.
-- Credentials never enter a record: `CredentialRefusedError`, for writes through the views and wrappers only.
-- Module caches: `moduleMembershipRevision`, `moduleAssetsRevision`, `moduleFieldPlain`, `characterFieldPlain`.
-- Asset lists (a module's `assets`, a character's `additionalAssets`, `emotionImages`, `ccAssets`) are frozen in the
-  record: an edit replaces the whole list, and the raw paths (`applyRawCharacter`, `patchRawCharacter`) freeze
-  handed-over data in place, so a caller that keeps editing its input passes a copy (`frozenAssetOf`,
-  `isFrozenAssetList`, `refuseFrozen`, `adoptModuleValue`, `freshAssetList`).
+- Installation and writes: `initializeRecords`, `applyRaw`, `replaceRecord`, `batchRecordWrites`,
+  `setRecordWriteListener`, `setCharacterWriteListener`.
+- Wrapper identity and list operations: `trackedRecord`, `BY_ID_FIELDS`, `moveRecordListItem`, `replaceRecordList`,
+  `DetachedWrapperError`, `DuplicateIdError`.
+- Save projections and adoption: `characterFieldStamp`, `moduleItemFieldStamp`, `adoptCharacterValue`,
+  `adoptModuleValue`, `applyRawCharacter`, `patchRawCharacter`.
+- Credential routing: `CredentialRefusedError`; the external mutation boundary is described above.
 
 ## Flows
 

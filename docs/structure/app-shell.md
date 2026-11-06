@@ -13,7 +13,7 @@
 - Not here: DB shape and migrations → `persistence.md`. The save loop → [save cycle](resource-sync.md#save-cycle);
   `globalFetch` → [network-jobs](network-jobs.md). Chat UI below `ChatScreen` → `ui-theming.md`. The server's
   client-route fallback (`shared/routes.ts`, `GET *` in `server/src/app.ts`) → `self-host-server.md`. The settings page
-  numbers → `settings-i18n.md`.
+  numbers → `settings-i18n.md`. Alert and terminal-notice surfaces → `global-api.md`.
 
 ## Files
 
@@ -27,8 +27,7 @@
 - `src/App.svelte`: the screen selection ([Screen selection](#screen-selection)), the overlays, the drag/drop import,
   and the one keep-alive controller.
 - `src/ts/keepAliveAudio.ts` `createKeepAliveAudio`: "Keep Session Alive: Via Sound"
-  (`settings.ui.keepSessionAlive === "sound"`); `createAudio` says why the level is in the waveform (Chrome measures the
-  output, and treats media of 5 s or less as transient).
+  (`settings.ui.keepSessionAlive === "sound"`); its header documents the audio requirements.
 
 ### Router
 
@@ -68,7 +67,9 @@
 
 - `src/ts/hotkey.ts`: `initHotkey` (the key handler and its dispatch switch), `hotkeyMatches`, `enabledHotkeys` and
   `activeHotkeys` (`HotkeySettings.svelte`'s list), `changeToPreset` (Ctrl+1..9 through `pickBinding`,
-  [chat bindings](persistence.md)), and the `quickSettings` key, which only shows `language.quickSettingsRemoved`.
+  [chat bindings](persistence.md)), and the `quickSettings` key, which only shows `language.quickSettingsRemoved`. Alert
+  key gating is in [global-api](global-api.md#alert-queue); picker/dialog priority is in
+  [UI](ui-theming.md#dialogs-popovers-and-portals).
 - `shared/hotkeys.ts` `defaultHotkeys`, re-exported by `src/ts/defaulthotkeys.ts` with the `Hotkey` type of
   `shared/settings.ts`.
 - `src/ts/observer.svelte.ts` `startObserveDom`: the BGM markers (`risu-ctrl`, `BGM_STOP_GRACE_MS`) and the `x-hl-lang`
@@ -86,10 +87,10 @@
 
 1. `index.html` loads `main.ts`; without the injected `__NODE__` flag it mounts only the server-required notice.
    Otherwise `boot()` starts diagnostics and `startApp()` mounts `App` before data loads, leaving the loading branch up.
-2. `loadData()` reads `?safe` before navigation, reads the server snapshot, then installs selection and records, applies
-   first-boot defaults, awaits [draft recovery](draft-recovery.md#boot-recovery), and registers the service worker. A
-   failed snapshot read alerts and stops boot; there is no local snapshot fallback. Snapshot cache rules are in
-   [resource sync](resource-sync.md#boot-cache).
+2. `loadData()` reads `?safe` before navigation, reads the server snapshot, resolves the tab selection, installs
+   records, applies first-boot defaults, then awaits [draft recovery](draft-recovery.md#boot-recovery) before
+   registering the service worker. A failed snapshot read alerts and stops boot; there is no local snapshot fallback.
+   Snapshot cache rules are in [resource sync](resource-sync.md#boot-cache).
 3. Boot maintenance and chat initialization run before the safe-boot content stage and presentation setup. Then the save
    adapter and remote-record watchers start, followed by URL/share imports, legacy-data migration, the event feed, and
    plugin loading. The ordering matters: imports can await save acknowledgements and consume link query/hash data before
@@ -330,26 +331,26 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 
 ### Limitations
 
-- Safe boot's counter is a heuristic shared by the tabs of a browser: a user who reloads twice within 10 s of loading
-  trips it once, two tabs booting at once can overwrite each other's count (the read and the write are not atomic), and
-  a boot that settles only clears its own record. A plugin whose script throws at start fails every boot it runs in, so
-  a normal start with it enabled is safe again every third boot until it is fixed or disabled. Decision: D5 (once per
-  page load) and D6 (two boots, 10 s) of RisuNest Small Wins ([archive](../archived-plan/README.md)).
-- The router's accepted limits (recorded in the `router.svelte.ts` header: it waits for nothing, never loops, never
-  traverses to an entry the Navigation API does not list, and the URL catches up by the next store change):
-  - a click made between a back and its landing is undone by the landing;
-  - a back can do nothing (an entry dropped at the browser's session history cap, 50 entries in Chromium and Firefox,
-    100 in WebKit); the URL then stays one step behind until the next store change;
-  - overlapping navigations (the user's back, another script's history write, a router step) have no defined winner;
-  - without the Navigation API (iOS before 26.2, older Firefox) the router never goes back, so the history grows and a
-    back after a close shows the same screen again;
-  - after a back and a forward inside settings, a close replaces instead of going back (the entries beneath may name
-    another base).
+- Safe boot shares its attempt record across tabs, but concurrent writes are not atomic and a settled boot clears only
+  its own record. Decision: D5 and D6 of RisuNest Small Wins ([archive](../archived-plan/README.md)).
+- A plugin that throws while starting fails every boot it runs in, so a normal start with it enabled is safe again every
+  third boot until it is fixed or disabled. Decision: D5 and D6 of RisuNest Small Wins
+  ([archive](../archived-plan/README.md)).
+- The router never waits for navigation or traverses to an entry the Navigation API does not list. Decision: the
+  transition model in `src/ts/router/router.svelte.ts`.
+- A browser back can do nothing after the browser drops an entry, and the URL then stays behind until another store
+  change. Decision: the transition model in `src/ts/router/router.svelte.ts`.
+- Overlapping back actions, script history writes, and router transitions have no defined winner. Decision: the
+  transition model in `src/ts/router/router.svelte.ts`.
+- Without the Navigation API, the router does not traverse back to earlier entries. Decision: the transition model in
+  `src/ts/router/router.svelte.ts`.
+- A back and forward within settings can leave a close replacing the current entry instead of returning to the prior
+  base. Decision: layer entries retain their base route in `src/ts/router/router.svelte.ts`.
 - A back pressed before any interaction on a directly opened settings or grid link leaves the app, like any first page.
-  Decision: the router adds the root entry only at the first activation (`router.svelte.ts`).
+  Decision: the router adds the root entry only at the first activation in `src/ts/router/router.svelte.ts`.
 - BGM stop detection is marker-based. If a message re-render keeps its BGM marker out of the DOM for more than 1 s (for
-  example a slow re-parse), the track stops and restarts from the beginning. Decision: the grace period
-  `BGM_STOP_GRACE_MS` (`observer.svelte.ts`).
+  example a slow re-parse), the track stops and restarts from the beginning. Decision: `BGM_STOP_GRACE_MS` in
+  `src/ts/observer.svelte.ts`.
 
 ### Gotchas
 

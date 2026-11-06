@@ -1,6 +1,19 @@
 {
   "comment": "Path ownership: the guide that owns each repository path. Ordered, first match wins: specific rules first, the fallback directories last. Query with `pnpm docs:owner <path>`; `pnpm check:docs` validates it; util/docsOwner.mjs states the glob syntax and the shared-file rules.",
   "rules": [
+    { "match": "{STRUCTURE.md,docs/structure/ownership.json,docs/structure/**/*.md}", "guide": "README" },
+    {
+      "match": "shared/jobs.ts",
+      "guide": "server-generation",
+      "shared": true,
+      "part": "job admission, status, and terminal events"
+    },
+    {
+      "match": "shared/jobs.ts",
+      "guide": "network-jobs",
+      "shared": true,
+      "part": "tab channel messages, callbacks, and handoff"
+    },
     { "match": "src/ts/globalApi.svelte.ts", "guide": "global-api", "shared": true, "part": "the rest" },
     { "match": "src/ts/globalApi.svelte.ts", "guide": "assets", "shared": true, "part": "the asset functions" },
     { "match": "src/ts/globalApi.svelte.ts", "guide": "network-jobs", "shared": true, "part": "the fetch functions" },
@@ -70,13 +83,16 @@
     { "match": "server/src/tests/swAuth.test.ts", "guide": "build-test-platforms" },
     { "match": "server/src/tests/{cbs*,transformBudget}.test.ts", "guide": "cbs-rendering" },
     { "match": "server/src/tests/importPngCaps.test.ts", "guide": "characters-modules" },
-    { "match": "server/src/tests/{assemble,lore,promptTail}.test.ts", "guide": "chat-pipeline" },
     {
-      "match": "server/src/tests/{diagnostics,diagnosticsCrash,logEvent,push,requestHistory,requestHistoryRoutes,requestShare}.test.ts",
+      "match": "server/src/tests/{assemble,chatTemplate,lore,postProcess,promptTail}.test.ts",
+      "guide": "chat-pipeline"
+    },
+    {
+      "match": "server/src/tests/{diagnostics,diagnosticsCrash,logEvent,push,requestCapture,requestHistory,requestHistoryRoutes,requestShare}.test.ts",
       "guide": "diagnostics"
     },
     {
-      "match": "server/src/tests/{changeFeed,chatMetadataCoalescingEvents,events}.test.ts",
+      "match": "server/src/tests/{changeFeed,chatFeedPatches,chatMetadataCoalescingEvents,events}.test.ts",
       "guide": "live-update-feed"
     },
     { "match": "server/src/tests/llm*.test.ts", "guide": "llm-requests" },
@@ -95,11 +111,11 @@
       "guide": "scripts-triggers"
     },
     {
-      "match": "server/src/tests/{commandSequences,dynamicAssets,generationBarrier,generationDeltaChunks,generationJobs,generationReceipts,generations,jobChannel,jobModules,promptRunner,tokenRoutes,transform,transformService,translate}.test.ts",
+      "match": "server/src/tests/{chatBinding,commandSequences,dynamicAssets,generation*,jobChannel,jobMetadataScope,jobModules,jobRequestModelPreflight,jobScope*,promptRunner,thoughts,tokenRoutes,transform,transformService,translate}.test.ts",
       "guide": "server-generation"
     },
     {
-      "match": "server/src/tests/{backups,chatCheckpointRoutes,chatCheckpoints,chatStore,importCharx,importModule,importRealm,messageSearch,resourceCompression,resourceStore,snapshots,sqliteSynchronous}.test.ts",
+      "match": "server/src/tests/{backups,chatCheckpoint*,chatPatch,chatSourceGeneration,chatStore,chatSummaries,importCharx,importModule,importRealm,kinds,messageSearch,normalizationPass,normalizeCharacters,normalizeModules,normalizeSections,recordPatchText,resource*,restoreWorker,snapshots,sqliteSynchronous}.test.ts",
       "guide": "server-resources"
     },
     {
@@ -125,12 +141,12 @@
     { "match": "src/lib/ChatScreens/PartialEditController.test.ts", "guide": "translation" },
     { "match": "src/lib/ChatScreens/Chat.test.ts", "guide": "ui-theming" },
     { "match": "src/lib/Others/AlertComp.test.ts", "guide": "app-shell" },
-    { "match": "src/lib/Others/ChatCheckpointsDialog.test.ts", "guide": "chat-store" },
+    { "match": "src/lib/Others/ChatCheckpointsDialog.{svelte,test.ts}", "guide": "chat-store" },
     { "match": "src/lib/Setting/Pages/MemorySettings.*.test.ts", "guide": "memory" },
     { "match": "src/lib/Setting/Pages/Advanced/DiagnosticsPanel.test.ts", "guide": "diagnostics" },
     { "match": "src/lib/SideBars/DevTool.test.ts", "guide": "chat-pipeline" },
-    { "match": "src/lib/SideBars/ChatTranslationPanel.test.ts", "guide": "translation" },
-    { "match": "src/lib/UI/mainMenuProjection.test.ts", "guide": "app-shell" },
+    { "match": "src/lib/SideBars/ChatTranslationPanel.{svelte,test.ts}", "guide": "translation" },
+    { "match": "src/lib/UI/mainMenuProjection.{ts,test.ts}", "guide": "app-shell" },
     { "match": "src/lib/UI/NanoGPTDashboard.test.ts", "guide": "llm-requests" },
     { "match": "src/lib/UI/GUI/guiRendering.test.ts", "guide": "settings-i18n" },
     {
@@ -167,6 +183,9 @@
     },
     { "match": "src/ts/storage/tests/localLoreDraft.fence.test.ts", "guide": "memory" },
     { "match": "src/ts/storage/tests/{collectionStore,pluginStorageStore}.test.ts", "guide": "plugin-sandbox" },
+    { "match": "src/ts/storage/tests/resourceSyncJournal.test.ts", "guide": "draft-recovery" },
+    { "match": "src/ts/storage/tests/resourceSyncDiagnostics.test.ts", "guide": "diagnostics" },
+    { "match": "src/ts/storage/tests/resourceSync{FeedPatches,Live,Notices}.test.ts", "guide": "live-updates" },
     { "match": "src/ts/storage/tests/resourceSync*.test.ts", "guide": "resource-sync" },
     { "match": "src/ts/storage/tests/{fakeResourceServer,serverKinds,storeBackedServer}.ts", "guide": "resource-sync" },
     { "match": "src/ts/storage/tests/settingWrappers.test.ts", "guide": "settings-i18n" },
@@ -214,6 +233,7 @@
     { "match": "shared/{llm,llmSecrets,tokenizerChoice}.ts", "guide": "llm-requests" },
     { "match": "shared/llm/**", "guide": "llm-requests" },
     { "match": "shared/prompt/{chatTokens,imageTokens}.ts", "guide": "llm-requests" },
+    { "match": "server/src/llm/historyObserver.ts", "guide": "diagnostics" },
     { "match": "server/src/llm/**", "guide": "llm-requests" },
     { "match": "server/src/routes/llm.ts", "guide": "llm-requests" },
     { "match": "server/src/prompt/tokens.ts", "guide": "llm-requests" },
@@ -223,7 +243,7 @@
     { "match": "src/ts/{tokenizer,tokenCountField}.ts", "guide": "llm-requests" },
     { "match": "src/lib/UI/{Model*,NanoGPT*,OpenrouterProviderList}.svelte", "guide": "llm-requests" },
     {
-      "match": "src/lib/Setting/Pages/{Advanced/CustomModelsSettings,ApiKeysSettings}.svelte",
+      "match": "src/lib/Setting/Pages/{Advanced/CustomModelsSettings,ApiKeysSettings,Model/ModelProfileEditor,Model/ProfileSlotSelect,Model/ProviderDefaultKeys}.svelte",
       "guide": "llm-requests"
     },
     { "match": "src/lib/UI/GUI/CredentialSelect.svelte", "guide": "llm-requests" },
@@ -247,8 +267,13 @@
     { "match": "shared/cbs/**", "guide": "cbs-rendering" },
     { "match": "shared/prompt/toggles.ts", "guide": "cbs-rendering" },
     { "match": "src/ts/cbs.ts", "guide": "cbs-rendering" },
+    { "match": "src/ts/parser/{sentenceBreaks.ts,tests/sentenceBreaks.test.ts}", "guide": "translation" },
     { "match": "src/ts/parser/**", "guide": "cbs-rendering" },
-    { "match": "src/ts/gui/highlight.ts", "guide": "cbs-rendering" },
+    {
+      "match": "src/lib/ChatScreens/{ChatRowStyles.svelte,settledRender.svelte.ts,Chat.settledRender.svelte.test.ts}",
+      "guide": "cbs-rendering"
+    },
+    { "match": "src/ts/gui/highlight.{ts,test.ts}", "guide": "cbs-rendering" },
     { "match": "src/ts/gui/codearea/**", "guide": "cbs-rendering" },
     { "match": "src/lib/ChatScreens/PartialEditController.svelte", "guide": "cbs-rendering" },
     { "match": "src/lib/Others/MonacoEditor.svelte", "guide": "cbs-rendering" },
@@ -310,7 +335,10 @@
     { "match": "shared/translation/**", "guide": "translation" },
     { "match": "shared/translatorPresets.ts", "guide": "translation" },
     { "match": "server/src/translation/**", "guide": "translation" },
-    { "match": "src/lib/Setting/Pages/Translation/TranslatorPresetSettings.svelte", "guide": "translation" },
+    {
+      "match": "src/lib/Setting/Pages/{TranslationSettings,Translation/TranslatorPresetSettings,Translation/TranslatorStepEditor}.svelte",
+      "guide": "translation"
+    },
     { "match": "src/ts/drive/**", "guide": "backup-sync-hub" },
     { "match": "src/ts/{realmBlocking,realmTerms}.ts", "guide": "backup-sync-hub" },
     { "match": "src/ts/storage/realmImportClient.ts", "guide": "backup-sync-hub" },
@@ -319,6 +347,7 @@
     { "match": "server/src/data/upstream/{export,import}{Runner,Stage,Worker}.ts", "guide": "server-resources" },
     { "match": "server/src/data/upstream/**", "guide": "backup-sync-hub" },
     { "match": "shared/{upstreamBackup,upstreamExportReport}.ts", "guide": "backup-sync-hub" },
+    { "match": "src/lib/Others/HandoffStatus.svelte", "guide": "network-jobs" },
     { "match": "src/ts/storage/{assetClient,assetQueue,assetLifecycleClient}.ts", "guide": "assets" },
     { "match": "shared/assetBatch.ts", "guide": "assets" },
     { "match": "src/ts/screenshotCaptureCache.test.ts", "guide": "assets" },
@@ -327,7 +356,7 @@
     { "match": "src/ts/util.ts", "guide": "global-api" },
     { "match": "src/ts/util/**", "guide": "global-api" },
     { "match": "src/ts/{alert,alertQueue,dragTypes,sourcemap,iris,licenses}*.ts", "guide": "global-api" },
-    { "match": "src/lib/Others/{AlertComp,IrisModal}.svelte", "guide": "global-api" },
+    { "match": "src/lib/Others/{AlertComp,IrisModal,ReloadNotice,TerminalNotice}.svelte", "guide": "global-api" },
     { "match": "src/ts/tests/{alertMock,globalApiMock}.ts", "guide": "global-api" },
     { "match": "src/etc/Airisu.webp", "guide": "global-api" },
     { "match": "src/ts/setting/**", "guide": "settings-i18n" },
@@ -375,7 +404,7 @@
       "match": "server/src/routes/{generations,transform,translate,memoryTasks,tokens}.ts",
       "guide": "server-generation"
     },
-    { "match": "shared/assetMime.ts", "guide": "self-host-server" },
+    { "match": "shared/{assetLifecycle,assetMime}.ts", "guide": "self-host-server" },
     { "match": "{Dockerfile,server.sh,server.bat}", "guide": "self-host-server" },
     { "match": "vitest.*", "guide": "test-harness" },
     { "match": "playwright.config.ts", "guide": "test-harness" },

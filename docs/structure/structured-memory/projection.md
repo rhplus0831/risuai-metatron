@@ -30,6 +30,8 @@
 - `server/src/data/resourceStore.ts`: read overlays and projection reads; `sealedMemoryProjection`,
   `overlayMemoryProjection`, `overlaysMemoryProjection`, `store.memory.readProjection`,
   `store.memory.readProjectionRevisions`.
+- `server/src/data/chatStore.ts`: write-time projection rules; `withoutProjection`, `refusesHypaV3Data`,
+  `prepareWholeChat`, `prepareOp`.
 - `server/src/routes/structuredMemory.ts`: projection and reset routes; the header's `revisions`, `projection`,
   `reset-summaries`, and `resettable`. The shared `StructuredMemoryResetAnswer` is listed with
   [records' Files](records.md#files).

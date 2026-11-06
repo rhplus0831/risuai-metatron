@@ -27,9 +27,8 @@ The transport below retains this tab's in-memory log.
 
 ### Network clients
 
-- `src/ts/globalApi.svelte.ts`, fetch functions and log: buffered/streaming routing, `/proxy2`, and tab diagnostics;
-  `globalFetch`, `fetchWithProxy`, `fetchNative`, `writeFetchLog`, `getFetchLogs`, `getFetchData`, `addFetchLog`,
-  `appendFetchLog`, `addFetchLogInGlobalFetch`, `FETCH_LOG_MAX_ENTRIES`, `FETCH_LOG_MAX_CHARS`.
+- `src/ts/globalApi.svelte.ts`: `globalFetch`, `fetchWithProxy`, `fetchNative`, and the tab-log helpers. Their comments
+  own routing, proxy headers, timeouts, and log limits.
 - `shared/localNetwork.ts`: host classification shared with the server request layer; `isLocalNetworkHost`,
   `isLocalNetworkUrl`. `src/ts/network/localNetwork.ts` is the client re-export.
 - `src/ts/network/auxFetch.ts`: transport for stored LLM credentials; `auxFetch`, `auxFetchJson` and their contracts.
@@ -73,11 +72,10 @@ The transport below retains this tab's in-memory log.
 
 ### Plugin fetch boundary
 
-- The plugin `nativeFetch` adapter in `src/ts/plugins/apiV3/v3.svelte.ts` passes only `method`, `headers`, `body`, and
-  `signal` to `fetchNative`, defaulting to GET. It normalizes sandbox record/pair headers before the sensitive-header
-  scan, accepts string, ArrayBuffer, ArrayBufferView, and Blob bodies (others throw), supplies absent string/Blob
-  content types, and refuses GET/HEAD bodies. Internal routing is the `fetchNative` contract in
-  `src/ts/globalApi.svelte.ts`.
+- The plugin `nativeFetch` adapter in `src/ts/plugins/apiV3/v3.svelte.ts` defaults to GET and passes only method,
+  headers, body, and signal to `fetchNative`. It normalizes record/pair headers before the sensitive-header scan,
+  accepts string, ArrayBuffer, ArrayBufferView, and Blob bodies, supplies absent string/Blob content types, and refuses
+  GET/HEAD bodies. `fetchNative` owns internal routing and timeout behavior.
 
 ### Auxiliary credentials
 
@@ -127,9 +125,7 @@ The transport below retains this tab's in-memory log.
   `serverCommands.ts` owns roles and lifetime.
 - `fetchLog[]` is private, this tab's list only (the durable history is the server's). `getFetchLogs` exposes the live
   array (the popup's "This tab" and plugins' `getFetchLogs`); its identity stays fixed.
-- Every writer (including `addFetchLogInGlobalFetch`) uses `writeFetchLog`, which trims the live array in place to
-  `FETCH_LOG_MAX_ENTRIES` (20) and `FETCH_LOG_MAX_CHARS` (16 Mi UTF-16 code units of `body`, `header`, and `response`),
-  repairing an already oversized list too. The newest entry always survives whole, even alone over budget.
+- Every writer uses `writeFetchLog`; its comment and the `FETCH_LOG_MAX_*` constants own the in-place trimming rules.
 - `getFetchData` finds an entry by `chatId`, and `addFetchLog` returns 0. `appendFetchLog(entry)` adds an entry the
   server built (the `log` events of `/api/llm/request`, credentials redacted): the provider calls the server makes
   appear in the tab's request log.

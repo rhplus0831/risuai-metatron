@@ -32,69 +32,46 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 ### Chat screen
 
-- `src/lib/ChatScreens/ChatScreen.svelte`: the layout around the chat (`waifu` or classic) and the custom background.
-  Its `isolate` keeps local content below app popups (see [portals](#dialogs-popovers-and-portals)).
-- `src/lib/ChatScreens/DefaultChatScreen.svelte`: the composers, send/reroll ([chat pipeline](chat-pipeline.md)), and
-  menus; chooses home, playground, `src/lib/ChatScreens/ClosedChatScreen.svelte` (`selection.chatOpen` false), or the
-  chat. It owns the row window (`loadPages`, `onTrim`) and binds `Chats.revealing`/`Chats.holding` (`revealing`,
-  `rowsHeld`). Screenshot: `screenShot` over `src/lib/ChatScreens/screenshotExport.ts`. Message jumps: `pendingBookmark`
-  (`ScrollToMessageStore`), the search claim, `scrollToMessageId`.
-- `src/lib/ChatScreens/messageJump.ts`: the jump's decisions (`runMessageJump`, `messageJumpWindow`), testable without
-  the screen.
-- The chat column: the scroller publishes `settings.ui.chatScreenWidth` (Display, default 900) as `--chat-screen-width`;
-  the transcript (`Chats`), the first greeting (`.default-chat-screen > .risu-chat`), the composer, and the rows around
-  them carry `chat-screen-content-width` (`src/styles.css`). New scroller rows get the class too; the composer menu sits
-  in the composer row to follow the column.
-- The `metatron` theme adds `metatron-chat-theme` to the scroller; `src/styles.css` styles each `.risu-chat` as a card
-  under it; other non-`waifu` themes keep the classic layout.
+- `src/lib/ChatScreens/ChatScreen.svelte`: the chat layout, custom background, and `isolate` that keeps local content
+  below app popups ([portals](#dialogs-popovers-and-portals)).
+- `src/lib/ChatScreens/DefaultChatScreen.svelte`: home/playground/closed-chat selection, composers and menus, the row
+  window, screenshots (`src/lib/ChatScreens/screenshotExport.ts`), and message jumps. The closed-chat branch is
+  `src/lib/ChatScreens/ClosedChatScreen.svelte`; sending and rerolling belong to [chat pipeline](chat-pipeline.md).
+- `src/lib/ChatScreens/messageJump.ts` `runMessageJump` and `messageJumpWindow`: jump decisions, testable without the
+  screen. The chat column width and `metatron` card theme are in `src/styles.css`.
 
 ### Composer
 
-- Both composers are `<textarea>`s in `src/lib/ChatScreens/DefaultChatScreen.svelte`, not components: the main composer
-  (`composer.input`) in the composer row, and the translation composer (`composer.translate`, `#messageInputTranslate`)
-  under it while `useAutoTranslateInput` is on outside the playground.
-- Their text and files come from `createComposer` (`src/ts/process/composerDrafts.svelte.ts`), their keys from
-  `src/ts/process/inputTranslation.svelte.ts`. A new composer button goes in the composer row beside the `openMenu`
-  button; a popup from it follows [Dialogs, popovers, and portals](#dialogs-popovers-and-portals).
-- In `DefaultChatScreen.svelte`: the incomplete binding's read-only composers (`bindingIncomplete`) and the Stop
-  button's stage ring (`processStage`, `chat-process-stage-0`–`4`, from `chatStageOf` in `src/ts/process/jobStages.ts`,
-  with `.autoload` in auto mode).
-- `src/lib/ChatScreens/composerPlaceholder.ts`: the main composer's placeholder (`composerPlaceholder`).
+- Both composers are textareas in `DefaultChatScreen.svelte`; `createComposer` in
+  `src/ts/process/composerDrafts.svelte.ts` owns text/files and `inputTranslation.svelte.ts` owns key routing. A new
+  button goes in the composer row; popup behavior follows
+  [Dialogs, popovers, and portals](#dialogs-popovers-and-portals).
+- `src/lib/ChatScreens/composerPlaceholder.ts` owns the main placeholder. `DefaultChatScreen.svelte` also handles
+  incomplete chat bindings and the Stop button's `processStage` ring.
 
 ### Transcript rows and the mount hold
 
-- `src/lib/ChatScreens/Chats.svelte`: the transcript, rows mounted by hand and keyed by chat and `Message.chatId`
-  (header). Staging and reveal: `armDeferredRows`, `startReveal`, `waitForViewImages`. The mount hold, which every new
-  path that adds rows above the shown ones goes through: `holdRow`, `heldRows` (`chat-row-held`), `scrollGate`,
-  `scheduleRelease`, `readerScrolling`. Containment: `observer`. Trimming: `trimWindow` with `CHAT_ROW_CAP`
-  (`shared/chatLoadPages.ts`). `whenRendered` settles every row for jumps and screenshots.
+- `src/lib/ChatScreens/Chats.svelte`: hand-mounted keyed rows, the mount hold for rows added above the view, reveal,
+  containment, trimming, and `whenRendered`. Its header owns the structural-effect and hold rules.
 
 ### Transcript scrolling
 
 - A jump caused by rows mounting above the view is the hold in
   [Transcript rows and the mount hold](#transcript-rows-and-the-mount-hold), not this section.
-- `src/lib/ChatScreens/Chats.svelte`: the scroll anchor (`ScrollAnchor`, `start`, `end`, or none) and what releases it;
-  reply anchoring by `autoScrollToNewMessage`, `isMessageStreamed`, `scrollToReplyStartAfterStreaming`, `followsLatest`,
-  `latestAnchor`, `tailStreamed`; `scrollToLatestMessage`.
-- `DefaultChatScreen` anchors a followed swiped reroll (`followsSwap`). `openRoute` (a notification) sets
-  `ShowLatestMessageStore`, and the screen then shows the newest start even for a chat that was already open.
+- `Chats.svelte` owns scroll anchors and reply-stream following. `DefaultChatScreen` follows a swiped reroll, while
+  `openRoute` asks the screen to reveal the newest message even when its chat was already open
+  ([app shell](app-shell.md)).
 
 ### Message row
 
-- `src/lib/ChatScreens/Chat.svelte`: one message (header: theme branches, `renderGuiHtmlPart`, the row's own `chatRef`,
-  branching with `createFolderOnBranch`). Props `messageId`, `streamingOverride`, `pendingReveal`, `isLastMemory`;
-  `isEditing` (the trim guard), `whenRendered`, `chatBodyRevision`, `updateRow`, the memory limit line
-  (`memoryBoundary`).
-- `src/lib/ChatScreens/ChatBody.svelte`: the body (`markParsing`, `{@html}`, `lastParsed`, `parseRun`, `whenRendered`);
-  its contract holds the run's abort (`parseController`), the failure retries, and the pending body
-  (`prepareShownBody`).
+- `src/lib/ChatScreens/Chat.svelte`: one message row, its theme branches, controls, and display/streaming props.
+- `src/lib/ChatScreens/ChatBody.svelte`: sanitized body rendering and parse lifecycle; its component contract owns
+  abort, retry, and pending-body behavior.
 - `src/lib/ChatScreens/TransitionImage.svelte`: an image that drops an older `src` resolving late.
 
 ### Message editors
 
-- `src/lib/ChatScreens/Chat.svelte`: the original and translation editors (`draft`, `openAutoPopupMessageEditor`,
-  `openAutoPopupTranslationEditor`, `settings.ui.disableAutoPopupMessageEditor`, `edit()`, `saveTranslationEdit()`) and
-  `clickToEdit` (`isInteractiveBodyTarget`).
+- `src/lib/ChatScreens/Chat.svelte`: original/translation editing, auto-popup eligibility, and `clickToEdit`.
 - `src/lib/ChatScreens/messageEditPopup.ts`: the pure eligibility and stable-height rules.
 
 ### Context meter
@@ -106,22 +83,17 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 ### Sidebar
 
-- `src/lib/SideBars/Sidebar.svelte`: the character rail and folders (`characterOrder`, `RISU_*` MIME types,
-  `checkCharOrder`) and the settings pane (`SideChatList` | `OpenChatPanel` | `CharConfig` | `DevTool`); the
-  `--sidebar-gutter` rule for self-scrolling children. Status badges: `statusSets`, `characterStatuses`,
-  `pinnedStatuses`, `memoryCountOf`. The `memory` badge and its count come from memory tasks (`summarizingChats`,
-  `src/ts/process/memoryTasks.svelte.ts`); the `health` badge from Structured Memory (`memoryHealthStates()`,
-  [the health badge](structured-memory/read.md#the-health-badge)).
-- `src/lib/SideBars/chatStatus.ts`: badge priority (`CHAT_STATUS_PRIORITY`), `refusedChatKeys`, `folderStatus`,
-  `groupHealthState`, `groupMemoryCount`.
-- `src/lib/SideBars/SideChatList.svelte`: the chat list, folders, and chat actions (`chatEntry`, `changeChatTo`,
-  `importChat`, `chatFolderOf`, `completeOrder`, the Korean-aware filter with `matchesAny`).
-- `src/lib/SideBars/PinnedChatsRail.svelte`, `src/lib/SideBars/pinnedChats.ts`: the pinned-chat projection shared with
-  the home cards (`collectPinnedChats`, `openPinnedChat`).
+- `src/lib/SideBars/Sidebar.svelte`: the character rail and folders (`RISU_*`, `checkCharOrder`), settings pane, and
+  chat status badges. The `memory` badge comes from memory tasks; `health` comes from
+  [Structured Memory](structured-memory/read.md#the-health-badge).
+- `src/lib/SideBars/chatStatus.ts` owns badge priority and group states; `src/lib/SideBars/SideChatList.svelte` owns the
+  chat list, folders, filtering, and actions such as `completeOrder`.
+- `src/lib/SideBars/PinnedChatsRail.svelte` and `src/lib/SideBars/pinnedChats.ts` share the pinned-chat projection with
+  home cards (`openPinnedChat`).
 - `src/lib/SideBars/OpenChatPanel.svelte`: the open chat's tab. New-chat defaults and translation behavior are
   documented in [persistence](persistence.md) and [translation](translation.md).
-- `src/lib/SideBars/DevTool.svelte`: prompt and lorebook previews (`previewChat`) and the autopilot.
-- `src/lib/SideBars/Toggles.svelte`: per-chat prompt toggles (`resolveGlobalChatVar`, `setChatToggle`).
+- `src/lib/SideBars/DevTool.svelte` owns prompt/lore previews and autopilot; `src/lib/SideBars/Toggles.svelte` owns
+  per-chat prompt toggles.
 
 ### Dialogs, popovers, and portals
 
@@ -130,12 +102,12 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/UI/GUI/Portal.svelte` mounts to `document.body` or a target while keeping caller contexts. `ChatScreen`'s
   `isolate` keeps local content below app popups and alerts; use a portal or `App` mount when the popup must escape that
   stack.
-- Layering uses z-index and DOM order: context meter/search/bookmarks/composer menu at 30, binding/checkpoint dialogs at
-  40, recovery drafts at 45, alerts/editors/popup lists at 50, reload notice at 60. `topBindingLayer` follows `App`'s
-  dialog/picker order. See [app shell](app-shell.md#escape-order) for the full Escape order.
-- Capture-phase Escape handlers ignore IME composition (`isComposing` and key code 229), yield to alerts, terminal
-  notice, and `topBindingLayer()`, then stop propagation before the global hotkey listener. The context meter also
-  closes on outside press or focus leaving its trigger/panel; Escape and its Close button return focus to the trigger.
+- `src/ts/gui/dialogLayers.ts` `topBindingLayer` follows the pickers and dialogs' mount order in `App`; see
+  [app shell](app-shell.md#escape-order) for the full Escape order. Components own their z-index classes and local
+  dismissal behavior.
+- Capture-phase Escape handlers yield to alerts, the terminal notice, and `topBindingLayer()` before the global hotkey
+  listener. `ContextMeter` also closes on outside press or focus leaving its trigger/panel, and restores focus when it
+  closes.
 - `src/lib/UI/PopupButton.svelte` writes `popupStore`; `src/lib/UI/PopupList.svelte` is the fixed-position host mounted
   by `App`.
 - `src/lib/Others/RecoveryDrafts.svelte` ([draft recovery](draft-recovery.md#recovery-drafts)),
@@ -159,12 +131,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 ### Editor token counts
 
-- `CharConfig`, `ChatNoteEditor`, `LoreEntryFields`, `PromptSettings`, `PromptPresetSettings` (the legacy prompt
-  fields), `PopupEditor`, and `PlaygroundTokenizer` count with `createTokenCountField` (`src/ts/tokenCountField.ts`,
-  header: scope, debounce, abort, failure), as does the `ContextMeter` estimate; see [LLM](llm-requests.md).
-- Each consumer's `same` (`tokenCountInput` or `tokenScopeKey`) decides what is unchanged: expanded fields compare the
-  expanded text and scope, `ChatNoteEditor` the raw text and scope, `PopupEditor` reuses its expanded preview, and the
-  playground names its tokenizer. The meter clears its estimate on failure instead of keeping the last value.
+- `CharConfig`, `ChatNoteEditor`, `LoreEntryFields`, prompt settings, `PopupEditor`, `PlaygroundTokenizer`, and
+  `ContextMeter` use `createTokenCountField` (`src/ts/tokenCountField.ts`); its header owns scope, debounce, abort, and
+  failure behavior. See [LLM](llm-requests.md).
 
 ### Other UI
 
@@ -178,7 +147,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 - `src/styles.css`: the Tailwind v4 `@theme` tokens map `--color-<name>` to `var(--risu-theme-<name>)`; its comments
   hold the `risu-select`, `.chat-message-container.far`, and `:root` `color-scheme` rules.
-- `src/ts/gui/colorscheme.ts`: `updateColorScheme` applies the stored scheme ([Flows](#flows)).
+- `src/ts/gui/colorscheme.ts`: `updateColorScheme`, `updateTextThemeAndCSS` apply the saved palette and custom text/CSS.
+  `src/ts/gui/animation.ts` `updateAnimationSpeed` and `src/ts/gui/guisize.ts` `updateGuisize` apply the other display
+  values. Boot and remote `ui` updates call these together ([app shell](app-shell.md#boot)).
 
 ## Flows
 
@@ -284,21 +255,18 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 ### Issues
 
-- Rows bound by index carry only their owner's id as `popupEditorContext` (`PromptDataItem` in the prompt template,
-  `RegexData` in a regex list, a plugin's textarea argument, which uses the plugin's name): when another client reorders
-  the owner's rows while a popup is open and both rows hold the same text, the row stays mounted and its popup writes
-  into the row now at that index.
-- Plugin rows with duplicate names (kept by `setPlugins` and the upstream backup import) share a `popupEditorContext`
-  the same way. The rows have no ids, and the row object's identity would change on every refreshed record list, which
-  would discard unchanged drafts.
+- Unconfirmed: `popupEditorContext` distinguishes an owner, not a repeated row within it. Prompt-template
+  (`src/lib/UI/PromptDataItem.svelte`) and regex (`src/lib/SideBars/Scripts/RegexData.svelte`) rows pass the
+  preset/character id, so if another client reorders same-text rows while a popup is open, its draft may write to the
+  row now at that index. See [settings](settings-i18n.md) and [scripts/triggers](scripts-triggers.md).
 
 ### Limitations
 
-- Growth inside rows shown above the view during a scroll animation moves the reader by the grown height (Chrome,
-  reversed scroller): images swapped in late by `checkImg` (`.root-loaded-image` reserves no height), lazy images, a row
+- Growth inside rows shown above the view during a scroll animation moves the reader by the grown height (reversed
+  scroller): images swapped in late by `checkImg` (`.root-loaded-image` reserves no height), lazy images, a row
   re-rendering (CBS, translation, a reload pointer), and a far row whose `contain-intrinsic-block-size` estimate differs
   from its rendered height. A fix would restore a reader anchor (the visible row nearest the view's top and its offset)
-  at `scrollend`, not mid-animation, once the hold releases. Decision: deferred by the owner (2026-10-27), commit
+  at `scrollend`, not mid-animation, once the hold releases. Decision: owner deferred anchor restoration in commit
   `0aad24ce5`.
 - A far row's fixed-position or overflowing custom content is contained while it is far. Near rows are deliberately
   uncontained; do not apply `content-visibility` to every row or to the transcript ancestor. Decision: `src/styles.css`,
@@ -315,5 +283,4 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/ChatScreens/Message.svelte` is an unused TODO rewrite; `src/lib/UI/GUI/SyntaxHighlightedTextarea.svelte` is
   empty. Confirm intent before extending either.
 - `LazyPortal` has no active callers found.
-- Reproduce a transcript scroll-animation jump with real X wheel ticks (headed Chrome on WSLg through XTest); CDP
-  `Input.dispatchMouseEvent` wheels do not animate.
+- A transcript scroll-animation jump reproduces with real wheel input; CDP-dispatched wheel events do not animate.

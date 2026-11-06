@@ -251,11 +251,9 @@ and video have two modes:
   styles) gets the placeholders without the shared CSS, plus any retained sheets.
 - A row whose sheet was removed after a real gap (a `{#key}` reload, a remount) gets a new one. Rows `Chats` trims are
   detached at once but unmounted over the next frames, and keep their sheets until then.
-- Tab-side plugin continuations of both `editdisplay` and `editprocess` carry `PluginCallContext.purpose: "transform"`.
-  The v3 host refuses durable-data setters synchronously before any permission prompt, load or await, with a console
-  warning naming the API and no exception; the
-  [plugin author contract](../../plugins.md#read-only-transform-continuations) lists each API's result. `parseRisuChat`
-  still parses but forces `runVar` off.
+- Plugin continuations run with `PluginCallContext.purpose: "transform"`; the host's write boundary and API results are
+  owned by [plugin-sandbox](plugin-sandbox.md#invariants) and the
+  [plugin author contract](../../plugins.md#read-only-transform-continuations).
 - Transform batches key the captured plugin context as well as the server context so purposes, owner lifetimes and job
   parents cannot be borrowed from another call. Job-channel callbacks keep their normal write contract.
 - Mutating functions must respect `rmVar`/`runVar`. Display evaluation uses `rmVar:true`. `setvar` is a no-op unless
@@ -377,18 +375,9 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
 - `{{// ...}}` stays literal everywhere in rendered and prompt text: `shared/cbs/registry.ts` registers it `doc_only`,
   so the evaluator leaves it. Only lore key matching strips it (`shared/lore/activation.ts`). Decision: client/server
   and upstream parity (`server/src/tests/fixtures/cbs-parity.json`).
-- Write refusal checks every active context of a plugin instance (`hasReadOnlyContext`), while target selection uses the
-  innermost (`currentContext`). A writable hook overlapping a transform on that instance is conservatively refused too;
-  a handler that never settles keeps that restriction even after its transform times out. Exact call attribution needs
-  an RPC call id. Decision: the [read-only continuation contract](../../plugins.md#read-only-transform-continuations).
-- Plugin-private writes remain allowed: `pluginStorage` and its `_…PluginStorage` aliases, `getLocalPluginStorage()`'s
-  object, safe local storage, and the calling plugin's own arguments through `setArgument`/`setArg`. They can affect
-  opaque cached output without invalidating it. Decision: the
-  [read-only continuation exclusions](../../plugins.md#read-only-transform-continuations).
-- `runLLMModel`, `postPluginChannelMessage` and `loadPlugins` are unguarded: LLM transport can persist returned inlays,
-  channel messages do not propagate the context, and newly loaded plugin instances do not inherit it. General networking
-  and consent bookkeeping also remain available. This boundary governs host data setters, not every possible side
-  effect. Decision: the [read-only exclusions](../../plugins.md#read-only-transform-continuations).
+- Plugin-private writes and allowed indirect host effects can change opaque handler output without invalidating its
+  transform cache entry. See the [host write boundary](plugin-sandbox.md#invariants). Decision: the
+  [plugin author contract](../../plugins.md#read-only-transform-continuations).
 - The evaluator has quadratic paths: `{{` nesting (`unshift`), the `#each` splice, `filter` with `unique`/`all`; the
   limits bound them on both hosts, and a row that reaches the client budget shows the limit text instead of its content.
   A fan-out of `call::` (a function calling itself twice) is bounded by the work budget only, so on the server it fails

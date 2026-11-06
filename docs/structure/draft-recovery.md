@@ -32,24 +32,23 @@
 
 ### Journal store
 
-- `createDraftJournal` and `DraftJournal` define storage, keys, version fences, reservations, budgets and failure
-  behavior in `src/ts/storage/draftJournal.ts`; `pageDraftJournal` owns the page's shared instance.
-- Under `adoptOrphans`, a refused owner lock means the other tab is alive, hidden or frozen included, and retains its
-  rows. Only rows of an owner whose lock can be taken are re-keyed to this tab under the recover lock; collisions become
-  drafts.
+- `createDraftJournal` and `DraftJournal` own the store contract: keys, layers, version fences, reservations, budgets,
+  expiry, owner locks, and transaction failure behavior. Read the module header and the `checkJournalRow` comment in
+  `src/ts/storage/draftJournal.ts`; `pageDraftJournal` owns the page's shared instance.
 
 ### Eligibility
 
-- `isJournalEligible` gates mutation writes, drafts and orphan adoption in `draftJournal.ts`; `bootCache.ts`
-  `holdsCredential` shares the character-credential boundary. Read the eligibility module's header before widening it.
+- `journalEligibility.ts` `isJournalEligible` owns the admission boundary used by journal writes and recovery;
+  `bootCache.ts` `holdsCredential` shares the character-credential rule. Read the module header before widening it.
 - Free text in prompts, lore, module scripts or URLs, and messages is journaled like other content, as the server
   already stores it. Decision: Durable Drafts D1, Q2, archive.
 
 ### Composer API
 
-- `composerDrafts.svelte.ts` uses `DraftJournal`'s composer API on the shared page journal: the editable draft and a
-  send's hand-off occupy separate browser-wide rows, so typing during a send cannot replace what it sent. Read
-  `checkComposerValue` and the composer method comments for compatibility and atomic swaps.
+- `composerDrafts.svelte.ts` uses the shared page journal's composer API; its source comments own row lifecycle and
+  timing. The editable draft and a send hand-off remain separate browser-wide rows. Read `checkComposerValue` and the
+  composer method comments for compatibility and atomic swaps; composer timing and guarded restore are in
+  [chat pipeline](chat-pipeline.md#composer-and-drafts).
 - `onChatRemoved` in `chatStore.svelte.ts` notifies isolated listeners for local and remote single-chat deletion (a
   retained last chat included), collection removals, conflict reconciliation, and
   `forgetCharacterChats`/`forgetCharacter` (`chatId: null` for a character). The composer subscribes at app load and

@@ -24,28 +24,17 @@ the resource store's connection, epoch, and transactions → [server resources](
 
 ## Files
 
-Shared by the guides; each guide's `Files` names what it owns in them.
+Shared contracts and entrypoints; the focused guides' `Files` sections name their owned symbols.
 
-- `shared/structuredMemory.ts`: types, limits, and pure rules for tab and server; [records](records.md#files) lists the
-  records, limits, and route contracts.
-- `server/src/data/memoryStore.ts` and `server/src/routes/structuredMemory.ts`: the store and the routes,
-  [records](records.md)'s.
-- `server/src/prompt/memory/structured/`: the writer's `window`, `writer`, `prompts`, `analysis`, `patches`, `compact`,
-  `recordJob`, and the planning in `pages`; the read path's `lanes`, `retrieve`, `card`, `step`, and `testRun`
-  ([its run](read.md#the-test-run)); the lifecycle's `reconcile`, `inherit`, `restore`, `adopt`, and the repairs in
-  `edits` (its rest is [records](records.md)'s); [rebuild](rebuild.md)'s `rebuild`; [pages](pages.md)'s `importPackage`
-  and the tools and revert rules in `pages`.
-- `src/ts/process/structuredMemory.svelte.ts`: the tab's client: reads, edits, and package rendering
-  [records](records.md)'s; receipt and panel views [read](read.md)'s; page tool and import calls [pages](pages.md)'s;
-  revision, projection, and reset calls [projection](projection.md)'s; inherit, restore, adoption, and chat-file calls
-  [lifecycle](lifecycle.md)'s, as is `src/ts/process/chatMemoryInherit.svelte.ts`; cost and abandon calls
-  [rebuild](rebuild.md)'s.
-- `src/lib/Others/StructuredMemory/`, `src/lib/ChatScreens/MemoryReceiptLine.svelte`, and
-  `src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`: the panel and its pages, [read](read.md)'s, with the rebuild
-  controls [rebuild](rebuild.md)'s and the page tool controls [pages](pages.md)'s.
-- Outside the area: the projection parts of `src/ts/storage/chatStore.svelte.ts`, `src/ts/plugins/apiV3/v3.svelte.ts`,
-  `server/src/data/resourceStore.ts`, and `server/src/data/upstream/exportDatabase.ts` are
-  [projection](projection.md)'s; [lifecycle](lifecycle.md) names the memory capture in
-  `server/src/data/checkpointStore.ts`, a [server resources](../server-resources.md) file.
+- `shared/structuredMemory.ts` is the shared record and route contract used by the tab and server. The
+  [records guide](records.md#files) catalogs its cross-guide shapes and identifiers.
+- `server/src/prompt/memory/structured/` contains the area's server modules; `src/lib/Others/StructuredMemory/` holds
+  the panel and tabs. Each focused guide's `Files` section names the modules and symbols it owns.
+- The server entrypoints are `server/src/data/memoryStore.ts` and `server/src/routes/structuredMemory.ts`; the tab
+  entrypoints are `src/ts/process/structuredMemory.svelte.ts` and `src/ts/process/chatMemoryInherit.svelte.ts`.
+- The projection also crosses `src/ts/storage/chatStore.svelte.ts`, `src/ts/plugins/apiV3/v3.svelte.ts`,
+  `server/src/data/resourceStore.ts`, and `server/src/data/upstream/exportDatabase.ts` ([projection](projection.md)).
+  Checkpoint capture crosses `server/src/data/checkpointStore.ts` ([server resources](../server-resources.md),
+  [lifecycle](lifecycle.md#files)).
 - Shared identifiers, in [records](records.md#files): `STRUCTURED_MEMORY_ALGORITHM`, the persisted discriminator;
   `STRUCTURED_MEMORY_PATH`; the record types; the revision token `<epoch>:<chatSeq>:<revision>`.

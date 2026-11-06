@@ -45,8 +45,8 @@ and what to look up.
   and `LLMParameter`. `shared/llm/types.ts` re-exports them with `ProviderNames` and the parameter presets
   (`OpenAIParameters`, `ClaudeParameters`); static entries are in `shared/llm/providers/`.
 - `shared/llm/models.ts`: the catalogue and resolver both runtimes share: `BASE_LLM_MODELS`, `resolveModelInfo`, and
-  `dynamicModelOf`, the one discovery template builder. A dynamic id resolves from the id alone, so a job, a
-  translation, a transform, image flags, CBS, and token scopes need no tab descriptor or registry setting.
+  `dynamicModelOf`; its comments define catalogue construction and dynamic-id resolution.
+- `shared/llm/thinkingResolver.ts` `resolveClaudeThinkingType`: stored versus displayed Claude thinking mode.
 - `src/ts/model/modellist.ts`: the tab's registry and lookups: `LLMModels`, `isDynamicModel`, `registerModelDynamic`,
   `getModelInfo`, `getModelInfoForMode`, `getModelList`. The server's lookup is `server/src/llm/request.ts`
   `requestModelLookup`.
@@ -83,10 +83,8 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 
 ### Tab request layer
 
-- `src/ts/process/request/request.ts`: `requestChatData` (the tab's outer loop: retries, plugin replacers, escaping),
-  `requestChatDataMain` (one attempt: slot resolution, the tab-run Plugin and WebLLM formats, the server for the rest),
-  `reformater`, and `RequestDataArgumentExtended.requestIds` (a chatless request's ids, which
-  `src/ts/translator/translator.ts` captures once per run).
+- `src/ts/process/request/request.ts`: `requestChatData`, `requestChatDataMain`, `reformater`, and
+  `RequestDataArgumentExtended.requestIds`; their comments define the tab loop, chat pinning, and dispatch boundary.
 - `src/ts/process/request/transport.ts` `requestServer`: the tab half of `POST /api/llm/request`; the server half is
   `server/src/routes/llm.ts`. A plugin callback's `channelCall` parentage: [plugins](plugin-sandbox.md).
 - `src/ts/process/request/shared.ts` `applyParameters`, `applyAdditionalParameters`: the tab's plugin path's copy of
@@ -102,6 +100,10 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   `server/src/llm/openrouter.ts`). `server/src/llm/outer.ts` `requestChatDataOuter` is a job's outer loop.
 - `server/src/llm/openAI/shared.ts`: `getOpenAIRequestKey` and `getLocalNetworkRequestOptions` (the profile's
   `localNetworkMode` route and `localNetworkTimeoutSec`).
+- `server/src/llm/shared.ts` `applyParameters`, `applyAdditionalParameters`: server parameter application and the
+  trusted custom-parameter syntax, mirrored by the tab plugin path.
+- `server/src/llm/redact.ts`: `REDACTED`, `collectSecrets`, `createRedactor`; the server projection of request data,
+  including credential fields.
 - `server/src/llm/sseLines.ts` `SseLines`, and the stream parsers in `server/src/llm/openAI/requests.ts`,
   `server/src/llm/google.ts`, and `server/src/llm/anthropic.ts` (comments on each parser), under the snapshot contract
   in `Flows`.
@@ -162,10 +164,9 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
 - The server builds a detached request context with profile roots, resolves the named credential, reforms the prompt
   from model flags, and dispatches by `LLMFormat`. A bound Vertex account populates `vertexCredential`; other bound keys
   replace `arg.key`. See [credential binding](#credentials).
-- Streams carry cumulative `StreamResponseChunk` snapshots (text at key `'0'` plus metadata), from the server's parsers
-  through the transport to the tab's caller. Each parser applies an event once, skips a malformed line on its own, and
-  emits at most one snapshot per read; tool metadata survives to the final snapshot. Tool calls go through the tab's
-  `mcp.ts:callTool` (a callback from the server); results are appended before the request recurses.
+- Streams carry cumulative `StreamResponseChunk` snapshots from server parsers through transport to the tab; adapter
+  comments own parser details. Tool calls go through the tab's `mcp.ts:callTool` callback, then results are appended
+  before the request recurses.
 
 ## State
 
@@ -197,64 +198,40 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
 
 ## Invariants
 
-- Only append to the numeric enums (`LLMFlags`, `LLMProvider`, `LLMFormat`, `LLMTokenizer`). Saved custom models store
-  these numbers.
-- A model's `format`, `flags`, `parameters`, `internalID`, endpoint, and tokenizer must agree. Wrong flags silently
-  change the prompt shape.
-- A `dynamic_anthropic_<id>` whose suffix matches an Anthropic-provider static entry's `internalID` or `id` inherits
-  that entry's capabilities, including flags, parameters, format, and tokenizer, while retaining its dynamic `id` and
-  upstream `internalID`. Unknown dynamic Anthropic ids keep the generic budget/adaptive template without
-  `claudeThinkingOnByDefault`. Both the tab registry and server resolution use `dynamicModelOf`.
-- Profile custom flags replace catalogue flags. `ModelProfileEditor.svelte` and `CustomModelsSettings.svelte` expose
-  `noStructuredOutput` (25), `geminiThinkingNoMinimal` (26), and `claudeThinkingOnByDefault` (27) alongside the earlier
-  flags, labelled by their `LLMFlags` names.
-- `claudeThinkingOnByDefault`: off sends `thinking: { type: "disabled" }`; models without the flag omit `thinking` when
-  off.
-- `resolveClaudeThinkingType` resolves stored `budget` to `adaptive` on adaptive-only models (`claudeAdaptiveThinking`
-  without `claudeThinking`) at request and display time; the stored value is never rewritten. Budget-capable models keep
-  their mode. Picking Adaptive while the stored value is `budget` writes nothing because it already displays as
-  Adaptive.
+- `LLMFlags`, `LLMProvider`, `LLMFormat`, and `LLMTokenizer` are persisted numeric codes; append values only
+  ([STRUCTURE D5](../../STRUCTURE.md#data-and-persistence)).
+- Keep a model's `format`, `flags`, `parameters`, `internalID`, endpoint, and tokenizer consistent; the shared
+  descriptor comment explains the prompt-shape failure.
+- Both runtimes use `dynamicModelOf` for discovery ids. Its source comment owns provider-specific inheritance and
+  fallback behavior.
+- Profile custom flags replace catalogue flags. Model profile and custom model editors expose flags by `LLMFlags` name.
+- Claude thinking payloads follow model flags. `resolveClaudeThinkingType` displays stored `budget` as `adaptive` only
+  on adaptive-only models and never rewrites the stored value; `claudeThinkingOnByDefault` sends an explicit disabled
+  thinking mode when off, while models without it omit the field.
 - Streaming consumers expect cumulative text, not deltas. Tool metadata must survive to the final chunk.
 - `escape` disables streaming. Audio and image output modalities disable streaming.
 - Mode `submodel` is not a `seperateModels` key.
-- Additional parameters apply after the built body (the OpenAI Chat and Responses adapters still set `stream`) and can
-  override or delete body fields and headers:
-  - `header::` targets a header; its value stays a literal string.
-  - `{{none}}` deletes the field.
-  - `json::` parses a JSON value for a body field.
-  - Dotted keys address nested fields when setting.
-  - Treat these as trusted user configuration.
+- `applyAdditionalParameters` accepts trusted configuration that can override or delete body fields and headers; its
+  comment defines the syntax and notes that an adapter may still set fields afterward.
 - Configured provider URLs are fetched from the server, so `localhost` is the server's (in Docker, the container's: use
   `host.docker.internal` or the host's address).
-- `requestChatDataMain` mutates its argument object. Do not reuse it after the call.
-- A provider change goes into the server's adapters (`server/src/llm/`). They read nothing outside `arg.ctx` and their
-  arguments.
-- Slot routing lives only in `resolveSlotProfile`: the tab and the server both call it; never keep a local copy of the
-  rules. A slot naming a deleted profile refuses; it never falls back to another slot or profile.
-- An auxiliary request's profile fields reach the adapters only through the request-local `ctx.db`; the job's frozen db
-  and a captured profile are never mutated.
-- A named key binding that cannot be honored refuses the request and never falls back to the default key. The tab's
-  state and the server's decision both come from `resolveCredentialBinding`; change the rules there, not in one caller.
-- An adapter prefers `arg.key` where its model has a credential slot (the resolver's bound key arrives there). The
-  OpenAI Chat, Responses, and legacy instruct adapters take their key from `openAI/shared.ts` `getOpenAIRequestKey`:
-  `arg.key`, else a `keyIdentifier` model's own `OaiCompAPIKeys` entry or `""` (never another provider's key), else the
-  provider default (`""` for a custom model or the reverse proxy: `credentials.ts` `defaultCredentialKey`).
-- Every credential value a request can carry is collected by `redact.ts` `collectSecrets`: a new credential field or map
-  joins it.
-- Nothing the tab receives from `/api/llm/request` but a model's answer (results, chunks) skips `redact.ts`; a model's
-  answer is not redacted (it would rewrite URLs in the text).
+- A provider change belongs in the server adapters; they read only `arg.ctx` and their arguments
+  (`server/src/llm/request.ts`).
+- Slot routing and named-key binding use the shared `resolveSlotProfile` and `resolveCredentialBinding` decisions.
+  Refusals fail closed: there is no alternate profile or default-key fallback.
+- Auxiliary profile roots are detached into request-local `ctx.db`; adapters cannot mutate a job's frozen settings.
+- Adapters use the resolved key. `getOpenAIRequestKey` owns the OpenAI key precedence and never crosses provider
+  defaults.
+- `redact.ts` owns the secret projection of logs, errors, notices, callbacks, and tool records. New credential fields
+  join `collectSecrets`; model answer text remains unredacted.
 - On the server an unhandled promise rejection ends the process: a fire-and-forget promise in a ported adapter (a
   `pipeTo`, a `fetch`) must catch.
-- `cl100k_base` and `o200k_base` refuse text containing one of their special tokens (`<|endoftext|>` among them); the
-  count route returns `null` for that text, and the tab rejects its count.
+- `cl100k_base` and `o200k_base` refuse text containing their special tokens; the count route returns `null` and the tab
+  rejects that count.
 - Tokenization does not follow a per-call `profileId`: a request's tokenizer scope is still the main model's (the tab's
   `context.tokenizer`, a job's `tokenScopeFor`), so token biases and bans of a per-call request use the main model's
   tokenizer (translation sends none).
-- A failed request that follows a tool call (the Chat and Responses adapters in `openAI/`, the Gemini adapter; buffered
-  and streaming) is retried up to `requestRetrys` times, each retry after `util.ts` `toolRetryDelay` (1, 2, 4, then 8 s)
-  waited with the request's abort signal, so Stop ends the wait and sends nothing more. `google.ts` `fallBackGemini`
-  (the `antiServerOverloads` re-request of a `RESOURCE_EXHAUSTED` answer) is bounded the same way: at most
-  `requestRetrys` re-requests, each after that wait, then the original failure.
+- Tool-call and overload retries stay bounded and abortable; the adapter and `outer.ts` comments own the retry limits.
 
 ### Compatibility Model-Root Writes
 

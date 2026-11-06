@@ -29,21 +29,12 @@ Identifiers the flows below name are not repeated here.
 
 ### Feed connection
 
-- After boot and `startResourceSync`, `src/ts/bootstrap.ts` calls `eventFeed.ts` `startEventFeed` for `/api/events/ws`
-  (`shared/events.ts`). Changes reach `noteRemoteChanges`: record patches apply or await reads; chat bodies and
-  summaries follow [Chat live updates](#chat-live-updates).
-- A same-epoch `hello` installs `replaceFeedLocks` before `reconcileRemote`. A matching digest uses the advertised map.
-  Otherwise, with that map in the loaded epoch and both cursors plus digest, freeze its maps and held cursor, then await
-  `listChanges({ since: heldCursor, until: hello.cursor, epoch })`.
-- Replay only into the copy; reconcile from it on a digest match. Expired coverage, a remaining mismatch or absent
-  cursors (older servers) uses `listRevisions`. Both reads share the deadline and post-hello overlay.
-- The unoverlaid replay/listing reaches reconciliation and `src/ts/process/memoryTasks.svelte.ts` fences; only the
-  advertised map takes the overlay. Frames advance the held cursor, mid-read the overlay's, committed on success with
-  `hello.cursor`. Reconciliation routes listed and missing refs via the adapter and owners. Epoch mismatches
-  [halt](#restore-halt).
-- Handoff offers and presence go to `src/ts/network/handoff.ts`; `register` timing: the `eventFeed.ts` header.
-- `watchSocket` abandons dead sockets; `watchResume` replaces the connection when the page returns
-  (`src/ts/network/socketLiveness.ts`).
+- After boot and `startResourceSync`, `src/ts/bootstrap.ts` calls `startEventFeed` for `/api/events/ws`
+  (`shared/events.ts`). The `eventFeed.ts` module header owns hello reconciliation, digest/replay fallback, read
+  overlays, presence, and reconnect timing.
+- A same-epoch `hello` replaces feed locks before `reconcileRemote`; a different epoch [halts](#restore-halt). Refs
+  reach the resource adapter, with chat bodies and summaries following [Chat live updates](#chat-live-updates). Handoff
+  offers and presence go to `src/ts/network/handoff.ts`; socket resume/liveness is in `socketLiveness.ts`.
 
 ### Live updates
 
@@ -59,18 +50,16 @@ Identifiers the flows below name are not repeated here.
 
 ### Chat live updates
 
-- The adapter passes a chat ref to `noteRemoteChat` with at most one by-id change (`rowDelta ?? delta ?? patch`) and
-  [summary knowledge](chat-store.md#summaries-and-refresh). A loaded chat takes a fitting `applyRemoteChatPatch`;
-  otherwise the ordinary notice and idle refresh applies. A newer order ref or a new chat asks the adapter for the list.
-  Chat revisions advance by applied op count; a feed patch never settles a job hydration.
-- Feed deltas enter through `applyRemoteChatPatch`, never `mergeChatMeta`, which queues a write. `stagedRowDiffs` checks
-  all row diffs first (a failure is a miss); diffs alone keep the position index.
-- A `rows` manifest stays on the notice of a loaded, idle chat at its `baseRevision`; the idle read asks `chatRows` for
-  its rows and fields and applies them as a patch (`finishIdleChatRows`). A `moved` answer or a miss reads the chat
-  whole once in the same read (`refreshStaleChat` awaits it).
-- A list that meets this client's order work: `canApplyRemoteCollection` and `applyRemoteCollection` in
-  [chat store](chat-store.md#summaries-and-refresh); only the acknowledgement rebase (`keepPendingOrder`) takes a list
-  over a queued reorder.
+- A change entry carries at most one chat body (`patch`, `delta`, `rowDelta`) or `rows` manifest; their wire contract is
+  in `shared/resources.ts` `ChangeSet`. The adapter passes it and summary knowledge to `noteRemoteChat`. The chat-store
+  flow owns admission and refresh: only a loaded, idle chat at the body's base takes `applyRemoteChatPatch`; other
+  changes use a notice, summary, or list read ([chat-store](chat-store.md#summaries-and-refresh)).
+- A `rows` manifest stays on a loaded idle chat's notice at its `baseRevision`; the idle read asks `chatRows` for named
+  rows and fields. A moved answer or patch miss reads the chat whole. `stagedRowDiffs` checks all row diffs before
+  applying and keeps the by-id position index; feed deltas never use `mergeChatMeta` or settle job hydration. Chat
+  revisions advance by applied op count.
+- A list that meets this client's order work uses `canApplyRemoteCollection` and `applyRemoteCollection`; only the
+  acknowledgement rebase (`keepPendingOrder`) applies a list over a queued reorder.
 
 ### Feed locks
 

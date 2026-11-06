@@ -89,13 +89,10 @@
 
 ### Serialization
 
-- Adapter contracts: `projectCollection`, `characterProjection`, `moduleProjection`, `shareSavedText`,
-  `canonicalCharacter` and `canonicalShape`. Wrapper stamp/copy contracts: `characterFieldStamp`,
-  `moduleItemFieldStamp`, `adoptCharacterValue` and `adoptModuleValue` in `src/ts/storage/records.svelte.ts`.
-- Across that boundary, a mutator commits cache taint only after preparation succeeds; a local `reloadKeys` input
-  holding record state is detached. Raw `initializeRecords`, `applyRawCharacter`, `patchRawCharacter` accept detached
-  JSON; other modules never write through `characterData()`. Shared field/element state, non-JSON data or symbol keys
-  disable module stamps until fresh JSON is installed.
+- Adapter entrypoints: `projectCollection`, `characterProjection`, `moduleProjection`, `shareSavedText`,
+  `canonicalCharacter`, `canonicalShape`. Record wrapper stamps and copy rules belong to
+  [persistence](persistence.md#record-wrappers). Across the boundary, serialization preparation must succeed before
+  cache taint is committed; a local `reloadKeys` value holding record state is detached before adoption.
 
 ### Batch composition
 
@@ -120,14 +117,12 @@
 
 ### Record patches
 
-- `src/ts/storage/resourceSync.svelte.ts`: `updateOperation` (patch or whole record), `baseParts`, `recordPatchText`
-  (dictionary and item-key fallbacks), `itemProjection`. `llmSecrets` never has parts: the server refuses its patches,
-  readable siblings included.
-- Write forms both sides check (`shared/recordPatch.ts`: `checkRecordWritePatch`, `applyFieldPatch`, `itemIds`,
-  `checkItemPatch`, `applyItemPatch`): `pluginStorage` entries one level down in `PLUGIN_STORAGE_DICTIONARIES`
-  (`shared/pluginStorage.ts`); `plugins` items by unique id, else by unique name with `itemKey: "name"`.
-- A feed patch of `pluginStorage` dictionaries only, on a clean mirror, splices held text by entry
-  (`applyPluginStorageEntryPatch`, `patchRawPluginStorage`); others go through `patchedRecord`.
+- `updateOperation`, `baseParts`, `recordPatchText`, and `itemProjection` choose a validated field/item patch when its
+  saved base has matching parts, or a whole-record write otherwise. Shared validation and application live in
+  `shared/recordPatch.ts`; `pluginStorage` dictionary entries and name-keyed `plugins` items have their declared forms
+  there. `llmSecrets` has no patch form; the server refuses patches even to readable sibling fields.
+- A `pluginStorage` feed entry patch can splice the held text only on a clean mirror (`applyPluginStorageEntryPatch`,
+  `patchRawPluginStorage`); other feed patches use `patchedRecord`.
 
 ### Lost answers
 
@@ -193,31 +188,28 @@
 
 ### Chat and order conflicts
 
-- The adapter reads conflicts through `readRefs`, then `recoverChatConflicts` (`chatStore.svelte.ts`) requeues unrelated
-  groups, recognizes create/delete replays, and otherwise discards queued work with the notice, gone chats included. A
-  non-expired append with a missing anchor can instead reanchor and retry.
+- The adapter reads chat and order conflicts through `readRefs`; `recoverChatConflicts` owns per-group decisions such as
+  replay recognition, missing-anchor repair, generation retry, and discard. See [chat-store](chat-store.md#by-id-ops)
+  and [Restore floor](chat-store.md#restore-floor).
 - A conflicted reorder keeps its sent vector until the `hydrate` list read: equal server order settles quietly;
   otherwise `markOrderDiscarded` reports `chats/<chaId>` with the notice. A failed/deferred read settles nothing, and a
   newer queued reorder keeps its sequence.
-- A list reports work of missing chats as `chats/<chaId>/<chatId>`; idle ones go silently. A gone parent is removed only
-  if its held revision and `chatOwnerToken` stayed unchanged during the read, otherwise it remains in `hydrate`.
-- `readCharacter` fences lists against dispatch, settlement and owner changes while writes proceed. Such characters'
-  reorders are held, their chat groups are not. A locally absent `listRefresh` is parked without reads until re-add or
+- `readCharacter` fences list reads against dispatch, settlement, and owner changes while writes proceed. A list reports
+  work of missing chats as `chats/<chaId>/<chatId>`; idle ones go silently. A gone parent is removed only if its held
+  revision and `chatOwnerToken` stayed unchanged during the read, otherwise `hydrate` keeps it pending. Reorders wait
+  for a list read, while chat groups can proceed. A locally absent `listRefresh` waits without reads until re-add or
   confirmed deletion (`hydrateCharacters`).
-- A refused create that reads back null stays quarantined in the mirror unless its parent is gone. A chat streamed into
-  by this tab defers reload (`isChatDeferred`) until locks release; the deferred reload discards its queued edits.
+- A refused create that reads back null stays quarantined in the mirror unless its parent is gone.
+- A chat streamed into by this tab defers reload until its locks release (`isChatDeferred`); the deferred reload follows
+  chat-store's discard rules.
 
 ### Generating refusals
 
-- Before unrelated conflict reads, `recoverConflictedWork` hands a `reason: "generating"` refusal's `messageIds` to
-  `recoverChatConflicts` / `dropLockedEdits`. Edits of those locked messages in the refused group and newer work are
-  dropped and reported with `resourceReloaded`; the stale chat is read whole after surviving work lands and this tab's
-  locks release.
-- Surviving work, including chat-level ops, multi-id `remove` and other-message edits, waits `JOB_RETRY_MS` (5 s), as
-  does a refused character delete. One retry cycle is scheduled and `chatGenerating` shows once per episode. With no
-  surviving work there is no chat retry block; the sent sequence settles when none is kept.
-- The split uses server ids independently of tab locks, treating observer and lost-follow tabs alike. It is the fallback
-  for an edit sent before the [lock frame](live-updates.md#feed-locks).
+- `reason: "generating"` goes through `recoverChatConflicts` / `dropLockedEdits`: edits named by the server are dropped
+  with the reload notice; surviving work waits `JOB_RETRY_MS` before retry. The chat-store flow owns which ops survive
+  and when a deferred read runs. A refused character delete uses the same delay, and `chatGenerating` shows once per
+  episode. This server-id check also covers an edit sent before the [feed lock](live-updates.md#feed-locks) arrives or
+  while an observer has no local job lock.
 
 ### Record hydration
 

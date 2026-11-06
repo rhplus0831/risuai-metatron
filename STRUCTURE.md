@@ -1,219 +1,198 @@
 # STRUCTURE
 
-Agent map for the RisuAI metatron fork: a Svelte 5 + TypeScript client served by its Hono/Node self-host server,
-installable as a PWA. The client requires that server; standalone static hosting, Tauri, and Capacitor are not
-supported.
-
-Use this index to find the owning guide. Guides retain entrypoints, contracts, coupling, and hazards; current source and
-configuration remain authoritative. Paths and identifiers are lookup anchors, and test results belong to the current
-run.
+RisuAI metatron is a Svelte 5 and TypeScript client that requires its Hono/Node self-host server. The PWA uses the same
+server. Start with the task or source path you have.
 
 ## Agent Read Protocol
 
-1. Read **Repository-Wide Invariants** below for add/change tasks.
-2. Choose one owner in **Choose By Task**; for a supplied path run `pnpm docs:owner <path>`. A folder row's `README.md`
-   routes on to one of its guides.
-3. List that guide's headings with their sizes (`pnpm docs:read <guide>`), read `Scope`, then the relevant subsection
-   (`pnpm docs:read <guide> <heading>`), not the whole file. For an add/change task, also read `Invariants`, `Recipes`
-   for the edit path, and `Tests` for focused verification. A `Files` entry points at the module's contract comment:
-   read that comment with the code.
-4. Follow its `Coupling` links only when the change crosses a boundary. Do not load every guide.
-5. Confirm the named identifier with a bounded `rg -n "<identifier>" <path>` before editing.
-6. Run V1's gates and the affected guide's focused checks.
-7. Update the owning guide when moving a named file or changing a documented contract, and
-   `docs/structure/ownership.json` when a moved or new file has no rule. For guide edits, follow
-   [Doc Maintenance](docs/structure/README.md), run targeted Prettier and `pnpm check:docs`; if the slow-test table
-   changes, also run `pnpm check:tests`. The documentation check validates Markdown links, not source paths or
-   identifiers.
+1. For an add/change task, read **Repository-Wide Invariants**.
+2. Pick one guide from **Choose By Task**, or run `pnpm docs:owner <path>` for a source file. A folder guide opens its
+   README and routes you to a topic.
+3. Run `pnpm docs:read <guide>` for the outline, then `pnpm docs:read <guide> <heading>` for `Scope` and the section you
+   need. For edits also consult `Invariants`, the relevant `Recipes`, and `Tests`.
+4. Read the source contract at the `Files` entry. Follow `Coupling` when the change crosses into another guide.
+5. Confirm named identifiers in the current source with `rg -n "<identifier>" <path>`.
+6. Run V1 and the focused checks for the affected area.
+7. Update the guide when a named file moves or a documented contract changes. For guide or ownership edits, follow
+   [Doc Maintenance](docs/structure/README.md). Run targeted Prettier and `pnpm check:docs` (budgets, links, repository
+   path spans, ownership rules). Also run `pnpm check:tests` when the slow-test table changes.
 
 ## Repository-Wide Invariants
 
 ### Tooling
 
-- T1. Use `pnpm` (`packageManager: pnpm@10.34.1`) and Node `>=24.0.0`. The server runs TypeScript through Node type
-  stripping.
-- T2. `src/...` resolves to `/src` in Vite and Vitest; match surrounding import style. `shared/` has no alias. Imports
-  between shared modules use relative `.ts` paths and `import type` for types. Shared code runs in both client and
-  strict server projects: no DOM types, runes, enums, namespaces, or parameter properties. See
-  [persistence](docs/structure/persistence.md).
-- T3. Svelte runes belong only in `*.svelte` and `*.svelte.ts`. Legacy stores coexist with runes; preserve established
-  store boundaries.
-- T4. Format changed files with `pnpm format:changed --write` or `pnpm exec prettier --write <files>`; both honor
-  `.prettierignore`. `pnpm format:check` is the repository formatting check; its cache makes a warm run take seconds.
-- T5. Code comments, test titles, identifiers, and file names describe current behavior, not the work item that added
-  it: no plan, phase, slice, stop, or audit labels such as `(Phase 6 slice 5)`, `data-loss slice 6b`, or
-  `docs/plan/<plan>.md S2`. Plans move to the archive when done, so these labels go stale. State the reason itself
-  ("since chats became their own records", not "since slice 9"); history belongs in commits and
-  [the archive](docs/archived-plan/README.md).
+- T1. Use the pnpm version pinned by `packageManager` and the Node version range in `engines` in `package.json`. The
+  server runs TypeScript with Node type stripping.
+- T2. Vite and Vitest resolve `src/...` to `/src`. Within `shared/`, use relative `.ts` imports and `import type`. Both
+  client and strict server projects compile shared code. Keep it free of DOM types, runes and TypeScript syntax that
+  requires emitted JavaScript (enums, namespaces, parameter properties).
+- T3. Use runes in `*.svelte` and `*.svelte.ts`. Preserve existing boundaries between runes and legacy stores.
+- T4. Format changed files with `pnpm format:changed --write` or `pnpm exec prettier --write <files>`.
+  `pnpm format:check` checks the repository. All honor `.prettierignore`.
+- T5. Comments, test titles, identifiers, and file names describe current behavior and its reason. Keep plan, phase,
+  slice, stop, and audit labels in commits or the [plan archive](docs/archived-plan/README.md).
 
 ### Verification
 
-- V1. Run `pnpm check` (or `pnpm check:changed`) and `pnpm --silent test:agent` once per change, after the last source
-  edit; while iterating, run only the test files the edit reaches (`pnpm --silent test:agent <files or directories>`). A
-  change also runs the slow tests and `e2e/` specs it affects, and a build change `pnpm build`. Agents use the wrapper,
-  never `HUMAN` to bypass the human/CI command gate. The wrapper's flags, lock, and warnings belong to
-  [test-harness](docs/structure/test-harness.md).
-- V2. Unit tests are `*.test.ts`, colocated or in sibling `tests/` directories. Vitest defaults to happy-dom; server
-  tests select Node. Setup mocks, clone/DOM differences, and the deny-by-default network guard are documented in
-  [test-harness](docs/structure/test-harness.md). Domain guides own focused test paths and coverage gaps.
-- V3. A test in the gate (`pnpm test`, no `slow` tag) must not depend on real wall-clock time, CPU time, or the
-  scheduler: no elapsed-time or throughput assertion, no sleep as synchronization, no real production deadline raced by
-  test work. Control the clock (fake timers, an injected `now`, a deferred or latch, a test-only limit option) or tag
-  the test `slow`. A gate timeout is a hang guard, not a performance budget.
-  - Add tests only for code the task changes, and keep a test only when a plausible wrong implementation would fail it.
-  - Timing policy and overload checks: [test-harness](docs/structure/test-harness.md) `Tests`.
+- V1. After the last source edit, run `pnpm check` or `pnpm check:changed` and the full `pnpm --silent test:agent` gate.
+  While iterating, pass affected files or directories to the wrapper. Also run affected slow tests and browser specs,
+  and `pnpm build` for build changes. Agents use the wrapper and leave `HUMAN` unset. See the
+  [test commands and flags](docs/structure/test-harness.md#recipes).
+- V2. Unit tests are `*.test.ts`, colocated or in a sibling `tests/` directory. Vitest defaults to happy-dom. Server
+  tests select Node. Domain guides name focused tests and gaps. The [test harness](docs/structure/test-harness.md) owns
+  setup, mocks, and the network guard.
+- V3. Gate tests run independently of wall time, CPU speed, and scheduling. Control clocks and synchronization. Tag
+  tests of real deadlines or performance `slow`. The gate timeout guards against hangs. Add tests only for changed code
+  and a plausible wrong implementation they would catch. See [test rules](docs/structure/test-harness.md#test-rules).
 - V4. Before committing, `rg` each changed product export and file name across `src`, `server`, `shared`, `public`,
-  `util`, `e2e`, and `docs`, and update the consumers it finds (scripts that read source as text and guides that name it
-  included).
-- V5. A check that could not start, or was not run, is reported as unverified, never as passed.
-- V6. A new test is shown to fail once with the line it guards broken; a bug fix's test reproduces the bug before the
-  fix.
-- V7. Mock only process and I/O boundaries (network, file system, clock, workers, the server, dialogs). A module mocked
-  in more than one file gets one shared, typed factory in a `tests/` directory whose defaults `satisfies` the module's
-  export type, so a new export breaks `pnpm check` instead of a run under load. `src/ts/alert.ts` has `createAlertMock`
-  (`src/ts/tests/alertMock.ts`).
-- V8. Product code never imports test code (`tests/` directories, `*.test.*`, test-only helpers); test-only helpers live
-  in a `tests/` directory so the rule is checkable. `pnpm check:tests` checks it, and that every test file belongs to
-  exactly one runner and the slow-test table matches the `slow` tags; run it after adding, moving, or tagging a test.
-- V9. A test reads product source through `node:fs`, never a Vite `?raw` import (which pulls the file into the module
-  graph and coverage as text).
+  `util`, `e2e`, and `docs`. Update consumers, including scripts that read source text and guides that name it.
+- V5. Report checks that could not start or were skipped as unverified.
+- V6. Show a new test fails with the guarded line broken. Reproduce a bug with its regression test before fixing it.
+- V7. Mock process and I/O boundaries. When several files mock the same module, share a typed factory in a `tests/`
+  directory. Check its defaults against the module's export type with `satisfies`. See
+  [mock factories](docs/structure/test-harness.md#mock-factories).
+- V8. Keep imports of test code out of product modules. Put test-only helpers in `tests/`. After adding, moving, or
+  tagging a test, run `pnpm check:tests` for import boundaries, runner membership, and the slow-test table.
+- V9. Tests reading product source as text use `node:fs`. A Vite `?raw` import pulls the text into coverage.
 
 ### Data and persistence
 
-- D1. The client holds resource records, not a whole `Database`: settings views, character records, and the chat module
-  are its live state. Legacy snapshots are detached copies. All chat writes go through `chatStore.svelte.ts`, addressed
-  by chat id and message id (`Message.chatId`), never an index after an await. Bind chat fields through getter/setter
-  functions or a synced editing copy.
-- D2. A persisted field needs its shared type, ownership in `shared/sections.ts`, and server defaults/migration in
-  `server/src/data/normalize/`. Boot installs the server's records without client normalization. Details:
+- D1. The tab holds settings views, character records, and chat-store state. A legacy `Database` snapshot is a detached
+  copy. Route chat writes through `chatStore.svelte.ts`. Carry `Chat.id` and the message's `Message.chatId` across
+  awaits. Bind chat fields through getters/setters or a synchronized editing copy.
+- D2. Give each persisted field a shared type and an owning record. Settings fields also need ownership in
+  `shared/sections.ts` and server defaults or migration in `server/src/data/normalize/`. Boot installs normalized server
+  records. Chat and message readers supply defaults for missing fields. Settings views can fall back to tab selection,
+  but a send needs all three chat bindings. Keep derived model IDs in sync with slot/profile writes. See
   [persistence](docs/structure/persistence.md) and [LLM requests](docs/structure/llm-requests.md).
-  - Chat/message fields are stored largely as sent; default missing values at their readers.
-  - Settings views follow the open chat's bound records when available, then tab selection; a send requires all three
-    chat bindings and never uses that fallback.
-  - Model ids are derived from slots/profiles and are written synchronously.
 - D3. Preserve persisted spellings, including `seperateModels`, `seperateParameters`, `moduleIntergration`, and
   `PresensePenalty`.
-- D4. Resource writes carry revision and epoch. Stale writes merge independent units; same-unit conflicts reload,
-  keeping eligible local work as a recovery draft; by-id message operations and per-field chat metadata can apply to an
-  older chat revision while their targets exist. Preserve optimistic message ids and append collision refusal.
-  Add/remove/replace characters through `characterStore`; a structural write through the character-list wrapper throws.
-  External contracts use the validated mutation modules. Save/conflict rules:
-  [resource-sync](docs/structure/resource-sync.md).
-- D5. Cards (`.png` `chara`/`ccv3`, `.json`, `.charx`), modules (`.risum`), presets (`.risup`/`.risupreset`), translator
-  presets (`.risutl`), and plugin scripts are cross-user formats. Preserve old readers and paired client/server import
-  compatibility; format-specific parity rules and intentional refusal differences belong to
-  [characters/modules](docs/structure/characters-modules.md) `Invariants`. Never renumber `LLMFlags`, `LLMFormat`,
-  `LLMProvider`, `LLMTokenizer`, or rename persisted discriminator values.
+- D4. Resource writes carry revision and epoch. Merge independent units and reload on same-unit conflicts, retaining
+  eligible work as recovery drafts. Eligible by-ID edits and chat metadata changes can apply on older revisions. See
+  `ChatOp` in `shared/chats.ts` for target and revision requirements. Preserve optimistic message IDs and append
+  collision refusal. Use `characterStore` for structural character writes and validated mutations at external
+  boundaries. See [resource sync](docs/structure/resource-sync.md) and [chat store](docs/structure/chat-store.md).
+- D5. Preserve cross-user formats and client/server import parity for cards, modules, presets, translator presets, and
+  plugins. Keep persisted discriminators stable and append to `LLMFlags`, `LLMFormat`, `LLMProvider`, and `LLMTokenizer`
+  without changing existing values. See [format-specific rules](docs/structure/characters-modules.md#invariants).
 
 ### Platform and network
 
-- P1. Only `src/main.ts` gates on `isNodeServer` (`globalThis.__NODE__`, injected by Hono or Vite). It imports `boot.ts`
-  only with the server present; otherwise it mounts `NodeServerRequired`. Code past that gate assumes the server exists.
-  Do not add browser-only storage/network branches. `isMobile` is user-agent based.
-- P2. LLM generation and provider requests run on the server; plugin providers and browser WebLLM are explicit
-  exceptions. The tab never reads LLM credential values (`llmSecrets` is write-only). Credentialed LLM auxiliary
-  operations use `auxFetch`; other remote calls use `globalFetch`/`fetchNative`, preserving proxy, local-network policy,
-  and logs. See [network-jobs](docs/structure/network-jobs.md).
-  - TTS and image providers have separate client/server routing and credential paths; see
-    [media-aux](docs/structure/media-aux.md). P2's LLM rule does not describe every media request.
+- P1. `src/main.ts` checks `isNodeServer` using `globalThis.__NODE__` injected by Hono or Vite. It imports `boot.ts` on
+  the server-backed path and mounts `NodeServerRequired` otherwise. Code beyond this gate assumes server storage and
+  networking. See [app shell](docs/structure/app-shell.md).
+- P2. The server runs generation and LLM provider requests, except plugin providers and browser WebLLM. The tab receives
+  masked credential status and writes `llmSecrets`. In the tab, use `auxFetch` for credentialed LLM auxiliary calls and
+  `globalFetch`/`fetchNative` for other remote requests to preserve network policy and logs. See
+  [network jobs](docs/structure/network-jobs.md) and [media provider routing](docs/structure/media-aux.md).
 
 ### Security
 
-- S1. Pass untrusted user/model/card/module/plugin HTML through `ParseMarkdown` and `trimMarkdown` (DOMPurify) before
-  `{@html}`. Keep CSS scoped to `.chattext` and `x-risu-`; safe mode suppresses custom CSS and custom GUI HTML. The
-  existing unsanitized Realm sink is tracked in [backup-sync-hub Issues](docs/structure/backup-sync-hub.md#issues).
-- S2. Server Lua network/LLM calls and low-level trigger effects require the relevant character/module/trigger
-  `lowLevelAccess` gates. Do not widen them.
+- S1. Sanitize untrusted HTML before `{@html}`. For chat Markdown, follow `ParseMarkdown` with `trimMarkdown` or
+  `trimMarkdownSharingStyles` (DOMPurify). Keep custom CSS scoped to `.chattext` and `x-risu-` class names. Safe boot's
+  `css` category disables custom CSS and GUI HTML. See [rendering](docs/structure/cbs-rendering.md) and the
+  [known Realm sink](docs/structure/backup-sync-hub.md#issues).
+- S2. Preserve the character, module, and trigger `lowLevelAccess` checks on server Lua network/LLM calls and low-level
+  trigger effects. See [scripts and triggers](docs/structure/scripts-triggers.md).
 
 ### UI
 
-- U1. Use theme tokens from `src/styles.css` (`bg-bgcolor`, `bg-darkbg`, `bg-darkbutton`, `bg-selected`,
-  `text-textcolor`, `text-textcolor2`, `border-borderc`, `border-darkborderc`, `text-draculared`, and the
-  `primary|secondary|danger|neutral|success-50..900` families). Opacity modifiers are supported; avoid raw gray/black
-  colors.
-- U2. User-visible strings belong in `src/lang/en.ts`, the source and type. Other locales are `DeepPartial` overrides
-  merged by `changeLanguage`. Components import `{ language } from 'src/lang'`.
+- U1. Use the theme tokens and color families in `src/styles.css` for backgrounds, text, and borders. They support
+  opacity modifiers. See [UI and theming](docs/structure/ui-theming.md).
+- U2. Add user-visible strings to `src/lang/en.ts`, the source and type. `changeLanguage` merges other locales'
+  `DeepPartial` overrides. Components import `{ language } from 'src/lang'`.
 - U3. Use `src/ts/alert.ts` helpers for errors and confirmations.
-- U4. Stores choose the screen; the URL router applies URLs to them and mirrors settled changes into history. Screen
-  actions change stores. Resolve characters by `selection.characterId`/`selectedCharacter()` and use
-  `selectCharacter(chaId)`; `null` is home. Never retain a list index as an asynchronous address. See
-  [app-shell](docs/structure/app-shell.md).
+- U4. Screen actions change stores. The router applies URLs to stores and mirrors settled state into history. Resolve
+  characters by `selection.characterId`/`selectedCharacter()` and switch with `selectCharacter(chaId)`. `null` is home.
+  Carry stable IDs across awaits. See [app shell](docs/structure/app-shell.md).
 
 ### Release
 
-- R1. `version.json` and `appVer` (`APP_VERSION_POINT`) in `src/ts/storage/database.svelte.ts` are the compatibility
-  version: the upstream RisuAI release the ledger has triaged through
-  ([upstream ledger](docs/research/upstream-ledger.md)). Change both together, and only then. What people see is the
-  build id (`shared/buildInfo.ts`), taken from git at build time. `package.json`'s version is unused.
+- R1. Update `version.json` and `appVer` (`APP_VERSION_POINT` in `src/ts/storage/database.svelte.ts`) together when the
+  upstream compatibility release advances in the [ledger](docs/research/upstream-ledger.md). The displayed build ID
+  comes from `shared/buildInfo.ts`. See [build and release](docs/structure/build-test-platforms.md).
 
 ## Choose By Task
 
-Guide links below are the current ownership map, including behavior once described by completed plans.
-[Active plans](docs/plan/README.md) describe unfinished work; [migration history](docs/archived-plan/README.md) records
-completed plans and retrieval commands.
+### Chat, models and memory
 
-| Task                                                                                                  | Guide                                                            |
-| ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Boot, safe boot, screen selection, URL/history, stores, flags, hotkeys                                | [app-shell](docs/structure/app-shell.md)                         |
-| Asset sources and thumbnails, the asset client and queues, the batch codec                            | [assets](docs/structure/assets.md)                               |
-| Network/proxy, aux fetch, the request log, tab job client/channel, Web Push                           | [network-jobs](docs/structure/network-jobs.md)                   |
-| The globalApi facade, save entry points, writers, chat fold, utils, alerts, notices, Iris             | [global-api](docs/structure/global-api.md)                       |
-| Request history, checked failures, push diagnostics, reports, support shares                          | [diagnostics](docs/structure/diagnostics.md)                     |
-| Persisted fields, records, settings views, normalization, chat bindings                               | [persistence](docs/structure/persistence.md)                     |
-| Boot load and cache, save loop, batches, conflicts and merges, credential writes, transport           | [resource-sync](docs/structure/resource-sync.md)                 |
-| Live updates in the tab: feed connection, record and chat updates, feed locks, restore halt           | [live-updates](docs/structure/live-updates.md)                   |
-| Chat module, chat writes, job hydration, chat checkpoints, restore floor                              | [chat-store](docs/structure/chat-store.md)                       |
-| Draft journal, composer rows, boot recovery, recovery drafts                                          | [draft-recovery](docs/structure/draft-recovery.md)               |
-| Send/job client, stages, prompts, lore, commands, inlays, groups, reroll, message search              | [chat-pipeline](docs/structure/chat-pipeline.md)                 |
-| SupaMemory, HypaV2/V3, HypaV3 job modes, Hanurai, embeddings                                          | [memory](docs/structure/memory.md)                               |
-| Structured memory: records, the HypaV3 projection, writer, read path, lifecycle, rebuild, page tools  | [structured-memory/](docs/structure/structured-memory/README.md) |
-| Model catalogues/profiles/slots, credentials, adapters, streaming, token counts                       | [llm-requests](docs/structure/llm-requests.md)                   |
-| CBS, markdown/sanitizing, chat vars, partial edit, highlighting, display transform client and retries | [cbs-rendering](docs/structure/cbs-rendering.md)                 |
-| Regex, triggers v2, Lua editors/shared engines                                                        | [scripts-triggers](docs/structure/scripts-triggers.md)           |
-| Plugin v3 sandbox, host API, hooks, providers, plugin storage, permissions, plugin reload             | [plugin-sandbox](docs/structure/plugin-sandbox.md)               |
-| MCP client registry, remote and internal clients, RisuAccess, tool dispatch                           | [mcp](docs/structure/mcp.md)                                     |
-| Cards/characters/groups, modules, personas, lore editor                                               | [characters-modules](docs/structure/characters-modules.md)       |
-| Chat/sidebar UI, GUI primitives, portals, theme                                                       | [ui-theming](docs/structure/ui-theming.md)                       |
-| Settings registry/pages, preset editing/pickers, prompt editor, i18n                                  | [settings-i18n](docs/structure/settings-i18n.md)                 |
-| TTS, image generation, media compression, the aux-model selector, playground tools                    | [media-aux](docs/structure/media-aux.md)                         |
-| Translation: providers, the LLM translator, presets, server and stored translation, bilingual display | [translation](docs/structure/translation.md)                     |
-| Backups/upstream compatibility, Realm hub/creator blocking, settings report                           | [backup-sync-hub](docs/structure/backup-sync-hub.md)             |
-| Hono process, routes/auth, static serving, asset store, proxy, push, Docker, thumbnail HTTP responses | [self-host-server](docs/structure/self-host-server.md)           |
-| Server resource store, chat tables, checkpoints, snapshots, backups, file imports                     | [server-resources](docs/structure/server-resources.md)           |
-| Generation jobs, job channel, transforms, LLM and token routes                                        | [server-generation](docs/structure/server-generation.md)         |
-| Live-update feed: socket, hello, frame admission, chat entries, publication budget                    | [live-update-feed](docs/structure/live-update-feed.md)           |
-| Scripts/config, build, dev runner, worker/PWA, upstream check, releases                               | [build-test-platforms](docs/structure/build-test-platforms.md)   |
-| Test wrapper, test rules, slow tests, network guard, Playwright stack, browser checks                 | [test-harness](docs/structure/test-harness.md)                   |
+| Task                                                                                        | Guide                                                           |
+| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Send, prompts, lore, slash commands, groups, rerolls, message search and inlays             | [chat-pipeline](docs/structure/chat-pipeline.md)                |
+| LLM model catalogues, profiles, slots, credentials, providers, streaming and token counts   | [llm-requests](docs/structure/llm-requests.md)                  |
+| SupaMemory, HypaV2/V3, Hanurai, embeddings and memory jobs                                  | [memory](docs/structure/memory.md)                              |
+| Structured memory records, projection, writer, selection, lifecycle, rebuild and page tools | [structured-memory](docs/structure/structured-memory/README.md) |
+| CBS, Markdown, sanitizing, variables, partial edit, highlighting and display transforms     | [cbs-rendering](docs/structure/cbs-rendering.md)                |
+| Translation providers, translator presets, stored translations and bilingual display        | [translation](docs/structure/translation.md)                    |
+| TTS, image generation, media compression, auxiliary model selector and playgrounds          | [media-aux](docs/structure/media-aux.md)                        |
+
+### Client, content and extensions
+
+| Task                                                                                         | Guide                                                      |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Boot, safe boot, navigation, URL/history, screen stores, flags and hotkeys                   | [app-shell](docs/structure/app-shell.md)                   |
+| Chat/sidebar UI, GUI primitives, portals and theme                                           | [ui-theming](docs/structure/ui-theming.md)                 |
+| Settings pages, preset pickers, prompt editor and i18n                                       | [settings-i18n](docs/structure/settings-i18n.md)           |
+| Character cards, groups, modules, personas and lore editor                                   | [characters-modules](docs/structure/characters-modules.md) |
+| Asset URLs, thumbnails, asset client, queues and batch codec                                 | [assets](docs/structure/assets.md)                         |
+| globalApi facade, save entry points, writers, chat fold, utilities, alerts, notices and Iris | [global-api](docs/structure/global-api.md)                 |
+| Regex, trigger v2, Lua editors and shared script engines                                     | [scripts-triggers](docs/structure/scripts-triggers.md)     |
+| Plugin v3 sandbox, host API, hooks, providers, storage, permissions and reload               | [plugin-sandbox](docs/structure/plugin-sandbox.md)         |
+| MCP client registry, internal and remote clients, RisuAccess and tool dispatch               | [mcp](docs/structure/mcp.md)                               |
+| Backups, upstream import/export, Realm hub, creator blocking and settings reports            | [backup-sync-hub](docs/structure/backup-sync-hub.md)       |
+
+### Records, synchronization and jobs
+
+| Task                                                                               | Guide                                              |
+| ---------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Persisted fields, records, settings views, normalization and chat bindings         | [persistence](docs/structure/persistence.md)       |
+| Boot cache, save loop, batches, conflicts, merges, credential writes and transport | [resource-sync](docs/structure/resource-sync.md)   |
+| Tab feed connection, incoming record/chat changes, feed locks and restore halt     | [live-updates](docs/structure/live-updates.md)     |
+| Chat writes, job hydration, chat checkpoints and restore floor                     | [chat-store](docs/structure/chat-store.md)         |
+| Draft journal, composer rows, boot recovery and recovery drafts                    | [draft-recovery](docs/structure/draft-recovery.md) |
+| Network/proxy, aux fetch, request log, tab job channel, handoff and Web Push       | [network-jobs](docs/structure/network-jobs.md)     |
+| Request history, checked failures, push diagnostics, reports and support shares    | [diagnostics](docs/structure/diagnostics.md)       |
+
+### Server, build and repository tools
+
+| Task                                                                                   | Guide                                                          |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Hono routes, auth, static serving, assets, thumbnails, proxy, push and Docker          | [self-host-server](docs/structure/self-host-server.md)         |
+| Server resource store, chat tables, checkpoints, snapshots, backups and file imports   | [server-resources](docs/structure/server-resources.md)         |
+| Server generation jobs, job channel, transforms, LLM and token routes                  | [server-generation](docs/structure/server-generation.md)       |
+| Server live-update socket, hello, frame admission, chat entries and publication budget | [live-update-feed](docs/structure/live-update-feed.md)         |
+| Build, dev runner, worker/PWA, upstream checks, CI and releases                        | [build-test-platforms](docs/structure/build-test-platforms.md) |
+| Test wrapper, slow tests, network guard, Playwright stack and two-client checks        | [test-harness](docs/structure/test-harness.md)                 |
+| Guide edits, path ownership, fact ledgers, budgets and issue placement                 | [Doc Maintenance](docs/structure/README.md)                    |
+
+For unfinished work, see [active plans](docs/plan/README.md). Completed plans and retrieval commands are in the
+[archive](docs/archived-plan/README.md).
 
 ## Path Ownership
 
-`pnpm docs:owner <path>...` prints each path's owning guide from `docs/structure/ownership.json`, an ordered rule list
-where the first match wins; for a file two guides share, it adds the other guides and their parts. The path need not
-exist. `pnpm check:changed` prints the owners of the changed paths first.
+`pnpm docs:owner <path>...` uses the first matching rule in `docs/structure/ownership.json` and lists each part of a
+shared file. It accepts planned paths. Test rules route to the code or guide they exercise. Browser harnesses route to
+test-harness. `pnpm check:changed` reports the owners of changed paths.
 
-Tests follow the code they exercise, or the guide whose `Tests` names them: the manifest lists their globs before the
-fallbacks, and nothing is inferred from a test's name. Browser harness ownership stays with test-harness.
-
-Search-excluded payloads (`.ignore`): `server/assets/token/`, `public/plugin_start.7z`, `src/etc/docs/`,
-`src/ts/rpack/`. Use a targeted path for those payloads; follow [AGENTS.md](AGENTS.md) for search flags.
+Search-excluded payloads in `.ignore` are `server/assets/token/`, `public/plugin_start.7z`, `src/etc/docs/`, and
+`src/ts/rpack/`. For intentional searches of these paths, follow [AGENTS.md](AGENTS.md).
 
 ## Glossary
 
-- **CBS**: `{{fn::arg}}` syntax evaluated by `risuChatParser`.
-- **Lorebook**: keyword-activated context with `@@` decorators.
-- **Prompt preset**: `botPreset`, prompts/parameters and ordered `PromptItem[]`; `.risup` files.
-- **Model preset**: slots referencing model profiles; independent from the prompt preset.
-- **Model profile / Connection**: model id, named-key binding, endpoint and compatibility options.
-- **Aux model**: memory/translate/emotion/`otherAx` slot; unset slots use the sub slot.
-- **Named API key**: `credentials` metadata, value in write-only `llmSecrets.credentials`.
-- **Module**: `RisuModule`/`.risum`, lore/scripts/assets/MCP enabled in several scopes.
-- **Persona**: user name/icon/prompt, optionally an embedded module.
-- **Inlay**: `inlays` metadata plus an asset, referenced as `{{inlay::id}}`.
-- **Asset**: logical `assets/<hash>.<ext>` reference, read/written through asset helpers.
-- **Realm / Hub**: card service, reached through GET-only `/hub-proxy`.
-- **Iris**: built-in assistant using RisuAccess MCP tools.
+- **CBS** evaluates expressions such as `{{fn::arg}}` through `risuChatParser`. A **lorebook** supplies
+  keyword-activated context with `@@` decorators.
+- A **prompt preset** (`botPreset`, `.risup`) holds prompts, parameters, and ordered `PromptItem[]`. A **model preset**
+  selects profiles through slots. A **model profile / Connection** holds the model ID, key binding, endpoint, and
+  compatibility options. Unset **aux model** slots fall back to the sub slot.
+- A **named API key** has metadata in `credentials` and its value in write-only `llmSecrets.credentials`.
+- A **module** (`RisuModule`, `.risum`) can supply lore, scripts, assets, and MCP servers. A **persona** holds the
+  user's name, icon and prompt, and can embed a module.
+- An **inlay** combines `inlays` metadata with an asset, referenced by `{{inlay::id}}`. An **asset** is a logical key
+  such as `assets/<hash>.<ext>` read and written through asset helpers.
+- **Realm / Hub** is the card service reached through the GET-only `/hub-proxy`. **Iris** is the built-in assistant
+  using RisuAccess MCP tools.
 
 ## Doc Maintenance
 
-The rules for editing guides, from the outline and budgets to fact ledgers and `Known Hazards`, are in
+For the guide outline, size limits, fact-ledger checks, and issue inbox, see
 [Doc Maintenance](docs/structure/README.md).

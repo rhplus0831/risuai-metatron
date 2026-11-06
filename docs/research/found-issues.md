@@ -14,9 +14,8 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (8)
 - [Chat screen and input](#chat-screen-and-input) (5)
-- [Client and plugins](#client-and-plugins) (15)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
-- [Guides](#guides) (2)
+- [Client and plugins](#client-and-plugins) (17)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (9)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (1)
 
@@ -395,6 +394,18 @@ Deferred by the Implementation Audit Fixes plan (2026-11-05): the fix needs a li
 **Why it matters:** on a page no worker controls, media memory grows with every distinct item played, past the cache's budget.
 **Suggested handling:** a design of its own: track URL ownership by rendered media and cached HTML, and release unowned URLs under a byte budget.
 
+### Chat disclosure and watermark checks return constants
+
+In `src/ts/globalApi.svelte.ts`, `aiLawApplies` always returns true and `aiWatermarkingLawApplies` always returns false. Traced on 2026-11-07: `genInfo` in `src/lib/ChatScreens/Chat.svelte` displays its model button even with `requestInfoInsideChat` off when the message has a model. In `src/ts/parser/parser.svelte.ts`, `addMetadataToElement` returns before encoding a watermark. Both helpers have implementation TODOs.
+
+The owner still needs to decide whether these behaviors should be unconditional and what the setting should control. This was checked in source. See the [global API guide](../structure/global-api.md#issues).
+
+### Duplicate plugin names can share a popup editor target
+
+Unconfirmed in the browser. `setPlugins` in `src/ts/storage/collectionStore.svelte.ts` accepts duplicate names. In `src/lib/Setting/Pages/PluginSettings.svelte`, an unkeyed row binds the textarea to `settings.plugins[i].realArg[arg]`, while `popupEditorContext` uses the plugin name and argument key. `TextAreaInput.svelte` checks the initial value, context and context revision before applying the draft.
+
+If another client swaps two same-name plugins with the same key and text while the popup is open, those checks can still match the row now at that index. To verify, apply the draft and inspect which plugin's stored argument changed. Traced on 2026-11-07 while moving the earlier UI guide note to [plugin settings](../structure/plugin-sandbox.md#issues).
+
 ## Build, drivers, and e2e
 
 ### checkJobProtocol's first run after a source change fails its SIGKILL case
@@ -425,13 +436,6 @@ Deferred by the Implementation Audit Fixes plan (2026-11-05): the fix needs a li
 **Why it matters:** low: it needs an unrealistic code span.
 **Suggested handling:** collapse padding outside code spans only (`replaceCodeSpans` is in the same file) if a row ever hits it.
 
-### checkMcpFixes and the guide disagree on the repeated call
-
-`util/playwright/checkMcpFixes.mjs:476` says the hazard recorded in `plugins-mcp.md` is "that call fails". The Gotcha on 404 and 401 records that the session resets and the request repeats once, and says nothing of a failure. Found by Guide Budgets slice 5b.
-
-**Why it matters:** the comment and the guide disagree on what the browser check expects.
-**Suggested handling:** run the check's scenario to see which holds, then fix the comment or add the failure to the Gotcha.
-
 ### checkServerSend once hit an alert after its mid-stream reload
 
 On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the first `node util/playwright/checkServerSend.mjs` passed 11 checks, then `openCharacterChat` after the "reload in the middle of a slow stream" step (~340) timed out because a `[data-alert-dialog]` overlay covered the sidebar. The run overlapped a `docker build`; four reruns passed 19/19, two of them logging no alert after the reload, and the base `9bf28c429` passed 19/19. The alert text was not captured. Candidates: the automatic safe-boot notice (the driver does not clear safe-boot attempts) or an error alert from the owner's resync after the reload.
@@ -454,21 +458,17 @@ On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the firs
 **Why it matters:** type errors in specs and harnesses ship silently, and briefs that count `pnpm check` as type verification for an e2e-only change are wrong.
 **Suggested handling:** add an e2e tsconfig (node and Playwright types, a `/src/*` path mapping) and wire it into `pnpm check`; fix the `multiClient.spec.ts` narrowing in the same change.
 
-## Guides
+### Automatic browser spec selection misses extensionless imports
 
-### The non-fencing refusal list misses memoryRebuilding
+Both multi-client specs import `./multiClient` and `./fixtures`. In `util/agentE2e.mjs`, `staticImports` records those literal paths, while Git reports `e2e/multiClient.ts` and `e2e/fixtures.ts`. Reproduced on 2026-11-07 by passing each changed path separately to `selectSpecs` with `loadSpecs(".")` and `repositoryFiles(".")`. Each result had an empty `selected` list and put the helper in `unnamed`.
 
-`docs/structure/chat-pipeline.md` (~194) lists the generation-create refusals that do not fence an unanswered create (`503`, `chatBusy`, `chatBindingIncomplete`, `chatLoreOverrideOrphaned`). The Found Issues Sweep's I1 (9440f4ccd, 2026-11-05) added `409 { error: "memoryRebuilding" }`, which `serverCommands.ts` `admissionRefused` also treats as non-fencing; the list was not updated.
+A helper-only change can therefore miss its browser tests during automatic selection. Name the affected specs explicitly until the selector resolves extensionless imports to their on-disk paths. All current specs import `./fixtures`, while only the two multi-client specs import `./multiClient`. The [test harness guide](../structure/test-harness.md#browser-specs) gives both commands.
 
-**Why it matters:** low; the list does not claim to be complete, but a reader checking the non-fencing codes misses one.
-**Suggested handling:** add the code, paid with a trim in the same paragraph.
+### An ignored path can hide a broken sibling in a guide
 
-### records.md names test splitters that are gone
+In `util/docsBudget.mjs`, `pathProblem` returns success for the whole span as soon as a missing brace alternative matches a Git ignore rule. Reproduced on 2026-11-07 with `measureDocs` and `checkDocs` in a temporary Git repository containing an empty `src/` and a `*.local` ignore rule. The span `src/{draft.local,missing.ts}` produced no finding. Reversing the alternatives reported the missing `src/missing.ts`.
 
-`docs/structure/structured-memory/records.md` (~261, Tests) says `src/ts/process/structuredMemory.test.ts`'s "splitters read a file only by metadata and line counts". The sweep's B4 (8c51c1fe5) replaced `splitPage` and `splitTimeline` there with `parseMemoryPackage`. Found 2026-11-06.
-
-**Why it matters:** a Tests sentence about helpers that no longer exist.
-**Suggested handling:** drop or rewrite it when records.md is next edited (it also frees about 100 bytes under the `check:docs` ratchet).
+A guide can pass the path check while pointing an agent at a missing source file. Check the remaining alternatives after accepting an ignored path.
 
 ## Test timing
 

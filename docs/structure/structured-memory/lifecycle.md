@@ -61,97 +61,58 @@
 ### Reconciliation and repairs
 
 A send takes `reconcileEvents`' copy against stored messages; the tab takes `reconcileMemoryEvents`' copy with its own
-`hashOf`. Neither changes stored rows: putting a message back can make its event whole again. Read the shared module's
-`reconcileMemoryEvents`, `staleReasonOf`, `memoryAnchorState` and `memoryRerecordTarget` for reason precedence, anchor
-comparisons and repair eligibility.
+`hashOf`. Neither changes stored rows, so restoring a message can make its event whole again. The shared and server
+module headers own reason precedence, evidence reconciliation and repair eligibility.
 
-The panel sends event repairs through [the edit route](records.md#the-edit-route) to `applyEventRepair`. Retraction also
-passes through `withRetractedEvidence` before the store write. Keep acknowledges the message state seen in the tab,
-since messages can change without moving the memory revision. Re-record marks the old event, then the tab presses record
-now; [the writer's commit](writer.md#the-writer-task) swaps it for the replacement. A replacement older than another
-event is [historical](writer.md#a-writer-run). Until then, even after a failed run, the old event and mark stay.
-`applyEventRepair` owns no-op and refusal rules.
+The panel sends repairs through [the edit route](records.md#the-edit-route). A `rerecord` mark only requests a writer
+run: the old event remains until [the writer commit](writer.md#the-writer-task) replaces it, and a replacement older
+than later evidence uses the [historical path](writer.md#a-writer-run).
 
 Loading a checkpoint starts no work: a restored `rerecord` mark [waits for a press](writer.md#the-writers-windows). See
 [State](#state) for the two persisted repair fields.
 
 ### Retraction and edits
 
-A chat write reaches memory through a post-commit notice:
+`applyGroup` classifies confirmed removals as `retracted` and edits to `role`, `data` or `saying` as `rewritten`;
+`onMessagesChanged` delivers the notice after the chat transaction commits. `app.ts` wires it to
+`reconcileMessageChanges`, whose header owns the record reaction and thread/section effects. Memory reconciliation is a
+separate write: a crash between the chat commit and its notice leaves the event readable as `missing` or `changed` for a
+later repair.
 
-1. `server/src/data/chatStore.ts`'s `applyGroup` reports `ChatMessageChanges`: a marked `remove` supplies `retracted`
-   ids; a person's change of `role`, `data` or `saying` supplies `rewritten` ids. Read those for excluded writes.
-2. `onMessagesChanged` delivers after commit through the `onChatInvalidated` queue, never for rollback.
-   `server/src/app.ts` subscribes `reconcileMessageChanges` with or without a task service. At the read revision, the
-   reaction retracts events citing `retracted` ids through `applyEventRepair`, or marks rewritten evidence for
-   re-recording.
-3. This reaction and the edit route pass retractions through `withRetractedEvidence` before `store.memory.write`:
-   `withReconciledThreads` reopens a thread its closing event left, removes one only its opening event supported, and
-   keeps a state a person set. `flagUnsupportedSections` then gets the resulting events and pages; a writer's later
-   `changeSection` clears the flag. `retireRerecorded` flags sections only; the replacement takes `openedBy`/`closedBy`
-   and ended moves.
-
-This is separate from the chat transaction: a crash between them leaves `missing` or `changed` for a repair. Its turn,
-fence and conflict rules are the `reconcile.ts` header's.
-
-In the tab, `removeMessages` checks immediately and, outside this algorithm, removes immediately. Under this algorithm,
-`removeAfterAsking` pins the chat and reads coverage before asking `language.structuredMemory.removeRetracts` when a
-non-retracted event cites a message. Declining cancels the delete; confirming carries `retract` through the save. A
-failed read allows an unmarked delete. After the wait it rechecks the owner and locks; a newly locked message refuses
-it.
-
-`removeMessagesUnasked` is unasked and unmarked for `/cut`, `/del` and `runMultisend`; a recovered draft can pass an
-earlier mark. `applyChatResult` (rerolls and scripts) and server-trigger removes are unmarked too, leaving `missing` for
-a panel repair.
+For a user-confirmed delete, `removeAfterAsking` checks coverage and asks before carrying `retract` through the save;
+the chat store guide owns its save and lock checks. `/cut`, `/del`, `runMultisend`, rerolls, scripts, server triggers
+and recovered drafts can remove messages without that mark, leaving `missing` for panel repair.
 
 ### A checkpoint
 
-A checkpoint captures all four kinds, runs included, so the loaded Log matches its events. `save` takes
-`memoryStore.ts`'s `rows`; the checkpoint module header defines verbatim chunks. `fields` names their manifest under
-`CHECKPOINT_MEMORY_FIELD` (`CheckpointMemoryManifest`); `checkpointPageRefs` includes both. Only changed chunks need new
-pages, treated like other pages by delete, prune and snapshot restore.
+A checkpoint stores all four record kinds, including runs, as chunks named by `CheckpointMemoryManifest`; the checkpoint
+store header owns the chunk format and reuse. New checkpoints write a manifest even when empty. A legacy checkpoint
+without one leaves memory and its revision alone on load.
 
-1. `server/src/data/checkpointService.ts`'s `load` reads `compose` and `readMemory`. Every new save writes the manifest,
-   even empty; its absence identifies a legacy checkpoint whose load leaves memory and its revision alone.
-2. The service's `before` callback saves the pre-load memory in a safety checkpoint; `after` calls `tx.restoreMemory`
-   when memory was captured. Safety capture, chat replacement and memory restore share one `applyChanges` transaction.
-3. `CheckpointTransaction.restoreMemory` delegates to `memoryStore.ts`'s `replace`, whose comment defines row checks and
-   replacement. All four kinds restore, preserving `createdRevision`; the revision moves up by one even with no records,
-   refusing a write based on the pre-load revision.
+`checkpointService.load` captures a safety checkpoint, replaces the chat and restores memory through one `applyChanges`
+transaction. `tx.restoreMemory` restores the four kinds and moves the memory revision once, even for an empty restore.
+The [server resources guide](../server-resources.md#chat-writes-and-checkpoints) owns the transaction; the
+[checkpoint tables](../server-resources.md#checkpoint-tables) section owns snapshot validation. A crafted future
+`createdRevision` can pass the snapshot walk but fail the load's `replace` with 400; no change commits, including the
+safety checkpoint.
 
-A running writer is stopped before that: `load` takes the chat's summary writer lease (`acquireSummaryWriter`,
-`"checkpoint-load"`), which ends the task as `cancelled` (`writerLease`), and the commit invalidates retained task input
-([summary writers](../memory.md#summary-writers)).
-
-`walkCheckpointSnapshot` and `checkMemoryChunk` own manifest/chunk admission, including checks across chunks. The walk
-has no memory revision counter: a crafted future `createdRevision` can pass it but fail `replace` at load, a 400 with no
-change, safety checkpoint included. A live save never creates one.
+`load` takes `acquireSummaryWriter(..., "checkpoint-load")`, cancelling a running writer with `writerLease` and
+invalidating retained task input ([summary writers](../memory.md#summary-writers)).
 
 ### Copies and branches
 
-Copying from a chat row's options or branching from a message uses `createInheritingChat`. The server's
-`inheritedRecords` maps evidence and rewinds page history; its header and helpers define which records cross. Retained
-history and reshaped pages limit the rewind ([Limitations](#limitations));
-`server/src/prompt/memory/structured/retrieve.ts`'s `shownSections` does not hide `unsupported` text. A new, plugin-made
-or recovered chat inherits nothing; an import instead [restores its file](#chat-files).
+Copying from a chat row or branching from a message calls `createInheritingChat`; plugin-made and recovered chats do not
+inherit. The tab posts `{ sourceChatId }` to `POST .../inherit` after `createChat` answers, using its returned id. Its
+module header owns the save-loop wait and failure notice; this is one attempt, so closing the tab before the request can
+leave a created chat without memory. An inherited section still marked `unsupported` can reach the prompt:
+`retrieve.ts`'s `shownSections` does not hide it.
 
-1. `createInheritingChat` begins a mutation scope before `createChat` and returns its answer while memory work runs
-   behind the action. `createSettled` calls `flushResources`; a discarded/refused create or save error fails it.
-   `GenerationBlockedError` can concern another chat, so it waits for `chatHasUnackedWork`, bounded by 30 s, while the
-   save loop continues. This proves no acknowledgment: the route's `chatGone` remains authoritative.
-2. `inheritStructuredMemory` posts `{ sourceChatId }` to `POST .../inherit` on `createChat`'s answered id, which can
-   differ from the input. After body admission the route checks the epoch and target fence, reads both chats and source
-   records, builds through `inheritedRecords`, and calls `store.memory.write` at the target's read revision. This is
-   synchronous, so a source writer cannot enter between the reads; only the target needs a fence.
-3. Any target row, runs included, prevents inheritance. The source's decline crosses with the records, even with none
-   supported or none to build; `inherited` reports records only. Runs stay behind, so `createInheritingChat` strips the
-   copied receipts (`generationInfo.memory`): the new Log is empty and coverage comes from event sources. The route
-   header owns empty/repeat answers and HTTP refusals.
-
-One attempt, no retry. Every copy asks, even under another algorithm; only this algorithm shows
-`structuredMemory.inherit.failed` on failure or non-`epoch` refusal. `epoch` halts with its own notice. A failed
-response leaves inheritance unconfirmed; it can be lost after commit. Closing the tab before the request leaves no
-records or notice.
+The route checks the epoch and target fence, reads both chats and source records, builds via `inheritedRecords`, then
+writes the target synchronously at its read revision; only the target needs a fence because a source writer cannot enter
+between reads. The builder's header owns source-to-target evidence mapping and page-history rewind. Any target row, runs
+included, prevents inheritance. Runs stay behind, so receipts are stripped from the copied chat and coverage comes from
+event sources. A decline crosses with the records; `inherited` reports record transfer only. For refusal and repeat
+answers, see the route header. Imports instead [restore their file](#chat-files).
 
 ### Chat files
 
@@ -207,35 +168,26 @@ or notice; no retry.
 
 ### Adopting HypaV3 summaries
 
-`StructuredMemoryPanel` offers the choice ([the memory panel](read.md#the-memory-panel)); its press calls
-`adoptStructuredMemory`, then bodyless `POST .../adopt`. The route reads `readChatSource`, builds events through
-`adoptedEvents` and commits through `store.memory.write` in one synchronous epoch/fence/read/build/write step. Neither a
-tab-sent value nor an overlaid projection is adopted; the builder also refuses sealed values. No model is called and
-there is no cost to preview. The route header owns `StructuredMemoryAdoptAnswer` and no-op/refusal rules; the builder's
-header owns summary conversion.
+The [memory panel](read.md#the-memory-panel) calls `adoptStructuredMemory`, then bodyless `POST .../adopt`. In one
+synchronous step, the route reads stored `hypaV3Data`, builds events and writes them; a sealed projection is never
+adopted. Adoption uses no model; the `adopt.ts` header owns summary conversion, and the route header owns hold, repeat
+and refusal rules. It permits existing runs but fences a live one and writes only events, leaving summaries and failed
+runs untouched; `ADOPTED_WRITER_RUN` names no run.
 
-Unlike inherit/restore, adoption permits existing runs: a failed run must not bar it, and the fence excludes a live one.
-It writes only events, leaving the chat's `hypaV3Data`, failed runs and their pause in place, with no new Log run.
-`ADOPTED_WRITER_RUN` names no run; Timeline says “originally” because a later writer can merge into the last adopted
-event and keep that marker.
-
-`recordedMessages` counts sources in any status, so the writer leaves adopted turns recorded. `coveredMessages` takes
-only active, unsuppressed events, so stale ones remove no messages from the prompt. A later send can embed these events;
-only adopting is free of model calls. Stored summaries keep `overlayMemoryProjection` and upstream projection aside
-until a reset; plugins then read [the projection](projection.md#the-hypav3-projection), `pinned` as `isImportant`.
+Adopted sources count as recorded to the writer, while send coverage still requires an active, unsuppressed event. A
+later send can therefore process them through the normal read path; adoption alone makes no model call. Stored summaries
+keep the [HypaV3 projection](projection.md#the-hypav3-projection) aside until reset.
 
 ### The adoption choice
 
-`adoptionHold` holds a chat with no page, event, thread or decline when `adoptedEvents` could build from its stored
-summaries; runs do not count and blank summaries hold nothing. The panel offers adopt or decline.
-[The writer](writer.md#a-writer-run) records nothing until the choice; a send's `adoptionHeld` prevents the gap question
-and task hand-off. This keeps one memory owner per chat. While real summaries remain, the projection stands aside and
-plugins read them.
+`adoptionHold` and the adoption route share eligibility: a chat with no page, event, thread or decline waits only while
+stored summaries can become events. Runs do not count; blank summaries hold nothing. The panel offers adopt or decline.
+The held chat gets no send gap question or writer hand-off ([writer](writer.md#the-writer-task)), keeping one memory
+owner until the choice. While real summaries remain, the projection stands aside and plugins read them.
 
-The panel calls `declineStructuredMemory`, then bodyless `POST .../decline`. In one checked synchronous write, only a
-held chat sets one-way `adoptionDeclined` and moves the memory revision; any other answers `declined: false`
-(`StructuredMemoryDeclineAnswer`). The writer then starts from the oldest turn. A tab's real value stays: plugin reads
-never ask about one and `readProjectionRevisions` answers null for it.
+Decline calls bodyless `POST .../decline`; only a held chat sets `adoptionDeclined` and moves the memory revision. The
+writer then starts from the oldest turn. A real HypaV3 value is not subject to this choice: plugin reads never ask about
+it and `readProjectionRevisions` answers null.
 
 Where a decline goes: snapshots carry it; a checkpoint's `replace` leaves it in memory state, even loading a pre-decline
 checkpoint. Inherit carries it with no records or none supported too, since the copy holds the same summaries. Chat
@@ -258,25 +210,16 @@ takes over.
 
 ## Coupling
 
-- A chat write reaches the records through `applyGroup`'s `ChatMessageChanges` and `onMessagesChanged`, which the chat
-  store owns; [chat store](../chat-store.md) holds the `retract` mark a `remove` carries.
-- `reconcileMessageChanges` holds no fence ([a running writer](writer.md#the-writer-task) meets `revisionConflict` or
-  `windowChanged`), and a re-record is committed by the writer task.
-- The tab reads the reconciled copy for [the memory panel](read.md#the-memory-panel), and a send reads it for
-  [the read path](read.md#the-read-path); both take the rule from `shared/`, with `hashOf` injected.
-- A repair is a case of the edit route's closed union: [the edit route](records.md#the-edit-route) owns the fence, the
-  revision check, and the answer.
-- A checkpoint's memory follows the [checkpoint tables](../server-resources.md#checkpoint-tables) and the load's
-  transaction in [server resources](../server-resources.md#chat-writes-and-checkpoints).
-- The inherit route and `createInheritingChat` are reached from the chat list's copy and branch sites, and the store
-  write is [a memory write](records.md#a-memory-write).
-- The restore route is reached from `importChat` alone, [a memory write](records.md#a-memory-write) too, and, alongside
-  [package import](pages.md#the-import-route), writes records the tab sent ([Invariants](records.md#invariants)).
-- The adopt route is reached from the panel alone, and [the writer's windows](writer.md#the-writers-windows) read what
-  it writes as recorded through `sources`, so an event's shape is the only contract between them.
-- A chat file and [the HypaV3 projection](projection.md#the-hypav3-projection): an exported copy drops `hypaV3Data` by
-  the seal alone (`exportChatMemory`), so the projection a tab's read overlays must stay sealed, and an unsealed one
-  would be exported as real summaries. An import of an older file that holds a sealed value drops it in `createChat`.
+- `chatStore.ts` owns message-change classification and the delete mark; [chat store](../chat-store.md) owns their write
+  protocol. `reconcileMessageChanges` runs after commit without a fence; a concurrent writer retries at its boundary.
+- The tab and send both read the shared reconciliation rule ([panel](read.md#the-memory-panel),
+  [read path](read.md#the-read-path)); [records](records.md#the-edit-route) owns repair admission and memory revisions.
+- Checkpoint chunks and the load transaction are owned by
+  [server resources](../server-resources.md#chat-writes-and-checkpoints).
+- Chat-file `hypaV3Data` handling follows the [projection seal](projection.md#the-hypav3-projection); lifecycle owns
+  which records the file carries and how restore admits them.
+- Copy, restore, and adoption all write through [the memory store](records.md#a-memory-write); their source records come
+  from `inherit`, `restore`, or `adopt`, respectively.
 
 ## Invariants
 
