@@ -490,10 +490,10 @@ In `src/ts/process/structuredMemory.svelte.ts` and `StructuredMemoryPanel.svelte
 
 ### Projection refresh leftovers
 
-Left by slice 5g. A journal recovery that replays a real `hypaV3Data` while Structured Memory is selected is dropped (`src/ts/storage/journalRecovery.ts` `applyChatOps` through `setChatMeta`) with the plugin-worded `structuredMemory.projectionWriteRefused` notice. The body-cap comment above `limitBody` in `server/src/app.ts` omits the revisions route's 256 KiB. The `chatOutput` payload (`src/ts/network/jobChannel.ts`) copies held chats with no projection refresh. `src/ts/plugins/apiV3/hostApiMemory.test.ts` reads `MEMORY_REFRESH_DEADLINE_MS` and `MEMORY_PROJECTIONS_PER_READ` out of `v3.svelte.ts` by regular expression.
+Left by slice 5g. The body-cap comment above `limitBody` in `server/src/app.ts` omits the revisions route's 256 KiB. The `chatOutput` payload (`src/ts/network/jobChannel.ts`) copies held chats with no projection refresh. `src/ts/plugins/apiV3/hostApiMemory.test.ts` reads `MEMORY_REFRESH_DEADLINE_MS` and `MEMORY_PROJECTIONS_PER_READ` out of `v3.svelte.ts` by regular expression.
 
-**Why it matters:** a wrong actor in a rare notice, a stale comment, a stale payload, and a brittle test.
-**Suggested handling:** a recovery wording, the comment in the next `app.ts` change, and moving the constants to `shared/structuredMemory.ts`.
+**Why it matters:** a stale comment, a stale payload, and a brittle test.
+**Suggested handling:** the comment in the next `app.ts` change, and moving the constants to `shared/structuredMemory.ts`.
 
 ### Adopted summaries
 
