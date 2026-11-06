@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (5)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
 - [Server routes and resource store](#server-routes-and-resource-store) (5)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -58,13 +58,6 @@ Found 2026-11-05 in Job Handoff Slice 2; narrowed 2026-11-06. The Implementation
 
 **Why it matters:** today it only affects what the worker displays and costs extra checkpoint reads; it becomes a real problem once anything relies on the worker's stream view.
 **Suggested handling:** split reporting from retirement on the lost path too: release a `"lost"` follow with the detach release and keep its notices.
-
-### pluginStorage writes still reach other tabs whole
-
-The Plugin Storage and Data API run (2026-11-05, slice 2) made the upload of a `pluginStorage` write a nested entry patch; the Implementation Audit Fixes run's P2 (b71dbe54e, 2026-11-06) made the server store and publish it by entry (`entryPatch`, with `nested` and `itemKey: "name"` forms), so other tabs no longer read the record whole. What is left is client-side JSON work per update in `src/ts/storage/resourceSync.svelte.ts`: `canApplyRemote` projects the local record (`projectRecord`, a whole stringify) to compare with the held text, `patchedRecord` (~5102) `JSON.parse`s the whole held text (a 2 MiB history included), `applyCollectionPatch` → `applyToMirror` installs the whole record, and `applyRemotePatch` (~4979) re-projects it (`projectEntry`) to update `persisted`. Found after P2.
-
-**Why it matters:** the server no longer runs 2 MiB passes for a one-key counter write, but each observing tab still pays about one parse and one or more stringifies of the whole record per write: the client twin of the server fix.
-**Suggested handling:** if pluginStorage feed cost comes up again, keep the held text cut by entry on the client (like the server's patch base) instead of reparsing the record.
 
 ## Server jobs and prompt assembly
 
