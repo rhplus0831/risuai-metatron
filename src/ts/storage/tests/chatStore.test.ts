@@ -3020,6 +3020,28 @@ describe("Structured Memory projections in the chat mirror", () => {
         expect(console.warn).toHaveBeenCalledTimes(3);
     });
 
+    it("returns only refused unsealed recovery memory without a plugin toast, while ordinary writes still notify", async () => {
+        const { chat, ref, projection, toast, commit, server } = await projectedBoot();
+        const memory = plainMemory("Recovered memory");
+        expect(chat.setChatMeta(ref, { note: "Recovered note", hypaV3Data: memory }, [], "recovery")).toEqual(memory);
+        expect(chat.setChatMeta(ref, { hypaV3Data: memory }, [], "recovery")).toEqual(memory);
+        for (const sealed of [
+            sealHypaV3Data(plainMemory("Another intact projection")),
+            { ...clone(projection), summaries: plainMemory("Changed sealed projection").summaries },
+        ]) {
+            expect(chat.setChatMeta(ref, { hypaV3Data: sealed }, [], "recovery")).toBeUndefined();
+        }
+        expect(chat.findChat(ref)).toMatchObject({ note: "Recovered note", hypaV3Data: projection });
+        expect(toast).not.toHaveBeenCalled();
+        commit();
+        expect(server.chat("c", "k")!.data.note).toBe("Recovered note");
+        expect(server.chat("c", "k")!.data).not.toHaveProperty("hypaV3Data");
+
+        expect(chat.setChatMeta(ref, { hypaV3Data: memory })).toBeUndefined();
+        const { language } = await import("../../../lang");
+        expect(toast).toHaveBeenCalledExactlyOnceWith(language.structuredMemory.projectionWriteRefused);
+    });
+
     it("drops carried projections from creates and character installs, notices changed seals, and preserves real new memory", async () => {
         const { chat, ref, projection, toast, server, commit } = await projectedBoot();
         for (const install of [false, true]) {

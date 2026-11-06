@@ -1698,6 +1698,12 @@ export const languageEnglish = {
         applyConfirm: (name: string) => `Apply “${name}” over the current server copy?`,
         discardConfirm: (name: string) => `Discard the recovery draft “${name}”? This cannot be undone.`,
         applied: "Recovered changes were processed.",
+        memoryFiled:
+            "This chat's memory belongs to Structured Memory, so the recovered HypaV3 memory was not applied. It was kept as a separate recovery draft. Export it, or apply it after switching the memory algorithm to HypaV3.",
+        memoryKept:
+            "This chat's memory belongs to Structured Memory, so the recovered HypaV3 memory was not applied. This draft was kept. Export it, or apply it after switching the memory algorithm to HypaV3.",
+        memoryDraftFailed:
+            "The recovered HypaV3 memory could not be kept as a draft of its own, so this draft was kept. Export it to keep a copy of the memory.",
         skipped: "Skipped operations (missing targets, whole-chat changes, or a translation whose source changed):",
         failed: "Could not complete this action. The recovery draft has been kept.",
         refreshFailed: "Could not refresh recovery drafts.",

@@ -4153,11 +4153,19 @@ function noticeRefusedProjection(key: string) {
  *   notice, so it never becomes a stored owner. A new chat has no records. With another algorithm
  *   selected it is a real write, which replaces a projection held from before: HypaV3 owns the chat
  *   from then on when the value holds summaries.
+ * Recovery suppresses the plugin notices; its caller preserves refused unsealed intent as a draft.
+ * Sealed values are still dropped, without becoming recovery intent.
  */
-function keepsHeldHypaV3Data(key: string, incoming: unknown, held: Chat | undefined, baseline: unknown): boolean {
+function keepsHeldHypaV3Data(
+    key: string,
+    incoming: unknown,
+    held: Chat | undefined,
+    baseline: unknown,
+    source: "write" | "recovery" = "write",
+): boolean {
     const differs = () => JSON.stringify(incoming) !== JSON.stringify(baseline);
     if (isSealedHypaV3Data(incoming)) {
-        if (!sealedHypaV3DataIntact(incoming) && differs()) {
+        if (source === "write" && !sealedHypaV3DataIntact(incoming) && differs()) {
             noticeRefusedProjection(key);
         }
         return true;
@@ -4176,7 +4184,7 @@ function keepsHeldHypaV3Data(key: string, incoming: unknown, held: Chat | undefi
     if (!held || !projectionsField()) {
         return false;
     }
-    if (differs()) {
+    if (source === "write" && differs()) {
         noticeRefusedProjection(key);
     }
     return true;
@@ -4314,13 +4322,16 @@ const SUMMARY_FIELD_TYPES: Readonly<Record<string, "string" | "number" | "boolea
  * A chat that is not loaded takes changes of its list fields only (`SUMMARY_FIELD_TYPES`: its summary
  * changes and the same op is queued); any other field needs it loaded. The whole change is checked
  * before anything changes. A `hypaV3Data` that stays as held (`keepsHeldHypaV3Data`) drops out, and
- * the other fields still apply.
+ * the other fields still apply. The recovery source suppresses plugin notices and returns any
+ * refused unsealed value for its caller to preserve; sealed values and unsets are never returned.
+ * Ordinary writes retain their existing notices and return nothing.
  */
 export function setChatMeta(
     ref: ChatRef,
     set: Partial<DeepReadonly<Chat>> | Record<string, unknown>,
     unset: readonly string[] = [],
-) {
+    source: "write" | "recovery" = "write",
+): unknown {
     const loaded = findCharacter(ref.chaId) ? heldChat(ref) : undefined;
     let summary: ChatEntryMeta | undefined;
     if (!loaded) {
@@ -4341,6 +4352,7 @@ export function setChatMeta(
     }
     const chat = (loaded ?? summary) as unknown as Record<string, unknown>;
     const changes: Record<string, unknown> = {};
+    let refusedHypaV3Data: unknown;
     const requested: Record<string, unknown> = { ...set };
     for (const key of unset) {
         if (Object.hasOwn(SERVER_META_DEFAULTS, key) && requested[key] === undefined) {
@@ -4363,8 +4375,13 @@ export function setChatMeta(
         if (JSON.stringify(chat[key]) === JSON.stringify(value)) {
             continue;
         }
-        if (key !== "hypaV3Data" || !keepsHeldHypaV3Data(keyOf(ref.chaId, ref.chatId), value, loaded, chat[key])) {
+        if (
+            key !== "hypaV3Data" ||
+            !keepsHeldHypaV3Data(keyOf(ref.chaId, ref.chatId), value, loaded, chat[key], source)
+        ) {
             changes[key] = clone(value);
+        } else if (source === "recovery" && !isSealedHypaV3Data(value)) {
+            refusedHypaV3Data = clone(value);
         }
     }
     const removals = unset.filter((key) => {
@@ -4376,11 +4393,12 @@ export function setChatMeta(
             Object.hasOwn(chat, key) &&
             !Object.hasOwn(changes, key) &&
             !Object.hasOwn(SERVER_META_DEFAULTS, key) &&
-            (key !== "hypaV3Data" || !keepsHeldHypaV3Data(keyOf(ref.chaId, ref.chatId), undefined, loaded, chat[key]))
+            (key !== "hypaV3Data" ||
+                !keepsHeldHypaV3Data(keyOf(ref.chaId, ref.chatId), undefined, loaded, chat[key], source))
         );
     });
     if (Object.keys(changes).length === 0 && removals.length === 0) {
-        return;
+        return refusedHypaV3Data;
     }
     const before = fieldsBefore(chat, [...Object.keys(changes), ...removals]);
     for (const [key, value] of Object.entries(changes)) {
@@ -4391,6 +4409,7 @@ export function setChatMeta(
     }
     changed(keyOf(ref.chaId, ref.chatId));
     enqueueLocalEdit(ref, { op: "meta", set: changes, unset: removals }, before);
+    return refusedHypaV3Data;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { changeLanguage, language } from "src/lang";
+import { v4 as uuidv4 } from "uuid";
 import type { ChatOp } from "../../../shared/chats.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
@@ -7,6 +8,7 @@ import { isMessageTranslation, dropInvalidTranslation } from "../../../shared/tr
 import { SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import { COLLECTION_KIND, COLLECTION_SELECTION_FIELDS, SECTION_KIND } from "../../../shared/sections.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
+import { isSealedHypaV3Data } from "../../../shared/structuredMemory.ts";
 import { recordClientEvent } from "../diagnostics/collector";
 import {
     characterList,
@@ -818,10 +820,13 @@ export function recoveryDraftDetails(entry: DraftEntry): {
 /**
  * Explicit Apply makes fresh by-id writes: append only absent messages and remove only present ids.
  * Returns skipped missing targets, whole-chat ops and translations whose source changed, so the
- * caller can report lost intent even though a successful save still removes the draft.
+ * caller can report lost intent even though a successful save still removes the draft. Metadata
+ * uses the recovery source, without plugin notices. The last meta naming hypaV3Data wins, including
+ * an unset; only a final refused unsealed value is returned for the caller to preserve as a draft.
  */
-function applyChatOps(ref: ChatRef, ops: ChatOp[]): string[] {
+function applyChatOps(ref: ChatRef, ops: ChatOp[]): { skipped: string[]; refusedHypaV3Data: unknown } {
     const skipped: string[] = [];
+    let refusedHypaV3Data: unknown;
     for (const op of ops) {
         const present = new Set(findChat(ref)!.message.map((message) => message.chatId));
         if (op.op === "begin") continue;
@@ -847,7 +852,8 @@ function applyChatOps(ref: ChatRef, ops: ChatOp[]): string[] {
             if (missing.length > 0) skipped.push(`${op.op}: ${missing.join(", ")}`);
             if (ids.length > 0) removeMessagesUnasked(ref, ids, op.retract ? { retract: true } : {});
         } else if (op.op === "meta") {
-            setChatMeta(ref, op.set ?? {}, op.unset ?? []);
+            const refused = setChatMeta(ref, op.set ?? {}, op.unset ?? [], "recovery");
+            if (namesHypaV3Data(op)) refusedHypaV3Data = refused;
             const fields = new Set([...Object.keys(op.merge ?? {}), ...Object.keys(op.mergeUnset ?? {})]);
             for (const field of fields)
                 mergeChatMeta(ref, field, op.merge?.[field] ?? {}, op.mergeUnset?.[field] ?? []);
@@ -873,7 +879,71 @@ function applyChatOps(ref: ChatRef, ops: ChatOp[]): string[] {
             }
         }
     }
-    return skipped;
+    return { skipped, refusedHypaV3Data };
+}
+
+function namesHypaV3Data(op: Extract<ChatOp, { op: "meta" }>): boolean {
+    return Object.hasOwn(op.set ?? {}, "hypaV3Data") || (op.unset ?? []).includes("hypaV3Data");
+}
+
+function finalHypaV3Data(ops: ChatOp[]): unknown {
+    const op = ops.findLast((op) => op.op === "meta" && namesHypaV3Data(op));
+    return op?.op === "meta" ? op.set?.hypaV3Data : undefined;
+}
+
+function onlyHypaV3Data(ops: ChatOp[]): boolean {
+    return ops.every(
+        (op) =>
+            op.op === "begin" ||
+            (op.op === "meta" &&
+                [...Object.keys(op.set ?? {}), ...(op.unset ?? [])].every((key) => key === "hypaV3Data") &&
+                Object.keys(op.merge ?? {}).length === 0 &&
+                Object.keys(op.mergeUnset ?? {}).length === 0),
+    );
+}
+
+/**
+ * Keeps refused memory before flushing, with the source's expiry. Durable drafts make retries
+ * idempotent even after reload; the source itself cannot stand in for a draft that outlives removal.
+ * A recreated destination retry files missing tail memory too: an earlier filing may have failed
+ * while the create went on to save. It does not replay the tail over later edits.
+ */
+async function keepRecoveryMemory(
+    entry: ChatDraft,
+    ref: ChatRef,
+    hypaV3Data: unknown,
+    retry = false,
+): Promise<boolean> {
+    const journal = pageDraftJournal();
+    const target = `${ref.chaId}\u0000${ref.chatId}`;
+    const text = JSON.stringify(hypaV3Data);
+    const existing = (await journal.listDrafts()).some((draft) => {
+        if (draft.id === entry.id || draft.scope !== "chat" || draft.epoch !== entry.epoch || draft.target !== target) {
+            return false;
+        }
+        const value = finalHypaV3Data(draftChat(draft).ops);
+        return value !== undefined && sameJson(JSON.stringify(value), text);
+    });
+    if (!existing) {
+        const held = findChat(ref)?.hypaV3Data;
+        if (retry && held !== undefined && sameJson(JSON.stringify(held), text)) return false;
+        const id = await journal.putDraft({
+            scope: "chat",
+            epoch: entry.epoch,
+            target,
+            createdAt: entry.createdAt,
+            layers: {
+                pending: {
+                    ops: [{ op: { op: "meta", set: { hypaV3Data } } }],
+                    baseRevision: heldChatRevision(ref) ?? null,
+                    groupId: uuidv4(),
+                },
+            },
+        });
+        if (id === null) throw new Error(language.recoveryDrafts.memoryDraftFailed);
+    }
+    await recoveryDrafts.refresh();
+    return true;
 }
 
 /**
@@ -882,12 +952,19 @@ function applyChatOps(ref: ChatRef, ops: ChatOp[]): string[] {
  * sent, refused; chat order is resend, refused, pending. Existing chats are loaded and pinned, then
  * admission, epoch, owner lifetime and generation are checked again before fresh by-id writes.
  * A missing chat is created under the draft id, stable across retries and reloads; an existing
- * destination under that id needs only a flush and draft removal. src/ts/storage/resourceSync.svelte.ts
+ * destination under that id preserves any unapplied tail memory, then only flushes and removes the
+ * draft. Refused unsealed memory is filed separately before flushing, deduplicated by target/value
+ * and retaining the source's expiry. A memory-only refusal keeps the source without flushing;
+ * failed filing also keeps it. The result reports whether memory was filed or the source kept.
+ * src/ts/storage/resourceSync.svelte.ts
  * flushResources must confirm the scope without relevant discarded/refused keys before deletion.
  * If deletion fails after saving, src/ts/storage/recoveryDrafts.svelte.ts marks Apply off for this
  * page, reporting appliedNotRemoved; after reload the durable draft is available again.
  */
-export async function applyRecoveryDraft(entry: DraftEntry): Promise<{ skipped: string[] }> {
+export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
+    skipped: string[];
+    memoryKept?: "filed" | "kept";
+}> {
     assertSaveAdmission();
     const details = recoveryDraftDetails(entry);
     if (!details.canApply) throw new Error(details.reason);
@@ -896,6 +973,7 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{ skipped: 
     const keys = new Set<string>();
     const changedMembership = new Set<string>();
     let skipped: string[] = [];
+    let memoryKept: "filed" | undefined;
     let release: (() => void) | undefined;
     try {
         if (entry.scope === "record") {
@@ -929,15 +1007,33 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{ skipped: 
         } else {
             const { ref, ops, snapshot, tail } = draftChat(entry);
             const destination = { chaId: ref.chaId, chatId: entry.id };
+            let appliedRef = ref;
+            let refusedHypaV3Data: unknown;
             keys.add(`chats/${ref.chaId}`);
             if (chatEntry(destination)) {
                 // A previous Apply queued the complete create; its lost answer only needs a flush.
                 keys.add(`chats/${destination.chaId}/${destination.chatId}`);
+                const memory = finalHypaV3Data(tail);
+                if (memory !== undefined && !isSealedHypaV3Data(memory)) {
+                    const owner = chatOwnerToken(destination.chaId);
+                    release = pinChat(destination);
+                    if (
+                        !(await ensureChatLoaded(destination)) ||
+                        chatOwnerToken(destination.chaId) !== owner ||
+                        !findChat(destination)
+                    ) {
+                        throw new Error(language.recoveryDrafts.unavailable);
+                    }
+                    assertSaveAdmission();
+                    if (entry.epoch !== getResourceEpoch()) throw new Error(language.recoveryDrafts.otherEpoch);
+                    if (await keepRecoveryMemory(entry, destination, memory, true)) memoryKept = "filed";
+                }
             } else if (!chatEntry(ref)) {
                 if (!snapshot) throw new Error(language.recoveryDrafts.noSnapshot);
                 const chat = createChat(ref.chaId, { ...snapshot, id: entry.id });
                 keys.add(`chats/${ref.chaId}/${chat.id}`);
-                skipped = applyChatOps({ chaId: ref.chaId, chatId: chat.id }, tail);
+                appliedRef = { chaId: ref.chaId, chatId: chat.id };
+                ({ skipped, refusedHypaV3Data } = applyChatOps(appliedRef, tail));
             } else {
                 const owner = chatOwnerToken(ref.chaId);
                 release = pinChat(ref);
@@ -948,7 +1044,14 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{ skipped: 
                 if (entry.epoch !== getResourceEpoch()) throw new Error(language.recoveryDrafts.otherEpoch);
                 if (isChatGenerating(ref)) throw new Error(language.chatGenerating);
                 keys.add(`chats/${ref.chaId}/${ref.chatId}`);
-                skipped = applyChatOps(ref, ops);
+                ({ skipped, refusedHypaV3Data } = applyChatOps(ref, ops));
+                if (refusedHypaV3Data !== undefined && !snapshot && onlyHypaV3Data(ops)) {
+                    return { skipped, memoryKept: "kept" };
+                }
+            }
+            if (refusedHypaV3Data !== undefined) {
+                await keepRecoveryMemory(entry, appliedRef, refusedHypaV3Data);
+                memoryKept = "filed";
             }
         }
         const result = await flushResources({ scope });
@@ -972,7 +1075,7 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{ skipped: 
             recoveryDrafts.markApplied(entry.id);
             throw new Error(language.recoveryDrafts.appliedNotRemoved);
         }
-        return { skipped };
+        return { skipped, ...(memoryKept ? { memoryKept } : {}) };
     } finally {
         release?.();
     }

@@ -2,6 +2,7 @@ import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { tick } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChatOp } from "../../shared/chats.ts";
 import type { DraftJournal, LayerWrites } from "./storage/draftJournal";
 import { createFakeLockManager } from "./storage/tests/fakeLockManager";
 import { StoreBackedServer } from "./storage/tests/storeBackedServer";
@@ -738,6 +739,146 @@ async function hideUnsent() {
     await drain();
     return page!.journal.readOwn();
 }
+
+describe("Apply preserves refused recovery memory", () => {
+    const hypaV3Data = {
+        summaries: [{ text: "Memory from the recovery draft", chatMemos: ["m"], isImportant: false }],
+    };
+    const memoryOp = { op: "meta", set: { hypaV3Data } } satisfies ChatOp;
+    const mixedOp = { op: "meta", set: { note: "Recovered note", hypaV3Data } } satisfies ChatOp;
+
+    async function setupDraft(ops: ChatOp[], chatId = "chat") {
+        seedChats();
+        server.set("ui", "main", { ...server.record("ui", "main")!.data, memoryAlgorithmType: "structuredMemory" });
+        const current = await boot();
+        await flush();
+        const id = await current.journal.putDraft({
+            epoch: server.store.epoch(),
+            scope: "chat",
+            target: `c\0${chatId}`,
+            createdAt: Date.now() - 60_000,
+            layers: {
+                pending: {
+                    baseRevision: server.chat("c", chatId)?.revision ?? null,
+                    groupId: "recovered-memory-group",
+                    ops: ops.map((op) => ({ op })),
+                },
+            },
+        });
+        expect(id).not.toBeNull();
+        await current.recoveryDrafts.refresh();
+        const draft = (await current.journal.listDrafts()).find((entry) => entry.id === id)!;
+        expect(draft).toBeDefined();
+        const { applyRecoveryDraft } = await import("./storage/journalRecovery");
+        const { alertToast } = await import("./alert");
+        const toast = vi.mocked(alertToast).mockClear();
+        server.requests.length = 0;
+        return { current, draft, applyRecoveryDraft, toast };
+    }
+
+    it("files refused memory before saving the other edits and can apply it after switching to HypaV3", async () => {
+        const { current, draft, applyRecoveryDraft, toast } = await setupDraft([mixedOp]);
+        await current.chat.ensureChatLoaded(ref());
+        const heldMemory = current.chat.findChat(ref())!.hypaV3Data;
+        let draftsAtFlush: Awaited<ReturnType<DraftJournal["listDrafts"]>> | undefined;
+        io.fetch = async (path, init) => {
+            if (batchPath(path)) draftsAtFlush = await current.journal.listDrafts();
+            return transport.fetch(path, init);
+        };
+
+        expect(await applyRecoveryDraft(draft)).toEqual({ skipped: [], memoryKept: "filed" });
+        expect(current.chat.findChat(ref())!.note).toBe("Recovered note");
+        expect(current.chat.findChat(ref())!.hypaV3Data).toEqual(heldMemory);
+        expect(server.chat("c", "chat")!.data.note).toBe("Recovered note");
+        expect(server.chat("c", "chat")!.data).not.toHaveProperty("hypaV3Data");
+        expect(toast).not.toHaveBeenCalled();
+
+        const drafts = await current.journal.listDrafts();
+        expect(drafts).toHaveLength(1);
+        const [filed] = drafts;
+        expect(filed.id).not.toBe(draft.id);
+        expect(filed).toMatchObject({
+            scope: "chat",
+            target: "c\0chat",
+            epoch: draft.epoch,
+            createdAt: draft.createdAt,
+            layers: { pending: { value: { ops: [{ op: memoryOp }] } } },
+        });
+        expect(draftsAtFlush).toHaveLength(2);
+        expect(draftsAtFlush).toEqual(expect.arrayContaining([draft, filed]));
+
+        current.settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+        expect(await applyRecoveryDraft(filed)).toEqual({ skipped: [] });
+        expect(current.chat.findChat(ref())!.hypaV3Data).toEqual(hypaV3Data);
+        expect(server.chat("c", "chat")!.data).toMatchObject({ note: "Recovered note", hypaV3Data });
+        expect(await current.journal.listDrafts()).toEqual([]);
+    });
+
+    it("keeps a memory-only refusal as the original durable draft", async () => {
+        const { current, draft, applyRecoveryDraft } = await setupDraft([memoryOp]);
+        const before = plain(server.chat("c", "chat"));
+
+        expect(await applyRecoveryDraft(draft)).toEqual({ skipped: [], memoryKept: "kept" });
+        expect(await current.journal.listDrafts()).toEqual([draft]);
+        expect(server.chat("c", "chat")).toEqual(before);
+        expect(current.chat.findChat(ref())!.hypaV3Data).not.toEqual(hypaV3Data);
+        expect(chatGroups()).toEqual([]);
+    });
+
+    it.each(["existing", "recreated"] as const)(
+        "retries Apply after a lost save response without duplicating refused memory (%s chat)",
+        async (kind) => {
+            const ops: ChatOp[] =
+                kind === "existing"
+                    ? [mixedOp]
+                    : [
+                          {
+                              op: "create",
+                              chat: { id: "gone", name: "Recovered chat", note: "", localLore: [], message: [] },
+                          },
+                          mixedOp,
+                      ];
+            const { current, draft, applyRecoveryDraft } = await setupDraft(ops, kind === "existing" ? "chat" : "gone");
+            server.dropNextBatchResponse = true;
+
+            await expect(applyRecoveryDraft(draft)).rejects.toThrow();
+            await drain();
+            const drafts = await current.journal.listDrafts();
+            expect(drafts).toHaveLength(2);
+            expect(drafts).toContainEqual(draft);
+            const filed = drafts.find((entry) => entry.id !== draft.id)!;
+            const chatId = kind === "existing" ? "chat" : draft.id;
+            expect(filed).toMatchObject({
+                scope: "chat",
+                target: `c\0${chatId}`,
+                epoch: draft.epoch,
+                createdAt: draft.createdAt,
+                layers: { pending: { value: { ops: [{ op: memoryOp }] } } },
+            });
+            expect(server.chat("c", chatId)!.data.note).toBe("Recovered note");
+            expect(server.chat("c", chatId)!.data).not.toHaveProperty("hypaV3Data");
+
+            const second = await reload();
+            const retained = second.recoveryDrafts.entries.find((entry) => entry.id === draft.id)!;
+            expect(retained).toBeDefined();
+            const freshRecovery = await import("./storage/journalRecovery");
+            expect(await freshRecovery.applyRecoveryDraft(retained)).toEqual({ skipped: [], memoryKept: "filed" });
+            expect(await second.journal.listDrafts()).toEqual([filed]);
+            expect(server.chat("c", chatId)!.data.note).toBe("Recovered note");
+            expect(server.chat("c", chatId)!.data).not.toHaveProperty("hypaV3Data");
+        },
+    );
+
+    it("rejects Apply and keeps the source when refused memory cannot be filed", async () => {
+        const { current, draft, applyRecoveryDraft } = await setupDraft([mixedOp]);
+        vi.spyOn(current.journal, "putDraft").mockResolvedValueOnce(null);
+        const { language } = await import("../lang");
+
+        await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.memoryDraftFailed);
+        expect(await current.journal.listDrafts()).toEqual([draft]);
+        expect(server.chat("c", "chat")!.data).not.toHaveProperty("hypaV3Data");
+    });
+});
 
 describe("boot recovery of chat work", () => {
     it("retries a remembered group with its original request and hands the settled chat to the new journal", async () => {

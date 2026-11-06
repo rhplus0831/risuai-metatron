@@ -36,8 +36,7 @@
   behavior in `src/ts/storage/draftJournal.ts`; `pageDraftJournal` owns the page's shared instance.
 - Under `adoptOrphans`, a refused owner lock means the other tab is alive, hidden or frozen included, and retains its
   rows. Only rows of an owner whose lock can be taken are re-keyed to this tab under the recover lock; collisions become
-  drafts. Rows handed back to saving stay reserved through installation and adoption; committed whole-row moves to
-  drafts and expiry cleanup also free reservations.
+  drafts.
 
 ### Eligibility
 
@@ -152,9 +151,11 @@
 
 ### Apply
 
-- The dialog calls `applyRecoveryDraft`, which applies explicit intent through normal record/character/chat writers in a
-  mutation scope. Its comment defines admission, expiry, layer priority and retry destination; `applyChatOps` defines
-  skipped ops. A gone chat with a snapshot uses `chatStore.svelte.ts` `createChat` under the draft's id.
+- The dialog calls `applyRecoveryDraft`, which applies explicit intent through normal writers in a mutation scope. Its
+  comment defines admission, expiry, layer priority and retry destination; `applyChatOps` defines skipped ops. A gone
+  chat with a snapshot uses `createChat` under the draft's id.
+- A real `hypaV3Data` that Structured Memory refuses (`setChatMeta`'s recovery source) is filed as a draft of its own
+  before the flush, or a memory-only draft is kept; the dialog says which.
 - `flushResources({ scope })` must save the affected keys without `discarded` or `refused` before
   `recoveryDrafts.remove` deletes the draft. A conflict retains it; a second Apply uses the revision the conflict reload
   installed.
@@ -168,13 +169,11 @@
   `journalChatViews`, and pending-key sets are described under [Journal writes](#journal-writes); the chat module's
   `journalChats`, `journalOrders`, `createSnapshots`, and `beforeValues` under [Chat journal](#chat-journal).
 - `conflictDrafts` holds detached captures with stable ids until [their commit](#conflict-capture).
-- `recoveryDrafts` is the reactive view, tagging rows from another epoch as `otherEpoch`; the journal remains the
-  durable source. Notice dismissal is page-local and independent of conflict dismissal. Discard and confirmed Apply
-  remove rows from both.
+- `recoveryDrafts` is the reactive view, tagging rows from another epoch as `otherEpoch`. Notice dismissal is page-local
+  and independent of conflict dismissal. Discard and confirmed Apply remove rows from both.
 
 ## Coupling
 
-- `bootstrap.ts` `loadData` awaits `recoverJournal` after `applyFirstBootDefaults`.
 - `startResourceSync` connects the chat module (`chatJournal.setListener`, `setConflictListener`).
 - The adapter alone writes mutation rows; `journalRecovery.ts` moves and releases them.
 - `composerDrafts.svelte.ts` is the composer API's only caller.
