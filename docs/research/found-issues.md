@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (12)
+- [Structured Memory](#structured-memory) (11)
 
 ## Chat store, sync, and change feeds
 
@@ -502,13 +502,6 @@ Left by slice 7d. `contents.trash` has no budget or expiry and the table of cont
 **Why it matters:** a trash that only grows.
 **Suggested handling:** decide on a trash bound.
 
-### Health badge leftovers
-
-Left by slice 7e. The contents route calls `readHealth` with no byte budget.
-
-**Why it matters:** a contents read of a huge chat is not bounded.
-**Suggested handling:** a budget on the contents read; measure first.
-
 ### Evaluation findings
 
 Measured by slice 8 on scripted fixtures (`docs/audit/structured-memory-2026-11-03.md`); nothing was changed, and Q2 stays open until a real A/B.
@@ -517,7 +510,6 @@ Measured by slice 8 on scripted fixtures (`docs/audit/structured-memory-2026-11-
 - `selectMemory` takes 520–584 ms on a 1,000-turn send, mostly tokenizing (296–356 ms) and cache reads; `addText`'s quadratic scan costs 60 ms at 4,000 texts.
 - An unchanged checkpoint save holds about 500 ms on a 2,000-run chat. A hash cache is not worth it; dropping `input` from recorded runs is (whole-row readers not traced).
 - `getChatFromIndex` over 67 or more loaded chats spends the shared per-IP authenticated bucket, and a neighbour route was refused until the reset (loopback surrogate only).
-- `readHealth`'s page-byte budget bounds neither events nor runs: 635 ms for 64 chats of 5,000 each.
 - At a 16k context the `threads` lane starves once events carry three quotes, and a two-event comparison loses one event in a long chat, also at 32k.
 
 **Why it matters:** cost previews people pay by, and stalls on long chats.
