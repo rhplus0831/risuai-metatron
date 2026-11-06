@@ -5,8 +5,9 @@ HaejeokRisuai, RisuNest, risuai-fastify) handle clients that write the same data
 [resource-sync](../structure/resource-sync.md), [live-updates](../structure/live-updates.md),
 [chat-store](../structure/chat-store.md), [server-resources](../structure/server-resources.md),
 [server-generation](../structure/server-generation.md), [draft-recovery](../structure/draft-recovery.md) and
-[test-harness](../structure/test-harness.md). Owner decisions the same day: the server-restart scenario runs as a
-`util/playwright/` check with its own stack, not as an e2e spec; the plan is implemented in separate sessions, one per
+[test-harness](../structure/test-harness.md). Owner decisions the same day: every open question's recommendation is
+accepted (Q1–Q3); the server-restart scenario runs as a `util/playwright/` check with its own stack, not as an e2e
+spec; the plan is implemented in separate sessions, one per
 slice, after the Chat Store and Structured Memory Sweep (retired in `c0ab74a9b`). Line numbers below are from that
 tree; identifiers are the anchors. Re-verify each cited location before editing (STRUCTURE.md protocol step 5).
 
@@ -60,10 +61,10 @@ The slices do not repeat these; they cite them where a case borrows a recipe.
 
 ## Open questions
 
-Each carries a recommendation; a slice that depends on one names it and proceeds with the recommendation unless the
-owner answers otherwise.
+The owner accepted every recommendation on 2026-11-06. Each gated slice carries the accepted answer only; no slice
+waits on a question.
 
-| Q   | Question                                                                                                                                                                                                                                                                 | Recommendation                                                                                                                                                                                                                                                                                    | Gates   |
+| Q   | Question                                                                                                                                                                                                                                                                 | Accepted answer                                                                                                                                                                                                                                                                                   | Gates   |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | Q1  | When a case finds a defect, does the slice fix it, or land red?                                                                                                                                                                                                          | Neither: the slice files the defect in [found-issues](../research/found-issues.md) under "Chat store, sync, and change feeds" (or the owning section) with the case's steps as the repro, marks that one case `test.fixme(<entry heading>)`, and lands green. The fix is its own slice elsewhere. | A, B, C |
 | Q2  | S7: a record edit (settings, a character field) is not sent on unload (records use normal cycles only; unload sends whole by-id chat batches), though a hidden-visibility cycle may save it first. Assert its arrival, or only the chat edit's?                          | Assert the chat edit's arrival. Observe the record edit and record what happens as a Limitation in resource-sync if it is lost: that is the documented design (Durable Drafts D7), not a defect.                                                                                                  | A       |

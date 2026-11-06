@@ -9,8 +9,8 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   local silently (a stale tab, a lost answer, same and different messages, the chat set, a tab close, the
   generation lock, a server restart with work in flight). Three slices: the two-session harness and the
   conflict spec (A), the generation-lock spec (B), and a restart-races check script with its own stack (C).
-  Three open questions carry recommendations (red cases file an inbox entry, the unload record edit, the
-  same-message convergence).
+  The three open questions (red cases file an inbox entry, the record edit on unload, same-message
+  convergence) are answered: every recommendation accepted 2026-11-06.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
