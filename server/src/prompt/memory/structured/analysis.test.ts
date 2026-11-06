@@ -1,6 +1,13 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
+import type { Message } from "../../../../../shared/database.ts";
+import type { MemoryThread } from "../../../../../shared/structuredMemory.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../../../data/kinds.ts";
+import { messageSourceHash } from "../../../data/memoryStore.ts";
+import { createResourceStore } from "../../../data/resourceStore.ts";
+import { memoryRecords, writeMemory } from "../../../tests/memoryFixtures.ts";
 import { admitAnalysis, parseAnalysis } from "./analysis.ts";
+import { withRetractedEvidence } from "./reconcile.ts";
 
 const draft = (overrides: Record<string, unknown> = {}) => ({
     title: "The promise",
@@ -15,6 +22,114 @@ const draft = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("analysis admission", () => {
+    it("replaces a repeated event's earlier thread moves so retracting it undoes the admitted moves", () => {
+        const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+        const store = createResourceStore({ file: ":memory:", kinds });
+        onTestFinished(() => store.close());
+        const messages: Message[] = ["first", "repeat"].map((chatId) => ({
+            chatId,
+            role: "char",
+            data: "Cara promises to return.",
+        }));
+        store.applyChanges({
+            ops: [{ kind: kinds.get("characters")!, id: "c", baseRevision: null, data: { chaId: "c" } }],
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { name: "K", note: "", localLore: [], message: messages } }],
+                },
+            ],
+        });
+        const [opening, repeated] = memoryRecords(["opening", "repeated"], "Cara promises to return.").events;
+        repeated.sources = [{ messageId: "first", index: 0, hash: messageSourceHash(messages[0]) }];
+        repeated.openThreads = {
+            add: [],
+            close: ["cancel"],
+            transitions: [
+                { threadId: "close", to: "progress" },
+                { threadId: "advance", to: "paused" },
+                { threadId: "unmoved", to: "partial" },
+            ],
+        };
+        const threads: MemoryThread[] = [
+            { id: "close", title: "Close", who: [], state: "progress", openedBy: "opening" },
+            // A user reopened this thread after the event's earlier close.
+            { id: "cancel", title: "Cancel", who: [], state: "open", openedBy: "opening" },
+            { id: "advance", title: "Advance", who: [], state: "paused", openedBy: "opening" },
+            { id: "unmoved", title: "Unmoved", who: [], state: "partial", openedBy: "opening" },
+        ];
+        writeMemory(store, "c", "k", { events: [opening, repeated], threads });
+        const lastEvent = store.memory.readRecord("c", "k", "events", "repeated")!.data;
+        const window = {
+            messages: [messages[1]],
+            sources: [{ messageId: "repeat", index: 1, hash: messageSourceHash(messages[1]) }],
+        };
+        const admitted = admitAnalysis({
+            draft: {
+                ...lastEvent,
+                openThreads: {
+                    add: [],
+                    close: ["close"],
+                    transitions: [
+                        { threadId: "cancel", to: "cancelled" },
+                        { threadId: "advance", to: "progress" },
+                    ],
+                },
+            },
+            warnings: [],
+            window,
+            runId: "repeat-run",
+            pages: new Set(),
+            threads: new Map(threads.map((thread) => [thread.id, thread])),
+            lastEvent,
+            messages,
+            newId: () => "new-event",
+        });
+        expect(admitted.repeated).toBe(true);
+        expect(admitted.event).toMatchObject({
+            id: "repeated",
+            repeatCount: 1,
+            sources: [...lastEvent.sources, ...window.sources],
+        });
+        writeMemory(store, "c", "k", { events: [admitted.event], threads: admitted.threads });
+        const saved = store.memory.readRecord("c", "k", "events", "repeated")!.data;
+        for (const thread of [
+            { ...threads[0], state: "done", closedBy: "repeated" },
+            { ...threads[1], state: "cancelled", closedBy: "repeated" },
+            { ...threads[2], state: "progress" },
+            threads[3],
+        ]) {
+            expect(store.memory.readRecord("c", "k", "threads", thread.id)!.data).toEqual(thread);
+        }
+
+        writeMemory(
+            store,
+            "c",
+            "k",
+            withRetractedEvidence(
+                store,
+                { chaId: "c", chatId: "k" },
+                {
+                    events: [{ ...saved, status: "retracted" }],
+                },
+            ),
+        );
+        for (const thread of threads) {
+            expect(store.memory.readRecord("c", "k", "threads", thread.id)!.data).toEqual({ ...thread, state: "open" });
+        }
+        expect(saved.openThreads).toEqual({
+            add: [],
+            close: ["close"],
+            transitions: [
+                { threadId: "unmoved", to: "partial" },
+                { threadId: "cancel", to: "cancelled" },
+                { threadId: "advance", to: "progress" },
+            ],
+        });
+    });
+
     it("bounds strings and lists, reports discarded elements, and rounds and clamps axes", () => {
         const lines = Array.from({ length: 6 }, (_, i) => ({ speaker: "Cara", text: `Line ${i}` }));
         const threads = Array.from({ length: 9 }, (_, i) => ({ title: `Promise ${i}`, who: [] }));

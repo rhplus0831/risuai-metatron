@@ -17,11 +17,7 @@ import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import type { HypaV3Preset } from "../../../shared/memory.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import { COLLECTION_KIND, SECTION_KIND } from "../../../shared/sections.ts";
-import {
-    STRUCTURED_MEMORY_ALGORITHM,
-    structuredMemoryHighlightOverride,
-    structuredMemoryLanguageOverride,
-} from "../../../shared/structuredMemory.ts";
+import { STRUCTURED_MEMORY_ALGORITHM, structuredMemoryLanguageOverride } from "../../../shared/structuredMemory.ts";
 import { type ChatWriteChange, messageOrderAfterChange } from "../data/chatStore.ts";
 import {
     characterShell,
@@ -409,9 +405,8 @@ function fingerprintedHypaV3Preset(preset: HypaV3Preset | undefined): unknown {
  * definition, and the request's temperature and response size, or the refusal), and the embedding
  * model with its custom endpoint and model (never its key). Under the Structured Memory algorithm
  * alone it also covers the writer: the preset's `structured` settings, the owner's and the chat's
- * language overrides, the chat's highlight override, and `db.language`, which an empty language
- * follows. The key is absent otherwise, so no other algorithm's digest depends on them. Equal for two
- * scopes read from the same settings.
+ * language overrides, and `db.language`, which an empty language follows. The key is absent otherwise,
+ * so no other algorithm's digest depends on them. Equal for two scopes read from the same settings.
  */
 export function memorySettingsFingerprint(scope: JobScope): string {
     const db = scope.db;
@@ -449,7 +444,6 @@ function structuredMemoryFingerprint(scope: JobScope, preset: HypaV3Preset | und
         settings: preset?.settings?.structured ?? null,
         ownerLanguage: structuredMemoryLanguageOverride(owner) ?? null,
         chatLanguage: structuredMemoryLanguageOverride(chat) ?? null,
-        chatHighlight: structuredMemoryHighlightOverride(chat) ?? null,
         uiLanguage: scope.db.language ?? null,
     };
 }

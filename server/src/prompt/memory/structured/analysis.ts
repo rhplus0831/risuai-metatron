@@ -505,9 +505,10 @@ function repeatsEvent(
  *   exists and has not ended (`unknownThread` or `endedThread` otherwise). A thread named twice is
  *   written once, the last naming winning, and an end sets `closedBy`.
  * - A repeat of the last stored event (`repeatsEvent`) makes no new event: that event counts it and
- *   cites the window, or the window would stay open forever, and the thread changes name it. Everything
- *   else on it stays, pins included, and `speakerId` does not reach it. A window that re-records an event
- *   is never a repeat: a repair must replace that event, not merge into it.
+ *   cites the window, or the window would stay open forever, and records this admission's thread moves.
+ *   The thread changes name it. Everything else on it stays, pins included, and `speakerId` does not
+ *   reach it. A window that re-records an event is never a repeat: a repair must replace that event,
+ *   not merge into it.
  *   Repetition requires an active event, the same participants and character-bigram Jaccard similarity
  *   at least `dedupeSimilarity`; hashed sources must still match, while adopted null hashes pass.
  */
@@ -627,12 +628,22 @@ export function admitAnalysis(arg: {
         })),
     ];
 
+    const close = [...moved].flatMap(([id, state]) => (state === "done" ? [id] : []));
+    const transitions = [...moved].flatMap(([threadId, to]) => (to === "done" ? [] : [{ threadId, to }]));
     const grade = memoryGrade(draft.axes);
     const event: MemoryEventWrite = repeated
         ? {
               ...repeated,
               repeatCount: (repeated.repeatCount ?? 0) + 1,
               sources: [...repeated.sources, ...window.sources],
+              openThreads: {
+                  ...repeated.openThreads,
+                  close: [...repeated.openThreads.close.filter((id) => !moved.has(id)), ...close],
+                  transitions: [
+                      ...repeated.openThreads.transitions.filter(({ threadId }) => !moved.has(threadId)),
+                      ...transitions,
+                  ],
+              },
           }
         : {
               ...draft,
@@ -643,8 +654,8 @@ export function admitAnalysis(arg: {
               relationshipShifts,
               openThreads: {
                   add: added,
-                  close: [...moved].flatMap(([id, state]) => (state === "done" ? [id] : [])),
-                  transitions: [...moved].flatMap(([threadId, to]) => (to === "done" ? [] : [{ threadId, to }])),
+                  close,
+                  transitions,
               },
               id: eventId,
               sources: window.sources,

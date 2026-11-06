@@ -144,8 +144,9 @@ function replayedThreads(events: readonly MemoryEventWrite[]): Map<string, Pick<
  * naming the thread removes it instead. Other thread fields and changes are preserved.
  *
  * Without a newly retracted stored event it answers `changes` itself and reads no record body; without
- * affected threads it reads no event body. Call it in the write's synchronous step, except when retiring
- * a re-record whose replacement carries the old event's thread effects.
+ * affected threads it reads no event body. Call it in the write's synchronous step. Re-record retirement
+ * uses `retireRerecorded` instead: it preserves thread state and transfers provenance and thread moves
+ * to the replacement, so a later retraction of that replacement can reconcile the inherited threads.
  */
 export function withReconciledThreads(
     store: { memory: Pick<WriterMemory, "readContents" | "readRecord"> },
@@ -253,11 +254,16 @@ export function withRetractedEvidence(
  * it. A window that re-records an event, in the writer's final commit, the one with an event in it,
  * retires the event it replaces in the same write: the new event carries the old one's `pinned`,
  * `suppressed`, and `userCorrected` when set, the old one is written `retracted`, without its mark or
- * `staleReason`, and the sections that leaves unsupported are flagged. An old event that is gone, no
+ * `staleReason`, and the sections that leaves unsupported are flagged. Threads keep their state, with
+ * `openedBy` and `closedBy` naming the replacement wherever they named the old event, including threads
+ * already written by `changes`. The replacement also carries the old event's `close` and ended `transitions`
+ * for threads it does not move itself, so its later retraction can replay those effects. Display-only
+ * `add` entries stay as recorded; opening ownership comes from `openedBy`. An old event that is gone, no
  * longer marked, or retracted answers null, because committing would leave a second event over the same
  * messages. Anything else answers `changes` itself, as does the very event being written.
  *
- * It reads the old event in the commit's synchronous step, so each retry of a commit works it out again.
+ * It reads the old event and stored threads in the commit's synchronous step, skipping threads already
+ * written or removed by `changes`, so each retry of a commit works it out again.
  */
 export function retireRerecorded(
     store: Pick<ResourceStore, "memory">,
@@ -282,9 +288,39 @@ export function retireRerecorded(
         ...(old.suppressed ? { suppressed: true } : {}),
         ...(old.userCorrected ? { userCorrected: true } : {}),
     };
+    const moved = new Set([
+        ...recorded.openThreads.close,
+        ...recorded.openThreads.transitions.map(({ threadId }) => threadId),
+    ]);
+    const openThreads = {
+        ...recorded.openThreads,
+        close: [...recorded.openThreads.close, ...old.openThreads.close.filter((id) => !moved.has(id))],
+        transitions: [
+            ...recorded.openThreads.transitions,
+            ...old.openThreads.transitions.filter(({ threadId, to }) => !moved.has(threadId) && memoryThreadEnded(to)),
+        ],
+    };
+    const written = new Map((changes.threads ?? []).map((thread) => [thread.id, thread]));
+    const removed = new Set(changes.remove?.threads);
+    const contents = store.memory.readContents(chatRef.chaId, chatRef.chatId);
+    for (const { id } of contents?.threads ?? []) {
+        if (written.has(id) || removed.has(id)) {
+            continue;
+        }
+        const thread = store.memory.readRecord(chatRef.chaId, chatRef.chatId, "threads", id)?.data;
+        if (thread && (thread.openedBy === old.id || thread.closedBy === old.id)) {
+            written.set(id, thread);
+        }
+    }
+    const threads = [...written.values()].map((thread) => ({
+        ...thread,
+        ...(thread.openedBy === old.id ? { openedBy: recorded.id } : {}),
+        ...(thread.closedBy === old.id ? { closedBy: recorded.id } : {}),
+    }));
     return withUnsupportedSections(store, chatRef, {
         ...changes,
-        events: [{ ...recorded, ...marks }, ...others, { ...retired, status: "retracted" }],
+        events: [{ ...recorded, ...marks, openThreads }, ...others, { ...retired, status: "retracted" }],
+        ...(threads.length > 0 ? { threads } : {}),
     });
 }
 

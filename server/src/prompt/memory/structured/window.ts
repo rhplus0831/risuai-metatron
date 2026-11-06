@@ -383,7 +383,8 @@ export async function confirmedWindows(arg: {
 
 /**
  * Whether `window` still reads from the chat as stored in `messages`: `confirmedBefore` is still an
- * eligible message, and every source's message is there, still confirmed under it, with the same hash.
+ * eligible message, and every source's message is there, still confirmed under it, with the same hash
+ * under that source's stored hash version.
  * A message that only moved keeps its window; its source's `index` is not compared. `inclusive` is
  * what the window was computed under.
  */
@@ -400,6 +401,6 @@ export function windowStillConfirmed(
     const byId = new Map(confirmed.map(({ id, message }) => [id, message]));
     return window.sources.every((source) => {
         const message = byId.get(source.messageId);
-        return message !== undefined && messageSourceHash(message) === source.hash;
+        return message !== undefined && messageSourceHash(message, source.hash) === source.hash;
     });
 }

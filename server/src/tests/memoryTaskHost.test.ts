@@ -515,12 +515,6 @@ describe("memorySettingsFingerprint Structured Memory settings", () => {
             },
         ],
         [
-            "chat highlight",
-            (scope) => {
-                scopeChat(scope)!.structuredMemoryHighlight = "all";
-            },
-        ],
-        [
             "UI language",
             (scope) => {
                 scope.db.language = scope.db.language === "en" ? "ko" : "en";
@@ -552,6 +546,19 @@ describe("memorySettingsFingerprint Structured Memory settings", () => {
                 const scope = freshScope(h, ownerId, "structuredMemory");
                 change(scope);
                 expect(memorySettingsFingerprint(scope), `${ownerId}: ${name}`).not.toBe(baseline);
+            }
+        }
+    });
+
+    it("keeps queued writer fingerprints across chat highlight modes", () => {
+        const h = openStore();
+        cleanups.push(() => h.dispose());
+        for (const ownerId of ["c", "g"]) {
+            const scope = freshScope(h, ownerId, "structuredMemory");
+            const queuedFingerprint = memorySettingsFingerprint(scope);
+            for (const mode of ["none", "important", "all"] as const) {
+                scopeChat(scope)!.structuredMemoryHighlight = mode;
+                expect(memorySettingsFingerprint(scope), `${ownerId}: chat highlight ${mode}`).toBe(queuedFingerprint);
             }
         }
     });

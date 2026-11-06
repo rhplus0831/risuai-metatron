@@ -100,8 +100,8 @@ The synchronous `commit(baseRevision, changes)` crosses the service, repair logi
 1. `memoryTasks` checks the task is live (throws after its end), the gate is open, and the service, epoch and source
    generation still match; a stale input is refused `staleInput`.
 2. For a closing write carrying the replacement event, `retireRerecorded` refuses `windowChanged` if the old event is
-   gone, unmarked or retracted. It transfers `pinned`, `suppressed` and `userCorrected` to the replacement and retracts
-   the old event, with [its sections flagged](lifecycle.md#retraction-and-edits), in the same change set.
+   gone, unmarked or retracted, else retracts it in the same change set, handing its marks and
+   [thread provenance](lifecycle.md#retraction-and-edits) to the replacement.
 3. `commitWindow` checks the stored chat and `windowStillConfirmed` under the window's own ceiling, `messagesLocked`,
    then the chat's [rebuild run](rebuild.md#during-a-run), then adoption hold. These refuse `windowChanged`: locks can
    precede a continue's changed hash, and metadata or an algorithm switch can introduce a hold after admission.
@@ -279,8 +279,9 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
 - Overrides are read only through `structuredMemoryLanguageOverride` and `structuredMemoryHighlightOverride`, which
   treat a bad stored value as unset. No normalizer deletes one: the tab holds what it sent, so a server-only deletion
   would make a later conflict merge against a record the server does not have.
-- `memorySettingsFingerprint` digests `structured`, the overrides, and `db.language` only while `memoryAlgorithmType` is
-  `structuredMemory`, so a change to them never marks another algorithm's queued task stale.
+- `memorySettingsFingerprint` digests `structured`, the language overrides (not the chat's highlight: it only marks a
+  commit), and `db.language` only while `memoryAlgorithmType` is `structuredMemory`, so a change to them never marks
+  another algorithm's queued task stale.
 - A message is recorded when any stored event cites it, in any status, retracted and stale included: that only stops the
   writer recording it again automatically, so nothing brings back what the user retracted. It is not coverage: dropping
   raw history asks whether an active event covers it, and never reads this set.

@@ -88,7 +88,8 @@ A chat write reaches memory through a post-commit notice:
 3. This reaction and the edit route pass retractions through `withRetractedEvidence` before `store.memory.write`:
    `withReconciledThreads` reopens a thread its closing event left, removes one only its opening event supported, and
    keeps a state a person set. `flagUnsupportedSections` then gets the resulting events and pages; a writer's later
-   `changeSection` clears the flag. `retireRerecorded` flags sections only: its replacement keeps the thread effects.
+   `changeSection` clears the flag. `retireRerecorded` flags sections only; the replacement takes `openedBy`/`closedBy`
+   and ended moves.
 
 This is separate from the chat transaction: a crash between them leaves `missing` or `changed` for a repair. Its turn,
 fence and conflict rules are the `reconcile.ts` header's.
@@ -258,8 +259,8 @@ takes over.
 
 - A chat write reaches the records through `applyGroup`'s `ChatMessageChanges` and `onMessagesChanged`, which the chat
   store owns; [chat store](../chat-store.md) holds the `retract` mark a `remove` carries.
-- `reconcileMessageChanges` is subscribed in `app.ts`. It holds no fence, so a running writer meets it as
-  `revisionConflict` or `windowChanged`, and a re-record is committed by [the writer task](writer.md#the-writer-task).
+- `reconcileMessageChanges` holds no fence ([a running writer](writer.md#the-writer-task) meets `revisionConflict` or
+  `windowChanged`), and a re-record is committed by the writer task.
 - The tab reads the reconciled copy for [the memory panel](read.md#the-memory-panel), and a send reads it for
   [the read path](read.md#the-read-path); both take the rule from `shared/`, with `hashOf` injected.
 - A repair is a case of the edit route's closed union: [the edit route](records.md#the-edit-route) owns the fence, the

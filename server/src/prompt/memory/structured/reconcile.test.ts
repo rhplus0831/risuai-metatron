@@ -1,12 +1,12 @@
 // @vitest-environment node
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import type { Message } from "../../../../../shared/database.ts";
-import { coveredMessages, type MemoryEvent } from "../../../../../shared/structuredMemory.ts";
+import { coveredMessages, type MemoryEvent, type MemoryThread } from "../../../../../shared/structuredMemory.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../../../data/kinds.ts";
 import { messageSourceHash } from "../../../data/memoryStore.ts";
 import { createResourceStore } from "../../../data/resourceStore.ts";
 import { memoryRecords, writeMemory } from "../../../tests/memoryFixtures.ts";
-import { reconcileEvents, reconcileMessageChanges } from "./reconcile.ts";
+import { reconcileEvents, reconcileMessageChanges, retireRerecorded, withRetractedEvidence } from "./reconcile.ts";
 
 beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -34,6 +34,134 @@ function messageStore(messages: Message[]) {
     });
     return store;
 }
+
+it("transfers re-recorded thread ownership and ended moves so retracting the replacement reconciles them", () => {
+    const store = messageStore([]);
+    const [opening, old, replacement] = memoryRecords(["opening", "old", "replacement"]).events;
+    old.rerecord = true;
+    old.openThreads = {
+        add: [
+            { title: "Opened by old", who: [] },
+            { title: "done", who: [] },
+        ],
+        close: ["closed", "overridden"],
+        transitions: [
+            { threadId: "done", to: "done" },
+            { threadId: "cancelled", to: "cancelled" },
+        ],
+    };
+    replacement.openThreads.transitions = [{ threadId: "overridden", to: "progress" }];
+    const threads: MemoryThread[] = [
+        { id: "opened", title: "Opened by old", who: [], state: "open", openedBy: "old" },
+        ...(["closed", "done", "cancelled", "overridden"] as const).map((id): MemoryThread => ({
+            id,
+            title: id,
+            who: [],
+            state: id === "cancelled" ? "cancelled" : "done",
+            openedBy: id === "done" ? "old" : "opening",
+            closedBy: "old",
+        })),
+    ];
+    writeMemory(store, "c", "k", { events: [opening, old], threads });
+    const written: MemoryThread[] = [
+        { ...threads[2], title: "Updated completion" },
+        { id: "overridden", title: "overridden", who: [], state: "progress", openedBy: "opening" },
+    ];
+
+    const changes = retireRerecorded(
+        store,
+        { chaId: "c", chatId: "k" },
+        { rerecords: "old" },
+        {
+            events: [replacement],
+            threads: written,
+        },
+    );
+    expect(changes).not.toBeNull();
+    writeMemory(store, "c", "k", changes!);
+
+    const saved = store.memory.readRecord("c", "k", "events", "replacement")!.data;
+    expect(store.memory.readRecord("c", "k", "events", "old")!.data.status).toBe("retracted");
+    expect(saved.openThreads).toEqual({
+        add: [],
+        close: ["closed"],
+        transitions: [
+            { threadId: "overridden", to: "progress" },
+            { threadId: "done", to: "done" },
+            { threadId: "cancelled", to: "cancelled" },
+        ],
+    });
+    const committed = [
+        { ...threads[0], openedBy: "replacement" },
+        { ...threads[1], closedBy: "replacement" },
+        { ...threads[2], title: "Updated completion", openedBy: "replacement", closedBy: "replacement" },
+        { ...threads[3], closedBy: "replacement" },
+        written[1],
+    ];
+    for (const thread of committed) {
+        expect(store.memory.readRecord("c", "k", "threads", thread.id)!.data).toEqual(thread);
+    }
+
+    writeMemory(
+        store,
+        "c",
+        "k",
+        withRetractedEvidence(
+            store,
+            { chaId: "c", chatId: "k" },
+            {
+                events: [{ ...saved, status: "retracted" }],
+            },
+        ),
+    );
+    expect(store.memory.readRecord("c", "k", "threads", "opened")).toBeNull();
+    expect(store.memory.readRecord("c", "k", "threads", "done")).toBeNull();
+    for (const { closedBy, ...thread } of [committed[1], committed[3], committed[4]]) {
+        expect(store.memory.readRecord("c", "k", "threads", thread.id)!.data).toEqual({ ...thread, state: "open" });
+    }
+});
+
+it("leaves a retired event's non-ended transition out of its replacement and preserves that thread on retraction", () => {
+    const store = messageStore([]);
+    const [opening, old, replacement] = memoryRecords(["opening", "old", "replacement"]).events;
+    old.rerecord = true;
+    old.openThreads.transitions = [{ threadId: "promise", to: "progress" }];
+    const thread: MemoryThread = {
+        id: "promise",
+        title: "Return",
+        who: [],
+        state: "progress",
+        openedBy: "opening",
+    };
+    writeMemory(store, "c", "k", { events: [opening, old], threads: [thread] });
+
+    const changes = retireRerecorded(
+        store,
+        { chaId: "c", chatId: "k" },
+        { rerecords: "old" },
+        {
+            events: [replacement],
+        },
+    );
+    expect(changes).not.toBeNull();
+    writeMemory(store, "c", "k", changes!);
+    const saved = store.memory.readRecord("c", "k", "events", "replacement")!.data;
+    expect(saved.openThreads).toEqual({ add: [], close: [], transitions: [] });
+
+    writeMemory(
+        store,
+        "c",
+        "k",
+        withRetractedEvidence(
+            store,
+            { chaId: "c", chatId: "k" },
+            {
+                events: [{ ...saved, status: "retracted" }],
+            },
+        ),
+    );
+    expect(store.memory.readRecord("c", "k", "threads", "promise")!.data).toEqual(thread);
+});
 
 it.each([
     { label: "one live event body", staged: false },

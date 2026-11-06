@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { Message } from "../../../../../shared/database.ts";
 import { messageSourceHash } from "../../../data/memoryStore.ts";
@@ -10,6 +11,7 @@ import {
     windowStillConfirmed,
     writerCeiling,
     type WriterCadence,
+    type WriterWindow,
 } from "./window.ts";
 
 describe("confirmed writer windows", () => {
@@ -160,6 +162,28 @@ describe("confirmed writer windows", () => {
             ).toEqual(row.expected);
         }
     });
+});
+
+it("confirms an unchanged window saved with version-1 source hashes and rejects an edited source", () => {
+    const reply: Message = { chatId: "reply", role: "char", data: "I will return." };
+    const window: WriterWindow = {
+        messages: [reply],
+        sources: [
+            {
+                messageId: "reply",
+                index: 0,
+                // Legacy runs stored bare SHA-256 of [role, data], before speaker-aware v2 hashes.
+                hash: createHash("sha256")
+                    .update(JSON.stringify(["char", "I will return."]))
+                    .digest("hex"),
+            },
+        ],
+    };
+
+    expect(windowStillConfirmed(window, [reply], "reply", { inclusive: true })).toBe(true);
+    expect(windowStillConfirmed(window, [{ ...reply, data: "I will stay." }], "reply", { inclusive: true })).toBe(
+        false,
+    );
 });
 
 it("includes the manually confirmed assistant in both window planning and commit validation", async () => {
