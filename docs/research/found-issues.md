@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) the same day; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
 - [Server routes and resource store](#server-routes-and-resource-store) (5)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -16,9 +16,9 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Chat screen and input](#chat-screen-and-input) (5)
 - [Client and plugins](#client-and-plugins) (15)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
-- [Guides](#guides) (1)
+- [Guides](#guides) (2)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (1)
+- [Structured Memory](#structured-memory) (3)
 
 ## Chat store, sync, and change feeds
 
@@ -43,6 +43,27 @@ Raised in the Phase 6 slice 9b review (2026-10-07) and judged out of scope; narr
 
 **Why it matters:** each costs one avoidable read.
 **Suggested handling:** decide whether an own-save echo should install the acknowledged summary, and whether an idle refresh counts as recent use for the trim (the sweep plan's Deferred "Refresh and trim costs").
+
+### Feed row text diffs hash the whole base per candidate
+
+`server/src/data/chatStore.ts` `chatRowDiff` (~751–780) calls `textHash(before.data)` for every row whose text changed while `chatFeedChange` (~1912–1925) builds body candidates, so a candidate the size choice later rejects (a whole-row `patch` under 8 KiB, the 64 KiB cap) still pays the hash; the tab hashes its held text once per applied diff (`stagedRowDiffs` in `src/ts/storage/chatStore.svelte.ts`). Measured by the A5 challenger of the Chat Store and Structured Memory Sweep (2026-11-06): about 2.3 ms per MiB on warm Node.
+
+**Why it matters:** only multi-MiB messages make it visible.
+**Suggested handling:** if feed cost on huge rows is reported, add `base` only after the row delta fits (its encoded size is fixed, about 45 bytes), or skip it when the whole-row patch wins.
+
+### Two more cyrb53 copies beside `shared/textHash.ts`
+
+`shared/notifications.ts` (~117, the notification tag) and `shared/contextReport.ts` (~517) each carry a private base-36 cyrb53. The sweep's A5 added the shared hex helper in `shared/textHash.ts`. Their outputs must not change (tags, report keys), so a merge needs a radix option on the shared core. Found 2026-11-06.
+
+**Why it matters:** three copies of one hash invite drift; cleanup only.
+**Suggested handling:** fold them into `shared/textHash.ts` when one of those files is touched anyway.
+
+### pluginStorage adoption keeps plain input objects
+
+`src/ts/storage/records.svelte.ts` wrapper adoption (~1457, `unwrap`) keeps a plain object assigned through the `pluginStorage` wrapper instead of copying it, as characters and modules do. Mutating that object later changes the record's serialization with no write mark and no `pluginStorageRevision` bump, so the change is never saved; same-record aliasing (`custom = _ownedPluginStorage`) is accepted too. Found by the sweep's A6 challenger (2026-11-06); the v3 storage setters detach their inputs, so no producer is known.
+
+**Why it matters:** a silent unsaved divergence that A6's entry fast path would not detect either.
+**Suggested handling:** detach plain inputs at pluginStorage adoption, as for characters and modules.
 
 ## Server jobs and prompt assembly
 
@@ -435,6 +456,13 @@ On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the firs
 **Why it matters:** low; the list does not claim to be complete, but a reader checking the non-fencing codes misses one.
 **Suggested handling:** add the code, paid with a trim in the same paragraph.
 
+### records.md names test splitters that are gone
+
+`docs/structure/structured-memory/records.md` (~261, Tests) says `src/ts/process/structuredMemory.test.ts`'s "splitters read a file only by metadata and line counts". The sweep's B4 (8c51c1fe5) replaced `splitPage` and `splitTimeline` there with `parseMemoryPackage`. Found 2026-11-06.
+
+**Why it matters:** a Tests sentence about helpers that no longer exist.
+**Suggested handling:** drop or rewrite it when records.md is next edited (it also frees about 100 bytes under the `check:docs` ratchet).
+
 ## Test timing
 
 ### Gate tests still racing real time
@@ -447,6 +475,20 @@ Untagged gate tests that depend on real wall-clock or scheduler time (invariant 
 ## Structured Memory
 
 Moved from the Structured Memory plan run on 2026-11-03 and re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here.
+
+### Boot replay sends a real hypaV3Data past the Structured Memory guard
+
+The sweep's B11 (d0e198cc3) fixed only an explicit recovery Apply (`applyChatOps` in `src/ts/storage/journalRecovery.ts`). A resend's original ops (`installRecoveredChat` in `src/ts/storage/chatStore.svelte.ts` ~4739), an unchanged-revision whole-chat replay (`journalRecovery.ts` ~541) and a quarantine retry (`releaseChatRefusal`, `chatStore.svelte.ts` ~5059) reach the server without `keepsHeldHypaV3Data`. The server's `withoutProjection` (`server/src/data/chatStore.ts` ~798) strips only sealed values, so with Structured Memory selected a retry group stored a real `hypaV3Data` and reads stopped projecting. Found 2026-11-06 while doing B11.
+
+**Why it matters:** a journal row written under HypaV3 and replayed after a switch to Structured Memory silently hands the field back to HypaV3.
+**Suggested handling:** a design: filtering resends would break the exact-ops, base and group-id retry contract (`draft-recovery.md` Chat recovery).
+
+### Preset highlight settings still stale a queued writer input
+
+`structuredMemoryFingerprint` in `server/src/jobs/jobScope.ts` (~443) digests the preset's whole `settings.structured`, so a preset `highlightMode`, `highlightKinds` or `highlightChangeGrade` change still ends a queued writer input `skipped` (`staleInput`). The sweep's B5 (f3b7ad0d1, Q11) dropped only the chat's highlight override, because highlight only marks committed history; the same reason covers the preset fields. Found 2026-11-06.
+
+**Why it matters:** one lost queued run per preset highlight change.
+**Suggested handling:** digest `structured` without the highlight fields; `memoryTaskHost.test.ts` "digests every writer setting" lists them as fingerprint changes today.
 
 ### Evaluation findings
 
