@@ -299,6 +299,20 @@ it("preserves conflict history, disputes weak contradictions, and refuses overfl
             disputed: false,
         },
         {
+            name: "stacked was lines in the body",
+            fields: { was: "Old Gate", body: "New Gate\n(was: Older Gate)\n  (was: Oldest Gate)" },
+            body: "New Gate\n(was: Old Gate)",
+            kind: "change",
+            disputed: false,
+        },
+        {
+            name: "was quoting a disputed join",
+            fields: { was: "Old Gate\n[disputed] Newer Gate", conflict: "contradiction" as const, confidence: 1 },
+            body: "New Gate\n(was: Old Gate)",
+            kind: "contradiction",
+            disputed: false,
+        },
+        {
             name: "was of only a was line",
             fields: { was: " (was: Old Gate)" },
             body: "New Gate",
@@ -636,4 +650,113 @@ it("refuses remaining edits that would empty the page after an oversized creatio
         { kind: "emptiesPage", heading: "Gate" },
         { kind: "emptiesPage", heading: "Hearth" },
     ]);
+});
+
+it("keeps one (was: ...) line across replacements, refuses a body of was lines, and shows and keeps the disputed mark", () => {
+    let chained = page();
+    chained.sections[0] = section("Gate", "B\n(was: A)");
+    for (const [next, previous] of [
+        ["C", "B"],
+        ["D", "C"],
+    ] as const) {
+        const changes: PageChanges = new Map();
+        // A model that repeats the old body's "(was: ...)" line, as the rules' "repeat what stays true" invites.
+        const copied = chained.sections[0].body
+            .split("\n")
+            .filter((line) => line.startsWith("(was:"))
+            .join("\n");
+        applyPatches({
+            pages: new Map([[chained.id, chained]]),
+            changes,
+            patches: [patch("Gate", { body: `${next}\n${copied}`, was: previous })],
+            seen: shown([chained]),
+            stamp: stamp(),
+        });
+        chained = changes.get("bad")!.page;
+    }
+    expect(chained.sections[0].body).toBe("D\n(was: C)");
+
+    // The was lines go before the parser's clamp, so a body that fits once they are gone is kept whole.
+    const long = page();
+    const facts = "Current fact.\n".repeat(275);
+    const tail = "Final fact: the antidote is in the red box.";
+    const parsed = parsePatches(
+        JSON.stringify({
+            patches: [
+                { pageId: "bad", heading: "Gate", op: "upsert", body: `${facts}(was: ${"old ".repeat(60)})\n${tail}` },
+            ],
+        }),
+    );
+    expect(parsed.ok && parsed.patches[0].body).toBe(`${facts}${tail}`);
+    const whole: PageChanges = new Map();
+    const longWarnings = applyPatches({
+        pages: new Map([[long.id, long]]),
+        changes: whole,
+        patches: parsed.ok ? parsed.patches : [],
+        seen: shown([long]),
+        stamp: stamp(),
+    });
+    expect(longWarnings).toEqual([]);
+    expect(whole.get("bad")!.page.sections[0].body.endsWith(tail)).toBe(true);
+    // A body over the limit whose cut ends in whitespace is still refused: the trim hides no cut.
+    const over = parsePatches(
+        JSON.stringify({
+            patches: [
+                {
+                    pageId: "bad",
+                    heading: "Gate",
+                    op: "upsert",
+                    body: `${"Current fact.\n".repeat(285)}A final.\n\n\n\n${tail}`,
+                },
+            ],
+        }),
+    );
+    const cut: PageChanges = new Map();
+    const overWarnings = applyPatches({
+        pages: new Map([[page().id, page()]]),
+        changes: cut,
+        patches: over.ok ? over.patches : [],
+        seen: shown([page()]),
+        stamp: stamp(),
+    });
+    expect(overWarnings).toEqual([expect.objectContaining({ kind: "sectionTooLong", heading: "Gate" })]);
+    expect(cut.has("bad")).toBe(false);
+
+    const wasOnly = page();
+    const refused: PageChanges = new Map();
+    const warnings = applyPatches({
+        pages: new Map([[wasOnly.id, wasOnly]]),
+        changes: refused,
+        patches: [patch("Gate", { body: "(was: Old Gate)\n  (was: Older Gate)", was: "Old Gate" })],
+        seen: shown([wasOnly]),
+        stamp: stamp(),
+    });
+    expect(warnings).toEqual([expect.objectContaining({ kind: "emptyBody", pageId: "bad", heading: "Gate" })]);
+    expect(refused.has("bad")).toBe(false);
+
+    const joined = "Old Gate\n[disputed] New Gate";
+    const disputed = page();
+    disputed.sections[0] = { ...section("Gate", joined), disputed: true };
+    const row = showTargets([
+        { page: disputed, candidate: { targetId: disputed.id, reason: "Changed", confidence: 1 } },
+    ]);
+    expect(row.rows[0].sections[0]).toEqual({ heading: "Gate", body: joined, disputed: true });
+    expect(row.rows[0].sections[1]).toEqual({ heading: "Hearth", body: "Old Hearth" });
+    for (const [name, body, kept] of [
+        ["an identical upsert", joined, true],
+        ["a body that keeps the join", "Old Gate, repainted\n[disputed] New Gate", true],
+        ["a body with one value", "New Gate", false],
+    ] as const) {
+        const changes: PageChanges = new Map();
+        applyPatches({
+            pages: new Map([[disputed.id, disputed]]),
+            changes,
+            patches: [patch("Gate", { body })],
+            seen: shown([disputed]),
+            stamp: stamp(),
+        });
+        const after = changes.get("bad")!.page.sections[0];
+        expect(after.body, name).toBe(body);
+        expect(after.disputed ?? false, name).toBe(kept);
+    }
 });

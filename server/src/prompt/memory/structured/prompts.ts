@@ -11,6 +11,7 @@ import {
     type MemoryPage,
     type MemoryThread,
     memorySectionBudget,
+    memoryThreadEnded,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     type StructuredMemoryDefaultPromptsAnswer,
 } from "../../../../../shared/structuredMemory.ts";
@@ -77,8 +78,10 @@ export type AnalysisInput = {
     /** The pages to list (`castSlice`). */
     cast: readonly CastRow[];
     scene: MemoryPage | null;
-    /** The open threads to show. */
+    /** The open threads to show (`promptThreads`). */
     threads: readonly MemoryThread[];
+    /** The open threads left out, which the slot states so the model knows the list is not all of them. */
+    moreThreads?: number;
     /** The last recorded event's title. */
     previousTitle: string | undefined;
     /** The chat's stored messages. */
@@ -151,8 +154,14 @@ const PATCH_RULES = `Rules:
 - A locked section shows at most a short excerpt for context; never patch it or a section listed under notShown, and never leave a page with no text.
 - A character page uses only the headings it lists, and a heading marked empty has no text yet.
 - identity holds what lasts about the character: name, role, appearance, background, and defining traits. When the event reveals a new one or changes one for good, upsert identity with it; passing moods and situations belong in currentState.
+- currentState holds what is true of the character right now: where they are, what they are doing, how they feel. An upsert replaces it with the present state and keeps nothing that has passed.
 - knowledge holds only facts the character will act on later, one short line each, and need not repeat the event's knowledge items, which are already recorded.
 - relationships is one line per other character, - <name>: <current standing>, and a change replaces that character's line instead of adding another.
+- goals holds what the character is pursuing, one short line each; remove a goal once it is reached or given up.
+- inventory holds what the character carries or owns, one short line each; remove what is lost, spent, or given away.
+- openContinuity holds unresolved details later scenes must stay consistent with (an injury, a debt, a promise, a thing left behind), one short line each; remove one once it is resolved.
+- A "(was: ...)" line is code's record of the value a change replaced: never write one into a body, which holds only what is true now.
+- A section marked disputed holds two values, the second on a "[disputed]" line, because an earlier event contradicted the first without settling it. When the event shows which is true, upsert the section with that one value and no "[disputed]" line; otherwise leave the section as it is.
 - A section marked userCorrected holds a person's words: change it only when the event contradicts them.
 - A person undid what a page lists under takenBack: do not write that text again, and do not delete a section marked deleted there.
 - "conflict" is "change" when the story moved on from the old value, and "contradiction" when both cannot be true and the story does not say why, with "confidence" from 0 to 1 that the new value is right.`;
@@ -292,6 +301,25 @@ function sceneSlot(scene: MemoryPage | null): string {
 }
 
 /**
+ * The open threads the analysis prompt lists, `promptThreads` at most, in list order: first those naming
+ * someone on `stage`, the scene's attendance, newest first, then the rest newest first. The writer can
+ * close only a thread it is shown, so the threads whose people are present come before older ones that
+ * would otherwise hold the newest places for good; `more` counts the open threads left out.
+ */
+export function promptThreads(
+    threads: readonly MemoryThread[],
+    stage: ReadonlySet<string>,
+): { listed: MemoryThread[]; more: number } {
+    const open = threads.filter(({ state }) => !memoryThreadEnded(state));
+    const ranked = open
+        .map((thread, index) => ({ thread, index, present: thread.who.some((id) => stage.has(id)) }))
+        .toSorted((a, b) => Number(b.present) - Number(a.present) || b.index - a.index)
+        .slice(0, LIMITS.promptThreads)
+        .toSorted((a, b) => a.index - b.index);
+    return { listed: ranked.map(({ thread }) => thread), more: open.length - ranked.length };
+}
+
+/**
  * The slot values of one recording. Window text stays raw for quote verification, except that inlays
  * show as `[Image]`; filling after ChatML and CBS parsing prevents that text becoming prompt syntax.
  */
@@ -303,8 +331,10 @@ export function analysisSlots(input: AnalysisInput): AnalysisSlots {
         cast: input.cast.map((row) => JSON.stringify(row)).join("\n") || NONE,
         scene: sceneSlot(input.scene),
         threads:
-            input.threads.map(({ id, title, who, state }) => JSON.stringify({ id, title, who, state })).join("\n") ||
-            NONE,
+            [
+                ...input.threads.map(({ id, title, who, state }) => JSON.stringify({ id, title, who, state })),
+                ...(input.moreThreads ? [`(${input.moreThreads} more open threads are not listed)`] : []),
+            ].join("\n") || NONE,
         previous: previousSlot(input),
         messages: input.window.messages
             .map(

@@ -5,13 +5,18 @@ import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { showTargets } from "./patches.ts";
 import { createNodeCbsEvaluator } from "../../../tests/cbsHost.ts";
 import { parseChatML } from "../../triggers.ts";
-import { STRUCTURED_MEMORY_LIMITS as LIMITS } from "../../../../../shared/structuredMemory.ts";
+import {
+    type MemoryThread,
+    type MemoryThreadState,
+    STRUCTURED_MEMORY_LIMITS as LIMITS,
+} from "../../../../../shared/structuredMemory.ts";
 import {
     parseCustomFrame,
     fillSlots,
     defaultPrompts,
     analysisSlots,
     patchSlots,
+    promptThreads,
     assembleAnalysisPrompt,
     assembleCompactPrompt,
     compactSlots,
@@ -100,6 +105,19 @@ it("reserves patch space for taken-back text before bodies and tells the writer 
     ).toBeLessThanOrEqual(LIMITS.promptPatchChars);
     expect(slots.rules).toContain("change it only when the event contradicts them");
     expect(slots.rules).toContain("do not write that text again");
+    for (const slot of [
+        "identity",
+        "currentState",
+        "knowledge",
+        "relationships",
+        "goals",
+        "inventory",
+        "openContinuity",
+    ]) {
+        expect(slots.rules, slot).toMatch(new RegExp(`^- ${slot} (holds|is) `, "m"));
+    }
+    expect(slots.rules).toContain("never write one into a body");
+    expect(slots.rules).toContain('A section marked disputed holds two values, the second on a "[disputed]" line');
 });
 
 it("keeps taken-back scene text in the analysis scene slot past a full scene's clamp", () => {
@@ -196,4 +214,43 @@ it("compacts knowledge and relationships by their slot rules while keeping other
     expect(goals).toContain("at most 1600 characters");
     expect(goals).toContain("Keep every fact that is still true");
     expect(goals).not.toContain("one line per other character");
+});
+
+it("lists open threads about who is on stage before older ones and states how many are left out", () => {
+    const thread = (id: string, who: string[], state: MemoryThreadState = "open"): MemoryThread => ({
+        id,
+        title: `Thread ${id}`,
+        who,
+        state,
+    });
+    const threads = [
+        thread("old-present", ["a"]),
+        ...Array.from({ length: LIMITS.promptThreads }, (_, index) => thread(`t${index}`, ["z"])),
+        thread("done", ["a"], "done"),
+        thread("nobody", []),
+    ];
+    const { listed, more } = promptThreads(threads, new Set(["a"]));
+    expect(listed).toHaveLength(LIMITS.promptThreads);
+    expect(more).toBe(2);
+    expect(listed.map(({ id }) => id)).toEqual([
+        "old-present",
+        ...Array.from({ length: LIMITS.promptThreads - 2 }, (_, index) => `t${index + 2}`),
+        "nobody",
+    ]);
+    const input = {
+        language: "English",
+        cast: [],
+        scene: null,
+        threads: listed.slice(0, 1),
+        moreThreads: more,
+        previousTitle: undefined,
+        messages: [],
+        window: { messages: [], sources: [] },
+        speaker: () => "Cara",
+    };
+    expect(analysisSlots(input).threads).toBe(
+        `${JSON.stringify({ id: "old-present", title: "Thread old-present", who: ["a"], state: "open" })}\n(2 more open threads are not listed)`,
+    );
+    expect(analysisSlots({ ...input, threads: [], moreThreads: 0 }).threads).toBe("(none)");
+    expect(promptThreads(threads.slice(0, 3), new Set())).toEqual({ listed: threads.slice(0, 3), more: 0 });
 });

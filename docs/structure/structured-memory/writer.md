@@ -195,12 +195,14 @@ filling and [fine-tuning](read.md#prompt-fine-tuning); `parseAnalysis`/`admitAna
 references, threads and repeat admission; `castSlice`/`planPages` for cast selection, identities, alias seeds and the
 group speaker.
 
-`commitPages` gathers created pages, patches, compactions, relationship links and scene changes into one map by page id,
-because the store refuses duplicate writes of an id in one change set. `changeSection` stamps bounded evidence (afresh
-for a replaced body), history, marks and highlights; the chat-or-preset rule comes from the writer's `highlightRule`,
-with rebuilds using `none`. An empty patch result still leaves a created identity so admitted references remain valid.
-Repeat planning creates no candidate pages or patch targets and refuses candidates `repeatedEvent`; `commitPages` still
-creates a missing scene page and applies the scene rewrite.
+`commitPages` gathers created pages, patches, compactions, relationship links (`addLinks`, the newest `pageRefsPerItem`)
+and scene changes into one map by page id, because the store refuses duplicate writes of an id in one change set.
+`changeSection` stamps bounded evidence (afresh for a replaced body), history, marks and highlights, and keeps
+`disputed` while a body still holds the join; the chat-or-preset rule comes from the writer's `highlightRule`, with
+rebuilds using `none`. An empty patch result still leaves a created identity so admitted references remain valid.
+`promptThreads` picks threads about who is on stage before older ones and counts the rest. Repeat planning creates no
+candidate pages or patch targets and refuses candidates `repeatedEvent`; `commitPages` still creates a missing scene
+page and applies the scene rewrite.
 
 ### The scene page
 
@@ -223,9 +225,10 @@ so a run whose targets are all locked makes no patch call; its comment owns the 
 admission cannot reach a page; its text traces to the `provenance` event. Default inputs are bounded under
 `RUN_RECORD_MARGIN_BYTES`; custom frames get a separate pre-call size check.
 
-`parsePatches` and `applyPatches` own operations, conflict classes, the refusal codes and whole-page admission. Page
-refusal is a warning: other pages and the event still commit. The writer keeps the patch input with its closing run,
-without a separate pending write.
+`parsePatches` and `applyPatches` own operations, conflict classes, the refusal codes and whole-page admission. A body
+loses its "(was: ...)" lines before admission; the rules name every character slot and the disputed mark the row shows.
+Page refusal is a warning: other pages and the event still commit. The writer keeps the patch input with its closing
+run, without a separate pending write.
 
 ### Compaction
 
@@ -279,9 +282,9 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
 - Overrides are read only through `structuredMemoryLanguageOverride` and `structuredMemoryHighlightOverride`, which
   treat a bad stored value as unset. No normalizer deletes one: the tab holds what it sent, so a server-only deletion
   would make a later conflict merge against a record the server does not have.
-- `memorySettingsFingerprint` digests `structured`, the language overrides (not the chat's highlight: it only marks a
-  commit), and `db.language` only while `memoryAlgorithmType` is `structuredMemory`, so a change to them never marks
-  another algorithm's queued task stale.
+- `memorySettingsFingerprint` digests `structured` without its highlight fields, the language overrides (not the chat's
+  highlight either: a highlight only marks a commit), and `db.language` only while `memoryAlgorithmType` is
+  `structuredMemory`, so a change to them never marks another algorithm's queued task stale.
 - A message is recorded when any stored event cites it, in any status, retracted and stale included: that only stops the
   writer recording it again automatically, so nothing brings back what the user retracted. It is not coverage: dropping
   raw history asks whether an active event covers it, and never reads this set.
@@ -365,4 +368,4 @@ and hashes and `historyId` on each row. The Pages tab shows the history diff; th
   owner decisions.
 - A character's language override does not travel in a card: the card exporters use explicit field lists.
 - `readMemoryRecords`, `readRecordedMessages` and `historicalWindow` read every stored event of the chat (per send, task
-  or window): the store has no bulk read.
+  or window), and `buildPrompt` every open thread: the store has no bulk read.

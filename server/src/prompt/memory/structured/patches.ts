@@ -19,6 +19,7 @@ import {
     addPage,
     changedSectionTexts,
     changeSection,
+    DISPUTED_LINE,
     newScenePage,
     type PageChanges,
     type PagePlan,
@@ -44,7 +45,11 @@ import {
  *   during it was never seen.
  * - An upsert of an existing section is a `change`. A `contradiction` keeps that kind, and below
  *   `contradictionConfidence`, where a missing confidence counts as 0, both values stay, marked disputed.
- *   Nothing is cut to fit: a body past `sectionBodyChars`, as answered or once joined, is refused.
+ *   The call shows the mark, and its rules say a body with one value settles it; a body that keeps the
+ *   join keeps the mark (`changeSection`). Nothing is cut to fit: a body past `sectionBodyChars`, as
+ *   answered or once joined, is refused.
+ * - A body loses every "(was: ...)" line before it is read (`withoutWasLines`): code writes that line
+ *   from `was`, once, so a model that repeats the old body's line cannot stack one line per change.
  * - The model never sets what code owns: evidence, flags, locks, and history are `changeSection`'s.
  * - A patch may replace a `userCorrected` section: only a lock refuses it. The call shows the mark and its
  *   rules ask for a contradiction, and what such a patch does to the mark is `changeSection`'s.
@@ -58,7 +63,7 @@ import {
 
 /** An editable body, a locked heading with at most a short context excerpt, or an empty character slot. */
 type PatchRowSection =
-    | { heading: string; body: string; userCorrected?: true }
+    | { heading: string; body: string; userCorrected?: true; disputed?: true }
     | { heading: string; locked: true; excerpt?: string }
     | { heading: string; empty: true };
 
@@ -165,7 +170,7 @@ export function showTargets(targets: PagePlan["targets"]): ShownPages {
         if (!headings) continue;
         const sections: PatchRowSection[] = [];
         const notShown: string[] = [];
-        for (const { heading, body, locked, userCorrected } of page.sections) {
+        for (const { heading, body, locked, userCorrected, disputed } of page.sections) {
             if (locked) {
                 const excerpt = clampText(body, LIMITS.promptSectionSummaryChars);
                 if (excerpt.length <= room) {
@@ -179,6 +184,7 @@ export function showTargets(targets: PagePlan["targets"]): ShownPages {
                     heading,
                     body,
                     ...(userCorrected ? { userCorrected } : {}),
+                    ...(disputed ? { disputed } : {}),
                 });
             } else {
                 notShown.push(heading);
@@ -212,8 +218,9 @@ function readPatch(value: unknown): MemoryPatch | undefined {
         heading: clampText(heading.trim(), LIMITS.labelChars),
         op,
         // A run keeps this, so it is bounded, but a body too long must still read as too long
-        // (`resolveGroup`), even where the cut would split a surrogate pair and lose a unit.
-        ...(typeof body === "string" ? { body: clampText(body, LIMITS.sectionBodyChars + 2) } : {}),
+        // (`resolveGroup`), even where the cut would split a surrogate pair and lose a unit. The
+        // "(was: ...)" lines go first, so the cut never hides what admission would have accepted whole.
+        ...(typeof body === "string" ? { body: clampText(withoutWasLines(body), LIMITS.sectionBodyChars + 2) } : {}),
         ...(conflict ? { conflict } : {}),
         ...(typeof was === "string" ? { was: clampText(was, LIMITS.factChars) } : {}),
         ...(confidence !== undefined ? { confidence } : {}),
@@ -245,13 +252,23 @@ export function parsePatches(text: string): ParsedPatches {
 
 /**
  * The replaced value alone: a model often answers the whole old body as `was`, its own `(was: ...)` line
- * included, and wrapping that again would nest one line inside the next on every change. The page's
- * history keeps the whole old body, so what is cut here is not lost.
+ * or a disputed join's `[disputed]` line included, and wrapping that again would nest one line inside the
+ * next on every change, or keep a settled section reading as disputed. The page's history keeps the
+ * whole old body, so what is cut here is not lost.
  */
 function replacedValue(was: string | undefined): string {
     const text = was ?? "";
-    const nested = text.indexOf("(was:");
-    return (nested === -1 ? text : text.slice(0, nested)).trim();
+    const cuts = [text.indexOf("(was:"), text.indexOf(DISPUTED_LINE)].filter((index) => index !== -1);
+    return (cuts.length === 0 ? text : text.slice(0, Math.min(...cuts))).trim();
+}
+
+/** `body` without its "(was: ...)" lines, trimmed: code writes that line, so a body never carries one. */
+function withoutWasLines(body: string): string {
+    return body
+        .split("\n")
+        .filter((line) => !/^\s*\(was:/.test(line))
+        .join("\n")
+        .trim();
 }
 
 /** What an upsert makes of `section`, or `sectionTooLong` when a joined body would not fit. */
@@ -259,12 +276,11 @@ function upsertOver(section: MemorySection, patch: MemoryPatch, body: string): S
     const { heading, conflict, confidence } = patch;
     const disputed = conflict === "contradiction" && (confidence ?? 0) < LIMITS.contradictionConfidence;
     const was = replacedValue(patch.was);
-    const wasLine = `(was: ${was})`;
     const joined = disputed
-        ? `${section.body}\n[disputed] ${body}`
-        : was === "" || body.includes(wasLine)
+        ? `${section.body}\n${DISPUTED_LINE} ${body}`
+        : was === ""
           ? body
-          : `${body}\n${wasLine}`;
+          : `${body}\n(was: ${was})`;
     if (joined.length > LIMITS.sectionBodyChars) {
         return "sectionTooLong";
     }
@@ -304,11 +320,13 @@ function resolveGroup(
         if (!section && sections + 1 > LIMITS.sectionsPerPage) {
             return "tooManySections";
         }
-        const body = patch.body ?? "";
-        if (body.trim() === "") {
+        const body = withoutWasLines(patch.body ?? "");
+        if (body === "") {
             return "emptyBody";
         }
-        if (body.length > LIMITS.sectionBodyChars) {
+        // The length as answered: `readPatch` cuts an oversized body to just past the limit, and the
+        // trim here must not bring that cut under it.
+        if ((patch.body ?? "").length > LIMITS.sectionBodyChars) {
             return "sectionTooLong";
         }
         if (!section) sections++;
@@ -337,8 +355,9 @@ function emptiesPage(page: MemoryPage, edits: readonly SectionEdit[]): boolean {
  * - `duplicateHeading`: the group names the same heading twice.
  * - `notASlot`: adds to a character outside `CHARACTER_SECTION_SLOTS`.
  * - `tooManySections`: additions exceed `sectionsPerPage`, after this group's deletes make room.
- * - `emptyBody`: an upsert is blank.
- * - `sectionTooLong`: the answered or joined body exceeds `sectionBodyChars`; nothing is cut to fit.
+ * - `emptyBody`: an upsert is blank, or holds nothing but "(was: ...)" lines.
+ * - `sectionTooLong`: the answered body, its "(was: ...)" lines gone, or the joined one exceeds
+ *   `sectionBodyChars`; nothing is cut to fit, and a trim never brings a cut body under the limit.
  *
  * `sectionTooLong` refuses only its patch. Every other refusal cancels its page's whole group; otherwise
  * valid patches read `pageRefused`. If the remaining edits would empty a page that had sections, those
@@ -346,8 +365,8 @@ function emptiesPage(page: MemoryPage, edits: readonly SectionEdit[]): boolean {
  * An upsert of existing text is `change`, or `contradiction` for that conflict. At or above
  * `contradictionConfidence` it replaces; below it, missing confidence counting as zero, it joins
  * `<old>\n[disputed] <new>`, sets `disputed` and warns. A replacing upsert appends `(was: ...)` for
- * nonblank `was`, cut before any `(was:` it carries, unless that exact line is already present. Neither
- * conflict waits for approval.
+ * nonblank `was`, cut before any `(was:` it carries, to a body stripped of such lines, so a section holds
+ * one at most. Neither conflict waits for approval.
  */
 export function applyPatches(arg: {
     changes: PageChanges;

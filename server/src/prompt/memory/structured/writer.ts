@@ -60,6 +60,7 @@ import {
     fillSlots,
     parseCustomFrame,
     patchSlots,
+    promptThreads,
     sceneTakenBackLines,
 } from "./prompts.ts";
 import { eventVectorTexts } from "./retrieve.ts";
@@ -292,20 +293,18 @@ function buildPrompt(
     const chat = scopeChat(scope);
     const owner = scope.db.characters.find((entry) => entry?.chaId === chaId);
     const pages = readPages(store, arg, contents);
-    const threads: MemoryThread[] = [];
-    for (const { id } of contents.threads
+    const scene = pages.find(({ type }) => type === "scene") ?? null;
+    // Every open thread, since which ones the prompt lists depends on who is on stage (`promptThreads`).
+    const open: MemoryThread[] = contents.threads
         .filter(({ state }) => !memoryThreadEnded(state))
-        .slice(-LIMITS.promptThreads)) {
-        const thread = store.memory.readRecord(chaId, chatId, "threads", id)?.data;
-        if (thread) {
-            threads.push(thread);
-        }
-    }
+        .flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "threads", id)?.data ?? []);
+    const { listed: threads, more: moreThreads } = promptThreads(open, new Set(scene?.participants ?? []));
     const slots = analysisSlots({
         language: writerLanguage(arg),
         cast: castSlice(pages, window.messages),
-        scene: pages.find(({ type }) => type === "scene") ?? null,
+        scene,
         threads,
+        moreThreads,
         previousTitle: contents.events.findLast(({ status }) => status === "active")?.title,
         messages: chat?.message ?? [],
         window,

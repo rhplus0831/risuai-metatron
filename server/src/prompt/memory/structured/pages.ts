@@ -146,6 +146,14 @@ const SNAPSHOT_MARKS = ["userCorrected", "disputed", "unsupported", "pinned", "s
 
 const SCENE_TITLE = "Scene";
 
+/** The line that opens the second value of a disputed join (`upsertOver` in `patches.ts`). */
+export const DISPUTED_LINE = "[disputed]";
+
+/** Whether `body` still holds a disputed join: a line that starts with `DISPUTED_LINE`. */
+export function holdsDisputedLine(body: string): boolean {
+    return body.split("\n").some((line) => line.trimStart().startsWith(DISPUTED_LINE));
+}
+
 /** A stored field as text: stored lore and characters hold anything, and what is no string counts as absent. */
 export const storedText = (value: unknown) => (typeof value === "string" ? value : "");
 
@@ -498,7 +506,8 @@ export function addPage(changes: PageChanges, page: MemoryPage, stamp: PageStamp
 /**
  * Sets `heading` of `page`, which must be the commit's latest version of it, to `body`, or removes it on
  * null. The section gains the event and the window as evidence and loses `unsupported`, and `disputed`
- * unless the edit sets it; `locked`, `pinned`, and `suppressed` stay. `userCorrected` goes when another
+ * unless the edit sets it or the text still holds the join (`holdsDisputedLine`): a dispute is settled
+ * by a body with one value, or by a person; `locked`, `pinned`, and `suppressed` stay. `userCorrected` goes when another
  * text or a delete replaces a person's words, which highlights the entry whatever the rule says, and
  * stays on an identical upsert and on a disputed join, whose text keeps them. An identical upsert is
  * never highlighted, though it keeps its entry and its receipt row. The history keeps what was replaced,
@@ -539,7 +548,7 @@ export function changeSection(
         };
         delete written.unsupported;
         delete written.disputed;
-        if (disputed) {
+        if (disputed || (before?.disputed && (sameText || holdsDisputedLine(body)))) {
             written.disputed = true;
         }
         if (replacesCorrection) {
@@ -562,8 +571,10 @@ export function changeSection(
 }
 
 /**
- * Gives each shift's `from` page a link to its `to` page, which nothing else fills. No section changes,
- * and a page at `pageRefsPerItem` links takes no more.
+ * Gives each shift's `from` page a link to its `to` page, which nothing else fills, as the newest of its
+ * links: a page keeps the newest `pageRefsPerItem`, and a shift to a page already linked moves that link
+ * to the newest place, so a page the story left long ago gives way to one it returns to. No section
+ * changes.
  */
 export function addLinks(
     changes: PageChanges,
@@ -572,8 +583,12 @@ export function addLinks(
 ): void {
     for (const { from, to } of shifts) {
         const page = changes.get(from)?.page ?? pages.get(from);
-        if (page && from !== to && !page.links.includes(to) && page.links.length < LIMITS.pageRefsPerItem) {
-            putPage(changes, { ...page, links: [...page.links, to] });
+        if (!page || from === to) {
+            continue;
+        }
+        const links = [...page.links.filter((link) => link !== to), to].slice(-LIMITS.pageRefsPerItem);
+        if (links.length !== page.links.length || links.some((link, index) => link !== page.links[index])) {
+            putPage(changes, { ...page, links });
         }
     }
 }

@@ -12,10 +12,12 @@ import {
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { parseAnalysis } from "./analysis.ts";
 import {
+    addLinks,
     aliasSeeds,
     applyPageTool,
     castSlice,
     MemoryPageToolRefusal,
+    type PageChanges,
     pageToolIds,
     parseMemoryPageTool,
     planPages,
@@ -369,4 +371,22 @@ it("refuses to trash the scene page", () => {
         applyPageTool(toolRecords([scene]), { kind: "trash", pageId: "scene" }, { now: 200, newId: () => "unused" }),
     ).toThrow(expect.objectContaining({ reason: "invalid", constructor: MemoryPageToolRefusal }));
     expect(scene).not.toHaveProperty("trashedAt");
+});
+
+it("keeps a page's newest links at the cap and moves a repeated link to the newest place", () => {
+    const links = Array.from({ length: LIMITS.pageRefsPerItem }, (_, index) => `p${index}`);
+    const source = page("source", { links });
+    const changes: PageChanges = new Map();
+    addLinks(changes, new Map([[source.id, source]]), [
+        { from: "source", to: "p0" },
+        { from: "source", to: "new" },
+        { from: "source", to: "source" },
+        { from: "missing", to: "new" },
+    ]);
+    expect(changes.get("source")!.page.links).toEqual([...links.slice(2), "p0", "new"]);
+    expect(changes.has("missing")).toBe(false);
+    const same = page("same", { links: ["a", "b"] });
+    const unchanged: PageChanges = new Map();
+    addLinks(unchanged, new Map([[same.id, same]]), [{ from: "same", to: "b" }]);
+    expect(unchanged.has("same")).toBe(false);
 });
