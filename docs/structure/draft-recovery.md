@@ -198,7 +198,7 @@
 
 - Focused:
   `pnpm --silent test:agent draftJournal journalEligibility journalRecovery resourceSyncJournal RecoveryDrafts`. No
-  `slow` or `e2e` membership.
+  `slow`; `e2e`: `e2e/multiClient.spec.ts`, an edit of a chat another tab deleted becomes a draft.
 - `src/ts/storage/tests/fakeLockManager.ts` models callback turns, `ifAvailable`, and waiting-request signals;
   `src/ts/storage/tests/draftJournal.test.ts` uses it with `fake-indexeddb`, an injected clock, and fake timers.
 - `src/ts/storage/tests/resourceSyncJournal.test.ts` uses `src/ts/storage/tests/mutationStoresHarness.ts`,
@@ -209,7 +209,7 @@
   simulates reload by stopping sync, closing the journal, removing listeners, and resetting the module graph.
 - Manual crash coverage: `util/playwright/checkDurableDrafts.mjs` uses a persistent Chrome profile to exercise a kill
   before dispatch, after server commit with the answer held, and during an uncommitted journal transaction.
-- Not tested: pending writes across a back/forward cache return (`runBfcache` only reports the browser's evidence).
+- Not tested: pending writes across a back/forward cache return (`runBfcache` only reports what Chrome did).
 
 ## Known Hazards
 
@@ -237,19 +237,19 @@
 
 ### Limitations
 
-- A missing-chat Apply creates its chat under the draft's id so a retry finds it; a destination that another tab deleted
-  after the create landed is created again by an Apply retried after a reload (the server keeps no tombstone of the
-  deleted chat). Decision: DD3,
+- A missing-chat Apply creates its chat under the draft's id for a retry to find; a destination that another tab deleted
+  after the create landed is created again by an Apply retried after a reload (the server keeps no tombstone). Decision:
+  DD3,
   [durable drafts audit](../manual-audit/archive/durable-drafts-2026-10-29.md#dd3--retrying-a-missing-chat-apply-creates-another-copy).
 - After two failed split-journal writes (or with the journal off or the row skipped), the prefix can dispatch without a
   durable split record. Oversized pending batches become drafts instead of replaying a prefix; see
   [Split confirmation](#split-confirmation). Decision: Durable Drafts D7, archive.
 - Quarantined chat intent stays local: eligible, in-budget refusals are journaled and become recovery drafts on the next
-  boot, while server backups omit it and report that omission. See [Chat journal](#chat-journal) and
-  [Boot recovery](#boot-recovery). Decision: Durable Drafts D5, D8, archive.
+  boot, while server backups omit it and say so. See [Chat journal](#chat-journal) and [Boot recovery](#boot-recovery).
+  Decision: Durable Drafts D5, D8, archive.
 - A stale Retry or edit of a loaded whole-chat replacement takes
   [normal conflict recovery](resource-sync.md#chat-and-order-conflicts); eligible abandoned work is captured as a draft
-  ([Conflict capture](#conflict-capture)). Decision: Durable Drafts D5, D8, archive.
+  ([Conflict capture](#conflict-capture)). Decision: as above.
 - An `expired` answer to a recovered group enters durable refusal quarantine with its rejected and newer ops. Retry
   explicitly reapplies that intent from its ops under a fresh id, since recovered work never entered the mirror; Discard
   accepts the server; the next boot moves the refused layer to recovery drafts. Decision: the archive's Durable Drafts
@@ -262,8 +262,8 @@
   record point 11, archive.
 - Chrome discards a journal write begun in `pagehide` when the page unloads
   ([observation](../audit/durable-drafts-observations-2026-10-29.md)), so the hide flush protects only a page that stays
-  alive hidden, such as a backgrounded PWA killed later. Crash and kill protection comes from per-cycle writes and the
-  500 ms journal timer; there is no `localStorage` fallback. Decision: the archive's Durable Drafts entry.
+  alive hidden, such as a backgrounded PWA killed later. Crash and kill protection is per-cycle writes and the 500 ms
+  journal timer; there is no `localStorage` fallback. Decision: the archive's Durable Drafts entry.
 - A kill between an edit and its cycle's journal commit loses that edit unless its batch already reached the server. The
   500 ms save debounce and journal timer are nominal scheduling, not a maximum loss window: queueing, throttling, and
   failed transactions can extend it. Decision: Durable Drafts D7, archive.

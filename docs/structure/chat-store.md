@@ -23,8 +23,7 @@ Module headers and export comments hold the contracts; these lists give lookup i
 - Writers: `createChat`, `ensureChat`, `deleteChat`, `reorderChats`, `selectChat`, `appendMessage`, `replaceMessage`,
   `patchMessage`, `setMessageText`, `setMessageTranslation`, `selectCandidate`, `removeMessages`,
   `removeMessagesUnasked`, `restoreUnsentRemoval`, `setChatMeta`, `mergeChatMeta`, `replaceChat`, `captureChatBaseline`,
-  `applyChatResult`, `reconcileCharacterChats`, `installChatProjection`. Versions: `chatSaveVersion`,
-  `chatInstallVersion`, `chatHasUnackedWork`.
+  `applyChatResult`, `reconcileCharacterChats`, `installChatProjection`.
 - Save-loop side: `takeChatWork`, `ackChatWork` (the acknowledged floor: `ackedRevisions`, `belowAckedRevision`),
   `requeueChatWork`, `recoverChatConflicts` (`reanchorGoneAppends`, `dropLockedEdits`), `acceptRemoteChat`,
   `acceptRemoteCollection`, `quarantineChat`, `unloadPendingChatWork`, `hasUnsavedChatWork`, `hasRefusedChatWork`,
@@ -255,9 +254,9 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 - `src/ts/storage/tests/{chatStore.test.ts,resourceSyncChats.test.ts}` use
   [`StoreBackedServer`](resource-sync.md#tests).
 - `src/ts/checkpoints/tests/checkpointServer.ts` wraps that store with the real checkpoint service and controls load
-  admission, commit, and lost answers; its policy routes use the real service too.
+  admission, commit, and lost answers; its policy routes are real too.
 - `slow`: `src/ts/storage/tests/resourceSyncHydration.test.ts`, patches on a chat longer than a call's argument list.
-- `e2e`: `e2e/lazyChats.spec.ts` (`pnpm test:e2e`), lazy loading end to end.
+- `e2e`: `e2e/lazyChats.spec.ts`, lazy loading; `e2e/multiClient.spec.ts`, two clients.
 - Not tested: the client's two-round gone-anchor repair after a checkpoint load
   (`src/ts/storage/tests/resourceSyncChats.test.ts` exercises it for another cause); checkpoint preparation after a
   conflicting reorder is reported by `markOrderDiscarded`. `src/lib/Others/ChatCheckpointsDialog.test.ts` mocks the
@@ -276,24 +275,23 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 - `CHAT_READ_DEADLINE_MS` bounds one `readRefs` call, not a whole load: a load can make three passes of 500-chat calls
   plus a summary list read. Decision: U1, [durable drafts audit](../manual-audit/archive/durable-drafts-2026-10-29.md).
 - A same-id recreation reconciles only the chats this client knows: a chat another tab created survives, and a reused
-  id's `replace` on a changed base conflicts through the usual 409 path, with eligible content captured as a recovery
-  draft. Explicit recreation releases old chat refusals, so they do not hold the reorder. Decision:
-  `chatStore.svelte.ts` re-add reconciliation.
+  id's `replace` on a changed base conflicts (409), eligible content kept as a recovery draft. Explicit recreation
+  releases old chat refusals from holding the reorder. Decision: `chatStore.svelte.ts` re-add reconciliation.
 - A same-id re-add after a failed or generating-refused deletion reconciles like one before the deletion was sent: a
   whole `replace` per reused chat, also for an undo; a replace of a chat the job still locks waits behind its retry
   block (the flush rejects until then). Decision: Durable Drafts Out of scope (no server create tombstone), archive.
 - A deletion whose answer was lost and that landed is not known as such: a same-id re-add conflicts or meets a missing
   parent, and the recovery removes it with the notice. Another writer deleting a character between the conflict read
-  that adopts its lost create and the summary-list read leaves no order to learn; that refresh ends. Decision: Durable
-  Drafts Out of scope (no server create tombstone), archive.
+  that adopts its lost create and the summary-list read leaves no order to learn; that refresh ends. Decision: as above.
 - A stored chat row without `fmIndex` is not backfilled: a summary reads `-1`, a whole read can omit it. Decision:
-  formats metatron created during its own phases are owed no migration
-  ([compatibility rule](persistence.md#invariants)).
+  metatron-only formats are owed no migration ([compatibility rule](persistence.md#invariants)).
 - A callback can fail as `barrier` while the job channel dispatcher loads (`onChannel`): a job's chat event moves
   `jobMetadata` at once and `rememberJobStreaming` waits on the socket-ordered chain, so a callback from that chain can
-  find metadata newer than its list and is refused. The send ends with its job error (the hook did not run, the job's
-  writes stay; sending again works). Decision: a barrier that cannot prove its `streaming` list current fails rather
-  than install an older read that could retire live generations (`jobChannel.ts` `recoverJobChat`).
+  find metadata newer than its list and is refused. The send ends with its job error (no hook ran; the job's writes
+  stay; a resend works). Decision: a barrier that cannot prove its `streaming` list current fails rather than install an
+  older read that could retire live generations (`jobChannel.ts` `recoverJobChat`).
+- Two clients' `setText` on one message: the later-accepted one wins on any revision; no notice for the client it
+  overwrote. Decision: a per-message base makes slow edits conflict (Multi-Client Data Safety Checks Q3, archive).
 
 ### Gotchas
 
@@ -303,8 +301,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   keeps the id: a drop at the root does not remove it, a move into a folder replaces it. The pinned rail and the modal
   chat list do not group by folder.
 - A job's membership changes are not hydrated on its socket; they reach every tab through the live updates.
-- An observing tab sees a job's reply at its 3 s checkpoints, then the final text; a disconnected tab catches up at the
-  reconnect's reconcile.
+- An observing tab sees a job's reply at its 3 s checkpoints, then the final text; a disconnected tab catches up on
+  reconnect.
 - A character wrapper's `chats` view builds a fresh array per read: read one chat through `findChat`, not by scanning
   `chats` ([observation](../audit/chat-scan-observations-2026-10-24.md)).
 - `installRead` treats an incomparable revision as older, `adoptChatRead` as not older; only fixtures with tokens like

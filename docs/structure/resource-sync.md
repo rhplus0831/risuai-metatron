@@ -232,7 +232,7 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   after its owner record. Cleanup waits until owner deletion is acknowledged; comment contracts on `sendSecretOps`,
   `entryOwnerState`, `adoptSecretRecord` and `adoptSecretSiblings` define retries, refusals and sibling adoption.
 - `auxFetch` calls `awaitSecretWrites` before using a stored key; refused ops, cleanups behind unsaved owner deletion,
-  saving failure or halt reject that barrier. Unload sends no credential ops.
+  saving failure or halt reject that barrier.
 
 ### flushResources
 
@@ -300,7 +300,7 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 ## Tests
 
 - Focused: `pnpm --silent test:agent src/ts/storage/tests/resourceSync*.test.ts`. `slow`: a long-chat case in
-  `src/ts/storage/tests/resourceSyncHydration.test.ts`. `e2e`: none of its own; the live-update client's are
+  `src/ts/storage/tests/resourceSyncHydration.test.ts`. `e2e`: `e2e/multiClient.spec.ts`; the live-update client's are
   [live-updates](live-updates.md#tests).
 - Adapter tests use the real Svelte module, a fresh module graph, and fake timers per test.
 - `src/ts/storage/tests/fakeResourceServer.ts`: an in-memory `authFetch` resource-route fake with batch, lost-answer,
@@ -316,19 +316,19 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 
 ### Issues
 
-- A single oversized chat group is quarantined before dispatch and cannot be chunked; see
-  [Batch composition](#batch-composition) for the cap. An edit or Retry still over it quarantines again silently.
+- A single oversized chat group is quarantined before dispatch and cannot be chunked (cap:
+  [Batch composition](#batch-composition)); an edit or Retry still over it quarantines again silently.
 - A page restored from the back-forward cache may still wait for an unload answer; `flushResources` gives up after 20 s.
 - A save's echo arriving before its acknowledgement schedules a cycle 50 ms later (`noteRemoteChanges`), so continuous
   typing can save more often than the debounce. [Measurements](../audit/projection-bindings-2026-10-04.md) no longer
-  show the extra saves, but the 50 ms echo cycle remains; coalescing would bound it.
+  show extra saves; coalescing would bound the 50 ms echo cycle.
 
 ### Limitations
 
 - A lost group is recognized only within its chat's newest 100 groups: a live resend past them answers
   `reason: "expired"` and takes conflict recovery, a recovered one durable refusal quarantine. A resend skips page
-  unload (`unloadPendingChatWork`). Decision: Durable Drafts Out of scope, D2 (f), archive; the recovered case is the
-  archive's Durable Drafts entry.
+  unload (`unloadPendingChatWork`). Decision: Durable Drafts Out of scope, D2 (f), archive; the recovered case is
+  Durable Drafts' archive entry.
 - A live resend of a lost chat create can recreate a chat another writer deleted; boot instead drafts it. Decision:
   Durable Drafts D2 (d), Out of scope, archive.
 - A same-item or both-reordered `togglePresets` conflict takes the whole server list, so a local addition can vanish
@@ -338,14 +338,14 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   reload, as a recovery draft at boot, only when the journal runs and its content is eligible and within budget. Other
   edits do not retry it. Decision: Static Audit Fixes SA3, archive.
 - A refused chat create is out of collection-removal reconciliation until an edit, Retry, recreation, or Discard; its
-  parent's server-side deletion still clears it. Decision: Static Audit Fixes SA3, archive.
+  parent's server-side deletion still clears it. Decision: as above.
 - [Isolated](#refusals-and-quarantine) requests are atomic only per request. Decision: `resourceSync.svelte.ts`
   `isolateBatches`.
 - A preset's record and credential are separate requests: a refused credential leaves the entry keyless, and a deleted
   owner's entry stays until cleanup succeeds. Decision: a preset is saved before its key (`resourceSync.svelte.ts`
   credential writes).
-- Keepalive has no prefix send: an ineligible batch waits for normal saving and the journal. Decision: Durable Drafts
-  D7, archive.
+- Keepalive has no prefix send and no records: an ineligible batch, or a record edit no cycle saved before a close,
+  waits for normal saving or the journal's next boot. Decision: Durable Drafts D7, archive.
 
 ### Gotchas
 
