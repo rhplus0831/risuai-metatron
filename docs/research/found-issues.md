@@ -18,7 +18,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (7)
 - [Guides](#guides) (1)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (13)
+- [Structured Memory](#structured-memory) (12)
 
 ## Chat store, sync, and change feeds
 
@@ -470,13 +470,6 @@ Untagged gate tests that depend on real wall-clock or scheduler time (invariant 
 
 Moved from the Structured Memory plan run on 2026-11-03. Each entry was re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here. The last five entries came from the Implementation Audit Fixes run (2026-11-05/06); the last two are its excluded audit findings.
 
-### Receipt on a message with no generation info
-
-`writer.ts` `commitWindow` writes `generationInfo: { memory }` on a window message that had none, so with `requestInfoInsideChat` `Chat.svelte` shows a model button labelled "Unknown". `genInfo`, which holds `MemoryReceiptLine`, is not rendered in the `mobilechat` and `cardboard` themes, so no receipt line shows there. Slice 2d.
-
-**Why it matters:** a stray button in one setting, and no receipt at all in two themes.
-**Suggested handling:** skip the model button when only `memory` is present; decide where the line goes in those themes.
-
 ### Panel writer line and stale views
 
 In `src/ts/process/structuredMemory.svelte.ts` and `StructuredMemoryPanel.svelte`:
@@ -511,7 +504,7 @@ Left by slice 6a. An adopted summary's `pinned` selects nothing in any lane (`ad
 
 ### Highlight and revert leftovers
 
-Left by slice 7b; the dead `retract` kind left in the Found Issues Sweep (I3). A new page's receipt row has no highlight and no revert. Changing a chat's highlight mode moves `memorySettingsFingerprint`, so a queued writer input ends `skipped` (`staleInput`).
+Left by slice 7b; the dead `retract` kind left in the Found Issues Sweep (I3). A new page's receipt row has no revert. Changing a chat's highlight mode moves `memorySettingsFingerprint`, so a queued writer input ends `skipped` (`staleInput`).
 
 **Why it matters:** one lost queued run per mode change.
 **Suggested handling:** leave highlight out of the fingerprint if a replay may ignore it (the sweep plan's Structured Memory follow-up).
