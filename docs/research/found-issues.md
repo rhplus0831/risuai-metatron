@@ -10,11 +10,11 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
-- [Server routes and resource store](#server-routes-and-resource-store) (5)
+- [Server routes and resource store](#server-routes-and-resource-store) (7)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (8)
 - [Chat screen and input](#chat-screen-and-input) (5)
-- [Client and plugins](#client-and-plugins) (17)
+- [Client and plugins](#client-and-plugins) (19)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (9)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (1)
@@ -125,6 +125,13 @@ The `changes` table in `resources.sqlite` (Incremental Chat Transport D5, `serve
 
 **Suggested handling:** size snapshot storage as rows × id length; add a VACUUM or a byte bound if a real store comes near it.
 
+### Other server write paths still fail a job on a non-finite number
+
+The Lua chat-variable setters store a non-finite number as text (2026-11-07), but other writes still fail validation or serialization (`serialize`, `server/src/data/resourceStore.ts`) on one and end the job; binding and metadata-flush failures are latched. Reproduced by a Sol review the same day (scripts in `/home/codex/review-reports/lua-chatvar-nonfinite-2026-11-07/scratch/`): Lua `setChat`, `addChat`, `insertChat` (`server/src/lua/bindings.ts` ~1308–1447) pass message text through a cast, so `addChat(id, "char", 0/0)` fails the job, and a finite number fails `setChat`'s text check the same way; `upsertLocalLoreBook`'s `name` and `content` (~1581–1618) likewise; trigger `v2CreateLorebook`/`v2ModifyLorebookByIndex` (`server/src/prompt/triggers.ts` ~1702–1758) check only `NaN`, so an `Infinity` insert order (from `"1e400"` or a variable Lua set to `math.huge`) fails the character patch; and `v2GetArrayVar`/`v2PopArrayVar`/`v2ShiftArrayVar` (~1299–1350) and `v2GetDictVar` (~1834–1843) store the parsed JSON value raw, so `{"score":1e400}` from an LLM answer fails the metadata flush. CBS `arrayelement`/`dictelement` stringify their results and are safe.
+
+**Why it matters:** a script or trigger fed an unusual number ends its whole job; earlier effects stay committed.
+**Suggested handling:** check text arguments at the Lua boundary as `setDescription` does, use `Number.isFinite` at the two lore order sites, and stringify extracted scalars as CBS does (a nested object holding one needs its own handling).
+
 ### Lua image shortcuts reuse an asset key without a claim
 
 `isImageInlay` in `server/src/lua/bindings.ts` (~774, used by `usableImage` for `getCharacterImageMain` / `getPersonaImageMain`) checks the inlay's media with `storageFileExists` (an unlocked `lstat`), and the existing-image shortcut then hands out the marker. The Invariants of `docs/structure/self-host-server.md` say every server reuse of an asset key goes through `claimAssetKey`. Low risk today: an existing inlay record keeps its asset in the sweep's re-mark, and A1 (inlay-id claims) protects the record itself, so the file cannot be a deletion candidate while the record exists. Found in the Implementation Audit Fixes run (2026-11-05, slice A1).
@@ -156,6 +163,13 @@ Excluded as edge cases by the Implementation Audit Fixes plan (2026-11-05). All 
 
 **Why it matters:** an undisclosed missing image behind a later swipe, a slow import of a message with thousands of swipes, and lost alternates from a malformed file.
 **Suggested handling:** if the importer's report or conversion is touched: scan `candidates[].data` once per chat for the report, keep the selected entry plus a bounded newest window before building candidates, and test the normalized `candidates` field before refusing swipe conversion.
+
+### Upstream `.bin` import converts MessagePack-only values without a report
+
+`server/src/data/upstream/risuSave.ts` decodes a legacy (`\x07`–`\x09`) save with msgpackr, so a value can be a `Uint8Array`, a `Date` (timestamp extension), or `undefined`. The converter stores it through `serialize`/`storedValue` (`importRecords.ts`), whose `JSON.stringify` succeeds: binary becomes an index object (`{"0":..}`), a date an ISO string, an `undefined` property disappears and an array hole becomes `null`, with `copied: false` and no report entry. A non-finite top-level number in a settings section is repaired by `plainClone` to `null` and then defaulted (a nested one stays `null`), and the section loop (`importDatabase.ts` ~214–228) ignores `copied`, so that loss is not reported either (characters, chats, and plugin values report `invalid-data`). The realistic holder is `pluginCustomStorage`; upstream's own `Database` fields are JSON-like, and block saves are JSON already. Found 2026-11-07 while comparing with the Fastify fork's MessagePack `undefined` marker fix (its `de5b8214e`); this fork's msgpackr decodes that marker as `undefined`, so it does not arise here.
+
+**Why it matters:** a plugin's binary or dated value comes back changed after an upstream import, with nothing in the report to say so.
+**Suggested handling:** have `storedValue`/`storedForm` report a value whose JSON form differs in kind (typed array, `Date`, `Map`/`Set`), and report `copied` in the settings loop.
 
 ## Request history and diagnostics
 
@@ -405,6 +419,20 @@ The owner still needs to decide whether these behaviors should be unconditional 
 Unconfirmed in the browser. `setPlugins` in `src/ts/storage/collectionStore.svelte.ts` accepts duplicate names. In `src/lib/Setting/Pages/PluginSettings.svelte`, an unkeyed row binds the textarea to `settings.plugins[i].realArg[arg]`, while `popupEditorContext` uses the plugin name and argument key. `TextAreaInput.svelte` checks the initial value, context and context revision before applying the draft.
 
 If another client swaps two same-name plugins with the same key and text while the popup is open, those checks can still match the row now at that index. To verify, apply the draft and inspect which plugin's stored argument changed. Traced on 2026-11-07 while moving the earlier UI guide note to [plugin settings](../structure/plugin-sandbox.md#issues).
+
+### pluginStorage.setItem changes non-JSON values without an error
+
+`src/ts/plugins/apiV3/v3.svelte.ts` `_setPluginStorage` (~3114) round-trips the value through JSON before `setOwnedPluginStorageItem` checks it, so a `Set`/`Map` is stored as `{}`, a typed array as an index object, a `Date` as a string, `NaN`/`Infinity` as `null`, and an `undefined` property is dropped; a `bigint` or a cycle throws, for example. The local-plugin path (`pluginSafeClass.ts`, `isJsonValue`) refuses those values instead. Current upstream JSON-serializes each plugin storage item too, so the result matches upstream; the contrast is the local-plugin path, which tells the plugin. Found 2026-11-07.
+
+**Why it matters:** a plugin that stores a `Set` or bytes reads back a different shape and fails later, away from the write.
+**Suggested handling:** decide whether v3 storage should refuse non-JSON values (as `isJsonValue` does) rather than convert them; plugins written against upstream may rely on the conversion.
+
+### Nested numeric settings can be stored as null
+
+Three writers can leave a nested number field `NaN` or `null`, which the record normalizers do not repair (they check top-level kinds only): `src/lib/Setting/Pages/PluginSettings.svelte` (~291) stores `parseInt` of a radio option's suffix, `NaN` for a non-numeric suffix in plugin metadata; `ImageGenerationSettings.svelte` (~466) stores `Number(params.information_extracted)` from a vibe file without checking it; and `CharConfig.svelte`'s VOICEVOX scale inputs (~1194–1203) bind a `NumberInput` that writes `null` when emptied, which `tts.ts` (~290) sends as is. JSON turns `NaN` into `null`, so all three reload as `null`. Current upstream has the same writers and stores these records as JSON too. Found 2026-11-07.
+
+**Why it matters:** a malformed plugin or vibe file, or an emptied VOICEVOX field, leaves a `null` that the readers pass on (stableDiff.ts falls back with `|| 1`; VOICEVOX gets `null` scales).
+**Suggested handling:** validate with `Number.isFinite` at the two parse sites and fall back to the field default for an emptied VOICEVOX input.
 
 ## Build, drivers, and e2e
 

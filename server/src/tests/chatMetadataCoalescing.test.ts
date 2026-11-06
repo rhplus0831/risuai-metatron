@@ -232,6 +232,52 @@ describe("chat metadata coalescing", () => {
         expect(samples[1]).toEqual(samples[0]);
     });
 
+    it("stores a non-finite Lua chat variable as the text a read returns and other values raw", async () => {
+        const h = setup();
+        const before = h.store.chatRevision("c", "k")!;
+        const sync = h.run.bindings.host.sync!;
+        const setRaw = (key: string, value: unknown) => sync.setChatVar(["id", key, value], h.run.nativeCtx);
+        const setChanged = (key: string, value: unknown) => sync.setChatVarChanged(["id", key, value], h.run.nativeCtx);
+        // Lua's 0/0 and math.huge arrive as JS numbers; JSON cannot hold them, and the store refuses them.
+        setRaw("nan", NaN);
+        expect(setChanged("inf", Infinity)).toBe(true);
+        // Finite numbers and booleans stay raw: reroll checkpoints compare them strictly.
+        setRaw("num", 5);
+        setRaw("flag", false);
+        expect(h.get("nan")).toBe("NaN");
+        await Promise.resolve();
+        expect(h.services.fence).not.toThrow();
+        expect(h.stored()).toMatchObject({
+            revision: revisionAfter(before, 1),
+            data: { scriptstate: { $old: "kept", $nan: "NaN", $inf: "Infinity", $num: 5, $flag: false } },
+        });
+        // The same values again compare equal to what is stored, so nothing is queued.
+        expect(setChanged("inf", Infinity)).toBeUndefined();
+        expect(setChanged("num", 5)).toBeUndefined();
+        await Promise.resolve();
+        expect(h.stored().revision).toBe(revisionAfter(before, 1));
+
+        // A trigger's triggerlua run writes through the trigger's working copy instead.
+        const written: [string, unknown][] = [];
+        const working = {
+            chat: scopeChat(h.run.scope)!,
+            getVar: () => "",
+            setVar: (key: string, value: string) => (written.push([key, value]), true),
+        };
+        await h.run.bindings.withWorking(working, async () => {
+            setRaw("nan", NaN);
+            setChanged("inf", -Infinity);
+            setRaw("num", 5);
+            setChanged("flag", true);
+        });
+        expect(written).toEqual([
+            ["nan", "NaN"],
+            ["inf", "-Infinity"],
+            ["num", 5],
+            ["flag", true],
+        ]);
+    });
+
     it("coalesces one CBS evaluation and separates awaited command segments", async () => {
         const h = setup();
         const before = h.stored().revision;

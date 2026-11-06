@@ -122,6 +122,8 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 - Lua character getters return `""` when the run has no resolvable character, and the stored value (possibly
   `undefined`) for a resolvable one; character setters return without writing when no character resolves.
 - Lua `setDescription` refuses a non-string value ("Invalid data type") and writes nothing.
+- Lua `setChatVar`/`setChatVarChanged` store a non-finite number as the text `getChatVar` returns (`0/0` as "NaN"),
+  other values raw.
 - During rerolls, Lua getters and indexed setters share the carrier-hidden history view; setters write by message id,
   and insertions beside the carrier anchor as trigger insertions do.
 - Lua `getLoreBooksMain` searches the chat's `localLore`, the character's `globalLore` with the chat's `loreOverrides`

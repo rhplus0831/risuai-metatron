@@ -274,6 +274,16 @@ function mimeOf(meta: InlayResource): string {
     return "application/json";
 }
 
+/**
+ * A chat variable value from Lua: a non-finite number (Lua's `0/0`, `math.huge`) becomes the text
+ * a read returns (`getChatVar` answers `toString()`), "NaN" or "Infinity", since the store refuses
+ * it. Every other value passes as it is: a finite number or boolean stays raw, as upstream stores
+ * it, so reroll checkpoints holding the raw value still compare equal.
+ */
+function chatVarText(value: unknown): string {
+    return typeof value === "number" && !Number.isFinite(value) ? String(value) : (value as string);
+}
+
 /** Rejects with the signal's reason when it aborts first. */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     if (signal.aborted) {
@@ -1259,9 +1269,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             if (working) {
-                working.setVar(key as string, value as string);
+                working.setVar(key as string, chatVarText(value));
             } else {
-                setChatVar(key as string, value as string, ctx);
+                setChatVar(key as string, chatVarText(value), ctx);
             }
             return undefined;
         },
@@ -1270,8 +1280,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             const changed = working
-                ? working.setVar(key as string, value as string)
-                : setChatVar(key as string, value as string, ctx);
+                ? working.setVar(key as string, chatVarText(value))
+                : setChatVar(key as string, chatVarText(value), ctx);
             return changed === true ? true : undefined;
         },
         getGlobalVar: ([, key]) => cbsHost.getGlobalChatVar(key as string, ref),
