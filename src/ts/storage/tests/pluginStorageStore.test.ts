@@ -375,6 +375,91 @@ describe("owned storage administration", () => {
         },
     );
 
+    it("refreshes cached owner keys and retained wrappers after remote removal and re-addition", async () => {
+        const createServer = StoreBackedServer.create;
+        vi.spyOn(StoreBackedServer, "create").mockImplementationOnce(() =>
+            createServer.call(StoreBackedServer, { feed: true }),
+        );
+        const { fake, sync, pluginStorageStore: ps, settings } = await boot();
+        const records = await import("../records.svelte");
+        ps.replacePluginCustomStorage({
+            _ownedPluginStorage: { "plug\u0000old": { value: 1 }, "plug\u0000keep": 2 },
+            _pluginStorage: { legacy: 3 },
+        });
+        await sync.flushResources();
+        const root = settings.pluginStorage;
+        const owned = root._ownedPluginStorage;
+        const old = owned["plug\u0000old"];
+        expect(old.value).toBe(1);
+        expect(ps.ownedPluginStorageKeys("plug")).toEqual(["old", "keep", "legacy"]);
+
+        vi.resetModules();
+        const writer = await import("../resourceClient");
+        const snapshot = await writer.readKinds(["pluginStorage"]);
+        writer.setResourceEpoch(snapshot.epoch);
+        fake.onFeed = (event) => {
+            if (event.type === "change") sync.noteRemoteChanges(event.changes);
+        };
+        fake.requests.length = 0;
+        fake.feedEvents.length = 0;
+        for (const readd of [false, true]) {
+            await writer.applyBatchText(
+                JSON.stringify({
+                    ops: [
+                        {
+                            kind: "pluginStorage",
+                            id: "main",
+                            baseRevision: fake.record("pluginStorage", "main")!.revision,
+                            patch: {
+                                nested: {
+                                    _ownedPluginStorage: readd
+                                        ? { set: { "plug\u0000old": { value: 4 } } }
+                                        : { set: { "plug\u0000new": 5 }, remove: ["plug\u0000old"] },
+                                },
+                            },
+                        },
+                    ],
+                }),
+            );
+            const event = fake.feedEvents.at(-1)!;
+            if (event.type !== "change") throw new Error("missing feed change");
+            expect(event.changes.resources[0]).toHaveProperty("entryPatch");
+            const keys = readd ? ["keep", "new", "old", "legacy"] : ["keep", "new", "legacy"];
+            expect(ps.ownedPluginStorageKeys("plug")).toEqual(keys);
+            expect(ps.ownedPluginStorageKeyCount("plug")).toBe(keys.length);
+            expect(keys.map((_, index) => ps.ownedPluginStorageKeyAt("plug", index))).toEqual(keys);
+            expect(ps.ownedPluginStorageKeyAt("plug", keys.length)).toBeNull();
+            expect(ps.getOwnedPluginStorageValue("plug", "old")).toEqual(readd ? { value: 4 } : null);
+            expect(Object.keys(owned)).toEqual(
+                readd ? ["plug\u0000keep", "plug\u0000new", "plug\u0000old"] : ["plug\u0000keep", "plug\u0000new"],
+            );
+            if (readd) {
+                expect(old.value).toBe(4);
+            } else {
+                expect(owned["plug\u0000old"]).toBeUndefined();
+            }
+            const expected = {
+                _ownedPluginStorage: {
+                    "plug\u0000keep": 2,
+                    "plug\u0000new": 5,
+                    ...(readd ? { "plug\u0000old": { value: 4 } } : {}),
+                },
+                _pluginStorage: { legacy: 3 },
+            };
+            expect(root).toEqual(expected);
+            expect(records.recordData("pluginStorage")).toEqual(expected);
+            expect(fake.record("pluginStorage", "main")!.data).toEqual(expected);
+            expect(sync.heldRecordSnapshot("pluginStorage", "main")).toEqual({
+                revision: fake.record("pluginStorage", "main")!.revision,
+                text: JSON.stringify(expected),
+            });
+        }
+        await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(fake.requests.filter((request) => request.path === "/api/resources/read")).toEqual([]);
+        expect(fake.batchCount()).toBe(2);
+    });
+
     it("keeps owned entries and clear markers when a custom-storage replacement omits the dictionary", async () => {
         const { sync, pluginStorageStore: ps, record } = await boot();
         ps.replacePluginCustomStorage({

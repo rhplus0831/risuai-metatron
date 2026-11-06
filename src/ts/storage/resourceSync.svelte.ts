@@ -87,6 +87,8 @@ import {
     characterFieldStamp,
     moduleItemFieldStamp,
     patchRawCharacter,
+    patchRawPluginStorage,
+    pluginStorageRevision,
     recordData,
     REMOVE_FIELD,
     setCharacterWriteListener,
@@ -302,6 +304,12 @@ const characterKey = (id: string) => recordKey(RESOURCE_KIND.characters, id);
 
 /** What the server holds for each record this client knows: `<kind>\0<id>` → revision and JSON text. */
 const persisted = new Map<string, Persisted>();
+/**
+ * Proof that a held plugin storage text was projected from this mirror at this wrapper revision.
+ * Acknowledgements alone cannot establish it: the mirror may have changed after dispatch. Weak
+ * keys release old texts and records when their persisted entry is replaced.
+ */
+const pluginStorageBaselines = new WeakMap<Persisted, { revision: number; record: unknown }>();
 /**
  * The text this client sent for a record whose answer was lost (a network failure or a 5xx, not a
  * refusal), on the saved base revision it was sent on: the server holds it or still the saved copy.
@@ -2183,6 +2191,17 @@ function canonicalCharacter(id: string, projection: Projection): Projection {
     return character ? characterProjection(character) : projection;
 }
 
+/** Holds a projection of the current mirror, with proof for subsequent plugin dictionary patches. */
+function holdMirrorProjection(key: string, kind: string, entry: Persisted) {
+    persisted.set(key, entry);
+    if (kind === RESOURCE_KIND.pluginStorage && entry.parts?.type === "fields" && entry.parts.source === entry.text) {
+        pluginStorageBaselines.set(entry, {
+            revision: pluginStorageRevision(),
+            record: recordData(RESOURCE_KIND.pluginStorage),
+        });
+    }
+}
+
 /** A record's mirror text with its parts (`projectRecord`), or undefined when the mirror has none. */
 function projectEntry(kind: string, id: string): Projection | undefined {
     if (kind === RESOURCE_KIND.characters) {
@@ -2719,6 +2738,16 @@ function collectOperations(): {
             // A whole serialization can answer undefined (a `toJSON` hook): equal to an absent record.
             if (current !== undefined) {
                 shareSavedText(collection, SINGLETON_RESOURCE_ID, projection.text, current.text);
+                if (collection === RESOURCE_KIND.pluginStorage) {
+                    if (projection.parts) {
+                        projection.parts.source = current.text;
+                    }
+                    holdMirrorProjection(key, collection, {
+                        revision: current.revision,
+                        text: current.text,
+                        parts: projection.parts,
+                    });
+                }
             }
         } else {
             const op = current
@@ -3597,7 +3626,7 @@ function acceptRemote(item: RemoteItem, removeAbsentSingleton = false) {
     if (item.revision === null) {
         persisted.delete(key);
     } else {
-        persisted.set(key, {
+        holdMirrorProjection(key, item.kind, {
             revision: item.revision,
             ...(projectEntry(item.kind, item.id) ?? { text: JSON.stringify(item.data) }),
         });
@@ -4965,13 +4994,14 @@ export function reconcileRemote(listing: ResourceRevisionListing) {
  * record at exactly the patch's base revision (of the loaded epoch, the same incarnation, one write
  * before the update) and has no local change of it (`canApplyRemote`), except an echo of a lost
  * in-doubt write may advance the saved base while preserving newer local mirror text. Sending,
- * quarantined and job-blocked records still refuse that echo. In the ordinary path, a character's
- * field patch (`RecordFieldPatch`) goes in raw (`patchRawCharacter`: no mark, no echo); another
- * mirrored record patch (except `llmSecrets`), including declared dictionary entries and name-keyed
- * plugin items, is applied to a detached copy of the held text. The result goes through the mirror's
- * whole-record path (`applyToMirror`, as a read would). The saved text is the mirror's projection
- * afterwards, as for a whole update, and a waiting notice the update covers is settled. The remote-change
- * listeners hear of every changed field. Returns false, changing nothing, for anything else (another
+ * quarantined and job-blocked records still refuse that echo. A validated nested-only pluginStorage
+ * patch on a proven clean mirror installs fresh dictionaries and splices held entry texts, preserving
+ * parts for the next update (`applyPluginStorageEntryPatch`). Otherwise a character's field patch
+ * goes in raw (`patchRawCharacter`: no mark, no echo); another mirrored record patch (except
+ * `llmSecrets`) is applied to a detached copy of the held text, then through `applyToMirror` as a read
+ * would. Its saved text is projected from the mirror afterwards. A waiting notice the update covers
+ * is settled, and the remote-change listeners hear of every changed field. Returns false, changing
+ * nothing, for anything else (another
  * kind or patch form, another base, a local change, a malformed patch or one naming a field twice, a
  * character's fixed or client-only field or one the mirror object only inherits, an item patch that
  * does not fit the held list): the update is then read whole as before.
@@ -5013,18 +5043,22 @@ function applyRemotePatch(ref: {
         }
         return true;
     }
-    if (!canApplyRemote(key, ref)) {
-        return false;
+    let projection = ref.kind === RESOURCE_KIND.pluginStorage ? applyPluginStorageEntryPatch(key, held, patch) : null;
+    let changed: boolean | null = true;
+    if (projection === null) {
+        if (!canApplyRemote(key, ref)) {
+            return false;
+        }
+        changed =
+            ref.kind === RESOURCE_KIND.characters
+                ? applyCharacterPatch(ref.id, patch)
+                : applyCollectionPatch(ref.kind, ref.id, held.text, patch);
+        if (changed === null) {
+            return false;
+        }
+        projection = projectEntry(ref.kind, ref.id)!;
     }
-    const changed =
-        ref.kind === RESOURCE_KIND.characters
-            ? applyCharacterPatch(ref.id, patch)
-            : applyCollectionPatch(ref.kind, ref.id, held.text, patch);
-    if (changed === null) {
-        return false;
-    }
-    const projection = projectEntry(ref.kind, ref.id)!;
-    persisted.set(key, { revision: ref.revision, ...projection });
+    holdMirrorProjection(key, ref.kind, { revision: ref.revision, ...projection });
     journalDiscarded(key);
     const waiting = remoteRecords.get(key);
     if (waiting && waiting.revision !== null && (compareRevision(waiting.revision, ref.revision) ?? 1) <= 0) {
@@ -5034,6 +5068,190 @@ function applyRemotePatch(ref: {
         notifyRemoteListeners(ref.kind, ref.id);
     }
     return true;
+}
+
+/** Plain JSON whose standalone serialization cannot omit data or invoke a key-dependent hook. */
+function isEntryJsonData(value: unknown, seen = new Set<object>(), depth = 0): boolean {
+    if (value === null || typeof value === "string" || typeof value === "boolean") {
+        return true;
+    }
+    if (typeof value === "number") {
+        return Number.isFinite(value);
+    }
+    if (typeof value !== "object" || depth >= 256 || seen.has(value)) {
+        return false;
+    }
+    const array = Array.isArray(value);
+    const proto = Object.getPrototypeOf(value);
+    if (!array && proto !== Object.prototype && proto !== null) {
+        return false;
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (
+        Reflect.ownKeys(descriptors).some((key) => typeof key !== "string" || !("value" in descriptors[key])) ||
+        typeof (value as { toJSON?: unknown }).toJSON === "function" ||
+        (array &&
+            (Object.keys(value).length !== value.length ||
+                Object.keys(value).some((key, index) => key !== String(index))))
+    ) {
+        return false;
+    }
+    seen.add(value);
+    try {
+        return Object.values(descriptors).every(
+            (descriptor) => !descriptor.enumerable || isEntryJsonData(descriptor.value, seen, depth + 1),
+        );
+    } finally {
+        seen.delete(value);
+    }
+}
+
+/** Rebuilds field and dictionary spans while copying every untouched value from the held text. */
+function spliceDictionaryEntries(
+    parts: Extract<RecordParts, { type: "fields" }>,
+    changes: ReadonlyMap<string, [string, string][]>,
+): Projection {
+    const writer: JsonWriter = { pieces: [], length: 0 };
+    const fields: FieldSpan[] = [];
+    const nested = new Map<string, FieldSpan[]>();
+    write(writer, "{");
+    for (const [key, start, end] of parts.fields) {
+        write(writer, `${fields.length ? "," : ""}${JSON.stringify(key)}:`);
+        const offset = writer.length;
+        const entries = changes.get(key);
+        if (entries) {
+            nested.set(key, objectSpans(writer, entries));
+        } else {
+            write(writer, parts.source.slice(start, end));
+            const spans = parts.nested?.get(key);
+            if (spans) {
+                nested.set(
+                    key,
+                    spans.map(([entry, from, to]) => [entry, from + offset - start, to + offset - start]),
+                );
+            }
+        }
+        fields.push([key, offset, writer.length]);
+    }
+    write(writer, "}");
+    const text = writer.pieces.join("");
+    return { text, parts: { type: "fields", source: text, fields, nested } };
+}
+
+/**
+ * A validated nested-only plugin storage patch on a proven clean mirror. All admission, value
+ * cloning and text assembly precede the raw install. Fresh dictionaries keep ordinary object key
+ * order even when the old Svelte dictionary has deleted or previously read missing slots. Integer
+ * keys take the whole-record path; an unexpected installed order uses the mirror projection.
+ */
+function applyPluginStorageEntryPatch(key: string, held: Persisted, patch: RecordPatch): Projection | null {
+    const proof = pluginStorageBaselines.get(held);
+    const record = recordData(RESOURCE_KIND.pluginStorage);
+    const parts = held.parts;
+    if (
+        !proof ||
+        proof.record !== record ||
+        proof.revision !== pluginStorageRevision() ||
+        dirty.has(key) ||
+        sendingKeys.has(key) ||
+        inDoubt.has(key) ||
+        quarantinedRecords.has(key) ||
+        isRecordJobBlocked(key) ||
+        !isPlainObject(record) ||
+        parts?.type !== "fields" ||
+        parts.source !== held.text
+    ) {
+        return null;
+    }
+    const sameKeys = (keys: string[], spans: readonly FieldSpan[]) =>
+        keys.length === spans.length && keys.every((key, index) => key === spans[index][0]);
+    const isIndex = (key: string) => {
+        const index = Number(key);
+        return Number.isInteger(index) && index >= 0 && index < 2 ** 32 - 1 && String(index) === key;
+    };
+    const changes: Parameters<typeof patchRawPluginStorage>[0][number][] = [];
+    const texts = new Map<string, [string, string][]>();
+    let projection: Projection;
+    try {
+        const outer = patch as unknown as Record<string, unknown>;
+        if (
+            Reflect.ownKeys(outer).length !== 4 ||
+            !["baseRevision", "set", "remove", "nested"].every((field) => Object.hasOwn(outer, field)) ||
+            !isPlainObject(outer.set) ||
+            Object.keys(outer.set).length !== 0 ||
+            !Array.isArray(outer.remove) ||
+            outer.remove.length !== 0 ||
+            !sameKeys(Object.keys(record), parts.fields)
+        ) {
+            return null;
+        }
+        const checked = checkRecordWritePatch(
+            { set: outer.set, remove: outer.remove, nested: outer.nested },
+            { nestedFields: PLUGIN_STORAGE_DICTIONARIES },
+        );
+        if (checked.type !== "fields" || checked.nested.length === 0) {
+            return null;
+        }
+        for (const [field, entries] of checked.nested) {
+            const dictionary = record[field];
+            const spans = parts.nested?.get(field);
+            if (
+                !Object.hasOwn(record, field) ||
+                !isPlainObject(dictionary) ||
+                (Object.getPrototypeOf(dictionary) !== Object.prototype &&
+                    Object.getPrototypeOf(dictionary) !== null) ||
+                !spans ||
+                !sameKeys(Object.keys(dictionary), spans) ||
+                spans.some(([entry]) => isIndex(entry))
+            ) {
+                return null;
+            }
+            const before = new Map(spans.map(([entry, start, end]) => [entry, held.text.slice(start, end)]));
+            for (const entry of [...entries.set.map(([entry]) => entry), ...entries.remove]) {
+                if (
+                    isIndex(entry) ||
+                    assignsInherited(dictionary, entry) ||
+                    (Object.hasOwn(dictionary, entry) && JSON.stringify(dictionary[entry]) !== before.get(entry))
+                ) {
+                    return null;
+                }
+            }
+            const next = { ...dictionary };
+            for (const [entry, value] of entries.set) {
+                if (!isEntryJsonData(value)) {
+                    return null;
+                }
+                const detached: unknown = structuredClone(value);
+                const text = JSON.stringify(detached);
+                if (text === undefined) {
+                    return null;
+                }
+                next[entry] = detached;
+                before.set(entry, text);
+            }
+            for (const entry of entries.remove) {
+                delete next[entry];
+                before.delete(entry);
+            }
+            changes.push([field as (typeof PLUGIN_STORAGE_DICTIONARIES)[number], next]);
+            texts.set(field, [...before]);
+        }
+        projection = spliceDictionaryEntries(parts, texts);
+    } catch {
+        return null;
+    }
+    if (!patchRawPluginStorage(changes)) {
+        return null;
+    }
+    // Verify the proxy actually installed the planned keys before publishing spans for their text.
+    for (const [field] of changes) {
+        const keys = Object.keys(record[field] as object);
+        const planned = texts.get(field)!;
+        if (keys.length !== planned.length || keys.some((entry, index) => entry !== planned[index][0])) {
+            return collectionProjection(RESOURCE_KIND.pluginStorage)!;
+        }
+    }
+    return projection;
 }
 
 /**
@@ -5097,7 +5315,8 @@ function matchesPatchRevision(patch: RecordPatch, revision: string): boolean {
 
 /**
  * A detached server record reconstructed from held text with the kind's field, dictionary-entry,
- * or item-key rules. Unknown members and malformed or inapplicable patches require a whole read.
+ * or item-key rules. This whole-record path also handles in-doubt echoes and plugin storage patches
+ * without entry admission. Unknown members and malformed or inapplicable patches require a whole read.
  */
 function patchedRecord(
     kind: string,
@@ -5174,7 +5393,8 @@ function applyCollectionPatch(kind: string, id: string, heldText: string, patch:
  * or an absent singleton; a local unsaved creation must reach its save/conflict outcome instead.
  * Character generation alone is no blocker. llmSecrets is checked against server siblings after
  * reading; blockedLocal prevents rereading the same conflicting local text while its 409 is
- * pending.
+ * pending. Immediate nested-only plugin storage patches can instead use a proven clean baseline
+ * (`applyPluginStorageEntryPatch`); queued refresh work still compares the whole projection here.
  */
 function canApplyRemote(key: string, entry: { kind: string; id: string; blockedLocal?: string }): boolean {
     if (sendingKeys.has(key) || recordQuarantine(key) || isRecordJobBlocked(key) || inDoubt.has(key)) {
@@ -5250,7 +5470,7 @@ function applyRemoteRecord(
     if (item.revision === null) {
         persisted.delete(key);
     } else {
-        persisted.set(key, {
+        holdMirrorProjection(key, item.kind, {
             revision: item.revision,
             ...(projectEntry(item.kind, item.id) ?? { text: recordText(item.kind, item.data) }),
         });
@@ -5477,7 +5697,7 @@ export function applyHydration(record: HydrationRecord): boolean {
         return false;
     }
     applyToMirror(record.kind, record.id, record.data);
-    persisted.set(key, {
+    holdMirrorProjection(key, record.kind, {
         revision: record.revision,
         ...(projectEntry(record.kind, record.id) ?? { text: JSON.stringify(record.data) }),
     });

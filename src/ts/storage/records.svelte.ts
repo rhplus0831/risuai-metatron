@@ -19,6 +19,7 @@ import {
 import { clearSecret, setSecret } from "./llmSecrets.svelte";
 import { v4 } from "uuid";
 import { writeEntries } from "./mutationValidation";
+import { PLUGIN_STORAGE_DICTIONARIES } from "../../../shared/pluginStorage.ts";
 
 /**
  * The settings records: the source of truth of the five sections, the settings collections, and
@@ -706,6 +707,41 @@ export function applyRaw(kind: RecordKind, data: unknown) {
             unpinBelow(root);
         }
         refreshRoot(kind);
+    });
+}
+
+/**
+ * Installs fresh plugin storage dictionaries after an admitted server entry patch. Retained values
+ * may be shared with the current dictionaries; incoming values are already detached. Queues no
+ * write. The epoch and revision advance as for `applyRaw`, and wrappers under changed dictionaries
+ * follow their paths without retaining the old targets.
+ */
+export function patchRawPluginStorage(
+    changes: readonly (readonly [(typeof PLUGIN_STORAGE_DICTIONARIES)[number], Record<string, unknown>])[],
+): boolean {
+    return untrack(() => {
+        const target = records.pluginStorage as Record<string, unknown> | undefined;
+        if (!isObject(target)) {
+            return false;
+        }
+        for (const [field] of changes) {
+            const descriptor = Object.getOwnPropertyDescriptor(target, field);
+            if (!descriptor || !("value" in descriptor) || !descriptor.writable) {
+                return false;
+            }
+        }
+        bumpEpoch(metaOf("pluginStorage"));
+        bumpPluginStorage();
+        const root = rootNodes.get("pluginStorage");
+        for (const [field, value] of changes) {
+            const node = root?.keyChildren.get(field);
+            if (node) {
+                unpinBelow(node, true);
+            }
+            target[field] = value;
+        }
+        refreshRoot("pluginStorage");
+        return true;
     });
 }
 

@@ -269,10 +269,36 @@ function rerollRows() {
     return { original, begun, restored, selected, begin, rollback, select };
 }
 
+/** Largest JSON parse input and stringify output during synchronous observer delivery only. */
+function jsonPassSizes(deliver: () => void) {
+    const parse = vi.spyOn(JSON, "parse");
+    const stringify = vi.spyOn(JSON, "stringify");
+    try {
+        deliver();
+        return {
+            parsed: Math.max(0, ...parse.mock.calls.map(([text]) => text.length)),
+            stringified: Math.max(
+                0,
+                ...stringify.mock.results.map((result) =>
+                    result.type === "return" && typeof result.value === "string" ? result.value.length : 0,
+                ),
+            ),
+        };
+    } finally {
+        parse.mockRestore();
+        stringify.mockRestore();
+    }
+}
+
 describe("resource entry patches through the tab save adapter", () => {
-    it("applies another client's dictionary entry and name-keyed plugin toggle without reading either record", async () => {
+    it("applies consecutive dictionary entries beside a large history and a plugin toggle without whole JSON passes or reads", async () => {
+        const history = "x".repeat(256 * 1024);
         const initial = {
-            pluginStorage: { _ownedPluginStorage: { history: ["kept"], counter: 0 } },
+            pluginStorage: {
+                _ownedPluginStorage: { history: [history], counter: 0 },
+                _pluginStorage: { legacy: "kept" },
+                _safeLocalPluginStorage: { flag: false },
+            },
             plugins: [
                 { name: "first", enabled: true },
                 { name: "second", enabled: true },
@@ -291,45 +317,180 @@ describe("resource entry patches through the tab save adapter", () => {
         const snapshot = await writer.readKinds(["pluginStorage", "plugins"]);
         writer.setResourceEpoch(snapshot.epoch);
         b.fake.requests.length = 0;
+        b.live.paused = true;
+        for (const counter of [1, 2]) {
+            await writer.applyBatchText(
+                JSON.stringify({
+                    ops: [
+                        {
+                            kind: "pluginStorage",
+                            id: "main",
+                            baseRevision: b.fake.record("pluginStorage", "main")!.revision,
+                            patch: {
+                                nested: {
+                                    _ownedPluginStorage: { set: { counter } },
+                                    ...(counter === 1
+                                        ? { _pluginStorage: { set: { added: "new" } } }
+                                        : { _safeLocalPluginStorage: { set: { flag: true } } }),
+                                },
+                            },
+                        },
+                        ...(counter === 1
+                            ? [
+                                  {
+                                      kind: "plugins",
+                                      id: "main",
+                                      baseRevision: snapshot.kinds.plugins[0].revision,
+                                      patch: { itemKey: "name", changes: [{ id: "second", set: { enabled: false } }] },
+                                  },
+                              ]
+                            : []),
+                    ],
+                }),
+            );
+            const event = b.live.queue.at(-1)!;
+            if (event.type !== "change") throw new Error("missing feed change");
+            expect(event.changes.resources).toHaveLength(counter === 1 ? 2 : 1);
+            for (const ref of event.changes.resources) {
+                expect(ref).toHaveProperty("entryPatch");
+                expect(ref).not.toHaveProperty("patch");
+            }
+
+            // The server commit and assertions stay outside the observer's JSON measurement.
+            const sizes = jsonPassSizes(b.flushFeed);
+            expect(sizes.parsed, `update ${counter}: parsed text`).toBeLessThan(history.length);
+            expect(sizes.stringified, `update ${counter}: serialized value`).toBeLessThan(history.length);
+            const expected = {
+                pluginStorage: {
+                    _ownedPluginStorage: { history: [history], counter },
+                    _pluginStorage: { legacy: "kept", added: "new" },
+                    _safeLocalPluginStorage: { flag: counter === 2 },
+                },
+                plugins: [initial.plugins[0], { name: "second", enabled: false }],
+            };
+            for (const kind of ["pluginStorage", "plugins"] as const) {
+                expect(b.records.recordData(kind)).toEqual(expected[kind]);
+                expect(b.fake.record(kind, "main")!.data).toEqual(expected[kind]);
+                expect(b.sync.heldRecordSnapshot(kind, "main")).toEqual({
+                    revision: b.fake.record(kind, "main")!.revision,
+                    text: JSON.stringify(expected[kind]),
+                });
+            }
+            expect(reads(b)).toEqual([]);
+        }
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toEqual([]);
+        expect(b.fake.batchCount()).toBe(2);
+        quiet(b);
+    });
+
+    it.each([
+        {
+            label: "a top-level custom-key set",
+            patch: { set: { custom: "remote" }, nested: { _ownedPluginStorage: { set: { counter: 1 } } } },
+            expected: { custom: "remote", _ownedPluginStorage: { counter: 1 } },
+        },
+        {
+            label: "a top-level custom-key removal",
+            patch: { remove: ["custom"], nested: { _ownedPluginStorage: { set: { counter: 1 } } } },
+            expected: { _ownedPluginStorage: { counter: 1 } },
+        },
+        {
+            label: "an array-index-like dictionary key",
+            patch: { nested: { _ownedPluginStorage: { set: { "12": "remote" } } } },
+            expected: { custom: "kept", _ownedPluginStorage: { "12": "remote", counter: 0 } },
+        },
+    ])("keeps whole-record patching for $label", async ({ patch, expected }) => {
+        const history = "x".repeat(256 * 1024);
+        const b = await boot({
+            prepare: (fake) =>
+                fake.set("pluginStorage", "main", {
+                    custom: "kept",
+                    _ownedPluginStorage: { counter: 0, history },
+                }),
+        });
+        vi.resetModules();
+        const writer: Client = await import("../resourceClient");
+        writer.setResourceEpoch(b.client.getResourceEpoch());
+        b.live.paused = true;
         await writer.applyBatchText(
             JSON.stringify({
                 ops: [
                     {
                         kind: "pluginStorage",
                         id: "main",
-                        baseRevision: snapshot.kinds.pluginStorage[0].revision,
-                        patch: { nested: { _ownedPluginStorage: { set: { counter: 1 } } } },
-                    },
-                    {
-                        kind: "plugins",
-                        id: "main",
-                        baseRevision: snapshot.kinds.plugins[0].revision,
-                        patch: { itemKey: "name", changes: [{ id: "second", set: { enabled: false } }] },
+                        baseRevision: b.fake.record("pluginStorage", "main")!.revision,
+                        patch,
                     },
                 ],
             }),
         );
-        const expected = {
-            pluginStorage: { _ownedPluginStorage: { history: ["kept"], counter: 1 } },
-            plugins: [initial.plugins[0], { name: "second", enabled: false }],
-        };
-        for (const kind of ["pluginStorage", "plugins"] as const) {
-            expect(b.records.recordData(kind)).toEqual(expected[kind]);
-            expect(b.records.recordData(kind)).toEqual(b.fake.record(kind, "main")!.data);
-            expect(b.sync.heldRecordRevision(kind, "main")).toBe(b.fake.record(kind, "main")!.revision);
-        }
-        const event = b.fake.feedEvents.at(-1)!;
+        const event = b.live.queue.at(-1)!;
         if (event.type !== "change") throw new Error("missing feed change");
-        expect(event.changes.resources).toHaveLength(2);
-        for (const ref of event.changes.resources) {
-            expect(ref).toHaveProperty("entryPatch");
-            expect(ref).not.toHaveProperty("patch");
-        }
-        expect(reads(b)).toEqual([]);
+        expect(event.changes.resources[0]).toHaveProperty("entryPatch");
+        const sizes = jsonPassSizes(b.flushFeed);
+        expect(sizes.parsed).toBeGreaterThanOrEqual(history.length);
+        expect(sizes.stringified).toBeGreaterThanOrEqual(history.length);
+        const data = { ...expected, _ownedPluginStorage: { ...expected._ownedPluginStorage, history } };
+        expect(b.records.recordData("pluginStorage")).toEqual(data);
+        expect(b.fake.record("pluginStorage", "main")!.data).toEqual(data);
+        expect(b.sync.heldRecordSnapshot("pluginStorage", "main")).toEqual({
+            revision: b.fake.record("pluginStorage", "main")!.revision,
+            text: JSON.stringify(data),
+        });
         await b.sync.flushResources();
         await vi.advanceTimersByTimeAsync(1500);
         expect(reads(b)).toEqual([]);
         expect(b.fake.batchCount()).toBe(1);
+        quiet(b);
+    });
+
+    it("preserves and saves an unsaved dictionary edit when a remote entry arrives inside a local write batch", async () => {
+        const initial = { _ownedPluginStorage: { counter: 0, local: "saved" } };
+        const b = await boot({ prepare: (fake) => fake.set("pluginStorage", "main", initial) });
+        const storage = b.records.trackedRecord("pluginStorage")!;
+        const held = b.sync.heldRecordSnapshot("pluginStorage", "main");
+        vi.resetModules();
+        const writer: Client = await import("../resourceClient");
+        writer.setResourceEpoch(b.client.getResourceEpoch());
+        b.live.paused = true;
+        await writer.applyBatchText(
+            JSON.stringify({
+                ops: [
+                    {
+                        kind: "pluginStorage",
+                        id: "main",
+                        baseRevision: b.fake.record("pluginStorage", "main")!.revision,
+                        patch: { nested: { _ownedPluginStorage: { set: { counter: 1 } } } },
+                    },
+                ],
+            }),
+        );
+        b.records.batchRecordWrites(() => {
+            storage._ownedPluginStorage.local = "unsaved";
+            const sizes = jsonPassSizes(b.flushFeed);
+            expect(b.sync.heldRecordSnapshot("pluginStorage", "main")).toEqual(held);
+            expect(sizes.stringified).toBeGreaterThanOrEqual(held!.text.length);
+            expect(b.records.recordData("pluginStorage")).toEqual({
+                _ownedPluginStorage: { counter: 0, local: "unsaved" },
+            });
+        });
+        b.live.paused = false;
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        const expected = { _ownedPluginStorage: { counter: 1, local: "unsaved" } };
+        expect(b.records.recordData("pluginStorage")).toEqual(expected);
+        expect(b.fake.record("pluginStorage", "main")!.data).toEqual(expected);
+        expect(b.sync.heldRecordSnapshot("pluginStorage", "main")).toEqual({
+            revision: b.fake.record("pluginStorage", "main")!.revision,
+            text: JSON.stringify(expected),
+        });
+        const batches = b.fake.batchCount();
+        expect(batches).toBeGreaterThan(1);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(b.fake.batchCount()).toBe(batches);
         quiet(b);
     });
 
@@ -339,6 +500,16 @@ describe("resource entry patches through the tab save adapter", () => {
             kind: "pluginStorage",
             id: "main",
             patch: { set: { counter: 99 }, remove: [], future: true },
+        },
+        {
+            label: "an unknown dictionary-entry patch member",
+            kind: "pluginStorage",
+            id: "main",
+            patch: {
+                set: {},
+                remove: [],
+                nested: { _ownedPluginStorage: { set: { counter: 99 }, remove: [], future: true } },
+            },
         },
         {
             label: "an unknown item-change member",

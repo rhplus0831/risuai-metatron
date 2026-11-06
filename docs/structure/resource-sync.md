@@ -59,8 +59,8 @@
 - The `@chatCollection` claim (`chatCollectionClaim`) requires matching `chatSummaryFormat`: bump shared
   `CHAT_SUMMARY_FORMAT` when the server summary projection changes.
 - Boot schedules `scheduleBootCacheCommit` after installation; captured server texts alone enter the cache. It outlives
-  the tab in the browser profile (`clearBootCache` for a future sign-out). A new epoch needs no clear, but independently
-  written servers must not share an epoch behind one origin.
+  the tab (`clearBootCache` for a future sign-out). A new epoch needs no clear, but independently written servers must
+  not share an epoch behind one origin.
 
 ### Dirty marking
 
@@ -71,9 +71,9 @@
 
 ### Save cycle
 
-- `runCycle`, `cycle` and `schedule` in `src/ts/storage/resourceSync.svelte.ts` define debounce, single-flight writes
-  and backoff. A cycle collects records and `takeChatWork`, sends through `applyBatchText`, then acknowledges the
-  resource baseline and `ackChatWork`. A mark made in flight stays dirty. Ready feed patches apply before collection.
+- `runCycle`, `cycle` and `schedule` define debounce, single-flight writes and backoff. A cycle collects records and
+  `takeChatWork`, sends through `applyBatchText`, then acknowledges the resource baseline and `ackChatWork`. A mark made
+  in flight stays dirty. Ready feed patches apply before collection.
 - `runRefresh` owns reads beside writes: it reloads deferred chats and lists through `resourceClient.ts`, applies feed
   records, and refreshes idle summaries/chats through the chat module. Stages start independently; a completed stage
   wakes pending writes. Only conflict and credential dependency reads remain inside a write cycle.
@@ -81,7 +81,7 @@
 ### Read deadlines
 
 - Adapter reads use `deadlineRead` (20 s, including `readRefs` continuations, or halt); `watchForRestore` has its own 5
-  s bound. `authFetch` in `src/ts/storage/serverAuth.ts` never dispatches an aborted request.
+  s bound. `authFetch` never dispatches an aborted request.
 - Other readers use `readWithDeadline`: 30 s for an order-repair chunk (`characterOrder.ts`) and the callback barrier's
   chat read (`jobChannel.ts`), 60 s for an export chunk (`chatEdits.ts`), 120 s per boot read. Chat loads have
   [their own](chat-store.md#limitations) bound. Only a complete read installs; owner replacement leaves its read running
@@ -126,12 +126,14 @@
 - Write forms both sides check (`shared/recordPatch.ts`: `checkRecordWritePatch`, `applyFieldPatch`, `itemIds`,
   `checkItemPatch`, `applyItemPatch`): `pluginStorage` entries one level down in `PLUGIN_STORAGE_DICTIONARIES`
   (`shared/pluginStorage.ts`); `plugins` items by unique id, else by unique name with `itemKey: "name"`.
+- A feed patch of `pluginStorage` dictionaries only, on a clean mirror, splices held text by entry
+  (`applyPluginStorageEntryPatch`, `patchRawPluginStorage`); others go through `patchedRecord`.
 
 ### Lost answers
 
-- Network/5xx uncertainty is handed from the adapter to `requeueChatWork({ lost: true })`: `Pending.resend` replays
-  exactly the sent group, alone with `retry`, before newer work. Newer work, even an empty newer sequence, uses another
-  id, so the replay's answer cannot settle it. Failed pagehide requests take the same path through `settleUnloadWork`.
+- The adapter hands network/5xx uncertainty to `requeueChatWork({ lost: true })`: `Pending.resend` replays exactly the
+  sent group, alone with `retry`, before newer work. Newer work, even an empty newer sequence, uses another id, so the
+  replay's answer cannot settle it. Failed pagehide requests take the same path through `settleUnloadWork`.
 - A definitely unapplied group merged in front of newer work keeps that group's id. A rolled-back unanswered resend
   remains a resend; a named 409 clears doubt. Expired live groups discard with the notice and no fresh identity; expired
   recovered groups quarantine for explicit Retry/Discard.
@@ -153,7 +155,7 @@
 - A refused order keeps its intent until sendable ids change or Retry. While `isOrderQuarantined` holds it, it is
   outside flush obligations, in `refused`, and still protects page close.
 - Chat refusal retention and release: `quarantineChat`, `releaseChatRefusal`, `retryRefusedChat` and `deleteChat` in
-  `src/ts/storage/chatStore.svelte.ts`.
+  `chatStore.svelte.ts`.
 - Read `refusedItems`, `retryRefused` and `discardRefused` for opaque keys, reactive reads, halt admission and read
   fences. Discard accepts the server copy only if newer local intent has not superseded it.
 
@@ -175,10 +177,9 @@
 
 ### Record merge
 
-- `mergeConcurrentChange` in `src/ts/storage/resourceSync.svelte.ts` uses `recordMerge.ts`'s three-way field/tuple/item
-  policy. A success applies detached data raw, rebases through `adoptMergedBase`, and keeps the key dirty without a
-  draft or notice; equal server values produce no echo. Taken fields reach `onRemoteRecordApplied`; a failure takes
-  [whole-record acceptance](#conflicts).
+- `mergeConcurrentChange` uses `recordMerge.ts`'s three-way field/tuple/item policy. A success applies detached data
+  raw, rebases through `adoptMergedBase`, and keeps the key dirty without a draft or notice; equal server values produce
+  no echo. Taken fields reach `onRemoteRecordApplied`; a failure takes [whole-record acceptance](#conflicts).
 - For module lists accepted by `itemIds`, a fresh-id addition merges with independent remote changes and rebases without
   a discard.
 - `pluginStorage` merges by key, one level down in each `PLUGIN_STORAGE_DICTIONARIES` entry, other top-level keys whole
@@ -192,9 +193,9 @@
 
 ### Chat and order conflicts
 
-- The adapter reads conflicts through `readRefs`, then `recoverChatConflicts` in `src/ts/storage/chatStore.svelte.ts`
-  requeues unrelated groups, recognizes create/delete replays, and otherwise discards queued work with the notice, gone
-  chats included. A non-expired append with a missing anchor can instead reanchor and retry.
+- The adapter reads conflicts through `readRefs`, then `recoverChatConflicts` (`chatStore.svelte.ts`) requeues unrelated
+  groups, recognizes create/delete replays, and otherwise discards queued work with the notice, gone chats included. A
+  non-expired append with a missing anchor can instead reanchor and retry.
 - A conflicted reorder keeps its sent vector until the `hydrate` list read: equal server order settles quietly;
   otherwise `markOrderDiscarded` reports `chats/<chaId>` with the notice. A failed/deferred read settles nothing, and a
   newer queued reorder keeps its sequence.
@@ -261,7 +262,7 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 
 - `src/ts/storage/resourceClient.ts` owns loaded-epoch checks, `readRefs` continuation and pre-signed unload transport.
   Mutations carry the loaded epoch; a read of another epoch reaches the adapter's restore halt through the registered
-  listener. Normal requests pass through `authFetch` in `src/ts/storage/serverAuth.ts`.
+  listener. Normal requests pass through `authFetch` (`serverAuth.ts`).
 - `readRefs` returns a complete result in request order or throws; a `moved` row read is an answer. Its rounds share an
   epoch, not a moment: only a character record and its collection entries are guaranteed the same round's read
   ([server contract](server-resources.md)).
