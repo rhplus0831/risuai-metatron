@@ -11,7 +11,7 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   conflict spec (A), the generation-lock spec (B), and a restart-races check script with its own stack (C).
   The three open questions (red cases file an inbox entry, the record edit on unload, same-message
   convergence) are answered: every recommendation accepted 2026-11-06.
-  Landed: A, C.
+  Landed: A, B, C (every slice).
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
