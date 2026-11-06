@@ -68,17 +68,18 @@ Read each module's header or component contract, then read the named export's co
 With `memoryJob.structuredMemory`, previews and service-free sends read as sends do; without it, history stays raw with
 no memory report.
 
-1. The read step calls `readMemoryRecords`, then `selectMemory`, which calls `retrieveLanes` and `buildMemoryCard`,
-   counting each card text once (`countOnce`). It runs `reconcileEvents` on a copy against stored messages
-   ([reconciliation](lifecycle.md#reconciliation-and-repairs)). `coveredMessages` reads that copy's active, unsuppressed
-   events for what may leave; `recordedMessages`, any stored status, for what the writer skips.
+1. The read step calls `readMemoryRecords`, then `selectMemory`, which calls `retrieveLanes` and `buildMemoryCard`.
+   Selection runs `reconcileEvents` on a copy against stored messages
+   ([reconciliation](lifecycle.md#reconciliation-and-repairs)). `coveredMessages` reads active, unsuppressed events from
+   that copy to decide what may leave; `recordedMessages` reads any stored status for what the writer leaves alone.
 2. The card enters history as `memo: "supaMemory"`. Under `volatileBeforeLastUser`, its volatile part bypasses history
    to survive chat ranges and memory cards; assembly inserts it after formatting by provenance before the latest user,
    else after the last memory entry, else at the end.
-3. `trimHistoryToContext` protects the window and older continue target via `protectedEntries` and final recheck; an
-   unfit tail fails `TOO_MUCH_TOKEN`. Trimmed history means `coverage: "gap"`; evidence also searches its uncovered
-   messages, in a rebuilt card that keeps them out, dropped if it fails a fitting send. `selectMemory`'s comment holds
-   the empty-card gap rule: only `gapTokens` drives the writer's question and gap stage.
+3. `trimHistoryToContext` in `server/src/prompt/memory/hypav3.ts` protects the window and older continue target via
+   `protectedEntries` and final recheck; an unfit tail fails `TOO_MUCH_TOKEN`. Trimmed history means `coverage: "gap"`;
+   evidence also searches its uncovered messages, in a rebuilt card that keeps them out, dropped if it fails a fitting
+   send. `selectMemory`'s comment holds the empty-card gap rule: only `gapTokens` drives the writer's question and gap
+   stage.
 4. Before any embedding, required pages over the cap make the card refuse and the step return `alert`, and a budget the
    card's smallest frame fills embeds nothing. Assembly raises `SendError` naming pages and tokens, ending previews and
    the gap run's second selection, with no `inlayErrorResponse` reply.

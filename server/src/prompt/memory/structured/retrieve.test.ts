@@ -413,33 +413,6 @@ describe("selectMemory evidence from trimmed history", () => {
         expect(result.coverage).toBe("gap");
     });
 
-    it("counts each distinct system text once across preflight and the evidence rebuild", async () => {
-        const counted: string[] = [];
-        const request = selectionInput([{ chatId: "answer", role: "char", data: longAnswer }, ...tail], {
-            tokenizer: {
-                tokenizeChat: async ({ role, content }) => {
-                    if (role === "system") counted.push(content);
-                    return content.length;
-                },
-            },
-        });
-
-        // The required scene displaces the answer, so the evidence rebuild builds a second card.
-        const result = await selectMemory(request, { ...records, pages: [scene] });
-        expect(result.type).toBe("selected");
-        if (result.type !== "selected") throw new Error(JSON.stringify(result));
-        expect(result.items.filter(({ lane }) => lane === "evidence")).toEqual([
-            expect.objectContaining({ id: "answer" }),
-        ]);
-        expect(counted).toEqual(
-            expect.arrayContaining([
-                "[m:scene] scene | currentState: At the vault.",
-                `[m:answer] character: "${answer}"`,
-            ]),
-        );
-        expect(counted).toHaveLength(new Set(counted).size);
-    });
-
     it("does not excerpt an older answer that stays raw after an earlier entry is trimmed", async () => {
         const request = selectionInput([
             { chatId: "unrelated", role: "char", data: "x".repeat(2500) },

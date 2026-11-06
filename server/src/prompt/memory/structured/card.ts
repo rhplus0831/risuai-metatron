@@ -37,34 +37,6 @@ import {
 
 export { itemTag } from "../../../../../shared/structuredMemory.ts";
 
-const countedTokenizers = new WeakSet<MemoryTokenizer>();
-
-/** Share in-flight counts of content-only system chats, preserving an existing wrapper's scope. */
-export function countOnce(tokenizer: MemoryTokenizer): MemoryTokenizer {
-    if (countedTokenizers.has(tokenizer)) return tokenizer;
-    const counts = new Map<string, Promise<number>>();
-    const wrapped: MemoryTokenizer = {
-        tokenizeChat(chat) {
-            if (
-                chat.role !== "system" ||
-                chat.name !== undefined ||
-                chat.multimodals !== undefined ||
-                chat.thoughts !== undefined
-            ) {
-                return tokenizer.tokenizeChat(chat);
-            }
-            let count = counts.get(chat.content);
-            if (count === undefined) {
-                count = tokenizer.tokenizeChat(chat);
-                counts.set(chat.content, count);
-            }
-            return count;
-        },
-    };
-    countedTokenizers.add(wrapped);
-    return wrapped;
-}
-
 type CardParts = { stable: string; volatile: string };
 
 /** The card's answer. `items` are in admission order, none verified yet. */
@@ -215,7 +187,6 @@ export async function preflightMemoryCard(
     tokenizer: MemoryTokenizer,
     { maximum, lanes }: { maximum: number; lanes: readonly Lane<LaneCandidate>[] },
 ): Promise<RequiredOverLimit | { type: "ready"; embeddings: boolean }> {
-    tokenizer = countOnce(tokenizer);
     const required = lanes.filter(({ lane }) => lane === "required");
     const card = await buildMemoryCard(tokenizer, { maximum, lanes: required });
     if (card.type === "requiredOverLimit") return card;
@@ -240,13 +211,11 @@ export async function preflightMemoryCard(
  * no item left, both parts are empty and the card costs nothing.
  *
  * A lane's lines are counted together, so a tokenizer that goes over the network uses its own queue.
- * Each distinct text is counted once per build.
  */
 export async function buildMemoryCard(
     tokenizer: MemoryTokenizer,
     { maximum, lanes }: { maximum: number; lanes: readonly Lane<LaneCandidate>[] },
 ): Promise<MemoryCard | RequiredOverLimit> {
-    tokenizer = countOnce(tokenizer);
     const count = (content: string) => tokenizer.tokenizeChat({ role: "system", content });
     const partTokens = async ({ stable, volatile }: CardParts) =>
         (await count(stable)) + (volatile === "" ? 0 : await count(volatile));

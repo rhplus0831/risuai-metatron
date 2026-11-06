@@ -22,7 +22,7 @@ import type { MemoryContents } from "../../../data/memoryStore.ts";
 import type { ResourceStore } from "../../../data/resourceStore.ts";
 import type { MemoryHost, MemoryTokenizer } from "../host.ts";
 import { blankEntry, trimHistoryToContext } from "../hypav3.ts";
-import { buildMemoryCard, countOnce, preflightMemoryCard, type MemoryCard, type RequiredOverLimit } from "./card.ts";
+import { buildMemoryCard, preflightMemoryCard, type MemoryCard, type RequiredOverLimit } from "./card.ts";
 import {
     coveredMessages,
     type ExcludedItem,
@@ -229,7 +229,6 @@ function cardEntries(
 /**
  * What `records` make of the send's history. Every step counts with the job's tokenizer: the entries
  * that leave come off the count, the card's entries go on it, then the trim runs over what is left.
- * Content-only system chats count each distinct text once per selection.
  * When it removes older uncovered messages and evidence is on, that lane searches them too and the
  * card is rebuilt. Its placed entries' token difference adjusts the count; growth continues trimming
  * from the history already kept, while shrinkage never restores removed entries. Excerpts therefore
@@ -249,8 +248,7 @@ export async function selectMemory(
     input: MemorySelectionInput,
     records: Pick<MemoryRecords, "events" | "threads" | "pages" | "stage">,
 ): Promise<MemorySelection> {
-    const { host, settings, chats, historyStart, entries, maxContextTokens, continueMessageId } = input;
-    const tokenizer = countOnce(input.tokenizer);
+    const { host, settings, tokenizer, chats, historyStart, entries, maxContextTokens, continueMessageId } = input;
     const structured = normalizeStructuredMemorySettings(settings.structured);
     const events = reconcileEvents(records.events, input.messages);
     const continued =
