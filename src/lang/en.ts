@@ -3263,7 +3263,7 @@ export const languageEnglish = {
         snapshots: "Resource snapshots",
         thumbnails: "Thumbnails",
         staging: "Staging",
-        unmanaged: "Unmanaged",
+        unmanaged: "Unrecognized files in assets",
         referencedLogical: "Referenced logical size",
         referencedDeduped: "Referenced deduplicated size",
         referencedSavings: "Deduplication savings",
@@ -3336,7 +3336,18 @@ export const languageEnglish = {
         title: "Storage",
         navLabel: "Storage",
         description: "Server disk usage, asset cleanup, and resource snapshots.",
-        overview: { title: "Overview" },
+        overview: {
+            title: "Overview",
+            outside: "Used outside RisuAI",
+            outsideHelp:
+                "Other programs, files in save/ outside the measured folders, and blocks the filesystem reserves.",
+            free: "Free",
+            diskUnknown: "Disk size unknown; only measured usage is shown.",
+            reclaimable: "Reclaimable",
+            snapshotsCard: "Snapshots",
+            snapshotCount: (count: number) => `${count.toLocaleString()} snapshots`,
+            dedupeSaved: "Saved by deduplication",
+        },
         cleanup: { title: "Cleanup" },
         snapshots: {
             title: "Snapshots",
@@ -3345,7 +3356,11 @@ export const languageEnglish = {
             editLabel: "Edit label",
             backupsLink: "Manage server snapshots in Storage",
         },
-        owners: { title: "Usage by owner" },
+        owners: {
+            title: "Usage by owner",
+            showAll: (count: number) => `Show all (${count.toLocaleString()})`,
+            showFewer: "Show top ten",
+        },
         details: { title: "Details" },
     },
     requestHistoryLabels: {
