@@ -1,6 +1,6 @@
 # Storage Settings Page Plan
 
-Status: drafted 2026-11-07; landed: none. Source: the same day's design discussion with the owner over
+Status: drafted 2026-11-07; landed: A (9f7094ec6). Source: the same day's design discussion with the owner over
 `src/lib/Setting/Pages/Advanced/StoragePanel.svelte`, the [settings-i18n](../structure/settings-i18n.md),
 [app-shell](../structure/app-shell.md), [assets](../structure/assets.md) and
 [self-host-server](../structure/self-host-server.md) guides. Every design decision below is the owner's answer from that
