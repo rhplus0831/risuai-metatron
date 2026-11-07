@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (8)
 - [Chat screen and input](#chat-screen-and-input) (5)
-- [Client and plugins](#client-and-plugins) (19)
+- [Client and plugins](#client-and-plugins) (20)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (9)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (1)
@@ -426,6 +426,14 @@ Three writers can leave a nested number field `NaN` or `null`, which the record 
 
 **Why it matters:** a malformed plugin or vibe file, or an emptied VOICEVOX field, leaves a `null` that the readers pass on (stableDiff.ts falls back with `|| 1`; VOICEVOX gets `null` scales).
 **Suggested handling:** validate with `Number.isFinite` at the two parse sites and fall back to the field default for an emptied VOICEVOX input.
+
+### StorageController.owners has no reader
+
+`src/lib/Setting/Pages/Storage/storageController.svelte.ts` (~57) `owners = $derived(...)` sorts every owner on each report, but since the Storage Settings Page run (slice B, 2026-11-07) `StorageOwners.svelte` sorts and caps owners through `Storage/storageUsage.ts` `getTopOwners`. Slice B could not edit the controller (slice C owned it), so the derived stayed. Owner: settings-i18n.
+
+**Why it matters:** a dead sort on every report refresh, and it misleads readers about where the owner list is computed.
+
+**Suggested handling:** remove it after `rg "controller\.owners"` confirms no reader.
 
 ## Build, drivers, and e2e
 
