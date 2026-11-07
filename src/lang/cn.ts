@@ -977,7 +977,6 @@ export const languageChinese = {
     blockMode: "区块",
     helpBlock: "帮助",
     hideChatIcon: "隐藏头像",
-    loadInternalBackup: "读取内部备份",
     createCopy: "新建副本",
     chatOptions: "聊天选项",
     parameters: "参数",

@@ -58,7 +58,6 @@ export function createGlobalApiMock(overrides: ModuleMockOverrides<GlobalApiModu
         fetchNative: vi.fn(async () => new Response()),
         toggleFullscreen: vi.fn(),
         trimNonLatin: vi.fn((data: string) => data),
-        loadInternalBackup: vi.fn(async () => {}),
         getLanguageCodes: vi.fn(() => []),
         getVersionString: vi.fn(() => ""),
         aiLawApplies: vi.fn(() => false),

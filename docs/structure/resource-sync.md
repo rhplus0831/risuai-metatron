@@ -271,8 +271,8 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 
 - The chain is the records and the chat module → `resourceSync.svelte.ts` → `resourceClient.ts` → `authFetch`
   (`serverAuth.ts`) → `/api/resources`.
-- `bootstrap.ts`: [boot load](#boot-load). `drive/backuplocal.ts`: `flushResources` and the backup routes;
-  `globalApi.loadInternalBackup` restores through the routes only (no flush).
+- `bootstrap.ts`: [boot load](#boot-load). `drive/backuplocal.ts`: `flushResources` and the backup routes; the Storage
+  page's snapshot restore uses the routes only (no flush).
 - `permissionStore.ts`, `inlays.ts`: own resources through `resourceClient.ts`. `refreshPluginPermissions` keeps a newer
   copy it holds. An inlay metadata read begun before an invalidation or this tab's write fills no cache; an on-demand
   read retries twice, then returns uncached.

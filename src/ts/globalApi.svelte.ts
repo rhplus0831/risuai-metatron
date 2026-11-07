@@ -15,13 +15,12 @@ import {
     OpenRealmStore,
 } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
-import { alertConfirm, alertError, alertMd, alertNormal, alertNormalWait, alertSelect, waitAlert } from "./alert";
+import { alertConfirm, alertError, alertMd, alertNormal, waitAlert } from "./alert";
 import { hasher } from "./parser/parser.svelte";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
 import { chatEntry, chatList, currentChatRef, ensureChat, selectChat, type ChatRef } from "./storage/chatStore.svelte";
 import { selectCharacter, setChatOpen } from "./storage/selection.svelte";
-import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storage/resourceClient";
 import {
     readAsset,
     readAssets,
@@ -1270,39 +1269,6 @@ export class BlankWriter {
     async end() {
         //do nothing, just to make compatible with other writer
     }
-}
-
-/**
- * Lets the user pick one of the server's resource snapshots (taken every 10 minutes while data
- * changes, 20 kept) and restores it; the app then reloads.
- */
-export async function loadInternalBackup() {
-    let backups: Awaited<ReturnType<typeof listBackups>>;
-    try {
-        backups = await listBackups();
-    } catch (error) {
-        alertError(error instanceof Error ? error.message : String(error));
-        return;
-    }
-
-    const selectOptions = ["Cancel", ...backups.map((backup) => new Date(backup.createdAt).toLocaleString())];
-
-    const alertResult = parseInt(await alertSelect(selectOptions)) - 1;
-
-    if (!(alertResult >= 0 && alertResult < backups.length)) {
-        return;
-    }
-
-    try {
-        await restoreBackup(backups[alertResult].id);
-    } catch (error) {
-        if (!(error instanceof ResourceEpochMismatchError)) {
-            alertError(error instanceof Error ? error.message : String(error));
-            return;
-        }
-    }
-    await alertNormalWait("Loaded backup");
-    location.reload();
 }
 
 export class PerformanceDebugger {

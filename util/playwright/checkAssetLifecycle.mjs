@@ -567,7 +567,8 @@ try {
             `/api/backups/${id}`,
         );
         await panelReady();
-        await snapshotRow(label).getByRole("button", { name: "Label", exact: true }).click();
+        await snapshotRow(label).getByRole("button", { name: "Snapshot actions", exact: true }).click();
+        await snapshotRow(label).getByRole("button", { name: "Edit label", exact: true }).click();
         const newLabel = "Lifecycle retained C";
         await snapshotRow(label).getByRole("textbox", { name: "Label", exact: true }).fill(newLabel);
         await panelRequest(
@@ -590,6 +591,7 @@ try {
         assert.equal(held.heldBytes, fixture.third.bytes.length);
         assert.equal(await snapshotRow(label).getByText(`${held.heldBytes} B`, { exact: true }).count(), 1);
         assert.deepEqual(await readFile(assetFile(fixture.third.key)), fixture.third.bytes);
+        await snapshotRow(label).getByRole("button", { name: "Snapshot actions", exact: true }).click();
         await panelRequest(
             snapshotRow(label).getByRole("button", { name: "Restore", exact: true }),
             "POST",
@@ -622,6 +624,7 @@ try {
             `/api/backups/${id}`,
         );
         await panelReady();
+        await snapshotRow(label).getByRole("button", { name: "Snapshot actions", exact: true }).click();
         await panelRequest(
             snapshotRow(label).getByRole("button", { name: "Delete", exact: true }),
             "DELETE",

@@ -19,9 +19,9 @@
 
 ### Other `globalApi` exports
 
-- `src/ts/globalApi.svelte.ts`: the application-wide facade. Read export comments for save (`saving`,
-  `loadInternalBackup`), writers (`LocalWriter`, `VirtualWriter`, `BlankWriter`, `AppendableBuffer`), chat navigation
-  (`changeChatTo`, `openPinnedChat`, `createChatCopyName`), `downloadFile`, `openURL`, and `toggleFullscreen`.
+- `src/ts/globalApi.svelte.ts`: the application-wide facade. Read export comments for save (`saving`), writers
+  (`LocalWriter`, `VirtualWriter`, `BlankWriter`, `AppendableBuffer`), chat navigation (`changeChatTo`,
+  `openPinnedChat`, `createChatCopyName`), `downloadFile`, `openURL`, and `toggleFullscreen`.
 - Other visible helpers include `getLanguageCodes` (translation and subtitle pickers), `getVersionString` (the
   compatibility version shown in the UI), and `aiLawApplies`/`aiWatermarkingLawApplies` (chat and parser decisions).
   `checkCharOrder` is re-exported from this facade; its implementation belongs to `src/ts/storage/characterOrder.ts`.

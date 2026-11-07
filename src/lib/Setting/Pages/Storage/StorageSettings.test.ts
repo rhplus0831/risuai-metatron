@@ -151,7 +151,9 @@ async function open() {
     await settle();
 }
 function button(label: string, within: ParentNode = target) {
-    const found = [...within.querySelectorAll("button")].find((item) => item.textContent?.trim() === label);
+    const found = [...within.querySelectorAll("button")].find(
+        (item) => item.textContent?.trim() === label || item.getAttribute("aria-label") === label,
+    );
     expect(found, `button ${label}`).toBeDefined();
     return found!;
 }
@@ -161,10 +163,24 @@ async function click(label: string, within: ParentNode = target) {
 }
 function snapshotRow(label: string) {
     const row = [...target.querySelectorAll("li")].find((item) =>
-        [...item.querySelectorAll("dd")].some((cell) => cell.textContent === label),
+        [...item.querySelectorAll("span")].some((cell) => cell.textContent === label),
     );
     expect(row, `snapshot ${label}`).toBeDefined();
     return row!;
+}
+/** A snapshot row's ⋯ menu item, opening that row's menu first when it is closed. */
+async function snapshotAction(action: string, label: string) {
+    const trigger = button(language.storagePage.snapshots.actions, snapshotRow(label));
+    if (trigger.getAttribute("aria-expanded") !== "true")
+        await click(language.storagePage.snapshots.actions, snapshotRow(label));
+    return button(action, snapshotRow(label));
+}
+async function clickSnapshotAction(action: string, label: string) {
+    (await snapshotAction(action, label)).click();
+    await settle();
+}
+function heldBytes(label: string) {
+    return snapshotRow(label).querySelector(`[title="${language.storage.heldBytes}"]`)?.textContent?.trim();
 }
 function input(label: string, value: string, within: ParentNode = target) {
     const field = [...within.querySelectorAll<HTMLInputElement>("input")].find(
@@ -191,6 +207,64 @@ function detail(within: ParentNode, label: string) {
 }
 
 describe("StorageSettings", () => {
+    it("shows the no-label text in an unlabeled snapshot row", async () => {
+        deps.listBackups.mockResolvedValue([{ ...snapshot("unlabeled", ""), label: null }]);
+        await open();
+
+        const row = target.querySelector('[data-settings-section="storage.snapshots"] li');
+        expect(row).not.toBeNull();
+        expect(row!.textContent).toContain(language.storagePage.snapshots.noLabel);
+    });
+
+    it("closes a snapshot's actions menu on Escape", async () => {
+        await open();
+        const row = snapshotRow("Live A");
+        const trigger = button(language.storagePage.snapshots.actions, row);
+        await click(language.storagePage.snapshots.actions, row);
+        expect(row.querySelector('[role="menu"]')).not.toBeNull();
+        expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+        button(language.storagePage.snapshots.editLabel, row).dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+        );
+        await settle();
+
+        expect(row.querySelector('[role="menu"]')).toBeNull();
+        expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("closes a snapshot's actions menu on a click outside the menu", async () => {
+        await open();
+        const row = snapshotRow("Live A");
+        const trigger = button(language.storagePage.snapshots.actions, row);
+        await click(language.storagePage.snapshots.actions, row);
+        expect(row.querySelector('[role="menu"]')).not.toBeNull();
+        expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+        // The row's label is outside the menu even though it belongs to the same snapshot.
+        [...row.querySelectorAll("span")].find((cell) => cell.textContent === "Live A")!.click();
+        await settle();
+
+        expect(row.querySelector('[role="menu"]')).toBeNull();
+        expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("closes the first snapshot's actions menu when another row's menu opens", async () => {
+        await open();
+        const first = snapshotRow("Live A");
+        const second = snapshotRow("Live B");
+        await click(language.storagePage.snapshots.actions, first);
+        expect(first.querySelector('[role="menu"]')).not.toBeNull();
+
+        await click(language.storagePage.snapshots.actions, second);
+
+        expect(first.querySelector('[role="menu"]')).toBeNull();
+        expect(button(language.storagePage.snapshots.actions, first).getAttribute("aria-expanded")).toBe("false");
+        expect(second.querySelector('[role="menu"]')).not.toBeNull();
+        expect(button(language.storagePage.snapshots.actions, second).getAttribute("aria-expanded")).toBe("true");
+        expect(target.querySelectorAll('[role="menu"]')).toHaveLength(1);
+    });
+
     it("reads storage without writes and shows totals, owners, candidates, inlays, and live snapshots matched by id", async () => {
         deps.listBackups.mockResolvedValue([
             snapshot("snap-a", "Live A"),
@@ -250,9 +324,9 @@ describe("StorageSettings", () => {
         expect(target.textContent).toContain(language.storage.candidates);
         expect(target.textContent).toContain(language.storage.orphanInlays);
         expect(target.textContent).toContain("assets/inlay-first.png");
-        expect(detail(snapshotRow("Live A"), language.storage.heldBytes)).toBe(bytes(24));
-        expect(detail(snapshotRow("Live B"), language.storage.heldBytes)).toBe(bytes(42));
-        expect(detail(snapshotRow("New snapshot"), language.storage.heldBytes)).toBe(language.storage.missingValue);
+        expect(heldBytes("Live A")).toBe(bytes(24));
+        expect(heldBytes("Live B")).toBe(bytes(42));
+        expect(heldBytes("New snapshot")).toBe(language.storage.missingValue);
         expect(target.textContent).not.toContain("Removed snapshot");
         expect(deps.readStorageReport).toHaveBeenCalledExactlyOnceWith();
         expect(deps.listBackups).toHaveBeenCalledExactlyOnceWith();
@@ -278,7 +352,7 @@ describe("StorageSettings", () => {
         await open();
         // Completion must refresh even if the status version has not changed.
         deps.readStorageReport.mockResolvedValue(report());
-        await click(language.storage.label, snapshotRow("Live A"));
+        await clickSnapshotAction(language.storagePage.snapshots.editLabel, "Live A");
         await click(language.storage.scan);
         expect(deps.startStorageScan).toHaveBeenCalledExactlyOnceWith();
         expect(target.textContent).toContain(language.storage.scanning);
@@ -289,6 +363,9 @@ describe("StorageSettings", () => {
             .map((item) => item.getAttribute("aria-label") ?? item.textContent?.trim() ?? item.value)
             // Cancel only closes the open label editor, so it stays enabled during a scan.
             .filter((name) => name !== language.storage.cancel);
+        const actionsDisabledWhileRunning = ["Live A", "Live B"].map(
+            (label) => button(language.storagePage.snapshots.actions, snapshotRow(label)).disabled,
+        );
         for (const title of [language.storagePage.owners.title, language.storagePage.details.title]) {
             expect(button(title).disabled).toBe(false);
             await click(title);
@@ -310,6 +387,8 @@ describe("StorageSettings", () => {
         expect(deps.readStorageStatus).toHaveBeenCalledTimes(3);
         expect(deps.readStorageReport).toHaveBeenCalledTimes(2);
         expect(enabledWhileRunning).toEqual([]);
+        // The ⋯ triggers carry aria-expanded, so the sweep above skips them.
+        expect(actionsDisabledWhileRunning).toEqual([true, true]);
     });
 
     it("blocks cleanup for incomplete scans, marks named unreadable snapshots, and still allows their deletion", async () => {
@@ -344,10 +423,10 @@ describe("StorageSettings", () => {
         expect(deps.sweepAssets).not.toHaveBeenCalled();
         for (const label of ["Live A", "Live B"]) {
             expect(snapshotRow(label).textContent).toContain(language.storage.unreadableSnapshot);
-            expect(button(language.storage.deleteSnapshot, snapshotRow(label)).disabled).toBe(false);
+            expect((await snapshotAction(language.storage.deleteSnapshot, label)).disabled).toBe(false);
         }
         expect(snapshotRow("Readable").textContent).not.toContain(language.storage.unreadableSnapshot);
-        await click(language.storage.deleteSnapshot, snapshotRow("Live B"));
+        await clickSnapshotAction(language.storage.deleteSnapshot, "Live B");
         expect(deps.alertConfirm).toHaveBeenCalledWith(
             language.storage.deleteSnapshotConfirm(new Date("2023-11-13T12:00:00.000Z").toLocaleString()),
         );
@@ -424,14 +503,14 @@ describe("StorageSettings", () => {
         expect(deps.updateSnapshot).toHaveBeenLastCalledWith("snap-a", { pinned: true });
         await click(language.storage.unpin, snapshotRow("Live B"));
         expect(deps.updateSnapshot).toHaveBeenLastCalledWith("snap-b", { pinned: false });
-        await click(language.storage.label, snapshotRow("Live B"));
+        await clickSnapshotAction(language.storagePage.snapshots.editLabel, "Live B");
         input(language.storage.snapshotLabel, "Keep this snapshot", snapshotRow("Live B"));
         await click(language.storage.save, snapshotRow("Live B"));
         expect(deps.updateSnapshot).toHaveBeenLastCalledWith("snap-b", { label: "Keep this snapshot" });
         deps.alertConfirm.mockResolvedValueOnce(false);
-        await click(language.storage.deleteSnapshot, snapshotRow("Live A"));
+        await clickSnapshotAction(language.storage.deleteSnapshot, "Live A");
         expect(deps.deleteSnapshot).not.toHaveBeenCalled();
-        await click(language.storage.deleteSnapshot, snapshotRow("Live A"));
+        await clickSnapshotAction(language.storage.deleteSnapshot, "Live A");
         expect(deps.alertConfirm).toHaveBeenLastCalledWith(
             language.storage.deleteSnapshotConfirm(new Date("2023-11-13T12:00:00.000Z").toLocaleString()),
         );
@@ -451,13 +530,13 @@ describe("StorageSettings", () => {
         const reload = vi.spyOn(location, "reload").mockImplementation(() => {});
         await open();
         deps.alertConfirm.mockResolvedValueOnce(false);
-        await click(language.storage.restore, snapshotRow("Live B"));
+        await clickSnapshotAction(language.storage.restore, "Live B");
         expect(deps.restoreBackup).not.toHaveBeenCalled();
         expect(reload).not.toHaveBeenCalled();
         const notice = deferred<void>();
         deps.alertNormalWait.mockReturnValueOnce(notice.promise);
         deps.restoreBackup.mockResolvedValueOnce("restored-epoch");
-        await click(language.storage.restore, snapshotRow("Live B"));
+        await clickSnapshotAction(language.storage.restore, "Live B");
         expect(deps.alertConfirm).toHaveBeenLastCalledWith(
             language.storage.restoreConfirm(new Date("2023-11-13T12:00:00.000Z").toLocaleString()),
         );
@@ -469,7 +548,7 @@ describe("StorageSettings", () => {
         expect(reload).toHaveBeenCalledTimes(1);
         deps.alertNormalWait.mockClear();
         deps.restoreBackup.mockRejectedValueOnce(new ResourceEpochMismatchError("new-epoch"));
-        await click(language.storage.restore, snapshotRow("Live A"));
+        await clickSnapshotAction(language.storage.restore, "Live A");
         expect(deps.restoreBackup).toHaveBeenLastCalledWith("snap-a");
         expect(deps.alertNormalWait).toHaveBeenCalledExactlyOnceWith(language.storage.restoreConflict);
         expect(deps.alertNormalWait).not.toHaveBeenCalledWith(language.storage.restored);
@@ -482,9 +561,9 @@ describe("StorageSettings", () => {
         expect(deps.readStorageReport).toHaveBeenCalledExactlyOnceWith();
         expect(deps.listBackups).toHaveBeenCalledExactlyOnceWith();
         expect(target.querySelector('[role="alert"]')?.textContent).toBe("Storage report unavailable");
-        expect(detail(snapshotRow("Live A"), language.storage.heldBytes)).toBe(language.storage.missingValue);
-        expect(detail(snapshotRow("Live B"), language.storage.heldBytes)).toBe(language.storage.missingValue);
-        expect(button(language.storage.restore, snapshotRow("Live A")).disabled).toBe(false);
+        expect(heldBytes("Live A")).toBe(language.storage.missingValue);
+        expect(heldBytes("Live B")).toBe(language.storage.missingValue);
+        expect((await snapshotAction(language.storage.restore, "Live A")).disabled).toBe(false);
     });
 
     it("stops scheduled status polling when the page unmounts during a scan", async () => {

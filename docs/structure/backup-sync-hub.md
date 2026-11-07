@@ -58,10 +58,10 @@ and keeps what spans files.
   client maps to `language.upstreamImport`.
 - `shared/upstreamExportReport.ts`: the export report and routes (`UpstreamExportReport`, `UpstreamExportRequest`),
   codes mapped to `language.upstreamExport`. `shared/backups.ts`: `selectPartialBackupAssets`.
-- `src/ts/globalApi.svelte.ts` `loadInternalBackup` ("Load Internal Backup" in `UserSettings.svelte`; the file is
-  [global-api](global-api.md)'s): client entry for restoring and reloading a server snapshot. Snapshot retention,
-  validation, and restore ordering are in [server-resources](server-resources.md#snapshots-and-restore); checkpoint
-  tables are in its [Checkpoint tables](server-resources.md#checkpoint-tables).
+- `src/lib/Setting/Pages/Storage/storageController.svelte.ts` restores a server snapshot and reloads (the Storage page's
+  snapshots section; `UserSettings.svelte` links there). Snapshot retention, validation, and restore ordering are in
+  [server-resources](server-resources.md#snapshots-and-restore); checkpoint tables are in its
+  [Checkpoint tables](server-resources.md#checkpoint-tables).
 - Realm, the Realm part of `src/ts/characterCards.ts`: `hubURL`, `getRisuHub`, `hubAdditionalHTML`, `hubType`,
   `getRealmInfo`, `showRealmInfoStore`, `downloadRisuHub`, `commitRealmCard`, `getHubResources`; its staged import
   client `src/ts/storage/realmImportClient.ts` (`prepareRealmImport`, `commitRealmImport`, `cancelRealmImport`).

@@ -1,7 +1,6 @@
 <script lang="ts">
     import { language } from "src/lang";
     import { alertConfirm } from "src/ts/alert";
-    import { loadInternalBackup } from "src/ts/globalApi.svelte";
     import {
         LoadLocalBackup,
         SaveLocalBackup,
@@ -10,6 +9,9 @@
     } from "src/ts/drive/backuplocal";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import { exportAsDataset } from "src/ts/storage/exportAsDataset";
+    import { openSetting } from "src/ts/setting/settingJump.svelte";
+    import type { SettingHit } from "src/ts/setting/searchIndex";
+    import { STORAGE_SETTINGS_MENU } from "src/ts/settingsMenu";
 </script>
 
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.backups}</h2>
@@ -58,16 +60,22 @@
     {language.loadBackupLocal}
 </Button>
 
-<Button
-    onclick={async () => {
-        if ((await alertConfirm(language.backupLoadConfirm)) && (await alertConfirm(language.backupLoadConfirm2))) {
-            loadInternalBackup();
-        }
-    }}
-    className="mt-2"
+<button
+    type="button"
+    class="mt-2 rounded-sm text-textcolor underline underline-offset-4 hover:text-textcolor2 focus-visible:ring-2 focus-visible:ring-selected"
+    onclick={() =>
+        openSetting({
+            kind: "section",
+            id: "storage.snapshots",
+            label: language.storagePage.snapshots.title,
+            breadcrumb: [language.storagePage.title],
+            target: { menu: STORAGE_SETTINGS_MENU, sectionId: "storage.snapshots" },
+            available: true,
+            score: 0,
+        } satisfies SettingHit)}
 >
-    {language.loadInternalBackup}
-</Button>
+    {language.storagePage.snapshots.backupsLink}
+</button>
 
 <Button onclick={exportAsDataset} className="mt-2">
     {language.exportAsDataset}
