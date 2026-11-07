@@ -45,7 +45,8 @@ vi.mock("src/ts/alert", async () =>
 
 import { language } from "src/lang";
 import { ResourceEpochMismatchError, ResourceRequestError } from "src/ts/storage/resourceClient";
-import StoragePanel from "./StoragePanel.svelte";
+import StorageSettings from "../StorageSettings.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 
 const SCANNED_AT = 1_700_000_000_000;
 const bytes = (value: number) => `${value} ${language.storage.byteUnits[0]}`;
@@ -123,6 +124,7 @@ async function settle() {
 let target: HTMLElement;
 let mounted: ReturnType<typeof mount> | undefined;
 beforeEach(() => {
+    installFlatDatabase({ characters: [] });
     vi.resetAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(SCANNED_AT);
@@ -144,7 +146,7 @@ afterEach(async () => {
 });
 
 async function open() {
-    mounted = mount(StoragePanel, { target });
+    mounted = mount(StorageSettings, { target });
     flushSync();
     await settle();
 }
@@ -188,7 +190,7 @@ function detail(within: ParentNode, label: string) {
     return term!.nextElementSibling?.textContent;
 }
 
-describe("StoragePanel", () => {
+describe("StorageSettings", () => {
     it("reads storage without writes and shows totals, owners, candidates, inlays, and live snapshots matched by id", async () => {
         deps.listBackups.mockResolvedValue([
             snapshot("snap-a", "Live A"),
@@ -196,8 +198,16 @@ describe("StoragePanel", () => {
             snapshot("new", "New snapshot"),
         ]);
         await open();
-        expect(deps.readStorageReport).toHaveBeenCalledExactlyOnceWith();
-        expect(deps.listBackups).toHaveBeenCalledExactlyOnceWith();
+        expect(
+            [...target.querySelectorAll("[data-settings-section]")].map((section) =>
+                section.getAttribute("data-settings-section"),
+            ),
+        ).toEqual(["storage.overview", "storage.cleanup", "storage.snapshots", "storage.owners", "storage.details"]);
+        for (const title of [language.storagePage.owners.title, language.storagePage.details.title]) {
+            expect(button(title).getAttribute("aria-expanded")).toBe("false");
+            await click(title);
+            expect(button(title).getAttribute("aria-expanded")).toBe("true");
+        }
         const totals = [
             [language.storage.diskFree, bytes(501)],
             [language.storage.diskTotal, bytes(901)],
@@ -244,6 +254,8 @@ describe("StoragePanel", () => {
         expect(detail(snapshotRow("Live B"), language.storage.heldBytes)).toBe(bytes(42));
         expect(detail(snapshotRow("New snapshot"), language.storage.heldBytes)).toBe(language.storage.missingValue);
         expect(target.textContent).not.toContain("Removed snapshot");
+        expect(deps.readStorageReport).toHaveBeenCalledExactlyOnceWith();
+        expect(deps.listBackups).toHaveBeenCalledExactlyOnceWith();
         for (const write of [
             deps.startStorageScan,
             deps.sweepAssets,
@@ -257,20 +269,32 @@ describe("StoragePanel", () => {
         expect(deps.alertConfirm).not.toHaveBeenCalled();
     });
 
-    it("starts a scan, polls status until it finishes, reads the full report once at the end, and disables action buttons while running", async () => {
+    it("starts a scan, polls status until it finishes, reads the full report once at the end, and disables action controls while keeping accordions usable", async () => {
         deps.startStorageScan.mockResolvedValue(report({ running: true }));
         deps.readStorageStatus
             .mockResolvedValueOnce({ running: true, version: 1 })
             .mockResolvedValueOnce({ running: true, version: 1 })
-            .mockResolvedValue({ running: false, version: 2 });
+            .mockResolvedValue({ running: false, version: 1 });
         await open();
-        deps.readStorageReport.mockResolvedValue(report({ version: 2 }));
+        // Completion must refresh even if the status version has not changed.
+        deps.readStorageReport.mockResolvedValue(report());
+        await click(language.storage.label, snapshotRow("Live A"));
         await click(language.storage.scan);
         expect(deps.startStorageScan).toHaveBeenCalledExactlyOnceWith();
         expect(target.textContent).toContain(language.storage.scanning);
-        const enabledWhileRunning = [...target.querySelectorAll("button")]
+        const enabledWhileRunning = [
+            ...target.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button:not([aria-expanded]), input"),
+        ]
             .filter((item) => !item.disabled)
-            .map((item) => item.textContent?.trim());
+            .map((item) => item.getAttribute("aria-label") ?? item.textContent?.trim() ?? item.value)
+            // Cancel only closes the open label editor, so it stays enabled during a scan.
+            .filter((name) => name !== language.storage.cancel);
+        for (const title of [language.storagePage.owners.title, language.storagePage.details.title]) {
+            expect(button(title).disabled).toBe(false);
+            await click(title);
+            expect(button(title).getAttribute("aria-expanded")).toBe("true");
+            await click(title);
+        }
         await vi.advanceTimersByTimeAsync(2000);
         flushSync();
         expect(deps.readStorageStatus).toHaveBeenCalledTimes(2);
@@ -286,20 +310,6 @@ describe("StoragePanel", () => {
         expect(deps.readStorageStatus).toHaveBeenCalledTimes(3);
         expect(deps.readStorageReport).toHaveBeenCalledTimes(2);
         expect(enabledWhileRunning).toEqual([]);
-    });
-
-    it("reads the full report when a status poll changes version while the run is still running", async () => {
-        deps.readStorageReport
-            .mockResolvedValueOnce(report({ running: true, version: 1 }))
-            .mockResolvedValue(report({ running: true, version: 2 }));
-        deps.readStorageStatus.mockResolvedValue({ running: true, version: 2 });
-        await open();
-        expect(deps.readStorageReport).toHaveBeenCalledTimes(1);
-        await vi.advanceTimersByTimeAsync(1000);
-        flushSync();
-        expect(deps.readStorageStatus).toHaveBeenCalledExactlyOnceWith();
-        expect(deps.readStorageReport).toHaveBeenCalledTimes(2);
-        expect(target.textContent).toContain(language.storage.scanning);
     });
 
     it("blocks cleanup for incomplete scans, marks named unreadable snapshots, and still allows their deletion", async () => {
@@ -464,5 +474,52 @@ describe("StoragePanel", () => {
         expect(deps.alertNormalWait).toHaveBeenCalledExactlyOnceWith(language.storage.restoreConflict);
         expect(deps.alertNormalWait).not.toHaveBeenCalledWith(language.storage.restored);
         expect(reload).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps live snapshots visible when the report read fails", async () => {
+        deps.readStorageReport.mockRejectedValue(new ResourceRequestError(503, "Storage report unavailable"));
+        await open();
+        expect(deps.readStorageReport).toHaveBeenCalledExactlyOnceWith();
+        expect(deps.listBackups).toHaveBeenCalledExactlyOnceWith();
+        expect(target.querySelector('[role="alert"]')?.textContent).toBe("Storage report unavailable");
+        expect(detail(snapshotRow("Live A"), language.storage.heldBytes)).toBe(language.storage.missingValue);
+        expect(detail(snapshotRow("Live B"), language.storage.heldBytes)).toBe(language.storage.missingValue);
+        expect(button(language.storage.restore, snapshotRow("Live A")).disabled).toBe(false);
+    });
+
+    it("stops scheduled status polling when the page unmounts during a scan", async () => {
+        deps.startStorageScan.mockResolvedValue(report({ running: true }));
+        deps.readStorageStatus.mockResolvedValue({ running: true, version: 1 });
+        await open();
+        await click(language.storage.scan);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(deps.readStorageStatus).toHaveBeenCalledExactlyOnceWith();
+        await unmount(mounted!);
+        mounted = undefined;
+        expect(vi.getTimerCount()).toBe(0);
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(deps.readStorageStatus).toHaveBeenCalledTimes(1);
+        expect(deps.readStorageReport).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores an in-flight status response after unmount without reading a report or rescheduling", async () => {
+        const status = deferred<Awaited<ReturnType<typeof deps.readStorageStatus>>>();
+        deps.startStorageScan.mockResolvedValue(report({ running: true }));
+        deps.readStorageStatus.mockReturnValue(status.promise);
+        await open();
+        await click(language.storage.scan);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(deps.readStorageStatus).toHaveBeenCalledExactlyOnceWith();
+        await unmount(mounted!);
+        mounted = undefined;
+        // A newer report is available, but belongs to a page that has already left.
+        status.resolve({ running: true, version: 2 });
+        await settle();
+        expect(deps.readStorageReport).toHaveBeenCalledTimes(1);
+        expect(deps.listBackups).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(deps.readStorageStatus).toHaveBeenCalledTimes(1);
+        expect(deps.readStorageReport).toHaveBeenCalledTimes(1);
     });
 });

@@ -6,6 +6,7 @@ import {
     MODEL_PROFILES_SETTINGS_MENU,
     MODEL_SETTINGS_MENU,
     PROMPT_SETTINGS_MENU,
+    STORAGE_SETTINGS_MENU,
     TRANSLATION_SETTINGS_MENU,
     VOICE_SETTINGS_MENU,
 } from "../settingsMenu";
@@ -42,6 +43,7 @@ export const SETTINGS_PAGES = {
     modules: 14,
     plugins: 4,
     user: 0,
+    storage: STORAGE_SETTINGS_MENU,
     hotkeys: 15,
     advanced: 6,
     thanks: 77,

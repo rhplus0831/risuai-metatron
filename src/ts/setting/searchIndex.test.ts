@@ -53,6 +53,7 @@ import { memorySettingsSections } from "./memorySettingsData";
 import { modelSettingsSections } from "./modelSettingsData";
 import { promptSettingsSections } from "./promptSettingsData";
 import { searchSettings, SETTING_HIT_LIMIT, SETTING_LOCATIONS, settingLocation, type SettingHit } from "./searchIndex";
+import { storageSettingsSections } from "./storageSettingsData";
 import { translationSettingsSections } from "./translationSettingsData";
 import type { SettingContext } from "./types";
 import { getFullSettingsData } from "./utils";
@@ -61,6 +62,7 @@ const ALL_SECTIONS = [
     ...accessibilitySettingsSections,
     ...interactionSettingsSections,
     ...advancedSettingsSections,
+    ...storageSettingsSections,
     ...translationSettingsSections,
     ...displaySettingsSections,
     ...modelSettingsSections,
@@ -136,6 +138,36 @@ describe("SETTING_LOCATIONS", () => {
 });
 
 describe("searchSettings", () => {
+    it("routes storage and snapshot searches to Storage instead of Advanced", () => {
+        changeLanguage("ko");
+        for (const query of ["snapshot", "스냅샷"]) {
+            const hits = searchSettings(query, ctx());
+            expect(hits).toContainEqual(
+                expect.objectContaining({
+                    target: { menu: 23, sectionId: "storage.snapshots" },
+                    available: true,
+                }),
+            );
+            expect(hits.filter((entry) => entry.target.menu === 6)).toEqual([]);
+        }
+        const hits = searchSettings("storage", ctx());
+        expect(hits).toContainEqual(expect.objectContaining({ kind: "page", target: { menu: 23 }, available: true }));
+        expect(hits.filter((entry) => entry.target.menu === 6)).toEqual([]);
+    });
+
+    it("resolves dotted section titles in Korean and matches their English titles too", () => {
+        changeLanguage("ko");
+        for (const query of ["소유자별 사용량", "Usage by owner"]) {
+            expect(searchSettings(query, ctx())).toContainEqual(
+                expect.objectContaining({
+                    kind: "section",
+                    label: "소유자별 사용량",
+                    target: { menu: 23, sectionId: "storage.owners" },
+                }),
+            );
+        }
+    });
+
     it("finds the context size by its keyword, on Connections", () => {
         expect(hit("context", "params.maxContext")).toMatchObject({
             target: { menu: MODEL_PROFILES_SETTINGS_MENU },

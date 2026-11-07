@@ -12,6 +12,7 @@ import {
     MODEL_PROFILES_SETTINGS_MENU,
     MODEL_SETTINGS_MENU,
     PROMPT_SETTINGS_MENU,
+    STORAGE_SETTINGS_MENU,
     TRANSLATION_SETTINGS_MENU,
     VOICE_SETTINGS_MENU,
 } from "../settingsMenu";
@@ -27,7 +28,15 @@ import { modelAdditionalParamsItems, modelSettingsSections } from "./modelSettin
 import { promptSettingsSections } from "./promptSettingsData";
 import { translationSettingsHeader, translationSettingsSections } from "./translationSettingsData";
 import { voiceSettingsItems } from "./voiceSettingsData";
-import { checkCondition, getFullSettingsData, getLabel, languageText, sectionHasVisibleItems } from "./utils";
+import { storageSettingsHeader, storageSettingsSections } from "./storageSettingsData";
+import {
+    checkCondition,
+    getFullSettingsData,
+    getLabel,
+    languageText,
+    resolveLanguageText,
+    sectionHasVisibleItems,
+} from "./utils";
 
 /**
  * Settings locations and ranked search, with no runes or DOM work. Locations reuse the pages' header
@@ -143,6 +152,8 @@ placeItems(interactionSettingsHeader, { menu: INTERACTION_SETTINGS_MENU });
 placeSections(interactionSettingsSections, { menu: INTERACTION_SETTINGS_MENU });
 placeItems(advancedSettingsHeader, { menu: 6 });
 placeSections(advancedSettingsSections, { menu: 6 });
+placeItems(storageSettingsHeader, { menu: STORAGE_SETTINGS_MENU });
+placeSections(storageSettingsSections, { menu: STORAGE_SETTINGS_MENU });
 placeItems(translationSettingsHeader, { menu: TRANSLATION_SETTINGS_MENU });
 placeSections(translationSettingsSections, { menu: TRANSLATION_SETTINGS_MENU });
 for (const tab of displaySettingsTabs) {
@@ -195,6 +206,7 @@ const PAGES: PageEntry[] = [
     { menu: 10, label: (lang) => lang.language },
     { menu: 15, label: (lang) => lang.hotkey },
     { menu: 0, label: (lang) => lang.backups },
+    { menu: STORAGE_SETTINGS_MENU, label: (lang) => lang.storagePage.title },
     { menu: 6, label: (lang) => lang.advancedSettings },
     { menu: 77, label: (lang) => lang.supporterThanks },
 ];
@@ -212,8 +224,7 @@ const PROMPT_TABS: Record<number, (lang: Language) => string> = {
 };
 
 function englishText(key: string | undefined): string {
-    const value = key ? (languageEnglish as Record<string, unknown>)[key] : undefined;
-    return typeof value === "string" ? value : "";
+    return resolveLanguageText(languageEnglish, key);
 }
 
 function englishLabel(item: SettingItem): string {

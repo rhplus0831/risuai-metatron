@@ -275,13 +275,6 @@ export const advancedSettingsItems: SettingItem[] = [
         componentId: "DiagnosticsPanel",
         keywords: ["diagnostics", "report", "debug", "support", "진단", "보고서"],
     },
-    {
-        type: "custom",
-        id: "adv.storagePanel",
-        labelKey: "settingsSectionStorage",
-        componentId: "StoragePanel",
-        keywords: ["storage", "disk", "assets", "cleanup", "snapshot", "backup", "저장소", "용량", "스냅샷", "백업"],
-    },
 ];
 
 /** The page heading, above the sections. */
@@ -325,12 +318,6 @@ export const advancedSettingsSections: SettingSection[] = [
             "adv.requestHistoryContent",
             "adv.requestHistoryLimit",
         ]),
-    },
-    {
-        id: "advanced.storage",
-        labelKey: "settingsSectionStorage",
-        descriptionKey: "settingsSectionStorageDesc",
-        items: itemsById(advancedSettingsItems, ["adv.storagePanel"]),
     },
     {
         id: "advanced.developer",

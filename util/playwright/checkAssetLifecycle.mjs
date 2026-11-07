@@ -104,11 +104,13 @@ async function panelReady() {
 async function openStorage() {
     await page.evaluate(async () => {
         const stores = await import("/src/ts/stores.svelte.ts");
-        stores.SettingsMenuIndex.set(6);
+        stores.SettingsMenuIndex.set(23);
         stores.settingsOpen.set(true);
     });
-    panel = page.locator('[data-settings-section="advanced.storage"]');
-    await panel.waitFor({ state: "visible" });
+    panel = page
+        .locator(".rs-setting-cont-4")
+        .filter({ has: page.locator('[data-settings-section="storage.cleanup"]') });
+    await panel.locator('[data-settings-section="storage.cleanup"]').waitFor({ state: "visible" });
     await panelReady();
 }
 
@@ -445,6 +447,8 @@ try {
         const owner = report.owners.find((item) => item.kind === "character" && item.id === fixture.a);
         assert.equal(owner?.count, 2, "A owns its profile and the inlay resolved through the message's id");
         assert.equal(owner.bytes, fixture.profile.bytes.length + fixture.media.bytes.length);
+        const ownersToggle = panel.locator('[data-settings-section="storage.owners"] button[aria-expanded]');
+        if ((await ownersToggle.getAttribute("aria-expanded")) !== "true") await ownersToggle.click();
         const row = panel.getByRole("row").filter({ hasText: "Lifecycle A" });
         assert.equal(await row.count(), 1);
         assert.equal(await row.getByRole("cell").nth(2).innerText(), "2");

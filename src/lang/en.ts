@@ -3246,8 +3246,6 @@ export const languageEnglish = {
     diagnosticsSaveNetwork: "Could not reach the server.",
     diagnosticsSaveUnconfirmed: "No answer from the server: the report may or may not have been saved.",
     diagnosticsCopyFailed: "Could not copy the report.",
-    settingsSectionStorage: "Storage",
-    settingsSectionStorageDesc: "Server disk usage, asset cleanup, and resource snapshots.",
     storage: {
         loading: "Reading storage…",
         scanning: "Scanning storage…",
@@ -3334,6 +3332,16 @@ export const languageEnglish = {
         restoreConflict:
             "The resource snapshot was not restored because the server data was replaced elsewhere. The app will reload to show the current data.",
         unreadableSnapshot: "Unreadable snapshot — delete it, then scan again.",
+    },
+    storagePage: {
+        title: "Storage",
+        navLabel: "Storage",
+        description: "Server disk usage, asset cleanup, and resource snapshots.",
+        overview: { title: "Overview" },
+        cleanup: { title: "Cleanup" },
+        snapshots: { title: "Snapshots" },
+        owners: { title: "Usage by owner" },
+        details: { title: "Details" },
     },
     requestHistoryLabels: {
         request: "Request",

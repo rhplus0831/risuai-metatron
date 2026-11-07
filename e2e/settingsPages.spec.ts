@@ -38,6 +38,7 @@ const PAGES: [number, string][] = [
     [14, "modules"],
     [4, "plugins"],
     [0, "files"],
+    [23, "storage"],
     [15, "hotkeys"],
     [6, "advanced"],
 ];

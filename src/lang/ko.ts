@@ -3208,8 +3208,6 @@ export const languageKorean = {
     diagnosticsSaveNetwork: "서버에 연결하지 못했습니다.",
     diagnosticsSaveUnconfirmed: "서버 응답이 없어 보고서 저장 완료 여부를 확인하지 못했습니다.",
     diagnosticsCopyFailed: "보고서를 클립보드에 복사하지 못했습니다.",
-    settingsSectionStorage: "저장소 관리",
-    settingsSectionStorageDesc: "서버 디스크 사용량 확인, 미참조 에셋 정리 및 리소스 스냅샷을 관리합니다.",
     storage: {
         loading: "저장소 정보를 불러오는 중…",
         scanning: "저장소를 스캔하는 중…",
@@ -3298,6 +3296,16 @@ export const languageKorean = {
         restoreConflict:
             "다른 곳에서 서버 데이터가 교체되어 리소스 스냅샷을 복원하지 않았습니다. 최신 데이터를 표시하기 위해 앱을 새로고침합니다.",
         unreadableSnapshot: "읽을 수 없는 스냅샷입니다. 삭제한 뒤 다시 스캔해 주세요.",
+    },
+    storagePage: {
+        title: "저장소 관리",
+        navLabel: "저장소",
+        description: "서버 디스크 사용량 확인, 미참조 에셋 정리 및 리소스 스냅샷을 관리합니다.",
+        overview: { title: "개요" },
+        cleanup: { title: "정리" },
+        snapshots: { title: "스냅샷" },
+        owners: { title: "소유자별 사용량" },
+        details: { title: "세부 정보" },
     },
     requestHistoryLabels: {
         request: "요청",

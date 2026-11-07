@@ -30,10 +30,22 @@ import { memorySettingsItems } from "./memorySettingsData";
 import { modelSettingsItems } from "./modelSettingsData";
 import { promptSettingsItems } from "./promptSettingsData";
 import { voiceSettingsItems } from "./voiceSettingsData";
+import { storageSettingsItems } from "./storageSettingsData";
 
-/** The current language's string for a flat key (`language.xxx`), or `""` when it has none. */
+/** Resolve a flat or dotted language key to a string; missing and non-string values have no label. */
+export function resolveLanguageText(source: unknown, key: string | undefined): string {
+    if (!key) return "";
+    let value = source;
+    for (const segment of key.split(".")) {
+        if (value === null || typeof value !== "object") return "";
+        value = (value as Record<string, unknown>)[segment];
+    }
+    return typeof value === "string" ? value : "";
+}
+
+/** The current language's string for a flat or dotted key, or `""` when it has none. */
 export function languageText(key: string | undefined): string {
-    return (key && (language as any)[key]) || "";
+    return resolveLanguageText(language, key);
 }
 
 /** The current language's `labelKey`, then `fallbackLabel`, else an empty label. */
@@ -164,6 +176,7 @@ export function getFullSettingsData(searchTerm = "") {
         memorySettingsItems,
         voiceSettingsItems,
         interactionSettingsItems,
+        storageSettingsItems,
     );
 
     if (!searchTerm) return full;

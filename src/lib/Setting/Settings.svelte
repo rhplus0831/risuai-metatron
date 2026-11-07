@@ -11,6 +11,7 @@
         CodeIcon,
         ContactIcon,
         DatabaseBackupIcon,
+        HardDriveIcon,
         GlobeIcon,
         LanguagesIcon,
         MonitorIcon,
@@ -36,6 +37,7 @@
     } from "src/ts/setting/settingJump.svelte";
     import DisplaySettings from "./Pages/DisplaySettings.svelte";
     import UserSettings from "./Pages/UserSettings.svelte";
+    import StorageSettings from "./Pages/StorageSettings.svelte";
     import ModelSettings from "./Pages/ModelSettings.svelte";
     import ModelProfilesSettings from "./Pages/ModelProfilesSettings.svelte";
     import ApiKeysSettings from "./Pages/ApiKeysSettings.svelte";
@@ -56,6 +58,7 @@
         IMAGE_GENERATION_SETTINGS_MENU,
         VOICE_SETTINGS_MENU,
         INTERACTION_SETTINGS_MENU,
+        STORAGE_SETTINGS_MENU,
         SettingsMenuIndex,
         settingsOpen,
     } from "src/ts/stores.svelte";
@@ -138,7 +141,10 @@
         {
             id: "data",
             label: () => language.settingsNavGroupData,
-            entries: [{ menus: [0], icon: DatabaseBackupIcon, label: () => language.backups }],
+            entries: [
+                { menus: [0], icon: DatabaseBackupIcon, label: () => language.backups },
+                { menus: [STORAGE_SETTINGS_MENU], icon: HardDriveIcon, label: () => language.storagePage.navLabel },
+            ],
         },
         {
             id: "advanced",
@@ -332,6 +338,8 @@
                     {/if}
                     {#if $SettingsMenuIndex === 0}
                         <UserSettings />
+                    {:else if $SettingsMenuIndex === STORAGE_SETTINGS_MENU}
+                        <StorageSettings />
                     {:else if $SettingsMenuIndex === MODEL_SETTINGS_MENU}
                         <ModelSettings />
                     {:else if $SettingsMenuIndex === MODEL_PROFILES_SETTINGS_MENU}

@@ -17,13 +17,14 @@ import { memorySettingsItems, memorySettingsSections, memorySupaMemoryItems } fr
 import { modelAdditionalParamsItems, modelSettingsItems, modelSettingsSections } from "./modelSettingsData";
 import { promptSettingsItems, promptSettingsSections } from "./promptSettingsData";
 import { itemsById } from "./sections";
+import { storageSettingsHeader, storageSettingsItems, storageSettingsSections } from "./storageSettingsData";
 import {
     translationSettingsHeader,
     translationSettingsItems,
     translationSettingsSections,
 } from "./translationSettingsData";
 import type { SettingContext, SettingItem, SettingSection } from "./types";
-import { getFullSettingsData } from "./utils";
+import { getFullSettingsData, resolveLanguageText } from "./utils";
 import { voiceSettingsItems } from "./voiceSettingsData";
 
 // A sectioned page builds its sections by id from its leaf arrays, so every leaf item is placed
@@ -49,6 +50,12 @@ const PAGES: SectionedPage[] = [
         leaves: [advancedSettingsItems],
         header: advancedSettingsHeader,
         sections: advancedSettingsSections,
+    },
+    {
+        name: "storage",
+        leaves: [storageSettingsItems],
+        header: storageSettingsHeader,
+        sections: storageSettingsSections,
     },
     {
         name: "translation",
@@ -306,8 +313,8 @@ describe("settings page sections", () => {
                 [section.labelKey, section.descriptionKey, section.badgeKey].filter((key) => key !== undefined),
             ),
         );
-        const english = languageEnglish as Record<string, unknown>;
-        expect(keys.filter((key) => typeof english[key] !== "string" || english[key] === "")).toEqual([]);
+        // Keys may be dotted paths into nested objects (`storagePage.overview.title`).
+        expect(keys.filter((key) => resolveLanguageText(languageEnglish, key) === "")).toEqual([]);
     });
 
     it("keeps each dependent pair in one section", () => {

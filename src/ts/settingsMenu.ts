@@ -22,3 +22,5 @@ export const VOICE_SETTINGS_MENU = 20;
 export const TRANSLATION_SETTINGS_MENU = 21;
 /** Chat input, message editing, and the menus and chat list (`InteractionSettings.svelte`). */
 export const INTERACTION_SETTINGS_MENU = 22;
+/** Disk usage, asset cleanup, and resource snapshots (`StorageSettings.svelte`). */
+export const STORAGE_SETTINGS_MENU = 23;

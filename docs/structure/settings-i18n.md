@@ -65,10 +65,8 @@ Each module's rules are in its header or on its exports, and each component's in
 
 - An item's id prefix names the page it came from, not the page it sits on: search the id before assuming its page
   (`acc.`, `adv.`, and `display.` ids sit on several pages).
-- Page data: `src/ts/setting/accessibilitySettingsData.ts`, `src/ts/setting/interactionSettingsData.ts`,
-  `src/ts/setting/advancedSettingsData.ts`, `src/ts/setting/translationSettingsData.ts`,
-  `src/ts/setting/chatFormatSettingsData.ts`, `src/ts/setting/memorySettingsData.ts`,
-  `src/ts/setting/voiceSettingsData.ts`.
+- Page data:
+  `src/ts/setting/{accessibility,interaction,advanced,storage,translation,chatFormat,memory,voice}SettingsData.ts`.
 - `src/ts/setting/displaySettingsData.svelte.ts` (Display's tabs and sections, `requestDisplayTab`,
   `takeRequestedDisplayTab`); `src/ts/setting/modelSettingsData.ts` and `src/ts/setting/promptSettingsData.ts` (global
   items below the Model and Prompt pages' handwritten controls); `src/ts/setting/botSettingsParamsData.ts`
@@ -104,9 +102,9 @@ These live in `src/lib/Setting/Pages/`. `Display/HandoffToggles.svelte` edits de
 `src/ts/network/handoff.ts`, using `serverJob.handoff` strings; its custom registry item belongs to the notification
 section.
 
-- Declarative: `AccessibilitySettings`, `InteractionSettings`, and `AdvancedSettings` (the header array, then
-  `SettingsSections`), `DisplaySettings` (sectioned per tab), `ChatFormatSettings`, and `LanguageSettings` (the UI
-  language only).
+- Declarative: `AccessibilitySettings`, `InteractionSettings`, `AdvancedSettings`, and `StorageSettings` (the header
+  array, then `SettingsSections`), `DisplaySettings` (sectioned per tab), `ChatFormatSettings`, and `LanguageSettings`
+  (the UI language only).
 - Hybrid handwritten/registry pages: `ModelSettings` (the model preset and the aux selector owned by
   [media-aux](media-aux.md)) and `PromptPresetSettings` (the prompt preset). Connections, profile editing, and slot
   selection belong to [LLM requests](llm-requests.md).
@@ -116,9 +114,11 @@ section.
   [State](#state).
 - `ImageGenerationSettings` (provider controls, `NAIApiKey`, WaveSpeed LoRA rows) and `VoiceSettings` (TTS, Emotion
   Images): runtime behavior is in [media](media-aux.md).
+- `StorageSettings` (menu 23): its sections read the page's `Storage/storageController.svelte.ts` (via
+  `Storage/storageContext.ts`), so polling ends with the page.
 - `HotkeySettings` (menu 15): `activeHotkeys` (`src/ts/hotkey.ts`) hides `quickSettings` ([app-shell](app-shell.md)).
 - Other handwritten pages: `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `UserSettings`, `ThanksPage`,
-  `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, `Advanced/StoragePanel`, and `Display/*`.
+  `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, and `Display/*`.
 
 ### Preset lists
 
@@ -240,8 +240,9 @@ section.
   4. Verify `pnpm check`, loading an old DB, language switching, and settings search.
 - Add a setting to a sectioned page: add the `SettingItem` to the page's leaf array as above, then its id to the
   section's `itemsById` list (right under the item its condition reads, if any). A new section needs a page-unique `id`
-  and `en.ts` keys for its title and any description or badge. `src/ts/setting/settingsPageSections.test.ts` fails on an
-  unplaced or doubled item; a new sectioned page goes into its `PAGES`.
+  and `en.ts` keys (dotted paths allowed) for its title and any description or badge.
+  `src/ts/setting/settingsPageSections.test.ts` fails on an unplaced or doubled item; a new sectioned page goes into its
+  `PAGES`.
 - Add a custom-UI setting: register an ID in `customComponents.ts`, then use `type:'custom'`, `componentId`, and
   `componentProps`.
 - Add a preset field: see Invariants. Verify switching, hotkeys, and export/import.
