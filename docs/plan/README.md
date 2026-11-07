@@ -10,8 +10,7 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   of "Load internal backup". Previews go through a new lease-free `GET /api/assets/preview/*`. Five slices: the page
   and its controller (A), overview/details/owners (B), the cleanup list (C), snapshot rows and the Backups link (D),
   the preview route (E). Every design decision answered by the owner 2026-11-07.
-  Landed: A.
-  Landed: none.
+  Landed: A, E.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
