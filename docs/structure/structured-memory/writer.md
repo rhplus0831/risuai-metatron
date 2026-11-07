@@ -157,9 +157,9 @@ enforce one scene page. The read path exposes scene attendance as `stage`.
 
 `showTargets` passes the event and writable pages, with each `reason` that fits, to `assemblePatchPrompt`; no writable
 targets means no call. `parsePatches` and `applyPatches` own operation, conflict and whole-page admission rules.
-`PATCH_RULES` in `prompts.ts` distinguishes durable character `identity` facts from passing `currentState` and asks the
-model to update identity when a lasting trait changes. A page refusal is a warning: other pages and the event still
-commit.
+`PATCH_RULES` in `prompts.ts` keeps situational roles out of `identity`, adds lasting facts the event establishes, and
+drops a sentence whose situation has ended; `RULES` has the analysis call report both as identity stateChanges. A page
+refusal is a warning: other pages and the event still commit.
 
 ### Compaction
 

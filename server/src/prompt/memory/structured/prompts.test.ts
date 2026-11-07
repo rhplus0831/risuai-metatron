@@ -120,6 +120,14 @@ it("reserves patch space for taken-back text before bodies and tells the writer 
     expect(slots.rules).toContain("never write one into a body");
     expect(slots.rules).toContain('A section marked disputed holds two values, the second on a "[disputed]" line');
     expect(slots.rules).toMatch(/^- A page's "reason" is .*not itself evidence/m);
+    expect(slots.rules).toMatch(
+        /^- identity holds what lasts .*A role that comes from the situation .* is currentState, not identity/m,
+    );
+    expect(slots.rules).toMatch(/^- A fact with one current value .* conflict "change"/m);
+    expect(slots.rules).toMatch(/^- identity grows: .* every existing sentence kept/m);
+    expect(slots.rules).toMatch(
+        /^- Whenever you upsert identity, re-read each existing sentence .* has ended or been resolved/m,
+    );
 });
 
 it("keeps taken-back scene text in the analysis scene slot past a full scene's clamp", () => {
@@ -151,6 +159,21 @@ it("keeps taken-back scene text in the analysis scene slot past a full scene's c
         LIMITS.promptSceneChars,
     );
     expect(slots.messages).not.toContain("Rejected harbor");
+});
+
+it("asks the analysis call to report identity facts and ended situations as identity stateChanges", () => {
+    const slots = analysisSlots({
+        language: "English",
+        cast: [],
+        scene: null,
+        threads: [],
+        previousTitle: undefined,
+        messages: [],
+        window: { messages: [], sources: [] },
+        speaker: () => "Cara",
+    });
+    expect(slots.rules).toMatch(/^- When these messages newly establish a lasting fact .* section "identity"/m);
+    expect(slots.rules).toMatch(/^- Read each sentence of a listed page's identity .* has ended or been resolved/m);
 });
 
 it("checks custom slots after CBS and fills quoted data without evaluating it again", () => {
