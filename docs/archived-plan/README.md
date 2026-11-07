@@ -65,6 +65,7 @@ git show 7a4e8d113:docs/plan/reroll-candidates.md
 git show 607a33d74:docs/plan/implementation-audit-fixes.md
 git show e99fca9a7:docs/plan/store-memory-sweep.md
 git show 211ac71e2:docs/plan/multi-client-e2e.md
+git show d745dcb8f:docs/plan/storage-settings-page.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -133,6 +134,7 @@ it is not a current architecture guide.
 | Implementation Audit Fixes               | `607a33d74`: `docs/plan/implementation-audit-fixes.md`                    | [server resources](../structure/server-resources.md), [server](../structure/self-host-server.md), [server generation](../structure/server-generation.md), [chat store](../structure/chat-store.md), [plugins](../structure/plugin-sandbox.md), [translation](../structure/translation.md), [CBS and rendering](../structure/cbs-rendering.md), [assets](../structure/assets.md) (Q1), the [structured memory](../structure/structured-memory/README.md) pages                               |
 | Chat Store and Structured Memory Sweep   | `e99fca9a7`: `docs/plan/store-memory-sweep.md`                            | [resource sync](../structure/resource-sync.md), [chat store](../structure/chat-store.md), [chat pipeline](../structure/chat-pipeline.md), [server resources](../structure/server-resources.md), [plugins](../structure/plugin-sandbox.md), [draft recovery](../structure/draft-recovery.md), the [structured memory](../structure/structured-memory/README.md) pages; the deferred groups' entries stay in [found-issues](../research/found-issues.md)                                      |
 | Multi-Client Data Safety Checks          | `211ac71e2`: `docs/plan/multi-client-e2e.md`                              | [resource sync](../structure/resource-sync.md), [chat store](../structure/chat-store.md) (Q3 Limitation), [draft recovery](../structure/draft-recovery.md), [live updates](../structure/live-updates.md), [server generation](../structure/server-generation.md), [test harness](../structure/test-harness.md)                                                                                                                                                                              |
+| Storage Settings Page                    | `d745dcb8f`: `docs/plan/storage-settings-page.md`                         | [settings](../structure/settings-i18n.md), [app shell](../structure/app-shell.md), [assets](../structure/assets.md), [server](../structure/self-host-server.md)                                                                                                                                                                                                                                                                                                                             |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1255,6 +1257,16 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     the `pnpm test:e2e` runtime budget.
   - Found by the run: one entry in `docs/research/found-issues.md` (`99bb605e0`: `pnpm check` does not type-check
     `e2e/`, with a TS2339 in `e2e/multiClient.spec.ts`).
+- Storage Settings Page:
+  - Settings → Advanced → Storage moved to its own Data-group page (menu 23, slug `storage`) with a disk bar that
+    shows space used outside RisuAI, cleanup rows with kind filters, image previews and no default selection,
+    one-line snapshot rows, collapsed owners and totals, and a Backups link in place of "Load internal backup".
+    Previews use the lease-free `GET /api/assets/preview/<hex>`. All five slices landed on `dev` on 2026-11-07:
+    A (`9f7094ec6`), E (`28a0d02bf`), D (`d4f074614`), B (`7a29d191d`), C (`8f88ede1e`).
+  - Still open, device checks: no horizontal scroll in the Storage rows at about 360px on a real phone; the hatched
+    outside-RisuAI segment stays visible in every theme.
+  - Found by the run: one entry in `docs/research/found-issues.md` (`a6eac283f`: `StorageController.owners` has no
+    reader).
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.
