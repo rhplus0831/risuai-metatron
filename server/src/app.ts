@@ -5,6 +5,7 @@ import type { MemoryTaskService } from "../../shared/jobs.ts";
 import {
     ASSET_GRACE_DEFAULT_DAYS,
     ASSET_GRACE_MIN_DAYS,
+    ASSET_PREVIEW_PATH,
     ASSET_REPORT_PATH,
     ASSET_STATUS_PATH,
     ASSET_SCAN_PATH,
@@ -112,7 +113,7 @@ import { createEventSockets } from "./routes/events.ts";
 import { MEMORY_TASKS_PATH, registerMemoryTaskRoutes } from "./routes/memoryTasks.ts";
 import { STRUCTURED_MEMORY_PATH, registerStructuredMemoryRoutes } from "./routes/structuredMemory.ts";
 import { registerResourceRoutes, RESOURCE_READ_PATH } from "./routes/resources.ts";
-import { ASSET_MISSING_PATH, registerStorageRoutes } from "./routes/storage.ts";
+import { ASSET_MISSING_PATH, assetHeaders, registerStorageRoutes } from "./routes/storage.ts";
 import { createScriptWorkerPool, type ScriptWorkerTimingOptions } from "./scripts/workerPool.ts";
 import {
     MAX_READ_RESPONSE_BYTES,
@@ -693,6 +694,9 @@ export function createServerContext(options: {
         }
     });
 
+    // Wrap shutdown refusal too; the preview route does not apply assetHeaders a second time.
+    app.use(`${ASSET_PREVIEW_PATH}/*`, assetHeaders);
+
     // Admit resource handlers before their first await (including body parsing and auth). Tracking
     // them also makes in-process dispose safe; maintenance only waits for storage-gate admissions.
     app.use(async (c, next) => {
@@ -731,7 +735,8 @@ export function createServerContext(options: {
             fileImportRoute === ASSET_REPORT_PATH ||
             fileImportRoute === ASSET_STATUS_PATH ||
             fileImportRoute === ASSET_SCAN_PATH ||
-            fileImportRoute === ASSET_SWEEP_PATH;
+            fileImportRoute === ASSET_SWEEP_PATH ||
+            c.req.path.startsWith(`${ASSET_PREVIEW_PATH}/`);
         const tokenRoute = fileImportRoute === TOKEN_COUNT_PATH || fileImportRoute === TOKEN_ENCODE_PATH;
         // The login, the password set, and the subscription writes end in a durable write that dispose
         // must wait for, so they are refused and tracked like resource handlers.
@@ -1007,7 +1012,13 @@ export function createServerContext(options: {
         process.env.RISU_RESTORE_HEAP_MB,
         DEFAULT_RESTORE_HEAP_MB,
     );
-    registerAssetLifecycleRoutes(app, { auth, limiter: storageRouteLimiter.middleware, lifecycle: assetLifecycle });
+    registerAssetLifecycleRoutes(app, {
+        auth,
+        limiter: storageRouteLimiter.middleware,
+        lifecycle: assetLifecycle,
+        savePath,
+        thumbnails,
+    });
     registerBackupRoutes(app, {
         statfs: options.assetLifecycle?.statfs,
         exportHolds: upstreamExportStaging,

@@ -128,16 +128,16 @@ authenticated limiter, `no-store`, bodies capped after authentication (`PUT /api
 `server/src/routes/storage.ts` `registerStorageRoutes`: `checkAuth` (JWT), storage limiter, hex UTF-8 logical keys
 (`decodeKeyHeader`, `resolveStorageKey`); each route's contract is the comment above it.
 
-- `GET /api/read`, `GET /api/list`, `POST /api/write`, and `GET /api/remove` (no client calls it).
+- `GET /api/{read,list}`, `POST /api/write`, and `GET /api/remove` (no client calls it).
 - `GET`/`HEAD /api/asset/*`: `assetHeaders`, `serveAssetFile`, `shared/assetMime.ts` (`assetMimeType`,
-  `isActiveAssetExtension`), `assetVerification`; `?w=256|512` is the thumbnail variant (`createThumbnailService`). The
-  cache headers, ETags, and the variant's `307` reasons (`x-risu-thumbnail`) are the comment above the route.
-- `POST /api/assets/{write,read}` (`shared/assetBatch.ts` framing); `POST /api/assets/missing` (`ASSET_MISSING_PATH`).
-- `GET /api/assets/{report,status}`, `POST /api/assets/{scan,sweep}`: `server/src/routes/assetLifecycle.ts`,
-  `shared/assetLifecycle.ts`.
+  `isActiveAssetExtension`), `assetVerification`; `?w=256|512` is the thumbnail variant (`createThumbnailService`). Its
+  comment has the cache headers, ETags, and the variant's `307` reasons (`x-risu-thumbnail`).
+- `POST /api/assets/{write,read,missing}` (`shared/assetBatch.ts` framing; `ASSET_MISSING_PATH`).
+- `GET /api/assets/{report,status,preview/*}`, `POST /api/assets/{scan,sweep}`: `server/src/routes/assetLifecycle.ts`,
+  `shared/assetLifecycle.ts`; `preview/*` serves a candidate's image, unleased.
 - The thumbnail sizes are admitted here (`widths`, `thumbnailSize`) and repeated in `ThumbnailRequest.size` and
-  `ENTRY_NAME`: change them together. The browser and the service worker follow the variant's redirect to the original,
-  so a page needs no status handling.
+  `ENTRY_NAME`: change them together. Browsers and the service worker follow the variant's redirect; pages need no
+  status handling.
 
 ## Flows
 
@@ -370,8 +370,8 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
 - Boot, auth, limits, shutdown:
   `pnpm --silent test:agent server/src/tests/{app,listenConfig,shutdown,shutdownAdmission}.test.ts`.
 - Storage and HTTP:
-  `pnpm --silent test:agent server/src/tests/{assets,assetRoute,assetVerification,assetThumbnails,proxy}.test.ts`.
-- Ordered and durable writes: `pnpm --silent test:agent server/src/tests/{orderedWriter,durableWrite}.test.ts`.
+  `pnpm --silent test:agent server/src/tests/{assets,assetRoute,assetPreview,assetVerification,assetThumbnails,proxy}.test.ts`.
+- Ordered, durable writes: `pnpm --silent test:agent server/src/tests/{orderedWriter,durableWrite}.test.ts`.
 - Diagnostics and request history coverage belongs to [diagnostics](diagnostics.md); client transport tests to
   [network and jobs](network-jobs.md).
 

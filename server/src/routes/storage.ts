@@ -479,7 +479,7 @@ function thumbnailFailure(c: Context<AppEnv>, hex: string, error: unknown): Resp
  * the CSP sandbox, `nosniff`, same-origin CORP, `Accept-Ranges: bytes`, `inline` unless the route
  * chose `attachment`, and `no-store` on an error or an answer without its own `Cache-Control`.
  */
-const assetHeaders: MiddlewareHandler<AppEnv> = async (c, next) => {
+export const assetHeaders: MiddlewareHandler<AppEnv> = async (c, next) => {
     await next();
     c.header(
         "Content-Security-Policy",

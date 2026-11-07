@@ -389,7 +389,7 @@ export function createAssetLifecycle(
     let completedMono = 0;
     let liveSelectedRows = 0;
     let candidates = new Map<string, { key: string; bytes: number; since: number }>();
-    let orphanCandidates = new Map<string, { since: number; bytes: number; revision: string }>();
+    let orphanCandidates = new Map<string, { asset: string | null; since: number; bytes: number; revision: string }>();
 
     function transaction(body: () => void) {
         ledger.exec("BEGIN");
@@ -846,7 +846,12 @@ export function createAssetLifecycle(
                     .filter((item) => item.since !== null && item.since + grace <= now)
                     .map((item) => [
                         item.id,
-                        { since: item.since!, bytes: item.bytes, revision: root.inlays.get(item.id)!.revision },
+                        {
+                            asset: item.asset,
+                            since: item.since!,
+                            bytes: item.bytes,
+                            revision: root.inlays.get(item.id)!.revision,
+                        },
                     ]),
             );
         }
@@ -1487,6 +1492,14 @@ export function createAssetLifecycle(
         },
         report(): AssetLifecycleReport {
             return { ...latest, running: active !== null || sweepActive !== null, version: reportVersion };
+        },
+        /** Reads the full current candidate maps, including while a scan or sweep is running. */
+        previewable(key: string): boolean {
+            if (candidates.has(key)) return true;
+            for (const candidate of orphanCandidates.values()) {
+                if (candidate.asset === key) return true;
+            }
+            return false;
         },
         scan,
         sweep,

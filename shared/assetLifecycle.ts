@@ -3,6 +3,8 @@ export const ASSET_REPORT_PATH = "/api/assets/report";
 export const ASSET_STATUS_PATH = "/api/assets/status";
 export const ASSET_SCAN_PATH = "/api/assets/scan";
 export const ASSET_SWEEP_PATH = "/api/assets/sweep";
+/** Lease-free image previews of current cleanup candidates, addressed by hex UTF-8 storage key. */
+export const ASSET_PREVIEW_PATH = "/api/assets/preview";
 export const ASSET_LEASE_MS = 60 * 60 * 1000;
 export const ASSET_GRACE_DEFAULT_DAYS = 7;
 export const ASSET_GRACE_MIN_DAYS = 3;
