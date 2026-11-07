@@ -16,9 +16,10 @@
      * It marks no memory record; its local send makes the panel read-only and moves `refresh`, so neither
      * running nor clearing on refresh is safe. The answer has no next message and can differ from a send.
      *
-     * `memoryBlockEntries` in src/ts/process/structuredMemory.svelte.ts finds item tags after prompt edits;
-     * entry memos cannot identify the block reliably, and a tagless rule header is not a block. A failed
-     * titles read leaves the manifest visible without titles. Model and message text stays plain.
+     * `memoryBlockEntries` in src/ts/process/structuredMemory.svelte.ts reads the entries the job found by
+     * their item tags before taking the tags out; entry memos cannot identify the block reliably, and a
+     * tagless rule header is not a block. A failed titles read leaves the manifest visible without titles.
+     * Model and message text stays plain.
      */
 
     interface Props {
@@ -32,7 +33,7 @@
     const text = language.structuredMemory.preview;
 
     type Shown = {
-        /** The final messages that hold an item's tag. */
+        /** The final messages that held an item's tag, by the job's `memoryBlock`. */
         block: OpenAIChat[];
         /** What the report says of a Structured Memory step; none when the step did not run. */
         memory: NonNullable<ContextReport["memory"]> | null;
@@ -68,7 +69,7 @@
             return;
         }
         const memory = answer.report.memory?.kind === "structuredMemory" ? answer.report.memory : null;
-        shown = { block: memoryBlockEntries(answer.messages, memory?.items ?? []), memory };
+        shown = { block: memoryBlockEntries(answer.messages, memory ? answer.memoryBlock : null), memory };
         if (memory) {
             const contents = await readStructuredMemoryContents(ref);
             if (current() && contents.outcome === "ok") {

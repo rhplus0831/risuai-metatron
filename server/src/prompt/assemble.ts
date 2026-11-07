@@ -284,6 +284,8 @@ export type AssembledPrompt =
           generationInfo: MessageGenerationInfo;
           promptInfo: MessagePresetInfo;
           maxContextTokens: number;
+          /** The indexes in `formated` of the entries that held an item's tag, when Structured Memory read. */
+          memoryBlock?: number[];
           /**
            * The memory step's task input (captured before the step) and whether work is due: the
            * summaries of HypaV3's lookahead plan, a window of the Structured Memory cadence; only for
@@ -2498,6 +2500,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         promptInfo.promptText = promptBodyformatedForChatStore;
     }
 
+    // The model never reads the item tags: note the entries that hold each, then count and send without them.
+    const memoryTagHolders = memoryRun?.manifest ? takeItemTags(memoryRun.manifest.items, formated) : null;
+
     // Recount the final prompt and record removals for Structured Memory's gap report.
     let inputTokens = 0;
     /** Each entry's count in the recheck, before any removal. */
@@ -2570,6 +2575,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
             marker,
             trimLedger,
             memoryRun,
+            memoryTagHolders,
             hadMemoryEntries: memoryEntries.size > 0,
             lore: lorepmt,
             tokenScope: host.tokenScope,
@@ -2584,6 +2590,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         ...(memoryReceipt ? { memory: memoryReceipt } : {}),
     };
 
+    const memoryBlock = memoryTagHolders ? heldEntryIndexes(memoryTagHolders, formated) : null;
     return {
         type: "prompt",
         formated,
@@ -2591,6 +2598,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         generationInfo,
         promptInfo,
         maxContextTokens,
+        ...(memoryBlock ? { memoryBlock } : {}),
         ...(memoryTask ? { memoryTask } : {}),
         ...(memoryVectorWarm ? { memoryVectorWarm } : {}),
     };
@@ -2885,6 +2893,8 @@ function buildContextReport(arg: {
     marker: OpenAIChat | null;
     trimLedger: { headroom: number; next: readonly OpenAIChat[] } | null;
     memoryRun: MemoryRun | null;
+    /** Each manifest item's entries that held its tag (`takeItemTags`), by item index. */
+    memoryTagHolders: readonly (readonly OpenAIChat[])[] | null;
     hadMemoryEntries: boolean;
     lore: LoreActivation;
     tokenScope: string;
@@ -3000,7 +3010,7 @@ function buildContextReport(arg: {
                 lateGapTokens += source.tokens;
             }
         }
-        const items = manifest ? verifiedItems(manifest.items, arg.formated) : [];
+        const items = manifest ? verifiedItems(manifest.items, arg.memoryTagHolders, arg.formated) : [];
         // Two card parts can be lost apart, so another traced memory entry proves nothing about an item.
         const lostMemory =
             ((arg.memoryRun.kind === "hypaV3" || arg.memoryRun.kind === "structuredMemory") &&
@@ -3060,10 +3070,41 @@ function buildContextReport(arg: {
     return report;
 }
 
-/** `items` with `verified` set: an item's tag is somewhere in the final prompt, whichever entry holds it. */
-function verifiedItems(items: readonly MemoryManifestItem[], formated: readonly OpenAIChat[]): MemoryManifestItem[] {
-    const prompt = formated.map(({ content }) => content).join("\n");
-    return items.map((item) => ({ ...item, verified: prompt.includes(itemTag(item)) }));
+/**
+ * Each item's entries that hold its tag, by item index, with every tag taken out of their text. Tags are
+ * read after `editRequest` because they are the only mark its rebuilt entries keep; the model never needs
+ * them, so the request goes without.
+ */
+function takeItemTags(items: readonly MemoryManifestItem[], formated: readonly OpenAIChat[]): OpenAIChat[][] {
+    const tags = items.map((item) => itemTag(item));
+    const holders = tags.map((): OpenAIChat[] => []);
+    for (const chat of new Set(formated)) {
+        const held = tags.flatMap((tag, index) => (chat.content.includes(tag) ? [index] : []));
+        for (const index of held) {
+            holders[index].push(chat);
+            chat.content = chat.content.replaceAll(`${tags[index]} `, "").replaceAll(tags[index], "");
+        }
+    }
+    return holders;
+}
+
+/** The indexes of the final entries that held an item's tag. */
+function heldEntryIndexes(holders: readonly (readonly OpenAIChat[])[], formated: readonly OpenAIChat[]): number[] {
+    const held = new Set(holders.flat());
+    return formated.flatMap((chat, index) => (held.has(chat) ? [index] : []));
+}
+
+/** `items` with `verified` set: an entry that held the item's tag is still in the final prompt. */
+function verifiedItems(
+    items: readonly MemoryManifestItem[],
+    holders: readonly (readonly OpenAIChat[])[] | null,
+    formated: readonly OpenAIChat[],
+): MemoryManifestItem[] {
+    const kept = new Set(formated);
+    return items.map((item, index) => ({
+        ...item,
+        verified: holders?.[index]?.some((chat) => kept.has(chat)) ?? false,
+    }));
 }
 
 /** The report's fields of a Structured Memory send, the card's stage read from `items`, verified. */

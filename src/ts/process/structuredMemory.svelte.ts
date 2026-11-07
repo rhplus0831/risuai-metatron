@@ -7,12 +7,10 @@ import {
     type ContextReport,
 } from "../../../shared/contextReport.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
-import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     isSealedHypaV3Data,
-    itemTag,
     MEMORY_HEALTH_CHATS_MAX,
     MEMORY_PACKAGE_VERSION,
     MEMORY_PAGE_TYPES,
@@ -2006,15 +2004,19 @@ export function memoryItemTitles({
 }
 
 /**
- * The prompt's memory block: the `messages` that hold an item's tag, in order. Tags find it, not the
- * entries' `memo`, which `editRequest` can rebuild them without.
+ * The prompt's memory block: the `messages` at a preview's `memoryBlock` indexes, in order. The send takes
+ * the item tags out of the prompt, so the job names the entries that held them; an index that names no
+ * message, or a block of another shape, adds nothing.
  */
-export function memoryBlockEntries<T extends Pick<OpenAIChat, "content">>(
-    messages: readonly T[],
-    items: readonly Pick<MemoryManifestItem, "lane" | "id">[],
-): T[] {
-    const tags = items.map((item) => itemTag(item));
-    return messages.filter(({ content }) => tags.some((tag) => content.includes(tag)));
+export function memoryBlockEntries<T>(messages: readonly T[], block: unknown): T[] {
+    if (!Array.isArray(block)) {
+        return [];
+    }
+    return block.flatMap((index: unknown) =>
+        Number.isInteger(index) && (index as number) >= 0 && (index as number) < messages.length
+            ? [messages[index as number]]
+            : [],
+    );
 }
 
 /** What a Log row's expanded view shows of the event a run extracted. */

@@ -70,8 +70,11 @@ export async function previewChat(
     return typeof result === "string" ? result : null;
 }
 
-/** A preview's messages, and the context report a send of them would store. */
-export type ChatPreviewReport = { messages: OpenAIChat[]; report: ContextReport | null };
+/**
+ * A preview's messages, the context report a send of them would store, and the job's `memoryBlock` as it
+ * came (`memoryBlockEntries` reads it).
+ */
+export type ChatPreviewReport = { messages: OpenAIChat[]; report: ContextReport | null; memoryBlock?: unknown };
 
 /**
  * `previewChat("preview")` with the job's context report, for a caller that reads what the prompt was
@@ -80,7 +83,13 @@ export type ChatPreviewReport = { messages: OpenAIChat[]; report: ContextReport 
 export async function previewChatReport(target?: ChatRef): Promise<ChatPreviewReport | null> {
     const { ok, result } = await runSend({ preview: true, target });
     const preview = ok ? previewResult(result) : null;
-    return preview && { messages: preview.messages, report: parseContextReport(preview.context) };
+    return (
+        preview && {
+            messages: preview.messages,
+            report: parseContextReport(preview.context),
+            memoryBlock: preview.memoryBlock,
+        }
+    );
 }
 
 /** A `preview` job's `done.result`, or null for one of another shape. */

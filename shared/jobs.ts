@@ -329,8 +329,15 @@ export type ReplyResyncRequest = { type: "resyncReply" };
 /** A generation socket's liveness reply, echoing the server ping's timestamp. */
 export type GenerationPong = { type: "pong"; ts: number };
 
-/** A `preview` job's `done.result`: the final prompt, and the report a send of it stores on its reply. */
-export type GenerationPreviewResult = { messages: OpenAIChat[]; context: MessageGenerationInfo["context"] };
+/**
+ * A `preview` job's `done.result`: the final prompt, the report a send of it stores on its reply, and the
+ * indexes of Structured Memory's entries in `messages`, which the prompt no longer marks.
+ */
+export type GenerationPreviewResult = {
+    messages: OpenAIChat[];
+    context: MessageGenerationInfo["context"];
+    memoryBlock?: number[];
+};
 
 /** A `memoryRecord` command's `done.result`: work finished in the job, or accepted by the task queue. */
 export type MemoryRecordResult = { memoryRecord: "completed" | "queued" };

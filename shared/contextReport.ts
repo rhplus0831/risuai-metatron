@@ -178,8 +178,8 @@ export type ContextReport = {
          * (`server/src/prompt/memory/structured/step.ts`) sets it. Raw history the prompt lost afterwards
          * demotes only "covered" (to "unknown"), except Structured Memory's final recheck loss of
          * non-blank history makes it "gap". For those two, memory sent with no traced memory-only
-         * entry in the final prompt, an untraced memory entry there, or a manifest item whose tag is not in
-         * it forces "unknown".
+         * entry in the final prompt, an untraced memory entry there, or a manifest item none of whose tag
+         * holders is in it forces "unknown".
          */
         coverage: "covered" | "gap" | "unknown";
         /**
@@ -206,8 +206,8 @@ export type ContextReport = {
          */
         lookaheadIn?: number;
         /**
-         * Structured Memory: every record the send included; `verified` says its tag was found in the
-         * final prompt. The memory budget bounds the list, so a reader caps nothing.
+         * Structured Memory: every record the send included; `verified` says an entry that held its tag is
+         * in the final prompt. The memory budget bounds the list, so a reader caps nothing.
          */
         items?: readonly MemoryManifestItem[];
         /** Structured Memory: the candidates left out that a report keeps (`reportedMemoryExclusions`). */

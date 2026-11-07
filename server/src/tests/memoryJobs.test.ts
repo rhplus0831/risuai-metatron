@@ -3530,9 +3530,13 @@ describe("structured memory job hand-offs", () => {
                         .body.messages.filter((message: { role: string }) => message.role === "assistant")
                         .map((message: { content: string }) => message.content),
                 ).not.toContain("First reply");
-                expect(prompt).toContain("[m:a1] character:");
+                expect(prompt).toContain('character: \\"First reply');
+                expect(prompt).not.toContain("[m:");
                 const reply = (await readChat(chaId)).data.message.at(-1);
                 const report = parseContextReport(reply.generationInfo.context);
+                expect(report?.memory?.items).toEqual(
+                    expect.arrayContaining([expect.objectContaining({ id: "a1", lane: "evidence", verified: true })]),
+                );
                 expect(report?.memory?.gapTokens).toBe(0);
                 expect(report?.memory?.confirmedThrough).toBeUndefined();
                 expect(readRecordSet(store.memory, chaId, "k")).toEqual(before);
@@ -3577,9 +3581,10 @@ describe("structured memory job hand-offs", () => {
                 const prompt = mains()[0]
                     .body.messages.map((message: { content: string }) => message.content)
                     .join("\n");
-                expect(prompt).toContain("[m:scene] Gate scene | present: Ada");
-                expect(prompt).toContain("[m:ada] Ada | currentState: Waiting at the gate");
-                expect(prompt).toContain("[m:charter]");
+                expect(prompt).toContain("\nGate scene | present: Ada");
+                expect(prompt).toContain("\nAda | currentState: Waiting at the gate");
+                expect(prompt).toContain("\nCharter");
+                expect(prompt).not.toContain("[m:");
                 expect(embedCalls.length).toBeGreaterThan(0);
                 expect(summaries()).toEqual([]);
                 const reply = (await readChat(chaId)).data.message.at(-1);
@@ -3621,10 +3626,20 @@ describe("structured memory job hand-offs", () => {
                     expect(summaries()).toEqual([]);
                     expect(store.memory.readContents(chaId, "k")).toEqual(contents);
                     expect(storedChat()).toEqual(chat);
+                    if (result.terminal?.type === "done" && kind === "previewPrompt") {
+                        expect(JSON.stringify(result.terminal.result)).toContain("turns ago:");
+                        expect(JSON.stringify(result.terminal.result)).not.toContain("[m:");
+                    }
                     if (result.terminal?.type === "done" && kind === "preview") {
-                        const value = result.terminal.result as { messages: { content: string }[]; context: unknown };
-                        expect(Object.keys(value).sort()).toEqual(["context", "messages"]);
-                        expect(value.messages.some(({ content }) => content.includes("[m:flow:promise]"))).toBe(true);
+                        const value = result.terminal.result as {
+                            messages: { content: string }[];
+                            context: unknown;
+                            memoryBlock: number[];
+                        };
+                        expect(Object.keys(value).sort()).toEqual(["context", "memoryBlock", "messages"]);
+                        const block = value.memoryBlock.map((index) => value.messages[index].content);
+                        expect(block.join("\n")).toContain("turns ago:");
+                        expect(JSON.stringify(value.messages)).not.toContain("[m:");
                         const report = parseContextReport(value.context);
                         expect(report?.memory).toMatchObject({
                             kind: "structuredMemory",
@@ -3790,9 +3805,8 @@ describe("structured memory job hand-offs", () => {
                 expect(contents.runs.every((run) => run.result === "recorded")).toBe(true);
                 expect(mains()[0].chatAtRequest.events).toHaveLength(contents.events.length);
                 const prompt = JSON.stringify(mains()[0].body.messages);
-                // The card must use ids that only exist after the writer commits.
-                expect(contents.events.some(({ id }) => prompt.includes(`[m:flow:${id}]`))).toBe(true);
                 expect(prompt).toContain("Recorded promise");
+                expect(prompt).not.toContain("[m:");
                 expect(prompt).not.toContain("Message number 0:");
                 expect(prompt).toContain("Message number 23:");
                 const reply = (await readChat(chaId)).data.message.at(-1);
@@ -3802,7 +3816,12 @@ describe("structured memory job hand-offs", () => {
                     confirmedThrough: "m23",
                     stages: expect.arrayContaining([{ stage: "gap", reason: "generated" }]),
                 });
-                expect(reply.generationInfo.context.memory.items.some((item: any) => item.verified)).toBe(true);
+                // The card must use ids that only exist after the writer commits.
+                expect(
+                    reply.generationInfo.context.memory.items.some(
+                        (item: any) => item.verified && contents.events.some(({ id }) => id === item.id),
+                    ),
+                ).toBe(true);
             } finally {
                 store.close();
             }

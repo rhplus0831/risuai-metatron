@@ -867,6 +867,7 @@ describe("the context report", () => {
                 generationInfo: result.generationInfo,
                 formated: result.formated,
                 texts: result.formated.map((entry) => entry.content),
+                memoryBlock: result.memoryBlock,
             };
         };
         return { run, chat, counts, host };
@@ -1083,7 +1084,7 @@ describe("the context report", () => {
             expect(records).toEqual(before);
         });
 
-        it("reports required and related pages in their lanes and verifies their tags in the final prompt", async () => {
+        it("reports required and related pages in their lanes and verifies the entries that held their tags", async () => {
             const dir = mkdtempSync(path.join(os.tmpdir(), "page-manifest-"));
             const cache = createVectorCache({ file: path.join(dir, "vectors.sqlite"), now: () => 1000 });
             onTestFinished(() => {
@@ -1136,8 +1137,9 @@ describe("the context report", () => {
                 });
                 const result = await assembly.run();
                 const stable = result.formated.find(({ memo }) => memo === "supaMemory")!.content;
-                expect(stable).toContain("[m:scene] At the gate | present: Ada");
-                expect(stable).toContain("[m:charter]");
+                expect(stable).toContain("\nAt the gate | present: Ada");
+                expect(stable).toContain("\nCharter");
+                expect(result.texts.join("\n")).not.toContain("[m:");
                 expect(stable).not.toContain("Waiting patiently");
                 expect(result.texts.at(-2)).toContain("Ada | currentState: Waiting patiently");
                 expect(result.texts.at(-1)).toBe(fiveMessages.at(-1)!.data);
@@ -1246,7 +1248,8 @@ describe("the context report", () => {
                     "u7",
                 ]);
                 expect(result.formated[0]).toMatchObject({ role: "system", memo: "supaMemory" });
-                expect(result.formated[0].content).toContain("[m:flow:active]");
+                expect(result.formated[0].content).toContain("turns ago: active");
+                expect(result.formated[0].content).not.toContain("[m:");
                 expect(result.report.memory).toMatchObject({ kind: "structuredMemory", coverage: "covered" });
                 expect(assembly.confirmGap).not.toHaveBeenCalled();
             }
@@ -1551,13 +1554,14 @@ describe("the context report", () => {
                 const result = await assembly.run();
                 expect(result.texts.at(-1)).toBe(fiveMessages[4].data);
                 expect(result.formated[0].memo).toBe("supaMemory");
-                expect(result.texts[0]).toContain("[m:flow:past]");
+                expect(result.texts[0]).toContain("\n2 turns ago: past");
                 expect(result.formated).toHaveLength(apart ? 3 : 2);
-                expect(result.texts[apart ? 1 : 0]).toContain("[m:open] Find the key");
+                expect(result.texts[apart ? 1 : 0]).toContain("\nFind the key (open)");
                 if (apart) {
-                    expect(result.texts[0]).not.toContain("[m:open]");
-                    expect(result.texts[1]).not.toContain("[m:flow:past]");
+                    expect(result.texts[0]).not.toContain("Find the key");
+                    expect(result.texts[1]).not.toContain("turns ago");
                 }
+                expect(result.texts.join("\n")).not.toContain("[m:");
                 expect(result.report.memory!.items).toEqual(
                     expect.arrayContaining([
                         expect.objectContaining({ id: "past", lane: "flow", verified: true }),
@@ -1565,6 +1569,34 @@ describe("the context report", () => {
                     ]),
                 );
             }
+        });
+
+        it("sends the card without its item tags, counts what it sends, and names the card's entries by index", async () => {
+            for (const apart of [false, true]) {
+                const assembly = structuredAssembly({
+                    messages: fiveMessages,
+                    maxContext: 4000,
+                    records: anchored(
+                        stored(
+                            [event("past", ["m1", "m2"])],
+                            [{ id: "open", title: "Find the key", who: [], state: "open" }],
+                        ),
+                        fiveMessages,
+                    ),
+                    settings: { volatileBeforeLastUser: apart },
+                    template: [{ type: "memory" }, { type: "chat", rangeStart: -1, rangeEnd: "end" }],
+                });
+                const result = await assembly.run();
+                expect(result.texts.join("\n")).not.toContain("[m:");
+                expect(result.texts.join("\n")).not.toContain("bracketed tags");
+                expect(result.generationInfo.inputTokens).toBe(
+                    await assembly.host.tokenizer.tokenizeChats(result.formated),
+                );
+                expect(result.memoryBlock).toEqual(apart ? [0, 1] : [0]);
+                expect(result.report.memory!.items!.map(({ verified }) => verified)).toEqual([true, true]);
+            }
+            const legacy = await contextAssembly({ messages: fiveMessages, maxContext: 4000 }).run();
+            expect(legacy.memoryBlock).toBeUndefined();
         });
 
         it("verifies each manifest tag after editRequest and demotes coverage when only one item is lost", async () => {

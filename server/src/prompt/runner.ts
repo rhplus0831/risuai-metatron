@@ -1756,7 +1756,11 @@ async function runSpeaker(arg: {
         memoryTask = assembled.memoryTask;
         memoryVectorWarm = assembled.memoryVectorWarm;
         if (job.kind === "preview") {
-            const result: GenerationPreviewResult = { messages: formated, context: generationInfo.context };
+            const result: GenerationPreviewResult = {
+                messages: formated,
+                context: generationInfo.context,
+                ...(assembled.memoryBlock ? { memoryBlock: assembled.memoryBlock } : {}),
+            };
             return { type: "preview", result };
         }
 

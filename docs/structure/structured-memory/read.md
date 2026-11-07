@@ -83,10 +83,11 @@ no memory report.
    Assembly raises `SendError` with the page and token details, including for previews and the gap run's second
    selection.
 
-After scripts and `editRequest`, the final recheck drops any memory lines that no longer fit and updates the report
-without reselection. `buildContextReport` finds each item's `itemTag` in the final prompt; a missing tag makes coverage
-unknown. `reportedMemoryExclusions` caps the report, while `excludedTotal` counts all rows. `sendManifest` and
-`writerState` supply item and stage summaries; `due` is a hand-off request, not a queued task.
+After scripts and `editRequest`, `takeItemTags` notes the entries holding each `itemTag` and strips the tags before the
+final recheck, which drops entries that no longer fit without reselection. An item is verified while a holder survives,
+else coverage is unknown; a preview's `memoryBlock` indexes the holders. `reportedMemoryExclusions` caps the report,
+while `excludedTotal` counts all rows. `sendManifest` and `writerState` supply item and stage summaries; `due` is a
+hand-off request, not a queued task.
 
 The meter reads tokens and `memoryStatusWord`; its popover and Preview share `MemoryManifest`.
 
@@ -281,8 +282,8 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 ### Limitations
 
 - `verified` reads assembly's returned prompt. Plugin replacers and `request` triggers run later on every attempt, so
-  removed lines still read verified; a provider gathering system entries (Ooba mode) undoes placement. A tag echoed by
-  the model into a kept message also verifies a lost line. Decision: D8, archive.
+  removed lines still read verified; a provider gathering system entries (Ooba mode) undoes placement. A tag left in a
+  kept message (an old echo, a paste) verifies a lost line. Decision: D8, archive.
 - A preview marks no record and asks nothing, but has side effects: it runs the start trigger, whose result can commit,
   and counts in `statics.messages`. Decision: Structured Memory slice 3c, archive.
 - A tab older than the `structuredMemory` kind reads such a report as none and shows an older one.

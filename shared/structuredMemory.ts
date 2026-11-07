@@ -1074,7 +1074,7 @@ export interface MemoryManifestItem {
     /** Why the lane selected it. */
     reason: string;
     tokens: number;
-    /** The item's tag was found in the final prompt, after scripts and `editRequest`. */
+    /** An entry that held the item's tag after scripts and `editRequest` is in the final prompt. */
     verified: boolean;
 }
 
@@ -1090,9 +1090,9 @@ export interface MemoryManifest {
 const wellFormed = (text: string) => text.replace(/\p{Cs}/gu, "�");
 
 /**
- * An item's tag in the memory card, which is how a send and the tab find the item in a prompt. A valid
- * resource id can hold spaces, brackets, and lone surrogates, on which `encodeURIComponent` would
- * throw, so the tag holds the id encoded; a UUID is unchanged.
+ * An item's tag in the memory card, which is how a send finds the item's entries before taking it out.
+ * A valid resource id can hold spaces, brackets, and lone surrogates, on which `encodeURIComponent`
+ * would throw, so the tag holds the id encoded; a UUID is unchanged.
  */
 export function itemTag({ lane, id }: Pick<MemoryManifestItem, "lane" | "id">): string {
     const encoded = encodeURIComponent(wellFormed(id));

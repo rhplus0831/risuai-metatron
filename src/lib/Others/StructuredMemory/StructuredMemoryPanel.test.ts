@@ -598,7 +598,7 @@ const previewAnswer = (result: unknown): Awaited<ReturnType<typeof io.runServerJ
     terminal: { type: "done", epoch: "e", revision: null, result },
 });
 
-it("runs Preview only on its button and keeps the final tagged block and manifest across its own fence refresh", async () => {
+it("runs Preview only on its button and keeps the job's memory block and manifest across its own fence refresh", async () => {
     const pending = deferred<Awaited<ReturnType<typeof io.runServerJob>>>();
     releases.push(() => pending.resolve(previewAnswer({ messages: [], context: memoryReport() })));
     io.runServerJob.mockReturnValueOnce(pending.promise);
@@ -629,15 +629,15 @@ it("runs Preview only on its button and keeps the final tagged block and manifes
     expect(io.runServerJob.mock.calls[0][2]).toMatchObject({ kind: "preview", context: { input: "" } });
     expect(query("[data-memory-panel-read-only]")).not.toBeNull();
     const messages = [
-        { role: "system", content: "[m:flow:used] <b>A promise</b>" },
+        { role: "system", content: "<b>A promise</b>" },
         { role: "system", content: "An unrelated old memory", memo: "supaMemory" },
         { role: "user", content: "Next question" },
     ];
-    pending.resolve(previewAnswer({ messages, context: memoryReport() }));
+    pending.resolve(previewAnswer({ messages, context: memoryReport(), memoryBlock: [0] }));
     await settle();
     expect(query("[data-memory-panel-read-only]")).toBeNull();
     expect([...target.querySelectorAll("[data-memory-preview-entry]")].map((row) => row.textContent?.trim())).toEqual([
-        "[m:flow:used] <b>A promise</b>",
+        "<b>A promise</b>",
     ]);
     expect(query("[data-memory-preview-block] b")).toBeNull();
     expect(query("[data-memory-manifest-item]")?.textContent).toContain("Remembered promise");
@@ -647,9 +647,9 @@ it("runs Preview only on its button and keeps the final tagged block and manifes
     expect(io.runServerJob).toHaveBeenCalledTimes(1);
     expect(query("[data-memory-preview-entry]")).not.toBeNull();
     // Both public preview consumers still unpack the server's new result envelope.
-    io.runServerJob.mockResolvedValue(previewAnswer({ messages, context: memoryReport() }));
+    io.runServerJob.mockResolvedValue(previewAnswer({ messages, context: memoryReport(), memoryBlock: [0] }));
     expect(await previewChat("preview", ref)).toEqual(messages);
-    expect(await previewChatReport(ref)).toEqual({ messages, report: memoryReport() });
+    expect(await previewChatReport(ref)).toEqual({ messages, report: memoryReport(), memoryBlock: [0] });
     io.runServerJob.mockResolvedValue(previewAnswer({ messages, context: { v: 99 } }));
     expect(await previewChatReport(ref)).toEqual({ messages, report: null });
 });
@@ -683,8 +683,9 @@ it("never displays a pending preview's answer after the user switches chats", as
     await settle();
     pending.resolve(
         previewAnswer({
-            messages: [{ role: "system", content: "[m:flow:used] Foreign memory" }],
+            messages: [{ role: "system", content: "Foreign memory" }],
             context: memoryReport(),
+            memoryBlock: [0],
         }),
     );
     await settle();

@@ -25,9 +25,9 @@ import {
  * on its own. The stable part (required pages, recent flow) opens with the rule header; the volatile
  * part (pages, events, evidence, threads) stands alone, and is empty when no lane of it has an item.
  *
- * - One line per item, led by a tag a send can look for in its final prompt. A flow title has a tag of
- *   its own, so it never verifies the event's full text. A page has one item, so what it knows and does
- *   not know is part of its line.
+ * - One line per item, led by a tag a send finds its final entries by, then takes out before the request.
+ *   A flow title has a tag of its own, so it never verifies the event's full text. A page has one item,
+ *   so what it knows and does not know is part of its line.
  * - The card's own words are English, for the model. Field values stay in whatever language the record
  *   was written.
  * - `maximum` bounds both parts counted as one system chat each, wherever the volatile part goes.
@@ -70,8 +70,7 @@ export type PageLineParts = {
 };
 
 const RULE_HEADER =
-    "These records are authoritative for the past, and the scene for the present; recent messages win over both. " +
-    "Never repeat the bracketed tags.";
+    "These records are authoritative for the past, and the scene for the present; recent messages win over both.";
 
 /** Each lane's part and heading. `MEMORY_MANIFEST_LANES` orders the lanes within a part. */
 const CARD_LANES: Record<MemoryManifestLane, { part: keyof CardParts; heading: string }> = {

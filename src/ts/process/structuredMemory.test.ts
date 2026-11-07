@@ -658,20 +658,19 @@ it("reads malformed stored runs without throwing or inventing an extraction", ()
     expect(memoryRunView({ answer: '{"patches": [' }).answer).toBe('{"patches": [');
 });
 
-it("extracts every final message carrying an included item's encoded tag in prompt order regardless of memo", () => {
+it("extracts the final messages a preview's memory block names, in its order, skipping indexes it cannot read", () => {
     const messages = [
         { role: "system", content: "Unrelated legacy block", memo: "supaMemory" },
-        { role: "system", content: "Stable [m:flow:past%20event] promise" },
+        { role: "system", content: "Stable promise" },
         { role: "user", content: "What now?", memo: "last" },
-        { role: "system", content: "Volatile [m:door%5D] is open", memo: "rewritten-by-script" },
-        { role: "system", content: "Excluded [m:not-in-manifest]" },
+        { role: "system", content: "Volatile door is open", memo: "rewritten-by-script" },
     ];
-    const items = [
-        { lane: "threads" as const, id: "door]" },
-        { lane: "flow" as const, id: "past event" },
-    ];
-    expect(memoryBlockEntries(messages, items)).toEqual([messages[1], messages[3]]);
+    expect(memoryBlockEntries(messages, [1, 3])).toEqual([messages[1], messages[3]]);
+    expect(memoryBlockEntries(messages, [1, -1, 4, 1.5, "3", null])).toEqual([messages[1]]);
     expect(memoryBlockEntries(messages, [])).toEqual([]);
+    for (const block of [undefined, null, "1", { 0: 1 }]) {
+        expect(memoryBlockEntries(messages, block)).toEqual([]);
+    }
 });
 
 it("orders Timeline by surviving messages then stored positions and ages from the newest surviving source", () => {
