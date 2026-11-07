@@ -3,14 +3,18 @@ import type { AssetLifecycleReport } from "../../../../../shared/assetLifecycle.
 export type StorageUsageKind = keyof AssetLifecycleReport["usage"] | "outside" | "free";
 export type StorageUsageSegment = { kind: StorageUsageKind; bytes: number; fraction: number };
 
-/** Measured folders can span mounts, so the bar must also accommodate usage beyond disk.total. */
-export function getStorageSegments(report: AssetLifecycleReport) {
+/**
+ * The bar shows only RisuAI's measured folders unless `wholeDisk` asks for the disk around them: on a real disk the
+ * measured share is otherwise a sliver. Measured folders can span mounts, so the whole-disk bar must also accommodate
+ * usage beyond disk.total.
+ */
+export function getStorageSegments(report: AssetLifecycleReport, options: { wholeDisk?: boolean } = {}) {
     const kinds = ["assetsOnDisk", "resourcesDb", "snapshots", "thumbnails", "staging", "unmanaged"] as const;
     const segments: StorageUsageSegment[] = kinds.map((kind) => ({ kind, bytes: report.usage[kind], fraction: 0 }));
     const measured = segments.reduce((sum, segment) => sum + segment.bytes, 0);
     let denominator = measured;
 
-    if (report.disk !== null) {
+    if (options.wholeDisk && report.disk !== null) {
         const { total, free } = report.disk;
         const outside = Math.max(0, total - free - measured);
         if (outside > 0) segments.push({ kind: "outside", bytes: outside, fraction: 0 });
@@ -20,6 +24,8 @@ export function getStorageSegments(report: AssetLifecycleReport) {
 
     return {
         diskUnknown: report.disk === null,
+        measured,
+        free: report.disk?.free ?? null,
         denominator,
         segments: segments.map((segment) => ({
             ...segment,

@@ -215,7 +215,12 @@ function cleanupList(kind: "assets" | "inlays") {
     expect(section, `cleanup list ${kind}`).toBeDefined();
     return section!;
 }
-function cleanupValues(within: ParentNode = target, selectedOnly = false) {
+function cleanupSection() {
+    const section = target.querySelector<HTMLElement>('[data-settings-section="storage.cleanup"]');
+    expect(section, "cleanup section").not.toBeNull();
+    return section!;
+}
+function cleanupValues(within: ParentNode = cleanupSection(), selectedOnly = false) {
     return [...within.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
         .filter((item) => !selectedOnly || item.checked)
         .map((item) => item.value);
@@ -353,7 +358,7 @@ describe("StorageSettings", () => {
 
     it("starts with no selection and retains only still-listed selections after scans, polls, and sweeps", async () => {
         await open();
-        expect(cleanupValues(target, true)).toEqual([]);
+        expect(cleanupValues(cleanupSection(), true)).toEqual([]);
         expect(button(language.storage.deleteAssets).disabled).toBe(true);
         expect(button(language.storage.deleteInlays).disabled).toBe(true);
         for (const kind of ["assets", "inlays"] as const) {
@@ -371,7 +376,7 @@ describe("StorageSettings", () => {
         ];
         deps.startStorageScan.mockResolvedValue(scanned);
         await click(language.storage.scan);
-        expect(cleanupValues(target, true)).toEqual(["assets/first.png", "inlay-first"]);
+        expect(cleanupValues(cleanupSection(), true)).toEqual(["assets/first.png", "inlay-first"]);
         expect(cleanupList("assets").textContent).toContain(language.storagePage.cleanup.selected(1, bytes(10)));
         expect(cleanupList("inlays").textContent).toContain(language.storagePage.cleanup.selected(1, bytes(11)));
 
@@ -381,14 +386,14 @@ describe("StorageSettings", () => {
         await vi.advanceTimersByTimeAsync(1000);
         flushSync();
         expect(deps.readStorageReport).toHaveBeenCalledTimes(2);
-        expect(cleanupValues(target, true)).toEqual(["assets/first.png", "inlay-first"]);
+        expect(cleanupValues(cleanupSection(), true)).toEqual(["assets/first.png", "inlay-first"]);
 
         const swept = report({ version: 3 });
         swept.unreferenced.candidates = swept.unreferenced.candidates.filter((item) => item.key !== "assets/first.png");
         deps.readStorageReport.mockResolvedValue(swept);
         await click(language.storage.deleteAssets);
         expect(deps.sweepAssets).toHaveBeenLastCalledWith({ keys: ["assets/first.png"], inlays: [] });
-        expect(cleanupValues(target, true)).toEqual(["inlay-first"]);
+        expect(cleanupValues(cleanupSection(), true)).toEqual(["inlay-first"]);
         const afterInlays = report({ ...swept, version: 4 });
         afterInlays.orphanInlays = {
             ...swept.orphanInlays,
@@ -397,7 +402,7 @@ describe("StorageSettings", () => {
         deps.readStorageReport.mockResolvedValue(afterInlays);
         await click(language.storage.deleteInlays);
         expect(deps.sweepAssets).toHaveBeenLastCalledWith({ keys: [], inlays: ["inlay-first"] });
-        expect(cleanupValues(target, true)).toEqual([]);
+        expect(cleanupValues(cleanupSection(), true)).toEqual([]);
     });
 
     it("shares counted kind filters and largest-first or oldest-first sorting across both cleanup lists", async () => {
@@ -473,7 +478,7 @@ describe("StorageSettings", () => {
         expect(assets.textContent).toContain(language.storagePage.cleanup.selected(1, bytes(10)));
         expect(inlays.textContent).toContain(language.storagePage.cleanup.selected(1, bytes(41)));
         await click(language.storagePage.cleanup.selectAll, inlays);
-        expect(cleanupValues(target, true)).toEqual(["assets/photo.PNG", "image-inlay"]);
+        expect(cleanupValues(cleanupSection(), true)).toEqual(["assets/photo.PNG", "image-inlay"]);
         expect(inlays.textContent).toContain(language.storagePage.cleanup.selected(1, bytes(11)));
 
         await click(`${language.storagePage.cleanup.kinds.audio} (2)`);
@@ -487,13 +492,13 @@ describe("StorageSettings", () => {
         await click(language.storagePage.cleanup.clear, inlays);
         expect(inlays.textContent).toContain(language.storagePage.cleanup.selected(0, bytes(0)));
         await click(`${language.storagePage.cleanup.kinds.all} (8)`);
-        expect(cleanupValues(target, true)).toEqual([]);
+        expect(cleanupValues(cleanupSection(), true)).toEqual([]);
 
         await click(`${language.storagePage.cleanup.kinds.audio} (2)`);
         await click(language.storagePage.cleanup.selectAll, assets);
         await click(language.storagePage.cleanup.selectAll, inlays);
         await click(`${language.storagePage.cleanup.kinds.image} (2)`);
-        expect(cleanupValues(target, true)).toEqual([]);
+        expect(cleanupValues(cleanupSection(), true)).toEqual([]);
         deps.alertConfirm.mockResolvedValueOnce(false);
         await click(language.storage.deleteAssets);
         expect(deps.alertConfirm).toHaveBeenLastCalledWith(language.storage.deleteConfirm(1, bytes(30)));
@@ -609,9 +614,7 @@ describe("StorageSettings", () => {
             [language.storage.ownerKinds.character, "Character owner", "3", bytes(120)],
             [language.storage.ownerKinds.module, "Module owner", "1", bytes(60)],
         ]);
-        expect(
-            [...target.querySelectorAll('input[type="checkbox"]')].map((item) => (item as HTMLInputElement).value),
-        ).toEqual([
+        expect(cleanupValues()).toEqual([
             "assets/unselected.png",
             "assets/second.png",
             "assets/first.png",
@@ -619,9 +622,7 @@ describe("StorageSettings", () => {
             "inlay-second",
             "inlay-first",
         ]);
-        expect(
-            [...target.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].some((item) => item.checked),
-        ).toBe(false);
+        expect(cleanupValues(cleanupSection(), true)).toEqual([]);
         expect(target.textContent).toContain(language.storage.candidates);
         expect(target.textContent).toContain(language.storage.orphanInlays);
         expect(target.querySelector('[title="assets/inlay-first.png"]')).not.toBeNull();
@@ -663,6 +664,8 @@ describe("StorageSettings", () => {
             .filter((item) => !item.disabled)
             // Kind filter chips only change which rows are shown, so they stay enabled during a scan.
             .filter((item) => !item.hasAttribute("aria-pressed"))
+            // The whole-disk toggle only redraws the overview bar, so it stays enabled during a scan.
+            .filter((item) => item.closest("label")?.textContent?.trim() !== language.storagePage.overview.wholeDisk)
             .map((item) => item.getAttribute("aria-label") ?? item.textContent?.trim() ?? item.value)
             // Cancel only closes the open label editor, so it stays enabled during a scan.
             .filter((name) => name !== language.storage.cancel);
@@ -954,45 +957,65 @@ describe("StorageSettings usage summary", () => {
             expect(header.textContent).not.toContain(language.storage.noScanYet);
 
             const overview = section("overview");
-            const expectedLegend = [
+            const measuredLegend = [
                 [language.storage.assetsOnDisk, bytes(201)],
                 [language.storage.resourcesDb, bytes(202)],
                 [language.storage.snapshots, bytes(203)],
                 [language.storage.thumbnails, bytes(204)],
                 [language.storage.staging, bytes(205)],
                 [unmanaged, bytes(206)],
-                ...(disk
-                    ? [
-                          [language.storagePage.overview.outside, bytes(279)],
-                          [language.storagePage.overview.free, bytes(500)],
-                      ]
-                    : []),
             ];
-            const legend = [...overview.querySelectorAll("li")];
-            expect(
-                legend.map((item) =>
+            const legend = () =>
+                [...overview.querySelectorAll("li")].map((item) =>
                     [...item.querySelectorAll("span")].map((span) => span.textContent?.trim()).filter(Boolean),
-                ),
-            ).toEqual(expectedLegend);
+                );
+            const summary = () =>
+                [...overview.querySelectorAll("p")]
+                    .filter((item) => item.querySelectorAll("span").length === 2)
+                    .map((item) => [...item.querySelectorAll("span")].map((span) => span.textContent?.trim()));
+            const barWidths = () => {
+                const bars = overview.querySelectorAll<HTMLElement>('div[aria-hidden="true"]');
+                expect(bars).toHaveLength(1);
+                return [...bars[0].children].map((segment) => parseFloat((segment as HTMLElement).style.width));
+            };
+            const expectWidths = (expected: number[]) => {
+                const widths = barWidths();
+                expect(widths).toHaveLength(expected.length);
+                widths.forEach((width, index) => expect(width).toBeCloseTo(expected[index]));
+            };
+            const wholeDisk = overview.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+            expect(wholeDisk.closest("label")?.textContent?.trim()).toBe(language.storagePage.overview.wholeDisk);
+            expect(wholeDisk.checked).toBe(false);
+            expect(wholeDisk.disabled).toBe(disk === null);
+
+            // By default the bar and legend cover RisuAI's measured folders only; free space stays as a number.
+            expect(legend()).toEqual(measuredLegend);
+            expect(summary()).toEqual([
+                [language.storagePage.overview.measuredTotal, `1.19 ${language.storage.byteUnits[1]}`],
+                ...(disk ? [[language.storagePage.overview.free, bytes(500)]] : []),
+            ]);
+            expectWidths([201, 202, 203, 204, 205, 206].map((size) => (size / 1221) * 100));
+            expect(overview.textContent).not.toContain(language.storagePage.overview.outsideHelp);
             if (disk) {
-                expect(legend[6].querySelector("p")?.textContent?.trim()).toBe(
+                expect(overview.textContent).not.toContain(language.storagePage.overview.diskUnknown);
+                wholeDisk.click();
+                flushSync();
+                expect(wholeDisk.checked).toBe(true);
+                expect(legend()).toEqual([
+                    ...measuredLegend,
+                    [language.storagePage.overview.outside, bytes(279)],
+                    [language.storagePage.overview.free, bytes(500)],
+                ]);
+                expect(overview.querySelectorAll("li")[6].querySelector("p")?.textContent?.trim()).toBe(
                     language.storagePage.overview.outsideHelp,
                 );
-                expect(overview.textContent).not.toContain(language.storagePage.overview.diskUnknown);
+                expect(summary()).toEqual([
+                    [language.storagePage.overview.measuredTotal, `1.19 ${language.storage.byteUnits[1]}`],
+                ]);
+                expectWidths([10.05, 10.1, 10.15, 10.2, 10.25, 10.3, 13.95, 25]);
             } else {
                 expect(overview.textContent).toContain(language.storagePage.overview.diskUnknown);
-                expect(overview.textContent).not.toContain(language.storagePage.overview.outsideHelp);
             }
-
-            const bars = overview.querySelectorAll<HTMLElement>('div[aria-hidden="true"]');
-            expect(bars).toHaveLength(1);
-            const expectedWidths = disk
-                ? [10.05, 10.1, 10.15, 10.2, 10.25, 10.3, 13.95, 25]
-                : [201, 202, 203, 204, 205, 206].map((size) => (size / 1221) * 100);
-            expect(bars[0].children).toHaveLength(expectedWidths.length);
-            [...bars[0].children].forEach((segment, index) => {
-                expect(parseFloat((segment as HTMLElement).style.width)).toBeCloseTo(expectedWidths[index]);
-            });
 
             for (const [label, values] of [
                 [language.storagePage.overview.reclaimable, [bytes(60)]],

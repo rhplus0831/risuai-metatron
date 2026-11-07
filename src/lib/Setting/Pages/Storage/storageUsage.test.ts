@@ -22,51 +22,59 @@ function report(overrides: Partial<AssetLifecycleReport> = {}): AssetLifecycleRe
 }
 
 describe("getStorageSegments", () => {
-    it("places six measured kinds, positive outside usage, and free space over the known disk total", () => {
+    const measuredOver = (denominator: number) =>
+        [
+            { kind: "assetsOnDisk", bytes: 120 },
+            { kind: "resourcesDb", bytes: 80 },
+            { kind: "snapshots", bytes: 60 },
+            { kind: "thumbnails", bytes: 40 },
+            { kind: "staging", bytes: 30 },
+            { kind: "unmanaged", bytes: 20 },
+        ].map((segment) => ({ ...segment, fraction: segment.bytes / denominator }));
+
+    it("by default places only the six measured kinds over their sum and reports free space beside the bar", () => {
         expect(getStorageSegments(report())).toEqual({
             diskUnknown: false,
+            measured: 350,
+            free: 250,
+            denominator: 350,
+            segments: measuredOver(350),
+        });
+    });
+
+    it("places six measured kinds, positive outside usage, and free space over the known disk total", () => {
+        expect(getStorageSegments(report(), { wholeDisk: true })).toEqual({
+            diskUnknown: false,
+            measured: 350,
+            free: 250,
             denominator: 1000,
             segments: [
-                { kind: "assetsOnDisk", bytes: 120, fraction: 0.12 },
-                { kind: "resourcesDb", bytes: 80, fraction: 0.08 },
-                { kind: "snapshots", bytes: 60, fraction: 0.06 },
-                { kind: "thumbnails", bytes: 40, fraction: 0.04 },
-                { kind: "staging", bytes: 30, fraction: 0.03 },
-                { kind: "unmanaged", bytes: 20, fraction: 0.02 },
+                ...measuredOver(1000),
                 { kind: "outside", bytes: 400, fraction: 0.4 },
                 { kind: "free", bytes: 250, fraction: 0.25 },
             ],
         });
     });
 
-    it("uses only the six measured kinds and their sum when disk size is unknown", () => {
-        expect(getStorageSegments(report({ disk: null }))).toEqual({
+    it("uses only the six measured kinds and their sum when disk size is unknown, even for the whole disk", () => {
+        const expected = {
             diskUnknown: true,
+            measured: 350,
+            free: null,
             denominator: 350,
-            segments: [
-                { kind: "assetsOnDisk", bytes: 120, fraction: 120 / 350 },
-                { kind: "resourcesDb", bytes: 80, fraction: 80 / 350 },
-                { kind: "snapshots", bytes: 60, fraction: 60 / 350 },
-                { kind: "thumbnails", bytes: 40, fraction: 40 / 350 },
-                { kind: "staging", bytes: 30, fraction: 30 / 350 },
-                { kind: "unmanaged", bytes: 20, fraction: 20 / 350 },
-            ],
-        });
+            segments: measuredOver(350),
+        };
+        expect(getStorageSegments(report({ disk: null }))).toEqual(expected);
+        expect(getStorageSegments(report({ disk: null }), { wholeDisk: true })).toEqual(expected);
     });
 
-    it("omits a negative outside gap and fits measured usage plus free space into the bar", () => {
-        expect(getStorageSegments(report({ disk: { total: 400, free: 250 } }))).toEqual({
+    it("omits a negative outside gap and fits measured usage plus free space into the whole-disk bar", () => {
+        expect(getStorageSegments(report({ disk: { total: 400, free: 250 } }), { wholeDisk: true })).toEqual({
             diskUnknown: false,
+            measured: 350,
+            free: 250,
             denominator: 600,
-            segments: [
-                { kind: "assetsOnDisk", bytes: 120, fraction: 120 / 600 },
-                { kind: "resourcesDb", bytes: 80, fraction: 80 / 600 },
-                { kind: "snapshots", bytes: 60, fraction: 60 / 600 },
-                { kind: "thumbnails", bytes: 40, fraction: 40 / 600 },
-                { kind: "staging", bytes: 30, fraction: 30 / 600 },
-                { kind: "unmanaged", bytes: 20, fraction: 20 / 600 },
-                { kind: "free", bytes: 250, fraction: 250 / 600 },
-            ],
+            segments: [...measuredOver(600), { kind: "free", bytes: 250, fraction: 250 / 600 }],
         });
     });
 
@@ -82,13 +90,25 @@ describe("getStorageSegments", () => {
             { kind: "staging", bytes: 0, fraction: 0 },
             { kind: "unmanaged", bytes: 0, fraction: 0 },
         ];
-        expect(getStorageSegments({ ...empty, disk: { total: 0, free: 0 } })).toEqual({
+        const zeroDisk = { ...empty, disk: { total: 0, free: 0 } };
+        expect(getStorageSegments(zeroDisk, { wholeDisk: true })).toEqual({
             diskUnknown: false,
+            measured: 0,
+            free: 0,
             denominator: 0,
             segments: [...measured, { kind: "free", bytes: 0, fraction: 0 }],
         });
+        expect(getStorageSegments(zeroDisk)).toEqual({
+            diskUnknown: false,
+            measured: 0,
+            free: 0,
+            denominator: 0,
+            segments: measured,
+        });
         expect(getStorageSegments({ ...empty, disk: null })).toEqual({
             diskUnknown: true,
+            measured: 0,
+            free: null,
             denominator: 0,
             segments: measured,
         });

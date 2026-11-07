@@ -3305,6 +3305,8 @@ export const languageKorean = {
             outside: "RisuAI 외 사용",
             outsideHelp: "다른 프로그램, save/ 내 측정 대상 폴더 밖의 파일, 파일 시스템이 예약한 블록을 포함합니다.",
             free: "여유 공간",
+            measuredTotal: "RisuAI 총 사용량",
+            wholeDisk: "디스크 전체 기준으로 보기",
             diskUnknown: "디스크 전체 용량을 알 수 없어 측정된 사용량만 표시합니다.",
             reclaimable: "확보 가능한 공간",
             snapshotsCard: "스냅샷",

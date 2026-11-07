@@ -3342,6 +3342,8 @@ export const languageEnglish = {
             outsideHelp:
                 "Other programs, files in save/ outside the measured folders, and blocks the filesystem reserves.",
             free: "Free",
+            measuredTotal: "Used by RisuAI",
+            wholeDisk: "Show the whole disk",
             diskUnknown: "Disk size unknown; only measured usage is shown.",
             reclaimable: "Reclaimable",
             snapshotsCard: "Snapshots",
