@@ -7,6 +7,7 @@ const deps = vi.hoisted(() => ({
     readStorageStatus: vi.fn<(typeof import("src/ts/storage/assetLifecycleClient"))["readStorageStatus"]>(),
     startStorageScan: vi.fn<(typeof import("src/ts/storage/assetLifecycleClient"))["startStorageScan"]>(),
     sweepAssets: vi.fn<(typeof import("src/ts/storage/assetLifecycleClient"))["sweepAssets"]>(),
+    loadAssetPreview: vi.fn<(typeof import("src/ts/storage/assetLifecycleClient"))["loadAssetPreview"]>(),
     listBackups: vi.fn<(typeof import("src/ts/storage/resourceClient"))["listBackups"]>(),
     takeSnapshot: vi.fn<(typeof import("src/ts/storage/resourceClient"))["takeSnapshot"]>(),
     updateSnapshot: vi.fn<(typeof import("src/ts/storage/resourceClient"))["updateSnapshot"]>(),
@@ -23,6 +24,7 @@ vi.mock(
             readStorageStatus: deps.readStorageStatus,
             startStorageScan: deps.startStorageScan,
             sweepAssets: deps.sweepAssets,
+            loadAssetPreview: deps.loadAssetPreview,
         }) satisfies typeof import("src/ts/storage/assetLifecycleClient"),
 );
 vi.mock("src/ts/storage/resourceClient", async () =>

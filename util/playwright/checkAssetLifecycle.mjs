@@ -505,6 +505,12 @@ try {
 
     await runCase("e: day-16 sweep deletes both media files; immutable cache survives until cleared", async () => {
         await advance(16);
+        const previews = [fixture.profile.key, fixture.media.key].map((key) => {
+            const route = `/api/assets/preview/${Buffer.from(key, "utf-8").toString("hex")}`;
+            const response = page.waitForResponse((reply) => new URL(reply.url()).pathname === route);
+            void response.catch(() => {});
+            return { key, response };
+        });
         const report = await scan();
         assert.deepEqual(candidates(report).sort(), [fixture.profile.key, fixture.media.key].sort());
         assert.equal(
@@ -515,6 +521,22 @@ try {
             report.unreferenced.candidates.find((item) => item.key === fixture.media.key).since,
             fixture.sinceMedia,
         );
+        for (const preview of previews) {
+            const row = panel.locator("label").filter({ has: page.locator(`input[value="${preview.key}"]`) });
+            await row.scrollIntoViewIfNeeded();
+            assert.equal((await preview.response).status(), 200, `lease-free preview of ${preview.key}`);
+            await until(
+                () =>
+                    row
+                        .locator("img")
+                        .evaluateAll((images) => images.some((img) => img.complete && img.naturalWidth > 0)),
+                `loaded cleanup preview of ${preview.key}`,
+            );
+        }
+        await panel
+            .locator('[data-storage-cleanup-list="assets"]')
+            .getByRole("button", { name: "Select all", exact: true })
+            .click();
         const expectedBytes = fixture.profile.bytes.length + fixture.media.bytes.length;
         const removed = await panelRequest(
             button("Delete selected assets"),

@@ -9,6 +9,7 @@ const deps = vi.hoisted(() => ({
     readStorageStatus: vi.fn<(typeof import("src/ts/storage/assetLifecycleClient"))["readStorageStatus"]>(),
     startStorageScan: vi.fn<(typeof import("src/ts/storage/assetLifecycleClient"))["startStorageScan"]>(),
     sweepAssets: vi.fn<(typeof import("src/ts/storage/assetLifecycleClient"))["sweepAssets"]>(),
+    loadAssetPreview: vi.fn<(typeof import("src/ts/storage/assetLifecycleClient"))["loadAssetPreview"]>(),
     listBackups: vi.fn<(typeof import("src/ts/storage/resourceClient"))["listBackups"]>(),
     takeSnapshot: vi.fn<(typeof import("src/ts/storage/resourceClient"))["takeSnapshot"]>(),
     updateSnapshot: vi.fn<(typeof import("src/ts/storage/resourceClient"))["updateSnapshot"]>(),
@@ -25,6 +26,7 @@ vi.mock(
             readStorageStatus: deps.readStorageStatus,
             startStorageScan: deps.startStorageScan,
             sweepAssets: deps.sweepAssets,
+            loadAssetPreview: deps.loadAssetPreview,
         }) satisfies typeof import("src/ts/storage/assetLifecycleClient"),
 );
 vi.mock("src/ts/storage/resourceClient", async () =>
@@ -131,6 +133,7 @@ beforeEach(() => {
     deps.readStorageReport.mockResolvedValue(report());
     deps.listBackups.mockResolvedValue([snapshot("snap-a", "Live A"), snapshot("snap-b", "Live B", true)]);
     deps.sweepAssets.mockResolvedValue(emptySweep());
+    deps.loadAssetPreview.mockImplementation(() => ({ src: new Promise(() => {}), release: () => {} }));
     deps.alertConfirm.mockResolvedValue(true);
     deps.alertNormalWait.mockResolvedValue();
     target = document.createElement("div");
@@ -191,12 +194,12 @@ function input(label: string, value: string, within: ParentNode = target) {
     field!.dispatchEvent(new Event("input", { bubbles: true }));
     flushSync();
 }
-function deselect(value: string) {
+function select(value: string) {
     const checkbox = [...target.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find(
         (item) => item.value === value,
     );
     expect(checkbox).toBeDefined();
-    expect(checkbox!.checked).toBe(true);
+    expect(checkbox!.checked).toBe(false);
     checkbox!.click();
     flushSync();
 }
@@ -205,6 +208,89 @@ function detail(within: ParentNode, label: string) {
     expect(term, `detail ${label}`).toBeDefined();
     return term!.nextElementSibling?.textContent;
 }
+
+function cleanupList(kind: "assets" | "inlays") {
+    const label = kind === "assets" ? language.storage.candidates : language.storage.orphanInlays;
+    const section = [...target.querySelectorAll("section")].find((item) => item.getAttribute("aria-label") === label);
+    expect(section, `cleanup list ${kind}`).toBeDefined();
+    return section!;
+}
+function cleanupValues(within: ParentNode = target, selectedOnly = false) {
+    return [...within.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+        .filter((item) => !selectedOnly || item.checked)
+        .map((item) => item.value);
+}
+function cleanupRow(value: string) {
+    const checkbox = [...target.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find(
+        (item) => item.value === value,
+    );
+    expect(checkbox, `cleanup row ${value}`).toBeDefined();
+    return checkbox!.closest("label")!;
+}
+function chooseSort(element: HTMLSelectElement, value: string) {
+    element.value = value;
+    // happy-dom does not match :checked options, which Svelte's select binding reads.
+    const query = element.querySelector.bind(element);
+    const spy = vi
+        .spyOn(element, "querySelector")
+        .mockImplementation((selector: string) =>
+            selector === ":checked" ? (element.options[element.selectedIndex] ?? null) : query(selector),
+        );
+    try {
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+    } finally {
+        spy.mockRestore();
+    }
+}
+function mixedReport(): AssetLifecycleReport {
+    const value = report();
+    value.unreferenced.candidates = [
+        { key: "assets/photo.PNG", bytes: 10, since: SCANNED_AT - 3000 },
+        { key: "assets/sound.mp3", bytes: 30, since: SCANNED_AT - 1000 },
+        { key: "assets/movie.webm", bytes: 20, since: SCANNED_AT - 2000 },
+        { key: "assets/document.html", bytes: 40, since: SCANNED_AT - 4000 },
+    ];
+    value.orphanInlays.records = [
+        { id: "image-inlay", asset: "assets/inlay.webp", bytes: 11, since: SCANNED_AT - 1000 },
+        { id: "audio-inlay", asset: "assets/inlay.flac", bytes: 31, since: SCANNED_AT - 3000 },
+        { id: "video-inlay", asset: "assets/inlay.mp4", bytes: 21, since: SCANNED_AT - 2000 },
+        { id: "missing-inlay", asset: null, bytes: 41, since: null },
+    ];
+    return value;
+}
+
+function controlVisibility() {
+    const observed = new Map<Element, (visible: boolean) => void>();
+    globalThis.IntersectionObserver = class {
+        private elements = new Set<Element>();
+        constructor(private callback: IntersectionObserverCallback) {}
+        observe(element: Element) {
+            this.elements.add(element);
+            observed.set(element, (isIntersecting) =>
+                this.callback(
+                    [{ target: element, isIntersecting } as IntersectionObserverEntry],
+                    this as unknown as IntersectionObserver,
+                ),
+            );
+        }
+        disconnect() {
+            for (const element of this.elements) observed.delete(element);
+        }
+    } as unknown as typeof IntersectionObserver;
+    return (value: string, visible = true) => {
+        const row = cleanupRow(value);
+        const entry = [...observed].find(([element]) => row.contains(element));
+        expect(entry, `visibility observer for ${value}`).toBeDefined();
+        entry![1](visible);
+        flushSync();
+    };
+}
+
+// Restore only the observer: vi.unstubAllGlobals would also drop vitest.setup.ts's global stubs.
+const originalIntersectionObserver = globalThis.IntersectionObserver;
+afterEach(() => {
+    globalThis.IntersectionObserver = originalIntersectionObserver;
+});
 
 describe("StorageSettings", () => {
     it("shows the no-label text in an unlabeled snapshot row", async () => {
@@ -265,6 +351,218 @@ describe("StorageSettings", () => {
         expect(target.querySelectorAll('[role="menu"]')).toHaveLength(1);
     });
 
+    it("starts with no selection and retains only still-listed selections after scans, polls, and sweeps", async () => {
+        await open();
+        expect(cleanupValues(target, true)).toEqual([]);
+        expect(button(language.storage.deleteAssets).disabled).toBe(true);
+        expect(button(language.storage.deleteInlays).disabled).toBe(true);
+        for (const kind of ["assets", "inlays"] as const) {
+            expect(cleanupList(kind).textContent).toContain(language.storagePage.cleanup.selected(0, bytes(0)));
+        }
+        for (const value of ["assets/first.png", "assets/second.png", "inlay-first", "inlay-second"]) select(value);
+        const scanned = report({ running: true });
+        scanned.unreferenced.candidates = [
+            { key: "assets/new.png", bytes: 99, since: SCANNED_AT },
+            ...scanned.unreferenced.candidates.filter((item) => item.key !== "assets/second.png"),
+        ];
+        scanned.orphanInlays.records = [
+            { id: "new-inlay", asset: null, bytes: 98, since: null },
+            ...scanned.orphanInlays.records.filter((item) => item.id !== "inlay-second"),
+        ];
+        deps.startStorageScan.mockResolvedValue(scanned);
+        await click(language.storage.scan);
+        expect(cleanupValues(target, true)).toEqual(["assets/first.png", "inlay-first"]);
+        expect(cleanupList("assets").textContent).toContain(language.storagePage.cleanup.selected(1, bytes(10)));
+        expect(cleanupList("inlays").textContent).toContain(language.storagePage.cleanup.selected(1, bytes(11)));
+
+        // Removed selections stay cleared even if a later report lists those rows again.
+        deps.readStorageStatus.mockResolvedValue({ running: false, version: 2 });
+        deps.readStorageReport.mockResolvedValue(report({ version: 2 }));
+        await vi.advanceTimersByTimeAsync(1000);
+        flushSync();
+        expect(deps.readStorageReport).toHaveBeenCalledTimes(2);
+        expect(cleanupValues(target, true)).toEqual(["assets/first.png", "inlay-first"]);
+
+        const swept = report({ version: 3 });
+        swept.unreferenced.candidates = swept.unreferenced.candidates.filter((item) => item.key !== "assets/first.png");
+        deps.readStorageReport.mockResolvedValue(swept);
+        await click(language.storage.deleteAssets);
+        expect(deps.sweepAssets).toHaveBeenLastCalledWith({ keys: ["assets/first.png"], inlays: [] });
+        expect(cleanupValues(target, true)).toEqual(["inlay-first"]);
+        const afterInlays = report({ ...swept, version: 4 });
+        afterInlays.orphanInlays = {
+            ...swept.orphanInlays,
+            records: swept.orphanInlays.records.filter((item) => item.id !== "inlay-first"),
+        };
+        deps.readStorageReport.mockResolvedValue(afterInlays);
+        await click(language.storage.deleteInlays);
+        expect(deps.sweepAssets).toHaveBeenLastCalledWith({ keys: [], inlays: ["inlay-first"] });
+        expect(cleanupValues(target, true)).toEqual([]);
+    });
+
+    it("shares counted kind filters and largest-first or oldest-first sorting across both cleanup lists", async () => {
+        deps.readStorageReport.mockResolvedValue(mixedReport());
+        await open();
+        const filters = target.querySelectorAll(
+            `[role="group"][aria-label="${language.storagePage.cleanup.filterKind}"]`,
+        );
+        expect(filters).toHaveLength(1);
+        expect([...filters[0].querySelectorAll("button")].map((item) => item.textContent?.trim())).toEqual([
+            `${language.storagePage.cleanup.kinds.all} (8)`,
+            `${language.storagePage.cleanup.kinds.image} (2)`,
+            `${language.storagePage.cleanup.kinds.audio} (2)`,
+            `${language.storagePage.cleanup.kinds.video} (2)`,
+            `${language.storagePage.cleanup.kinds.other} (2)`,
+        ]);
+        expect(cleanupValues(cleanupList("assets"))).toEqual([
+            "assets/document.html",
+            "assets/sound.mp3",
+            "assets/movie.webm",
+            "assets/photo.PNG",
+        ]);
+        expect(cleanupValues(cleanupList("inlays"))).toEqual([
+            "missing-inlay",
+            "audio-inlay",
+            "video-inlay",
+            "image-inlay",
+        ]);
+        const sorts = [...target.querySelectorAll("select")].filter((item) =>
+            item.closest("label")?.textContent?.includes(language.storagePage.cleanup.sortBy),
+        );
+        expect(sorts).toHaveLength(1);
+        const age = [...sorts[0].options].find((item) => item.textContent === language.storagePage.cleanup.sortAge)!;
+        chooseSort(sorts[0], age.value);
+        await settle();
+        expect(cleanupValues(cleanupList("assets"))).toEqual([
+            "assets/document.html",
+            "assets/photo.PNG",
+            "assets/movie.webm",
+            "assets/sound.mp3",
+        ]);
+        expect(cleanupValues(cleanupList("inlays"))).toEqual([
+            "audio-inlay",
+            "video-inlay",
+            "image-inlay",
+            "missing-inlay",
+        ]);
+        for (const [kind, asset, inlay] of [
+            ["image", "assets/photo.PNG", "image-inlay"],
+            ["audio", "assets/sound.mp3", "audio-inlay"],
+            ["video", "assets/movie.webm", "video-inlay"],
+            ["other", "assets/document.html", "missing-inlay"],
+        ] as const) {
+            await click(`${language.storagePage.cleanup.kinds[kind]} (2)`);
+            expect(cleanupValues(cleanupList("assets"))).toEqual([asset]);
+            expect(cleanupValues(cleanupList("inlays"))).toEqual([inlay]);
+        }
+        await click(`${language.storagePage.cleanup.kinds.all} (8)`);
+        expect(cleanupValues()).toHaveLength(8);
+    });
+
+    it("replaces each selection with filtered select-all, keeps hidden selections, and deletes exactly those selections", async () => {
+        deps.readStorageReport.mockResolvedValue(mixedReport());
+        await open();
+        const assets = cleanupList("assets");
+        const inlays = cleanupList("inlays");
+        select("assets/document.html");
+        select("missing-inlay");
+        await click(`${language.storagePage.cleanup.kinds.image} (2)`);
+        expect(assets.textContent).toContain(language.storagePage.cleanup.selected(1, bytes(40)));
+        expect(inlays.textContent).toContain(language.storagePage.cleanup.selected(1, bytes(41)));
+        await click(language.storagePage.cleanup.selectAll, assets);
+        expect(assets.textContent).toContain(language.storagePage.cleanup.selected(1, bytes(10)));
+        expect(inlays.textContent).toContain(language.storagePage.cleanup.selected(1, bytes(41)));
+        await click(language.storagePage.cleanup.selectAll, inlays);
+        expect(cleanupValues(target, true)).toEqual(["assets/photo.PNG", "image-inlay"]);
+        expect(inlays.textContent).toContain(language.storagePage.cleanup.selected(1, bytes(11)));
+
+        await click(`${language.storagePage.cleanup.kinds.audio} (2)`);
+        select("assets/sound.mp3");
+        select("audio-inlay");
+        expect(assets.textContent).toContain(language.storagePage.cleanup.selected(2, bytes(40)));
+        expect(inlays.textContent).toContain(language.storagePage.cleanup.selected(2, bytes(42)));
+        await click(language.storagePage.cleanup.clear, assets);
+        expect(assets.textContent).toContain(language.storagePage.cleanup.selected(0, bytes(0)));
+        expect(inlays.textContent).toContain(language.storagePage.cleanup.selected(2, bytes(42)));
+        await click(language.storagePage.cleanup.clear, inlays);
+        expect(inlays.textContent).toContain(language.storagePage.cleanup.selected(0, bytes(0)));
+        await click(`${language.storagePage.cleanup.kinds.all} (8)`);
+        expect(cleanupValues(target, true)).toEqual([]);
+
+        await click(`${language.storagePage.cleanup.kinds.audio} (2)`);
+        await click(language.storagePage.cleanup.selectAll, assets);
+        await click(language.storagePage.cleanup.selectAll, inlays);
+        await click(`${language.storagePage.cleanup.kinds.image} (2)`);
+        expect(cleanupValues(target, true)).toEqual([]);
+        deps.alertConfirm.mockResolvedValueOnce(false);
+        await click(language.storage.deleteAssets);
+        expect(deps.alertConfirm).toHaveBeenLastCalledWith(language.storage.deleteConfirm(1, bytes(30)));
+        expect(deps.sweepAssets).not.toHaveBeenCalled();
+        await click(language.storage.deleteAssets);
+        expect(deps.sweepAssets).toHaveBeenCalledExactlyOnceWith({ keys: ["assets/sound.mp3"], inlays: [] });
+        await click(language.storage.deleteInlays);
+        expect(deps.alertConfirm).toHaveBeenLastCalledWith(language.storage.deleteInlaysConfirm(1));
+        expect(deps.sweepAssets).toHaveBeenCalledTimes(2);
+        expect(deps.sweepAssets).toHaveBeenLastCalledWith({ keys: [], inlays: ["audio-inlay"] });
+    });
+
+    it("loads visible images only, falls back to icons on load or image errors, and releases removed and unmounted previews", async () => {
+        const visible = controlVisibility();
+        const value = mixedReport();
+        value.unreferenced.candidates.push({ key: "assets/rejected.png", bytes: 5, since: SCANNED_AT });
+        deps.readStorageReport.mockResolvedValue(value);
+        const handles: { key: string; release: ReturnType<typeof vi.fn> }[] = [];
+        deps.loadAssetPreview.mockImplementation((key) => {
+            const release = vi.fn();
+            handles.push({ key, release });
+            return {
+                src:
+                    key === "assets/rejected.png"
+                        ? Promise.reject(new Error("Preview unavailable"))
+                        : Promise.resolve(`blob:${key}`),
+                release,
+            };
+        });
+        await open();
+        expect(deps.loadAssetPreview).not.toHaveBeenCalled();
+        visible("assets/photo.PNG", false);
+        await settle();
+        expect(deps.loadAssetPreview).not.toHaveBeenCalled();
+        visible("assets/photo.PNG");
+        visible("assets/rejected.png");
+        visible("image-inlay");
+        await settle();
+        expect(deps.loadAssetPreview.mock.calls).toEqual([
+            ["assets/photo.PNG"],
+            ["assets/rejected.png"],
+            ["assets/inlay.webp"],
+        ]);
+        expect(cleanupRow("assets/photo.PNG").querySelector("img")?.getAttribute("src")).toBe("blob:assets/photo.PNG");
+        expect(cleanupRow("assets/rejected.png").querySelector("img")).toBeNull();
+        expect(cleanupRow("assets/rejected.png").querySelector("svg")).not.toBeNull();
+        const inlayImage = cleanupRow("image-inlay").querySelector("img");
+        expect(inlayImage?.getAttribute("src")).toBe("blob:assets/inlay.webp");
+        inlayImage!.dispatchEvent(new Event("error"));
+        await settle();
+        expect(cleanupRow("image-inlay").querySelector("img")).toBeNull();
+        expect(cleanupRow("image-inlay").querySelector("svg")).not.toBeNull();
+        expect(target.querySelector('[role="alert"]')).toBeNull();
+        for (const row of ["assets/sound.mp3", "assets/movie.webm", "assets/document.html", "missing-inlay"]) {
+            expect(cleanupRow(row).querySelector("svg")).not.toBeNull();
+        }
+        expect(handles[0].release).not.toHaveBeenCalled();
+        await click(`${language.storagePage.cleanup.kinds.audio} (2)`);
+        expect(handles[0].release).toHaveBeenCalledOnce();
+        await click(`${language.storagePage.cleanup.kinds.all} (9)`);
+        visible("assets/photo.PNG");
+        await settle();
+        expect(handles).toHaveLength(4);
+        expect(handles[3].release).not.toHaveBeenCalled();
+        await unmount(mounted!);
+        mounted = undefined;
+        expect(handles[3].release).toHaveBeenCalledOnce();
+    });
+
     it("reads storage without writes and shows totals, owners, candidates, inlays, and live snapshots matched by id", async () => {
         deps.listBackups.mockResolvedValue([
             snapshot("snap-a", "Live A"),
@@ -314,16 +612,19 @@ describe("StorageSettings", () => {
         expect(
             [...target.querySelectorAll('input[type="checkbox"]')].map((item) => (item as HTMLInputElement).value),
         ).toEqual([
-            "assets/first.png",
-            "assets/second.png",
             "assets/unselected.png",
-            "inlay-first",
-            "inlay-second",
+            "assets/second.png",
+            "assets/first.png",
             "inlay-unselected",
+            "inlay-second",
+            "inlay-first",
         ]);
+        expect(
+            [...target.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].some((item) => item.checked),
+        ).toBe(false);
         expect(target.textContent).toContain(language.storage.candidates);
         expect(target.textContent).toContain(language.storage.orphanInlays);
-        expect(target.textContent).toContain("assets/inlay-first.png");
+        expect(target.querySelector('[title="assets/inlay-first.png"]')).not.toBeNull();
         expect(heldBytes("Live A")).toBe(bytes(24));
         expect(heldBytes("Live B")).toBe(bytes(42));
         expect(heldBytes("New snapshot")).toBe(language.storage.missingValue);
@@ -360,6 +661,8 @@ describe("StorageSettings", () => {
             ...target.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button:not([aria-expanded]), input"),
         ]
             .filter((item) => !item.disabled)
+            // Kind filter chips only change which rows are shown, so they stay enabled during a scan.
+            .filter((item) => !item.hasAttribute("aria-pressed"))
             .map((item) => item.getAttribute("aria-label") ?? item.textContent?.trim() ?? item.value)
             // Cancel only closes the open label editor, so it stays enabled during a scan.
             .filter((name) => name !== language.storage.cancel);
@@ -382,6 +685,8 @@ describe("StorageSettings", () => {
         expect(deps.readStorageReport).toHaveBeenCalledTimes(2);
         expect(target.textContent).not.toContain(language.storage.scanning);
         expect(button(language.storage.scan).disabled).toBe(false);
+        expect(button(language.storage.deleteAssets).disabled).toBe(true);
+        select("assets/first.png");
         expect(button(language.storage.deleteAssets).disabled).toBe(false);
         await vi.advanceTimersByTimeAsync(5000);
         expect(deps.readStorageStatus).toHaveBeenCalledTimes(3);
@@ -409,6 +714,8 @@ describe("StorageSettings", () => {
         ]);
         await open();
         expect(target.textContent).toContain(language.storage.incomplete);
+        select("assets/first.png");
+        select("inlay-first");
         for (const reason of [
             "snapshot snap-a: unreadable manifest",
             "snapshot snap-b missing asset index",
@@ -441,7 +748,8 @@ describe("StorageSettings", () => {
             skipped: [{ key: "assets/second.png", reason: "asset is now referenced" }],
         });
         await open();
-        deselect("assets/unselected.png");
+        select("assets/first.png");
+        select("assets/second.png");
         deps.alertConfirm.mockResolvedValueOnce(false);
         await click(language.storage.deleteAssets);
         expect(deps.alertConfirm).toHaveBeenLastCalledWith(language.storage.deleteConfirm(2, bytes(30)));
@@ -464,7 +772,8 @@ describe("StorageSettings", () => {
             skippedInlays: [{ id: "inlay-second", reason: "within grace period" }],
         });
         await open();
-        deselect("inlay-unselected");
+        select("inlay-first");
+        select("inlay-second");
         deps.alertConfirm.mockResolvedValueOnce(false);
         await click(language.storage.deleteInlays);
         expect(deps.alertConfirm).toHaveBeenLastCalledWith(language.storage.deleteInlaysConfirm(2));
@@ -482,6 +791,8 @@ describe("StorageSettings", () => {
             .mockRejectedValueOnce(new ResourceRequestError(409, "Scan changed; scan again"))
             .mockRejectedValueOnce(new ResourceRequestError(503, "Storage temporarily unavailable"));
         await open();
+        select("assets/first.png");
+        select("inlay-first");
         await click(language.storage.deleteAssets);
         expect(target.querySelector('[role="alert"]')?.textContent).toBe("Scan changed; scan again");
         await click(language.storage.deleteInlays);

@@ -106,8 +106,10 @@ export class StorageController {
     private applyReport = (value: AssetLifecycleReport) => {
         if (this.disposed) return;
         this.report = value;
-        this.selectedKeys = value.unreferenced.candidates.map((item) => item.key);
-        this.selectedInlays = value.orphanInlays.records.map((item) => item.id);
+        const keys = new Set(value.unreferenced.candidates.map((item) => item.key));
+        const inlays = new Set(value.orphanInlays.records.map((item) => item.id));
+        this.selectedKeys = this.selectedKeys.filter((key) => keys.has(key));
+        this.selectedInlays = this.selectedInlays.filter((id) => inlays.has(id));
     };
 
     private refreshSnapshots = async () => {

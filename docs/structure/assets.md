@@ -41,12 +41,12 @@ errors.
 - Batches: `writeAssets` (the skip rule for `AssetWriteItem.sha256`, asked per batch), `readAssets`, and
   `missingAssets`, behind globalApi's `saveAssetBatch` and `loadAssets`; `ASSET_BATCH_CLIENT_RECORDS`,
   `ASSET_BATCH_CLIENT_BYTES`, `MISSING_CHECK_DEADLINE_MS`, and `assetContentHash`.
-- `src/ts/storage/assetLifecycleClient.ts`: the Storage page's report, scan, and sweep calls.
+- `src/ts/storage/assetLifecycleClient.ts`: the Storage page's report, scan, sweep, and lease-free preview calls.
 
 ### Asset queues
 
-`src/ts/storage/assetQueue.ts`: the bounded save queues for bulk imports and the batched reads of exports. Its header
-and export comments state admission, batching, settlement, and failure.
+`src/ts/storage/assetQueue.ts`: the bounded save queues for bulk imports and the batched export reads. Its comments
+state admission, batching, settlement, and failure.
 
 - `saveAssets` (`AssetSaveItem`, `AssetSaveError`; asks again before returning), `savePickedFiles`, `AssetSaveQueue`
   (the in-tab `CharXImporter`, `src/ts/process/processzip.ts`), and `loadAssetsInBatches`.
