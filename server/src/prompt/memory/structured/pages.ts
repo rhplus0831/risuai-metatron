@@ -154,6 +154,18 @@ export function holdsDisputedLine(body: string): boolean {
     return body.split("\n").some((line) => line.trimStart().startsWith(DISPUTED_LINE));
 }
 
+/**
+ * The standing value of a disputed join: the text before its first `DISPUTED_LINE`, so a new challenger
+ * replaces the old one instead of stacking a third value. A body with no such line, or nothing before it,
+ * is its own standing value.
+ */
+export function disputedStanding(body: string): string {
+    const lines = body.split("\n");
+    const first = lines.findIndex((line) => line.trimStart().startsWith(DISPUTED_LINE));
+    const standing = first === -1 ? "" : lines.slice(0, first).join("\n").trimEnd();
+    return standing === "" ? body : standing;
+}
+
 /** A stored field as text: stored lore and characters hold anything, and what is no string counts as absent. */
 export const storedText = (value: unknown) => (typeof value === "string" ? value : "");
 
@@ -246,7 +258,12 @@ function castRow(page: MemoryPage): CastRow {
         lastState: clampText(lastState(page), LIMITS.promptPageStateChars),
         sections: sections.slice(0, LIMITS.sectionsPerPage).map(({ heading, body }) => ({
             heading: clampText(heading, LIMITS.labelChars),
-            summary: clampText(body, LIMITS.promptSectionSummaryChars),
+            summary: clampText(
+                body,
+                type === "character" && heading === "identity"
+                    ? LIMITS.promptIdentitySummaryChars
+                    : LIMITS.promptSectionSummaryChars,
+            ),
         })),
     };
 }
@@ -255,7 +272,9 @@ function castRow(page: MemoryPage): CastRow {
  * The pages a recording's prompt lists, at most `promptPages`, in this order: `always` pages, the scene's
  * participants, then pages named in `messages` by lore's plain-key matching (`pageNamedInTexts`). The
  * scene page itself is left out: it has its own slot. Each row holds id, type, title, aliases, last
- * state and section summaries; row count and text sizes are capped, so prompt cost stays bounded.
+ * state and section summaries; row count and text sizes are capped, so prompt cost stays bounded. A
+ * character's `identity` gets the longer `promptIdentitySummaryChars`, so a stale lasting fact past
+ * the usual clamp can still be nominated for change.
  */
 export function castSlice(pages: readonly MemoryPage[], messages: readonly Pick<Message, "data">[]): CastRow[] {
     const scene = pages.find(({ type }) => type === "scene");

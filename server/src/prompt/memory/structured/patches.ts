@@ -20,6 +20,7 @@ import {
     changedSectionTexts,
     changeSection,
     DISPUTED_LINE,
+    disputedStanding,
     newScenePage,
     type PageChanges,
     type PagePlan,
@@ -44,7 +45,8 @@ import {
  *   heading a patch names: a section deleted during the call cannot come back as new, and one added
  *   during it was never seen.
  * - An upsert of an existing section is a `change`. A `contradiction` keeps that kind, and below
- *   `contradictionConfidence`, where a missing confidence counts as 0, both values stay, marked disputed.
+ *   `contradictionConfidence`, where a missing confidence counts as 0, both values stay, marked disputed;
+ *   over a section already disputed, the standing value stays with the newest challenger, never a third.
  *   The call shows the mark, and its rules say a body with one value settles it; a body that keeps the
  *   join keeps the mark (`changeSection`). Nothing is cut to fit: a body past `sectionBodyChars`, as
  *   answered or once joined, is refused.
@@ -75,6 +77,8 @@ export type PatchRow = {
     id: string;
     type: MemoryPageType;
     title: string;
+    /** The analysis call's note of what changes on the page, at most `factChars` like its own clamp. */
+    reason?: string;
     sections: PatchRowSection[];
     /** The editable sections past the call's budget, by heading. */
     notShown: string[];
@@ -113,10 +117,12 @@ function writablePage(page: MemoryPage): boolean {
  * before charging anything. What a person took back of kept targets comes first out of `promptPatchChars`,
  * at most `PROMPT_TAKEN_BACK` rows a page, newest first. Editable bodies then show whole or not at all,
  * across all targets in order; those that do not fit go under `notShown`. A target with editable bodies,
- * none of which fit, is refused `overBudget`, even if it could add a section. Locked sections use the
- * remaining room for excerpts of at most `promptSectionSummaryChars`, or just their headings if an excerpt
- * does not fit; their `seen` entries are always null. Rows keep page section order, then empty character
- * slots. A page with no editable sections but room for a legal addition stays in the list.
+ * none of which fit, is refused `overBudget`, even if it could add a section. Each kept target's
+ * candidate `reason`, at most `factChars`, then shows if it fits, so it never costs a page a body.
+ * Locked sections use the remaining room for excerpts of at most `promptSectionSummaryChars`, or just
+ * their headings if an excerpt does not fit; their `seen` entries are always null. Rows keep page section
+ * order, then empty character slots. A page with no editable sections but room for a legal addition
+ * stays in the list.
  */
 export function showTargets(targets: PagePlan["targets"]): ShownPages {
     const rows: PatchRow[] = [];
@@ -165,6 +171,14 @@ export function showTargets(targets: PagePlan["targets"]): ShownPages {
         }
         seen.set(page.id, headings);
     }
+    const reasons = new Map<string, string>();
+    for (const { page, candidate } of writable) {
+        const reason = clampText(candidate.reason.trim(), LIMITS.factChars);
+        if (seen.has(page.id) && reason !== "" && reason.length <= room) {
+            room -= reason.length;
+            reasons.set(page.id, reason);
+        }
+    }
     for (const { page } of writable) {
         const headings = seen.get(page.id);
         if (!headings) continue;
@@ -196,7 +210,16 @@ export function showTargets(targets: PagePlan["targets"]): ShownPages {
         }
         const { id, type, title } = page;
         const taken = takenBack.get(id) ?? [];
-        rows.push({ id, type, title, sections, notShown, ...(taken.length > 0 ? { takenBack: taken } : {}) });
+        const reason = reasons.get(id);
+        rows.push({
+            id,
+            type,
+            title,
+            ...(reason ? { reason } : {}),
+            sections,
+            notShown,
+            ...(taken.length > 0 ? { takenBack: taken } : {}),
+        });
     }
     return { rows, seen, refused };
 }
@@ -277,7 +300,7 @@ function upsertOver(section: MemorySection, patch: MemoryPatch, body: string): S
     const disputed = conflict === "contradiction" && (confidence ?? 0) < LIMITS.contradictionConfidence;
     const was = replacedValue(patch.was);
     const joined = disputed
-        ? `${section.body}\n${DISPUTED_LINE} ${body}`
+        ? `${disputedStanding(section.body)}\n${DISPUTED_LINE} ${body}`
         : was === ""
           ? body
           : `${body}\n(was: ${was})`;
@@ -364,7 +387,8 @@ function emptiesPage(page: MemoryPage, edits: readonly SectionEdit[]): boolean {
  * edits read `emptiesPage`. Other pages and the event still commit.
  * An upsert of existing text is `change`, or `contradiction` for that conflict. At or above
  * `contradictionConfidence` it replaces; below it, missing confidence counting as zero, it joins
- * `<old>\n[disputed] <new>`, sets `disputed` and warns. A replacing upsert appends `(was: ...)` for
+ * `<old>\n[disputed] <new>`, where `<old>` is a disputed body's standing value (`disputedStanding`),
+ * sets `disputed` and warns. A replacing upsert appends `(was: ...)` for
  * nonblank `was`, cut before any `(was:` it carries, to a body stripped of such lines, so a section holds
  * one at most. Neither conflict waits for approval.
  */

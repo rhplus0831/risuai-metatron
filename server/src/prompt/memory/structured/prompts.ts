@@ -152,6 +152,7 @@ const PATCH_RULES = `Rules:
 - Change only what the event establishes, on the pages listed. A section you do not name stays as it is.
 - An upsert replaces the section's whole text, so repeat what stays true in it.
 - A locked section shows at most a short excerpt for context; never patch it or a section listed under notShown, and never leave a page with no text.
+- A page's "reason" is the analysis call's note of what changes on it: a lead to check against the event, not itself evidence.
 - A character page uses only the headings it lists, and a heading marked empty has no text yet.
 - identity holds what lasts about the character: name, role, appearance, background, and defining traits. When the event reveals a new one or changes one for good, upsert identity with it; passing moods and situations belong in currentState.
 - currentState holds what is true of the character right now: where they are, what they are doing, how they feel. An upsert replaces it with the present state and keeps nothing that has passed.

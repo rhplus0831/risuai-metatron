@@ -95,6 +95,7 @@ it("reserves patch space for taken-back text before bodies and tells the writer 
     const slots = patchSlots({ language: "English", rows: shown.rows, event: records.events[0] });
     const row = JSON.parse(slots.cast);
     expect(row.takenBack).toEqual([{ heading: "Section 0", text: "The rejected claim" }]);
+    expect(row.reason).toBe("New facts");
     expect(row.sections).toHaveLength(2);
     expect(row.sections[0]).toMatchObject({ heading: "Section 0", userCorrected: true });
     expect(row.notShown).toEqual(["Section 2"]);
@@ -118,6 +119,7 @@ it("reserves patch space for taken-back text before bodies and tells the writer 
     }
     expect(slots.rules).toContain("never write one into a body");
     expect(slots.rules).toContain('A section marked disputed holds two values, the second on a "[disputed]" line');
+    expect(slots.rules).toMatch(/^- A page's "reason" is .*not itself evidence/m);
 });
 
 it("keeps taken-back scene text in the analysis scene slot past a full scene's clamp", () => {

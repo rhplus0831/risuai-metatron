@@ -155,10 +155,11 @@ enforce one scene page. The read path exposes scene attendance as `stage`.
 
 ### The patch call
 
-`showTargets` passes the admitted event and writable pages to `assemblePatchPrompt`; no writable targets means no call.
-`parsePatches` and `applyPatches` own operation, conflict and whole-page admission rules. `PATCH_RULES` in `prompts.ts`
-distinguishes durable character `identity` facts from passing `currentState` and asks the model to update identity when
-a lasting trait changes. A page refusal is a warning: other pages and the event still commit.
+`showTargets` passes the event and writable pages, with each `reason` that fits, to `assemblePatchPrompt`; no writable
+targets means no call. `parsePatches` and `applyPatches` own operation, conflict and whole-page admission rules.
+`PATCH_RULES` in `prompts.ts` distinguishes durable character `identity` facts from passing `currentState` and asks the
+model to update identity when a lasting trait changes. A page refusal is a warning: other pages and the event still
+commit.
 
 ### Compaction
 
@@ -261,9 +262,9 @@ Compaction changes no event, and a warning does not fail the run.
 - A section whose text is retained by an identical upsert, disputed join, or compaction keeps only the newest
   `sectionEvidence`; an older dropped event can still support it while the section reads `unsupported`. Decision:
   Structured Memory slice 4a, archive.
-- A section whose `userCorrected` stands is never compacted, and can grow by disputed joins until `sectionTooLong`
-  refuses only that section's patch; the page's other edits can still apply. The person trims it. A section a failed or
-  discarded compaction left long waits for its next change. Decision: Structured Memory D13, archive.
+- A section whose `userCorrected` stands is never compacted. A disputed join keeps its standing and newest values; past
+  `sectionTooLong` only that patch is refused. The person trims it. A section a failed or discarded compaction left long
+  waits for its next change. Decision: Structured Memory D13, archive.
 - `takenBack` is advice: code compares a patch with it nowhere, so a model can write the text again. Only a scene field
   is held. Decision: Structured Memory slice 7b, archive.
 - Budgets are per section in characters, so they do not keep the required lane under `requiredCap`. Compaction runs

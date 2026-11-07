@@ -167,6 +167,18 @@ it("shows whole sections within the patch budget and marks omitted headings", ()
     expect(result.refused).toEqual([{ candidate: targets[1].candidate, refusal: "overBudget" }]);
 });
 
+it("shows each kept target's candidate reason, clamped and charged to the budget after its bodies", () => {
+    const first = page("first");
+    first.sections = [section("Gate", "x".repeat(LIMITS.promptPatchChars - LIMITS.factChars))];
+    const second = page("second");
+    second.sections = [section("Gate", "")];
+    const result = showTargets([
+        { page: first, candidate: { targetId: first.id, confidence: 1, reason: "r".repeat(LIMITS.factChars + 50) } },
+        { page: second, candidate: { targetId: second.id, confidence: 1, reason: "Short" } },
+    ]);
+    expect(result.rows.map((row) => row.reason)).toEqual(["r".repeat(LIMITS.factChars), undefined]);
+});
+
 it("refuses a fully locked character without spending the next page's patch budget", () => {
     const locked = page("locked");
     locked.type = "character";
@@ -189,6 +201,7 @@ it("refuses a fully locked character without spending the next page's patch budg
             id: "editable",
             title: "editable",
             type: "location",
+            reason: "Update",
             sections: [{ heading: "Gate", body: "The gate is open." }],
             notShown: [],
         },
@@ -204,13 +217,19 @@ it("shows editable bodies before compact locked context and still refuses locked
         locked: true,
     }));
     const editable = page("editable");
-    // Leave room for only one locked excerpt, so excerpts charged first would hide an editable body.
+    // Leave room for both reasons and only one locked excerpt, so excerpts charged first would hide an
+    // editable body.
     editable.sections = [
         section("First", "a".repeat(LIMITS.sectionBodyChars)),
         section("Second", "b".repeat(LIMITS.sectionBodyChars)),
         section(
             "Third",
-            "c".repeat(LIMITS.promptPatchChars - 2 * LIMITS.sectionBodyChars - LIMITS.promptSectionSummaryChars),
+            "c".repeat(
+                LIMITS.promptPatchChars -
+                    2 * LIMITS.sectionBodyChars -
+                    2 * "Update".length -
+                    LIMITS.promptSectionSummaryChars,
+            ),
         ),
     ];
     const targets = [locked, editable].map((page) => ({
@@ -226,6 +245,7 @@ it("shows editable bodies before compact locked context and still refuses locked
             id: "locked",
             title: "locked",
             type: "character",
+            reason: "Update",
             sections: [
                 ...locked.sections.map(({ heading }) => expect.objectContaining({ heading, locked: true })),
                 { heading: CHARACTER_SECTION_SLOTS.at(-1), empty: true },
@@ -236,6 +256,7 @@ it("shows editable bodies before compact locked context and still refuses locked
             id: "editable",
             title: "editable",
             type: "location",
+            reason: "Update",
             sections: editable.sections.map(({ heading, body }) => ({ heading, body })),
             notShown: [],
         },
@@ -379,6 +400,28 @@ it("preserves conflict history, disputes weak contradictions, and refuses overfl
         expect(changes.size).toBe(0);
         expect(warnings).toEqual([expect.objectContaining({ kind: "sectionTooLong" })]);
     }
+});
+
+it("keeps the standing value and the newest challenger when a disputed section is disputed again", () => {
+    // Stacked, the three values would pass `sectionBodyChars`; the standing one and the challenger fit.
+    const middle = "m".repeat(LIMITS.sectionBodyChars - 200);
+    const challenger = "n".repeat(1000);
+    const before = page();
+    before.sections[0] = { ...section("Gate", `Old Gate\n[disputed] ${middle}`), disputed: true };
+    const changes: PageChanges = new Map();
+    const warnings = applyPatches({
+        pages: new Map([[before.id, before]]),
+        changes,
+        patches: [patch("Gate", { body: challenger, conflict: "contradiction", confidence: 0 })],
+        seen: shown([before]),
+        stamp: stamp(),
+    });
+    expect(changes.get("bad")!.page.sections[0]).toMatchObject({
+        body: `Old Gate\n[disputed] ${challenger}`,
+        disputed: true,
+    });
+    expect(changes.get("bad")!.page.history[0].before!.body).toBe(`Old Gate\n[disputed] ${middle}`);
+    expect(warnings).toEqual([expect.objectContaining({ kind: "disputed" })]);
 });
 
 it("starts a replaced section's evidence afresh and adds to it where the old text stays", () => {

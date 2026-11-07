@@ -201,6 +201,8 @@ export const STRUCTURED_MEMORY_LIMITS = {
     /** A listed page's last state in the writer's prompt, and what it shows of each section. */
     promptPageStateChars: 200,
     promptSectionSummaryChars: 120,
+    /** What the writer's prompt shows of a character's `identity`, so a stale lasting fact stays in view. */
+    promptIdentitySummaryChars: 400,
     /** Section bodies the patch call shows, across its pages. */
     promptPatchChars: 12000,
     /** Open threads the writer's prompt lists, the newest ones. */

@@ -390,3 +390,16 @@ it("keeps a page's newest links at the cap and moves a repeated link to the newe
     addLinks(unchanged, new Map([[same.id, same]]), [{ from: "same", to: "b" }]);
     expect(unchanged.has("same")).toBe(false);
 });
+
+it("shows a character's identity in the cast past the other sections' summary clamp", () => {
+    const long = "i".repeat(LIMITS.promptIdentitySummaryChars + 50);
+    const hero = page("hero", { type: "character", contextMode: "always" });
+    hero.sections = ["identity", "currentState"].map((heading) => ({ ...hero.sections[0], heading, body: long }));
+    const place = page("place", { contextMode: "always" });
+    place.sections = [{ ...place.sections[0], heading: "identity", body: long }];
+    const summaries = castSlice([hero, place], []).map(({ sections }) => sections.map(({ summary }) => summary.length));
+    expect(summaries).toEqual([
+        [LIMITS.promptIdentitySummaryChars, LIMITS.promptSectionSummaryChars],
+        [LIMITS.promptSectionSummaryChars],
+    ]);
+});
