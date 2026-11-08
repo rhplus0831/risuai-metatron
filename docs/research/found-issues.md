@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, and seven more plan-leftover collections from memory the same day; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, and the seventeenth (the Found Issues Decisions run) on 2026-11-09; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. An entry is a `###` heading under its area section, a paragraph saying what and where (`file:line`), then a **Why it matters:** line and a **Suggested handling:** line; the Contents list at the top counts each area's entries. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -14,8 +14,8 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [LLM requests and providers](#llm-requests-and-providers) (14)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (7)
-- [Chat screen and input](#chat-screen-and-input) (5)
-- [Client and plugins](#client-and-plugins) (24)
+- [Chat screen and input](#chat-screen-and-input) (6)
+- [Client and plugins](#client-and-plugins) (25)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
 - [Test timing](#test-timing) (1)
 
@@ -448,6 +448,13 @@ Left by the chat rendering perf series (7003e80e9, daf658ba1, 224bc6aae, 2026-10
 **Why it matters:** the containment changes what a far card can show, and the anchoring has no regression test.
 **Suggested handling:** start from this list when picking up chat rendering work; the later chat-open work (newest-first reveal, staged mounting, held rows) is contracted in ui-theming.md.
 
+### ChatBody's modelShortName no longer changes the body
+
+`src/lib/ChatScreens/ChatBody.svelte` `prepareShownBody` (~581) still reads `modelShortName` into its pending memo, and `src/lib/ChatScreens/Chat.svelte` (~1422) still computes it per row from `getModelInfo(...).shortName`. Its only effect on the HTML was `addMetadataToElement` (the watermark), which Found Issues Decisions C1 deleted (2026-11-09), so the prop is now a dead render input. Also cited as dormant in `docs/manual-audit/plan-design-audit-2026-11-04/render-work-budget.md` (~94). Found by the C1 slice session.
+
+**Why it matters:** a model change only misses the pending memo (one extra re-render), and every row pays a `getModelInfo` call for nothing.
+**Suggested handling:** drop the prop, its memo key, the `Chat.svelte` computation, and the `modelShortName: ""` lines in the ChatBody and Chat tests (the `ChatBody.svelte.test.ts` model-change case ~720 goes with it).
+
 ## Client and plugins
 
 ### Stop B leftovers
@@ -648,6 +655,13 @@ Left on purpose by slice P2 of the RisuNest Small Wins plan (ed9d207c5, 2026-10-
 
 **Why it matters:** a reload can run a job against a half-unloaded hook list, a failed plugin start stays listed as loaded, and a terminated plugin's fetch keeps the network busy.
 **Suggested handling:** pick these up when a change touches plugin reload timing (S1 safe boot uses P2's reload guard) or a bug report does. Related: "A multi-tab plugin removal can bring its deleted data back".
+
+### The plugin remove button's comment predates the owned-write refusal
+
+`src/lib/Setting/Pages/PluginSettings.svelte` remove button (~206): the comment "onUnload can still write; delete only after the local sandbox is gone" predates Found Issues Decisions B1 (2026-11-09), which makes `setOwnedPluginStorageItem` throw for an owner not in `settings.plugins`. The plugin is spliced out of the list before `loadPlugins()`, so its `onUnload` owned writes are now refused; only legacy and custom (`setDatabase`) writes can still land. B1 could not edit the file (B2 owned it in that run). Found by the B1 slice session.
+
+**Why it matters:** a reader may think the order still protects owned keys, or reorder the handler wrongly.
+**Suggested handling:** reword the comment when the handler is next touched; the delete-after-unload order still matters for custom keys.
 
 ## Build, drivers, and e2e
 
