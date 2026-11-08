@@ -15,7 +15,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (9)
 - [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (30)
+- [Client and plugins](#client-and-plugins) (29)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (9)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (1)
@@ -651,14 +651,6 @@ Deferred by the Implementation Audit Fixes plan (2026-11-05): the fix needs a li
 **Suggested handling:** a design of its own: track URL ownership by rendered media and cached HTML, and release unowned URLs under a byte budget.
 
 **Decision (owner, 2026-11-08):** accepted; record in assets Known Hazards that the fallback URLs live for the page and grow with the distinct media played, released by a reload.
-
-### Chat disclosure and watermark checks return constants
-
-In `src/ts/globalApi.svelte.ts`, `aiLawApplies` always returns true and `aiWatermarkingLawApplies` always returns false. Traced on 2026-11-07: `genInfo` in `src/lib/ChatScreens/Chat.svelte` displays its model button even with `requestInfoInsideChat` off when the message has a model. In `src/ts/parser/parser.svelte.ts`, `addMetadataToElement` returns before encoding a watermark. Both helpers have implementation TODOs.
-
-The owner still needs to decide whether these behaviors should be unconditional and what the setting should control. This was checked in source. See the [global API guide](../structure/global-api.md#issues).
-
-**Decision (owner, 2026-11-08):** the disclosure becomes opt-in through a server environment variable, `RISU_AI_DISCLOSURE` (default off), injected beside `__NODE__` by `serveCachedIndex` and the Vite dev plugin and folded into the index page's ETag; `aiLawApplies` reads it. The watermark path (`aiWatermarkingLawApplies`, `addMetadataToElement`, `encodeMetadata`) and the unused `countriesWithAiLaw` set are deleted. The default-off divergence from upstream is a global-api Limitation.
 
 ### Duplicate plugin names can share a popup editor target
 
