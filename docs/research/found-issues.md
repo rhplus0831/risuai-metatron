@@ -855,7 +855,6 @@ Measured by slice 8 on scripted fixtures (`docs/audit/structured-memory-2026-11-
 
 - `MEMORY_CALL_OVERHEAD_TOKENS` (1,500) is low: overhead was about 2,100 per call in English and 2,800–3,700 in Korean, and actual analysis input was 1.13–2.32 times the preview. Proposal: 3,000, bytes÷3 kept, after a real-model check.
 - `selectMemory` takes 520–584 ms on a 1,000-turn send, mostly tokenizing (296–356 ms) and cache reads. The sweep plan's B10 tried counting each text once per selection (de9e9ed21, reverted in 2a0f07213): only 9 of about 2,190 counts per send were repeats and the time did not drop. The rest are distinct history entries `assemble.ts` already counted for `currentTokens`, so the gain needs `selectMemory` to reuse those counts.
-- An unchanged checkpoint save holds about 500 ms on a 2,000-run chat. A hash cache is not worth it; dropping `input` from recorded runs is (whole-row readers not traced).
 - `getChatFromIndex` over 67 or more loaded chats spends the shared per-IP authenticated bucket, and a neighbour route was refused until the reset (loopback surrogate only). The bucket is now 2,000 a minute (`server/src/app.ts`), so this is cost, not a near refusal: coalesce adjacent refreshes into one revisions batch.
 - At a 16k context the `threads` lane starves once events carry three quotes, and a two-event comparison loses one event in a long chat, also at 32k.
 
