@@ -4,7 +4,8 @@ Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) records completed plans,
 historical paths/commits, retrieval commands, and pending manual follow-ups.
 
-None
+- [Found Issues Decisions](found-issues-decisions.md): the eighteen owner decisions of
+  2026-11-08 on found-issues entries, as nine fixes, one feature flag, one follow-up slice and a guide pass.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
