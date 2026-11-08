@@ -358,6 +358,7 @@
     { "match": "src/ts/{alert,alertQueue,dragTypes,sourcemap,iris,licenses}*.ts", "guide": "global-api" },
     { "match": "src/lib/Others/{AlertComp,IrisModal,ReloadNotice,TerminalNotice}.svelte", "guide": "global-api" },
     { "match": "src/ts/tests/{alertMock,globalApiMock}.ts", "guide": "global-api" },
+    { "match": "src/ts/globalApiDisclosure.test.ts", "guide": "global-api" },
     { "match": "src/etc/Airisu.webp", "guide": "global-api" },
     { "match": "src/ts/setting/**", "guide": "settings-i18n" },
     { "match": "src/ts/settingsMenu.ts", "guide": "settings-i18n" },

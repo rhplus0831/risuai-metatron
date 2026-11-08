@@ -1,7 +1,8 @@
 /**
  * The platform flags, and the labels of the error dialog's stack trace block (`src/lib/Others/AlertComp.svelte`). The
- * app runs only on the self-host server, so no module past `src/main.ts` branches on `isNodeServer`; the other flags
- * describe the device and the browser.
+ * app runs only on the self-host server, so no module past `src/main.ts` branches on `isNodeServer`;
+ * `aiDisclosureEnabled` is the server operator's choice injected beside it, and the other flags describe the device
+ * and the browser.
  */
 
 type UserAgentDataLike = {
@@ -27,6 +28,14 @@ const browserNavigator = navigator as BrowserNavigator;
  * `src/main.ts`.
  */
 export const isNodeServer: boolean = !!(globalThis as typeof globalThis & { __NODE__?: boolean }).__NODE__;
+/**
+ * True only when the page was served with `globalThis.__RISU_AI_DISCLOSURE__ = true`, injected in the same script as
+ * `__NODE__` by the self-host server (from its `RISU_AI_DISCLOSURE` environment variable) or by the `risu-node-flag`
+ * plugin of the Vite dev server (from the shell's). A page-lifetime constant: a change needs a server restart and a
+ * page reload. Read only by `aiLawApplies` in `src/ts/globalApi.svelte.ts`.
+ */
+export const aiDisclosureEnabled: boolean =
+    (globalThis as typeof globalThis & { __RISU_AI_DISCLOSURE__?: boolean }).__RISU_AI_DISCLOSURE__ === true;
 /** A mobile user-agent heuristic; it misses iPads that report a desktop user agent. */
 export const isMobile: boolean = /Android|iPhone|iPad|iPod|webOS/i.test(browserNavigator.userAgent);
 

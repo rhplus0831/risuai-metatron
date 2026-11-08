@@ -40,7 +40,6 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     risuChatParserForDisplay: vi.fn((text: string) => text),
     ParseMarkdown: vi.fn(async (text: string) => `<p>${text}</p>`),
     trimMarkdown: vi.fn((html: string) => html),
-    addMetadataToElement: vi.fn((html: string) => html),
     postTranslationParse: vi.fn(async (html: string) => html),
     getDistance: vi.fn(() => 0),
     parseMarkdownSafe: vi.fn((text: string) => text),

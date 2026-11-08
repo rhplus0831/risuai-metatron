@@ -61,7 +61,6 @@ export function createGlobalApiMock(overrides: ModuleMockOverrides<GlobalApiModu
         getLanguageCodes: vi.fn(() => []),
         getVersionString: vi.fn(() => ""),
         aiLawApplies: vi.fn(() => false),
-        aiWatermarkingLawApplies: vi.fn(() => false),
         changeChatTo: vi.fn(),
         openPinnedChat: vi.fn(),
         createChatCopyName: vi.fn((name: string, type: string) => `${name} (${type})`),

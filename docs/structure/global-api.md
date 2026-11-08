@@ -24,7 +24,8 @@
   (`saving`), writers (`LocalWriter`, `VirtualWriter`, `BlankWriter`, `AppendableBuffer`), chat navigation
   (`changeChatTo`, `openPinnedChat`, `createChatCopyName`), `downloadFile`, `openURL`, and `toggleFullscreen`.
 - Other visible helpers include `getLanguageCodes` (translation and subtitle pickers), `getVersionString` (the
-  compatibility version shown in the UI), and `aiLawApplies`/`aiWatermarkingLawApplies` (chat and parser decisions).
+  compatibility version shown in the UI), and `aiLawApplies` (whether the chat screens show the AI disclosure: it
+  returns `aiDisclosureEnabled` from `src/ts/platform.ts`, the page flag the server sets from `RISU_AI_DISCLOSURE`).
   `checkCharOrder` is re-exported from this facade; its implementation belongs to `src/ts/storage/characterOrder.ts`.
 - The network exports (`globalFetch` with `GlobalFetchArgs`, `fetchNative`, `addFetchLog`, `appendFetchLog`,
   `getFetchLogs`): their routing and the log are [network-jobs](network-jobs.md)'s.
@@ -124,7 +125,7 @@ before the queue advances. See `alertQueue.ts`, `hotkey.ts`, and `AlertComp.svel
 ## Tests
 
 - Vitest:
-  `pnpm --silent test:agent src/ts/alert{Queue,Terminal,CardExport}.test.ts src/ts/{sourcemap,util}.test.ts src/ts/util/koreanSearch.test.ts`.
+  `pnpm --silent test:agent src/ts/alert{Queue,Terminal,CardExport}.test.ts src/ts/{sourcemap,util,globalApiDisclosure}.test.ts src/ts/util/koreanSearch.test.ts`.
 - Typed shared doubles: `src/ts/tests/alertMock.ts` and `src/ts/tests/globalApiMock.ts`.
 - Browser specs:
   `pnpm --silent test:agent --e2e e2e/terminalNotice.spec.ts e2e/welcomeAndChatSettings.spec.ts e2e/personaBinding.spec.ts`
@@ -133,8 +134,8 @@ before the queue advances. See `alertQueue.ts`, `hotkey.ts`, and `AlertComp.svel
 
 ## Known Hazards
 
-### Issues
+### Limitations
 
-- `aiLawApplies` always returns true and `aiWatermarkingLawApplies` always returns false. The chat row’s model button
-  and the parser’s watermark follow those values. See the
-  [issue and affected callers](../research/found-issues.md#chat-disclosure-and-watermark-checks-return-constants).
+- The AI disclosure (`aiLawApplies`: the empty-chat warning, the request-info disclaimer, and the chat row's model
+  button regardless of `requestInfoInsideChat`) is off unless the operator sets `RISU_AI_DISCLOSURE`; upstream shows it
+  unconditionally. Changing the variable needs a server restart and a page reload. Decision: owner, 2026-11-08.

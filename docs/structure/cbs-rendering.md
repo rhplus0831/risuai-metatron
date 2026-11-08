@@ -49,9 +49,9 @@ and the module headers.
 
 - `src/ts/parser/parser.svelte.ts`: the client host of the evaluator and the renderer (module header; `risuChatParser`,
   `risuChatParserScoped`, `risuChatParserForDisplay`, `CLIENT_CBS_LIMITS`, `ParseMarkdown`,
-  `renderMarkdown`/`renderHighlightableMarkdown`, `trimMarkdown`, `trimMarkdownSharingStyles`, `parseMarkdownSafe`,
-  `addMetadataToElement`; assets: `parseAdditionalAssets`, `assetRegex`, `resetAssetsCache`, `syncAssetsCache`,
-  `getClosestMatch`, `getDistance`).
+  `renderMarkdown`/`renderHighlightableMarkdown`, `trimMarkdown`, `trimMarkdownSharingStyles`, `parseMarkdownSafe`;
+  assets: `parseAdditionalAssets`, `assetRegex`, `resetAssetsCache`, `syncAssetsCache`, `getClosestMatch`,
+  `getDistance`).
   - A parse that reaches its budget throws `CbsLimitError` to its caller; the server's `cbs` callback fails its request
     on purpose (`src/ts/process/request/transport.ts`). The places that show a result call `risuChatParserForDisplay`
     instead: `src/lib/ChatScreens/Chat.svelte` `displayPrePass` (also the copy of a streaming row),
@@ -139,9 +139,9 @@ and video have two modes:
    `ParseMarkdown`, `serverProcessScript`, `translateHTML`, and `postTranslationParse`; the reads a failed run retries
    are `src/ts/parser/renderErrors.ts`, the retry policy the `ChatBody` contract
    ([ui-theming](ui-theming.md#message-row)).
-3. `ChatBody`'s `shownBody` sanitizes the result (`addMetadataToElement(pruneEmptyBilingualPairs(trimMarkdown(...)))`).
-   Under the chat screen (`DefaultChatScreen` provides a `ChatStyleRegistry`), a body that holds a `<style>` or
-   `<risu-style>` goes through `trimMarkdownSharingStyles` instead: [Shared styles](#shared-styles).
+3. `ChatBody`'s `shownBody` sanitizes the result (`pruneEmptyBilingualPairs(trimMarkdown(...))`). Under the chat screen
+   (`DefaultChatScreen` provides a `ChatStyleRegistry`), a body that holds a `<style>` or `<risu-style>` goes through
+   `trimMarkdownSharingStyles` instead: [Shared styles](#shared-styles).
 
 ### Display transform
 

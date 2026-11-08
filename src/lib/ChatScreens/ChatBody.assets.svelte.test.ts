@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("src/ts/parser/parser.svelte", () => ({
     ParseMarkdown: vi.fn(async (text: string) => text),
     trimMarkdown: (html: string) => html,
-    addMetadataToElement: (html: string) => html,
     postTranslationParse: async (html: string) => html,
 }));
 vi.mock("src/ts/parser/assetSearch", async (original) => {

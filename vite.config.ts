@@ -53,14 +53,24 @@ export default defineConfig(({ command, mode }) => {
                 },
             },
             {
-                // Dev only (`apply: "serve"`), so `dist/index.html` never carries the flag: in production
-                // the self-host server injects it (`server/src/http/staticCache.ts` `serveCachedIndex`).
-                // `src/ts/platform.ts` `isNodeServer` reads it.
+                // Dev only (`apply: "serve"`), so `dist/index.html` never carries the flags: in production
+                // the self-host server injects them (`server/src/http/staticCache.ts` `serveCachedIndex`).
+                // `src/ts/platform.ts` reads them: `isNodeServer` from `__NODE__`, `aiDisclosureEnabled`
+                // from `__RISU_AI_DISCLOSURE__`, which follows the shell's `RISU_AI_DISCLOSURE` by the
+                // server's rule (`1` or `true`, trimmed and in any case, is on; anything else is off).
                 name: "risu-node-flag",
                 apply: "serve",
-                transformIndexHtml: () => [
-                    { tag: "script", children: "globalThis.__NODE__ = true", injectTo: "head-prepend" },
-                ],
+                transformIndexHtml: () => {
+                    const raw = process.env.RISU_AI_DISCLOSURE?.trim().toLowerCase();
+                    const aiDisclosure = raw === "1" || raw === "true";
+                    return [
+                        {
+                            tag: "script",
+                            children: `globalThis.__NODE__ = true; globalThis.__RISU_AI_DISCLOSURE__ = ${aiDisclosure}`,
+                            injectTo: "head-prepend",
+                        },
+                    ];
+                },
             },
         ],
 

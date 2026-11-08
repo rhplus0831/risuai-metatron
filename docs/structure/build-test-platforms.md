@@ -59,10 +59,11 @@
 ### Config files
 
 - `vite.config.ts`: the client build and the dev server (port 5174, `strictPort`, proxy to `RISU_DEV_SERVER`, `cacheDir`
-  from `RISU_VITE_CACHE_DIR`). Look up `risu-node-flag` (dev only: `globalThis.__NODE__`), `risu-build-info` (build
-  only: `dist/build-info.json`), and `define` (`__RISU_BUILD__`, read through `src/ts/buildInfo.ts`). Besides Svelte,
-  `@tailwindcss/vite`, and `vite-plugin-wasm`, builds use `@rollup/plugin-strip`, `build.target`
-  `baseline-widely-available`, `build.minify` `oxc`, and no `manualChunks`; `envPrefix` is Vite's default (`VITE_`).
+  from `RISU_VITE_CACHE_DIR`). Look up `risu-node-flag` (dev only: `__NODE__`, and `__RISU_AI_DISCLOSURE__` from the
+  shell), `risu-build-info` (build only: `dist/build-info.json`), and `define` (`__RISU_BUILD__`, read through
+  `src/ts/buildInfo.ts`). Besides Svelte, `@tailwindcss/vite`, and `vite-plugin-wasm`, builds use
+  `@rollup/plugin-strip`, `build.target` `baseline-widely-available`, `build.minify` `oxc`, and no `manualChunks`;
+  `envPrefix` is Vite's default (`VITE_`).
 - `server/src/buildInfo.ts` `resolveBuildInfo`: `RISU_BUILD_COMMIT`, `RISU_BUILD_DATE`, `RISU_BUILD_DIRTY` give the
   build id without git, as the `Dockerfile` build arguments do; otherwise git. The id's shape is in [State](#state).
 - `util/compressDist.mjs`: after Vite, writes the smaller `.br` and `.gz` siblings into `dist/`; its extensions are

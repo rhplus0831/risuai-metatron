@@ -22,7 +22,7 @@ import { createAuthStore } from "../routes/auth.ts";
 import type { DurableFs } from "../data/durableWrite.ts";
 import type { AppEnv } from "../types.ts";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServerContext } from "../app.ts";
 import { decodeFileName, decodeKeyHeader, encodeFileName, resolveStorageKey } from "../routes/storage.ts";
 import {
@@ -49,7 +49,7 @@ afterAll(() => {
 afterEach(async () => {
     await Promise.all(servers.splice(0).map((s) => s.close()));
 });
-function freshServer(options?: { password?: string }) {
+function freshServer(options?: { password?: string; rootDir?: string }) {
     server = createTestServer(options);
     servers.push(server);
     return server;
@@ -74,6 +74,15 @@ describe("GET / and /index.html", () => {
         return bodies;
     }
 
+    // The index tests outside "AI disclosure" expect the default (unset) disclosure flag.
+    const NODE_FLAGS_OFF = "<script>globalThis.__NODE__ = true; globalThis.__RISU_AI_DISCLOSURE__ = false</script>";
+    beforeEach(() => {
+        vi.stubEnv("RISU_AI_DISCLOSURE", undefined);
+    });
+    afterEach(() => {
+        vi.unstubAllEnvs();
+    });
+
     // Without the flag the client shows only the "self-host server required" notice, so both
     // entry URLs must inject it (with or without a query string, which deep links carry).
     it("injects the __NODE__ flag and revalidates both entry URLs", async () => {
@@ -85,11 +94,91 @@ describe("GET / and /index.html", () => {
             expect(res.headers.get("content-type"), url).toMatch(/^text\/html/);
             expect(res.headers.get("cache-control"), url).toBe("no-cache");
             expect(res.headers.get("etag"), url).toMatch(/^W\//);
-            expect(res.headers.get("last-modified"), url).toBe(modifiedAt.toUTCString());
+            expect(res.headers.get("last-modified"), url).toBeNull();
             const html = await res.text();
-            expect(html, url).toContain('<head><script>globalThis.__NODE__ = true</script><meta charset="utf-8">');
+            expect(html, url).toContain(`<head>${NODE_FLAGS_OFF}<meta charset="utf-8">`);
             expect(html.match(/__NODE__/g), url).toHaveLength(1);
         }
+    });
+
+    describe("AI disclosure", () => {
+        const entryUrls = ["/", "/index.html", "/settings/model"];
+        const indexWithDisclosure = (enabled: boolean) =>
+            TEST_INDEX_HTML.replace(
+                "<head>",
+                `<head><script>globalThis.__NODE__ = true; globalThis.__RISU_AI_DISCLOSURE__ = ${enabled}</script>`,
+            );
+
+        it.each([
+            [undefined, false],
+            [" 1 ", true],
+            [" \tTrUe\n", true],
+            ["false", false],
+        ] as const)("injects one disclosure script for RISU_AI_DISCLOSURE=%j", async (env, enabled) => {
+            vi.stubEnv("RISU_AI_DISCLOSURE", env);
+            const { app } = freshServer();
+
+            for (const url of entryUrls) {
+                const res = await app.request(url);
+                expect(res.status, url).toBe(200);
+                expect(await res.text(), url).toBe(indexWithDisclosure(enabled));
+            }
+        });
+
+        it("revalidates the disclosure ETag across restarts only when the flag is unchanged", async () => {
+            vi.stubEnv("RISU_AI_DISCLOSURE", undefined);
+            const initial = freshServer();
+            utimesSync(path.join(initial.rootDir, "dist", "index.html"), modifiedAt, modifiedAt);
+            const first = await initial.app.request("/");
+            expect(first.status).toBe(200);
+            expect(await first.text()).toBe(indexWithDisclosure(false));
+            const oldEtag = first.headers.get("etag")!;
+            expect(oldEtag).toBeTruthy();
+            await initial.context.dispose();
+
+            // Reuse the same index file: only the operator's environment choice changes.
+            for (const [env, enabled, status] of [
+                ["false", false, 304],
+                ["1", true, 200],
+            ] as const) {
+                vi.stubEnv("RISU_AI_DISCLOSURE", env);
+                const restarted = freshServer({ rootDir: initial.rootDir });
+                for (const url of entryUrls) {
+                    const res = await restarted.app.request(url, { headers: { "If-None-Match": oldEtag } });
+                    expect(res.status, url).toBe(status);
+                    expect(await res.text(), url).toBe(enabled ? indexWithDisclosure(true) : "");
+                    const etag = res.headers.get("etag")!;
+                    expect(etag, url).toBeTruthy();
+                    if (enabled) expect(etag, url).not.toBe(oldEtag);
+                    else expect(etag, url).toBe(oldEtag);
+                    expect(res.headers.get("cache-control"), url).toBe("no-cache");
+                    expect(res.headers.get("last-modified"), url).toBeNull();
+
+                    const unchanged = await restarted.app.request(url, { headers: { "If-None-Match": etag } });
+                    expect(unchanged.status, url).toBe(304);
+                    expect(await unchanged.text(), url).toBe("");
+                    expect(unchanged.headers.get("etag"), url).toBe(etag);
+                    expect(unchanged.headers.get("last-modified"), url).toBeNull();
+                }
+                await restarted.context.dispose();
+            }
+        });
+
+        it.each([
+            [undefined, false],
+            ["true", true],
+        ] as const)("ignores index If-Modified-Since with RISU_AI_DISCLOSURE=%j", async (env, enabled) => {
+            vi.stubEnv("RISU_AI_DISCLOSURE", env);
+            const { app, rootDir } = freshServer();
+            utimesSync(path.join(rootDir, "dist", "index.html"), modifiedAt, modifiedAt);
+
+            for (const url of entryUrls) {
+                const res = await app.request(url, { headers: { "If-Modified-Since": modifiedAt.toUTCString() } });
+                expect(res.status, url).toBe(200);
+                expect(await res.text(), url).toBe(indexWithDisclosure(enabled));
+                expect(res.headers.get("last-modified"), url).toBeNull();
+            }
+        });
     });
 
     it("caches content-hashed assets immutably for one year", async () => {
@@ -272,7 +361,7 @@ describe("GET / and /index.html", () => {
                         ? sourceMap
                         : url === "/other.html"
                           ? TEST_INDEX_HTML
-                          : TEST_INDEX_HTML.replace("<head>", "<head><script>globalThis.__NODE__ = true</script>");
+                          : TEST_INDEX_HTML.replace("<head>", `<head>${NODE_FLAGS_OFF}`);
                 expect(await res.text(), label).toBe(method === "HEAD" ? "" : content);
             }
         }
@@ -334,11 +423,10 @@ describe("GET / and /index.html", () => {
         "returns an empty 304 for matching validators and the full body for a non-matching ETag on %s",
         async (url) => {
             const { app, rootDir } = freshServer();
-            const content = url === "/index.html" ? TEST_INDEX_HTML : "self.version = 1;";
-            const expectedBody =
-                url === "/index.html"
-                    ? content.replace("<head>", "<head><script>globalThis.__NODE__ = true</script>")
-                    : content;
+            // The index is revalidated by ETag only (its injected flag is not in the file's mtime).
+            const isIndex = url === "/index.html";
+            const content = isIndex ? TEST_INDEX_HTML : "self.version = 1;";
+            const expectedBody = isIndex ? content.replace("<head>", `<head>${NODE_FLAGS_OFF}`) : content;
             const filePath = path.join(rootDir, "dist", url.slice(1));
             writeFileSync(filePath, content);
             utimesSync(filePath, modifiedAt, modifiedAt);
@@ -347,13 +435,13 @@ describe("GET / and /index.html", () => {
             expect(first.status).toBe(200);
             expect(await first.text()).toBe(expectedBody);
             const etag = first.headers.get("etag") ?? "";
-            const lastModified = first.headers.get("last-modified") ?? "";
+            const lastModified = modifiedAt.toUTCString();
             expect(etag).toMatch(/^W\//);
-            expect(lastModified).toBe(modifiedAt.toUTCString());
+            expect(first.headers.get("last-modified")).toBe(isIndex ? null : lastModified);
 
             for (const [header, validator] of [
                 ["If-None-Match", etag],
-                ["If-Modified-Since", lastModified],
+                ...(isIndex ? [] : [["If-Modified-Since", lastModified]]),
             ]) {
                 const unchanged = await app.request(url, { headers: { [header]: validator } });
                 expect(unchanged.status, header).toBe(304);

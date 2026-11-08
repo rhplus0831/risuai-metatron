@@ -173,7 +173,6 @@ export function createBootMock<K extends keyof BootModules>(
             ParseMarkdown: vi.fn<BootModules["parser"]["ParseMarkdown"]>(),
             trimMarkdown: vi.fn<BootModules["parser"]["trimMarkdown"]>(),
             trimMarkdownSharingStyles: vi.fn<BootModules["parser"]["trimMarkdownSharingStyles"]>(),
-            addMetadataToElement: vi.fn<BootModules["parser"]["addMetadataToElement"]>(),
             postTranslationParse: vi.fn<BootModules["parser"]["postTranslationParse"]>(),
             parseMarkdownSafe: vi.fn<BootModules["parser"]["parseMarkdownSafe"]>(),
             hasher: vi.fn<BootModules["parser"]["hasher"]>(),

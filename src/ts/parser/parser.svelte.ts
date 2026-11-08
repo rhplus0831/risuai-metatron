@@ -22,7 +22,7 @@ import {
     type triggerscript,
 } from "../storage/database.svelte";
 import { CurrentTriggerIdStore } from "../stores.svelte";
-import { aiWatermarkingLawApplies, getDirectAssetSrc, getFileSrc } from "../globalApi.svelte";
+import { getDirectAssetSrc, getFileSrc } from "../globalApi.svelte";
 import {
     getChatVar,
     getChatVarOf,
@@ -1247,78 +1247,6 @@ export function trimMarkdownSharingStyles(
         style.textContent = "/**/";
     }
     return { html: root.innerHTML, styles };
-}
-
-const metaCodes = [
-    "\u200B", //zero width space
-    "\u200C", //zero width non-joiner
-    "\u200D", //zero width joiner
-    "\uFEFF", //zero width no-break space
-    "\u2060", //word joiner
-    "\u180E", //mongolian vowel separator
-];
-
-const encodedMetadataCache = new Map<string, string>();
-
-function encodeMetadata(modelShortName: string) {
-    const metadata = "{" + ["risuai", modelShortName.toLocaleLowerCase().replace(/[^a-z]/g, "")].join("|") + "}";
-
-    const cached = encodedMetadataCache.get(metadata);
-    if (cached !== undefined) {
-        return cached;
-    }
-
-    let encodedMetaCode = "";
-    for (let i = 0; i < metadata.length; i++) {
-        let byte = (metadata.charCodeAt(i) - 97).toString(6).padStart(2, "0");
-        for (let j = 0; j < byte.length; j++) {
-            switch (byte.charAt(j)) {
-                case "0": {
-                    encodedMetaCode += metaCodes[0];
-                    break;
-                }
-                case "1": {
-                    encodedMetaCode += metaCodes[1];
-                    break;
-                }
-                case "2": {
-                    encodedMetaCode += metaCodes[2];
-                    break;
-                }
-                case "3": {
-                    encodedMetaCode += metaCodes[3];
-                    break;
-                }
-                case "4": {
-                    encodedMetaCode += metaCodes[4];
-                    break;
-                }
-                case "5": {
-                    encodedMetaCode += metaCodes[5];
-                    break;
-                }
-            }
-        }
-    }
-
-    encodedMetadataCache.set(metadata, encodedMetaCode);
-    return encodedMetaCode;
-}
-
-export function addMetadataToElement(data: string, modelShortName: string) {
-    if (!aiWatermarkingLawApplies()) {
-        return data;
-    }
-
-    const encodedMetaCode = encodeMetadata(modelShortName);
-    console.log("Encoded metadata:", encodedMetaCode.length, "characters");
-    console.log("This requires at least", Math.ceil(encodedMetaCode.length / 32), "<p> tags to store");
-
-    let d = data.replace(/\<p\>/g, (v) => {
-        return "<p>" + encodedMetaCode;
-    });
-
-    return d + encodedMetaCode;
 }
 
 /**

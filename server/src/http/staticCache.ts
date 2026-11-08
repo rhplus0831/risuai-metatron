@@ -12,7 +12,11 @@ import type { AppEnv } from "../types.ts";
  * Brotli/gzip siblings may serve compressible files, with validators specific to that representation;
  * range requests use identity. The client index is read and validated through one handle and must
  * contain a head tag before it can answer, including a 304: its injected __NODE__ flag lets the
- * client boot. Missing or rejected static paths fall through without cache headers.
+ * client boot, and the __RISU_AI_DISCLOSURE__ flag beside it (RISU_AI_DISCLOSURE, read by
+ * server/src/app.ts) turns the client's AI disclosure on. The flag is part of the index's ETag and
+ * the index is revalidated by ETag only, so a browser holding the page gets the new flag after the
+ * operator changes the variable and restarts. Missing or rejected static paths fall through without
+ * cache headers.
  */
 
 /** File extensions eligible for precompressed .br/.gz sibling negotiation; HTML stays identity. */
@@ -229,13 +233,17 @@ export function createStaticCache(root: string): MiddlewareHandler<AppEnv> {
 }
 
 /**
- * The client index (`/`, `/index.html`, the client routes): `no-cache`, a weak size/mtime ETag,
- * `Last-Modified`, and the same conditional 304 as `createStaticCache`, else the text with
- * `globalThis.__NODE__ = true` injected after the `<head>` tag, which the client needs to mount. The
- * validator and index text come from the same open file, and an index without `<head>` throws before
- * any conditional answer, so the unflagged file is never served.
+ * The client index (`/`, `/index.html`, the client routes): `no-cache` and a weak ETag of the file's
+ * size and mtime plus the disclosure flag (`-ai1` or `-ai0`), else the text with one script injected
+ * after the `<head>` tag: `globalThis.__NODE__ = true`, which the client needs to mount, and
+ * `globalThis.__RISU_AI_DISCLOSURE__ = <aiDisclosure>`, which `src/ts/platform.ts` reads. The index is
+ * revalidated by ETag only: `If-None-Match` (weak comparison, as in `createStaticCache`) decides a
+ * bodyless 304, no `Last-Modified` is sent, and `If-Modified-Since` is ignored (the file's mtime does
+ * not change with the flag), so a request without `If-None-Match` gets the page. The validator and
+ * index text come from the same open file, and an index without `<head>` throws before any
+ * conditional answer, so the unflagged file is never served.
  */
-export async function serveCachedIndex(c: Context<AppEnv>, indexPath: string) {
+export async function serveCachedIndex(c: Context<AppEnv>, indexPath: string, aiDisclosure: boolean) {
     const handle = await fs.open(indexPath, "r");
     try {
         const stat = await handle.stat({ bigint: true });
@@ -243,10 +251,15 @@ export async function serveCachedIndex(c: Context<AppEnv>, indexPath: string) {
         if (!headOpenTag.test(mainIndex)) {
             throw new Error("dist/index.html has no <head>");
         }
-        if (setCacheHeaders(c, stat, "no-cache")) {
+        const etag = `W/"${stat.size}-${stat.mtimeNs}-ai${aiDisclosure ? 1 : 0}"`;
+        c.header("ETag", etag);
+        c.header("Cache-Control", "no-cache");
+        const ifNoneMatch = c.req.header("If-None-Match");
+        if (ifNoneMatch !== undefined && matchesEtag(ifNoneMatch, etag)) {
             return c.body(null, 304);
         }
-        return c.html(mainIndex.replace(headOpenTag, (tag) => `${tag}<script>globalThis.__NODE__ = true</script>`));
+        const flags = `globalThis.__NODE__ = true; globalThis.__RISU_AI_DISCLOSURE__ = ${aiDisclosure}`;
+        return c.html(mainIndex.replace(headOpenTag, (tag) => `${tag}<script>${flags}</script>`));
     } finally {
         await handle.close();
     }

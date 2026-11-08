@@ -25,7 +25,6 @@
     import { isTransient } from "src/ts/parser/renderErrors";
     import { alertError } from "../../ts/alert";
     import {
-        addMetadataToElement,
         ParseMarkdown,
         postTranslationParse,
         trimMarkdown,
@@ -563,14 +562,10 @@
 
     function shownBody(source: string): { html: string; styles: readonly ChatStyle[] } {
         if (!chatStyles || !source || !styleTag.test(source)) {
-            return {
-                html: addMetadataToElement(pruneEmptyBilingualPairs(trimMarkdown(source)), modelShortName),
-                styles: NO_STYLES,
-            };
+            return { html: pruneEmptyBilingualPairs(trimMarkdown(source)), styles: NO_STYLES };
         }
         // Pruned before the styles are taken out: a pair side holding only a style is kept, as before.
-        const { html, styles } = trimMarkdownSharingStyles(source, pruneEmptyBilingualPairsIn);
-        return { html: addMetadataToElement(html, modelShortName), styles };
+        return trimMarkdownSharingStyles(source, pruneEmptyBilingualPairsIn);
     }
 
     let shownMemo:

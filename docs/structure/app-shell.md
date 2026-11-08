@@ -57,8 +57,9 @@
   without starting those effects; `stores.svelte.ts` re-exports them, and `PlaygroundStore` from
   `src/ts/storage/selection.svelte.ts`.
 - `src/ts/pageVisibility.svelte.ts` `isPageVisible`, `pageRecoveryVersion`; `src/ts/ime.ts` `isImeComposing`.
-- `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `isMobile`, `isIOS`, `getRisuEnvironmentLabel`,
-  `getDetailedOSLabel`, `getFallbackOSLabel`, `isInStandaloneMode` (unused).
+- `src/ts/platform.ts`: `isNodeServer` (read only by `main.ts`), `aiDisclosureEnabled` (the injected
+  `__RISU_AI_DISCLOSURE__` flag, read only by `aiLawApplies` in `globalApi`), `isMobile`, `isIOS`,
+  `getRisuEnvironmentLabel`, `getDetailedOSLabel`, `getFallbackOSLabel`, `isInStandaloneMode` (unused).
 - `src/ts/polyfill.ts` `safeStructuredClone` and the global polyfills; `src/vite-env.d.ts` declares the globals
   (`Buffer`, `safeStructuredClone`, `userScriptFetch`); `src/types.d.ts` holds `DeepPartial<T>` only.
 - `src/ts/mutex.ts` `Mutex`: a FIFO lock that nothing in production imports.
@@ -85,7 +86,8 @@
 
 ### Boot
 
-1. `index.html` loads `main.ts`; without the injected `__NODE__` flag it mounts only the server-required notice.
+1. `index.html` loads `main.ts`; without the injected `__NODE__` flag it mounts only the server-required notice (the
+   same script injects `__RISU_AI_DISCLOSURE__`, the operator's AI disclosure choice that `aiLawApplies` reads).
    Otherwise `boot()` starts diagnostics and `startApp()` mounts `App` before data loads, leaving the loading branch up.
 2. `loadData()` reads `?safe` before navigation, reads the server snapshot, resolves the tab selection, installs
    records, applies first-boot defaults, then awaits [draft recovery](draft-recovery.md#boot-recovery) before
@@ -237,9 +239,11 @@ selection lives in `src/ts/storage/selection.svelte.ts`.
   `const currentCharacter = $derived(selectedCharacter())` and the list as `characterList()`, never by an index; a
   handler that awaits captures the `chaId` first and finds the character again after the await.
 - Call `startResourceSync()` only once, from `loadData`; it ignores a second call.
-- `isNodeServer` depends on the server's `index.html` (`serveCachedIndex` in `server/src/http/staticCache.ts`, for `/`,
-  `/index.html`, and the client routes) or the Vite dev plugin `risu-node-flag` injecting `globalThis.__NODE__ = true`.
-  Keep everything the app needs behind the dynamic `boot.ts` import so the notice path initializes nothing.
+- `isNodeServer` and `aiDisclosureEnabled` depend on the server's `index.html` (`serveCachedIndex` in
+  `server/src/http/staticCache.ts`, for `/`, `/index.html`, and the client routes) or the Vite dev plugin
+  `risu-node-flag` injecting one script, `globalThis.__NODE__ = true; globalThis.__RISU_AI_DISCLOSURE__ = <bool>` (the
+  server's `RISU_AI_DISCLOSURE`, or the dev shell's). Both are page-lifetime constants. Keep everything the app needs
+  behind the dynamic `boot.ts` import so the notice path initializes nothing.
 - The stores are the screen state. Change the screen by setting them; do not call `history.pushState`/`replaceState` for
   a screen (another script's write fires no `popstate`, and the router overwrites it at the next store change). The
   router writes paths without a query or hash: a link parameter is consumed at boot (`characterURLImport` and its

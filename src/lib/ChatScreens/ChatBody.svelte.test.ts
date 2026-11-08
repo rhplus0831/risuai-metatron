@@ -26,7 +26,6 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
             }),
     ),
     trimMarkdown: vi.fn((html: string) => html),
-    addMetadataToElement: vi.fn((html: string) => html),
     postTranslationParse: vi.fn(async (html: string) => html),
     getDistance: vi.fn(() => 0),
 }));

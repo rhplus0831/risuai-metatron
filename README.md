@@ -62,6 +62,8 @@ pnpm run server
 
 Then open `http://localhost:6001/`. The server listens on `PORT` (default 6001) and switches to HTTPS when `server/ssl/certificate/server.key` and `server.crt` exist.
 
+The AI disclosure (the warning on an empty chat, the request-info disclaimer, and the model button on every reply) is off by default. Set `RISU_AI_DISCLOSURE=1` for the server (for example `RISU_AI_DISCLOSURE=1 pnpm run server`) to show it; changing it needs a server restart and a page reload. The dev server below reads the same variable from its shell.
+
 ### Development
 
 Run the self-host server and the Vite dev server side by side:
@@ -95,6 +97,8 @@ You can also run Risuai using Docker. This method is particularly useful for web
    ```
    docker run -d --name risuai --restart always -p 6001:6001 -v risuai-save:/app/save risuai
    ```
+
+   Add `-e RISU_AI_DISCLOSURE=1` to show the AI disclosure (see [Running from source](#running-from-source)).
 
 3. Access Risuai at `http://localhost:6001` in your web browser.
 

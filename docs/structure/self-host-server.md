@@ -34,6 +34,9 @@ A module's contract is its doc comments; an entry names its path, role, and iden
   `parseAssetClockOffset`.
 - `server/src/app.ts` the assembly of state, routes, and lifecycle: `createServerContext`, `RouteLimits`,
   `attachWebSocket`, `startBackgroundTasks`, `beginShutdown`, `dispose`.
+- `RISU_AI_DISCLOSURE`: `1` or `true` (trimmed, any case) turns the client's AI disclosure on (the empty-chat warning,
+  the request-info disclaimer, and the model button on every chat row); unset or any other value leaves it off.
+  `createServerContext` reads it once, so a change needs a restart and a page reload.
 - `RISU_PASSWORD_SHA256`; `RISU_MAX_IMPORT_BYTES` ([backup routes](server-resources.md#backup-routes));
   `RISU_MAX_UPSTREAM_DB_BYTES` ([upstream backups](server-resources.md#upstream-backups));
   `RISU_UPSTREAM_IMPORT_HEAP_MB`, `RISU_UPSTREAM_EXPORT_HEAP_MB`, and `RISU_RESTORE_HEAP_MB`
@@ -145,9 +148,12 @@ admission, wire keys, body caps, and response policy.
 2. SIGINT or SIGTERM: `beginShutdown`, the HTTP drain (`SHUTDOWN_GRACE_MS`), `dispose()`; for a restore or an import see
    [shutdown during a restore](server-resources.md#shutdown-during-a-restore).
 
-`__NODE__` in the flagged `index.html` lets the client mount only when this server is present. Client boot, auth, and
-dev proxy setup are documented in [app-shell](app-shell.md) and [build-test-platforms](build-test-platforms.md). Opening
-the store runs the [normalization pass](server-resources.md#store-open-and-normalization).
+`__NODE__` in the flagged `index.html` lets the client mount only when this server is present; the same script carries
+`__RISU_AI_DISCLOSURE__` (`RISU_AI_DISCLOSURE`), which the client's `aiLawApplies` reads. The flag is part of the
+index's ETag and the index is revalidated by ETag only (no `Last-Modified`, `If-Modified-Since` ignored), so a browser
+holding the page gets the new flag after a restart. Client boot, auth, and dev proxy setup are documented in
+[app-shell](app-shell.md) and [build-test-platforms](build-test-platforms.md). Opening the store runs the
+[normalization pass](server-resources.md#store-open-and-normalization).
 
 ### Asset mark
 
@@ -328,9 +334,11 @@ and the jobs' parts are in [store state](server-resources.md#process-memory) and
 - Rate limits and client IPs keep Express semantics: the [four buckets](#rate-limits) stay separate; `TRUST_PROXY`
   retains Express hop-count and `proxy-addr` semantics. IPv4-mapped IPv6 addresses collapse to IPv4, and other IPv6
   addresses use a `/56` key.
-- `http/staticCache.ts` injects `__NODE__` only into the client index served for the root and client routes. Static
-  serving must not return an unflagged index. `attachWebSocket` owns one Node `upgrade` listener and dispatches only the
-  generation and live-update socket paths.
+- `http/staticCache.ts` injects `__NODE__` and `__RISU_AI_DISCLOSURE__` (one script) only into the client index served
+  for the root and client routes. Static serving must not return an unflagged index. The disclosure flag is part of the
+  index's ETag, and the index is revalidated by ETag only: no `Last-Modified`, `If-Modified-Since` ignored, since the
+  file's mtime does not change with the flag. Other static files keep `setCacheHeaders` as it is. `attachWebSocket` owns
+  one Node `upgrade` listener and dispatches only the generation and live-update socket paths.
 - The server uses one local `save/` directory and one process. Docker persistence depends on the `/app/save` volume;
   removing it loses user data and registered keys.
 - Keep the `100 MiB` global request-body limit and the route-specific exceptions in [Routes](#routes). Do not add

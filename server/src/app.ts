@@ -293,6 +293,7 @@ export function createServerContext(options: {
     assetLifecycle?: AssetLifecycleOptions;
 }) {
     const graceDays = options.assetLifecycle?.graceDays ?? parseAssetGraceDays(process.env.RISU_ASSET_GRACE_DAYS);
+    const aiDisclosure = parseAiDisclosure(process.env.RISU_AI_DISCLOSURE);
     const clockOffsetMs =
         options.assetLifecycle?.clockOffsetMs ??
         parseAssetClockOffset(process.env.RISU_AGENT_DEV_ASSET_CLOCK_OFFSET_MS, process.env.RISU_HOST);
@@ -855,14 +856,15 @@ export function createServerContext(options: {
         return ownLimit ? next() : limitBody(c, next);
     });
 
-    // Serves the client with the flag that makes `isNodeServer` true. Without it the client shows only a
-    // "self-host server required" notice, so `/index.html` must not fall through to the raw static file.
+    // Serves the client with the flag that makes `isNodeServer` true, and the AI disclosure flag beside
+    // it. Without the first the client shows only a "self-host server required" notice, so
+    // `/index.html` must not fall through to the raw static file.
     const serveIndex = async (c: Context<AppEnv>) => {
         const clientIP =
             c.req.header("x-forwarded-for") || clientIp(c) || c.env?.incoming?.socket?.remoteAddress || "Unknown IP";
         console.log(`[Server] ${new Date().toISOString()} | Connection from: ${clientIP}`);
 
-        return serveCachedIndex(c, path.join(distPath, "index.html"));
+        return serveCachedIndex(c, path.join(distPath, "index.html"), aiDisclosure);
     };
     app.get("/", serveIndex);
     app.get("/index.html", serveIndex);
@@ -1269,6 +1271,15 @@ function parseAssetGraceDays(raw: string | undefined): number {
         throw new Error(`Invalid RISU_ASSET_GRACE_DAYS: ${raw}`);
     }
     return days;
+}
+
+/**
+ * Whether the client shows its AI disclosure (`RISU_AI_DISCLOSURE`): `1` or `true`, trimmed and in any case, turns it
+ * on; unset or any other value leaves it off. Never throws: the default is the safe answer.
+ */
+function parseAiDisclosure(raw: string | undefined): boolean {
+    const value = raw?.trim().toLowerCase();
+    return value === "1" || value === "true";
 }
 
 /** A positive safe integer from the environment variable `name`, else `fallback` when unset or empty. */

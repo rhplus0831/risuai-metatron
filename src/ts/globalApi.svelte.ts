@@ -39,6 +39,7 @@ import { updateGuisize } from "./gui/guisize";
 import { moduleUpdate } from "./process/modules";
 import { isLocalNetworkUrl } from "./network/localNetwork";
 import { getNodeServerProxyAuth } from "./storage/serverAuth";
+import { aiDisclosureEnabled } from "./platform";
 
 /**
  * Client facade for asset bytes and URLs, remote fetches and tab request logs, downloads and
@@ -1396,82 +1397,14 @@ export function getVersionString(): string {
     return versionString;
 }
 
-const countriesWithAiLaw = new Set<string>([
-    // EU
-    // AI Act
-    // https://artificialintelligenceact.eu/
-
-    "AT",
-    "BE",
-    "BG",
-    "HR",
-    "CY",
-    "CZ",
-    "DK",
-    "EE",
-    "FI",
-    "FR",
-    "DE",
-    "EL",
-    "GR",
-    "HU",
-    "IE",
-    "IT",
-    "LV",
-    "LT",
-    "LU",
-    "MT",
-    "NL",
-    "PL",
-    "PT",
-    "RO",
-    "SK",
-    "SI",
-    "ES",
-    "SE",
-
-    //China
-    //Measures for Labeling of AI-Generated Synthetic Content
-    // 关于印发《人工智能生成合成内容标识办法》的通知
-    // https://www.cac.gov.cn/2025-03/14/c_1743654684782215.htm
-    "CN",
-
-    //Although CN Law doesn't apply, just in case
-    "HK",
-    "MO",
-
-    //TW isn't under mainland china jurisdiction
-    //de facto, de jure in TW law, unlike HK and MO,
-    //So we don't include it for now
-    //"TW",
-
-    // Republic of Korea
-    // AI Basic Act
-    // 인공지능 발전과 신뢰 기반 조성 등에 관한 기본법
-    // https://www.law.go.kr/%EB%B2%95%EB%A0%B9/%EC%9D%B8%EA%B3%B5%EC%A7%80%EB%8A%A5%20%EB%B0%9C%EC%A0%84%EA%B3%BC%20%EC%8B%A0%EB%A2%B0%20%EA%B8%B0%EB%B0%98%20%EC%A1%B0%EC%84%B1%20%EB%93%B1%EC%97%90%20%EA%B4%80%ED%95%9C%20%EA%B8%B0%EB%B3%B8%EB%B2%95/(20676,20250121)
-    "KR",
-
-    // Vietnam
-    // Digital Tech Law
-    // Luật Công nghệ số
-    "VN",
-]);
-
-/** Always returns true, without checking a country or the countriesWithAiLaw set. */
+/**
+ * Whether the client shows its AI disclosure: the empty-chat warning (`DefaultChatScreen`), the request-info
+ * disclaimer (`AlertComp`), and the chat row's model button regardless of `requestInfoInsideChat` (`Chat`). It is the
+ * page flag `aiDisclosureEnabled` (`src/ts/platform.ts`), set by the server operator through `RISU_AI_DISCLOSURE`
+ * and off by default.
+ */
 export function aiLawApplies(): boolean {
-    //TODO: implement actual logic
-    //lets now assume it always applies
-    //so we don't have legal issues later
-
-    return true;
-}
-
-/** Always returns false, without checking a country or any watermarking requirement. */
-export function aiWatermarkingLawApplies(): boolean {
-    //TODO: implement actual logic
-    //lets now assume it is false for now,
-    //becuase very few countries have it for now
-    return false;
+    return aiDisclosureEnabled;
 }
 
 /** Selects a chat of the selected character by id or by its index in the list (per tab), and opens it. */
