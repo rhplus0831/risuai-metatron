@@ -25,7 +25,9 @@ export type JobFailureInfo = {
     end: Extract<GenerationTerminalEvent, { type: "error" }>;
 };
 
+/** Dialog/status payload for src/lib/Others/AlertComp.svelte; optional fields belong to the named variant. */
 export interface alertData {
+    /** Selects the dialog, popup or status rendered by AlertComp and its child components. */
     type:
         | "error"
         | "normal"
@@ -51,6 +53,7 @@ export interface alertData {
         | "requestlogs"
         | "upstreamImportReport"
         | "realmTerms";
+    /** Display text or variant-specific encoded payload; `none` carries a dialog's answer. */
     msg: string;
     /**
      * `error`: a hint; `progress`: a numeric percentage string without `%` (for example `50.00`);
@@ -275,6 +278,7 @@ export function dismissReloadNotice() {
     reloadNoticeStore.set(null);
 }
 
+/** Queues a plain-text notice without waiting for its dismissal. */
 export function alertNormal(msg: string) {
     void openDialog({
         type: "normal",
@@ -282,6 +286,7 @@ export function alertNormal(msg: string) {
     });
 }
 
+/** Queues a plain-text notice and resolves without a value when that dialog closes. */
 export async function alertNormalWait(msg: string) {
     await openDialog({
         type: "normal",
@@ -324,6 +329,7 @@ export async function alertErrorWait(msg: string) {
     });
 }
 
+/** Queues a Markdown notice rendered by src/lib/Others/AlertComp.svelte without waiting for dismissal. */
 export function alertMd(msg: string) {
     void openDialog({
         type: "markdown",
@@ -378,6 +384,7 @@ export async function alertSelectChar() {
     });
 }
 
+/** Queues a yes/no confirmation; resolves true only for the answer "yes", false for any other close. */
 export async function alertConfirm(msg: string) {
     const result = await openDialog({
         type: "ask",
@@ -398,6 +405,10 @@ export async function alertConfirmWithCheckbox(
     return result.startsWith("{") ? JSON.parse(result) : { confirmed: false, checked: checkbox.checked };
 }
 
+/**
+ * Queues Plugin Import confirmation; true only for "yes". src/lib/Others/AlertComp.svelte reads msg
+ * as a plugin name and newline-separated warnings, then a blank line and the confirmation text.
+ */
 export async function alertPluginConfirm(msg: string) {
     const result = await openDialog({
         type: "pluginconfirm",

@@ -72,6 +72,7 @@ export function prepareQuery(query: string): PreparedQuery | null {
     };
 }
 
+/** Returns the best MATCH_SCORE tier, or 0; all-choseong queries stop after initials matching. */
 export function matchText(text: string, query: PreparedQuery): number {
     const lowered = foldCase(text.normalize("NFC"));
     const compact = lowered.replace(WHITESPACE, "");
@@ -92,6 +93,7 @@ export function matchText(text: string, query: PreparedQuery): number {
     return 0;
 }
 
+/** Whether any defined text matches the prepared query at any positive score. */
 export function matchesAny(texts: (string | undefined)[], query: PreparedQuery): boolean {
     return texts.some((text) => text !== undefined && matchText(text, query) > 0);
 }

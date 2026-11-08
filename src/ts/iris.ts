@@ -1,5 +1,11 @@
 import { RisuAccessClient } from "./process/mcp/risuaccess";
 
+/**
+ * Builds the Iris persona prompt used by src/lib/Others/IrisModal.svelte. Each call incorporates
+ * the instructions and awaited tool list from src/ts/process/mcp/risuaccess/index.ts; it does not
+ * cache a prompt or catch a failed tool-list read. The prompt requests plain dialogue without narration.
+ */
+
 /** Iris's assistant system prompt, including the RisuAccess instructions and current tool list. */
 export const getIrisSystemPrompt = async () => {
     return `

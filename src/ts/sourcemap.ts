@@ -1,5 +1,13 @@
 import { SourceMapConsumer } from "source-map";
 
+/**
+ * Best-effort browser stack translation for src/lib/Others/AlertComp.svelte. Importing this module
+ * configures source-map's WASM loader to use the CDN below. A translation fetches each distinct
+ * HTTP(S) script's `.js.map` once per call, in parallel, and retains unmapped frames in input order.
+ * The ten-second timer bounds fetching response headers; body reads and map parsing follow outside
+ * it. Fetch/parse failures leave frames unchanged, while unexpected frame-processing errors reject.
+ */
+
 // Initialize the source-map library with the wasm file location
 SourceMapConsumer.initialize({
     "lib/mappings.wasm": "https://cdn.jsdelivr.net/npm/source-map@0.8.0/lib/mappings.wasm",
@@ -8,6 +16,7 @@ SourceMapConsumer.initialize({
 // Timeout for fetch requests (10 seconds)
 const FETCH_TIMEOUT_MS = 10000;
 
+/** Translated stack text and whether at least one frame acquired an original source position. */
 export interface StackTraceTranslationResult {
     stackTrace: string;
     didTranslate: boolean;

@@ -4,6 +4,17 @@
     import { recoveryDrafts } from "../../ts/storage/recoveryDrafts.svelte";
     import RecoveryDrafts from "./RecoveryDrafts.svelte";
     import Button from "../UI/GUI/Button.svelte";
+
+    /**
+     * Shows the save-conflict notice opened by src/ts/storage/resourceSync.svelte.ts through
+     * src/ts/alert.ts, plus a recovery-draft reminder from src/ts/storage/recoveryDrafts.svelte.ts.
+     * Dismiss clears the conflict store; the draft reminder's own dismissal lasts for this component
+     * lifetime and leaves drafts intact. Review opens RecoveryDrafts and hides its reminder while open.
+     * The z-60 status panel sits above the z-50 alert overlay without making the page inert or
+     * trapping focus. Its controls stop keydown, keyup and keypress propagation so they cannot answer
+     * an underlying alert through src/ts/hotkey.ts; earlier capture listeners still see those keys.
+     */
+
     let draftsDismissed = $state(false);
     const showDrafts = $derived(!draftsDismissed && !recoveryDrafts.isOpen && recoveryDrafts.entries.length > 0);
 </script>

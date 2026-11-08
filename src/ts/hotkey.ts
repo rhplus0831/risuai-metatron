@@ -39,6 +39,14 @@ import { topBindingLayer, type BindingLayer } from "./gui/dialogLayers";
 import { isImeComposing } from "./ime";
 
 /**
+ * Document keyboard shortcuts, quick-menu touches and sidebar-drag scroll gestures installed by
+ * src/startApp.ts. Installation is not deduplicated. Dialog answers use src/ts/alertQueue.ts's
+ * stroke gate; modal notices, checkpoint loading, text entry and src/ts/gui/dialogLayers.ts limit
+ * which actions may run. Actions change the stores in src/ts/stores.svelte.ts or dispatch existing
+ * UI controls; chat preset choices go through src/ts/storage/chatBindingPick.ts.
+ */
+
+/**
  * Installs the key handling (`startApp`, `src/startApp.ts`). Call it once per document: it does not deduplicate its
  * listeners. The capture-phase `window` keydown and keyup listeners feed the dialog key gate (`createDialogKeyGate`,
  * `src/ts/alertQueue.ts`). The `document` keydown handler:

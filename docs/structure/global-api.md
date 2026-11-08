@@ -3,8 +3,8 @@
 ## Scope
 
 - Owns `src/ts/globalApi.svelte.ts`, the application-wide client I/O facade, apart from its asset and network functions:
-  save entry points (the adapter is owned by resource-sync), writers, and chat-fold state. The plugin host adapts a
-  subset of these helpers; the plugin API itself is owned by [plugin-sandbox](plugin-sandbox.md).
+  the `saving` indicator (the adapter is owned by [resource-sync](resource-sync.md)), writers, and chat-fold state. The
+  plugin host adapts a subset of these helpers; the plugin API itself is owned by [plugin-sandbox](plugin-sandbox.md).
 - Also owns `src/ts/util.ts` helpers (the DOM file pickers and the DPoP keypair store among them), the alert protocol
   (`src/ts/alert.ts`, `src/ts/alertQueue.ts`, and `src/lib/Others/AlertComp.svelte`), the terminal and reload notices,
   `src/ts/sourcemap.ts`, `src/ts/dragTypes.ts`, `src/ts/licenses.ts`, `src/ts/util/inlayTokens.ts`,
@@ -13,15 +13,16 @@
   - Asset sources, the asset client and queues, and the batch codec → [assets](assets.md).
   - `globalFetch`/`fetchNative` routing, the request log, `auxFetch`, the job client and channel, and Web Push →
     [network-jobs](network-jobs.md).
-  - The save format and backends → `persistence.md` (this guide only covers save entry points).
+  - Save entry points and synchronization → [resource-sync](resource-sync.md); persisted formats →
+    [persistence](persistence.md).
 
 ## Files
 
 ### Other `globalApi` exports
 
-- `src/ts/globalApi.svelte.ts`: the application-wide facade. Read export comments for save (`saving`), writers
-  (`LocalWriter`, `VirtualWriter`, `BlankWriter`, `AppendableBuffer`), chat navigation (`changeChatTo`,
-  `openPinnedChat`, `createChatCopyName`), `downloadFile`, `openURL`, and `toggleFullscreen`.
+- `src/ts/globalApi.svelte.ts`: the application-wide facade. Read export comments for the save activity indicator
+  (`saving`), writers (`LocalWriter`, `VirtualWriter`, `BlankWriter`, `AppendableBuffer`), chat navigation
+  (`changeChatTo`, `openPinnedChat`, `createChatCopyName`), `downloadFile`, `openURL`, and `toggleFullscreen`.
 - Other visible helpers include `getLanguageCodes` (translation and subtitle pickers), `getVersionString` (the
   compatibility version shown in the UI), and `aiLawApplies`/`aiWatermarkingLawApplies` (chat and parser decisions).
   `checkCharOrder` is re-exported from this facade; its implementation belongs to `src/ts/storage/characterOrder.ts`.
@@ -49,8 +50,9 @@
   `alertSelect`, `alertInput`, `alertCardExport`, `alertRealmTerms`, `alertRequestLogs`, `showHypaV2Alert`, `alertWait`,
   `alertToast` (`onInstall`), `alertClear`, `waitAlert`, `doingAlert`, and `alertStore`, a `set` wrapper over the real
   store.
-- `src/lib/Others/AlertComp.svelte` renders and answers the queued alert; its component contract covers keyboard and
-  checkbox answers, the HypaV2 editor, and `src/ts/sourcemap.ts` `translateStackTrace`'s stale-trace rule.
+- `src/lib/Others/AlertComp.svelte` renders and answers the queued alert; its component contract covers keyboard
+  handling and `src/ts/sourcemap.ts` `translateStackTrace`'s stale-trace rule. Checkbox answers and the HypaV2 editor
+  are documented on `src/ts/alert.ts` `alertConfirmWithCheckbox` and `showHypaV2Alert`.
 - The error alert closes before opening request history. The viewer also closes around its delete confirmation and share
   errors; see `src/lib/Others/RequestLogs/RequestLogsPopup.svelte` and
   `src/lib/Others/RequestLogs/ServerRequestHistory.svelte` for that UI handoff.
@@ -94,8 +96,9 @@ before the queue advances. See `alertQueue.ts`, `hotkey.ts`, and `AlertComp.svel
 
 ## Coupling
 
-- `globalApi.svelte.ts` imports `database.svelte.ts`, `storage/resourceSync.svelte.ts`, `storage/resourceClient.ts`,
-  `stores.svelte.ts`, alerts, `characterCards.ts` (`characterURLImport`), and the network helpers.
+- `globalApi.svelte.ts` imports `database.svelte.ts`, `storage/assetClient.ts`, `stores.svelte.ts`, alerts,
+  `characterCards.ts` (`characterURLImport`), and the network helpers. It re-exports `storage/resourceSync.svelte.ts`,
+  `storage/characterOrder.ts`, and `chatFold.svelte.ts`.
 
 ## Invariants
 

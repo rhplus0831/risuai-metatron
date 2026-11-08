@@ -39,6 +39,27 @@ import { updateGuisize } from "./gui/guisize";
 import { moduleUpdate } from "./process/modules";
 import { isLocalNetworkUrl } from "./network/localNetwork";
 import { getNodeServerProxyAuth } from "./storage/serverAuth";
+
+/**
+ * Client facade for asset bytes and URLs, remote fetches and tab request logs, downloads and
+ * writers, and navigation/UI helpers. Re-exports preserve the same state objects as their owners.
+ *
+ * Asset transport, cancellation, retries and upload checks belong to src/ts/storage/assetClient.ts;
+ * shared/assetBatch.ts defines the batch framing. URL selection and fallback source lifetimes are
+ * specified on getFileSrc and holdFileSrc here; public/sw.js controls signed subresource loads.
+ *
+ * Fetch routing and failure rules live on globalFetch and fetchNative here. Host classification
+ * comes through src/ts/network/localNetwork.ts from shared/localNetwork.ts; proxy authentication
+ * comes from src/ts/storage/serverAuth.ts, and src/ts/stores.svelte.ts supplies body interceptors.
+ * The log helpers keep this tab's newest-first array in place, separate from server request history
+ * displayed by src/lib/Others/RequestLogs/ServerRequestHistory.svelte.
+ *
+ * Save entry points, conflict/restore handling and the re-exported saving indicator belong to
+ * src/ts/storage/resourceSync.svelte.ts. Chat folds belong to src/ts/chatFold.svelte.ts; character
+ * order repair belongs to src/ts/storage/characterOrder.ts.
+ */
+
+/** Fold state and actions owned by src/ts/chatFold.svelte.ts. */
 export { chatFoldedState, chatFoldedStateMessageIndex, foldChatToMessage } from "./chatFold.svelte";
 
 interface fetchLog {
@@ -489,6 +510,7 @@ export async function loadAssets(
     return readAssets(keys, options);
 }
 
+/** The save adapter's shared write-activity indicator; see src/ts/storage/resourceSync.svelte.ts. */
 export { saving } from "./storage/resourceSync.svelte";
 
 let usingSw = false;
@@ -860,6 +882,7 @@ async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<Global
  */
 const re = /\\/g;
 
+/** Returns the final path segment after converting backslashes to slashes; a trailing separator yields "". */
 export function getBasename(data: string) {
     const splited = data.replace(re, "/").split("/");
     const lasts = splited[splited.length - 1];
@@ -1271,6 +1294,7 @@ export class BlankWriter {
     }
 }
 
+/** Collects elapsed milliseconds by key from one shared start time, merges samples and logs their averages. */
 export class PerformanceDebugger {
     kv: { [key: string]: number[] } = {};
     startTime: number;
@@ -1433,6 +1457,7 @@ const countriesWithAiLaw = new Set<string>([
     "VN",
 ]);
 
+/** Always returns true, without checking a country or the countriesWithAiLaw set. */
 export function aiLawApplies(): boolean {
     //TODO: implement actual logic
     //lets now assume it always applies
@@ -1441,6 +1466,7 @@ export function aiLawApplies(): boolean {
     return true;
 }
 
+/** Always returns false, without checking a country or any watermarking requirement. */
 export function aiWatermarkingLawApplies(): boolean {
     //TODO: implement actual logic
     //lets now assume it is false for now,

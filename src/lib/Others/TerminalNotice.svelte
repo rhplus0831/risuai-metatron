@@ -2,6 +2,16 @@
     import { acknowledgeTerminalNotice, terminalNotice } from "../../ts/alert";
     import Button from "../UI/GUI/Button.svelte";
 
+    /**
+     * Shows src/ts/alert.ts's terminal notice, opened by src/ts/storage/resourceSync.svelte.ts when
+     * restored server data requires a reload. showModal places it in the browser's top layer above
+     * every z-index, focuses OK and makes the page behind it inert. Only OK acknowledges the notice;
+     * the save adapter resumes its reload sequence after that promise settles.
+     * Escape is cancelled and a browser close reopens the dialog while the notice remains. Key
+     * events stop here before bubbling to page handlers, and repeated/composing Enter cannot activate
+     * OK; capture listeners may already have observed the event.
+     */
+
     let dialog = $state<HTMLDialogElement | null>(null);
 
     // A modal dialog sits in the top layer (above every z-index), keeps focus inside, and makes the

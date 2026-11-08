@@ -1,6 +1,13 @@
 import { currentChatRef, selectedChat } from "./storage/chatStore.svelte";
 
 /**
+ * Transient fold target for the selected chat in src/ts/storage/chatStore.svelte.ts. The target
+ * carries character, chat and message ids; its displayed index is derived from loaded messages,
+ * never retained as an address. Selection changes hide an old target synchronously and clear it
+ * in an effect. src/lib/ChatScreens/DefaultChatScreen.svelte renders and expands the fold.
+ */
+
+/**
  * `data` is `{ targetCharacterId, targetChatId, targetMessageId }`, or null for no fold. This module's
  * selection effect clears it when the selected chat changes; `src/lib/ChatScreens/DefaultChatScreen.svelte`
  * also clears it for message jumps and when the user expands the folded messages.

@@ -2,6 +2,17 @@ import { writable, type Readable } from "svelte/store";
 import type { alertData } from "./alert";
 import { isImeComposing } from "./ime";
 
+/**
+ * Dialog queue and replaceable status slot for src/ts/stores.svelte.ts and src/ts/alert.ts.
+ * Answers and cancellation settle the targeted dialog handle; identical consecutive notices can
+ * share that handle, so their callers also share its answer promise.
+ * During the gap after a visible dialog closes, a queued dialog (including one opened during the gap)
+ * waits to appear and keeps dialog work pending, reading as type `none` with `dialogPending: true`;
+ * an empty queue is idle. Status replacement and cleanup must not answer a dialog over that status.
+ * src/ts/hotkey.ts feeds the key gate at window capture phase so a held or composing stroke cannot
+ * answer a newly shown dialog, including when a notice stops the event from bubbling further.
+ */
+
 /** Loading, progress and toast: one status slot, the newest replaces it. */
 const STATUS_TYPES: ReadonlySet<alertData["type"]> = new Set(["wait", "progress", "toast"]);
 /** Notices without an answer, where an identical copy right behind adds nothing. */

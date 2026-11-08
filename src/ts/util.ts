@@ -9,9 +9,21 @@ import type { Attachment } from "svelte/attachments";
 import { mount, unmount, type Snippet } from "svelte";
 import PopupList from "src/lib/UI/PopupList.svelte";
 
-// Shared with the server so CBS and lore pick the same values.
+/**
+ * Client presentation helpers, file pickers, text/byte conversions and browser storage utilities.
+ * Character and preset helpers read the live selection; persona helpers accept a stable chat
+ * reference for rendering another chat, falling back to the tab persona when no bound one exists
+ * (src/ts/storage/chatStore.svelte.ts and src/ts/storage/settingsViews.svelte.ts).
+ * File selection uses DOM inputs and preserves eligible-file order; byte reads and IndexedDB calls
+ * can reject. These browser helpers are separate from the deterministic server-shared re-exports
+ * in shared/hashRand.ts and shared/prompt/toggles.ts.
+ */
+
+/** Shared with the server so CBS and lore pick the same random values. */
 export { pickHashRand, sfc32 } from "../../shared/hashRand.ts";
+/** Shared parser for sidebar-toggle prompt syntax. */
 export { parseToggleSyntax } from "../../shared/prompt/toggles.ts";
+/** Sidebar-toggle records returned by shared/prompt/toggles.ts. */
 export type { sidebarToggle, sidebarToggleGroup, sidebarToggleGroupEnd } from "../../shared/prompt/toggles.ts";
 
 /** A displayed message with its original index before `messageForm` reverses and limits the list. */
@@ -19,6 +31,7 @@ export interface Messagec extends Message {
     index: number;
 }
 
+/** Copies display fields newest first, trims message text and limits to loadPages, keeping original indices. */
 export function messageForm(arg: Message[], loadPages: number) {
     function reformatContent(data: string) {
         return data?.trim();
@@ -39,6 +52,7 @@ export function messageForm(arg: Message[], loadPages: number) {
     return a.slice(0, loadPages);
 }
 
+/** Resolves after a timeout of ms milliseconds. */
 export function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -60,6 +74,7 @@ export function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> 
     });
 }
 
+/** Whether data is null or undefined. */
 export function checkNullish(data: any) {
     return data === undefined || data === null;
 }
@@ -101,6 +116,7 @@ export async function selectMultipleFile(ext: string[]) {
     return arr;
 }
 
+/** Replaces character/user markers from current selection and removes set/get-var markers; name is unused. */
 export const replacePlaceholders = (msg: string, name: string) => {
     let currentChar = selectedCharacter();
     return msg
@@ -136,18 +152,22 @@ function displayPersona(chatRef?: { chaId: string; chatId: string } | null) {
     return checkPersonaBinded(chatRef) ?? tabPersonaRecord();
 }
 
+/** Displayed persona's name for the given or selected chat, falling back to "User". */
 export function getUserName(chatRef?: { chaId: string; chatId: string } | null) {
     return displayPersona(chatRef)?.name ?? "User";
 }
 
+/** Displayed persona's icon for the given or selected chat, falling back to "". */
 export function getUserIcon(chatRef?: { chaId: string; chatId: string } | null) {
     return displayPersona(chatRef)?.icon ?? "";
 }
 
+/** Displayed persona's prompt for the given or selected chat, falling back to "". */
 export function getPersonaPrompt(chatRef?: { chaId: string; chatId: string } | null) {
     return displayPersona(chatRef)?.personaPrompt ?? "";
 }
 
+/** Displayed persona's large-portrait flag for the given or selected chat; false when absent or reading fails. */
 export function getUserIconProtrait(chatRef?: { chaId: string; chatId: string } | null) {
     try {
         return displayPersona(chatRef)?.largePortrait ?? false;
@@ -221,6 +241,7 @@ function readFileAsUint8Array(file: File) {
     });
 }
 
+/** Returns cover-background CSS for an image path, or "" for a path shorter than two characters. */
 export async function getCustomBackground(db: string) {
     if (db.length < 2) {
         return "";
@@ -256,6 +277,7 @@ export function findCharacterIndexbyId(id: string) {
     return -1;
 }
 
+/** Maps every current character/group id to its list index; indices are valid only for that list snapshot. */
 export function getCharacterIndexObject() {
     let i = 0;
     let result: { [key: string]: number } = {};
@@ -274,6 +296,7 @@ export function assetExtension(asset: readonly string[]): string {
 /** How many asset rows an asset list renders at first and adds per "Load More". */
 export const ASSET_LIST_PAGE = 100;
 
+/** Returns the first neutral emotion's image path, or "" when none exists. */
 export function defaultEmotion(em: readonly (readonly [string, string])[]) {
     if (!em) {
         return "";
@@ -359,6 +382,7 @@ export async function getEmotion(
     return datas;
 }
 
+/** Returns the first author-note template item's default text in the active prompt preset, or "". */
 export function getAuthorNoteDefaultText() {
     const template = activePreset.promptTemplate;
     if (!template) {
@@ -413,10 +437,12 @@ export async function decryptBuffer(data: Uint8Array, keys: string) {
     return result;
 }
 
+/** Creates a Svelte writable store initialized with t. */
 export function toState<T>(t: T): Writable<T> {
     return writable(t);
 }
 
+/** Decodes bytes as UTF-8 with TextDecoder, using Buffer when the TextDecoder binding is falsy. */
 export function BufferToText(data: Uint8Array) {
     if (!TextDecoder) {
         return Buffer.from(data).toString("utf-8");
@@ -451,6 +477,7 @@ export function parseMultilangString(data: string) {
     return result;
 }
 
+/** Uses Intl with the code's locale and English fallback; xx yields "Unknown Language", and errors return code. */
 export const toLangName = (code: string) => {
     try {
         switch (code) {
@@ -467,10 +494,12 @@ export const toLangName = (code: string) => {
     }
 };
 
+/** Uppercases the first UTF-16 code unit and leaves the rest of the string unchanged. */
 export const capitalize = (s: string) => {
     return s.charAt(0).toUpperCase() + s.slice(1);
 };
 
+/** Reads a Blob through FileReader as bytes; reader errors or a non-ArrayBuffer result reject. */
 export function blobToUint8Array(data: Blob) {
     return new Promise<Uint8Array>((resolve, reject) => {
         const reader = new FileReader();
@@ -488,6 +517,7 @@ export function blobToUint8Array(data: Blob) {
     });
 }
 
+/** Static language-code list for language selection. */
 export const languageCodes = [
     "af",
     "ak",
@@ -700,6 +730,7 @@ export function isLastCharPunctuation(s: string) {
     return true;
 }
 
+/** Drops trailing code units until isLastCharPunctuation accepts the trimmed suffix, or the string is empty. */
 export function trimUntilPunctuation(s: string) {
     let result = s;
     while (result.length > 0 && !isLastCharPunctuation(result)) {
@@ -783,6 +814,7 @@ export function getNodetextToSentence(node: Node): string {
     return result;
 }
 
+/** Canonical card tags and their prefix-search aliases, in suggestion order. */
 export const TagList = [
     {
         value: "female",
@@ -1002,6 +1034,10 @@ export const TagList = [
     },
 ];
 
+/**
+ * Suggests tags for the last comma-separated segment, excluding exact prior selections; over ten
+ * segments returns []. The query is lowercased, but stored tag values and aliases are compared as-is.
+ */
 export const searchTagList = (query: string) => {
     const splited = query.split(",").map((v) => v.trim());
     if (splited.length > 10) {
@@ -1059,6 +1095,7 @@ export function parseKeyValue(template: string) {
     }
 }
 
+/** Shared sorting options: a 300 ms touch-only delay, .no-sort filter and class-name substring move guard. */
 export const sortableOptions = {
     delay: 300, // time in milliseconds to define when the sorting should start
     delayOnTouchOnly: true,
@@ -1163,6 +1200,7 @@ export function simplifySchema(
     return result;
 }
 
+/** Prompt instructing image-tag insertion from the current character's CBS display-asset keywords. */
 export const prebuiltAssetCommand = `
 <Image Tag Instruction>Insert HTML image tags between paragraphs based on context.
 Set src as keywords from the list below that matches current character, outfit, situation sentiment and etc.
@@ -1174,6 +1212,7 @@ Example: <img src="{{ele::{{chardisplayasset}}::0}}">
 <Image Tag Instruction>
 `;
 
+/** Removes nonempty <Thoughts> blocks, unwraps one enclosing lowercase json fence and trims whitespace. */
 export const jsonOutputTrimmer = (data: string) => {
     data = data.replace(/<Thoughts>(.+?)<\/Thoughts>/gms, "").trim();
     if (data.startsWith("```json") && data.endsWith("```")) {
@@ -1184,8 +1223,10 @@ export const jsonOutputTrimmer = (data: string) => {
 
 /** Type assertion for buffer APIs only: returns the same value without copying or converting SharedArrayBuffer. */
 export function asBuffer(arr: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBuffer>;
+/** ArrayBufferLike overload of the same no-copy type assertion. */
 export function asBuffer(arr: ArrayBufferLike): ArrayBuffer;
 
+/** Returns the input unchanged; the ArrayBuffer result type does not convert shared backing storage. */
 export function asBuffer(arr: Uint8Array<ArrayBufferLike> | ArrayBufferLike): Uint8Array<ArrayBuffer> | ArrayBuffer {
     if (arr instanceof Uint8Array) {
         return arr as unknown as Uint8Array<ArrayBuffer>;

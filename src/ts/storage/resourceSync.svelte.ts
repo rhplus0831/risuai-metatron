@@ -295,6 +295,11 @@ let moduleTexts: { source: string; items: WeakMap<object, FieldTextCache["fields
 const CHARACTER_TEXTS_MAX = 8;
 const CHARACTER_TEXTS_MAX_UNITS = 64 * 1024 * 1024;
 
+/**
+ * Reactive write-activity indicator, also re-exported by src/ts/globalApi.svelte.ts. Set for resource
+ * batches or credential write attempts, cleared when the cycle settles or the adapter stops.
+ * Queued, debounced or refused work can remain while false; it is not an all-changes-saved flag.
+ */
 export const saving = $state({ state: false });
 
 const recordKey = recordTarget;
