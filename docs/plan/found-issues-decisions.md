@@ -62,7 +62,7 @@ Every slice is independent of the others' code unless listed here; the shared fi
   `globalApi.svelte.ts`, the parser, `ChatBody.svelte` (the watermark's one caller), the three disclosure
   components and the mocks named in C1
   (`globalApiMock.ts`, `bootMocks.ts`, four `src/lib/ChatScreens/` tests), D1 `shared/structuredMemory.ts`,
-  D2 `structured/writer.ts` and its commit paths, the probe in
+  D2 `structured/writer.ts` and its commit paths, the rebuild swap in `server/src/data/memoryStore.ts`, the probe in
   `server/src/tests/fixtures/memory/structured/measure.ts` and, if the after-measurement needs it,
   `util/memoryEval.mjs`. D2 may touch the `MemoryRun` doc comment in `shared/structuredMemory.ts` (~563): D2
   after D1, or rebase.
@@ -318,15 +318,22 @@ Every slice is independent of the others' code unless listed here; the shared fi
 
   Checkpoints and database snapshots keep run JSON and accept the fields as optional on restore; chat
   files, memory packages and inheritance exclude runs (the audit traced these; re-confirm before
-  editing). Policy, from the decision: no run but the replay target holds `input` or `patchInput`, and the
-  replay target stays what `replayedInput` reads today, the newest run whose result is not `recorded`, so
-  a failed run followed by a recording keeps its input while it is still that newest unrecorded run. The
-  prune happens at the durable commit boundaries (the live and the staged commit paths: opening, failure,
-  interruption and recorded writes, `writer.ts` ~523, ~554, ~755, ~949), not in the `MemoryChanges` the
+  editing). Policy, from the decision, as corrected after the second
+  [audit](../plan-runner-audit/found-issues-decisions-2026-11-08-2.md) (G1, owner, 2026-11-08): the replay
+  target stays what `replayedInput` reads today, the newest run whose result is not `recorded` (a
+  `pending` run included), but pruning keeps prompts against the settled outcome. A run keeps `input` and
+  `patchInput` only while it is the newest settled run (result neither `recorded` nor `pending`) whose
+  result is not `recorded`, or while it is itself `pending`; at most two runs hold them. So for failed F
+  then pending P, F keeps its input while P is open, and when P records, F, again the newest unrecorded
+  run, can still replay. The prune happens at the durable commit boundaries that settle a run (the live
+  and the staged commit paths: failure, interruption and recorded writes, `writer.ts` ~554, ~755, ~949);
+  the opening commit (~523) strips nothing from older runs. It is not done in the `MemoryChanges` the
   writer builds, so the test run's dry-run commit still sees `patchInput` and reports `patchCalled`
-  correctly. Each such commit writes the run it ends without the fields when it is not the replay target,
-  and strips them from every older run that still holds them and is not the replay target, in the same
-  commit. Existing chats shrink at their next commit; no migration. The Log export of an older run loses
+  correctly. Each settling commit writes the run it ends without the fields when that run does not keep
+  them by the rule above, and strips them from every older run that still holds them and does not keep
+  them, in the same commit. The rebuild's final swap, which appends staged runs into the live history on
+  its own (`server/src/data/memoryStore.ts` ~1136), applies the same rule to the history it produces.
+  Existing chats shrink at their next settling commit; no migration. The Log export of an older run loses
   its patch prompt: say so in the Log's description in `records.md`. Rewrite the lifecycle Limitation
   (only the replay target holds a prompt), the run description in `writer.md` and the field comments in
   `records.md`. The audit's second proposal (one JSON encoding less) stays out: a checkpoint format
@@ -338,13 +345,16 @@ Every slice is independent of the others' code unless listed here; the shared fi
   through the writer) over the seeded rows, then times the checkpoint save and reports the prompt bytes
   left beside the timing; the probe change is D2's. Record both numbers before and after in the commit
   message.
-  _Done_: a failed window still replays its exact input; after the next commit no run but the newest
-  unrecorded one holds `input` or `patchInput`; a test run still reports `patchCalled`; the 2,000-run save
-  hold drops with the bytes.
+  _Done_: a failed window still replays its exact input, also after a newer run opened and recorded in
+  between; after the next settling commit no run but the newest settled unrecorded one and a pending one
+  holds `input` or `patchInput`; a test run still reports `patchCalled`; the 2,000-run save hold drops
+  with the bytes.
   _Test_: `server/src/tests/memoryJobs.test.ts` (replay after a failure; after a recording, only the
   newest unrecorded run keeps its fields; a failed run that a newer failed run supersedes loses them), the
-  test-run case that asserts `patchCalled: true` after a patch, and the checkpoint tests that restore
-  memory records.
+  replay harness in `server/src/tests/memoryTasks.test.ts` (~5197: failure, then a pending run, then its
+  recording, with a restart or an interruption between, and the failed run still replays its input), a
+  rebuild swap case, the test-run case that asserts `patchCalled: true` after a patch, and the checkpoint
+  tests that restore memory records.
   _Removes_: the checkpoint-hold bullet of Evaluation findings.
 
 ### E. Inbox and guides
