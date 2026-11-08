@@ -407,6 +407,28 @@ describe("whole-list helpers", () => {
         moveRecordListItem(presets, 0.5, 1);
         expect(notified).toEqual([]);
     });
+
+    it("moveRecordListItem leaves the list and record untouched for a negative target index", () => {
+        initializeRecords({ presets: [{ id: "p1" }, { id: "p2" }, { id: "p3" }] });
+        const presets = trackedRecord<any[]>("presets")!;
+
+        moveRecordListItem(presets, 1, -1);
+
+        expect(presets).toEqual([{ id: "p1" }, { id: "p2" }, { id: "p3" }]);
+        expect(text("presets")).toBe('[{"id":"p1"},{"id":"p2"},{"id":"p3"}]');
+        expect(notified).toEqual([]);
+    });
+
+    it("moveRecordListItem leaves the list and record untouched for a target index past the end", () => {
+        initializeRecords({ presets: [{ id: "p1" }, { id: "p2" }, { id: "p3" }] });
+        const presets = trackedRecord<any[]>("presets")!;
+
+        moveRecordListItem(presets, 0, presets.length + 5);
+
+        expect(presets).toEqual([{ id: "p1" }, { id: "p2" }, { id: "p3" }]);
+        expect(text("presets")).toBe('[{"id":"p1"},{"id":"p2"},{"id":"p3"}]');
+        expect(notified).toEqual([]);
+    });
 });
 
 describe("identity", () => {

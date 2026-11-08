@@ -3000,11 +3000,15 @@ function wrappedList(list: unknown): { node: TrackedNode; target: unknown[] } | 
 export function moveRecordListItem(list: unknown[], from: number, to: number) {
     const wrapped = wrappedList(list);
     const target = wrapped?.target ?? list;
-    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || from >= target.length) {
-        return;
-    }
-    const index = Math.min(Math.max(to, 0), target.length - 1);
-    if (index === from) {
+    if (
+        !Number.isInteger(from) ||
+        !Number.isInteger(to) ||
+        from < 0 ||
+        from >= target.length ||
+        to < 0 ||
+        to >= target.length ||
+        to === from
+    ) {
         return;
     }
     untrack(() => {
@@ -3012,7 +3016,7 @@ export function moveRecordListItem(list: unknown[], from: number, to: number) {
             assertUniqueIds(wrapped.node);
         }
         const [item] = target.splice(from, 1);
-        target.splice(index, 0, item);
+        target.splice(to, 0, item);
     });
     if (wrapped) {
         queueNodeWrite(wrapped.node);

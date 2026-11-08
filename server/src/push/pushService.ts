@@ -31,7 +31,7 @@ import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 
 /** At most this many browsers are subscribed; registering one more drops the least recently refreshed. */
 export const MAX_PUSH_SUBSCRIPTIONS = 50;
-/** Completions waiting behind the one being delivered; a completion past this is dropped (a later one of its chat replaces its notice anyway). */
+/** Completions outstanding at once, the one being delivered included; a completion past this is dropped (a later one of its chat replaces its notice anyway). */
 const MAX_PENDING_SENDS = 4;
 const SEND_TIMEOUT_MS = 10_000;
 const MAX_ENDPOINT_LENGTH = 4096;
