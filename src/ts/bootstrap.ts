@@ -49,6 +49,15 @@ import {
 } from "./safeBoot";
 
 /**
+ * Bootstraps the server-backed tab: installs server baselines and records, recovers local intent,
+ * then starts persistence, live updates, plugins, routing, and job recovery. Saving starts before
+ * browser-local imports or plugin work. `src/ts/storage/bootCache.ts` only caches captured server
+ * texts, while `src/ts/storage/journalRecovery.ts` restores local edits after first-boot defaults.
+ * Boot failures latch safe boot and surface an alert; service-worker unavailability continues
+ * with object URLs, while its one permitted initialization reload returns before loading content.
+ */
+
+/**
  * Load through `src/ts/storage/bootCache.ts`, seeding server baselines before any local installation.
  * `loadSelection` precedes `installBootRecords`; `applyFirstBootDefaults` precedes `recoverJournal`, so
  * recovered intent wins that overlay. Recovery precedes service-worker reload, `maintainCharacters`

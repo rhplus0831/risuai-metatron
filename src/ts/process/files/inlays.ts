@@ -29,6 +29,7 @@ import { missingAssets, readAsset, writeAsset } from "../../storage/assetClient"
  * Every media write also rewrites metadata, even if unchanged, so reuse advances the revision checked by sweep.
  */
 
+/** An inlay's media or signature data together with its name, extension, type, and optional dimensions. */
 export type InlayAsset = {
     data: string | Blob;
     /** File extension */
@@ -459,6 +460,7 @@ async function drawInlayImage(imgObj: HTMLImageElement, imgid: string, arg: { na
     return `${imgid}`;
 }
 
+/** Model signatures with their source format and source identifier, serialized as a metadata-only inlay. */
 export type InlaySignature = {
     signatures: {
         type: "function" | "text";
@@ -708,6 +710,7 @@ export async function getInlayMetadata(id: string): Promise<InlayResource | null
     return (await getMeta(id))?.data ?? null;
 }
 
+/** Whether the current main model advertises image-input support. */
 export function supportsInlayImage() {
     return getModelInfoForMode("model").flags.includes(LLMFlags.hasImageInput);
 }

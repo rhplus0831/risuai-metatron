@@ -5,6 +5,13 @@ import { alertConfirm, alertError, alertSelectChar } from "../alert";
 import { language } from "src/lang";
 
 /**
+ * Edits a group's parallel member, talk-weight, and active arrays together. Adding captures the
+ * group id before dialogs and resolves that same group again afterwards; an optional greeting is
+ * appended through `src/ts/storage/chatStore.svelte.ts` before membership is added. Speaker
+ * selection during generation belongs to the server, not these membership helpers.
+ */
+
+/**
  * Adds a picked character to the selected group, refused (`alreadyCharInGroup`) when it is a member
  * already. With the confirm, its first message is appended to the group's selected chat before it
  * joins. The member arrays `characters`, `characterTalks`, and `characterActive` are parallel and grow

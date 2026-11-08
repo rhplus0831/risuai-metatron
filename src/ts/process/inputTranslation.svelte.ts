@@ -1,6 +1,15 @@
 import { isImeComposing } from "../ime";
 import { sleep } from "../util";
 
+/**
+ * Coordinates bidirectional composer translation and composer keyboard actions. A translation
+ * may publish only while it still owns both drafts and the captured chat key; IME composition
+ * protects the destination. Experimental forward translation clears its destination, while reverse
+ * translation waits before translating. Keyboard dispatch uses `src/ts/ime.ts` to leave composing
+ * keys untouched, and callers supply the send and reroll actions.
+ */
+
+/** One of the two composer text fields coordinated by input translation. */
 export type InputTranslationField = "main" | "translation";
 
 type InputTranslationDependencies = {

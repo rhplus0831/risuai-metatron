@@ -4,6 +4,13 @@ import { orphanedOverrideEntries, type OrphanedOverrideEntry } from "../../../sh
 import { characterList } from "../storage/characterStore.svelte";
 import { findChat, type ChatRef } from "../storage/chatStore.svelte";
 
+/**
+ * Checks loaded chat overrides against their owner's current lore with
+ * `shared/lore/overrides.ts` and formats the refusal shared with server-job errors. Callers that
+ * clear history or append input must check before those writes; the server's later refusal cannot
+ * undo them. Missing chats or owners yield no locally detected orphans.
+ */
+
 /** Orphans in the loaded chat's overrides of its owner's lore, including a group's own lore. */
 export function chatOrphanedOverrideEntries(ref: ChatRef): OrphanedOverrideEntry[] {
     const chat = findChat(ref);

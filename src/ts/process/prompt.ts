@@ -7,6 +7,15 @@ import { alertError, alertNormal } from "../alert";
 import type { OobaChatCompletionRequestParams } from "../model/ooba";
 import type { PromptItem, PromptRole } from "../../../shared/prompt.ts";
 
+/**
+ * Tab-side prompt-template token estimates and SillyTavern preset conversion. Token estimates
+ * count only template-owned strings through `src/ts/tokenizer.ts`; they are not full send costs.
+ * Conversion stores normalized prompt presets via `shared/presets.ts` and puts an instruct format
+ * in a separate unselected model preset. Chat-completion files cannot be combined with instruct
+ * files; JSON parse failures during conversion propagate to the caller.
+ */
+
+/** Re-exports the shared prompt item types for tab callers. */
 export type * from "../../../shared/prompt.ts";
 
 /**
@@ -51,6 +60,7 @@ function normalizeImportedPromptRole(role: unknown): PromptRole {
     return "system";
 }
 
+/** Recognizes supported SillyTavern JSON shapes; malformed or unknown input returns `NOTSUPPORTED`. */
 export function detectPromptJSONType(text: string) {
     function notNull<T>(x: T | null): x is T {
         return x !== null && x !== undefined;
@@ -98,6 +108,7 @@ type InstData = {
     name: string;
 };
 
+/** Converts the first SillyTavern prompt order into enabled prompt items, normalizing roles and optional prefill. */
 export function stChatConvert(pre: any) {
     //ST preset
     let promptTemplate = [];
@@ -195,6 +206,7 @@ export function stChatConvert(pre: any) {
     return promptTemplate;
 }
 
+/** Backend-specific sampler keys copied when enabled by an imported preset. */
 export const OobaParams = [
     "tokenizer",
     "min_p",

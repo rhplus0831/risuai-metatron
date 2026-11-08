@@ -20,6 +20,14 @@ import { runServerManualTrigger } from "./serverCommands";
 import { refuseOrphanedOverrides } from "./loreOverrides";
 
 /**
+ * Executes slash-command pipelines typed in the composer against a captured, pinned chat. `processMultiCommand` loads
+ * the chat before dispatch and passes its ref to chat operations and CBS parsing. Calculator variable lookup follows
+ * `src/ts/process/infunctions.ts`. An unknown command returns false after any earlier effects, allowing the caller to
+ * treat the line as text. Manual triggers delegate to `src/ts/process/serverCommands.ts`; page-owned multisend appends
+ * and generates sequentially, stopping at the first unsuccessful send.
+ */
+
+/**
  * `/multisend`: each part appended as a user message and sent, one after the other, in the chat
  * `ref`; with `clearMode` the chat's messages are removed before each part. Before each part, the
  * chat must be there and not busy (`isChatBusy`: a send of this tab, a followed job, or a lock);

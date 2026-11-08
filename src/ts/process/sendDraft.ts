@@ -2,6 +2,14 @@ import { v4 } from "uuid";
 import type { ChatRef } from "../storage/chatStore.svelte";
 
 /**
+ * Serializes composer text and ordered attachments, and retains send identities per chat.
+ * `createSendDrafts` keeps message ids for unchanged retries and request ids only while admission
+ * remains uncertain. A landed or successful send drops its draft; other ends restore it only into
+ * the selected empty composer, otherwise retaining it for later. Browser journaling is handled
+ * by `src/ts/process/composerDrafts.svelte.ts`, not by this in-memory registry.
+ */
+
+/**
  * A send's input and ids; `requestUncertain`: the request id is reused from an attempt that may have
  * reached the server.
  */

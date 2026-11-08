@@ -32,17 +32,16 @@
 
 ### Send client and registries
 
-- `src/ts/process/index.svelte.ts`: the send API (`sendChat`, `previewChat`, `previewChatReport`); `OpenAIChat` and
-  `MultiModal` are declared in `shared/openai.ts`.
+- `src/ts/process/index.svelte.ts`: the send and preview API (`sendChat`, `previewChat`, `previewChatReport`).
+- `shared/openai.ts`: shared prompt message and media types (`OpenAIChat`, `MultiModal`).
 - `src/ts/process/serverGeneration.ts`: the send as a server job (`sendChatOnServer`, `ServerSendResult`).
 - `src/ts/process/serverCommands.ts`: tab job admission, follows and recovery (`runServerJob`, `followJobToEnd`,
   `refreshChatAfterPush`).
-- `src/ts/network/generationJobs.ts`: job-create, stop and socket transport; protocol details are in
-  [network jobs](network-jobs.md).
-- `src/ts/process/localSends.ts`: this tab's sends, one per chat (`localSends`, `beginLocalSend`, `isLocalSend`,
+- `src/ts/network/generationJobs.ts`: job transport (`createGenerationJob`, `stopChatGeneration`,
+  `followGenerationJob`); protocol details are in [network jobs](network-jobs.md).
+- `src/ts/process/localSends.ts`: the tab's send registry (`localSends`, `beginLocalSend`, `isLocalSend`,
   `anyLocalSend`).
-- `src/ts/process/jobStages.ts`: the latest presentation stage per followed job (`setJobStage`, `dropJobStage`,
-  `chatStageOf`).
+- `src/ts/process/jobStages.ts`: job presentation stages (`setJobStage`, `dropJobStage`, `chatStageOf`).
 - `src/ts/process/chatStatus.svelte.ts`: the per-tab status sources ([State](#state)), `chatStatusKey`, `isChatBusy`,
   `foreignJobs`.
   - `isChatBusy` is a per-chat preflight; the resource flush and server admission still apply.
@@ -51,20 +50,22 @@
 ### Prompt and templates
 
 - `src/ts/process/prompt.ts`: `tokenizePreset` and the SillyTavern preset import (`promptConvertion`).
-- `shared/prompt/chatTemplate.ts`: the instruct templates and the Jinja renderer (`chatTemplates`,
-  `renderChatTemplate`); `src/ts/process/templates/chatTemplate.ts` `applyChatTemplate` supplies the tab's settings and
-  names.
-- `src/ts/process/templates/templates.ts`: the prebuilt presets, from `shared/presetTemplates.ts` (`PresetTemplate`).
-  `shared/prompt/templateCheck.ts`: the prompt-template warnings (`templateCheck`).
+- `shared/prompt/chatTemplate.ts`: instruct templates and Jinja rendering (`chatTemplates`, `renderChatTemplate`).
+- `src/ts/process/templates/chatTemplate.ts`: the tab's instruct-template adapter (`applyChatTemplate`).
+- `src/ts/process/templates/templates.ts`: preset template re-exports (`prebuiltPresets`, `prebuiltNAIpresets`,
+  `PresetTemplate`).
+- `shared/presetTemplates.ts`: built-in preset data and prompt strings (`prebuiltPresets`, `prebuiltNAIpresets`,
+  `PresetTemplate`).
+- `shared/prompt/templateCheck.ts`: prompt-template warnings (`templateCheck`).
 - `src/ts/process/stringlize.ts`: serializers for other backends and stop strings (`stringlizeChat`, `unstringlizeChat`,
   `getStopStrings`).
 
 ### Lore
 
 - `shared/lore/activation.ts`: lore activation, shared with the server (`activateLore`, `LoreHost`, `LoreBudget`,
-  `searchMatch`); the matching rules are under [Lore matching](#lore-matching). Lua `test_lorebook` returns the whole
+  `searchMatch`); the matching rules are under [Lore matching](#lore-matching). `/test_lorebook` returns the whole
   result as JSON.
-- `shared/lore/overrides.ts`: chat overrides of the owner's lore (module header; `mergeOwnerLore`, `offOverrideIds`,
+- `shared/lore/overrides.ts`: chat overrides of the owner's lore (`mergeOwnerLore`, `offOverrideIds`,
   `orphanedOverrideEntries`).
 - `src/ts/process/loreOverrides.ts`: the local refusal and the alert both refusals share (`refuseOrphanedOverrides`,
   `chatLoreOverrideRefusalText`).
@@ -73,44 +74,45 @@
 
 ### Context report
 
-- `shared/contextReport.ts`: what `assemblePrompt` writes to `MessageGenerationInfo.context` and the tab's context meter
-  reads; the counting and coverage rules are the `ContextReport` field comments. Readers go through
-  `parseContextReport`; `historyDigest` and assembly share `eligibleHistory` (`shared/eligibleHistory.ts`). Structured
-  Memory's coverage: [its report](structured-memory/read.md#the-read-path).
+- `shared/contextReport.ts`: generation context accounting (`ContextReport`, `parseContextReport`, `historyDigest`).
+  Structured Memory's coverage: [its report](structured-memory/read.md#the-read-path).
+- `shared/eligibleHistory.ts`: stored-history selection (`eligibleHistory`).
 
 ### Composer and drafts
 
 - `src/ts/process/sendDraft.ts`: failed sends' text and ids (`createSendDrafts`, `idsFor`, `takeUnplaced`,
   `composerSendText`).
-- `src/ts/process/composerDrafts.svelte.ts`: the screen's per-chat composer and its browser journal (module header;
-  `createComposer`, `beginSend`, `settleSend`, `placeSend`, `restore`).
+- `src/ts/process/composerDrafts.svelte.ts`: the screen's per-chat composer and browser journal (`createComposer`,
+  `beginSend`, `settleSend`, `placeSend`, `restore`).
 - `src/ts/process/inputTranslation.svelte.ts`: input auto-translation (`createInputTranslation`) and the composer keys
   (`handleMainComposerKeydown`, `handleTranslationComposerKeydown`).
 
 ### Reroll modules
 
-- `src/ts/process/rerollCandidates.ts`: `switchCandidate` (op `selectCandidate`, one at a time per chat), carrier
-  helpers.
-- `src/ts/process/rerollHistory.ts`: the screen's per-chat bundle history (`createRerollHistory`) and the restore after
-  a reroll (`restoreRerolledReplies`, Flows `Reroll`).
+- `src/ts/process/rerollCandidates.ts`: candidate navigation (`switchCandidate`, `rerollCarrier`,
+  `neighborCandidateId`).
+- `src/ts/process/rerollHistory.ts`: screen reroll history and failed-reroll restoration (`createRerollHistory`,
+  `restoreRerolledReplies`).
 
 ### Slash commands, groups, and search
 
 - `src/ts/process/command.ts`: the chat input's slash commands (`processMultiCommand`, `processCommand`,
-  `runMultisend`). `/trigger` runs on the server (`runServerManualTrigger`, `scripts-triggers.md`); a command job runs
-  its queued `/multisend` parts on the server under one job id and chat slot ([generation](server-generation.md)).
-- `src/ts/process/files/multisend.ts` `postChatFile`: file attachments.
-- `src/ts/process/group.ts` (`addGroupChar`, `rmCharFromGroup`); `src/ts/process/infunctions.ts` `calcString`: the CBS
-  calc function.
-- `shared/messageSearch.ts` defines `POST /api/chats/search` shapes; `src/ts/messageSearch.svelte.ts` builds requests
-  and owns the pending message-jump coordinator (module header).
+  `runMultisend`). Manual-trigger internals: [scripts and triggers](scripts-triggers.md). A command job runs its queued
+  `/multisend` parts on the server under one job id and chat slot ([generation](server-generation.md)).
+- `src/ts/process/files/multisend.ts`: file attachments (`postChatFile`).
+- `src/ts/process/group.ts`: group membership (`addGroupChar`, `rmCharFromGroup`).
+- `src/ts/process/infunctions.ts`: the tab's CBS calculator adapter (`calcString`).
+- `shared/messageSearch.ts`: message-search wire contract (`MESSAGE_SEARCH_PATH`, `MessageSearchQuery`,
+  `MessageSearchPage`).
+- `src/ts/messageSearch.svelte.ts`: search requests, panel state, and message jumps (`searchMessages`,
+  `messageSearchPanel`, `requestMessageJump`, `claimMessageJump`).
 
 ### Inlays
 
-- `src/ts/process/files/inlays.ts`: inlays on the server (module header; `writeInlayImage`, `setInlayAsset`,
-  `getInlayAsset`, `listInlayAssets`, `removeInlayAsset`, `getInlayMedia`, `getInlayObjectUrl`, `verifyInlay`,
-  `repairInlayMedia`).
-  - `src/ts/bootstrap.ts` wires remote changes to `setRemoteChatListener` and `invalidateInlayCaches`.
+- `src/ts/process/files/inlays.ts`: server-backed inlays (`writeInlayImage`, `setInlayAsset`, `getInlayAsset`,
+  `listInlayAssets`, `removeInlayAsset`, `getInlayMedia`, `getInlayObjectUrl`, `verifyInlay`, `repairInlayMedia`).
+  - `src/ts/bootstrap.ts`: boot wiring (`watchRemoteRecords`, `loadData`); remote changes connect through
+    `setRemoteChatListener` to `invalidateInlayCaches`.
   - Rendering: [CBS rendering](cbs-rendering.md) `parseInlayAssets`. The `<source>` type comes from
     `shared/assetMime.ts`.
 
@@ -167,7 +169,8 @@ in [server generation](server-generation.md#prompt-job-execution); tab job trans
 ### Not in `sendChat`
 
 - Input auto-translation (`createInputTranslation`) and suggestions call the tab request layer; the `previewRequest`
-  hotkey is also a tab request. Display translation is a UI concern. Group continues use the server speaker loop.
+  hotkey calls `previewChat("previewPrompt")` for a server preview job. Display translation is a UI concern. Group
+  continues use the server speaker loop.
 - Chat paging renders loaded messages only (`chatLoadInitialPages`, `chatLoadAdditionalPages`); it does not fetch
   history.
 

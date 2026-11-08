@@ -6,12 +6,17 @@ import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { sendChatOnServer, type ServerSendArg, type ServerSendResult } from "./serverGeneration";
 import { beginLocalSend } from "./localSends";
 
-export type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
+/**
+ * The tab's side of a send: the generation runs as a server job (`sendChatOnServer`;
+ * `server/src/prompt/runner.ts` assembles and requests). Each send holds its chat's entry in the
+ * local send registry (`localSends.ts`), so different chats send at the same time and one chat runs
+ * one send; a preview returns its result to its caller (`previewChat`).
+ * `sendChat` returns success; `previewChat` returns formatted messages or a request body, or null
+ * without a usable preview result. This module neither assembles prompts nor calls providers.
+ */
 
-// The tab's side of a send: the generation runs as a server job (`sendChatOnServer`;
-// `server/src/prompt/runner.ts` assembles and requests). Each send holds its chat's entry in the
-// local send registry (`localSends.ts`), so different chats send at the same time and one chat runs
-// one send; a preview returns its result to its caller (`previewChat`).
+/** Re-exports the shared prompt message and media shapes. */
+export type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
 
 type SendChatArg = ServerSendArg & {
     /**
@@ -53,7 +58,9 @@ export async function sendChat(chatProcessIndex = -1, arg: SendChatArg = {}): Pr
  * stopped).
  */
 export async function previewChat(kind: "preview", target?: ChatRef): Promise<OpenAIChat[] | null>;
+/** Returns the preview request body, or null when no usable result arrived. */
 export async function previewChat(kind: "previewPrompt", target?: ChatRef): Promise<string | null>;
+/** Dispatches the requested preview kind through the same send admission and server-job boundary. */
 export async function previewChat(
     kind: "preview" | "previewPrompt",
     target?: ChatRef,

@@ -1,6 +1,13 @@
 import type { Message } from "./database.ts";
 
 /**
+ * Shared message-search route, query bounds, and wire shapes for requests, pages, and epoch
+ * conflicts. Query lengths count normalized code points while hit offsets count UTF-16 units;
+ * consumers must preserve that distinction. A cursor can accompany an empty page, so only a null
+ * `next` ends pagination.
+ */
+
+/**
  * Message search across chats: the server scans the stored messages' text (`Message.data`, not
  * translations) with a case-insensitive substring match (ASCII letters only fold, as SQLite `LIKE`
  * does), newest chat incarnation first and newest message first within a chat.
@@ -9,9 +16,11 @@ export const MESSAGE_SEARCH_PATH = "/api/chats/search";
 
 /** Fewest and most code points of a query after NFC normalization and trimming. */
 export const MESSAGE_SEARCH_MIN_QUERY = 2;
+/** Maximum normalized query length in code points. */
 export const MESSAGE_SEARCH_MAX_QUERY = 200;
 /** Hits per page when `limit` is absent, and the most a page holds (a larger `limit` is clamped). */
 export const MESSAGE_SEARCH_DEFAULT_LIMIT = 30;
+/** Maximum number of hits requested in one page. */
 export const MESSAGE_SEARCH_MAX_LIMIT = 100;
 
 /**

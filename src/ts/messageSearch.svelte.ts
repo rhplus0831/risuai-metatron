@@ -114,6 +114,7 @@ export function openMessageSearch(scope: MessageSearchScope) {
     messageSearchPanel.open = true;
 }
 
+/** Closes the panel while retaining its scope and the panel component's query and results. */
 export function closeMessageSearch() {
     messageSearchPanel.open = false;
 }

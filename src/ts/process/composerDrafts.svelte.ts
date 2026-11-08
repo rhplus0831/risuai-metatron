@@ -32,6 +32,7 @@ import { composerSendText, type SendDraft } from "./sendDraft";
  *   is shown again.
  */
 
+/** A chat composer's main text, translation text, and ordered attachment ids. */
 export type ComposerDraft = { input: string; translate: string; files: string[] };
 /** A chat's live composer while shown, or its stashed draft otherwise. */
 export type ComposerView = ComposerDraft & { addFile(id: string): void; removeFileAt(index: number): void };

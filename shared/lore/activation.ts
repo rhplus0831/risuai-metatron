@@ -4,6 +4,15 @@ import type { DeepReadonly } from "../readonly.ts";
 import { mergeOwnerLore, offOverrideIds } from "./overrides.ts";
 
 /**
+ * Runs lore activation for both hosts through `LoreActivationInput` and `LoreHost`; no client
+ * stores are imported. `src/ts/process/lorebook.svelte.ts` supplies the tab host and
+ * `server/src/lua/bindings.ts` supplies the server host. Lore is cloned before child expansion;
+ * chat overrides are resolved by `shared/lore/overrides.ts`. Recursive matching precedes the
+ * single budget pass. Token counts must all succeed before pending activation flags are written;
+ * regex failures instead count as no match. Injection edits run after budgeting without recounting.
+ */
+
+/**
  * Lorebook activation, shared by the client and the server: the key, regex, and decorator matching
  * over the chat, recursion, the token budget, and `@@inject_lore`. The application state comes
  * through `input` and `host`; the module also uses `Math.random` (`@@probability`) and `console`.
@@ -45,6 +54,7 @@ export type LoreHost = {
     testRegex: (pattern: string, flags: string, text: string) => boolean | Promise<boolean>;
 };
 
+/** An activated lore prompt with placement, budget cost, ordering, and optional injection instructions. */
 export type LoreActive = {
     depth: number;
     pos: string;
@@ -62,6 +72,7 @@ export type LoreActive = {
     } | null;
 };
 
+/** One successful key match and the scanned text and source that caused it. */
 export type LoreMatch = { prompt: string; source: string; activated: string };
 
 /** An entry the budget pass dropped: its trimmed comment, else its trimmed key, else `lorebook <index>`. */
@@ -83,6 +94,7 @@ export type LoreBudget = {
     rejected: LoreRejected[];
 };
 
+/** Activation output: emitted lore, matching diagnostics, and the pre-injection budget result. */
 export type LoreActivation = { actives: LoreActive[]; matchLog: LoreMatch[]; budget: LoreBudget };
 
 /**

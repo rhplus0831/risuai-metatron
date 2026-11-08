@@ -8,6 +8,7 @@ import type { ChatRef } from "../storage/chatStore.svelte";
  * (`${chaId}\u0000${chatId}`). Like `localSends.ts`, a separate module with no runes and type-only
  * imports keeps hand-written mocks of `stores.svelte` and `index.svelte` from reaching it.
  */
+
 type JobStage = { chatKey: string; stage: GenerationStage };
 const stages = writable<ReadonlyMap<string, JobStage>>(new Map());
 

@@ -2,6 +2,13 @@ import { activePreset, activePersona } from "../storage/settingsViews.svelte";
 import type { OpenAIChat } from "./index.svelte";
 import { getUserName } from "../util";
 
+/**
+ * Serializes prompt messages for plain-text and AIN formats and trims generated text at speaker
+ * markers. Defaults read the active preset/persona through `src/ts/storage/settingsViews.svelte.ts`
+ * and `getUserName` in `src/ts/util.ts`; request-bound callers must pass names where supported.
+ */
+
+/** Joins plain-text messages, skipping inlay-image memos and adding the speaker prefix unless continuing. */
 export function stringlizeChat(formated: OpenAIChat[], char: string, continued: boolean) {
     let resultString: string[] = [];
     for (const form of formated) {
@@ -28,6 +35,7 @@ const userStrings = ["user", "human", "input", "inst", "instruction"];
 function toTitleCase(s: string) {
     return s[0].toUpperCase() + s.slice(1).toLowerCase();
 }
+/** Builds deduplicated stop markers from the active preset and persona; suggestions add a blank-line stop. */
 export function getStopStrings(suggesting: boolean = false) {
     let { userPrefix, seperator } = activePreset.ooba.formating;
     if (!seperator) {
@@ -71,6 +79,7 @@ export function unstringlizeChat(text: string, formated: OpenAIChat[], char: str
     return text;
 }
 
+/** Builds system and speaker boundary markers for normal or AIN output, plus their bare-name variants. */
 export function getUnstringlizerChunks(
     formated: OpenAIChat[],
     char: string,
@@ -125,6 +134,7 @@ export function getUnstringlizerChunks(
     return { chunks, extChunk: charNames.concat(chunks) };
 }
 
+/** Formats AIN dialogue; a non-continued suffix currently appends `NaN` through numeric coercion. */
 export function stringlizeAINChat(formated: OpenAIChat[], char: string, continued: boolean) {
     let resultString: string[] = [];
 
@@ -200,6 +210,7 @@ function extractAINOutputStrings(inputString: string, characters: string[]) {
     return results;
 }
 
+/** Parses AIN output into speaker turns, attaching narration to character turns and trimming trailing markers. */
 export function unstringlizeAIN(data: string, formated: OpenAIChat[], char: string = "") {
     const chunksResult = getUnstringlizerChunks(formated, char, "ain");
     const chunks = chunksResult.chunks;

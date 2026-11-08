@@ -8,6 +8,14 @@ import { BufferToText as BufferToText, selectMultipleFile } from "src/ts/util";
 import { postInlayAsset } from "./inlays";
 import { alertError } from "src/ts/alert";
 
+/**
+ * Converts picked or supplied files into inlay ids, retrieved text, or PO translation sends.
+ * Media storage goes through `src/ts/process/files/inlays.ts`; text, PDF, and XML retrieval uses
+ * `HypaProcesser`. PO entries send sequentially to one captured chat, stopping without a download
+ * when a send fails or its chat is unavailable, busy, or has orphaned lore overrides. Failed media
+ * uploads are alerted and skipped so later files can still be processed.
+ */
+
 type sendFileArg = {
     file: string;
     query: string;

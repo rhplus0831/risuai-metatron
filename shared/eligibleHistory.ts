@@ -1,6 +1,12 @@
 import type { Message } from "./database.ts";
 
 /**
+ * Selects stored history for prompt assembly and context digests without mutating the input.
+ * The last `allBefore` marker cuts off itself and everything earlier; a reset also tells callers
+ * to omit a greeting they would otherwise add. Kept messages retain their chronological order.
+ */
+
+/**
  * The messages a send reads: from the end back to the last `allBefore` message (excluded), skipping
  * disabled ones. `reset` is true when an `allBefore` message cut the history (the greeting is then
  * left out too).

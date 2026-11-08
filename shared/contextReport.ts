@@ -11,6 +11,14 @@ import {
     type MemoryStaleReason,
 } from "./structuredMemory.ts";
 
+/**
+ * Context accounting shared by prompt producers and meter readers: versioned report shapes,
+ * validation, history identity, and estimates of fixed cost and displaced turns. Readers must use
+ * `parseContextReport` for stored data; unknown or malformed reports yield null. History identity
+ * uses `shared/eligibleHistory.ts`, so the digest and the send's history selection share a cutoff.
+ */
+
+/** Re-exports the history selection shared by prompt assembly and digests. */
 export { eligibleHistory };
 
 /**
@@ -58,6 +66,7 @@ export function reportedLoreRejections(rejected: readonly ContextLoreRejected[])
     });
 }
 
+/** One queued trim cost, including whether dropping it displaces a user message. */
 export type ContextTrimEntry = { tokens: number; kind: "example" | "marker" | "message"; user: boolean };
 
 /** Why a send left a memory candidate out, worst first. */
@@ -87,12 +96,15 @@ export type ContextMemoryLane = { lane: MemoryManifestLane; target: number; spen
 
 /** The writer as a send saw it. */
 export const CONTEXT_MEMORY_WRITER_STATES = ["recorded", "pending", "failed", "paused", "notAutomatic"] as const;
+/** The observed memory writer state and optional reason code at send time. */
 export type ContextMemoryWriter = { state: (typeof CONTEXT_MEMORY_WRITER_STATES)[number]; reason?: string };
 
 /** One step of a send's memory ledger: `reason` is a code, so a step that did nothing still says why. */
 export const CONTEXT_MEMORY_STAGES = ["window", "lanes", "gap", "card", "writer"] as const;
+/** One named memory-ledger stage and its reason code. */
 export type ContextMemoryStage = { stage: (typeof CONTEXT_MEMORY_STAGES)[number]; reason: string };
 
+/** Versioned context accounting stored with a generation; validate stored values with `parseContextReport`. */
 export type ContextReport = {
     v: 1;
     /** Effective context size and the response reservation the request used. */

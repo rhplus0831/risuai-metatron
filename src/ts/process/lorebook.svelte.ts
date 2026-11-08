@@ -29,6 +29,15 @@ import { chatStatusKey, generatingChatKeys } from "./chatStatus.svelte";
 import { isLocalSend } from "./localSends";
 
 /**
+ * Provides the tab host for `shared/lore/activation.ts` and lore editor/import/export helpers. Activation pins its
+ * captured chat and supplies its ref to variables, CBS, and module lookup; token counts use its display ids. The
+ * calculator in `src/ts/process/infunctions.ts` still reads the selected chat. Replacing the owner's chats invalidates
+ * the run. Local lore writes replace the whole array and are fenced by local sends, followed jobs, and locks to avoid
+ * overwriting job-written entries. Global lore edits are not fenced. Imports capture their destination before the file
+ * dialog.
+ */
+
+/**
  * Whether a send of this tab or a job this tab knows of runs in `ref`'s chat: the fence of
  * `localLoreDraft.svelte.ts`. A local lore write sends the whole array as this tab holds it, so one
  * written while the job runs would drop the entries its Lua `upsertLocalLoreBook` writes.
@@ -242,6 +251,7 @@ export async function importLoreBook(mode: "global" | "local") {
     }
 }
 
+/** Accepted external lore entry fields and alternate names used during conversion. */
 export interface CCLorebook {
     key: string[];
     comment: string;
@@ -265,6 +275,7 @@ export interface CCLorebook {
     };
 }
 
+/** Converts external entry aliases to normal lore entries; absent fields use empty strings, zero, or false. */
 export function convertExternalLorebook(entries: { [key: string]: CCLorebook }) {
     let lore: loreBook[] = [];
     for (const key in entries) {

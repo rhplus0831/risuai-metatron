@@ -33,6 +33,15 @@ import { popUpEditorStore } from "src/ts/popupEditorSession.svelte";
 import { readChatGeneration } from "src/ts/network/generationJobs";
 import { isPageVisible, pageRecoveryVersion } from "src/ts/pageVisibility.svelte";
 
+/**
+ * Projects per-chat generation, visibility, unseen-reply, recovery, and memory-health status.
+ * Busy admission combines `src/ts/process/localSends.ts`, followed jobs from
+ * `src/ts/process/serverCommands.ts`, and chat-store locks; foreign-job marks are advisory.
+ * Store subscriptions are acquired lazily to avoid reading followed jobs during the import cycle.
+ * `watchChatVisibility` owns effects and subscriptions: visibility clears badges and schedules
+ * recovery reads; health facts remain observations rather than a send-admission condition.
+ */
+
 const MAX_UNSEEN_CHATS = 256;
 
 /** How long after a read of every chat's health a page return waits before it reads them again. */
@@ -78,6 +87,7 @@ export function isChatBusy(ref: ChatRef): boolean {
 /** Advisory only: a stale foreign mark must never block a new send. */
 export const foreignJobs = writable<ReadonlyMap<string, string>>(new Map());
 
+/** Records an advisory foreign job for this chat, notifying only when its id changes. */
 export function noteForeignJob(ref: ChatRef, jobId: string): void {
     const key = chatStatusKey(ref);
     const jobs = get(foreignJobs);
@@ -466,6 +476,7 @@ export function watchChatVisibility(): () => void {
     });
 }
 
+/** Clears status observations, badge state, and lazy store views for test isolation. */
 export function resetChatStatusForTests(): void {
     recoveryChatKeys.set(new Map());
     unseenChatKeys.set(new Set());

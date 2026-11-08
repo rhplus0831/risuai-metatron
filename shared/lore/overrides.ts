@@ -171,6 +171,7 @@ export function findOrphanedOverrides(
     return matchOverrides(ownerLore, overrides).orphans;
 }
 
+/** An orphaned override id and display name for a send-refusal message. */
 export type OrphanedOverrideEntry = { id: string; name: string };
 
 /** Orphans named for a refusal; persisted override comments and keys may be missing or non-strings. */

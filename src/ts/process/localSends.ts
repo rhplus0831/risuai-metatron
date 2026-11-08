@@ -10,6 +10,7 @@ import type { ChatRef } from "../storage/chatStore.svelte";
  * A module of its own (no runes, type-only imports) so its readers are not reached by the
  * hand-written mocks of `index.svelte`.
  */
+
 const sends = writable<ReadonlyMap<string, ChatRef | null>>(new Map());
 
 const TAB_SEND_KEY = "";

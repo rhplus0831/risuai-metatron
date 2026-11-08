@@ -13,6 +13,14 @@ import {
 import { flushResources, refreshStaleChat } from "../storage/resourceSync.svelte";
 import { isChatBusy } from "./chatStatus.svelte";
 
+/**
+ * Keeps screen-local reroll bundles and restores replies removed by a failed reroll. Tail swaps
+ * use `src/ts/storage/chatEdits.ts` only while anchor and current-bundle ids still match. Recovery
+ * first withdraws an unsent removal; otherwise it waits for a settled send and current chat mirror,
+ * checks the owner token and busy state, and restores only an unchanged empty tail. Uncertain or
+ * busy recovery leaves the removed replies untouched rather than inserting beside a new reply.
+ */
+
 type Slot = { anchor: string | null; bundles: Message[][]; cursor: number };
 
 const keyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;

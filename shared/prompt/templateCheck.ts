@@ -1,5 +1,11 @@
 import type { PromptItem } from "../prompt.ts";
 
+/**
+ * Checks structural coverage of a `shared/prompt.ts` prompt template without changing it.
+ * Missing templates return no warnings. Range connectivity is checked by matching endpoints,
+ * not by building the final prompt or verifying token budgets; warnings do not block a send.
+ */
+
 /** The prompt template's structural warnings (shared by the client and the server). */
 export function templateCheck(db: { promptTemplate?: PromptItem[] }) {
     const temp = db.promptTemplate;

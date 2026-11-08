@@ -5,6 +5,14 @@ import { incrementStatic } from "../storage/collectionStore.svelte";
 import { characterList } from "../storage/characterStore.svelte";
 import { runServerJob, type ServerCommandOutcome } from "./serverCommands";
 
+/**
+ * Maps the tab's send arguments to jobs through `src/ts/process/serverCommands.ts` and maps
+ * admission and terminal outcomes back to composer recovery. A listed target is required and
+ * stays pinned through the job; the job layer loads it and flushes pending writes. Preview results
+ * return to the caller, while generated replies arrive through server hydration. An unanswered
+ * create or lost follow stays unsettled so its request identity can be retained.
+ */
+
 /** What a send asks of the server (`sendChat`'s argument). */
 export type ServerSendArg = {
     target?: ChatRef;

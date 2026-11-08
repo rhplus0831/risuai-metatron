@@ -1,5 +1,12 @@
 import type { ChatRef } from "../storage/chatStore.svelte";
 
+/**
+ * Tracks this chat screen's send controllers by stable chat ref. Stop aborts only that chat's
+ * controller; releases are idempotent and cannot remove a replacement controller. The reactive
+ * registry is screen-local, distinct from job follows and the tab-wide local send registry in
+ * `src/ts/process/localSends.ts`.
+ */
+
 const keyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
 
 /**

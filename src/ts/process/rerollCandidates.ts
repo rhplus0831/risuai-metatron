@@ -14,6 +14,13 @@ import {
 import { flushResources, refreshStaleChat } from "../storage/resourceSync.svelte";
 import { chatStatusKey, isChatBusy } from "./chatStatus.svelte";
 
+/**
+ * Navigates persisted candidates on the last eligible reply using stable message and candidate
+ * ids. Switching pins the chat, applies an optimistic `selectCandidate`, then flushes and refreshes
+ * through `src/ts/storage/resourceSync.svelte.ts`. Each chat has one switch in flight; unresolved
+ * saved state prevents another switch, and a failed read never reapplies the old selection.
+ */
+
 const switching = new Set<string>();
 const unsettled = new Set<string>();
 
