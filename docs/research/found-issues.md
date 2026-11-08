@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, and seven more plan-leftover collections from memory the same day; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -9,13 +9,13 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (9)
-- [Server routes and resource store](#server-routes-and-resource-store) (9)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (12)
+- [Server routes and resource store](#server-routes-and-resource-store) (10)
 - [LLM requests and providers](#llm-requests-and-providers) (16)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (9)
-- [Chat screen and input](#chat-screen-and-input) (5)
-- [Client and plugins](#client-and-plugins) (27)
+- [Chat screen and input](#chat-screen-and-input) (6)
+- [Client and plugins](#client-and-plugins) (30)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (9)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (1)
@@ -132,6 +132,38 @@ The no-memory trim question (aad461e63, 2026-10-11; `server/src/prompt/runner.ts
 
 **Suggested handling:** reword the comment.
 
+### Asset-scale transport and job leftovers
+
+Left open by the 2026-10-14 to 2026-10-20 chat-render leak, 100k-asset traffic, chatPatch and heap-growth work (the archived Audit Findings plan, `git show e1aa33150:docs/plan/audit-findings-perf.md`, and the Heap Memory plan, `git show 639ba5b2e:docs/plan/heap-memory.md`; their main findings were fixed). Kept in memory until 2026-11-08 and re-checked by identifier that day, not re-measured. The client half is "Asset-scale client leftovers" under Client and plugins.
+
+- Transport: `plugins`, `loreBook` and `globalscript` (no item ids) and creates travel whole; meta goes whole when any field changes; there is no HTTP or WebSocket compression (measured and deferred in slice 3c); the provider `ChannelChunk` (`shared/jobs.ts`) stays cumulative; job owners get whole `resource` events from `emitRecords` (`server/src/jobs/chatResult.ts`); a never-settling `flushResources` (`src/ts/storage/resourceSync.svelte.ts`) keeps one recovery closure per follow. The whole-chat hydration was narrowed by the Incremental Chat Transport run (2026-11-05): a socket that advertised `hydration=patch` gets no chat from `hydrateAll` (`server/src/jobs/generationJobs.ts` ~526); other sockets still get the chat whole.
+- Jobs: every job parses the whole modules record and every section and preset; a deleted speaker id is looked up again per `refreshChat`; Lua `setChatVar` (`server/src/lua/runtime.ts` ~376) reparses the character twice.
+- The chatPatch transport was never checked in a real browser.
+
+**Why it matters:** traffic and parse work grow with the collection size on every job, not with the change.
+**Suggested handling:** measure before changing (slice 3c's numbers are the baseline); the rejected designs are in the plans' Landed notes.
+
+### HypaV3 deferred summary leftovers
+
+Accepted when `deferStored` and `lookaheadHeadroomRatio` landed (2026-10-27, `server/src/prompt/memory/hypav3.ts`); the owner chose "document, don't change" for the first two. Kept in memory until 2026-11-08; identifiers re-checked that day. The guide (memory.md, Deferred stored summaries) says only that the replay is approximate.
+
+- A lookahead window cut at the protected tail (or an edited or merged summary) differs from the ordinary plan's window; the replay takes the stored window whole, up to one window early.
+- A stored summary reaching into a grown `queryChatCount` tail is taken when the planner would otherwise re-summarize (legacy and original Hypa always use every stored summary).
+- The replay uses the current rest-of-prompt size for past lengths, so a lore swing can move summaries.
+
+**Why it matters:** prepared summaries can replace messages earlier than vanilla Hypa would (the user saw about 15% early before the fix round).
+**Suggested handling:** accepted; check these before adding replay rules, and record any change as an owner decision in memory.md Known Hazards.
+
+### Deferred lore behaviors
+
+Kept as-is at Phase 5 Stop B (2026-10-02) for parity with the browser path during the server move; the owner wants them raised when lore activation is next reworked. Kept in memory until 2026-11-08; identifiers re-checked that day. Tests still pin both.
+
+- Lore regex keys that contain a comma (`/a{1,2}/`) are split on every comma before the `/pattern/flags` parse (`shared/lore/activation.ts` ~630 `key.split(",")`, `secondkey` ~636), so a malformed key ends its query.
+- A bound persona's embedded module resolves only if a module with its id is in `db.modules` (pinned in `src/ts/process/lorebook.svelte.test.ts` ~230).
+
+**Why it matters:** a regex key with a quantifier count never matches, and a persona's module lore stays silent unless the module is installed separately.
+**Suggested handling:** accepted for now; a fix changes activation parity, so plan it with the next lore rework and update the pinning tests in the same change.
+
 ## Server routes and resource store
 
 ### The change log's bound is a row count, not 4 MB
@@ -204,6 +236,18 @@ The doc comment of `normalizePreset` in `shared/presets.ts` (~629–636) says "a
 **Why it matters:** no practical effect; recorded because the signature accepts `unknown`.
 
 **Suggested handling:** lowest priority; likely close as not worth fixing.
+
+### Realm staged import leftovers
+
+Left by slice 3 of the server-side Realm import (prepare/commit/cancel, 3a61ecb5c, 2026-10-19; `server/src/routes/importRealm.ts`, `shared/realmImport.ts`, `src/ts/storage/realmImportClient.ts`, `src/ts/characterCards.ts`); the slot, TTL and cap decisions are in backup-sync-hub.md. Kept in memory until 2026-11-08; identifiers re-checked that day.
+
+- A tab that leaves after its prepare staged a file leaves that file in `realmStaging` for the 10 min TTL.
+- A commit refused with 409 or 503 is not retried: the tab attempts a cancellation and the user re-imports (`characterCards.ts` ~2360).
+- Deferred from slices 1 and 2: legacy JSON hub resources are fetched by the tab, the tab's `readModule` saves the module.risum assets, and `planPngFile` (`server/src/routes/importPng.ts`) does one read per tEXt key.
+- No real-browser or live Realm check was run.
+
+**Why it matters:** a staged file holds one of the four staging slots and its disk space for the TTL; a transient refusal costs the user a second download.
+**Suggested handling:** check this list before changing the Realm import; a retry belongs in the client after the server's refusal text is classified as transient.
 
 ## LLM requests and providers
 
@@ -467,6 +511,18 @@ The Implementation Audit Fixes run's R6 (d94380fa5, 2026-11-06) prepares the fon
 **Why it matters:** a session that exports many times keeps growing the document's rules for an `@import`ed font.
 **Suggested handling:** if it matters, inline or drop the `@import` rules before calling `getFontEmbedCSS`, or remove the added copies after each export; add an `@import` webfont to the fixture before measuring.
 
+### Chat rendering leftovers
+
+Left by the chat rendering perf series (7003e80e9, daf658ba1, 224bc6aae, 2026-10-14) and slice 3f (2ed26dfee, 2026-10-16: per-row effect roots, `far` rows contained, a guarded trim to 150 rows; a windowed list was rejected; details in `git show e1aa33150:docs/plan/audit-findings-perf.md`). Kept in memory until 2026-11-08; the `far` containment observer is at `src/lib/ChatScreens/Chats.svelte` ~553 that day.
+
+- Firefox and Safari were never driven.
+- A far row's `position: fixed` or overflowing card content is contained while the row is far.
+- Pixel anchoring across far/near toggles was checked only by a manual Chrome script, not a kept test.
+- An old row's length-dependent CBS waits for the row's next render (the dormant upstream last-5 rerender was removed; recorded in the guide).
+
+**Why it matters:** the containment changes what a far card can show, and the anchoring has no regression test.
+**Suggested handling:** start from this list when picking up chat rendering work; the later chat-open work (newest-first reveal, staged mounting, held rows) is contracted in ui-theming.md.
+
 ## Client and plugins
 
 ### Stop B leftovers
@@ -669,6 +725,46 @@ Three writers can leave a nested number field `NaN` or `null`, which the record 
 **Why it matters:** low impact (callers pass UI page indexes), but the two paths disagree on what a valid page is.
 
 **Suggested handling:** apply the load check in the setter; low priority.
+
+### Asset-scale client leftovers
+
+The client half of "Asset-scale transport and job leftovers" under Server jobs and prompt assembly. The `getFileSrc` URL pinning is in "Stop B leftovers" and the inlay `mediaObjectUrls` in "Fallback media object URLs outlive the blob cache", so they are not repeated; the plan archive holds the options for the pinning (an avatar hold-release, or a parser placeholder with `fileSrcCache` removed). Kept in memory until 2026-11-08; identifiers re-checked that day, not re-measured.
+
+- `src/ts/parser/parser.svelte.ts` ~482 `fileSrcCache` is an unbounded path-to-src Map (cbs-rendering.md lists it among the parser caches).
+- Heap D3: `Batch.previous` held by an `{#await}` closure, about 17 MB after a server modules copy; not fixed.
+- The experimental Google translator still translates per stream frame (upstream behavior; `src/ts/translator/translator.ts` ~500).
+- A client JSON chat import can carry non-string message `data` (not validated in `prepareMessages`, `src/ts/storage/chatStore.svelte.ts` ~1597) and remount once; the `checkIfAtBottom` layout read remains (`src/lib/ChatScreens/Chats.svelte` ~961).
+- Asset UIs: the first filter query after an edit of the field copies the live state once (about 0.3 to 0.6 s at 100k assets).
+- The parser's fuzzy asset lookup is untested for owner teardown and very large lists at the parser level.
+
+**Why it matters:** the caches grow with the assets rendered, and the heap item was measured in the tens of megabytes.
+**Suggested handling:** confirm the heap items with a snapshot after delete/re-import and module toggles (`util/playwright/measureHeap.mjs`, `measureFileSources.mjs`); re-verify a line before acting.
+
+### Web Push leftovers
+
+Open after the Web Push implementation (e148f7276, 2026-10-13; the archived `docs/plan/web-push.md`) and the Open Bug Fixes slices S1 (3601b04c2) and P1 (34555e412); the VAPID key re-read landed 2026-10-28. Kept in memory until 2026-11-08 and re-checked that day. The real-browser checks (permission, subscription, click routing, Android PWA) went to the user's own checklist on 2026-10-28 and are not listed here; the `MAX_PENDING_SENDS` comment has its own entry ("The push send cap comment says four waiting").
+
+- Cross-tab opt-out race: an explicit disable racing another tab's enable within one reconcile (`src/ts/network/pushNotifications.ts`).
+- The enable button may lose user activation before `subscribe()` when it is queued behind a reconcile.
+- `public/sw.js` click handling: the `/` route only focuses.
+- `navigator.serviceWorker.ready` may be the old worker during an upgrade.
+- `no-store` is missing on middleware rejections of `/api/push/*`: the limiter, JWT and body cap in `server/src/routes/push.ts` (~26, ~49) answer before the handler sets it, push is not in `server/src/app.ts`'s no-store families (~810), and the `registerPushRoutes` header comment still promises `no-store` on every answer.
+- The P1 detail strings (`language.pushNotifications.*`) exist in en and ko and are English in de, es, vi, cn and zh-Hant.
+- Registration dedupe (Deep Audit Fixes slice 5, 2026-10-26): a subscription the server dropped while the browser keeps the same endpoint and keys comes back only at the first sync after 24 h or by off/on; `subscribed` stays true meanwhile and suppresses the tab fallback notice. Accepted.
+
+**Why it matters:** the races can leave a tab's toggle and the server's subscription list disagreeing, and a cached rejection could be replayed by an intermediary.
+**Suggested handling:** offer these as the next Web Push round; verify each against the current code first.
+
+### Plugin reload deferral leftovers
+
+Left on purpose by slice P2 of the RisuNest Small Wins plan (ed9d207c5, 2026-10-20; `git show f4c26f27d:docs/plan/risunest-small-wins.md`), which defers a remote plugin reload until the tab is idle, and by its P1 (a293fc574). The D4 decision (a never-settling guest defers remote reloads until a page reload or a local `loadPlugins`) is in plugin-sandbox.md Known Hazards and not repeated. Kept in memory until 2026-11-08; identifiers re-checked that day.
+
+- Work admitted while `loadV3Plugins` unloads the old sandboxes is not fenced: `unloadV3Plugin` (`src/ts/plugins/apiV3/v3.svelte.ts`) splices the instance before awaiting the unload callbacks (up to 1 s), so a job created then lists the hooks registered at that moment; every local `loadPlugins` has the same window. RisuNest fences with `beginUnload`/`invokeUnloadCallback`. A Sol plan review raised it; rejected as pre-existing.
+- `executePluginV3` (`v3.svelte.ts` ~3395) pushes the instance before `host.run`; a `run` that throws leaves the instance registered.
+- `SandboxHost.terminate` (`src/ts/plugins/apiV3/factory.ts` ~1156) aborts only controllers built from a guest-supplied signal (`ABORT_SIGNAL_REF`, ~720); a `nativeFetch(url)` without one keeps running until it resolves, and only its late body is cancelled. A fix needs a host-side controller per call in the CALL handler.
+
+**Why it matters:** a reload can run a job against a half-unloaded hook list, a failed plugin start stays listed as loaded, and a terminated plugin's fetch keeps the network busy.
+**Suggested handling:** pick these up when a change touches plugin reload timing (S1 safe boot uses P2's reload guard) or a bug report does. Related: "A multi-tab plugin removal can bring its deleted data back".
 
 ## Build, drivers, and e2e
 
