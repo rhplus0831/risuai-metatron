@@ -11,7 +11,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (12)
 - [Server routes and resource store](#server-routes-and-resource-store) (10)
-- [LLM requests and providers](#llm-requests-and-providers) (16)
+- [LLM requests and providers](#llm-requests-and-providers) (15)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (9)
 - [Chat screen and input](#chat-screen-and-input) (6)
@@ -286,16 +286,6 @@ For an escaped request, `requestChatData` in `src/ts/process/request/request.ts`
 **Why it matters:** an edge-case prompt surfaces as an exception rather than a failure message.
 
 **Suggested handling:** guard `formated.length` in the loop and at the Google read.
-
-### Anthropic streaming drops tool calls
-
-`requestClaude` in `server/src/llm/anthropic.ts` sends the tool schemas (~618), but its SSE parser (~1036) handles only text, thinking, redacted-thinking, and error events and emits `{ "0": text }` (~1075); streamed `tool_use` blocks (id, name, input) are dropped and never run. This contradicts the llm-requests invariant "Tool metadata must survive to the final chunk". Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** with streaming on, a Claude tool call is silently lost.
-
-**Suggested handling:** decide whether streamed tool calls are supported; if not, force a buffered request when tools are present.
-
-**Decision (owner, 2026-11-08):** force a buffered request when the request carries tools, so the existing tool loop runs; streamed tool calls stay unsupported, recorded as an llm-requests Limitation.
 
 ### A system-only Claude prompt loses its text
 

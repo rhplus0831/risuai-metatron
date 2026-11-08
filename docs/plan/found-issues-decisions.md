@@ -1,6 +1,6 @@
 # Found Issues Decisions Plan
 
-Status: drafted 2026-11-08 from the owner's decisions of the same day; no slice landed. Source: the
+Status: drafted 2026-11-08 from the owner's decisions of the same day; landed: A1 (844846d9b). Source: the
 eighteen entries of [found-issues](../research/found-issues.md) that asked for an owner decision, decided
 one by one against the tree at `cc08b6afd` (the decision paragraph under each entry, `Decision (owner,
 2026-11-08)`, is the record). Eight entries are code fixes, one is a server-side feature flag, eight move
