@@ -11,7 +11,7 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   `Files` entry shrinks to path, role, and identifiers only as a by-product. One slice per guide: self-host-server,
   chat-pipeline, global-api, llm-requests, persistence (server-generation stays out, Q1), run as pairs that share no
   file, `pnpm check` and `pnpm check:docs` per slice and the full test gate once at the end. Drafted 2026-11-08,
-  D1–D10 recommended, Q1–Q4 answered. Landed: 1, 2.
+  D1–D10 recommended, Q1–Q4 answered. Landed: 1, 2, 4.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
