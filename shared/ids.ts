@@ -1,4 +1,10 @@
 /**
+ * Record identity helpers shared by both runtimes. Creation uses `crypto.getRandomValues` so it
+ * also works for clients served over plain HTTP; validation accepts any non-empty string, not
+ * just UUIDs, to retain caller-supplied record ids.
+ */
+
+/**
  * A random v4 UUID for record ids assigned at creation (presets, personas, translator and HypaV3
  * presets). Built on `crypto.getRandomValues`, which exists in Node and in every browser context;
  * `crypto.randomUUID` does not, because it needs a secure context and the self-host client may be

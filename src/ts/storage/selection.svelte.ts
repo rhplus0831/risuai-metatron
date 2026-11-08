@@ -3,6 +3,15 @@ import { writable } from "svelte/store";
 import { characterData, characterIndex, setCharacterMembershipHook } from "./records.svelte";
 
 /**
+ * Per-tab selection state and character selection notifications. Prompt preset, model preset,
+ * and persona ids and the lorebook page load from sessionStorage, falling back to localStorage;
+ * storage failures are ignored. `src/ts/storage/settingsViews.svelte.ts` resolves ids against the
+ * current records, and `src/ts/router/router.svelte.ts` handles character/chat URLs. Membership
+ * notifications from `src/ts/storage/records.svelte.ts` return to home when the selected character
+ * disappears, without dispatching the explicit selection listeners.
+ */
+
+/**
  * The per-client selection: which prompt preset, model preset, and persona this browser uses, which
  * global lorebook page it shows, and which character this tab shows. It is not shared data and is
  * never saved to the server. Each change is kept in `sessionStorage`, so a reload restores this
@@ -37,6 +46,7 @@ export interface Selection {
 
 const STORAGE_KEY = "risu-selection";
 
+/** The tab's reactive selection; use the selection functions to persist choices and notify listeners. */
 export const selection: Selection = $state({
     presetId: "",
     modelPresetId: "",
@@ -97,6 +107,7 @@ export function loadSelection() {
     selection.loreBookPage = Number.isInteger(page) && (page as number) >= 0 ? (page as number) : 0;
 }
 
+/** Selects a prompt preset id without checking it exists and persists the selection when it changes. */
 export function selectPreset(id: string) {
     if (selection.presetId !== id) {
         selection.presetId = id;
@@ -104,6 +115,7 @@ export function selectPreset(id: string) {
     }
 }
 
+/** Selects a model preset id without checking it exists and persists the selection when it changes. */
 export function selectModelPreset(id: string) {
     if (selection.modelPresetId !== id) {
         selection.modelPresetId = id;
@@ -111,6 +123,7 @@ export function selectModelPreset(id: string) {
     }
 }
 
+/** Selects a persona id without checking it exists and persists the selection when it changes. */
 export function selectPersona(id: string) {
     if (selection.personaId !== id) {
         selection.personaId = id;
@@ -118,6 +131,7 @@ export function selectPersona(id: string) {
     }
 }
 
+/** Stores the lorebook page as supplied, without range checks, and persists the selection when it changes. */
 export function selectLoreBookPage(page: number) {
     if (selection.loreBookPage !== page) {
         selection.loreBookPage = page;

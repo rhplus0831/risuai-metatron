@@ -58,7 +58,9 @@ type AnyCharacter = character | groupChat;
  * `character`/`groupChat` shapes keep `chats`/`chatPage` for the server, cards, and plugin snapshots.
  */
 export type ClientCharacter = Omit<character, "chats" | "chatPage">;
+/** A group record without chats or chat selection; `src/ts/storage/chatStore.svelte.ts` owns both. */
 export type ClientGroup = Omit<groupChat, "chats" | "chatPage">;
+/** A client character or group record, with chats held by `src/ts/storage/chatStore.svelte.ts`. */
 export type AnyClientCharacter = ClientCharacter | ClientGroup;
 
 /** Fields a character patch may not set (`CHARACTER_FIXED_FIELDS`, shared with the server's RisuAccess host). */

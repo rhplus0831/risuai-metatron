@@ -4,6 +4,13 @@ import { newPersonaId, plainClone } from "./presets.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
 /**
+ * Persona defaults, normalization, note previews, and linked-module matching shared by client and
+ * server. `normalizePersonas` copies plain input and keeps the collection non-empty with unique
+ * record ids; module links keep unresolved ids and match stored modules by id while excluding MCPs.
+ * `src/ts/process/modules.ts` and `server/src/jobs/cbsHost.ts` use the same link rules.
+ */
+
+/**
  * The four persona fields the forwarding layer serves as `username`, `userIcon`, `personaPrompt`,
  * and `userNote`, with the value a persona that lacks one gets (the fresh-boot persona's).
  */

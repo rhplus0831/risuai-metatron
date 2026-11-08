@@ -33,10 +33,10 @@ callers:
   `shared/togglePresets.ts`: record schemas and normalizers.
 - `shared/recordPatch.ts`, `shared/mutationValidation.ts`: patch validation/application and mutation errors.
 - `shared/chatCheckpoints.ts`, `shared/jobs.ts`, `shared/chatBinding.ts`, `shared/chatLoadPages.ts`, `shared/ids.ts`:
-  checkpoint, job, binding, paging, and id helpers; their domain guides own semantics.
+  checkpoint, job, binding, chat load-count, and id helpers; their domain guides own semantics.
 
-Client compatibility modules re-export moved shapes from `shared/` (`src/ts/storage/database.svelte.ts`,
-`src/ts/storage/mutationValidation.ts`, `src/ts/chatLoadPages.ts`).
+Client entry modules re-export `shared/` modules: `src/ts/storage/database.svelte.ts` (also `appVer`, `saveImage`),
+`src/ts/storage/mutationValidation.ts`, `src/ts/chatLoadPages.ts`.
 
 ### Settings records
 

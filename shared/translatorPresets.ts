@@ -2,6 +2,17 @@ import { isRecordId, newId } from "./ids.ts";
 import type { TranslatorPreset, TranslatorStep, TranslatorStepModel } from "./settings.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
+/**
+ * Shared translator preset and step creation, normalization, and shape checks. The server's
+ * collection normalizer (`server/src/data/normalize/collections.ts`) and the client importer
+ * (`src/ts/translator/presets.ts`) use the same constructors so normalized presets round-trip.
+ * Normalization keeps at most five steps, supplies a step for an absent or empty list, and repairs
+ * invalid or repeated step ids and output keys. It does not resolve profile ids against records;
+ * shape checks likewise accept a syntactically valid profile binding without checking existence.
+ * Blank step prompts stay blank here; `shared/translation/pipeline.ts` uses `defaultTranslatorPrompt`
+ * when building their requests.
+ */
+
 export const defaultTranslatorPrompt =
     "You are a translator. translate the following html or text into {{slot}}. do not output anything other than the translation.";
 

@@ -189,11 +189,13 @@ export type ChatGroupResult = {
     stale?: true;
 };
 
+/** A batch's final stored chat order and revision, including membership changes from creates or deletes. */
 export type ChatOrderResult = { characterId: string; revision: string; ids: string[] };
 
 /** A chat as read: metadata plus `message` in order. */
 export type ChatRecord = { characterId: string; id: string; revision: string; data: Chat };
 
+/** A character's separately stored chat order as read: its revision and chat ids in display order. */
 export type ChatOrderRecord = { characterId: string; revision: string; ids: string[] };
 
 /** Bump when the server's chat summary projection changes, including derived fields. */

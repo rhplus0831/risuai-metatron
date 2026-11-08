@@ -87,6 +87,10 @@ type SectionView<S extends SectionKind> = Pick<Database, (typeof SECTION_FIELDS)
 type SelectableKind = keyof typeof COLLECTION_SELECTION_FIELDS;
 type PlainCollectionKind = Exclude<CollectionKind, SelectableKind>;
 
+/**
+ * The typed settings facade over `src/ts/storage/records.svelte.ts`: section fields and collection
+ * records, with `{ items, selectedId }` for selectable collections. The facade itself is not stored.
+ */
 export type SettingsViews = { [S in SectionKind]: SectionView<S> } & {
     [K in PlainCollectionKind]: Database[(typeof COLLECTION_FIELDS)[K]];
 } & {
@@ -101,14 +105,21 @@ export type SettingsViews = { [S in SectionKind]: SectionView<S> } & {
     pluginStorage: Database["pluginCustomStorage"];
 };
 
+/** Fields exposed by the active prompt preset view. */
 export type ActivePresetField = "name" | "image" | PromptPresetField;
+/** A live prompt preset view with a read-only resolved id; field writes target its owning preset record. */
 export type ActivePreset = Pick<botPreset, ActivePresetField> & { readonly id: string | undefined };
+/** Fields exposed by the active model preset view. */
 export type ActiveModelPresetField = "name" | ModelPresetField;
+/** A live model preset view with a read-only resolved id; field writes target its owning preset record. */
 export type ActiveModelPreset = Pick<ModelPreset, ActiveModelPresetField> & { readonly id: string | undefined };
+/** A slot's live profile view with a read-only profile id, undefined for missing or bare slots. */
 export type ModelProfileView = Pick<ModelProfile, "name" | ModelProfileField> & { readonly id: string | undefined };
 /** A captured pair of presets (a plugin hook's, a request's): the prompt preset and the model preset. */
 export type PresetScope = { readonly presetId: string; readonly modelPresetId: string };
+/** Fields exposed by the active persona view. */
 export type ActivePersonaField = "name" | "icon" | "note" | "personaPrompt" | "largePortrait";
+/** A live persona view with a read-only resolved id; writes update its persona collection record. */
 export type ActivePersona = Pick<RisuPersona, ActivePersonaField> & { readonly id: string | undefined };
 
 // ---------------------------------------------------------------------------------------------
@@ -676,6 +687,10 @@ function buildSettings(): SettingsViews {
     return Object.freeze(views) as SettingsViews;
 }
 
+/**
+ * The shared settings views: a frozen facade whose setters and nested wrappers write through to
+ * `src/ts/storage/records.svelte.ts`; reads follow record replacements.
+ */
 export const settings: SettingsViews = buildSettings();
 
 /** The fields `activePreset` serves: the prompt preset's `name`, `image`, and `PROMPT_PRESET_FIELDS`. */
@@ -718,6 +733,10 @@ export const activePreset: ActivePreset = buildPresetView<ActivePreset>(
     () => presetRecordForWrite() as unknown as Record<string, unknown> | undefined,
 );
 
+/**
+ * The selected model preset's view: reads apply schema defaults and the first-record fallback;
+ * writes resolve the bound or selected id without that fallback, dropping writes with no target.
+ */
 export const activeModelPreset: ActiveModelPreset = buildPresetView<ActiveModelPreset>(
     ACTIVE_MODEL_PRESET_FIELDS,
     resolveModelPreset,

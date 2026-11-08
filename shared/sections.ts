@@ -28,6 +28,7 @@ import {
  * - `DROPPED_FIELDS`: no longer persisted (no reader, write-only, migrated, or legacy mirrors).
  */
 
+/** The singleton settings resource kinds. */
 export const SECTION_KIND = {
     providers: "providers",
     secrets: "secrets",
@@ -36,8 +37,10 @@ export const SECTION_KIND = {
     memoryTranslateMedia: "memoryTranslateMedia",
 } as const;
 
+/** A singleton settings resource kind. */
 export type SectionKind = (typeof SECTION_KIND)[keyof typeof SECTION_KIND];
 
+/** The legacy `Database` fields stored in each singleton settings resource. */
 export const SECTION_FIELDS = {
     /** Provider and request settings outside the presets. */
     providers: [
@@ -301,6 +304,7 @@ export const SECTION_FIELDS = {
     ],
 } as const satisfies Record<SectionKind, readonly (keyof Database)[]>;
 
+/** The collection resource kinds, excluding records stored individually in `ITEM_RECORD_FIELDS`. */
 export const COLLECTION_KIND = {
     loreBook: "loreBook",
     globalscript: "globalscript",
@@ -320,6 +324,7 @@ export const COLLECTION_KIND = {
     modelProfiles: "modelProfiles",
 } as const;
 
+/** A collection resource kind. */
 export type CollectionKind = (typeof COLLECTION_KIND)[keyof typeof COLLECTION_KIND];
 
 /** The `Database` field each collection resource holds. */
@@ -383,6 +388,7 @@ export const FORWARDED_MODEL_PRESET_KEYS = [
     ...MODEL_PROFILE_ROOT_FIELDS,
 ] as const satisfies readonly (keyof Database)[];
 
+/** A legacy root derived from a model preset's slots, auxiliary toggle, or main profile. */
 export type ModelPresetRootKey = (typeof FORWARDED_MODEL_PRESET_KEYS)[number];
 
 /**

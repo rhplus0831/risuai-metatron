@@ -18,6 +18,18 @@ import type {
 } from "./sections.ts";
 
 /**
+ * Resource wire types and shared limits for `server/src/routes/resources.ts` and
+ * `src/ts/storage/resourceClient.ts`: reads, atomic batches, boot cache claims, and change notices.
+ * `shared/sections.ts` assigns database fields to section and collection payloads; chat payloads and
+ * orders use `shared/chats.ts`. Mutations carry the database epoch as well as record revisions;
+ * an epoch mismatch refuses the write, while revision conflicts roll back the batch.
+ * Feed bodies and boot cache omissions are optional protocol data: consumers must check whether
+ * their held base or cache claim permits reuse. Missing feed payloads still announce revisions and
+ * require reads when the client cannot apply them. Byte budgets and compatibility rules live on
+ * the individual exports below.
+ */
+
+/**
  * The server resource kinds and their payloads. The client assembles `Database` from them and
  * writes them back per collection.
  */
@@ -55,6 +67,7 @@ export const RESOURCE_KIND = {
     modelProfiles: "modelProfiles",
 } as const satisfies { readonly [K in SectionKind | CollectionKind]: K } & Record<string, string>;
 
+/** A resource kind registered in the shared resource-name table. */
 export type ResourceKindName = (typeof RESOURCE_KIND)[keyof typeof RESOURCE_KIND];
 
 /** The only id a singleton kind (every kind except `characters` and `inlays`) accepts. */
@@ -92,12 +105,18 @@ export type PluginPermissionGrants = {
 /** Request header naming the database epoch a mutation was based on. */
 export const RESOURCE_EPOCH_HEADER = "x-resource-epoch";
 
+/** A resource read's id, revision token, and payload, which the route may project for its kind. */
 export type ResourceRecord<T = unknown> = { id: string; revision: string; data: T };
 
+/** A whole-record batch write or deletion; null `baseRevision` creates, otherwise the current revision must match. */
 export type ResourceBatchOp =
     | { kind: string; id: string; baseRevision: string | null; data: unknown }
     | { kind: string; id: string; baseRevision: string; delete: true };
 
+/**
+ * Successful atomic batch response: the database epoch and written resource revisions (null for
+ * deletions), plus chat group and order results when present. Conflicts use a separate 409 body.
+ */
 export type ResourceBatchResult = {
     epoch: string;
     results: { kind: string; id: string; revision: string | null }[];
@@ -154,10 +173,12 @@ export function compareRevision(a: unknown, b: unknown): number | null {
  */
 export type BatchConflict = ResourceConflict | ChatConflict | ChatOrderConflict;
 
+/** Whether a batch conflict names a chat group. */
 export function isChatConflict(conflict: BatchConflict): conflict is ChatConflict {
     return conflict.kind === "chat";
 }
 
+/** Whether a batch conflict names a character's chat order. */
 export function isChatOrderConflict(conflict: BatchConflict): conflict is ChatOrderConflict {
     return conflict.kind === "chatOrder";
 }
@@ -175,6 +196,10 @@ export type ResourceEpochMismatchBody = { error: "EpochMismatch"; epoch: string 
  */
 export type ChatReadRecord = ChatRecord & { streaming?: StreamingMessage[] };
 
+/**
+ * `GET /api/resources?kinds=` response: every record of each requested kind in one committed state,
+ * with kind-specific projections and optional whole chats or summaries, together with chat orders.
+ */
 export type ResourceReadKindsResult = {
     epoch: string;
     kinds: Record<string, ResourceRecord[]>;
@@ -186,6 +211,11 @@ export type ResourceReadKindsResult = {
     chatOrders?: ChatOrderRecord[];
 };
 
+/**
+ * Results of reading named resources, chats, rows, or collections. Missing resource and whole-chat
+ * refs have null revision and data; a row read whose requested revision is unavailable returns `moved`.
+ * `ResourceReadRefsAnswer` adds continuation information for entries deferred by the byte budget.
+ */
 export type ResourceReadRefsResult = {
     epoch: string;
     items: { kind: string; id: string; revision: string | null; data: unknown }[];
@@ -323,6 +353,11 @@ export const BOOT_ITEM_KINDS: readonly string[] = [RESOURCE_KIND.modules, RESOUR
  */
 export const BOOT_ITEM_HASH_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 
+/**
+ * Boot read request for `server/src/routes/resourceBoot.ts`: requested kinds and optional summaries,
+ * with claims about held record revisions, item hashes, and complete chat summary collections so
+ * the server can omit matching data. `src/ts/storage/bootCache.ts` expands those omissions.
+ */
 export type ResourceBootRequest = {
     /** As `GET /api/resources?kinds=`: at least one, every one registered; duplicates count once. */
     kinds: string[];
@@ -666,6 +701,7 @@ export function chatCollectionClaim(
         .padStart(32, "0");
 }
 
+/** Metadata for a server SQLite backup managed by `server/src/data/snapshots.ts`; `size` is file bytes. */
 export type BackupSnapshotInfo = { id: string; createdAt: string; size: number; pinned: boolean; label: string | null };
 
 /** First record of a local backup archive (format version 2). */

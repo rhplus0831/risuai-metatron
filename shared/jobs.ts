@@ -16,8 +16,10 @@ import type { StructuredMemoryRebuildMode } from "./structuredMemory.ts";
  * absent: none), never enforced and never used to select capabilities.
  */
 
+/** The operations accepted when creating a generation job. */
 export type GenerationKind = "send" | "continue" | "reroll" | "group" | "preview" | "previewPrompt" | "command";
 
+/** The generation kinds accepted by client and server request validators. */
 export const GENERATION_KINDS: readonly GenerationKind[] = [
     "send",
     "continue",
@@ -107,8 +109,10 @@ export type GenerationCommand =
     | { type: "memoryRebuild"; mode: StructuredMemoryRebuildMode; turns: 1 | 2 }
     | { type: "memoryRebuild"; resume: true };
 
+/** Plugin script hooks a generation can request from its owner tab. */
 export type ScriptHookMode = "editinput" | "editprocess" | "editoutput" | "editdisplay";
 
+/** Supported script callback names for hook registration and validation. */
 export const SCRIPT_HOOK_MODES: readonly ScriptHookMode[] = ["editinput", "editprocess", "editoutput", "editdisplay"];
 
 /**
@@ -126,6 +130,7 @@ export type GenerationHooks = {
     mcpTools: string[];
 };
 
+/** An empty hook registration for jobs without client plugin hooks. */
 export const NO_GENERATION_HOOKS: GenerationHooks = {
     replacers: { beforeRequest: false, afterRequest: false },
     scripts: [],
@@ -180,6 +185,7 @@ export type GenerationStopBody = { characterId: string; chatId: string; jobId: s
 export type GenerationHandoffBody = { clientId: string; target?: string };
 /** Claims an open offer; the returned ticket authorizes one socket attach. */
 export type GenerationTakeoverBody = { clientId: string };
+/** A one-use socket attach ticket returned after reserving a handoff offer. */
 export type GenerationTakeoverAnswer = { ticket: string };
 
 /** 409: the chat has a running job (the owner can attach to it). */
@@ -188,8 +194,10 @@ export type GenerationBusyBody = { error: "chatBusy"; jobId: string };
 /** 409: the chat changed since the revision the client sent. */
 export type GenerationStaleBody = { error: "stale" };
 
+/** Terminal error reasons, including aborts and server lifecycle interruptions. */
 export const GENERATION_ERROR_REASONS = ["failed", "aborted", "shutdown", "maintenance", "timeout"] as const;
 
+/** The reason a generation ended with an error. */
 export type GenerationErrorReason = (typeof GENERATION_ERROR_REASONS)[number];
 
 /**
@@ -198,6 +206,7 @@ export type GenerationErrorReason = (typeof GENERATION_ERROR_REASONS)[number];
  */
 export const GENERATION_STAGES = ["preparing", "memory", "generating", "finishing"] as const;
 
+/** A running job's presentation stage. */
 export type GenerationStage = (typeof GENERATION_STAGES)[number];
 
 /**
@@ -207,6 +216,7 @@ export type GenerationStage = (typeof GENERATION_STAGES)[number];
  */
 export const GENERATION_ERROR_STAGES = ["setup", "input", "assembly", "request", "script", "persist", "tail"] as const;
 
+/** The runner step in which a generation failed. */
 export type GenerationErrorStage = (typeof GENERATION_ERROR_STAGES)[number];
 
 /**
@@ -216,6 +226,7 @@ export type GenerationErrorStage = (typeof GENERATION_ERROR_STAGES)[number];
  */
 export const GENERATION_ERROR_CODES = ["memoryRequiredOverCap", "memoryRecordSkipped"] as const;
 
+/** A machine-readable generation failure code with specialized client handling. */
 export type GenerationErrorCode = (typeof GENERATION_ERROR_CODES)[number];
 
 /** A job's or a request's id as the server makes them (`randomUUID`). */
@@ -342,6 +353,7 @@ export type GenerationPreviewResult = {
 /** A `memoryRecord` command's `done.result`: work finished in the job, or accepted by the task queue. */
 export type MemoryRecordResult = { memoryRecord: "completed" | "queued" };
 
+/** A job's terminal success or error, retained for reconnects and status reads. */
 export type GenerationTerminalEvent =
     | {
           type: "done";
@@ -406,6 +418,7 @@ export type SkippedHook =
 
 /** The most queued parts of one command job, and the longest part in characters. */
 export const MAX_SEQUENCE_PARTS = 64;
+/** The longest command sequence part, measured by JavaScript string length. */
 export const MAX_SEQUENCE_PART_CHARS = 100_000;
 
 // ---------------------------------------------------------------------------------------------
@@ -470,6 +483,7 @@ export type MemoryProgress =
           text?: string;
       };
 
+/** A question the server asks the owner tab, answered through `ChannelAnswer`. */
 export type GenerationQuestion =
     | { kind: "alertInput"; payload: { message: string; datalist?: [string, string][]; defaultValue?: string } }
     | { kind: "alertSelect"; payload: { options: string[]; display?: string } }
@@ -496,6 +510,7 @@ export type GenerationQuestion =
  * trim and do not ask again in this chat (until the owner's memory is turned on again).
  */
 export type MemoryTrimChoice = "memory" | "once" | "ignore";
+/** Trim answers in the dialog button order used by `src/ts/network/jobChannel.ts`. */
 export const MEMORY_TRIM_CHOICES: readonly MemoryTrimChoice[] = ["memory", "once", "ignore"];
 
 /**
@@ -503,6 +518,7 @@ export const MEMORY_TRIM_CHOICES: readonly MemoryTrimChoice[] = ["memory", "once
  * Memory records), or send now with stored memory and leave the gap to the background memory task.
  */
 export type MemoryGapChoice = "generate" | "continue";
+/** Gap answers in the dialog button order used by `src/ts/network/jobChannel.ts`. */
 export const MEMORY_GAP_CHOICES: readonly MemoryGapChoice[] = ["generate", "continue"];
 
 // ---------------------------------------------------------------------------------------------
@@ -607,6 +623,7 @@ export type StructuredMemoryTaskInput = MemoryTaskBase & {
 /** A task's input of either kind, as the memory task service takes and keeps it. */
 export type AnyMemoryTaskInput = MemoryTaskInput | StructuredMemoryTaskInput;
 
+/** The queued, running, or terminal state of a background memory task. */
 export type MemoryTaskState = "queued" | "running" | "done" | "failed" | "cancelled" | "skipped";
 
 /**
@@ -672,6 +689,7 @@ export interface MemoryTaskService {
  */
 export const TAB_MCP_IDENTIFIERS: readonly string[] = ["internal:fs", "internal:googlesearch"];
 
+/** Plugin and built-in requests the server can dispatch to the owner tab. */
 export type CallbackName =
     | "replacerbeforeRequest"
     | "replacerafterRequest"
@@ -686,6 +704,7 @@ export type CallbackName =
     | "inlayImage"
     | "imggen";
 
+/** The optional orientation requested by an image-generation callback. */
 export type ImageOrientation = "landscape" | "portrait";
 
 /** A callback's payload by name. */
@@ -760,6 +779,7 @@ export type CallbackTargets = {
  */
 export type HydrationReceipt = { kind: string; id: string; characterId?: string; revision: string };
 
+/** A question with its request id and server-clock deadline, replayable on owner reattach. */
 export type GenerationQuestionEvent = {
     type: "question";
     epoch: string;
@@ -768,6 +788,11 @@ export type GenerationQuestionEvent = {
     replay?: true;
 } & GenerationQuestion;
 
+/**
+ * An owner-tab callback with captured targets and hydration receipts. The tab must hold the listed
+ * revisions before running it; a replay requires retained state for that request in
+ * `src/ts/network/jobChannel.ts`.
+ */
 export type GenerationCallbackEvent = {
     type: "callback";
     epoch: string;
@@ -788,6 +813,7 @@ export type GenerationCallbackEvent = {
     replay?: true;
 };
 
+/** Server-to-tab notices, owner requests, and cancellation or provider-stream resync controls. */
 export type GenerationChannelEvent =
     | ({ type: "notice"; epoch: string } & GenerationNotice)
     | GenerationQuestionEvent
@@ -797,8 +823,10 @@ export type GenerationChannelEvent =
     /** The server stopped waiting for a request (timeout, job end): close it and drop its answer. */
     | { type: "cancel"; epoch: string; id: string };
 
+/** The server channel's final disposition of a question. */
 export type QuestionOutcome = "answered" | "cancelled" | "timedOut" | "disconnected" | "aborted" | "refused";
 
+/** A question's answer, or its non-answer outcome with an optional diagnostic. */
 export type QuestionResult =
     { outcome: "answered"; value: unknown } | { outcome: Exclude<QuestionOutcome, "answered">; error?: string };
 
@@ -812,6 +840,7 @@ export type CallbackFailure = "hook" | "barrier" | "protocol";
 /** Why the server refused a callback: the job's hook list lacks it, or a nesting or queue rule. */
 export type CallbackRefusal = "unregistered" | "nesting" | "queue";
 
+/** A callback's answer or failure, including server-owned refusal and disconnect outcomes. */
 export type CallbackResult =
     | { outcome: "answered"; value: unknown }
     | { outcome: "failed"; failure: CallbackFailure; error: string; discarded?: string[] }
@@ -857,6 +886,7 @@ export type ChannelAnswer =
     | { type: "answer"; id: string; outcome: "cancelled" }
     | { type: "answer"; id: string; outcome: "failed"; failure: CallbackFailure; error: string; discarded?: string[] };
 
+/** Frames sent on a generation job's WebSocket: ownership, reply data, status, and channel traffic. */
 export type GenerationEvent =
     | { type: "handoff"; epoch: string; owner: "self" | "other"; clientName?: string; pending?: true }
     | GenerationAcceptedEvent

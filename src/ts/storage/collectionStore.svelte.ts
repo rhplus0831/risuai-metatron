@@ -550,10 +550,18 @@ function setRequiredModelSlot(presetId: string, field: "mainSlot" | "subSlot", p
     return true;
 }
 
+/**
+ * Sets a preset's main slot to a non-empty profile id without checking that the profile exists.
+ * Invalid ids throw `MutationValidationError`; a missing preset returns false.
+ */
 export function setMainModelSlot(presetId: string, profileId: string): boolean {
     return setRequiredModelSlot(presetId, "mainSlot", profileId);
 }
 
+/**
+ * Sets a preset's sub slot to a non-empty profile id without checking that the profile exists.
+ * Invalid ids throw `MutationValidationError`; a missing preset returns false.
+ */
 export function setSubModelSlot(presetId: string, profileId: string): boolean {
     return setRequiredModelSlot(presetId, "subSlot", profileId);
 }

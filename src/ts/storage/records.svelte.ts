@@ -87,6 +87,7 @@ export const RECORD_KINDS = [
     ...Object.values(SECTION_KIND),
     ...Object.values(COLLECTION_KIND),
 ] as const;
+/** A settings record kind from `RECORD_KINDS`; characters are separate resources addressed by `chaId`. */
 export type RecordKind = (typeof RECORD_KINDS)[number];
 
 const recordKinds = new Set<string>(RECORD_KINDS);

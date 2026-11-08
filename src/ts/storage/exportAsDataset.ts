@@ -5,6 +5,13 @@ import { characterList } from "./characterStore.svelte";
 import { readChatsDetached } from "./chatEdits";
 
 /**
+ * Downloads `dataset.json` as one entry per chat of each non-group character, pairing saved
+ * messages with metadata captured before the read. `src/ts/storage/chatEdits.ts` supplies detached
+ * server chats after flushing queued writes; a read failure is shown through `src/ts/alert.ts`
+ * and aborts the export. A successful download is followed by a success alert.
+ */
+
+/**
  * Exports every chat of every character (not groups) as a dataset: the characters as they are when
  * the export starts, their chats as saved, read from the server (`readChatsDetached`, which saves
  * what is queued first and refuses when a conflict discarded a local change).

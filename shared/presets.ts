@@ -28,6 +28,7 @@ import { isPlainObject, type ValueKind, valueKindOf } from "./valueKinds.ts";
  * `autoSuggestClean` (`ui` fields).
  */
 
+/** Default AIN sampling settings shared by schema defaults and the preset import template. */
 export const defaultAIN: AINsettings = {
     top_p: 0.7,
     rep_pen: 1.0625,
@@ -40,6 +41,7 @@ export const defaultAIN: AINsettings = {
     top_k: 140,
 };
 
+/** Default Ooba generation and prompt formatting settings shared by schema defaults and imports. */
 export const defaultOoba: OobaSettings = {
     max_new_tokens: 180,
     do_sample: true,
@@ -115,6 +117,7 @@ type PresetOnlyExcluded =
 /** The materialized default profile; a default model preset names it in both required slots. */
 export const DEFAULT_MODEL_PROFILE_ID = "default";
 
+/** Canonical schema defaults; `undefined` leaves a field absent, and normalizers clone retained defaults. */
 export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     name: "New Preset",
     localNetworkMode: false,
@@ -216,6 +219,7 @@ export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     dynamicOutput: null,
 };
 
+/** A field name in the shared prompt preset, model preset, or model profile schema. */
 export type PresetField = keyof PresetDefaults;
 
 /** Every schema field (all three owners), by its record name. */
@@ -233,6 +237,7 @@ export const MODEL_PRESET_FIELDS = [
     "seperateModelsForAxModels",
 ] as const satisfies readonly PresetField[];
 
+/** A schema field owned by the model preset's slot configuration. */
 export type ModelPresetField = (typeof MODEL_PRESET_FIELDS)[number];
 
 /** The profile's definition, key binding, connection, routing, compatibility, and capacity. */
@@ -275,6 +280,7 @@ export const MODEL_PROFILE_FIELDS = [
     "customTokenizer",
 ] as const satisfies readonly PresetField[];
 
+/** A schema field owned by a model profile's connection and capacity configuration. */
 export type ModelProfileField = (typeof MODEL_PROFILE_FIELDS)[number];
 
 /** The fields records hold for themselves (`image` is only on the prompt preset). */

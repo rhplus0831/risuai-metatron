@@ -1,7 +1,3 @@
-// Persisted shapes of the database, characters, chats, and presets. Both the client and the server
-// compile this folder: keep it free of DOM types, runes, enums, and non-relative imports (see
-// `persistence.md`). Never rename persisted keys (STRUCTURE D3).
-
 import type { NewChatBinding } from "./chatBinding.ts";
 import type { ContextMeterTurnUnit, ContextReport } from "./contextReport.ts";
 import type { LLMFlags, LLMFormat, LLMTokenizer } from "./llm.ts";
@@ -30,11 +26,23 @@ import type { triggerscript } from "./triggers.ts";
 import type { MemoryReceipt, StructuredMemoryHighlightMode } from "./structuredMemory.ts";
 import type { TogglePreset } from "./togglePresets.ts";
 
+/**
+ * Shared settings, character, chat, message, and preset shapes compiled by both client and server.
+ * Persisted key spellings are part of the storage and interchange contracts, including
+ * `seperateModels`, `seperateParameters`, `moduleIntergration`, and `PresensePenalty`.
+ * `Database` is a flat compatibility shape: `shared/sections.ts` assigns its fields to resources
+ * or forwarded views. Character records and chat data have separate storage; the tab exposes chat
+ * views on characters and routes chat mutations through `src/ts/storage/chatStore.svelte.ts`.
+ * These types describe records, without validating input or supplying runtime defaults.
+ */
+
+/** How aggressively the chat UI reduces rendering work while displaying a streamed reply. */
 export type StreamingDisplayOptimizationMode = "off" | "balanced" | "strong";
 
 /** The range and default of `Database.contextMeterFixedWarn`, in percent; `normalizeUi` clamps to it. */
 export const CONTEXT_METER_FIXED_WARN = { min: 10, max: 95, default: 60 } as const;
 
+/** A blocked Realm creator persisted in UI settings; `id` is identity and `name` is a display label. */
 export type BlockedRealmCreator = { id: string; name: string };
 
 /** The named LLM credential types, shared with the server's collection normalizer. */
@@ -52,6 +60,7 @@ export const CREDENTIAL_TYPES = [
     "novelai",
     "custom",
 ] as const;
+/** A named LLM credential's provider type. */
 export type CredentialType = (typeof CREDENTIAL_TYPES)[number];
 
 /** Readable credential metadata; its value is in `llmSecrets.credentials.<id>.key`. */
@@ -60,6 +69,7 @@ export type Credential = { id: string; name: string } & (
     | { type: Exclude<CredentialType, "vertex">; clientEmail?: never; projectId?: never }
 );
 
+/** Compatibility flags retained in prompt presets by `shared/presets.ts`; generation does not read them. */
 export interface DynamicOutput {
     autoAdjustSchema: boolean;
     dynamicMessages: boolean;
@@ -82,6 +92,10 @@ export interface CustomModel {
     flags: LLMFlags[];
 }
 
+/**
+ * A persisted `personas` collection entry, normalized by `shared/personas.ts`. Its stable id binds
+ * chats to the persona; the selected entry also supplies the legacy user identity and prompt fields.
+ */
 export interface RisuPersona {
     personaPrompt: string;
     name: string;
@@ -98,6 +112,11 @@ export interface RisuPersona {
     modules?: string[];
 }
 
+/**
+ * The legacy flat view assembled from settings, content records, and chat state for plugins and
+ * server jobs. `shared/sections.ts` defines field ownership and forwarding; tab snapshots built by
+ * `src/ts/storage/snapshots.svelte.ts` are detached copies, never a writable persistence container.
+ */
 export interface Database {
     characters: (character | groupChat)[];
     apiType: string;
@@ -582,6 +601,7 @@ export interface Database {
     contextMeterLookahead: boolean;
 }
 
+/** Parameter fields retained in saved `seperateParameters` records and preset files. */
 export interface SeparateParameters {
     temperature?: number;
     top_k?: number;
@@ -603,6 +623,10 @@ export interface SeparateParameters {
 
 type OutputModal = "image" | "audio" | "video";
 
+/**
+ * A regex rule stored in global, character, module, or prompt-preset script lists. `type` selects
+ * the edit hook; `shared/scripts/regex.ts` interprets the pattern, replacement, and optional flags.
+ */
 export interface customscript {
     comment: string;
     in: string;
@@ -612,8 +636,13 @@ export interface customscript {
     ableFlag?: boolean;
 }
 
+/** The trigger record shared with `shared/triggers.ts`. */
 export type { triggerscript };
 
+/**
+ * A lore entry or folder stored in a global book, character, chat, or module. Activation and token
+ * budgeting are evaluated by `shared/lore/activation.ts`, rather than by this record type.
+ */
 export interface loreBook {
     key: string;
     secondkey: string;
@@ -643,6 +672,11 @@ export interface loreBook {
  */
 export type ChatLoreOverride = { entry: loreBook; off: boolean };
 
+/**
+ * A character resource keyed by `chaId`, holding card content and local settings. In the tab,
+ * `chats` and `chatPage` are views supplied by `src/ts/storage/chatStore.svelte.ts`; stored character
+ * records contain no chats (`server/src/data/normalize/characters.ts`).
+ */
 export interface character {
     type?: "character";
     name: string;
@@ -817,6 +851,7 @@ export interface character {
     customModuleToggle?: string;
 }
 
+/** Character or group lore limits, with missing values defaulted by `shared/lore/activation.ts`. */
 export interface loreSettings {
     tokenBudget: number;
     scanDepth: number;
@@ -824,6 +859,11 @@ export interface loreSettings {
     fullWordMatching?: boolean;
 }
 
+/**
+ * A group character resource keyed by `chaId`. `characters`, `characterTalks`, and `characterActive`
+ * are parallel member arrays; `src/ts/process/group.ts` edits them together. Its conversations use
+ * the same chat-store views and separate chat storage as an individual character's.
+ */
 export interface groupChat {
     type: "group";
     image?: string;
@@ -1019,6 +1059,7 @@ export interface botPreset {
     dynamicOutput?: DynamicOutput;
 }
 
+/** The auxiliary model roles addressable by a model preset's slots. */
 export type AuxModelMode = "memory" | "translate" | "emotion" | "otherAx";
 
 /** A slot states whether it names a profile or a bare definition; ids are never guessed apart. */
@@ -1083,6 +1124,7 @@ interface hordeConfig {
     softPrompt: string;
 }
 
+/** A sidebar folder persisted in `Database.characterOrder`; `data` holds its character ids. */
 export interface folder {
     name: string;
     data: string[];
@@ -1103,6 +1145,10 @@ interface sdConfig {
     hr_upscaler: string;
 }
 
+/**
+ * NovelAI image-generation options stored in `memoryTranslateMedia.NAIImgConfig` and consumed by
+ * `src/ts/process/stableDiff.ts`, including prompt, reference-image, and image-to-image inputs.
+ */
 export interface NAIImgConfig {
     width: number;
     height: number;
@@ -1202,6 +1248,7 @@ interface ComfyConfig {
     timeout: number;
 }
 
+/** A prompt section name used by the legacy `formatingOrder` assembly sequence. */
 export type FormatingOrderItem =
     | "main"
     | "jailbreak"
@@ -1214,6 +1261,12 @@ export type FormatingOrderItem =
     | "postEverything"
     | "personaPrompt";
 
+/**
+ * A chat's assembled view: metadata plus ordered messages. `server/src/data/chats.ts` normalizes
+ * the metadata and message rows stored separately; tab mutations go through
+ * `src/ts/storage/chatStore.svelte.ts`. `id` names the chat, while each `Message.chatId` names a
+ * message row. Streaming flags are client-only state, excluded from stored metadata.
+ */
 export interface Chat {
     message: Message[];
     note: string;
@@ -1301,6 +1354,7 @@ export interface Chat {
     toolCalls?: { [id: string]: ToolCallRecord };
 }
 
+/** A character-owned chat-list folder; `Chat.folderId` links a chat to its `id`. */
 export interface ChatFolder {
     id: string;
     name?: string;
@@ -1321,6 +1375,11 @@ export interface MessageCandidate {
     scriptstateAfter?: ScriptstateSnapshot;
 }
 
+/**
+ * A persisted chat message row, mutated in the tab through `src/ts/storage/chatStore.svelte.ts`.
+ * Despite its name, `chatId` identifies this message, not the containing chat; whole-chat
+ * normalization in `server/src/data/chats.ts` assigns missing ids and replaces later duplicates.
+ */
 export interface Message {
     role: "user" | "char";
     data: string;
@@ -1362,6 +1421,11 @@ export interface MessageTranslation {
     edited?: boolean;
 }
 
+/**
+ * Generation metadata stored with a reply or candidate: model, token counts and budgets, timings,
+ * and memory receipts. `server/src/prompt/assemble.ts` sets `outputTokens` to the response budget available
+ * within the context, rather than measured completion usage.
+ */
 export interface MessageGenerationInfo {
     model?: string;
     generationId?: string;
@@ -1383,12 +1447,14 @@ export interface MessageGenerationInfo {
     memory?: DeepReadonly<MemoryReceipt>;
 }
 
+/** Optional preset name, toggle values, and prompt text saved with a reply or candidate for inspection. */
 export interface MessagePresetInfo {
     promptName?: string;
     promptToggles?: { key: string; value: string }[];
     promptText?: OpenAIChat[];
 }
 
+/** Persisted UI preferences for comparing saved prompts. */
 export interface PromptDiffPrefs {
     diffStyle: "line" | "intraline";
     formatStyle: "raw" | "card";
@@ -1398,6 +1464,7 @@ export interface PromptDiffPrefs {
     contextRadius: number;
 }
 
+/** AI Novelist request options stored on prompt presets as `ainconfig`. */
 export interface AINsettings {
     top_p: number;
     rep_pen: number;
@@ -1410,6 +1477,7 @@ export interface AINsettings {
     top_k: number;
 }
 
+/** Text-generation-webui request and chat-format options stored on prompt presets as `ooba`. */
 export interface OobaSettings {
     max_new_tokens: number;
     do_sample: boolean;

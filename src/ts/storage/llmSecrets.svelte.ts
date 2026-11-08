@@ -13,6 +13,15 @@ import {
 } from "../../../shared/llmSecrets.ts";
 
 /**
+ * Reactive masked credential status and an ordered queue of secret operations, using paths from
+ * `shared/llmSecrets.ts`. `src/ts/storage/resourceSync.svelte.ts` sends the queue separately from
+ * normal record writes and removes acknowledged or dropped operations. Pending writes overlay
+ * the mask for status reads; acknowledged changes and explicit invalidation advance per-path
+ * versions after the first mask is installed. `src/ts/storage/records.svelte.ts` holds only the
+ * readable siblings and blank credential fields produced by `mirrorFields`.
+ */
+
+/**
  * The tab's view of the write-only `llmSecrets` record (`shared/llmSecrets.ts`):
  * the masked record the server last answered (each credential's `{ set, hint }`; the readable
  * siblings are held in the `llmSecrets` record like any section field, the credential fields there
@@ -29,13 +38,19 @@ export type SecretRequest =
      */
     | { kind: "cleanup"; path: Extract<SecretPath, { kind: "entry" }> };
 
+/** A queued credential request and its unique local id, used to remove the operation after saving or dropping it. */
 export type QueuedSecretOp = { id: number; request: SecretRequest };
 
+/** A credential's masked status with queued writes applied; `pending` marks an unacknowledged write. */
 export type SecretStatus = MaskedLeaf & {
     /** A queued write of this path has not been acknowledged yet. */
     pending: boolean;
 };
 
+/**
+ * The tab's acknowledged mask, invalidation versions, and ordered write queue; queued put requests
+ * retain plaintext until removed by `src/ts/storage/resourceSync.svelte.ts`.
+ */
 export const llmSecretState: {
     masked: MaskedLlmSecrets | null;
     versions: Record<string, number>;
@@ -62,6 +77,7 @@ export function setSecret(path: SecretPath, value: string): number {
     return enqueue({ kind: "put", path, value });
 }
 
+/** Queues an empty-value write to clear a credential and returns the operation's local id. */
 export function clearSecret(path: SecretPath): number {
     return setSecret(path, "");
 }
@@ -96,6 +112,7 @@ export function secretStatus(path: SecretPath): SecretStatus {
     return overlay.get(wanted) ?? current(path);
 }
 
+/** Whether the credential is set after applying queued writes over the acknowledged mask. */
 export function isSecretSet(path: SecretPath): boolean {
     return secretStatus(path).set;
 }
