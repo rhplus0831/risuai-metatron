@@ -226,15 +226,13 @@ describe("documentation budgets", () => {
         ]);
     });
 
-    it("rejects the guides and STRUCTURE.md together over the tree ratchet, and prints the tree in the verdict", () => {
+    it("measures the guides and STRUCTURE.md together and prints the total in the verdict without a limit", () => {
         const measure = measureDocs(tree());
         const { treeBytes } = measure.totals;
         expect(treeBytes).toBe(measure.totals.bytes + measure.index.bytes);
-        expect(checkDocs(measure, { treeRatchet: treeBytes })).toEqual([]);
-        expect(checkDocs(measure, { treeRatchet: treeBytes - 1 })).toEqual([finding("STRUCTURE.md", 1, "tree")]);
-        expect(formatCheck([], [], { bytes: treeBytes, ratchet: treeBytes })).toBe(
-            `[check:docs] OK, tree ${treeBytes} of ${treeBytes}\n`,
-        );
+        expect(checkDocs(measure)).toEqual([]);
+        expect(formatCheck([], [], treeBytes)).toBe(`[check:docs] OK, tree ${treeBytes} bytes\n`);
+        expect(formatCheck([], [])).toBe("[check:docs] OK\n");
     });
 
     it("rejects a link to its own file without an anchor", () => {

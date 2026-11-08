@@ -22,12 +22,12 @@
 //     JSON or has a bad rule, a rule matches no tracked path or only paths an earlier rule owns, a tracked path under
 //     `src/`, `server/`, `shared/`, `util/`, `e2e/`, or `public/` has no rule, or a rule names no guide. Tracked
 //     paths are what git lists, untracked files it does not ignore included; outside a repository there are none
-//     and a missing manifest has no rules, so the rule finds nothing;
-//   - `tree`: the guides and `STRUCTURE.md` together over `TREE_BYTES_RATCHET`. A trim lowers the ratchet to within
-//     1,000 bytes of the new total; nothing raises it.
+//     and a missing manifest has no rules, so the rule finds nothing.
 // It also prints, without failing, one `near` line per file over the guide target and per heading over the leaf
 // target, each with the bytes left under its budget: the targets are where a trim or a split lands, so a guide
-// keeps room for the changes that follow instead of sitting at the budget, where every edit fails the gate.
+// keeps room for the changes that follow instead of sitting at the budget, where every edit fails the gate. The
+// verdict line ends with the bytes of the guides and `STRUCTURE.md` together, a trend figure with no limit: a
+// reader takes one section at a time, so what bounds a read is the leaf and item budgets, not the tree.
 //
 // `--report` exits 0 whatever it finds and prints
 //   - a table of the guides: bytes, headroom under the guide budget, `###` headings, largest leaf, items over the
@@ -51,11 +51,6 @@ export const GUIDE_BYTES_TARGET = 36_000;
 export const LEAF_BYTES_TARGET = 7_000;
 export const ITEM_CHARS_BUDGET = 600;
 export const PAREN_DEPTH_BUDGET = 2;
-/**
- * The most the guides and `STRUCTURE.md` may hold together. Lower it in the change that lowers the total, to
- * within 1,000 bytes of the new total; a change that needs it raised moves or deletes text instead.
- */
-export const TREE_BYTES_RATCHET = 762_500;
 
 export const GUIDE_DIR = "docs/structure";
 export const INDEX_DOC = "STRUCTURE.md";
@@ -604,9 +599,9 @@ export function measureDocs(root) {
 
 /**
  * What fails for a `measureDocs` result, as `{ path, line, rule, message }` findings, each file's in rule order,
- * the tree's last. `treeRatchet` stands in for `TREE_BYTES_RATCHET`.
+ * the ownership manifest's last. The tree total is not checked.
  */
-export function checkDocs(measure, { treeRatchet = TREE_BYTES_RATCHET } = {}) {
+export function checkDocs(measure) {
     const findings = [];
     const add = (file, line, rule, message) => findings.push({ path: file, line, rule, message });
     for (const file of [...measure.guides, measure.index]) {
@@ -641,17 +636,6 @@ export function checkDocs(measure, { treeRatchet = TREE_BYTES_RATCHET } = {}) {
         for (const { line, kind, label } of file.labels) add(file.path, line, "label", `${kind} ${label}`);
     }
     for (const { line, message } of measure.ownership ?? []) add(OWNERSHIP_FILE, line, "ownership", message);
-    const { treeBytes } = measure.totals;
-    if (treeBytes > treeRatchet) {
-        const over = treeBytes - treeRatchet;
-        add(
-            INDEX_DOC,
-            1,
-            "tree",
-            `${treeBytes} bytes in the guides and ${INDEX_DOC}, ratchet ${treeRatchet}, ${over} over ` +
-                `(the ratchet rule: ${GUIDE_DIR}/README.md)`,
-        );
-    }
     return findings;
 }
 
@@ -681,15 +665,15 @@ export function nearTarget(measure) {
 }
 
 /**
- * What the check prints for `checkDocs` findings and `nearTarget` warnings: the warnings never fail it. `tree`
- * (`{ bytes, ratchet }`) adds the tree total to the verdict, so a trim sees how far the ratchet can come down.
+ * What the check prints for `checkDocs` findings and `nearTarget` warnings: the warnings never fail it. `treeBytes`
+ * adds the bytes of the guides and `STRUCTURE.md` together to the verdict, as a trend figure; it is no limit.
  */
-export function formatCheck(findings, warnings = [], tree = null) {
+export function formatCheck(findings, warnings = [], treeBytes = null) {
     const lines = [...findings, ...warnings].map(
         ({ path: file, line, rule, message }) => `${file}:${line} ${rule} ${message}`,
     );
     const near = warnings.length > 0 ? `, ${warnings.length} near the budget` : "";
-    const total = tree ? `, tree ${tree.bytes} of ${tree.ratchet}` : "";
+    const total = treeBytes === null ? "" : `, tree ${treeBytes} bytes`;
     const verdict = findings.length > 0 ? `FAIL: ${findings.length} finding(s)${near}${total}` : `OK${near}${total}`;
     return `${[...lines, `[check:docs] ${verdict}`].join("\n")}\n`;
 }
@@ -833,7 +817,7 @@ export function formatReport(measure) {
         `[check:docs] segments above depth ${PAREN_DEPTH_BUDGET}: ${totals.deepSegments}`,
         `[check:docs] unresolved links: ${totals.unresolvedLinks}`,
         `[check:docs] missing paths: ${totals.missingPaths}`,
-        `[check:docs] tree bytes, ${INDEX_DOC} included: ${totals.treeBytes} (ratchet ${TREE_BYTES_RATCHET})`,
+        `[check:docs] tree bytes, ${INDEX_DOC} included: ${totals.treeBytes}`,
         `[check:docs] section order problems: ${totals.sectionProblems}`,
         `[check:docs] hazard heading problems: ${totals.hazardProblems}`,
         `[check:docs] self-links: ${totals.selfLinks}`,
@@ -854,8 +838,7 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
         process.stdout.write(formatReport(measure));
     } else {
         const findings = checkDocs(measure);
-        const tree = { bytes: measure.totals.treeBytes, ratchet: TREE_BYTES_RATCHET };
-        const output = formatCheck(findings, nearTarget(measure), tree);
+        const output = formatCheck(findings, nearTarget(measure), measure.totals.treeBytes);
         (findings.length > 0 ? process.stderr : process.stdout).write(output);
         if (findings.length > 0) process.exitCode = 1;
     }

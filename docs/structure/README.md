@@ -68,10 +68,12 @@ topic would cross a target, move it to its owner or split the guide.
 | List item or table row, including continuation text and code spans |              | 600 characters |
 | Nested parentheses outside code spans                              |              |       2 levels |
 
-`pnpm check:docs` reports `near` over a target and fails over a limit. When a change reduces the combined tree, lower
-`TREE_BYTES_RATCHET` in `util/docsBudget.mjs` to within 1,000 bytes above the new total. The ratchet may only decrease.
-See the [documentation checker](build-test-platforms.md#documentation-check) for exact rule coverage and its report
-mode.
+`pnpm check:docs` reports `near` over a target and fails over a limit. Its verdict line also prints the bytes of the
+guides and the index together, a trend figure with no limit: a reader takes one section at a time, so the leaf and item
+limits bound a read, not the tree. A change adds its facts to the owning guide and does not trim a guide it would not
+otherwise touch. Trims are passes of their own, aimed first at large guides that `pnpm docs:reads` shows are rarely
+read. See the [documentation checker](build-test-platforms.md#documentation-check) for exact rule coverage and its
+report mode.
 
 ## Known hazards and the issue inbox
 
