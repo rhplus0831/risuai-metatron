@@ -182,6 +182,10 @@ of a committed reset whose answer was lost says `reset: false`.
 - A change shows at the first read past a chat's `MEMORY_RECHECK_WINDOW_MS`, not the very next read. The refresh shares
   `authenticatedRouteLimiter`, and its cost is bounded per chat per tab: one `getChar` loop is one request a window, and
   a plugin walking chats through `getChatFromIndex` costs one request per chat per window.
+- A plugin walking 67 or more loaded chats through `getChatFromIndex` spends the shared per-IP authenticated bucket
+  (2,000 a minute): in the loopback measurement a neighbour route was refused until the reset. Coalescing adjacent
+  refreshes into one revisions batch would lower the cost. Decision: Found Issues Decisions (owner, 2026-11-08),
+  [audit](../../audit/structured-memory-2026-11-03.md#getchatfromindex-and-the-rate-limit).
 
 ### Gotchas
 

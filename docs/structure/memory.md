@@ -345,6 +345,11 @@ lookahead starts at stored coverage and does not defer summaries.
   kernels: a ranking near a tie can differ between the two paths. Decision: `server/src/prompt/embeddings.ts` header.
 - The Transformers.js child process has no memory limit of its own; queue caps do not bound running model allocations.
   Decision: `server/src/prompt/transformers.ts` header.
+- The no-memory trim question has gaps: the late removable-message cleanup in `assemblePrompt` (`removable`) runs after
+  formatting and can still drop history without asking; an unanswered question (a timeout, a lost owner) ends the job
+  with an English error, since the server has no localized channel for terminal errors; and a raw record write that
+  turns `supaMemory` on does not bump `supaMemoryOnCount`, so a chat's "don't ask again" survives it. Decision: Found
+  Issues Decisions (owner, 2026-11-08).
 
 ### Gotchas
 

@@ -383,6 +383,13 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
   A fan-out of `call::` (a function calling itself twice) is bounded by the work budget only, so on the server it fails
   the job. Decision: the limits are policy (`server/src/jobs/cbsHost.ts`); the `call::` trade-off is pinned in
   `server/src/tests/cbsCallDepth.test.ts`.
+- A chat switch sends no new transform target, but up to `MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT` chunks already sent can
+  cross it. They are cancelled when the last subscriber leaves (`transformClient.ts`), after the unmount work, which
+  took about 370 ms at 600 rows, so the server can still finish one. Decision: Found Issues Decisions (owner,
+  2026-11-08), [measurement](../audit/render-work-budget-2026-11-05.md#acceptance-after-slices-14).
+- A chat write the render does not read still moves the chat revision in the transform key: with `useAutoSuggestions`
+  on, a suggestion save (`Suggestion.svelte`, `setChatMeta`) costs one server re-render of the rows on the next visit,
+  and a `{{random}}` row can change. Decision: Found Issues Decisions (owner, 2026-11-08).
 
 ### Gotchas
 

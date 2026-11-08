@@ -113,3 +113,6 @@ probe answers ([Issues](#issues)). The probe and the worker's signing:
 
 - A PNG card read from a one-shot stream (a Chub download) keeps each asset's base64 text in its `saveAssets` item for
   the final presence pass; a `File` or `Blob` rereads its byte range. Decision: Implementation Audit Fixes Q1.
+- Without a capable controlling service worker, the fallback's audio and video object URLs (`getInlayObjectUrl`,
+  `mediaObjectUrls` in `src/ts/process/files/inlays.ts`) live for the page: they grow with the distinct media played,
+  past the 64 MiB `blobCache` budget, until a reload. Decision: Found Issues Decisions (owner, 2026-11-08).

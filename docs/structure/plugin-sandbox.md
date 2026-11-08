@@ -322,6 +322,10 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   receipt of the plugin list change can still restore a key; delete it again from the plugin data page. A removed
   plugin's `onUnload` writes are refused in the removing tab too, so with "Also delete its stored data" unchecked its
   last `onUnload` write is not kept. Decision: Found Issues Decisions B1 (owner, 2026-11-08).
+- v3 `pluginStorage.setItem` converts a value through JSON without an error (`_setPluginStorage`): a `Set` or `Map`
+  reads back as `{}`, a typed array as an index object, a `Date` as a string, `NaN` and `Infinity` as `null`, and an
+  `undefined` property is dropped; a `bigint` or a cycle throws. `getLocalPluginStorage().setItem` refuses those values
+  instead (`isJsonValue`). Decision: upstream parity, Found Issues Decisions (owner, 2026-11-08).
 
 ### Gotchas
 

@@ -320,6 +320,13 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   characters near its budget can read differently.
 - A screened reply can stay in the writer's context-only `previous` slot, and a user message strands when the next reply
   is already recorded. Decision: Structured Memory slice 7e, archive.
+- `selectMemory` takes 520–584 ms on a 1,000-turn send, mostly tokenizing (296–356 ms) and cache reads. Counting each
+  text once per selection did not help (9 of about 2,190 counts were repeats; tried and reverted); the gain needs it to
+  reuse the counts `assemble.ts` already took for `currentTokens`. Decision: Found Issues Decisions (owner, 2026-11-08),
+  [audit](../../audit/structured-memory-2026-11-03.md).
+- Small contexts starve the last lanes: at 16,384 tokens of context the `threads` lane gets nothing once event lines
+  carry three quotes (found at 32,768), and a query naming two events loses one of them in a long chat at 32,768 too.
+  Decision: Found Issues Decisions (owner, 2026-11-08), [audit](../../audit/structured-memory-2026-11-03.md).
 
 ### Gotchas
 

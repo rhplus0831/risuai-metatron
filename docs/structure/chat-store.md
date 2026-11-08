@@ -291,7 +291,18 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   stay; a resend works). Decision: a barrier that cannot prove its `streaming` list current fails rather than install an
   older read that could retire live generations (`jobChannel.ts` `recoverJobChat`).
 - Two clients' `setText` on one message: the later-accepted one wins on any revision; no notice for the client it
-  overwrote. Decision: a per-message base makes slow edits conflict (Multi-Client Data Safety Checks Q3, archive).
+  overwrote. An open inline editor keeps its draft across another device's change of that message's text (rows are keyed
+  by message id; `updateRow`), and its Save replaces that text, also without a notice. Decision: a per-message base
+  makes slow edits conflict (Multi-Client Data Safety Checks Q3, archive); the editor, Found Issues Decisions (owner,
+  2026-11-08).
+- A character this client never persisted (`takeChatWork`'s absent-character sweep, `dropCharacterWork(id, false)`)
+  keeps its parked resends (`parkedResends`) until a same-id re-add, which replays one harmless resend first, or the
+  next boot: no deletion acknowledgement or `forgetCharacter` comes for it. The leak is bounded to that session's
+  resend-bearing chats, whose payloads can be whole chat snapshots. Decision: Found Issues Decisions (owner,
+  2026-11-08).
+- Two refresh costs, one read each: the own-save echo of an unloaded chat's list field asks for a summary-list read, and
+  a noticed loaded idle chat is read whole before the trim may evict it. Decision: Found Issues Decisions (owner,
+  2026-11-08).
 
 ### Gotchas
 
