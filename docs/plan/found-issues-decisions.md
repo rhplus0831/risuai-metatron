@@ -60,12 +60,14 @@ Every slice is independent of the others' code unless listed here; the shared fi
   (~563): D2 after D1, or rebase.
 - **Guides.** A1 and A2 both edit `llm-requests.md` (a Limitation vs a header sentence): rebase. B1, B2 and
   E1 edit `plugin-sandbox.md`; D1, D2 and E1 edit the `structured-memory/` pages: E1 runs last and rebases
-  onto what landed. Every guide stays under its byte budget (`pnpm check:docs`); `cbs-rendering.md`
-  (28.7 KB) and `llm-requests.md` (26.6 KB) have the least room.
+  onto what landed. B1 and B4 both edit `persistence.md`, B4 and C1 `self-host-server.md`, C1 and E1
+  `cbs-rendering.md`: rebase. Every guide stays under the 40,000-byte ceiling (`pnpm check:docs`);
+  `persistence.md` (28.9 KB), `self-host-server.md` (28.8 KB) and `cbs-rendering.md` (28.7 KB) are the
+  largest the slices touch.
 - **Questions.** None: every decision is recorded in the source entries. A slice that finds its decision
   does not fit the code stops with `QUESTION` instead of choosing.
 - **Sessions.** A1, A2, A3, B1, B2, B3, B4, D1 and E1 are _small_; C1 is _hard_ (server, dev server, page
-  flag and client across four guides) and D2 is _hard_ (durable record shape and replay). Three sessions
+  flag and client across five guides and the README) and D2 is _hard_ (durable record shape and replay). Three sessions
   at a time is the runner's default; E1 waits for every other slice.
 
 ## Slices
@@ -95,8 +97,9 @@ Every slice is independent of the others' code unless listed here; the shared fi
   `useStreaming` in both runtimes and reword the two header sentences that describe the precedence
   (`outer.ts` ~60, the tab `request.ts` ~171). The guide invariant "`escape` disables streaming" stands.
   _Done_: a request with `escape` and `forceStreaming` both set is buffered and escaped in both runtimes.
-  _Test_: `server/src/tests/llmServices.test.ts` and `src/ts/process/request/tests/transport.test.ts` (the
-  escape cases gain the `forceStreaming: true` variant).
+  _Test_: the server's outer-loop harness in `server/src/tests/llmCharsetRetries.test.ts` (not
+  `llmServices.test.ts`, which covers redaction, Vertex tokens and the warmer) and
+  `src/ts/process/request/tests/transport.test.ts` (an escape case with `forceStreaming: true`).
   _Removes_: `escape` loses to `forceStreaming`.
 
 - **A3. Every open offer turns absent after owner absence** (_small_, `server-generation.md`).
@@ -148,7 +151,7 @@ Every slice is independent of the others' code unless listed here; the shared fi
   _Done_: after Reset permissions, the plugin's next capability use prompts again in this tab at once and
   in another tab after its deferred reload; no grant survives.
   _Test_: `src/ts/plugins/apiV3/permissionRevocation.test.ts` (a reload follows the reset; a remote
-  `resets` bump queues the deferred reload), with the settings-page test that covers the remove flow.
+  `resets` bump queues the deferred reload); no unit test covers the settings page's remove flow today.
   _Removes_: Reset permissions leaves a running plugin's capabilities.
 
 - **B3. The pair cache keeps a pair that shares a translation** (_small_, `translation.md`).
@@ -202,7 +205,10 @@ Every slice is independent of the others' code unless listed here; the shared fi
      the dev server.
   4. `src/ts/platform.ts` exports the flag next to `isNodeServer`; `aiLawApplies` returns it and loses its
      TODO. `aiWatermarkingLawApplies`, `addMetadataToElement`, `encodeMetadata` and `countriesWithAiLaw`
-     are deleted with their callers' branches; `src/ts/tests/globalApiMock.ts` (~63–64) follows.
+     are deleted with their callers' branches; `src/ts/tests/globalApiMock.ts` (~63–64), the typed parser
+     double in `src/ts/tests/bootMocks.ts` (~176) and the renderer test mocks that name
+     `addMetadataToElement` (`ChatBody.svelte.test.ts`, `ChatBody.assets.svelte.test.ts`, `Chat.test.ts`,
+     `Chat.draft.test.ts` under `src/lib/ChatScreens/`) follow.
   5. Docs: the environment list in `self-host-server.md` (~37) and the README's run section gain the
      variable; `global-api.md`'s Issue (~138) becomes a Limitation ("the disclosure is off unless the
      operator sets `RISU_AI_DISCLOSURE`; upstream shows it unconditionally", owner, 2026-11-08);
@@ -212,8 +218,9 @@ Every slice is independent of the others' code unless listed here; the shared fi
      `requestInfoInsideChat`; with `RISU_AI_DISCLOSURE=1`, all three show; the index page's ETag differs
      between the two settings; the dev server behaves the same from the shell's environment.
      _Test_: `server/src/tests/app.test.ts` (the injected script and the ETag under both settings, a 304 only
-     when the flag is unchanged); a `globalApi` unit test for `aiLawApplies` reading the page flag. No test
-     mounts `DefaultChatScreen` or the disclaimer today, so the three sites are the browser check below.
+     when the flag is unchanged); a `globalApi` unit test for `aiLawApplies` reading the page flag. Only
+     `DefaultChatScreen.drafts.test.ts` mounts the real screen today and no test mounts the disclaimer, so
+     the three sites are the browser check below.
      _Removes_: Chat disclosure and watermark checks return constants.
 
 ### D. Structured Memory
