@@ -31,7 +31,8 @@
 //
 // `--report` exits 0 whatever it finds and prints
 //   - a table of the guides: bytes, headroom under the guide budget, `###` headings, largest leaf, items over the
-//     length budget, parenthesis depth, unresolved links;
+//     length budget, parenthesis depth, unresolved links, and stale identifiers (names in code spans that are a
+//     whole word of no source file, from `util/docsLedger.mjs`'s `--stale` scan, listed by `pnpm docs:ledger --stale`);
 //   - the `##` and `###` sections of each file with their bytes and own bytes;
 //   - each finding as `path:line`: long items, deep parentheses, unresolved links, section order, hazard
 //     headings, self-links, labels;
@@ -692,7 +693,7 @@ function table(rows) {
     );
 }
 
-function guideRow(guide) {
+function guideRow(guide, stale = null) {
     return [
         guide.path,
         guide.bytes,
@@ -706,14 +707,19 @@ function guideRow(guide) {
         guide.maxParenDepth,
         guide.deepSegments.length,
         guide.unresolvedLinks.length,
+        ...(stale ? [stale.get(guide.path) ?? 0] : []),
     ];
 }
 
-/** The report for a `measureDocs` result, ending in the guide totals. */
-export function formatReport(measure) {
+/**
+ * The report for a `measureDocs` result, ending in the guide totals. `stale`, a `staleIdentifiers` result from
+ * `util/docsLedger.mjs`, adds a stale-identifier column and total; without it the report has neither.
+ */
+export function formatReport(measure, stale = null) {
     const { guides, index, totals } = measure;
     const files = [...guides, index];
     const lines = [];
+    const staleByPath = stale ? new Map(stale.guides.map((guide) => [guide.rel, guide.stale.length])) : null;
     const header = [
         "guide",
         "bytes",
@@ -727,9 +733,10 @@ export function formatReport(measure) {
         "parens",
         `depth>${PAREN_DEPTH_BUDGET}`,
         "unresolved",
+        ...(staleByPath ? ["stale"] : []),
     ];
     const byBytes = [...guides].sort((a, b) => b.bytes - a.bytes || (a.path < b.path ? -1 : 1));
-    const rows = table([header, ...byBytes.map(guideRow), guideRow(index)]);
+    const rows = table([header, ...byBytes.map((guide) => guideRow(guide, staleByPath)), guideRow(index, staleByPath)]);
     const [head, ...body] = rows;
     lines.push("[check:docs] Guides", `  ${head}`);
     lines.push(...body.slice(0, -1).map((row) => `  ${row}`), "", `  ${body.at(-1)}`, "");
@@ -823,6 +830,12 @@ export function formatReport(measure) {
         `[check:docs] self-links: ${totals.selfLinks}`,
         `[check:docs] labels: ${totals.labels}`,
     );
+    if (stale) {
+        lines.push(
+            `[check:docs] stale identifiers, ${INDEX_DOC} included (names in code spans in no source file; ` +
+                `pnpm docs:ledger --stale lists them): ${stale.stale} of ${stale.checked}`,
+        );
+    }
     return `${lines.join("\n")}\n`;
 }
 
@@ -835,7 +848,11 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const measure = measureDocs(root);
     if (args.length > 0) {
-        process.stdout.write(formatReport(measure));
+        // Imported here, not at the top: `docsLedger.mjs` imports this module, and a top-level await on that cycle
+        // never settles while this module is the entry.
+        import("./docsLedger.mjs").then(({ staleIdentifiers }) => {
+            process.stdout.write(formatReport(measure, staleIdentifiers(root)));
+        });
     } else {
         const findings = checkDocs(measure);
         const output = formatCheck(findings, nearTarget(measure), measure.totals.treeBytes);

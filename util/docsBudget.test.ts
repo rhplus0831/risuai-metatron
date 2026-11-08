@@ -319,4 +319,25 @@ describe("documentation budgets", () => {
         expect(totals).toContain("[check:docs] unresolved links: 1\n");
         expect(totals).toMatch(/\[check:docs\] labels: 0\n$/);
     });
+
+    it("adds a stale-identifier column and total to the report only when given a stale scan", () => {
+        const measure = measureDocs(tree({ [GUIDE]: guide({ Scope: "`someFact`" }) }));
+        const plain = formatReport(measure);
+        expect(plain).not.toMatch(/^\s+guide\s.*\sstale$/m);
+        expect(plain).not.toContain("stale identifiers");
+        const stale = {
+            guides: [{ rel: GUIDE, checked: 3, stale: [{ id: "someFact", section: "Scope", line: 4 }] }],
+            checked: 3,
+            stale: 1,
+            files: 2,
+        };
+        const report = formatReport(measure, stale);
+        expect(report).toMatch(/^\s+guide\s+bytes\s.*\sunresolved\s+stale$/m);
+        expect(report).toMatch(/^  docs\/structure\/example\.md\s.*\s1$/m);
+        expect(report).toMatch(/^  STRUCTURE\.md\s.*\s0$/m);
+        expect(report).toContain(
+            "[check:docs] stale identifiers, STRUCTURE.md included (names in code spans in no source file; " +
+                "pnpm docs:ledger --stale lists them): 1 of 3\n",
+        );
+    });
 });

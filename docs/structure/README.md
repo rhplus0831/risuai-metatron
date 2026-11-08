@@ -55,6 +55,9 @@ prefix. Indexes and READMEs have a free outline.
    repository paths in code spans, the guide outline, budgets, and the ownership manifest. It expands braces and globs
    for path checks and allows git-ignored runtime paths. Verify identifiers and bare file names in source. Run
    `pnpm check:tests` after changing the slow-test table.
+6. A guide whose `pnpm docs:ledger --stale` count rises, or that has gathered many commits since it was last read
+   against the code, is due a read-and-verify pass: one session, section by section against the source, fixing what
+   drifted and recording the rest in the issue inbox. There is no whole-tree pass.
 
 ## Size limits
 
