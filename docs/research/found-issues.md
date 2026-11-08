@@ -9,13 +9,13 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (11)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (10)
 - [Server routes and resource store](#server-routes-and-resource-store) (10)
 - [LLM requests and providers](#llm-requests-and-providers) (14)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (8)
 - [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (27)
+- [Client and plugins](#client-and-plugins) (26)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (9)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (1)
@@ -114,16 +114,6 @@ The no-memory trim question (aad461e63, 2026-10-11; `server/src/prompt/runner.ts
 
 **Why it matters:** long HypaV3 chats re-add every summary chunk per send.
 **Suggested handling:** build a map by content once after `addText`.
-
-### The push send cap comment says four waiting
-
-`server/src/push/pushService.ts` documents `MAX_PENDING_SENDS = 4` (~35) as "Completions waiting behind the one being delivered", but `send` (~632) counts a send in `pending` from before it is chained until its `finally`, so the cap includes the delivery in flight: at most three wait behind one active send. The module header added on 2026-11-08 says "at most four pending sends", which matches the code; the constant's own comment does not. An earlier memory note recorded this nit as fixed by 2026-11-03, which the current wording contradicts. Found in the Module Headers run (2026-11-08).
-
-**Why it matters:** a reader of the constant expects five outstanding sends; comment-only unless the owner meant four waiting.
-
-**Suggested handling:** confirm the intended bound with the owner; if four in total, reword the constant's comment; if four waiting, let the check allow `MAX_PENDING_SENDS + 1`.
-
-**Decision (owner, 2026-11-08):** four in total: reword the constant's comment to match the code and the module header (at most four sends outstanding, the delivery in flight included).
 
 ### The context override comment is garbled
 
@@ -675,16 +665,6 @@ Three writers can leave a nested number field `NaN` or `null`, which the record 
 **Why it matters:** low impact (a debug aid), but the intended 10 s bound does not hold.
 
 **Suggested handling:** clear the timer after the body read.
-
-### moveRecordListItem clamps an out-of-range target
-
-`moveRecordListItem` in `src/ts/storage/records.svelte.ts` (~3000) is documented "Out-of-range indexes change nothing", but only `from` is range-checked; `to` is clamped (~3006), so `to = -1` or `to = length + 5` moves the item to the first or last slot. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** a caller trusting the comment (a drag reorder with a stale index) silently reorders a persisted record list.
-
-**Suggested handling:** decide whether the comment or the clamp is the intent; fix the comment if the clamp is wanted.
-
-**Decision (owner, 2026-11-08):** the comment is the contract: an out-of-range `to` changes nothing, with a test; the one caller (`botpreset.svelte` `movePreset`) range-checks already.
 
 ### selectLoreBookPage stores any number
 
