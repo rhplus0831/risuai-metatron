@@ -15,4 +15,22 @@ runs, or retires; a plan revised after its report gets a new one on its next run
 2026-11-04 design audit of five plans, which this folder's procedure grew out of, is in
 [manual-audit](../manual-audit/archive/plan-design-audit-2026-11-04.md).
 
+Each finding carries an id, its severity, the plan sentence it is about (section named, quoted),
+the code it was checked against (`file:line` and what the code does), and a suggested
+correction. A claim the auditor could not settle is `unverified`, never P1.
+
+## Re-check list
+
+Mechanisms an earlier plan got wrong, which every `full` audit checks again whenever the plan
+touches jobs, the feed, or the resource store, whatever the plan says about them. The auditor
+cites the current `file:line` for each. Add an entry when an audit finds a plan premise a later
+plan could repeat; drop one when the code no longer has the mechanism.
+
+- `patchMessage` closes an open generation fence.
+- Feed rows are measured whole against `MAX_FEED_PATCH_BYTES`.
+- `STORE_TABLES_SQL` runs only on a fresh database.
+- `sendText` counts any open socket as a delivery.
+
+The four above are the ones that fooled the 2026-11-04 plans.
+
 `pnpm check:docs` does not measure this folder; `pnpm format:check` does.
