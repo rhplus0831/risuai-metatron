@@ -8,29 +8,18 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (10)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (9)
 - [Server routes and resource store](#server-routes-and-resource-store) (10)
 - [LLM requests and providers](#llm-requests-and-providers) (14)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
-- [Display transform](#display-transform) (8)
-- [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (26)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (9)
+- [Display transform](#display-transform) (7)
+- [Chat screen and input](#chat-screen-and-input) (5)
+- [Client and plugins](#client-and-plugins) (24)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
 - [Test timing](#test-timing) (1)
-- [Structured Memory](#structured-memory) (1)
 
 ## Chat store, sync, and change feeds
-
-### Parked resends leak
-
-`src/ts/storage/chatStore.svelte.ts` `dropCharacterWork(id, false)` from `takeChatWork`'s absent-character sweep (~3505, the quarantined-create path) parks in-doubt resends (`parkResends`); no deletion acknowledgement or `forgetCharacter` ever comes for a character the server never had, so the entry stays until `seedChats` (boot) or a re-add of the same id, which would replay a harmless resend first. Accepted trade-off of open-bug-fixes slice A3 (landed on metatron 2026-10-19 via plan-runner), noted by its Fable reviewer. Still present 2026-10-21 (`parkedResends`, chatStore.svelte.ts ~180).
-
-**Why it matters:** tiny memory leak per session; a far-later same-id re-add sends one extra replay.
-
-**Suggested handling:** if it matters, drop parked resends once the adapter knows the abandoned character has no server incarnation and no unresolved create can still establish one, and also clean entries parked in an earlier cycle. `persisted` alone is not that proof: a removed character whose create answer was lost is resent while `persisted` lacks it (resourceSync.svelte.ts ~1387), and a same-id re-add still needs the preserved group ids (checked 2026-10-24). Parked payloads can hold whole chat snapshots, so the leak is not always tiny.
-
-**Decision (owner, 2026-11-08):** accepted; record in chat-store Known Hazards that a never-persisted character's parked resends stay until a same-id re-add or the next boot, bounded to resend-bearing chats of one session.
 
 ### Store subscriber throw queue
 
@@ -38,15 +27,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 **Why it matters:** a single bad subscriber (plugin or component) could silently freeze unrelated store notifications.
 **Suggested handling:** if store notifications mysteriously stop after an error, check for a throwing subscriber first; a fix would wrap subscribers or avoid svelte/store for hot paths.
-
-### Phase 6 review leftovers
-
-Raised in the Phase 6 slice 9b review (2026-10-07) and judged out of scope; narrowed by the Chat Store and Structured Memory Sweep's C1 (2026-11-06) to two refresh costs, after its other items moved to their guides' Known Hazards or were fixed. The own-save echo of an unloaded chat's list field costs one summary-list read, and a noticed loaded idle chat is read whole before the trim may evict it (`chatStore.svelte.ts`). The timings were not re-measured.
-
-**Why it matters:** each costs one avoidable read.
-**Suggested handling:** decide whether an own-save echo should install the acknowledged summary, and whether an idle refresh counts as recent use for the trim (the sweep plan's Deferred "Refresh and trim costs").
-
-**Decision (owner, 2026-11-08):** both costs accepted; record them in chat-store Known Hazards as one read each.
 
 ### Feed row text diffs hash the whole base per candidate
 
@@ -77,15 +57,6 @@ Raised in the Phase 6 slice 9b review (2026-10-07) and judged out of scope; narr
 
 **Why it matters:** with many or large tool definitions a send near the budget could be refused by the provider although the meter shows room.
 **Suggested handling:** measure with a real tool set and tokenizer; if the gap is real, charge an estimate of the schemas in the recheck (the token-counting follow-up group of the Deep Audit Fixes plan).
-
-### No-memory trim question gaps
-
-The no-memory trim question (aad461e63, 2026-10-11; `server/src/prompt/runner.ts` ~1086 compares `memoryTrimAck` with `supaMemoryOnCount`) shipped with gaps accepted at its review: the late removable-message cleanup in `assemblePrompt` (`v.removable`, `server/src/prompt/assemble.ts` ~2131), which runs after formatting, can still drop history without asking (offering "turn memory on" there would re-run memory and formatting mid-assembly); when the question goes unanswered (timeout or a lost owner) the job error the user sees is English, since the server has no localized channel for terminal errors; `supaMemory` turned on by a plugin (`setCharacter`) or a raw record write does not bump `supaMemoryOnCount`, so a chat's "don't ask again" survives it (Lua has no `supaMemory` setter); the dialog was never checked by hand. Identifiers re-checked 2026-11-03; kept in memory until then.
-
-**Why it matters:** a user can still see a silent trim or an English error from a feature meant to ask first.
-**Suggested handling:** raise when a silent trim or an English job error is reported; the cleanup gap needs a design, the other two are small.
-
-**Decision (owner, 2026-11-08):** the late removable cleanup and the English error on an unanswered question are accepted as memory Limitations; the plugin gap is closed (v3 `setCharacter` bumps `supaMemoryOnCount` on an off-to-on write) and narrows to raw record writes.
 
 ### The trim question counts blank history
 
@@ -390,15 +361,6 @@ Both sockets send `proto=1` (Incremental Chat Transport D4, Slice 2). The server
 **Why it matters:** users with display plugins and long chats may still see a round of raw rows before the retry, and a scope whose own charge is over the limit stays raw.
 **Suggested handling:** re-measure on a realistic large chat with handlers (`util/playwright/measureTransformLua.mjs` has the shape); if a scope alone still passes the limit on realistic chats, raise the limit or charge the transcript once per scope.
 
-### More than one transform chunk is in flight at a chat switch
-
-The Render Work Budget comparison run ([audit](../audit/render-work-budget-2026-11-05.md#acceptance-after-slices-14), 2026-11-05) met "no transform target sent after a switch" but not "in-flight ones at most one chunk": switching away 100 ms after all rows mounted left 1 / 2 / 4 `/api/transform` requests (1 / 45 / 171 targets) in flight at 30 / 150 / 600 rows. Every one had been sent before the switch and all but one ended `net::ERR_ABORTED` when the last subscriber left (`src/ts/parser/transformClient.ts`); at 600 rows unmounting the rows held the main thread for about 370 ms, so one 42-target request answered first and ran to completion. How many targets cross depends on where the switch falls in the send burst (the first after run: 0 / 49 / 78).
-
-**Why it matters:** the server still evaluates several chunks nobody will show after a switch on long chats; the cancellation arrives only after the unmount work.
-**Suggested handling:** owner decision whether the plan's one-chunk bound matters; if it does, cap the chunks in flight per chat, or abort a chat's transform subscriptions when the screen leaves the chat, before the rows unmount.
-
-**Decision (owner, 2026-11-08):** accepted; the acceptance is relaxed to "no target sent after the switch, crossing chunks cancelled at unmount", and cbs-rendering records that up to `MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT` chunks can cross a switch and are cancelled only after the unmount work on very long chats.
-
 ### A single combined paragraph is written back as HTML
 
 `src/ts/translator/translator.ts` `translateHTML`, the combineTranslation branch (~617, `node.innerHTML = sentences[0]`): the single-sentence case assigns `getNodetextToSentence`'s decoded text as HTML, while the multi-sentence case uses `textContent`. So `<p>&lt;b&gt;x&lt;/b&gt;</p>` becomes a real `<b>` before translation. Seen while doing the Found Issues Sweep's E3 (2026-11-05), not run in the app; whether a later sanitizer catches injected markup (`<img onerror>`) was not checked. Owner: translation.
@@ -450,15 +412,6 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 
 **Why it matters:** a regression in either path would pass the gate.
 **Suggested handling:** add coverage when `DefaultChatScreen` gets a mounted test harness (the Deep Audit Fixes bookmark-jump and translation-invalidation tests are waiting on the same harness), or when touching these paths.
-
-### An adopted server copy drops an open inline editor's unsaved text
-
-`src/lib/ChatScreens/Chats.svelte` mounts each row under a key that includes the message text, and `Chat.svelte` keeps an inline edit's `draft` in the component until Save (`setMessageText`). A server copy of the chat that changes an edited message's text (`applyRemoteChat`, from the live-update feed's change, the idle refresh of a stale chat, or since 2026-10-31 the completion-push read `refreshChatAfterPush`) therefore remounts that row and the typed text is gone: the chat store's local-work guards cover pending and in-flight mutations, not component drafts. Needs the inline editor (automatic popup editing off) and another device continuing or editing that same message meanwhile. Found by the Astra cross-layer review of the lost-job follow change (`/home/codex/review-reports/lost-job-follow-2026-10-31/astra-report.md`).
-
-**Why it matters:** a few lines of a correction typed on one device vanish without a notice when another device writes the same message.
-**Suggested handling:** register open editor drafts as refresh holds (the read waits until the editor closes, as pending work does), or keep drafts by chat and message id across the remount and show the changed base explicitly.
-
-**Decision (owner, 2026-11-08):** the premise is stale: rows have been keyed by message id since 224bc6aae (2026-10-14), so a remote text change reaches an open editor through `updateRow` and the typed draft survives. What remains is that Save then replaces the other device's text without a notice; fold that into chat-store's later-accepted-text-wins Limitation and delete this entry.
 
 ### The screenshot peak grows with the row count
 
@@ -587,29 +540,11 @@ Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it
 **Why it matters:** a `pluginStorage.getItem` value can come back without a field it was stored with; not prototype pollution.
 **Suggested handling:** define own properties (`Object.defineProperty` or a null-prototype object) in every bridge copy helper, and test a round trip through the guest bridge.
 
-### Fallback media object URLs outlive the blob cache
-
-Deferred by the Implementation Audit Fixes plan (2026-11-05): the fix needs a lifetime design on a fallback path. Without a capable controlling service worker, `getInlayObjectUrl` in `src/ts/process/files/inlays.ts` keeps every audio and video object URL in `mediaObjectUrls` (~544) for the page's life, so a blob the 64 MiB `blobCache` evicted stays retained (the audit's probe: nine 8 MiB items, 72 MiB held). The existing comment explains why revoking on blob-cache eviction breaks cached renders. This is the `mediaObjectUrls` part of the pinned-URL item in "Stop B leftovers". Source: [U1](../manual-audit/archive/asset-lifecycle-code-audit-2026-11-05.md#u1--fallback-audiovideo-object-urls-bypass-the-blob-caches-memory-bound).
-
-**Why it matters:** on a page no worker controls, media memory grows with every distinct item played, past the cache's budget.
-**Suggested handling:** a design of its own: track URL ownership by rendered media and cached HTML, and release unowned URLs under a byte budget.
-
-**Decision (owner, 2026-11-08):** accepted; record in assets Known Hazards that the fallback URLs live for the page and grow with the distinct media played, released by a reload.
-
 ### Duplicate plugin names can share a popup editor target
 
 Unconfirmed in the browser. `setPlugins` in `src/ts/storage/collectionStore.svelte.ts` accepts duplicate names. In `src/lib/Setting/Pages/PluginSettings.svelte`, an unkeyed row binds the textarea to `settings.plugins[i].realArg[arg]`, while `popupEditorContext` uses the plugin name and argument key. `TextAreaInput.svelte` checks the initial value, context and context revision before applying the draft.
 
 If another client swaps two same-name plugins with the same key and text while the popup is open, those checks can still match the row now at that index. To verify, apply the draft and inspect which plugin's stored argument changed. Traced on 2026-11-07 while moving the earlier UI guide note to [plugin settings](../structure/plugin-sandbox.md#issues).
-
-### pluginStorage.setItem changes non-JSON values without an error
-
-`src/ts/plugins/apiV3/v3.svelte.ts` `_setPluginStorage` (~3114) round-trips the value through JSON before `setOwnedPluginStorageItem` checks it, so a `Set`/`Map` is stored as `{}`, a typed array as an index object, a `Date` as a string, `NaN`/`Infinity` as `null`, and an `undefined` property is dropped; a `bigint` or a cycle throws, for example. The local-plugin path (`pluginSafeClass.ts`, `isJsonValue`) refuses those values instead. Current upstream JSON-serializes each plugin storage item too, so the result matches upstream; the contrast is the local-plugin path, which tells the plugin. Found 2026-11-07.
-
-**Why it matters:** a plugin that stores a `Set` or bytes reads back a different shape and fails later, away from the write.
-**Suggested handling:** decide whether v3 storage should refuse non-JSON values (as `isJsonValue` does) rather than convert them; plugins written against upstream may rely on the conversion.
-
-**Decision (owner, 2026-11-08):** keep the JSON conversion (upstream parity); record it as a plugin-sandbox Limitation beside the local-plugin path's refusal.
 
 ### Nested numeric settings can be stored as null
 
@@ -723,15 +658,6 @@ Left on purpose by slice P2 of the RisuNest Small Wins plan (ed9d207c5, 2026-10-
 **Why it matters:** a first run on a fresh tree can report a protocol failure that is the dev server's reload.
 **Suggested handling:** if it recurs, have the driver wait for Vite's optimization to settle before the case (`openApp` already answers the prompt again after a reload), or run the dev stack once before the cases.
 
-### A chat-open suggestion request bumps the chat revision
-
-`src/lib/ChatScreens/Suggestion.svelte` `requestSuggestions`: with `useAutoSuggestions` on, opening a chat without suggestions requests them and stores the answer through `setChatMeta`. That write moves the chat's revision, which is part of the transform key (`server/src/prompt/transform.ts` `baseKey`), so the rows just rendered miss the cache on the next return to the chat: full answers instead of `same`, and a `{{random}}` row changes its text. Seen in an `e2e/serverTransform.spec.ts` trace on 2026-10-30, when `perChatSends` left the setting on; not checked by hand. An empty answer over a chat with no suggestions no longer writes, so what is left is a real answer.
-
-**Why it matters:** with auto suggestions on, the first return to a chat after new suggestions downloads and re-runs what the tab already holds.
-**Suggested handling:** decide whether a non-render chat field such as `suggestMessages` should move the transform key at all; the chat revision is also the key's fence against mixed-revision results, so this needs its own design.
-
-**Decision (owner, 2026-11-08):** accepted; record in cbs-rendering's transform cache Known Hazards that a chat write the render does not read (an auto-suggestion save) costs one re-render on the next visit.
-
 ### check:docs does not measure blockquoted items
 
 `util/docsBudget.mjs` `parseGuide`: `LIST_MARKER` (:54) does not see a list item behind `> `, so `> - <601 characters>` becomes a paragraph, and the length rule skips paragraphs. Found by the Guide Budgets slice 7 challenger.
@@ -788,20 +714,3 @@ Untagged gate tests that depend on real wall-clock or scheduler time (invariant 
 
 **Why it matters:** each is a load-sensitive failure waiting for a slow CI runner; the timing plans' policy (`docs/structure/test-harness.md` `Tests`) asks for controlled clocks or the `slow` tag.
 **Suggested handling:** when one of these files is next touched, control its clock (inject the deadline or fake the timers) or tag the case `slow`; `pnpm --silent test:agent --slow-tests` lists the ones over 1 s.
-
-## Structured Memory
-
-Moved from the Structured Memory plan run on 2026-11-03 and re-checked against the run's last tree that day; the guides' Known Hazards hold the limits the owner accepted, so they are not repeated here.
-
-### Evaluation findings
-
-Measured by slice 8 on scripted fixtures (`docs/audit/structured-memory-2026-11-03.md`); Q2 stays open until a real A/B. The sweep plan's B8 bounded `readHealth`, and `addText`'s quadratic scan is gone (a set since 2a8e9fdd1); the rest are the plan's Deferred groups.
-
-- `selectMemory` takes 520–584 ms on a 1,000-turn send, mostly tokenizing (296–356 ms) and cache reads. The sweep plan's B10 tried counting each text once per selection (de9e9ed21, reverted in 2a0f07213): only 9 of about 2,190 counts per send were repeats and the time did not drop. The rest are distinct history entries `assemble.ts` already counted for `currentTokens`, so the gain needs `selectMemory` to reuse those counts.
-- `getChatFromIndex` over 67 or more loaded chats spends the shared per-IP authenticated bucket, and a neighbour route was refused until the reset (loopback surrogate only). The bucket is now 2,000 a minute (`server/src/app.ts`), so this is cost, not a near refusal: coalesce adjacent refreshes into one revisions batch.
-- At a 16k context the `threads` lane starves once events carry three quotes, and a two-event comparison loses one event in a long chat, also at 32k.
-
-**Why it matters:** cost previews people pay by, and stalls on long chats.
-**Suggested handling:** take each as a proposal when Structured Memory is next touched, and re-run `node util/memoryEval.mjs` after a read-path change.
-
-**Decision (owner, 2026-11-08):** raise `MEMORY_CALL_OVERHEAD_TOKENS` to 3,000 (the preview is better high than low); move the `selectMemory` time, the bucket cost and the small-context starvation into the structured-memory guides' Known Hazards with their numbers; and take the checkpoint hold as a follow-up slice that strips `input` and `patchInput` from every run except the newest unrecorded one, after tracing the whole-row readers (snapshots, the package, copies). The second audit proposal (one JSON encoding less) stays out: a checkpoint format change.
