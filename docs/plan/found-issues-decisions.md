@@ -59,7 +59,8 @@ Every slice is independent of the others' code unless listed here; the shared fi
   and the v3 setter in `v3.svelte.ts`, B2 `plugins.svelte.ts` and the settings page (not `v3.svelte.ts`,
   and no new export, so not `bootMocks.ts`), B3 `translator.ts`, B4 `pushService.ts` and
   `records.svelte.ts`, C1 `server/src/app.ts`, `staticCache.ts`, `vite.config.ts`, `platform.ts`,
-  `globalApi.svelte.ts`, the parser, the three disclosure components and the mocks named in C1
+  `globalApi.svelte.ts`, the parser, `ChatBody.svelte` (the watermark's one caller), the three disclosure
+  components and the mocks named in C1
   (`globalApiMock.ts`, `bootMocks.ts`, four `src/lib/ChatScreens/` tests), D1 `shared/structuredMemory.ts`,
   D2 `structured/writer.ts` and its commit paths, the probe in
   `server/src/tests/fixtures/memory/structured/measure.ts` and, if the after-measurement needs it,
@@ -125,7 +126,9 @@ Every slice is independent of the others' code unless listed here; the shared fi
   including a plugin provider that returns a stream anyway.
   _Test_: the server's outer-loop harness in `server/src/tests/llmCharsetRetries.test.ts` (not
   `llmServices.test.ts`, which covers redaction, Vertex tokens and the warmer) and
-  `src/ts/process/request/tests/transport.test.ts`: an escape case with `forceStreaming: true`, and an
+  `src/ts/process/request/tests/requestPresetScope.test.ts` (it drives the real `requestChatData` with a
+  provider and replacer harness; `transport.test.ts` calls `requestServer` directly and bypasses the escape
+  loop), its escape assertion on real escaping rather than the identity mock: an escape case with `forceStreaming: true`, and an
   escape case whose attempt answers `streaming` comes back as an escaped `success`.
   _Removes_: `escape` loses to `forceStreaming`.
 
@@ -259,7 +262,9 @@ Every slice is independent of the others' code unless listed here; the shared fi
      the dev server.
   4. `src/ts/platform.ts` exports the flag next to `isNodeServer`; `aiLawApplies` returns it and loses its
      TODO. `aiWatermarkingLawApplies`, `addMetadataToElement`, `encodeMetadata` and `countriesWithAiLaw`
-     are deleted with their callers' branches; `src/ts/tests/globalApiMock.ts` (~63–64), the typed parser
+     are deleted with their callers' branches (`src/lib/ChatScreens/ChatBody.svelte` ~28, ~567, ~573: drop
+     the import and both wrappers, keeping the sanitization and `pruneEmptyBilingualPairs`);
+     `src/ts/tests/globalApiMock.ts` (~63–64), the typed parser
      double in `src/ts/tests/bootMocks.ts` (~176) and the renderer test mocks that name
      `addMetadataToElement` (`ChatBody.svelte.test.ts`, `ChatBody.assets.svelte.test.ts`, `Chat.test.ts`,
      `Chat.draft.test.ts` under `src/lib/ChatScreens/`) follow.
