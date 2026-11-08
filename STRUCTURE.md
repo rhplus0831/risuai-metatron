@@ -35,10 +35,10 @@ server. Start with the task or source path you have.
 ### Verification
 
 - V1. After the last source edit, run `pnpm check` or `pnpm check:changed` and the full `pnpm --silent test:agent` gate.
-  A test file added or edited after that run gets `pnpm check` again (Vitest does not type-check) and a run of its own
-  file, not another gate. While iterating, pass affected files or directories to the wrapper. Also run affected slow
-  tests and browser specs, and `pnpm build` for build changes. Agents use the wrapper and leave `HUMAN` unset. See the
-  [test commands and flags](docs/structure/test-harness.md#recipes).
+  A test file edited after that run gets `pnpm check` again (Vitest does not type-check) and its own run, not another
+  gate. While iterating, pass affected files or directories to the wrapper. Also run affected slow tests and browser
+  specs, and `pnpm build` for build changes. Agents use the wrapper and leave `HUMAN` unset, except for a command the
+  wrapper cannot run (listing tests, a flag it lacks). See the [test commands](docs/structure/test-harness.md#recipes).
 - V2. Unit tests are `*.test.ts`, colocated or in a sibling `tests/` directory. Vitest defaults to happy-dom. Server
   tests select Node. Domain guides name focused tests and gaps. The [test harness](docs/structure/test-harness.md) owns
   setup, mocks, and the network guard.

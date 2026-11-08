@@ -32,7 +32,9 @@ codes; the entries name the role and the identifiers to look up.
 - `util/requireHuman.mjs` `requireHuman(command)`: the gate of `pnpm test`, `test:slow`, `test:all`, `test:e2e`, and a
   direct `vitest` run, open when `CI`, `HUMAN`, or `AGENT_TEST` is set. `vitest.config.ts` calls it at load, so an
   editor's Vitest extension needs `HUMAN` in its environment.
-- Agents use the wrapper and do not set `HUMAN` or `AGENT_TEST` themselves to bypass this convention.
+- Agents use the wrapper and do not set `HUMAN` or `AGENT_TEST` themselves to bypass this convention. The one exception
+  is a command the wrapper cannot run (`HUMAN=1 pnpm exec vitest list`, a reporter or flag it lacks); a test run, whole
+  suite or filtered, always goes through the wrapper.
 
 ### Vitest config and setup
 
