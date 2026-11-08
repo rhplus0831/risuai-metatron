@@ -1762,6 +1762,142 @@ describe("generation ownership handoffs", () => {
         expect(h.handoffs.at(-1)).toEqual({ type: "handoff", ...offer, state: "closed" });
     });
 
+    it("replaces a preferred offer with an absent offer ten seconds after the owner leaves", async () => {
+        const h = await live({ preferred: true });
+        const creator = await h.follow(h.job.id);
+        await creator.fence();
+        const preferred = {
+            epoch: h.store.epoch(),
+            jobId: h.job.id,
+            characterId: "c",
+            chatId: "k",
+            state: "open",
+            reason: "preferred",
+        };
+        const absent = { ...preferred, reason: "absent" };
+
+        await vi.advanceTimersByTimeAsync(10_001);
+        expect(h.handoffs).toEqual([{ type: "handoff", ...preferred }]);
+        expect(h.jobs.handoffSnapshot()).toEqual([preferred]);
+        await creator.close();
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(h.handoffs).toEqual([{ type: "handoff", ...preferred }]);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(h.handoffs).toEqual([
+            { type: "handoff", ...preferred },
+            { type: "handoff", ...preferred, state: "closed" },
+            { type: "handoff", ...absent },
+        ]);
+        expect(h.jobs.handoffSnapshot()).toEqual([absent]);
+    });
+
+    it("counts an untargeted request's absent deadline from owner absence even when requested later", async () => {
+        const h = await live();
+        const creator = await h.follow(h.job.id);
+        await creator.fence();
+        await creator.close();
+        await vi.advanceTimersByTimeAsync(4_000);
+        const requested = {
+            epoch: h.store.epoch(),
+            jobId: h.job.id,
+            characterId: "c",
+            chatId: "k",
+            state: "open",
+            reason: "requested",
+        };
+        const absent = { ...requested, reason: "absent" };
+        expect(h.offer()).toEqual({ ok: true, body: { offered: true } });
+
+        await vi.advanceTimersByTimeAsync(5_999);
+        expect(h.handoffs).toEqual([{ type: "handoff", ...requested }]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(h.handoffs).toEqual([
+            { type: "handoff", ...requested },
+            { type: "handoff", ...requested, state: "closed" },
+            { type: "handoff", ...absent },
+        ]);
+        expect(h.jobs.handoffSnapshot()).toEqual([absent]);
+    });
+
+    it.each(["preferred", "requested"] as const)(
+        "reopens an expired %s ticket as absent after the owner-absence deadline",
+        async (reason) => {
+            const h = await live({ preferred: reason === "preferred" });
+            const creator = await h.follow(h.job.id);
+            await creator.fence();
+            if (reason === "requested") expect(h.offer()).toEqual({ ok: true, body: { offered: true } });
+            const offer = {
+                epoch: h.store.epoch(),
+                jobId: h.job.id,
+                characterId: "c",
+                chatId: "k",
+                state: "open",
+                reason,
+            };
+            const absent = { ...offer, reason: "absent" };
+            await creator.close();
+            await vi.advanceTimersByTimeAsync(5_000);
+            expect(h.ticket()).toEqual(expect.any(String));
+            const reserved = [
+                { type: "handoff", ...offer },
+                { type: "handoff", ...offer, state: "closed" },
+            ];
+
+            // The claim survives the absent deadline at 10 s, until ticket expiry at 15 s.
+            await vi.advanceTimersByTimeAsync(9_999);
+            expect(h.handoffs).toEqual(reserved);
+            expect(h.jobs.handoffSnapshot()).toEqual([]);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(h.handoffs).toEqual([...reserved, { type: "handoff", ...absent }]);
+            expect(h.jobs.handoffSnapshot()).toEqual([absent]);
+        },
+    );
+
+    it.each(["preferred", "requested"] as const)(
+        "reopens an expired %s ticket with its reason before the deadline and turns it absent on time",
+        async (reason) => {
+            const h = await live({ preferred: reason === "preferred" });
+            const creator = await h.follow(h.job.id);
+            await creator.fence();
+            if (reason === "requested") expect(h.offer()).toEqual({ ok: true, body: { offered: true } });
+            const offer = {
+                epoch: h.store.epoch(),
+                jobId: h.job.id,
+                characterId: "c",
+                chatId: "k",
+                state: "open",
+                reason,
+            };
+            const absent = { ...offer, reason: "absent" };
+            expect(h.ticket()).toEqual(expect.any(String));
+            const reserved = [
+                { type: "handoff", ...offer },
+                { type: "handoff", ...offer, state: "closed" },
+            ];
+            await vi.advanceTimersByTimeAsync(5_000);
+            await creator.close();
+
+            // Ticket expiry at 10 s precedes the absent deadline at 15 s.
+            await vi.advanceTimersByTimeAsync(4_999);
+            expect(h.handoffs).toEqual(reserved);
+            expect(h.jobs.handoffSnapshot()).toEqual([]);
+            await vi.advanceTimersByTimeAsync(1);
+            const reopened = [...reserved, { type: "handoff", ...offer }];
+            expect(h.handoffs).toEqual(reopened);
+
+            await vi.advanceTimersByTimeAsync(4_999);
+            expect(h.handoffs).toEqual(reopened);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(h.handoffs).toEqual([
+                ...reopened,
+                { type: "handoff", ...offer, state: "closed" },
+                { type: "handoff", ...absent },
+            ]);
+            expect(h.jobs.handoffSnapshot()).toEqual([absent]);
+        },
+    );
+
     it("replaces an unclaimed targeted request with an absent offer ten seconds after the owner leaves", async () => {
         const h = await live();
         const creator = await h.follow(h.job.id);

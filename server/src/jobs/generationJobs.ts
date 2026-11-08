@@ -1112,7 +1112,10 @@ export function createGenerationJobs(options: {
         publishOffer(job.offer);
     }
 
-    /** A targeted request gets an offer-delay window from the later of its opening or owner absence. */
+    /**
+     * An open offer turns absent one offer delay after owner absence; a targeted request counts
+     * from the later of its opening or owner absence.
+     */
     function absentOfferAt(job: Job, offer: HandoffOffer | null): number | null {
         if (job.ownerAbsentSince === null) return null;
         const since =
@@ -1123,16 +1126,16 @@ export function createGenerationJobs(options: {
     }
 
     /**
-     * Callers refresh owner liveness before releasing the claim. An overdue targeted request
-     * reopens directly as absent; an earlier release keeps the original request's deadline.
+     * Callers refresh owner liveness before releasing the claim. Any offer past its absent deadline
+     * reopens directly as absent; an earlier release keeps its reason, target, and deadline.
      */
     function reopenOffer(job: Job, offer: HandoffOffer) {
         const absentAt = absentOfferAt(job, offer);
         const absentDue = absentAt !== null && clock() >= absentAt;
         if (canHandoff(job)) {
-            if (offer.reason === "requested" && offer.target && absentDue) {
+            if (absentDue) {
                 openOffer(job, "absent");
-            } else if (offer.reason !== "absent" || absentDue) {
+            } else if (offer.reason !== "absent") {
                 openOffer(job, offer.reason, offer.target);
             }
         }
@@ -1150,15 +1153,16 @@ export function createGenerationJobs(options: {
     }
 
     /**
-     * An unclaimed targeted request becomes absent one offer delay after the later of its opening
-     * or owner absence. Other open offers stay unchanged; tickets and pending takeovers keep their
-     * claim. Timers only wake checks; absence starts at the effective removal time, even if detected late.
+     * With no offer, or an unclaimed preferred or requested one, an absent offer opens one offer
+     * delay after owner absence; a targeted request counts from the later of its opening or owner
+     * absence. Tickets and pending takeovers keep their claim. Timers only wake checks;
+     * absence starts at the effective removal time, even if detected late.
      */
     function armOffer(job: Job) {
         if (job.offerTimer) clearTimeout(job.offerTimer);
         job.offerTimer = null;
         if (!canHandoff(job) || job.ownerAbsentSince === null || job.ticket || job.pendingTakeover) return;
-        if (job.offer && (job.offer.reason !== "requested" || !job.offer.target)) return;
+        if (job.offer?.reason === "absent") return;
         const remaining = absentOfferAt(job, job.offer)! - clock();
         if (remaining <= 0) {
             openOffer(job, "absent");

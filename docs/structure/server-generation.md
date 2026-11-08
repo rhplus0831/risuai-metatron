@@ -202,9 +202,10 @@ Rules: the comments of `participantJob`, `attach`, `switchOwner`, `takeover`, `a
 
 - A job keeps its creator (`clientId`: receipts, `owned`, device notices) and gains a current owner (`ownerClientId`:
   callbacks, lanes). Only owner sockets answer and count for `ownerAttached` (MCP included).
-- Offers go on the live-update feed (`HandoffOffer`); an unclaimed targeted one turns `absent` after owner absence. A
-  ticketed attach takes one; the switch waits until nothing delivered to the old owner is outstanding, and the old
-  owner's sockets become viewers. An owner's own ticket reattaches it; role events name the owner (`clientName`).
+- Offers go on the live-update feed (`HandoffOffer`); any unclaimed open offer turns `absent` one offer delay after
+  owner absence (a targeted request counts from the later of its opening and the absence). A ticketed attach takes one;
+  the switch waits until nothing delivered to the old owner is outstanding, and the old owner's sockets become viewers.
+  An owner's own ticket reattaches it; role events name the owner (`clientName`).
 - `skipped` reaches only the late-replay recipient; `done.missed` lists delivered `chatOutput` callbacks that settled
   `disconnected`.
 
