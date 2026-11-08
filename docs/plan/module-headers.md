@@ -4,7 +4,7 @@ Status: drafted 2026-11-08, after the owner retired the whole-tree byte gate (`f
 (`0c137ab45`). Decisions D1–D10 are recommendations for the owner; the **Open questions** Q1–Q4 were answered on
 2026-11-08 with their recommended options (persistence joins, server-generation does not; no tests per slice; no
 cap on found issues, one sweep after; pairs). Measurements are at `0c137ab45` on `dev`; re-run the commands under
-**Current state** before a slice starts (STRUCTURE.md protocol step 5). Landed: 1 (`b786a0938`), 2 (`ca958b7ec`), 4 (`28b6c54fe`).
+**Current state** before a slice starts (STRUCTURE.md protocol step 5). Landed: 1 (`b786a0938`), 2 (`ca958b7ec`), 3 (`19d1327fd`), 4 (`28b6c54fe`).
 
 Sources: the owner's 2026-11-08 decision not to run a second Guides To Source pass (the `Files` sections are already
 path, role, and identifier pointers: 475 of 807 named source paths carry a module header, 8,106 of 9,796 exports a doc
