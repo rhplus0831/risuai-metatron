@@ -19,6 +19,7 @@ import {
     type StructuredMemoryHighlightKind,
     type StructuredMemoryHighlightMode,
     type StructuredMemoryPageTool,
+    memorySourceText,
 } from "../../../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../../../shared/valueKinds.ts";
 import type { MemoryChanges } from "../../../data/memoryStore.ts";
@@ -279,7 +280,7 @@ function castRow(page: MemoryPage): CastRow {
 export function castSlice(pages: readonly MemoryPage[], messages: readonly Pick<Message, "data">[]): CastRow[] {
     const scene = pages.find(({ type }) => type === "scene");
     const listed = pages.filter((page) => page !== scene);
-    const texts = messages.map(({ data }) => data);
+    const texts = messages.map(({ data }) => memorySourceText(data));
     const present = new Set(scene?.participants ?? []);
     const picked = new Set([
         ...listed.filter(({ contextMode }) => contextMode === "always"),

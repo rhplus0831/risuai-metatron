@@ -73,11 +73,12 @@ Loading a checkpoint starts no work: a restored `rerecord` mark [waits for a pre
 
 ### Retraction and edits
 
-`applyGroup` classifies confirmed removals as `retracted` and edits to `role`, `data` or `saying` as `rewritten`;
-`onMessagesChanged` delivers the notice after the chat transaction commits. `app.ts` wires it to
-`reconcileMessageChanges`, whose header owns the record reaction and thread/section effects. Memory reconciliation is a
-separate write: a crash between the chat commit and its notice leaves the event readable as `missing` or `changed` for a
-later repair.
+`applyGroup` classifies confirmed removals as `retracted` and raw edits to `role`, `data` or `saying` as `rewritten`;
+the reaction marks a citing event only when the message no longer hashes as its stored source version read it, so a
+markup-only write leaves a version 3 event unmarked and marks a version 1 or 2 one; `onMessagesChanged` delivers the
+notice after the chat transaction commits. `app.ts` wires it to `reconcileMessageChanges`, whose header owns the record
+reaction and thread/section effects. Memory reconciliation is a separate write: a crash between the chat commit and its
+notice leaves the event readable as `missing` or `changed` for a later repair.
 
 For a user-confirmed delete, `removeAfterAsking` checks coverage and asks before carrying `retract` through the save;
 the chat store guide owns its save and lock checks. `/cut`, `/del`, `runMultisend`, rerolls, scripts, server triggers

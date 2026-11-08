@@ -1593,6 +1593,10 @@ export function createChatTables(
     const sumMessageBytes = db.prepare(
         "SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM messages WHERE chatSeq = ?",
     );
+    /** Point lookups of the named messages of one chat, driven by the id list (`TOUCHED_ROWS_SQL`). */
+    const selectNamedMessages = db.prepare(
+        "SELECT m.id, m.data FROM json_each(?) r CROSS JOIN messages m ON m.chatSeq = ? AND m.id = r.value",
+    );
     const selectOrderBytes = db.prepare("SELECT octet_length(ids) AS bytes FROM chatOrders WHERE characterId = ?");
     const sumCharacterMetaBytes = db.prepare(
         "SELECT COALESCE(SUM(octet_length(meta)), 0) AS bytes FROM chats WHERE characterId = ?",
@@ -3021,6 +3025,22 @@ export function createChatTables(
             if (!row || tokens.token(row.seq, row.revision) !== revision) return 0;
             const messages = sumNamedMessageBytes.get(row.seq, JSON.stringify(messageIds)) as { bytes: number };
             return messages.bytes + (meta.length > 0 ? row.bytes : 0);
+        },
+
+        /**
+         * The chat's stored messages among `messageIds`, by id: one point lookup each, and no other row is
+         * read. An id the chat does not hold, or a chat that does not exist, is left out.
+         */
+        readMessagesById(characterId: string, chatId: string, messageIds: readonly string[]): Map<string, Message> {
+            const found = new Map<string, Message>();
+            const row = selectChatRevision.get(characterId, chatId) as Pick<ChatRow, "seq"> | undefined;
+            if (!row || messageIds.length === 0) return found;
+            const rows = selectNamedMessages.all(JSON.stringify([...new Set(messageIds)]), row.seq) as {
+                id: string;
+                data: string;
+            }[];
+            for (const { id, data } of rows) found.set(id, readMessage(data));
+            return found;
         },
 
         /** How many of the chat's messages have the user role, or null when it does not exist (no message row read). */

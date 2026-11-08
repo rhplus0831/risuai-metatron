@@ -14,6 +14,7 @@ import {
     memoryThreadEnded,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     type StructuredMemoryDefaultPromptsAnswer,
+    memorySourceText,
 } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryEventWrite } from "../../../data/memoryStore.ts";
 import type { MemoryHost } from "../host.ts";
@@ -257,8 +258,11 @@ Section:
 {{slot::section}}<|im_end|>`;
 }
 
-/** A message's text as the prompt shows it: raw, so a quote can match, with inlays as `[Image]`. */
-const shownText = (message: Message) => message.data.replace(INLAY_TOKEN_REGEX, "[Image]");
+/**
+ * A message's text as the prompt shows it: `memorySourceText`, the text a v3 source hash reads and
+ * quotes are checked against, with inlays as `[Image]`.
+ */
+const shownText = (message: Message) => memorySourceText(message.data).replace(INLAY_TOKEN_REGEX, "[Image]");
 
 /** The last recorded event and the eligible messages before the window: what the model may read but not quote. */
 function previousSlot(input: AnalysisInput): string {
@@ -326,8 +330,8 @@ export function promptThreads(
 }
 
 /**
- * The slot values of one recording. Window text stays raw for quote verification, except that inlays
- * show as `[Image]`; filling after ChatML and CBS parsing prevents that text becoming prompt syntax.
+ * The slot values of one recording. Window text is `memorySourceText`, display markup removed, as quote
+ * verification reads it, except that inlays show as `[Image]`; filling after ChatML and CBS parsing prevents that text becoming prompt syntax.
  */
 export function analysisSlots(input: AnalysisInput): AnalysisSlots {
     return {

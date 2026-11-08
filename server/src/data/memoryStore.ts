@@ -12,8 +12,9 @@ import {
     MEMORY_RUN_RESULTS,
     MEMORY_SECTION_BUDGETS,
     MEMORY_THREAD_STATES,
+    memorySourceHashFields,
+    memorySourceHashOf,
     memorySourceHashVersion,
-    memorySourceSpeaker,
     projectHypaV3Data,
     reconcileMemoryEvents,
     storedMemorySources,
@@ -1316,17 +1317,16 @@ export function copyStagedMemory(db: DatabaseSync): void {
 }
 
 /**
- * What a `MemoryAnchoredSource` keeps as its `hash`: version 2 prefixes the SHA-256 of the message's
- * role, `data`, and normalized group speaker with `v2:`. A stored `like` retains its hash version:
- * version 1 is bare SHA-256 of role and `data`. JSON preserves field boundaries and lone surrogates.
- * Generation metadata, including `generationInfo` and receipts, stays outside the hash.
+ * What a `MemoryAnchoredSource` keeps as its `hash`: version 3 prefixes with `v3:` the SHA-256 of the
+ * message's role, `memorySourceText` of its `data` (display markup removed), and normalized group
+ * speaker. A stored `like` retains its hash version: version 2 (`v2:`) reads the raw `data` and the
+ * speaker, version 1 is bare SHA-256 of role and raw `data`. JSON preserves field boundaries and lone
+ * surrogates. Generation metadata, including `generationInfo` and receipts, stays outside the hash.
  */
 export function messageSourceHash(message: Pick<Message, "role" | "data" | "saying">, like?: string): string {
     const version = memorySourceHashVersion(like);
-    const fields =
-        version === 1 ? [message.role, message.data] : [message.role, message.data, memorySourceSpeaker(message)];
-    const hash = createHash("sha256").update(JSON.stringify(fields), "utf8").digest("hex");
-    return version === 1 ? hash : `v2:${hash}`;
+    const hash = createHash("sha256").update(memorySourceHashFields(message, version), "utf8").digest("hex");
+    return memorySourceHashOf(hash, version);
 }
 
 /** The last send's manifest: the newest context report with an `items` list, empty when that send included nothing. */

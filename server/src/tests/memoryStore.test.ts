@@ -862,7 +862,7 @@ it.each(["with memory tables", "without memory tables"])(
     },
 );
 
-it("hashes role, data and speaker with SHA-256 under version 2, keeps a stored version 1, and preserves field boundaries", () => {
+it("hashes role, stripped data and speaker with SHA-256 under version 3, keeps stored versions 1 and 2, and preserves field boundaries", () => {
     const message: Message = {
         role: "user",
         data: "The gate opens.",
@@ -870,9 +870,11 @@ it("hashes role, data and speaker with SHA-256 under version 2, keeps a stored v
     };
     const sha = (fields: unknown[]) => createHash("sha256").update(JSON.stringify(fields), "utf8").digest("hex");
     const hash = messageSourceHash(message);
-    expect(hash).toBe(`v2:${sha([message.role, message.data, null])}`);
+    expect(hash).toBe(`v3:${sha([message.role, message.data, null])}`);
     const v1 = sha([message.role, message.data]);
     expect(messageSourceHash(message, v1)).toBe(v1);
+    const v2 = `v2:${sha([message.role, message.data, null])}`;
+    expect(messageSourceHash(message, v2)).toBe(v2);
     expect(messageSourceHash({ ...message, generationInfo: { model: "second", outputTokens: 99 } } as Message)).toBe(
         hash,
     );
@@ -935,7 +937,7 @@ it("makes a version 2 event stale when only its source speaker changes", () => {
     expect(projectChatMemory([saved], messages).summaries).toEqual([]);
 });
 
-it("hashes absent and empty speakers alike and excludes generation metadata and receipts in both versions", () => {
+it("hashes absent and empty speakers alike and excludes generation metadata and receipts in every version", () => {
     const message = chat.message[0];
     const legacy = createHash("sha256")
         .update(JSON.stringify([message.role, message.data]), "utf8")
@@ -948,11 +950,29 @@ it("hashes absent and empty speakers alike and excludes generation metadata and 
             memory: { state: "recorded", runId: "run", pages: [], refused: [], unverified: [], warnings: [] },
         },
     };
-    for (const like of [undefined, legacy]) {
+    for (const like of [undefined, legacy, `v2:${legacy}`]) {
         const hash = messageSourceHash(message, like);
         expect(messageSourceHash({ ...message, saying: "" }, like)).toBe(hash);
         expect(messageSourceHash(receipted, like)).toBe(hash);
     }
+});
+
+it("keeps a version 3 hash when display markup is inserted, while stored versions 1 and 2 still read it as a change", () => {
+    const message: Message = { role: "char", data: "He opened the door.\n\nThe hall was dark.", saying: "member-a" };
+    const block =
+        '<div class="am-illustration-projection" data-am-slot-index="12"><span class="am-image">' +
+        '<img class="am-image__media" src="{{raw::한민재.__am__.chat.e6470a96}}" width="832" alt=""></span></div>';
+    const marked = { ...message, data: `He opened the door.\n\n${block}\n\nThe hall was dark.` };
+    const v3 = messageSourceHash(message);
+    expect(messageSourceHash(marked)).toBe(v3);
+    expect(messageSourceHash({ ...marked, data: marked.data.replace("dark", "lit") })).not.toBe(v3);
+    for (const like of [messageSourceHash(message, "legacy"), messageSourceHash(message, "v2:")]) {
+        expect(messageSourceHash(message, like)).toBe(like);
+        expect(messageSourceHash(marked, like)).not.toBe(like);
+    }
+    const event = { status: "active", sources: [{ messageId: "m", index: 0, hash: v3 }] } as const;
+    const [placed] = reconcileEvents([event as unknown as MemoryEvent], [{ ...marked, chatId: "m" }]);
+    expect(placed.status).toBe("active");
 });
 
 it("validates the final scene set atomically while allowing rewrites and replacement", () => {

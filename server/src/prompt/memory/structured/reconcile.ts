@@ -30,7 +30,8 @@ import type { WriterMemory } from "./writer.ts";
  * - A repair or confirmed delete also replays affected threads from surviving events, retiring an
  *   unsupported opening and preserving states the full history cannot explain (`withReconciledThreads`).
  * - A chat write reaches the records through `reconcileMessageChanges`: a delete a person confirmed
- *   retracts what cites the message, and an edit marks what cites it for a re-record. The citation
+ *   retracts what cites the message, and an edit marks what cites it for a re-record when the message
+ *   no longer hashes as the source stored it. The citation
  *   relation selects the events whose bodies the reaction reads. It runs in the write's own turn,
  *   holds up no send, and has no fence: a running writer sees `revisionConflict` and
  *   admits its answer again from fresh records, or `windowChanged` when its source moved. A rebuild's
@@ -324,12 +325,61 @@ export function retireRerecorded(
     });
 }
 
+/** The stored messages among a notice's `rewritten` ids, by id, read once on first use. */
+type RewrittenMessages = () => ReadonlyMap<string, Message>;
+
+/** The hash a person's keep recorded for each message id (`keptState`), or none when it is not one. */
+function keptHashes(keptState: string | undefined): Map<string, string> {
+    const kept = new Map<string, string>();
+    if (keptState === undefined) {
+        return kept;
+    }
+    try {
+        const parts: unknown = JSON.parse(keptState);
+        for (const part of Array.isArray(parts) ? parts : []) {
+            if (Array.isArray(part) && typeof part[0] === "string" && typeof part[1] === "string") {
+                kept.set(part[0], part[1]);
+            }
+        }
+    } catch {
+        // A keep this build cannot read accepts nothing: the source's own hash decides.
+    }
+    return kept;
+}
+
+/**
+ * Whether `event` cites a `rewritten` message whose evidence the write changed, under each source's stored
+ * hash version: the message is gone, the source is unanchored, or the message now hashes (`messageSourceHash`
+ * with the stored hash) to neither the source's hash nor the hash a person's keep recorded for it. So a
+ * write that changes only display markup leaves a version 3 source unchanged, while a version 1 or 2
+ * source, which reads raw `data`, still changes.
+ */
+function rewritesEvidence(event: MemoryEvent, rewritten: ReadonlySet<string>, messages: RewrittenMessages): boolean {
+    let kept: Map<string, string> | undefined;
+    return storedMemorySources(event.sources).some(({ messageId, hash }) => {
+        if (!rewritten.has(messageId)) {
+            return false;
+        }
+        const message = messages().get(messageId);
+        if (message === undefined || hash === null) {
+            return true;
+        }
+        const current = messageSourceHash(message, hash);
+        kept ??= keptHashes(event.keptState);
+        return current !== hash && current !== kept.get(messageId);
+    });
+}
+
 /**
  * What a chat write leaves of the records `memory` holds, in one synchronous step: see
  * `reconcileMessageChanges`. An empty notice reads nothing; otherwise the citation relation selects
  * the event bodies to check. Without citing events it stops here. Retractions then reconcile their evidence.
  */
-function reactToMessageChanges({ memory }: { memory: WriterMemory }, notice: MessagesChanged): void {
+function reactToMessageChanges(
+    { memory }: { memory: WriterMemory },
+    notice: MessagesChanged,
+    messages: RewrittenMessages,
+): void {
     const { epoch, characterId: chaId, id: chatId } = notice;
     const retracted = new Set(notice.retracted);
     const rewritten = new Set(notice.rewritten);
@@ -350,7 +400,7 @@ function reactToMessageChanges({ memory }: { memory: WriterMemory }, notice: Mes
         if (cited.some((messageId) => retracted.has(messageId))) {
             const repair = { kind: "event", eventId: id, repair: "retract" } as const;
             events.push(applyEventRepair<Message>(event, repair, [], messageSourceHash)!);
-        } else if (!event.rerecord && cited.some((messageId) => rewritten.has(messageId))) {
+        } else if (!event.rerecord && rewritesEvidence(event, rewritten, messages)) {
             events.push({ ...event, rerecord: true });
         }
     }
@@ -362,23 +412,30 @@ function reactToMessageChanges({ memory }: { memory: WriterMemory }, notice: Mes
 
 /**
  * What a chat write leaves of the records, from `notice` (`onMessagesChanged`): an event that cites a
- * `retracted` id is retracted, the same write as the panel's, and an event that cites a `rewritten` id, is
- * not retracted here, and has no mark yet is marked `rerecord` and nothing else, so it stays until a
- * re-record commits. A retraction reconciles the affected threads and flags unsupported sections.
+ * `retracted` id is retracted, the same write as the panel's, and an event that cites a `rewritten` id
+ * whose evidence changed under its stored hash version (`rewritesEvidence`), is not retracted here, and
+ * has no mark yet is marked `rerecord` and nothing else, so it stays until a re-record commits. The
+ * notice reports any raw change; a version 3 source ignores display markup, so a markup-only write marks
+ * none of its events. A retraction reconciles the affected threads and flags unsupported sections.
  * Nothing affected writes nothing. A chat's rebuild takes the same reaction on its staged records,
  * after the live ones.
  *
- * It reads no message: `notice` says what changed, and the citation relation limits the reaction's
- * event body reads to those citing changed ids. Retraction's evidence reconciliation can read further
- * records. Whether a marked event can be re-recorded is the windows' to say. A notice from before an
- * epoch change stops here.
+ * The citation relation limits the reaction's event body reads to those citing changed ids, and the
+ * `rewritten` messages are read by id once (`readMessagesById`), only when a citing event is unmarked.
+ * Retraction's evidence reconciliation can read further records. Whether a marked event can be
+ * re-recorded is the windows' to say. A notice from before an epoch change stops here.
  */
-export function reconcileMessageChanges(store: Pick<ResourceStore, "epoch" | "memory">, notice: MessagesChanged): void {
+export function reconcileMessageChanges(
+    store: Pick<ResourceStore, "epoch" | "memory" | "readMessagesById">,
+    notice: MessagesChanged,
+): void {
     if (store.epoch() !== notice.epoch) {
         return;
     }
-    reactToMessageChanges(store, notice);
+    let read: ReadonlyMap<string, Message> | undefined;
+    const messages = () => (read ??= store.readMessagesById(notice.characterId, notice.id, notice.rewritten));
+    reactToMessageChanges(store, notice, messages);
     if (store.memory.rebuild.status(notice.characterId, notice.id)) {
-        reactToMessageChanges({ memory: store.memory.rebuild.staged }, notice);
+        reactToMessageChanges({ memory: store.memory.rebuild.staged }, notice, messages);
     }
 }

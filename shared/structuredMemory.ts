@@ -1361,9 +1361,59 @@ export function memorySourceSpeaker(message: { saying?: unknown }): string | nul
     return typeof message.saying === "string" && message.saying !== "" ? message.saying : null;
 }
 
-/** New hashes use version 2; stored strings without its recognized prefix retain version 1. */
-export function memorySourceHashVersion(hash?: string): 1 | 2 {
-    return typeof hash !== "string" || hash.startsWith("v2:") ? 2 : 1;
+/** An HTML comment, or a tag: `<` then a letter, `/` or `!`, up to the next `>` with no `<` between. */
+const MEMORY_SOURCE_MARKUP = /<!--[\s\S]*?-->|<[A-Za-z/!][^<>]*>/g;
+
+/**
+ * A message's `data` as memory reads it: HTML tags and comments removed with their inner text kept,
+ * runs of blank lines collapsed to one, and the ends trimmed, so display markup a plugin adds (an
+ * illustration block) neither changes a source's hash nor reaches the writer's prompt. A `<` not
+ * followed by a letter, `/` or `!`, or with no `>` after it, stays (`a < b`). One regular expression,
+ * so it is deterministic and linear in practice; it does not parse HTML: text shaped like a tag, such
+ * as `<Name>`, is removed too, `<br>` joins its lines, and a `>` inside a quoted attribute ends the tag
+ * early. Entities and CBS outside tags stay as written.
+ */
+export function memorySourceText(data: string): string {
+    return data
+        .replace(MEMORY_SOURCE_MARKUP, "")
+        .replace(/\n(?:[ \t\r]*\n){2,}/g, "\n\n")
+        .trim();
+}
+
+/** A source hash's version: what memory reads of a message under it. */
+export type MemorySourceHashVersion = 1 | 2 | 3;
+
+/** New hashes use version 3; a stored `v2:` hash keeps version 2, and one without a recognized prefix version 1. */
+export function memorySourceHashVersion(hash?: string): MemorySourceHashVersion {
+    if (typeof hash !== "string" || hash.startsWith("v3:")) {
+        return 3;
+    }
+    return hash.startsWith("v2:") ? 2 : 1;
+}
+
+/**
+ * What a source hash of `version` reads of a message, as the JSON array both hashers digest: version 1
+ * role and `data`, version 2 also the normalized speaker, version 3 the speaker and `memorySourceText`
+ * of `data` in place of the raw text.
+ */
+export function memorySourceHashFields(
+    message: { role: unknown; data: string; saying?: unknown },
+    version: MemorySourceHashVersion,
+): string {
+    const fields =
+        version === 1
+            ? [message.role, message.data]
+            : [
+                  message.role,
+                  version === 2 ? message.data : memorySourceText(message.data),
+                  memorySourceSpeaker(message),
+              ];
+    return JSON.stringify(fields);
+}
+
+/** A digest under `version` with its prefix: version 1 hashes are bare. */
+export function memorySourceHashOf(hex: string, version: MemorySourceHashVersion): string {
+    return version === 1 ? hex : `v${version}:${hex}`;
 }
 
 /**

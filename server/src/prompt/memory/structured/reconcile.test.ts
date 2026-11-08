@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import type { Message } from "../../../../../shared/database.ts";
 import { coveredMessages, type MemoryEvent, type MemoryThread } from "../../../../../shared/structuredMemory.ts";
@@ -175,7 +176,14 @@ it.each([
     const store = messageStore(messages);
     const events = memoryRecords(messages.map((_, index) => `event-${index}`)).events.map((event, index) => ({
         ...event,
-        sources: [{ messageId: messages[index].chatId!, index, hash: messageSourceHash(messages[index]) }],
+        // Only event-500's source is older than its message, so only it reads the rewrite as changed.
+        sources: [
+            {
+                messageId: messages[index].chatId!,
+                index,
+                hash: messageSourceHash(index === 500 ? { ...messages[index], data: "Before" } : messages[index]),
+            },
+        ],
     }));
     writeMemory(store, "c", "k", { events });
     if (staged) {
@@ -201,6 +209,7 @@ it.each([
     }
     const liveRead = vi.spyOn(store.memory, "readRecord");
     const stagedRead = vi.spyOn(store.memory.rebuild.staged, "readRecord");
+    const messageRead = vi.spyOn(store, "readMessagesById");
     reconcileMessageChanges(store, {
         epoch: store.epoch(),
         characterId: "c",
@@ -213,6 +222,7 @@ it.each([
     expect(eventReads(stagedRead.mock.calls)).toHaveLength(staged ? 1 : 0);
     expect(eventReads(liveRead.mock.calls)).toEqual([["c", "k", "events", "event-500"]]);
     expect(eventReads(stagedRead.mock.calls)).toEqual(staged ? [["c", "k", "events", "event-500"]] : []);
+    expect(messageRead.mock.calls).toEqual([["c", "k", ["message-500"]]]);
     liveRead.mockRestore();
     stagedRead.mockRestore();
 
@@ -241,7 +251,7 @@ it.each(["rewrite", "confirmed delete"] as const)(
         shared.sources = messages.slice(0, 2).map((message, index) => ({
             messageId: message.chatId!,
             index,
-            hash: messageSourceHash(message),
+            hash: messageSourceHash({ ...message, data: `${message.data} before` }),
         }));
         unrelated.sources = [{ messageId: "other", index: 2, hash: messageSourceHash(messages[2]) }];
         writeMemory(store, "c", "k", { events: [shared, unrelated] });
@@ -309,4 +319,52 @@ it("reconciles changed, missing, inserted and moved sources on a copy and recove
         expect(reconcileEvents([event], harmless)).toEqual([before]);
     }
     expect(event).toEqual(before);
+});
+
+it("marks a rewritten source only when the message no longer hashes as its stored version read it", () => {
+    const prose = "He opened the door.\n\nThe hall was dark.";
+    const block = '<div class="am-illustration-projection"><img src="{{raw::한민재.__am__.chat.e6470a96}}"></div>';
+    const marked = `He opened the door.\n\n${block}\n\nThe hall was dark.`;
+    const original: Message = { chatId: "m", role: "char", data: prose };
+    const sha = (fields: unknown[]) => createHash("sha256").update(JSON.stringify(fields), "utf8").digest("hex");
+    const hashes = {
+        v1: sha(["char", prose]),
+        v2: `v2:${sha(["char", prose, null])}`,
+        v3: messageSourceHash(original),
+    };
+    const cases = [
+        { label: "v3, markup only", hash: hashes.v3, data: marked, marks: false },
+        {
+            label: "v3, kept, markup only",
+            hash: messageSourceHash({ ...original, data: "Older" }),
+            data: marked,
+            marks: false,
+            keep: true,
+        },
+        { label: "v2, markup only", hash: hashes.v2, data: marked, marks: true },
+        { label: "v1, markup only", hash: hashes.v1, data: marked, marks: true },
+        { label: "v3, prose edit", hash: hashes.v3, data: marked.replace("dark", "lit"), marks: true },
+        { label: "v3, message gone", hash: hashes.v3, data: null, marks: true },
+    ];
+    for (const { label, hash, data, marks, keep } of cases) {
+        const store = messageStore([data === null ? { ...original, chatId: "other" } : { ...original, data }]);
+        const [cited] = memoryRecords(["cited"]).events;
+        cited.sources = [{ messageId: "m", index: 0, hash }];
+        if (keep) {
+            cited.keptState = JSON.stringify([["m", hashes.v3, 0]]);
+        }
+        writeMemory(store, "c", "k", { events: [cited] });
+        reconcileMessageChanges(store, {
+            epoch: store.epoch(),
+            characterId: "c",
+            id: "k",
+            rewritten: ["m"],
+            retracted: [],
+        });
+        expect(store.memory.readRecord("c", "k", "events", "cited")!.data, label).toEqual({
+            ...cited,
+            createdRevision: 1,
+            ...(marks ? { rerecord: true } : {}),
+        });
+    }
 });

@@ -35,7 +35,11 @@ import { defaultPrompts } from "../prompt/memory/structured/prompts.ts";
 import { revertChange } from "../prompt/memory/structured/pages.ts";
 import { readRecordSet, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
 import { readMemoryRecords } from "../prompt/memory/structured/step.ts";
-import { reconcileMessageChanges, withUnsupportedSections } from "../prompt/memory/structured/reconcile.ts";
+import {
+    reconcileEvents,
+    reconcileMessageChanges,
+    withUnsupportedSections,
+} from "../prompt/memory/structured/reconcile.ts";
 import { retrieveLanes } from "../prompt/memory/structured/retrieve.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ChatInvalidation } from "../data/resourceStore.ts";
@@ -3535,6 +3539,44 @@ describe("structured memory tasks", () => {
         expect(eventRecord(t).sources[1].hash).not.toBe(sources[1].hash);
     });
 
+    it.each([
+        { label: "a markup-only patch to a version 3 event", like: undefined, prose: false, rerecords: false },
+        { label: "a markup-only patch to a version 2 event", like: "v2:", prose: false, rerecords: true },
+        { label: "a prose edit to a version 3 event", like: undefined, prose: true, rerecords: true },
+    ])("re-records automatically after $label only when its stored hash version reads a change", async (row) => {
+        const calls: WriterCall[] = [];
+        const t = structuredHarness({
+            limits: { maxWriterWindows: 1 },
+            structuredWriter: async (call) => {
+                calls.push(call);
+                return record(t, call);
+            },
+        });
+        t.store.onMessagesChanged((notice) => reconcileMessageChanges(t.store, notice));
+        const messages = t.chat("k1")!.message;
+        const sources = messages
+            .slice(0, 2)
+            .map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m, row.like) }));
+        writeMemory(t.store, "c", "k1", { events: [event("old", sources)] });
+        const block = '<div class="am-illustration-projection"><img src="{{raw::cara.__am__.chat.e6470a96}}"></div>';
+        const prose = row.prose ? "An edited reply." : messages[1].data;
+        t.write("k1", [{ op: "patchMessage", id: "m2", set: { data: `${prose}\n\n${block}\n` } }]);
+        const before = eventRecord(t);
+        expect(Boolean(before.rerecord)).toBe(row.rerecords);
+        const stored = t.chat("k1")!.message;
+        expect(reconcileEvents([before], stored)[0].status).toBe(row.rerecords ? "stale" : "active");
+        const terminal = t.nextTerminal("k1");
+        t.service.handOff(writerInput(t, "m3"));
+
+        const total = row.rerecords ? 1 : 0;
+        expect((await terminal).status).toMatchObject({ state: "done", done: total, total });
+        await t.service.drain();
+        expect(calls.map(({ window }) => window.rerecords)).toEqual(row.rerecords ? ["old"] : []);
+        if (!row.rerecords) {
+            expect(eventRecord(t)).toEqual(before);
+        }
+    });
+
     it("spends no automatic writer call on manual cadence, restored text, or missing sources, and keeps their marks", async () => {
         for (const condition of ["manual", "restored", "missing"] as const) {
             const calls: WriterCall[] = [];
@@ -4964,11 +5006,15 @@ describe("structured memory tasks", () => {
         expect(t.embeddings.bodies).toHaveLength(afterWarm);
     });
 
-    it("keeps only raw window quotes, lists rejected evidence in the receipt, and warms reusable event vectors", async () => {
+    it("keeps only window quotes, read without display markup, lists rejected evidence in the receipt, and warms reusable event vectors", async () => {
         const t = structuredHarness();
         t.write("k1", [
             { op: "setText", id: "m2", text: "Only yesterday." },
-            { op: "setText", id: "m4", text: "I will return.\nBefore {{inlay::picture}} after." },
+            {
+                op: "setText",
+                id: "m4",
+                text: 'I <b>will</b> return.\n<div class="am-illustration-projection"><img src="x"></div>\nBefore {{inlay::picture}} after.',
+            },
         ]);
         writeMemory(t.store, "c", "k1", {
             events: [
@@ -5005,6 +5051,8 @@ describe("structured memory tasks", () => {
         const { request, terminal } = await beginAnalysis(t, writerInput(t, "m5"));
         expect(t.provider.asked(request)).toContain("Only yesterday.");
         expect(t.provider.asked(request)).toContain("Before [Image] after.");
+        expect(t.provider.asked(request)).toContain("I will return.");
+        expect(t.provider.asked(request)).not.toContain("am-illustration-projection");
         request.answer(
             JSON.stringify(analysis({ summary: "  A return is promised.  ", keyLines, stateChanges, knowledge })),
         );

@@ -12,6 +12,8 @@ import {
     projectHypaV3Data,
     memoryAnchorState,
     memoryRerecordTarget,
+    memorySourceHashVersion,
+    memorySourceText,
 } from "./structuredMemory.ts";
 
 function event(id: string, overrides: Partial<MemoryEvent> = {}): MemoryEvent {
@@ -263,4 +265,44 @@ it("uses character slot budgets and keeps the page budget for other headings and
     expect(memorySectionOverBudget("character", "knowledge", "x".repeat(1001))).toBe(true);
     expect(memorySectionOverBudget("character", "relationships", "x".repeat(1201))).toBe(true);
     expect(memorySectionOverBudget("character", "goals", "x".repeat(1001))).toBe(false);
+});
+
+describe("memorySourceText", () => {
+    const block =
+        '<div class="am-illustration-projection" data-am-message-id="m" data-am-slot-index="12">' +
+        '<span class="am-image" style="display: block"><img class="am-image__media" ' +
+        'src="{{raw::한민재.__am__.chat.e6470a96}}" width="832" height="1216" alt="" loading="lazy"></span></div>';
+
+    it("removes tags and comments but keeps their inner text", () => {
+        expect(memorySourceText('<p class="x">She <b>waits</b>.</p><!-- note: a > b --><br/>')).toBe("She waits.");
+        expect(memorySourceText("<!DOCTYPE html>Text</P>")).toBe("Text");
+    });
+
+    it("keeps a < that opens no tag", () => {
+        expect(memorySourceText("a < b and 3<4, <3 and x <= y")).toBe("a < b and 3<4, <3 and x <= y");
+        expect(memorySourceText("open <tag with no end")).toBe("open <tag with no end");
+        // The documented limit: text shaped like a tag goes too.
+        expect(memorySourceText("Call me <Name> now")).toBe("Call me  now");
+    });
+
+    it("collapses blank-line runs to one blank line and trims the ends", () => {
+        expect(memorySourceText("A\n\n\n\nB\n \t\n\nC")).toBe("A\n\nB\n\nC");
+        expect(memorySourceText("A\n\nB")).toBe("A\n\nB");
+        expect(memorySourceText("  \nA  \n\n")).toBe("A");
+    });
+
+    it("reads an inserted illustration block as the prose alone", () => {
+        const prose = "He opened the door.\n\nThe hall was dark.";
+        for (const marked of [
+            `He opened the door.\n\n${block}\n\nThe hall was dark.`,
+            `${block}\n\n${prose}`,
+            `${prose}\n\n${block}\n${block}\n\n${block}\n`,
+        ]) {
+            expect(memorySourceText(marked)).toBe(prose);
+        }
+    });
+});
+
+it("reads a source hash's version from its prefix, current when absent", () => {
+    expect([undefined, "v3:ab", "v2:ab", "ab", "v4:ab"].map(memorySourceHashVersion)).toEqual([3, 3, 2, 1, 1]);
 });

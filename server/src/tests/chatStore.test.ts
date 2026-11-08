@@ -659,6 +659,27 @@ describe("memory evidence changes", () => {
             expect(notices, op).toEqual([]);
         }
     });
+
+    it("reports a person's markup-only data write as a rewrite: memory filters it by stored hash version", () => {
+        const block = '<div class="am-illustration-projection"><img src="{{raw::한민재.__am__.chat.e6470a96}}"></div>';
+        for (const op of ["setMessage", "patchMessage", "setText"] as const) {
+            const original = m("b", "He opened the door.\n\nThe hall was dark.", "char");
+            const data = `He opened the door.\n\n${block}\n\nThe hall was dark.`;
+            const edit: ChatOp =
+                op === "setMessage"
+                    ? { op, message: { ...original, data } }
+                    : op === "patchMessage"
+                      ? { op, id: "b", set: { data } }
+                      : { op, id: "b", text: data };
+            const { store, notices } = setup(original);
+            store.applyChanges({ chats: [group("k", chat(store, "k")!.revision, [edit])] });
+
+            expect(chat(store, "k")!.data.message[0].data, op).toBe(data);
+            expect(notices, op).toEqual([
+                { epoch: store.epoch(), characterId: "c", id: "k", rewritten: ["b"], retracted: [] },
+            ]);
+        }
+    });
 });
 
 describe("patchMessage", () => {

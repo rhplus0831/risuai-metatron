@@ -13,6 +13,7 @@ import type {
     ChatRecord,
     ChatSummary,
 } from "../../../shared/chats.ts";
+import type { Message } from "../../../shared/database.ts";
 import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import { HIDDEN_HYDRATION_KINDS } from "../../../shared/jobs.ts";
 import type { HypaV3Preset } from "../../../shared/memory.ts";
@@ -2833,6 +2834,12 @@ export function createResourceStore(options: {
         messagesLocked(characterId: string, chatId: string, messageIds: readonly string[]): boolean {
             assertOpen();
             return chatTables.messagesLocked(characterId, chatId, messageIds);
+        },
+
+        /** A chat's stored messages among `messageIds`, by id, read by point lookups (`chatTables.readMessagesById`). */
+        readMessagesById(characterId: string, chatId: string, messageIds: readonly string[]): Map<string, Message> {
+            assertOpen();
+            return chatTables.readMessagesById(characterId, chatId, messageIds);
         },
 
         /** How many of a chat's messages have the user role, or null when it does not exist (no message row read). */

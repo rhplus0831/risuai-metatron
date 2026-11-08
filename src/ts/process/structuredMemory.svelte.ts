@@ -17,7 +17,10 @@ import {
     MEMORY_RESTORE_BODY_BYTES,
     memoryEventCovers,
     memoryScreenReason,
+    memorySourceHashFields,
+    memorySourceHashOf,
     memorySourceHashVersion,
+    type MemorySourceHashVersion,
     memorySourceSpeaker,
     rawWindow,
     reconcileMemoryEvents,
@@ -1595,28 +1598,27 @@ type HashedMessage = DeepReadonly<Pick<Message, "chatId" | "role" | "data" | "sa
 
 /**
  * The hash a source keeps of `message`, exactly as `messageSourceHash` takes it on the server: new
- * hashes cover role, `data`, and the normalized group speaker with a `v2:` prefix; a stored `like`
- * retains its version, including bare role/data hashes. Generation metadata and receipts stay outside.
- * Pure JavaScript works without a secure context, and JSON preserves field boundaries and lone surrogates.
+ * hashes cover role, `memorySourceText` of `data`, and the normalized group speaker with a `v3:` prefix;
+ * a stored `like` retains its version, `v2:` raw `data` with the speaker and bare role/raw `data`.
+ * Generation metadata and receipts stay outside. Pure JavaScript works without a secure context, and
+ * JSON preserves field boundaries and lone surrogates.
  */
 export function memoryMessageHash(message: Pick<HashedMessage, "role" | "data" | "saying">, like?: string): string {
     const version = memorySourceHashVersion(like);
-    const fields =
-        version === 1 ? [message.role, message.data] : [message.role, message.data, memorySourceSpeaker(message)];
     const hash = new Sha256();
-    hash.update(JSON.stringify(fields));
+    hash.update(memorySourceHashFields(message, version));
     const hex = Array.from(hash.digestSync(), (byte) => byte.toString(16).padStart(2, "0")).join("");
-    return version === 1 ? hex : `v2:${hex}`;
+    return memorySourceHashOf(hex, version);
 }
 
 /**
- * A `memoryMessageHash` that hashes again only when role, `data`, normalized group speaker, or the
+ * A `memoryMessageHash` that hashes again only when role, raw `data`, normalized group speaker, or the
  * requested hash version changed, for a tab to hold while it lives: most row changes affect no evidence.
  */
 export function memoryMessageHasher(): (message: HashedMessage, like?: string) => string {
     const memo = new Map<
         string,
-        { role: Message["role"]; data: string; speaker: string | null; version: 1 | 2; hash: string }
+        { role: Message["role"]; data: string; speaker: string | null; version: MemorySourceHashVersion; hash: string }
     >();
     return (message, like) => {
         const { chatId, role, data } = message;

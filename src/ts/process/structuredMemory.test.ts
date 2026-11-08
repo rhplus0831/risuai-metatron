@@ -735,8 +735,16 @@ it("hashes role and Unicode text exactly like server source anchors including a 
     // Fixed server messageSourceHash values; no server imports in the Node client test.
     const message = { role: "char", data: '문 😀\ud800\nquote: "' } as const;
     const v1 = "db8d581f5fb0f0005aa6337e8568fca94baa45dc48b0a9ec2a01cbda9197f8b5";
-    expect(memoryMessageHash(message)).toBe("v2:fb3ad95bd266b99de71f60e1303e8a2f65c85f886e4bf8960ba96330341313b5");
+    const v2 = "v2:fb3ad95bd266b99de71f60e1303e8a2f65c85f886e4bf8960ba96330341313b5";
+    // Version 3 digests the markup-stripped text, which equals this plain text.
+    const v3 = "v3:fb3ad95bd266b99de71f60e1303e8a2f65c85f886e4bf8960ba96330341313b5";
+    expect(memoryMessageHash(message)).toBe(v3);
     expect(memoryMessageHash(message, v1)).toBe(v1);
+    expect(memoryMessageHash(message, v2)).toBe(v2);
+    // Display markup leaves the version 3 hash alone; version 2 still reads it raw.
+    const marked = { ...message, data: '문 <b>😀</b>\ud800\nquote: "\n\n<div class="am"><img src="x"></div>\n' };
+    expect(memoryMessageHash(marked)).toBe(v3);
+    expect(memoryMessageHash(marked, v2)).toBe("v2:c6c056e5def16121e6d4f71ca9c8d42a2fdba67eb560f92e3bfe3ef0f783cf05");
 });
 
 it("joins reconciled held messages as stale with no leaving coverage or request and restores them immediately", () => {

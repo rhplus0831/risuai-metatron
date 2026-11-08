@@ -226,8 +226,10 @@ group: no walk reads them.
 - Event status is `active`, `retracted`, or `stale`. Unfinished recording lives on the run and the receipt: a failed
   first recording commits no event, and a failed re-record leaves the committed event in place until its replacement
   succeeds.
-- A `MemoryAnchoredSource` hash reads role, `data` and `saying`, never `generationInfo`; a stored hash compares under
-  its own version (`messageSourceHash`).
+- A `MemoryAnchoredSource` hash reads role, `saying` and `data` as `memorySourceText` (tags and comments removed, blank
+  lines collapsed), never `generationInfo`, so display markup a plugin adds keeps it; a stored `v2:` or bare hash
+  compares under its own version, which reads raw `data` (`messageSourceHash`). The chat store's `rewritten` notice
+  stays raw, and the [memory reaction](lifecycle.md#retraction-and-edits) filters it by that stored version.
 - A `MemoryUnanchoredSource` means the anchor was never known: an adopted summary whose message was already gone. It
   forces its event `stale` until a person keeps it. A source whose message disappears later keeps its original hash and
   index. A run's window holds only anchored sources.

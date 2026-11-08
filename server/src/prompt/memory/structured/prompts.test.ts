@@ -176,6 +176,30 @@ it("asks the analysis call to report identity facts and ended situations as iden
     expect(slots.rules).toMatch(/^- Read each sentence of a listed page's identity .* has ended or been resolved/m);
 });
 
+it("shows window and context messages without display markup, with inlays as [Image]", () => {
+    const block =
+        '<div class="am-illustration-projection" data-am-slot-index="12"><span class="am-image">' +
+        '<img src="{{raw::한민재.__am__.chat.e6470a96}}" alt=""></span></div>';
+    const before = { chatId: "a", role: "user" as const, data: `<i>Knock</i> {{inlay::pic}}\n\n${block}\n` };
+    const reply = {
+        chatId: "b",
+        role: "char" as const,
+        data: `He opened the <b>door</b>.\n\n${block}\n\nThe hall was dark, 3 < 4.`,
+    };
+    const slots = analysisSlots({
+        language: "English",
+        cast: [],
+        scene: null,
+        threads: [],
+        previousTitle: undefined,
+        messages: [before, reply],
+        window: { messages: [reply], sources: [{ messageId: "b", index: 1, hash: "v3:x" }] },
+        speaker: () => "Cara",
+    });
+    expect(slots.messages).toBe("[m:b] Cara:\nHe opened the door.\n\nThe hall was dark, 3 < 4.");
+    expect(slots.previous).toBe("Context only: never quote it.\nCara: Knock [Image]");
+});
+
 it("checks custom slots after CBS and fills quoted data without evaluating it again", () => {
     const { risuChatParser } = createNodeCbsEvaluator({ characters: [], username: "Uma" } as unknown as Database, {
         selectedCharID: -1,
