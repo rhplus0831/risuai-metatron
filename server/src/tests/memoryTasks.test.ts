@@ -4868,9 +4868,10 @@ describe("structured memory tasks", () => {
         expect((await terminal).status).toMatchObject({ state: "done", done: 1, total: 1 });
         await t.service.drain();
         expect(t.provider.requests).toHaveLength(1);
+        // The recording settles its own run: a recorded run keeps no prompt.
+        expect(runRecord(t)).not.toHaveProperty("input");
         expect(runRecord(t)).toMatchObject({
             id: pending.id,
-            input: pending.input,
             result: "recorded",
             inputTokens,
             outputTokens: output.length,
@@ -5192,6 +5193,232 @@ describe("structured memory tasks", () => {
             { kind: "endedThread", detail: "cancelled" },
             { kind: "endedThread", detail: "done" },
         ]);
+    });
+
+    it("prunes live prompts on failures, recordings and unsent failures while preserving pending and newest skipped runs", async () => {
+        const t = structuredHarness({ hypaSettings: { structured: customFrames } });
+        const historical = memoryRecords(["z-recorded", "a-failed", "m-skipped"]).runs;
+        historical[1].result = "failed";
+        historical[2].result = "skipped";
+        for (const run of historical) run.patchInput = `Patch for ${run.id}`;
+        writeMemory(t.store, "c", "k1", { runs: historical });
+        const read = (id: string) => t.store.memory.readRecord("c", "k1", "runs", id)!.data;
+        const withoutPrompts = (run: ReturnType<typeof read>) => {
+            const { input, patchInput, ...rest } = run;
+            return rest;
+        };
+        const page = memoryRecords(["harbor"], "Harbor").pages[0];
+        const first = await beginPagePatch(t, [page]);
+        // Opening a pending run must not clean even historical recorded prompts.
+        for (const run of historical) expect(read(run.id)).toEqual(run);
+        const openedRevision = contents(t).revision;
+        first.patchRequest.fail("Patch unavailable");
+        expect((await first.terminal).status.state).toBe("failed");
+        await t.service.drain();
+        const failed = runRecord(t);
+        expect(failed).toMatchObject({ result: "failed", input: expect.any(String), patchInput: expect.any(String) });
+        expect(JSON.parse(failed.patchInput!).map(({ content }: OpenAIChat) => content)).toEqual(
+            first.patchRequest.body.messages.map(({ content }: OpenAIChat) => content),
+        );
+        for (const run of historical) expect(read(run.id)).toEqual(withoutPrompts(run));
+        expect(Number(contents(t).revision.split(":").at(-1))).toBe(Number(openedRevision.split(":").at(-1)) + 1);
+
+        const second = await beginPagePatch(t, [page]);
+        expect(read(failed.id)).toEqual(failed);
+        const secondId = runRecord(t).id;
+        // A pending row is protected even when it follows the newest failed row in storage order.
+        const pending = {
+            ...memoryRecords(["in-flight"], "Pending analysis").runs[0],
+            result: "pending" as const,
+            patchInput: "Pending patch",
+        };
+        writeMemory(t.store, "c", "k1", { runs: [pending] });
+        second.patchRequest.fail("Another patch failure");
+        expect((await second.terminal).status.state).toBe("failed");
+        await t.service.drain();
+        expect(read(failed.id)).toEqual(withoutPrompts(failed));
+        const newerFailure = read(secondId);
+        expect(newerFailure).toMatchObject({
+            result: "failed",
+            input: expect.any(String),
+            patchInput: expect.any(String),
+        });
+        expect(read(pending.id)).toEqual(pending);
+
+        const recording = await beginPagePatch(t, [page]);
+        const recordingId = runRecord(t).id;
+        const skipped = { ...pending, result: "skipped" as const, reason: "interrupted" };
+        expect(read(pending.id)).toEqual(skipped);
+        expect(read(secondId)).toEqual(newerFailure);
+        recording.patchRequest.answer(JSON.stringify({ patches: [] }));
+        await finishRecording(t, recording.terminal);
+        expect(read(secondId)).toEqual(withoutPrompts(newerFailure));
+        expect(read(pending.id)).toEqual(skipped);
+        expect(read(recordingId).result).toBe("recorded");
+        expect(read(recordingId)).not.toHaveProperty("input");
+        expect(read(recordingId)).not.toHaveProperty("patchInput");
+
+        t.replace("hypaV3Presets", (data) => ({
+            ...data,
+            items: data.items.map((item: any) => ({
+                ...item,
+                settings: { ...item.settings, structured: { ...customFrames, analysisPrompt: " " } },
+            })),
+        }));
+        const calls = t.provider.requests.length;
+        const unsent = t.nextTerminal("k1");
+        t.service.handOff(writerInput(t, "m5"));
+        expect((await unsent).status.state).toBe("failed");
+        await t.service.drain();
+        expect(t.provider.requests).toHaveLength(calls);
+        expect(runRecord(t)).toMatchObject({ result: "failed", receipt: { reason: "customPromptInvalid" } });
+        expect(read(pending.id)).toEqual(withoutPrompts(skipped));
+        for (const { id } of contents(t).runs) {
+            expect(read(id)).not.toHaveProperty("input");
+            expect(read(id)).not.toHaveProperty("patchInput");
+        }
+    });
+
+    it("replays a failed window exactly after a newer window records and the task service restarts", async () => {
+        const t = structuredHarness({
+            hypaSettings: {
+                structured: {
+                    ...customFrames,
+                    analysisPrompt:
+                        "<|im_start|>user<|im_sep|>{{slot::scene}} {{slot::threads}} {{slot::messages}}<|im_end|>",
+                },
+            },
+        });
+        // Fail the later window first; re-enabling the earlier one then opens a distinct run.
+        t.write(
+            "k1",
+            ["m1", "m2"].map((id) => ({ op: "patchMessage" as const, id, set: { disabled: true } })),
+        );
+        writeMemory(t.store, "c", "k1", {
+            threads: [{ id: "promise", title: "Original promise", who: [], state: "open" }],
+        });
+        const first = await beginAnalysis(t, writerInput(t, "m5"));
+        expect(t.provider.asked(first.request)).toContain("Original promise");
+        expect(runRecord(t).window.map(({ messageId }) => messageId)).toEqual(["m3", "m4"]);
+        first.request.fail("Analysis unavailable");
+        expect((await first.terminal).status.state).toBe("failed");
+        await t.service.drain();
+        const failed = runRecord(t);
+
+        t.write(
+            "k1",
+            ["m1", "m2"].map((id) => ({ op: "patchMessage" as const, id, set: { disabled: false } })),
+        );
+        writeMemory(t.store, "c", "k1", {
+            threads: [{ id: "promise", title: "Changed promise", who: [], state: "progress" }],
+        });
+        const intervening = await beginAnalysis(t);
+        const pending = runRecord(t);
+        expect(pending).toMatchObject({ result: "pending", input: expect.any(String) });
+        expect(pending.window.map(({ messageId }) => messageId)).toEqual(["m1", "m2"]);
+        expect(t.store.memory.readRecord("c", "k1", "runs", failed.id)!.data).toEqual(failed);
+        intervening.request.answer(JSON.stringify(analysis()));
+        await finishRecording(t, intervening.terminal);
+        expect(runRecord(t)).toMatchObject({ id: pending.id, result: "recorded" });
+        expect(runRecord(t)).not.toHaveProperty("input");
+        expect(runRecord(t)).not.toHaveProperty("patchInput");
+        expect(t.store.memory.readRecord("c", "k1", "runs", failed.id)!.data).toEqual(failed);
+
+        t.service.beginShutdown();
+        await t.service.drain();
+        const restarted = createMemoryTasks({
+            store: t.store,
+            kinds: t.kinds,
+            gate: t.gate,
+            hostDeps: t.hostDeps,
+            now: () => t.clock.now,
+        });
+        cleanups.push(async () => {
+            restarted.beginShutdown();
+            t.provider.abortAll();
+            await restarted.drain();
+        });
+        const finished = deferred<MemoryTaskEvent>();
+        restarted.onStatus((entry) => {
+            if (TERMINAL.has(entry.status.state)) finished.resolve(entry);
+        });
+        const retryIndex = t.provider.requests.length;
+        restarted.handOff(writerInput(t, "m5"));
+        const retry = await nextPatch(t, retryIndex, finished.promise);
+        expect(retry.rawBody).toBe(first.request.rawBody);
+        expect(runRecord(t)).toMatchObject({ input: failed.input, window: failed.window });
+        retry.answer(JSON.stringify(analysis()));
+        expect((await finished.promise).status).toMatchObject({ state: "done", done: 1 });
+        await restarted.drain();
+    });
+
+    it("prunes staged settlements and the combined live and staged run history at the rebuild swap", async () => {
+        const t = structuredHarness({ hypaSettings: { structured: customFrames } });
+        const live = memoryRecords(["z-recorded", "a-failed", "m-skipped", "live-pending"]).runs;
+        live[1].result = "failed";
+        live[2].result = "skipped";
+        live[3].result = "pending";
+        for (const run of live) run.patchInput = `Patch for ${run.id}`;
+        writeMemory(t.store, "c", "k1", { runs: live });
+        const input = beginStagedRun(t, "rebuild", [
+            ["m1", "m2"],
+            ["m3", "m4"],
+        ]);
+        const staged = t.store.memory.rebuild.staged;
+        const stagedRuns = () =>
+            staged.readContents("c", "k1")!.runs.map(({ id }) => staged.readRecord("c", "k1", "runs", id)!.data);
+        const draft = {
+            ...analysis(),
+            pageCandidates: [
+                { create: { type: "location", title: "Harbor", aliases: [] }, reason: "Arrival", confidence: 1 },
+            ],
+        };
+        const failedTerminal = t.nextTerminal("k1");
+        expect(t.service.rebuild(input).outcome).toBe("queued");
+        const first = await nextPatch(t, 0, failedTerminal);
+        first.answer(JSON.stringify(draft));
+        (await nextPatch(t, 1, failedTerminal)).fail("Patch unavailable");
+        expect((await failedTerminal).status.state).toBe("failed");
+        await t.service.drain();
+        const [failed] = stagedRuns();
+        expect(failed).toMatchObject({ result: "failed", input: expect.any(String), patchInput: expect.any(String) });
+
+        const terminal = t.nextTerminal("k1");
+        expect(t.service.rebuild(input).outcome).toBe("queued");
+        const retry = await nextPatch(t, 2, terminal);
+        expect(stagedRuns()[0]).toEqual(failed);
+        retry.answer(JSON.stringify(draft));
+        (await nextPatch(t, 3, terminal)).answer(JSON.stringify({ patches: [] }));
+        const last = await nextPatch(t, 4, terminal);
+        const [retained, recorded, pending] = stagedRuns();
+        expect(retained).toEqual(failed);
+        expect(recorded.result).toBe("recorded");
+        expect(recorded).not.toHaveProperty("input");
+        expect(recorded).not.toHaveProperty("patchInput");
+        expect(pending).toMatchObject({ result: "pending", input: expect.any(String) });
+        // Staged settlements must leave the live run JSON untouched until the swap.
+        for (const run of live) expect(t.store.memory.readRecord("c", "k1", "runs", run.id)!.data).toEqual(run);
+        const beforeSwap = contents(t).revision;
+        last.answer(JSON.stringify(analysis({ summary: "The second window" })));
+        expect((await terminal).status).toMatchObject({ state: "done", reason: "rebuilt", done: 2 });
+        await t.service.drain();
+        expect(t.store.memory.rebuild.status("c", "k1")).toBeNull();
+        expect(Number(contents(t).revision.split(":").at(-1))).toBe(Number(beforeSwap.split(":").at(-1)) + 1);
+        expect(contents(t).runs.map(({ id }) => id)).toEqual([
+            ...live.map(({ id }) => id),
+            failed.id,
+            recorded.id,
+            pending.id,
+        ]);
+        for (const { id } of contents(t).runs) {
+            const run = t.store.memory.readRecord("c", "k1", "runs", id)!.data;
+            if (id === failed.id) expect(run).toEqual(failed);
+            else if (id === "live-pending") expect(run).toEqual(live[3]);
+            else {
+                expect(run).not.toHaveProperty("input");
+                expect(run).not.toHaveProperty("patchInput");
+            }
+        }
     });
 
     it("replays a failed snapshot byte for byte despite thread changes and rebuilds when settings change", async () => {

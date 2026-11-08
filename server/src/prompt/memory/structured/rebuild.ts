@@ -347,7 +347,7 @@ export function rebuildStore(store: Pick<ResourceStore, "memory" | "chatMeta" | 
             write: (
                 chaId: string,
                 chatId: string,
-                options: { epoch: string | undefined; baseRevision: string },
+                options: Parameters<ResourceStore["memory"]["write"]>[2],
                 changes: MemoryChanges,
             ) =>
                 staged.write(

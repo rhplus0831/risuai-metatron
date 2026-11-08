@@ -281,11 +281,11 @@ takes over.
   or retract; a keep of an already-active event is a no-op. A chat under a save refusal sends a whole `replace`, which
   loses `retract` and any `rewritten`, so the event reads `missing` or `changed` for the panel. Decision: Structured
   Memory slice 5b, archive.
-- A checkpoint save reads and hashes every record's text in one synchronous step, however little changed, and runs are
-  never pruned while each holds whole prompts. So a save's event-loop hold grows with the chat's memory, on every
-  automatic checkpoint and every load's safety checkpoint:
-  [about 500 ms for 79 MB of runs](../../audit/structured-memory-2026-11-03.md). A load parses every record on top.
-  Decision: Structured Memory slice 5d, archive.
+- A checkpoint save reads and hashes every record's text in one synchronous step, however little changed, so its
+  event-loop hold grows with the chat's memory. Only the replay target holds a prompt once a settling commit
+  [prunes the rest](writer.md#a-writer-run): 2,000 old runs went from 79 MB and a 751 ms save to 237 KB and 20 ms. Old
+  runs keep their prompts until that commit, also after an older checkpoint's restore. A load parses every record on
+  top. Decision: Structured Memory slice 5d, archive; the prune, owner, 2026-11-08.
 - A tab closed before [the inherit](#copies-and-branches) posts leaves the new chat with no records and no notice:
   nothing retries it. Decision: Structured Memory slice 5c, archive.
 - A send that reaches the new chat before the inherit is fenced or finds records, so that chat keeps a gap. Decision:

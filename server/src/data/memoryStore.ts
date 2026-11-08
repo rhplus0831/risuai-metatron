@@ -404,12 +404,45 @@ function changedKinds(changes: Pick<MemoryChanges, MemoryRecordKind | "remove">)
 const namesNothing = (kinds: readonly ChangedKind[]) =>
     kinds.every(({ records, removed }) => records.length === 0 && removed.length === 0);
 
+/** The run fields kept only while a retry can use them (`keptPromptRunIds`). */
+const RUN_PROMPT_FIELDS = ["input", "patchInput"] as const;
+
+/**
+ * The runs of a chat's history, `rows` in storage order, that keep their prompts: every `pending` run,
+ * whose prompt is in flight, and the newest run that settled without recording (`failed` or `skipped`),
+ * the one `replayedInput` reads once no run is pending. Every other run, recorded or superseded, has no
+ * retry left that could send its prompt again.
+ */
+export function keptPromptRunIds(rows: readonly { id: string; result: string }[]): Set<string> {
+    const kept = new Set<string>();
+    const settled = rows.findLast(({ result }) => result === "failed" || result === "skipped");
+    if (settled) {
+        kept.add(settled.id);
+    }
+    for (const { id, result } of rows) {
+        if (result === "pending") {
+            kept.add(id);
+        }
+    }
+    return kept;
+}
+
 /**
  * One set of record tables with every rule a write over them follows: the live tables and a rebuild's
  * staged ones are two of these, so the two cannot differ in a rule. Every statement is built from
  * `descriptions`, and the caller owns the counter the revision moves in.
  */
 function createRecordSet(db: DatabaseSync, descriptions: Record<MemoryRecordKind, MemoryTable>) {
+    // The run rows that may still hold a prompt, outside the ids `json_each` lists: a key spelled as
+    // JSON writes it. A prompt quoting the key inside a string is escaped (`\"input\"`) and does not
+    // match; a key spelled with unicode escapes in a crafted record slips by and only leaves bytes.
+    const selectRunsHoldingPrompts = db.prepare(
+        `SELECT id, data FROM ${descriptions.runs.table} WHERE chatSeq = ? ` +
+            "AND id NOT IN (SELECT value FROM json_each(?)) " +
+            `AND (${RUN_PROMPT_FIELDS.map((field) => `instr(data, '"${field}"') > 0`).join(" OR ")}) ORDER BY seq`,
+    );
+    // The row keeps its `seq` and its columns: the result does not change, only the stored text.
+    const updateRunData = db.prepare(`UPDATE ${descriptions.runs.table} SET data = ? WHERE chatSeq = ? AND id = ?`);
     const selectCitingEvents = db.prepare(
         `SELECT ${listedColumns(descriptions.events)
             .map((column) => `e.${column}`)
@@ -518,8 +551,32 @@ function createRecordSet(db: DatabaseSync, descriptions: Record<MemoryRecordKind
         return rows;
     }
 
+    /**
+     * Strips `input` and `patchInput` from every run of chat `seq` that `keptPromptRunIds` does not keep,
+     * over the whole stored history. The keep set comes from the columns, so no body is read for it;
+     * only the rows the prefilter names are parsed, and a row is written back only when a field went,
+     * serialized as a write serializes a record. After the first prune, only the kept rows match, so a
+     * later prune reads at most those.
+     */
+    function pruneRunPrompts(seq: number): void {
+        const rows = tables.runs.selectContents.all(seq) as { id: string; result: string }[];
+        const kept = JSON.stringify([...keptPromptRunIds(rows)]);
+        for (const { id, data } of selectRunsHoldingPrompts.all(seq, kept) as { id: string; data: string }[]) {
+            const record = JSON.parse(data) as Record<string, unknown>;
+            if (!RUN_PROMPT_FIELDS.some((field) => field in record)) {
+                continue;
+            }
+            for (const field of RUN_PROMPT_FIELDS) {
+                delete record[field];
+            }
+            updateRunData.run(serialize(record).text, seq, id);
+        }
+    }
+
     return {
         tables,
+
+        pruneRunPrompts,
 
         /**
          * Each kind's table of contents, with no record's body. `citing` limits only the event list to
@@ -569,10 +626,11 @@ function createRecordSet(db: DatabaseSync, descriptions: Record<MemoryRecordKind
         },
 
         /**
-         * Removals, then upserts, as the revision after `current`, which it answers for the caller to store.
-         * Every refusal comes before the first statement that writes.
+         * Removals, then upserts, then with `pruneRunPrompts` the prune of the chat's run prompts over
+         * the rows as they now stand, as the revision after `current`, which it answers for the caller
+         * to store. Every refusal comes before the first statement that writes.
          */
-        write(seq: number, current: number, kinds: readonly ChangedKind[]): number {
+        write(seq: number, current: number, kinds: readonly ChangedKind[], prunePrompts = false): number {
             const revision = nextRevision(current, 1);
             const prepared = kinds.map(({ kind, records, removed }) => ({
                 kind,
@@ -588,6 +646,9 @@ function createRecordSet(db: DatabaseSync, descriptions: Record<MemoryRecordKind
                 for (const row of rows) {
                     tables[kind].upsert.run(seq, ...row);
                 }
+            }
+            if (prunePrompts) {
+                pruneRunPrompts(seq);
             }
             return revision;
         },
@@ -737,12 +798,18 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
      * the base is checked, answers the current token and writes nothing, not even a `memory_state`
      * row; a decline of a chat that already declined names nothing. Any other decline is a real
      * write, so a chat with no `memory_state` row gets one at revision 1.
+     *
+     * `pruneRunPrompts` is passed by a commit that settles a run: after the upserts, in the same
+     * transaction and under the same revision, every run of the chat that `keptPromptRunIds` does not
+     * keep loses `input` and `patchInput`, the runs just written included. The writer's change set
+     * is never changed: the prune works on the rows, so a dry run's captured changes keep the fields.
      */
     function write(
         characterId: string,
         chatId: string,
         baseRevision: string,
         changes: MemoryChanges,
+        options: { pruneRunPrompts?: boolean } = {},
     ): MemoryWriteResult {
         const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
         if (!chat) {
@@ -755,7 +822,7 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
         if (!declines && namesNothing(kinds)) {
             return { revision: currentToken, wrote: false };
         }
-        const revision = live.write(chat.seq, current, kinds);
+        const revision = live.write(chat.seq, current, kinds, options.pruneRunPrompts === true);
         upsertRevision.run(chat.seq, revision);
         if (declines) {
             setDeclined.run(chat.seq);
@@ -1060,13 +1127,16 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                 return found && data && { revision: tokens.token(found.seq, found.run.revision), data };
             },
 
-            /** `write` on the staged set. `advance` moves the cursor by one in the same statement as the revision. */
+            /**
+             * `write` on the staged set, `pruneRunPrompts` included, over the staged run history alone.
+             * `advance` moves the cursor by one in the same statement as the revision.
+             */
             write(
                 characterId: string,
                 chatId: string,
                 baseRevision: string,
                 changes: MemoryChanges,
-                advance = false,
+                options: { advance?: boolean; pruneRunPrompts?: boolean } = {},
             ): MemoryWriteResult {
                 const found = runOf(characterId, chatId);
                 if (!found) {
@@ -1077,8 +1147,8 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                 if (namesNothing(kinds)) {
                     return { revision: currentToken, wrote: false };
                 }
-                const revision = staged.write(found.seq, found.run.revision, kinds);
-                moveRun.run(revision, advance ? 1 : 0, found.seq);
+                const revision = staged.write(found.seq, found.run.revision, kinds, options.pruneRunPrompts === true);
+                moveRun.run(revision, options.advance ? 1 : 0, found.seq);
                 return { revision: tokens.token(found.seq, revision), wrote: true };
             },
 
@@ -1130,8 +1200,11 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             /**
              * Ends the run: `write` of `changes` on the live tables at `baseRevision`, so every check of a
              * write holds and the revision moves up by exactly one, then the staged runs join the live ones
-             * by their text, in the order written, and the staged rows and the run go. A chat with no run is
-             * refused as a missing chat. A refused write leaves everything to the caller's rollback.
+             * by their text, in the order written, and the staged rows and the run go. The history this
+             * leaves, live runs then staged, is pruned of its run prompts as a settling commit prunes
+             * (`pruneRunPrompts`), in the same transaction: the swap settles the run's windows for good. A
+             * chat with no run is refused as a missing chat. A refused write leaves everything to the
+             * caller's rollback.
              */
             swap(characterId: string, chatId: string, baseRevision: string, changes: MemoryChanges): MemoryWriteResult {
                 const found = runOf(characterId, chatId);
@@ -1140,6 +1213,7 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                 }
                 const written = write(characterId, chatId, baseRevision, changes);
                 copyStagedRuns.run(found.seq);
+                live.pruneRunPrompts(found.seq);
                 removeRun(found.seq);
                 return written;
             },

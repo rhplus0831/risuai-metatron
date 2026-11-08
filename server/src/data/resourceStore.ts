@@ -2190,18 +2190,21 @@ export function createResourceStore(options: {
             /**
              * Commits `changes` whole (`memoryTables.write`, which owns the revision check) and returns
              * the memory revision token; another epoch, or none, is a `ResourceEpochError`. Anything
-             * that escapes rolls the whole write back.
+             * that escapes rolls the whole write back. `pruneRunPrompts`, passed by a commit that settles
+             * a run, strips the prompts of the chat's runs that no retry can use in the same transaction.
              */
             write(
                 characterId: string,
                 chatId: string,
-                options: { epoch: string | undefined; baseRevision: string },
+                options: { epoch: string | undefined; baseRevision: string; pruneRunPrompts?: boolean },
                 changes: MemoryChanges,
             ): string {
                 assertWritable();
                 assertEpochNow(options.epoch);
                 return transactionInScope(() => {
-                    const { revision, wrote } = memoryTables.write(characterId, chatId, options.baseRevision, changes);
+                    const { revision, wrote } = memoryTables.write(characterId, chatId, options.baseRevision, changes, {
+                        pruneRunPrompts: options.pruneRunPrompts,
+                    });
                     if (wrote) {
                         countWrite();
                     }
@@ -2325,11 +2328,19 @@ export function createResourceStore(options: {
                         assertOpen();
                         return memoryTables.rebuild.readRecord(characterId, chatId, kind, id);
                     },
-                    /** `write` of `store.memory` on the staged set; `advance` moves the cursor with it. */
+                    /**
+                     * `write` of `store.memory` on the staged set, `pruneRunPrompts` over the staged runs;
+                     * `advance` moves the cursor with it.
+                     */
                     write(
                         characterId: string,
                         chatId: string,
-                        options: { epoch: string | undefined; baseRevision: string; advance?: boolean },
+                        options: {
+                            epoch: string | undefined;
+                            baseRevision: string;
+                            advance?: boolean;
+                            pruneRunPrompts?: boolean;
+                        },
                         changes: MemoryChanges,
                     ): string {
                         assertWritable();
@@ -2340,7 +2351,7 @@ export function createResourceStore(options: {
                                 chatId,
                                 options.baseRevision,
                                 changes,
-                                options.advance,
+                                { advance: options.advance, pruneRunPrompts: options.pruneRunPrompts },
                             );
                             if (wrote) {
                                 countWrite();

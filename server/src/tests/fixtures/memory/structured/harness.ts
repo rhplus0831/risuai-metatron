@@ -547,6 +547,28 @@ export function createFixture(options: FixtureOptions) {
         },
 
         /**
+         * Records the windows before `confirmedBefore` through the real live hand-off: the task service,
+         * the writer on the live records, `commitWindow` with its receipts on the chat. Under the pinned
+         * `everyTurn` cadence, the first user message of turn `n + 1` records turns 1 to `n`. Rejects when
+         * the task ends any other way than `done`.
+         */
+        async record(confirmedBefore: string): Promise<MemoryTaskEvent> {
+            if (algorithm !== "structuredMemory") {
+                throw new Error("Only a structured memory fixture records");
+            }
+            const scope = jobScope();
+            const input: StructuredMemoryTaskInput = { ...taskBase(scope), kind: "structuredMemory", confirmedBefore };
+            const terminal = nextTerminal();
+            service.handOff(input);
+            const event = await terminal;
+            if (event.status.state !== "done") {
+                throw new Error(`The recording ended ${event.status.state}: ${JSON.stringify(event.status)}`);
+            }
+            await service.drain();
+            return event;
+        },
+
+        /**
          * Summarizes the chat through HypaV3's real hand-off until the lookahead plan asks for nothing,
          * which is a success when it stopped at its target or the protected tail. Rejects on a failed or
          * skipped task, or on a plan that cannot go on.

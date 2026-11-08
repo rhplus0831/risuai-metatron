@@ -111,6 +111,13 @@ in one memory write. A revision conflict rebuilds planning against fresh records
 attempts. Only a recorded commit warms vectors, using the same event and section text that retrieval embeds. Returned
 compaction failures are warnings; an analysis or patch failure leaves no event.
 
+A run keeps `input` and `patchInput` only while a retry can use them. A commit that settles a run (a failure, an unsent
+run, a recording; `commitWindow` passes `pruneRunPrompts`) has the store strip both, in the same transaction, from every
+run but the newest failed or skipped one and any pending one (`keptPromptRunIds` in `server/src/data/memoryStore.ts`).
+The opening commit strips nothing, so a failed window still replays after a newer run opened and recorded. A rebuild's
+staged writes prune the staged history, and its swap prunes the live history it leaves. The writer's change set is never
+changed, so the dry run still reads `patchInput`.
+
 ### Record now
 
 A press past one window asks first, with [the cost preview](rebuild.md#the-cost-preview). Record now and resume use the
@@ -280,8 +287,9 @@ Compaction changes no event, and a warning does not fail the run.
 
 - An event recorded before its chat had pages holds its title, summary, key lines, and thread changes: its participants
   were removed and items naming a page left out.
-- `memory_runs.input` is never pruned, so a run costs about its prompt in storage. `inputTokens` counts one attempt
-  though `host.request` may retry, and `maxResponse` bounds the answer, so a low value fails runs on truncated JSON.
+- A run holding its prompts costs about them in storage until [the prune](#a-writer-run). `inputTokens` counts one
+  attempt though `host.request` may retry, and `maxResponse` bounds the answer, so a low value fails runs on truncated
+  JSON.
 - `MEMORY_SECTION_BUDGETS` are starting values with no setting.
 - Every numeric default in `normalizeStructuredMemorySettings` is a starting value too; the required cap and the lane
   targets add up to the default `memoryBudgetTokens`. Only the cadence, highlight mode, and highlight kinds defaults are

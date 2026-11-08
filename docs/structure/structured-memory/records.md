@@ -76,6 +76,8 @@ comparison ties rounds together.
   by position. The byte budget comes from `RouteLimits.memoryPackageRoundBytes` in `server/src/app.ts`, default
   `MAX_READ_RESPONSE_BYTES`; `roundOf` defines charging before body reads and the soft first-record rule. `/runs` feeds
   the Log; `/cost` is [rebuild's cost preview](rebuild.md#the-cost-preview), with no record sent.
+- The Log and its JSON export show a run's `patchInput` only while the run keeps it: an older run has lost its patch
+  prompt to [the prune](writer.md#a-writer-run).
 - `readStructuredMemoryHealth` calls `POST /health` for [the badge](read.md#the-health-badge), charging live pages,
   events and runs, reading no messages. An answer can be a prefix the tab resumes; a chat over the round budget answers
   `unavailable`, in contents too. The route header defines the caps.

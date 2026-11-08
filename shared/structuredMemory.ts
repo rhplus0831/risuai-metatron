@@ -560,13 +560,20 @@ export interface MemoryRun {
     /** Why it was skipped. */
     reason?: string;
     error?: string;
-    /** The exact input, so a retry replays the same call; absent when no model call was made. */
+    /**
+     * The exact input, so a retry replays the same call; absent when no model call was made. Kept only
+     * while a retry can use it: a commit that settles a run strips it from every run but the newest
+     * failed or skipped one and any pending one, so a recorded run and a superseded failure hold none.
+     */
     input?: string;
     /** `input`'s settings (`memorySettingsFingerprint`): a retry under other settings builds a new input. */
     settingsFingerprint?: string;
     /** The extraction as parsed; `eventId` is what was committed from it. */
     analysis?: MemoryAnalysisResult;
-    /** The patch call's exact input; absent when no such call was made. */
+    /**
+     * The patch call's exact input; absent when no such call was made, and stripped with `input` once no
+     * retry can use it. A dry run's captured run keeps it, which is how the test run reports its call.
+     */
     patchInput?: string;
     /** The patch call's answer as parsed. */
     patches?: MemoryPatch[];

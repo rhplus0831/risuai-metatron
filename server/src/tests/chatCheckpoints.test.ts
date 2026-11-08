@@ -251,6 +251,9 @@ describe("chat checkpoints", () => {
         const { store, db, file } = fileStore();
         seed(store, { name: "K", note: "note", localLore: [], message: [m("saved")] });
         const records = memoryRecords(["z", "a"], 'Saved 한글 😀 "quoted"\nline');
+        records.runs[0].result = "failed";
+        records.runs[0].patchInput = 'Patch 한글 😀 "quoted"\nline';
+        delete records.runs[1].input;
         writeMemory(store, "c", "k", records);
         // Legal stored JSON whose whitespace and escapes would be lost by reserialization.
         const expected = Object.fromEntries(

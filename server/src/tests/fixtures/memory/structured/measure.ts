@@ -199,24 +199,61 @@ export async function timeCacheReads(
 // ---------------------------------------------------------------------------------------------
 // Checkpoint saves
 
-/** `runs` recorded runs whose `input` is `inputBytes` of ASCII, written in batches. */
-export function writeSyntheticRuns(scratch: ScratchStore, runs: number, inputBytes: number): void {
+/**
+ * `runs` recorded runs whose `input` is `inputBytes` of ASCII, written straight into `store` for the
+ * chat `ref` names, in batches, on its current memory revision. They are rows as an older build left
+ * them: recorded runs still holding their prompts, which no write of this build makes.
+ */
+export function writeSyntheticRuns(store: ResourceStore, ref: MemoryChatRef, runs: number, inputBytes: number): void {
     const input = '{"role":"system","content":"long instruction\\n"}\n'
         .repeat(Math.ceil(inputBytes / 48))
         .slice(0, inputBytes);
     for (let start = 0; start < runs; start += 500) {
         const ids = Array.from({ length: Math.min(500, runs - start) }, (_, i) => `run-${start + i}`);
-        scratch.write(SCRATCH_CHAT, {
-            runs: memoryRecords(ids).runs.map((run): MemoryRun => ({ ...run, input })),
-        });
+        const contents = store.memory.readContents(ref.characterId, ref.chatId)!;
+        store.memory.write(
+            ref.characterId,
+            ref.chatId,
+            { epoch: store.epoch(), baseRevision: contents.revision },
+            { runs: memoryRecords(ids).runs.map((run): MemoryRun => ({ ...run, input })) },
+        );
     }
 }
 
-/** One checkpoint save through the real transaction, timed. */
-export function timeCheckpointSave(store: ResourceStore, characterId: string, chatId: string, name: string): number {
-    const started = performance.now();
-    store.applyChanges({}, { inTransaction: { before: (tx) => void tx.save(characterId, chatId, name, "auto") } });
-    return performance.now() - started;
+export type RunPromptBytes = {
+    /** The chat's run rows. */
+    runs: number;
+    /** The rows holding `input` or `patchInput`. */
+    holding: number;
+    /** The UTF-8 bytes of every `input` and `patchInput` string value. */
+    promptBytes: number;
+    /** The UTF-8 bytes of every run row's `data`. */
+    dataBytes: number;
+};
+
+/**
+ * What the chat's `memory_runs` rows hold of prompts, read from the store's file on a connection of
+ * its own: SQLite's JSON functions take the two string values out of each row, so the figure is the
+ * stored text's and no record is parsed in JavaScript.
+ */
+export function runPromptBytes(file: string, chatId: string): RunPromptBytes {
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
+        const { seq } = db.prepare("SELECT seq FROM chats WHERE id = ?").get(chatId) as { seq: number };
+        const row = db
+            .prepare(
+                "SELECT COUNT(*) AS runs, " +
+                    "COALESCE(SUM(data ->> '$.input' IS NOT NULL OR data ->> '$.patchInput' IS NOT NULL), 0) AS holding, " +
+                    "COALESCE(SUM(COALESCE(octet_length(data ->> '$.input'), 0) + " +
+                    "COALESCE(octet_length(data ->> '$.patchInput'), 0)), 0) AS promptBytes, " +
+                    "COALESCE(SUM(octet_length(data)), 0) AS dataBytes " +
+                    "FROM memory_runs WHERE chatSeq = ?",
+            )
+            .get(seq) as RunPromptBytes;
+        return row;
+    } finally {
+        db.close();
+    }
 }
 
 export type ReplayAttribution = {

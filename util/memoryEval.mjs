@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { MEMORY_CALL_OVERHEAD_TOKENS, MEMORY_HEALTH_ROUND_BYTES } from "../shared/structuredMemory.ts";
 import { createTokenizers, TOKENIZER_FAMILIES } from "../server/src/prompt/tokenizers/index.ts";
 import { memoryWorkCost } from "../server/src/prompt/memory/structured/rebuild.ts";
-import { generateStory, storySizes } from "../server/src/tests/fixtures/memory/structured/story.ts";
+import { generateStory, MIN_STORY_TURNS, storySizes } from "../server/src/tests/fixtures/memory/structured/story.ts";
 import { SUMMARY_SHARE } from "../server/src/tests/fixtures/memory/structured/scriptedWriter.ts";
 import {
     CHARACTER_ID,
@@ -44,14 +44,11 @@ import {
 import {
     createHealthStore,
     fileSystemOf,
-    openScratchStore,
     replayCheckpointPages,
+    runPromptBytes,
     runRateCase,
-    SCRATCH_CHARACTER,
-    SCRATCH_CHAT,
     sqliteModes,
     timeCacheReads,
-    timeCheckpointSave,
     timeHealth,
     writeSyntheticRuns,
 } from "../server/src/tests/fixtures/memory/structured/measure.ts";
@@ -719,28 +716,59 @@ function printReplay(replay) {
     );
 }
 
+// The seeded runs are rows an older build left: recorded runs still holding their prompts. One live
+// recording through the real writer and task service settles a run, which prunes the chat's run history
+// in that commit; the saves are timed over what it leaves.
 async function runSyntheticCheckpoint() {
-    print(`## checkpoint: real saves over ${SYNTHETIC_RUNS.runs} runs of ${SYNTHETIC_RUNS.inputBytes} bytes`);
+    print(
+        `## checkpoint: real saves over ${SYNTHETIC_RUNS.runs} seeded runs of ${SYNTHETIC_RUNS.inputBytes} bytes ` +
+            `after one live recording`,
+    );
     print();
-    const scratch = openScratchStore(dir);
+    const story = generateStory({ language: "en", turns: MIN_STORY_TURNS, seed });
+    const fixture = createFixture({ story, algorithm: "structuredMemory", dir });
     try {
-        writeSyntheticRuns(scratch, SYNTHETIC_RUNS.runs, SYNTHETIC_RUNS.inputBytes);
-        const modes = sqliteModes(scratch.file);
-        printConditions({ journal: modes.journal, synchronous: modes.synchronous });
-        const first = timeCheckpointSave(scratch.store, SCRATCH_CHARACTER, SCRATCH_CHAT, "first");
-        const second = timeCheckpointSave(scratch.store, SCRATCH_CHARACTER, SCRATCH_CHAT, "second");
-        const replay = replayCheckpointPages(scratch.file, SCRATCH_CHAT, dir);
-        result.checkpointSynthetic = { ...SYNTHETIC_RUNS, firstMs: first, secondMs: second, replay };
+        const file = path.join(fixture.dir, "resources.sqlite");
+        const ref = { characterId: CHARACTER_ID, chatId: CHAT_ID };
+        writeSyntheticRuns(fixture.store, ref, SYNTHETIC_RUNS.runs, SYNTHETIC_RUNS.inputBytes);
+        const seeded = runPromptBytes(file, CHAT_ID);
+        const modes = sqliteModes(file);
+        printConditions({ journal: modes.journal, synchronous: modes.synchronous, storyTurns: story.turns.length });
+        const recordStart = performance.now();
+        // The first user message of turn 2 confirms turn 1: one window, one recorded commit.
+        await fixture.record(story.turns[1].userId);
+        const recordMs = performance.now() - recordStart;
+        const left = runPromptBytes(file, CHAT_ID);
+        const first = fixture.checkpointSave("first");
+        const second = fixture.checkpointSave("second");
+        const replay = replayCheckpointPages(file, CHAT_ID, dir);
+        result.checkpointSynthetic = {
+            ...SYNTHETIC_RUNS,
+            seeded,
+            recordMs,
+            left,
+            firstMs: first,
+            secondMs: second,
+            replay,
+        };
         table(
-            ["save", "ms"],
+            ["memory_runs", "rows", "holding prompts", "prompt bytes", "run data bytes"],
             [
-                ["first", first],
-                ["second, no change", second],
+                ["seeded", seeded.runs, seeded.holding, seeded.promptBytes, seeded.dataBytes],
+                ["after the recording", left.runs, left.holding, left.promptBytes, left.dataBytes],
+            ],
+        );
+        table(
+            ["step", "ms"],
+            [
+                ["the recording (one window, its calls scripted)", recordMs],
+                ["first save", first],
+                ["second save, no change", second],
             ],
         );
         printReplay(replay);
     } finally {
-        scratch.dispose();
+        await fixture.dispose();
     }
 }
 

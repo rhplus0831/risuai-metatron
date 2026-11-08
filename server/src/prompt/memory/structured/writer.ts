@@ -85,7 +85,11 @@ import { windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./w
  * - Replay: the newest row that did not record is the only one read. Its input is sent again, exactly,
  *   when its window (by message id and hash) and its settings are still this run's, and it lists all a
  *   person took back of the scene since; otherwise, so that fixed instructions take effect, a regrouped
- *   window rebuilds, and a reverted scene stays reverted, the prompt is built anew.
+ *   window rebuilds, and a reverted scene stays reverted, the prompt is built anew. A row keeps its
+ *   `input` and `patchInput` only while a retry can use them: every commit that settles a run has the
+ *   store strip both from every run but the newest failed or skipped one and any pending one
+ *   (`commitWindow`), so a failed window still replays after a newer run opened and recorded, and a
+ *   recorded run's prompts leave the checkpoint and snapshot bytes.
  * - Snapshot: no analysis call is made before its exact input is stored in a `pending` row. An input too
  *   large for a record fails the run with no call.
  * - Before the closing commit, a provider failure, an empty or unexpected answer, or an answer
@@ -381,6 +385,13 @@ function failedRun(run: MemoryRun, reason: string, error: string): MemoryRun {
  * algorithm can reach this after a switch back, and the swap would lose what it wrote. `rebuild.status`
  * reads the chat's run, and the rebuild's own store answers that it has none.
  *
+ * A commit that settles a run, one whose `changes.runs` hold no `pending` run (a failure, an unsent
+ * run, a recording), has the store prune the chat's run prompts in the same write (`pruneRunPrompts`):
+ * every run but the newest failed or skipped one and any pending one loses `input` and `patchInput`,
+ * the runs written here included. The opening commit, which holds the new pending run, strips nothing,
+ * so the prune never races the run it opens. `changes` itself is never changed: a dry run's commit
+ * never reaches here and keeps every field it captured.
+ *
  * A run in `changes` with a receipt puts that receipt on the window's assistant messages, each with
  * its other generation info as stored. A receipt moves the chat's revision and no source hash, so it
  * keeps every window valid. A receipt that conflicts all the same is logged and left to the run, which
@@ -419,9 +430,16 @@ export function commitWindow(
     if (contents && adoptionHold(contents, () => stored.hypaV3Data) > 0) {
         return { outcome: "refused", reason: "windowChanged" };
     }
+    const runs = changes.runs ?? [];
+    const settling = runs.length > 0 && runs.every(({ result }) => result !== "pending");
     let revision: string;
     try {
-        revision = store.memory.write(chaId, chatId, { epoch: input.epoch, baseRevision: arg.baseRevision }, changes);
+        revision = store.memory.write(
+            chaId,
+            chatId,
+            { epoch: input.epoch, baseRevision: arg.baseRevision, ...(settling ? { pruneRunPrompts: true } : {}) },
+            changes,
+        );
     } catch (error) {
         if (error instanceof ResourceConflictError) {
             return { outcome: "refused", reason: "revisionConflict" };
