@@ -135,6 +135,7 @@ it is not a current architecture guide.
 | Chat Store and Structured Memory Sweep   | `e99fca9a7`: `docs/plan/store-memory-sweep.md`                            | [resource sync](../structure/resource-sync.md), [chat store](../structure/chat-store.md), [chat pipeline](../structure/chat-pipeline.md), [server resources](../structure/server-resources.md), [plugins](../structure/plugin-sandbox.md), [draft recovery](../structure/draft-recovery.md), the [structured memory](../structure/structured-memory/README.md) pages; the deferred groups' entries stay in [found-issues](../research/found-issues.md)                                      |
 | Multi-Client Data Safety Checks          | `211ac71e2`: `docs/plan/multi-client-e2e.md`                              | [resource sync](../structure/resource-sync.md), [chat store](../structure/chat-store.md) (Q3 Limitation), [draft recovery](../structure/draft-recovery.md), [live updates](../structure/live-updates.md), [server generation](../structure/server-generation.md), [test harness](../structure/test-harness.md)                                                                                                                                                                              |
 | Storage Settings Page                    | `d745dcb8f`: `docs/plan/storage-settings-page.md`                         | [settings](../structure/settings-i18n.md), [app shell](../structure/app-shell.md), [assets](../structure/assets.md), [server](../structure/self-host-server.md)                                                                                                                                                                                                                                                                                                                             |
+| Module Headers                           | `25537bb26`: `docs/plan/module-headers.md`                                | [self-host server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [global API](../structure/global-api.md), [LLM requests](../structure/llm-requests.md), [persistence](../structure/persistence.md): the source module headers and export doc comments their `Files` entries name                                                                                                                                                                      |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1267,6 +1268,26 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     outside-RisuAI segment stays visible in every theme.
   - Found by the run: one entry in `docs/research/found-issues.md` (`a6eac283f`: `StorageController.owners` has no
     reader).
+- Module Headers:
+  - All five slices landed on `dev` on 2026-11-08 (plan-runner): 1 self-host-server (`b786a0938`), 2
+    chat-pipeline (`ca958b7ec`), 3 global-api (`19d1327fd`), 4 llm-requests (`28b6c54fe`), 5 persistence
+    (`f9b1fab10`). Slice 6 (server-generation) did not run (Q1); the orchestrator ran Slice 7's combined check.
+    The slices changed comments and Markdown only; the full `pnpm --silent test:agent` gate passed on the combined
+    tree (9,540 passed).
+  - Coverage over each guide's named `Files` source paths, paths without a module header and exports documented,
+    before (at `0c137ab45`) and after: self-host-server 22 of 26 to 0, 99 of 145 to 145 of 145; chat-pipeline 30 of
+    36 to 0, 188 of 228 to 228 of 228; global-api 9 of 21 to 0, 158 of 198 to 196 of 198; llm-requests 34 of 58 to
+    0, 185 of 320 to 320 of 320; persistence 12 of 29 to 0, 439 of 553 to 540 of 553. The exports left are in files
+    other guides own and these entries do not name (`src/ts/storage/resourceSync.svelte.ts`,
+    `shared/translatorPresets.ts`, `src/ts/storage/pluginStorageStore.svelte.ts`). `pnpm docs:ledger --stale`
+    reports one name for the five guides, as before (`Fixtures` in llm-requests' Tests).
+  - D8 ran differently: the two slices of a pair did not rebase onto each other; each landed by cherry-pick and
+    `pnpm check:docs` ran again on `dev` after every landing (owner decision 2026-11-08, recorded here only).
+  - Not planned (the plan's Later list): a `missing-header` rule in `pnpm check:docs`, the identifier check and
+    `Files` generator Guides To Source left, and the same measure over the remaining guides; Slice 6's
+    server-generation path list is in the archived file.
+  - Found by the run: 29 entries in `docs/research/found-issues.md` (`25537bb26`), 16 of them under the new LLM
+    requests and providers section. The plan's D7 sweep session is for the owner to start; it was not run.
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.
