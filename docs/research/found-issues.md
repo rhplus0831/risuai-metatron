@@ -13,7 +13,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Server routes and resource store](#server-routes-and-resource-store) (10)
 - [LLM requests and providers](#llm-requests-and-providers) (14)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
-- [Display transform](#display-transform) (9)
+- [Display transform](#display-transform) (8)
 - [Chat screen and input](#chat-screen-and-input) (6)
 - [Client and plugins](#client-and-plugins) (28)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (9)
@@ -429,15 +429,6 @@ The Render Work Budget comparison run ([audit](../audit/render-work-budget-2026-
 
 **Why it matters:** the same cache-poisoning class as the direct adapter's fixed 429 case, reachable only with the experimental toggle on.
 **Suggested handling:** check `d.ok` before parsing when touching that branch.
-
-### The pair cache evicts a pair with the same translation
-
-`writeMemoryCache` in `src/ts/translator/translator.ts` (~83) drops the existing pair when a different source produces the same translation (`memoryCacheByTrans`). Two paragraphs that translate to identical text evict each other, so a later render (e.g. `ChatBody`'s retry) requests one of them again. Found by the R2 challenger of the Implementation Audit Fixes run (2026-11-06) with a deferred-fetch probe; it predates R2. Owner: translation.
-
-**Why it matters:** repeated short lines ("Yes.", "...") in rendered translation cost extra provider requests per render.
-**Suggested handling:** reverse lookups need the by-translation map, so a fix must first decide which origin a reverse lookup returns.
-
-**Decision (owner, 2026-11-08):** `writeMemoryCache` keeps the older pair's by-origin entry and only re-points the by-translation slot to the newest pair; reverse lookups keep returning the newest origin.
 
 ### A provider switch during a translation caches a mixed result
 
