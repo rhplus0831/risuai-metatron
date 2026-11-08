@@ -4,6 +4,11 @@
 - Read `STRUCTURE.md` next: its Agent Read Protocol and Repository-Wide
   Invariants, then the one focused guide its Choose By Task table routes you to.
   Do not load every guide.
+- Read `STRUCTURE.md` and every guide with `pnpm docs:read <guide>`
+  (`pnpm docs:read STRUCTURE` for the index), never with `cat`, `sed`, or the
+  Read tool, even when the session's instructions say to read files through
+  Bash: it prints the outline first, so one section is read instead of a
+  40,000-byte file.
 
 # Search Hygiene
 
