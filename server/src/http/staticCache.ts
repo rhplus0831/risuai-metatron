@@ -6,6 +6,16 @@ import type { Context, MiddlewareHandler } from "hono";
 import { getMimeType } from "hono/utils/mime";
 import type { AppEnv } from "../types.ts";
 
+/**
+ * Static representation negotiation and conditional caching before the fallback static server in
+ * server/src/app.ts. Hashed /assets/ files are immutable; other files require revalidation. Fresh
+ * Brotli/gzip siblings may serve compressible files, with validators specific to that representation;
+ * range requests use identity. The client index is read and validated through one handle and must
+ * contain a head tag before it can answer, including a 304: its injected __NODE__ flag lets the
+ * client boot. Missing or rejected static paths fall through without cache headers.
+ */
+
+/** File extensions eligible for precompressed .br/.gz sibling negotiation; HTML stays identity. */
 export const STATIC_COMPRESSIBLE_EXTENSIONS = new Set([".js", ".mjs", ".css", ".json", ".svg", ".wasm"]);
 
 type StaticEncoding = "br" | "gzip";

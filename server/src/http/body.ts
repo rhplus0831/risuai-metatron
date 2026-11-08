@@ -1,6 +1,14 @@
 import type { Context } from "hono";
 import type { AppEnv } from "../types.ts";
 
+/**
+ * JSON body parsing shared by server routes. Only application/json is read; empty or other media
+ * types produce an empty object. Objects and arrays are accepted, while primitives, malformed JSON,
+ * and failed reads produce a 400 response. Size limits belong to the calling route or
+ * server/src/app.ts, rather than this parser.
+ */
+
+/** Parsed JSON container or the 400 response to return. */
 export type JsonBodyResult = { ok: true; body: Record<string, any> } | { ok: false; response: Response };
 
 /**

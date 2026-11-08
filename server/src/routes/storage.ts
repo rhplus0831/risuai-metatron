@@ -30,8 +30,47 @@ import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { limitedBody, RequestBodyError } from "./limitedBody.ts";
 
+/**
+ * Logical asset-file storage, URL serving, and batch transfer. Only assets/ is a namespace; auth,
+ * resource databases, caches, and staging remain unreachable. Logical names become reversible,
+ * case-safe single path components through encodeFileName; headers and URL keys use strict hex
+ * UTF-8. Reads open regular files without following symlinks, and derive length and bytes from the
+ * same handle. Registration clears abandoned save/.tmp staging files; one process owns the save.
+ *
+ * Every route uses server/src/app.ts's storage limiter before JWT auth. GET /api/read returns an
+ * empty 200 for a missing/unresolvable key; GET /api/list returns only decodable regular files.
+ * GET /api/remove validates every $$-joined header key before sequential removal (later I/O failure
+ * leaves earlier removals). POST /api/write takes raw bytes, including empty files. Writes/removals
+ * enter the maintenance gate only for mutation and answer 503 with Retry-After: 5 while closed;
+ * reads stay available. Publication and reuse use claimAssetKey's lock and one-hour lease, shared
+ * with server/src/data/assetLifecycle.ts; in-process callers hold their own admission.
+ *
+ * POST /api/assets/write streams shared/assetBatch.ts records through flushed temporary files,
+ * admitting publication per record rather than across body reads. Failure drops the current stage,
+ * drains the body, and retains published records; success syncs target directories before answering.
+ * POST /api/assets/read returns an ordered no-store record stream, including duplicates and empty
+ * records for absent files. These routes and /api/write use the app's default 100 MiB body cap.
+ * POST /api/assets/missing instead authenticates before its 64 KiB body cap: 1..512 names, four
+ * concurrent hashes and 256 MiB of reads by default, sorted key locks through verified presence and
+ * lease renewal, missing names deduplicated in input order, and no-store on success only.
+ *
+ * GET/HEAD /api/asset/<hex> authenticates before file access (failures are 401); malformed keys are
+ * 400 and missing/non-regular files 404. shared/assetMime.ts supplies MIME/download classification;
+ * assetHeaders wraps errors, 304s, and redirects too. Content names verified by
+ * server/src/http/assetVerification.ts get strong SHA-256 validators and private year-long immutable
+ * caching; others use weak stat validators and private no-cache, queuing unknown content hashes.
+ * Matching If-None-Match precedes Range; one byte range can answer 206/416, malformed/multiple ranges
+ * are ignored, and HEAD, empty files, or any If-Range use full responses. Thumbnail queries have
+ * size/version-specific validators; deterministic originals and transient failures redirect 307 to
+ * the query-free URL with x-risu-thumbnail: original, unavailable, busy, or error. Failures use
+ * no-store and never produce a thumbnail 5xx.
+ */
+
+/** Awaited content-verified presence-check endpoint. */
 export const ASSET_MISSING_PATH = "/api/assets/missing";
+/** Maximum number of names accepted by one presence check. */
 export const MAX_ASSET_MISSING_NAMES = 512;
+/** Presence-check JSON body cap, applied after JWT authentication. */
 export const MAX_ASSET_MISSING_BODY_BYTES = 64 * 1024;
 
 /**

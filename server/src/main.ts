@@ -14,8 +14,13 @@ import { readListenConfig } from "./listenConfig.ts";
  * `TRUST_PROXY` to `createServerContext` (`server/src/http/clientIp.ts` parses it). WebSocket
  * upgrades and the background tasks (`attachWebSocket`, `startBackgroundTasks` in
  * `server/src/app.ts`) start only after `serve()` is set up, and SIGINT or SIGTERM runs the
- * shutdown below once.
+ * shutdown below once. Request receipt is bounded at four hours so large imports can arrive.
+ * Shutdown begins context refusal/aborts before closing the listener, allows eight seconds for
+ * HTTP draining, destroys remaining connections, then waits for context disposal before exit.
+ * Fatal runtime errors are recorded through uncaughtExceptionMonitor without changing Node's
+ * exit behavior; server errors are recorded before exit, while the startup catch only logs.
  */
+
 const rootDir = process.cwd();
 const SHUTDOWN_GRACE_MS = 8_000;
 /**

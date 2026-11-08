@@ -128,10 +128,47 @@ import { type BuildInfo, formatBuildId } from "../../shared/buildInfo.ts";
 import { readServerBuildInfo, resolveBuildInfo, resolveNormalizationIdentity } from "./buildInfo.ts";
 import type { AppEnv } from "./types.ts";
 
+/**
+ * Composes the self-host HTTP app and its per-context stores, workers, sockets, and background tasks.
+ * server/src/main.ts owns listening: it attaches upgrades and starts timers after creating the
+ * listener, then begins shutdown before draining HTTP and disposing this context.
+ *
+ * Middleware runs before route authentication: HTTP diagnostics, preview asset headers, shutdown
+ * admission/tracking, then body limits. Resource, checkpoint, memory-task, structured-memory, auth
+ * state-write, push state-write, and lifecycle handlers are tracked through their responses before
+ * the store closes. Backups/imports manage their own operation admission. Shutdown refuses those
+ * families plus history, diagnostics, and token routes with 503, Retry-After: 5, and no-store; all
+ * responses then close their connections. History, diagnostics, memory-task, structured-memory,
+ * checkpoint, token, and lifecycle responses are no-store even on limiter/body-limit failures.
+ *
+ * Four independent client-IP limiter buckets use server/src/http/clientIp.ts and
+ * server/src/http/rateLimit.ts: authenticated, storage, and auth each allow 2000/minute by default;
+ * login and initial password setup share 10/30 seconds. Proxy routes (including the unauthenticated
+ * hub proxy), push, history, diagnostics, and resource/job services use the authenticated bucket;
+ * server/src/routes/storage.ts and server/src/routes/assetLifecycle.ts share storage's bucket.
+ * server/src/routes/auth.ts uses the auth bucket for test_auth and crypto.
+ *
+ * The default body limit is 100 MiB, checked before route handlers. Backup, module, and CharX imports
+ * instead stream under maxImportBytes. Route-local caps replace the app cap for Realm POSTs,
+ * diagnostic reports, history shares, translation, memory tasks, structured memory, checkpoints,
+ * tokens, missing-asset checks, resource reads/boot, login/crypto/setup, transforms, and subscription
+ * PUT/DELETE. Their modules own the caps and authentication order; storage batch bodies use the
+ * app cap. History and diagnostics routes require JWT; shares cap at 4 KiB and reports at 1 MiB,
+ * both after auth in server/src/routes/requestHistory.ts and server/src/routes/diagnostics.ts.
+ * server/src/http/staticCache.ts handles validators and encoded siblings before static
+ * serving; /, /index.html, and shared/routes.ts client paths get the flagged index first. Index and
+ * static handlers have neither authentication nor rate limiting; HTML always uses identity encoding.
+ *
+ * One server/src/data/orderedWriter.ts scheduler serializes auth, push, and diagnostic file changes.
+ * beginShutdown stops admissions/timers and aborts work; dispose waits for jobs, admitted operations,
+ * and queued state writes, finishes diagnostics while its sources are open, then closes the stores.
+ */
+
 const MAX_BODY_BYTES = 100 * 1024 * 1024;
 /** An answer slower than this is an `http` diagnostic event whatever its status. */
 const HTTP_SLOW_MS = 5_000;
 
+/** The app, services, upgrade attachment, background-task startup, and shutdown lifecycle of one server. */
 export type ServerContext = ReturnType<typeof createServerContext>;
 
 /** Lower route caps, so a test reaches them in a few requests; each default is the production value. */
@@ -186,6 +223,8 @@ export type RouteLimits = {
  * step then selects stored records with no hand-off or gap question (Record now runs the writer
  * inside its job). With either, the manual routes answer 503 `notEnabled` (nothing hands a chat to
  * the context's service). `memoryTaskOptions` replaces the context's service's clock and limits (tests).
+ * Invalid parsed startup environment overrides throw with their variable name before the context
+ * is returned; the numeric overrides must satisfy their parser's range/integer checks.
  */
 export function createServerContext(options: {
     rootDir: string;

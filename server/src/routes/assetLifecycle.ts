@@ -19,6 +19,16 @@ import type { AuthStore } from "./auth.ts";
 import { decodeKeyHeader, resolveStorageKey } from "./storage.ts";
 
 /**
+ * Authenticated retention reporting, scan/sweep controls, and lease-free candidate previews over
+ * server/src/data/assetLifecycle.ts. The storage limiter precedes JWT authentication; no-store wraps
+ * every route answer, and server/src/app.ts tracks this family and covers shutdown refusals. POST
+ * bodies use the app's default 100 MiB cap, with sweep JSON read after authentication.
+ * Preview admission is rechecked under the asset key lock through file opening and thumbnail
+ * generation. Unlike ordinary asset reads, previews neither renew leases nor verify content names;
+ * only current image candidates may be shown. The app supplies assetHeaders before admission.
+ */
+
+/**
  * GET /api/assets/report answers 200 with the latest versioned report. GET /api/assets/status answers
  * 200 with only { running, version }. POST /api/assets/scan answers 202 with
  * the running report, or 409 while a scan or sweep is running. POST /api/assets/sweep validates

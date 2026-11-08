@@ -5,6 +5,28 @@ import { createRedactor } from "../llm/redact.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
+/**
+ * Reverse-proxy routes on server/src/app.ts's authenticated limiter bucket. GET/POST /proxy and
+ * /proxy2 authenticate with a stored password digest or registered JWT before reading raw POST
+ * bytes; their targets are unrestricted. risu-url (URI-decoded) precedes ?url=; risu-header is a
+ * URI-encoded JSON header object, otherwise incoming headers are used. Hop-by-hop fields,
+ * Connection-nominated fields, and risu-auth are stripped, and a missing x-forwarded-for is filled
+ * from the trusted client IP. The app's default 100 MiB body cap runs before this module.
+ *
+ * risu-aux-op instead requires JWT authentication and server/src/llm/auxOps.ts endpoint planning
+ * with stored credentials, optionally resolved from a stored profile by server/src/app.ts. No
+ * redirects are followed; upstream 3xx becomes 502. Response headers and error text are redacted,
+ * and successful JSON is parsed and refused if it carries the credential. Media bodies stream.
+ * A valid positive risu-timeout-ms covers fetch and the streamed body; downstream cancellation
+ * also aborts fetch. Timeout/abort before headers answers 504; a later abort closes the body.
+ * Reverse-proxy responses drop CSP, Clear-Site-Data, cache policy, and obsolete encoding/framing.
+ *
+ * GET /hub-proxy/* uses no auth and only the configured hub (default https://sv.risuai.xyz), forwarding
+ * its suffix/query with the hub Origin and without risu-auth. It follows at most one same-origin
+ * redirect, passing external redirects back to the browser. Its responses strip only obsolete
+ * encoding/framing headers; stream failures close the body and request failures answer 502.
+ */
+
 const DEFAULT_HUB_URL = "https://sv.risuai.xyz";
 
 // fetch() already decoded the body, so the upstream length/encoding/framing no longer apply.

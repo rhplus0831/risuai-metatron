@@ -1,6 +1,15 @@
 import type { CredentialSlotName } from "../../../shared/llm/credentialSlots.ts";
 import type { ResolvedCredential } from "./credentials.ts";
 
+/**
+ * Allowlisted credential injection plans for auxiliary requests in server/src/routes/proxy.ts.
+ * Each operation fixes HTTPS origin, method, path, query allowlist, and secret placement. Planning
+ * rejects URL credentials, mismatched endpoints/methods, extra query parameters, and missing keys;
+ * it removes caller credential headers/query fields before inserting the stored secret. Only rows
+ * with a credential slot accept a profile resolved by server/src/app.ts. A successful plan also
+ * returns stored/injected secret spellings for response redaction; this module performs no I/O.
+ */
+
 /** A profile's binding resolved by the app against stored records, never a caller-supplied key. */
 export type AuxCredential = { slot: CredentialSlotName | null; credential: ResolvedCredential } | { error: string };
 

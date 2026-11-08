@@ -2,6 +2,13 @@ import net from "node:net";
 import path from "node:path";
 
 /**
+ * Environment parsing for the listener in server/src/main.ts and startup options in server/src/app.ts.
+ * Authentication bypass and a nonzero development asset-clock offset require a numeric loopback
+ * host; resolver names are insufficient. Invalid flags, password digests, or clock offsets throw
+ * before startup can proceed. Relative save directories resolve against the supplied root.
+ */
+
+/**
  * Where `main.ts` listens and stores, from its environment. `PORT` (default 6001) and `RISU_HOST`
  * (unset: every interface, Node's default) pick the listener; `RISU_SAVE_DIR` (relative to the root)
  * replaces `cwd/save`. `RISU_AGENT_DEV_AUTH_BYPASS=TRUE` (or `1`, any case) lets every protected route
@@ -19,6 +26,7 @@ export type ListenConfig = {
     authBypass: boolean;
 };
 
+/** Resolves port, host, save directory, and the loopback-restricted authentication bypass. */
 export function readListenConfig(env: NodeJS.ProcessEnv, rootDir: string): ListenConfig {
     const hostname = env.RISU_HOST?.trim() || undefined;
     const authBypass = parseFlag(env.RISU_AGENT_DEV_AUTH_BYPASS, "RISU_AGENT_DEV_AUTH_BYPASS");

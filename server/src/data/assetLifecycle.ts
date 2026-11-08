@@ -74,6 +74,7 @@ const MEMORY_TABLES = [
 const CHECKPOINT_TABLES = ["chatCheckpoints", "checkpointPages", "checkpointPageRefs"];
 type AssetReportContent = Omit<AssetLifecycleReport, "version">;
 
+/** Receives recognized asset-name tails and inlay IDs from decoded text or JSON. */
 export type AssetReferenceSink = { tail(value: string): void; inlay(id: string): void };
 
 /** Cut before an invalid or incomplete UTF-8 code point, retaining the valid prefix. */
@@ -257,6 +258,7 @@ function attribute(root: Roots, kind: string, id: string, value: unknown) {
     }
 }
 
+/** Row selection counts and elapsed timings of the latest retention scan. */
 export type AssetScanMetrics = {
     tables: Record<string, { read: number; selected: number }>;
     liveScanMs: number;
@@ -264,13 +266,16 @@ export type AssetScanMetrics = {
     longestChunkMs: number;
     totalMs: number;
 };
+/** A sweep cannot start because its activity, scan, epoch, or uptime prerequisites do not hold. */
 export class AssetSweepConflict extends Error {}
+/** Synchronous-turn, retained-root recheck, batch, and total timings of the latest sweep. */
 export type AssetSweepMetrics = {
     longestSynchronousTurnMs: number;
     remarks: { kind: "full" | "narrowed"; ms: number }[];
     batches: number;
     totalMs: number;
 };
+/** Retention clocks, maturity, scheduling, bounded work, disk probing, and export-wait controls. */
 export type AssetLifecycleOptions = {
     /** Full retained rechecks are the default; a lower row cutoff permits comparison with JS narrowing. */
     fullRemarkMaxRows?: number;
@@ -289,8 +294,14 @@ export type AssetLifecycleOptions = {
     betweenChunks?: (signal: AbortSignal) => void | Promise<void>;
     exportWaitMs?: number;
 };
+/** Retention reports, candidate admission, scan/sweep work, metrics, and shutdown lifecycle. */
 export type AssetLifecycle = ReturnType<typeof createAssetLifecycle>;
 
+/**
+ * Opens the retention ledger and builds a scan/sweep service for one live store and its snapshots.
+ * start schedules read-only scans; deletion requires an explicit sweep. beginShutdown aborts current
+ * work and stops scheduling; close waits for scan/sweep settlement before closing the ledger.
+ */
 export function createAssetLifecycle(
     options: AssetLifecycleOptions & {
         savePath: string;

@@ -4,11 +4,21 @@ import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { STORAGE_READ_FLAGS } from "./recordStream.ts";
 
+/**
+ * Content-name verification shared by storage writers, immutable asset serving, and presence checks
+ * in server/src/routes/storage.ts. Cached results bind to absolute path plus size, nanosecond mtime,
+ * inode, and device; recording or forgetting advances in-flight generations so stale work cannot
+ * overwrite a newer result. The asset route can queue one bounded background reader; awaited checks
+ * instead reserve a read budget in input order and bound concurrent hashes. Unknown, unreadable,
+ * changed, symlinked, or over-budget files never count as proven present.
+ */
+
 type AssetStat = Pick<BigIntStats, "size" | "mtimeNs" | "ino" | "dev">;
 type Verification = AssetStat & { ok: boolean };
 type AssetHasher = (handle: FileHandle) => Promise<string>;
 type BoundedAssetHasher = (handle: FileHandle, size: number, signal?: AbortSignal) => Promise<string | null>;
 
+/** Awaited verification's hasher, parallelism, byte budget, and cancellation signal. */
 export type AssetVerificationOptions = {
     hasher?: BoundedAssetHasher;
     concurrency?: number;

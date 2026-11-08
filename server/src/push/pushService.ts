@@ -12,6 +12,23 @@ import { type DurableFs, mkdirDurableSync, writeFileDurable, writeFileDurableSyn
 import { createOrderedWriter, type OrderedWriter } from "../data/orderedWriter.ts";
 import { type DiagnosticsRecorder, recordSafely } from "../diagnostics/log.ts";
 
+/**
+ * Server Web Push delivery for shared/notifications.ts completions, with browser subscriptions in
+ * save/server outside resources, archives, and snapshots. VAPID comes from a complete environment
+ * pair or a generated/persisted key file; an invalid existing pair/file or contact disables push
+ * without replacing the file. Endpoints are canonical HTTPS DNS URLs on allowed push hosts; keys
+ * are validated before storage. RISU_WEB_PUSH_ALLOWED_HOSTS extends the built-in exact/suffix list.
+ *
+ * Subscription changes serialize on one server/src/data/orderedWriter.ts key and publish through
+ * server/src/data/durableWrite.ts before installation. Unreadable lists block replacement and are
+ * retried; delivery outcomes update bookkeeping in a later best-effort write. Registrations keep
+ * at most 50 endpoints and skip recent unchanged healthy entries. Completions queue serially with
+ * at most four pending sends, each fan-out parallel, ten-second transport timeouts, one-hour TTL,
+ * high urgency, and a per-chat topic when valid. Gone endpoints (404/410) are removed. Diagnostics
+ * carry service/outcome/job identifiers, never payloads or endpoints. Shutdown drops later sends;
+ * drain waits for queued subscription operations, without waiting for a delivery in flight.
+ */
+
 /** At most this many browsers are subscribed; registering one more drops the least recently refreshed. */
 export const MAX_PUSH_SUBSCRIPTIONS = 50;
 /** Completions waiting behind the one being delivered; a completion past this is dropped (a later one of its chat replaces its notice anyway). */
@@ -50,11 +67,13 @@ type StoredSubscription = {
 /** What a settled delivery left for the next operation to apply: `status` is null for no HTTP answer. */
 type DeliveryOutcome = { target: StoredSubscription; status: number | null; ok: boolean };
 
+/** The Web Push delivery transport, injectable without changing subscription persistence. */
 export type PushTransport = Pick<typeof webPush, "sendNotification">;
 
 /** A registration's outcome: stored, refused (invalid or outside the allowed hosts), push off, or not saved. */
 export type PushRegistration = "ok" | "invalid" | "disabled" | "unsaved";
 
+/** Public-key lookup, durable subscription changes, completion delivery, and shutdown controls. */
 export type PushService = {
     /** The VAPID public key browsers subscribe with, or null when push is disabled. */
     publicKey(): string | null;

@@ -7,6 +7,15 @@ import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { limitedBody } from "./limitedBody.ts";
 
+/**
+ * Browser Web Push key lookup and subscription writes backed by server/src/push/pushService.ts.
+ * All routes run server/src/app.ts's authenticated limiter, then JWT authentication. PUT/DELETE
+ * subscription bodies are capped at 16 KiB after auth and parsed as JSON; handler answers set
+ * no-store. No resource epoch is required. The app tracks subscription writes before their first
+ * await and refuses them during shutdown, so admitted durable writes settle before context disposal.
+ */
+
+/** Shared public-key and subscription endpoint paths from shared/notifications.ts. */
 export { PUSH_KEY_PATH, PUSH_SUBSCRIPTION_PATH };
 
 /** A subscription is an endpoint and two keys. */

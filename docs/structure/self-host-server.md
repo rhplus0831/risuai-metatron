@@ -33,8 +33,7 @@ A module's contract is its doc comments; an entry names its path, role, and iden
   `RISU_HOST`, `RISU_SAVE_DIR`, `RISU_AGENT_DEV_AUTH_BYPASS`), `isLoopbackHost`, `parsePasswordSeed`,
   `parseAssetClockOffset`.
 - `server/src/app.ts` the assembly of state, routes, and lifecycle: `createServerContext`, `RouteLimits`,
-  `attachWebSocket`, `startBackgroundTasks`, `beginShutdown`, `dispose`. It and its route factories consume the
-  variables below; a value one of them cannot parse stops the start, with the variable's name.
+  `attachWebSocket`, `startBackgroundTasks`, `beginShutdown`, `dispose`.
 - `RISU_PASSWORD_SHA256`; `RISU_MAX_IMPORT_BYTES` ([backup routes](server-resources.md#backup-routes));
   `RISU_MAX_UPSTREAM_DB_BYTES` ([upstream backups](server-resources.md#upstream-backups));
   `RISU_UPSTREAM_IMPORT_HEAP_MB`, `RISU_UPSTREAM_EXPORT_HEAP_MB`, and `RISU_RESTORE_HEAP_MB`
@@ -45,11 +44,10 @@ A module's contract is its doc comments; an entry names its path, role, and iden
 ### Services and helpers
 
 - `server/src/push/pushService.ts` Web Push for completions: `createPushService`, `completionTopic`, `PushService`,
-  `MAX_PUSH_SUBSCRIPTIONS`; its outcomes are content-free `push` events ([diagnostics](diagnostics.md)).
-- `server/src/data/orderedWriter.ts` the auxiliary-write scheduler: `createOrderedWriter`, one per context, shared by
-  the auth store, the diagnostics journal, and the push service.
-- `server/src/data/durableWrite.ts` flushed temporary file renamed into place, for the auth files and the push
-  subscriptions: `writeFileDurable`, `writeFileDurableSync`, `mkdirDurable`, `mkdirDurableSync`, `syncDir`.
+  `MAX_PUSH_SUBSCRIPTIONS`.
+- `server/src/data/orderedWriter.ts` the auxiliary-write scheduler: `createOrderedWriter`, `OrderedWriter`.
+- `server/src/data/durableWrite.ts` durable file publication and directory creation: `writeFileDurable`,
+  `writeFileDurableSync`, `mkdirDurable`, `mkdirDurableSync`, `syncDir`.
 - `server/src/http/body.ts` JSON bodies: `readJsonBody`. `server/src/http/rateLimit.ts` the buckets:
   `createRateLimiter`, `rateLimitKey`. `server/src/http/clientIp.ts` client IPs: `parseTrustProxyEnv`, `compileTrust`,
   `getClientIp`.
@@ -67,17 +65,15 @@ A module's contract is its doc comments; an entry names its path, role, and iden
 
 ### Routes
 
-`server/src/app.ts` `createServerContext` is the registration map of the server's HTTP and WebSocket surface: check it
-and the named route module before changing a path or its admission policy. In registration order:
+`server/src/app.ts` `createServerContext` registers HTTP and WebSocket services; its module header owns middleware
+ordering, shutdown admission, and body-cap exceptions (`app.onError`, `limitedBody`, `ownLimit`;
+[Request bodies](#request-bodies)). Check it and the named route module before changing a path or its admission policy.
+Route lookup order:
 
-1. `app.onError`, then shutdown admission before body parsing (what it tracks, refuses, and marks `no-store`: its
-   comments).
-2. `limitedBody`, the 100 MiB global cap, which the `ownLimit` routes skip ([Request bodies](#request-bodies)).
-3. `GET /`, `GET /index.html`, and every `isClientRoutePath` path (`shared/routes.ts`, [URL routes](app-shell.md)):
-   `serveCachedIndex`, with no auth and no limiter.
-4. `createStaticCache`, then `serveStatic`, for every other GET/HEAD of `dist/*`, with no auth and no limiter. HTML (the
-   injected index included) and requests carrying `Range` or `If-Range` are never negotiated: they get identity.
-5. The route families, with paths and request contracts documented by their owners:
+1. `GET /`, `GET /index.html`, and `isClientRoutePath` paths (`shared/routes.ts`, [URL routes](app-shell.md)):
+   `server/src/http/staticCache.ts` `serveCachedIndex`.
+2. Other `dist/*` GET/HEAD: `server/src/http/staticCache.ts` `createStaticCache`, then `serveStatic` in `app.ts`.
+3. Route families and their owners:
    - This guide: [proxy](#proxy-routes), [push](#push-routes),
      [request history and diagnostics](#request-history-and-diagnostics-routes), [auth](#auth-routes), and
      [storage](#storage-routes).
@@ -96,45 +92,45 @@ and the named route module before changing a path or its admission policy. In re
 
 ### Proxy routes
 
-`server/src/routes/proxy.ts` `registerProxyRoutes`, all on the authenticated limiter.
+`server/src/routes/proxy.ts` `registerProxyRoutes`; its module header owns authentication, limiter, and target policy.
 
-- `GET`/`POST /proxy`, `/proxy2`: `checkProxyAuth` (the stored password in `risu-auth`, or a registered ES256 JWT); with
-  `risu-aux-op`, JWT only (`server/src/llm/auxOps.ts`, [LLM requests](llm-requests.md)).
-- `GET /hub-proxy/*`: no auth; `https://sv.risuai.xyz` only.
+- `GET`/`POST /proxy`, `/proxy2`: `checkProxyAuth`; auxiliary operations: `server/src/llm/auxOps.ts`
+  ([LLM requests](llm-requests.md)).
+- `GET /hub-proxy/*`: configured hub (default `https://sv.risuai.xyz`).
 
 ### Push routes
 
-`server/src/routes/push.ts` `registerPushRoutes`: JWT, authenticated limiter, no epoch; the statuses are in its comment,
-the refresh interval is `PUSH_REGISTRATION_REFRESH_MS` (`shared/notifications.ts`).
+`server/src/routes/push.ts` `registerPushRoutes`; its module header and export doc own admission, body caps, and
+statuses. The refresh interval is `PUSH_REGISTRATION_REFRESH_MS` (`shared/notifications.ts`).
 
-- `GET /api/push/key`; `PUT` and `DELETE /api/push/subscription`, with 16 KiB bodies read after authentication.
+- `GET /api/push/key`; `PUT` and `DELETE /api/push/subscription`.
 
 ### Request history and diagnostics routes
 
-`/api/request-history*` and `/api/diagnostics*` (`registerRequestHistoryRoutes`, `registerDiagnosticsRoutes`): JWT,
-authenticated limiter, `no-store`, bodies capped after authentication (`PUT /api/request-history/share` 4 KiB,
-`POST /api/diagnostics/report` 1 MiB). The [routes and their contract](diagnostics.md#files) belong to diagnostics.
+`/api/request-history*` and `/api/diagnostics*` (`registerRequestHistoryRoutes`, `registerDiagnosticsRoutes`), including
+`PUT /api/request-history/share` and `POST /api/diagnostics/report`: admission and cap wiring in the `server/src/app.ts`
+module header; [route contracts](diagnostics.md#files) belong to diagnostics.
 
 ### Auth routes
 
-`server/src/routes/auth.ts` `createAuthStore` (`registerRoutes`, `verifyJwt`, `checkAuth`); the bodies are capped at
-`MAX_AUTH_BODY_BYTES` and read before any authentication.
+`server/src/routes/auth.ts` `createAuthStore` (`registerRoutes`, `verifyJwt`, `checkAuth`, `MAX_AUTH_BODY_BYTES`); its
+module header owns authentication, limiter selection, and body caps.
 
-- `GET /api/test_auth`: no auth, auth limiter. `POST /api/login`: password digest, login limiter.
-- `POST /api/crypto`: **no auth**, auth limiter. `POST /api/set_password`: **no auth**, only while unset; login limiter.
+- `GET /api/test_auth`; `POST /api/login`.
+- `POST /api/crypto`; `POST /api/set_password`.
 
 ### Storage routes
 
-`server/src/routes/storage.ts` `registerStorageRoutes`: `checkAuth` (JWT), storage limiter, hex UTF-8 logical keys
-(`decodeKeyHeader`, `resolveStorageKey`); each route's contract is the comment above it.
+`server/src/routes/storage.ts` `registerStorageRoutes` (`decodeKeyHeader`, `resolveStorageKey`); its module header owns
+admission, wire keys, body caps, and response policy.
 
 - `GET /api/{read,list}`, `POST /api/write`, and `GET /api/remove` (no client calls it).
 - `GET`/`HEAD /api/asset/*`: `assetHeaders`, `serveAssetFile`, `shared/assetMime.ts` (`assetMimeType`,
   `isActiveAssetExtension`), `assetVerification`; `?w=256|512` is the thumbnail variant (`createThumbnailService`). Its
-  comment has the cache headers, ETags, and the variant's `307` reasons (`x-risu-thumbnail`).
+  module header and route comment own validators, caching, and redirects (`x-risu-thumbnail`).
 - `POST /api/assets/{write,read,missing}` (`shared/assetBatch.ts` framing; `ASSET_MISSING_PATH`).
 - `GET /api/assets/{report,status,preview/*}`, `POST /api/assets/{scan,sweep}`: `server/src/routes/assetLifecycle.ts`,
-  `shared/assetLifecycle.ts`; `preview/*` serves a candidate's image, unleased.
+  `registerAssetLifecycleRoutes`, `shared/assetLifecycle.ts`.
 - The thumbnail sizes are admitted here (`widths`, `thumbnailSize`) and repeated in `ThumbnailRequest.size` and
   `ENTRY_NAME`: change them together. Browsers and the service worker follow the variant's redirect; pages need no
   status handling.
@@ -201,7 +197,8 @@ in its own `limitedBody(<cap>)`, as `server/src/routes/auth.ts` and `server/src/
 
 ### Disk layout
 
-Everything lives under `save/`. `data/`, `backups/`, and `cache/thumbnails/` are not storage namespaces.
+Runtime data defaults to `save/`; `RISU_DIAGNOSTICS_DIR` can place diagnostics elsewhere. `data/`, `backups/`, and
+`cache/thumbnails/` are not storage namespaces.
 
 - `server/`: the [auth and push files](#auth-and-push-files).
 - `assets/`: the [user files](#user-files).

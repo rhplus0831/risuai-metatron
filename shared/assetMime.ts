@@ -1,3 +1,9 @@
+/**
+ * Shared logical-asset extension and MIME classification. Unknown extensions stay opaque binary;
+ * active document/script extensions are classified separately so server/src/routes/storage.ts can
+ * force downloads. SVG remains an image and relies on that route's sandbox CSP for inline serving.
+ */
+
 const ASSET_MIME_TYPES: Readonly<Record<string, string>> = {
     png: "image/png",
     jpg: "image/jpeg",

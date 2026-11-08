@@ -12,6 +12,7 @@ import type { Context } from "hono";
 /** JSON text shorter than this in UTF-8 bytes is sent as is: compressing it saves little. */
 export const COMPRESS_MIN_BYTES = 32 * 1024;
 
+/** Supported compressed JSON response codings. */
 export type ResponseEncoding = "zstd" | "gzip";
 
 const zstdCompress = promisify(zlib.zstdCompress);

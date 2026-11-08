@@ -1,6 +1,13 @@
 import path from "node:path";
 import { stat, statfs } from "node:fs/promises";
 
+/**
+ * Disk-space probes and allocation guards for backup/import work. Capacity uses space available to
+ * this process, and a failed probe logs once per path and disables the guard for that call. A known
+ * shortage throws InsufficientStorageError; invalid estimates and unrelated I/O failures remain
+ * ordinary errors. Database estimates include the WAL because committed data may still be there.
+ */
+
 const warnedPaths = new Set<string>();
 
 /** Disk capacity available to this process (bavail, not privileged bfree); failures answer null and log once per path. */
@@ -8,6 +15,7 @@ export type DiskStatfs = (
     path: string,
 ) => Promise<{ bavail: number | bigint; bsize: number | bigint; blocks: number | bigint }>;
 
+/** Available and total filesystem bytes, or null when the capacity probe fails. */
 export async function freeBytes(
     path: string,
     options: { statfs?: DiskStatfs } = {},

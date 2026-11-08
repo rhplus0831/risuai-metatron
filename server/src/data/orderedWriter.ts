@@ -1,5 +1,13 @@
+/**
+ * Schedules auxiliary operations in FIFO order per key with a shared concurrency cap (four by
+ * default). Operations start in a microtask, failures reject only their own promises, and each
+ * nonempty key returns to the end of the ready queue after a turn. Consumers own their I/O and
+ * must include the whole read/derive/write/install transition in one operation to serialize it.
+ */
+
 const DEFAULT_CONCURRENCY = 4;
 
+/** Per-key operation scheduling and a barrier for work queued before it. */
 export type OrderedWriter = {
     /**
      * Queues `operation` on `key` and answers with its outcome. It never starts inside this call, so

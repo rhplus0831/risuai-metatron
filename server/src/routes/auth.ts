@@ -8,8 +8,30 @@ import { readJsonBody } from "../http/body.ts";
 import type { AppEnv } from "../types.ts";
 import { limitedBody } from "./limitedBody.ts";
 
+/**
+ * Password setup, browser public-key registration, and registered-key ES256 JWT authentication.
+ * server/src/app.ts supplies separate auth and login limiter buckets: GET /api/test_auth and POST
+ * /api/crypto use auth; POST /api/login and POST /api/set_password share login. All three POSTs cap
+ * bodies at 16 KiB before parsing, without requiring an existing JWT. Login registers a public-key
+ * hash after checking the stored password digest; the browser signs its own tokens. Initial setup
+ * stores a nonempty supplied password string only while no password file exists. Crypto hashes the
+ * supplied data as UTF-8; test_auth is an unauthenticated status check returning unset, incorrect,
+ * or success.
+ *
+ * JWT failures normally answer 400; server/src/routes/storage.ts maps asset failures to 401.
+ * checkProxyAuth additionally accepts the password digest, while isAuthorizedToken is JWT-only.
+ * The optional bypass accepts every token; server/src/listenConfig.ts restricts process startup
+ * with bypass to numeric loopback. Files live under save/server, outside the storage namespace.
+ * Missing keys start empty, malformed key JSON is renamed aside, and other read failures propagate.
+ * Empty password files block setup/login. Per-key operations on server/src/data/orderedWriter.ts
+ * publish through server/src/data/durableWrite.ts before installing new state in memory.
+ */
+
+/** Browser public-key registration endpoint. */
 export const LOGIN_PATH = "/api/login";
+/** UTF-8 SHA-256 hashing endpoint. */
 export const CRYPTO_PATH = "/api/crypto";
+/** Initial password setup endpoint. */
 export const SET_PASSWORD_PATH = "/api/set_password";
 /** These routes read their bodies before any authentication; a body is a password, or a digest and a JWK. */
 export const MAX_AUTH_BODY_BYTES = 16 * 1024;
@@ -32,10 +54,12 @@ const failureBodies: Record<JwtFailure, { status: 400; error: string; log: strin
     invalid_signature: { status: 400, error: "Invalid Signature", log: "Invalid signature" },
 };
 
+/** SHA-256 hex of the value's JSON.stringify representation. */
 export function hashJSON(json: unknown): string {
     return createHash("sha256").update(JSON.stringify(json)).digest("hex");
 }
 
+/** Authentication checks and route registration backed by one save directory's auth files. */
 export type AuthStore = ReturnType<typeof createAuthStore>;
 
 type PasswordState = { state: "unset" | "damaged" } | { state: "set"; value: string };

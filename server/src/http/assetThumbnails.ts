@@ -6,6 +6,20 @@ import type sharp from "sharp";
 import { decodeFileName, resolveStorageKey } from "../routes/storage.ts";
 import { isMissingFileError } from "./recordStream.ts";
 
+/**
+ * Derived WebP thumbnails for server/src/routes/storage.ts and server/src/routes/assetLifecycle.ts.
+ * Cache identity combines the logical key's SHA-256, requested short-side class (256/512), encoder
+ * version, and source size/nanosecond mtime/inode/device. Callers supply and retain an open source
+ * handle through get; encoding never reopens its path. Identical misses share one flight, with two
+ * generations running and 32 waiting by default. Publication, removal, and stale-entry sweeping
+ * serialize per key; derived entries live in save/cache/thumbnails and stage in save/.tmp.
+ *
+ * Only bounded, still raster sources are resized, rotated, and encoded at WebP quality 80 without
+ * enlargement. Deterministic decisions to keep the original use .orig markers; load/queue/encoding
+ * failures write no cache entry. The encoder loads lazily, with one sharp thread and no sharp cache,
+ * and a load failure is remembered. The post-listen sweep skips entries created during that sweep.
+ */
+
 /** Bump when the encoder, sizing, format, animation policy, or input caps change. */
 export const THUMBNAIL_VERSION = 2;
 const MAX_INPUT_BYTES = 32n * 1024n * 1024n;
@@ -13,9 +27,12 @@ const MAX_INPUT_PIXELS = 40_000_000;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const ENTRY_NAME = /^([0-9a-f]{64})-w(256|512)-v([1-9]\d*)-(\d+--?\d+-\d+-\d+)\.(webp|orig)$/;
 
+/** The thumbnail encoder could not be loaded for this service. */
 export class ThumbnailsUnavailable extends Error {}
+/** The bounded thumbnail generation queue has no free place. */
 export class ThumbnailBusy extends Error {}
 
+/** Encoder loading and generation concurrency/queue limits. */
 export type ThumbnailOptions = {
     /** Returns the callable encoder; a failed load is remembered for this service's lifetime. */
     loadSharp?: () => Promise<typeof sharp>;
@@ -31,6 +48,7 @@ type ThumbnailRequest = {
     source: { handle: FileHandle; stat: BigIntStats };
 };
 type ThumbnailResult = { kind: "webp"; path: string } | { kind: "original" } | { kind: "missing" };
+/** Thumbnail lookup/generation, per-key removal, and stale-cache sweeping. */
 export type ThumbnailService = ReturnType<typeof createThumbnailService>;
 
 function keyHash(key: string): string {

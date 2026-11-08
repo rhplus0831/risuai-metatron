@@ -3,6 +3,14 @@ import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFil
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
+/**
+ * Durable file publication and directory creation for server state. Publication flushes the
+ * temporary file before rename and the target directory afterward; a directory-sync failure can
+ * therefore reject after the target is installed. Only EINVAL and EPERM from directory flushing
+ * are tolerated, never file-write or file-sync errors. Temporary and target directories must share
+ * a filesystem; callers create them before publishing.
+ */
+
 /** The `node:fs/promises` member `syncDir` calls (tests inject latency and failures). */
 export type DirectorySyncFs = { open(file: string, flags: string): Promise<Pick<FileHandle, "sync" | "close">> };
 
