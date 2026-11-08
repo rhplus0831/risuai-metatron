@@ -8,3 +8,6 @@ None
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
+
+Before a plan-runner run schedules a plan, its decisions are read against the code and
+the findings are recorded in [plan-runner audits](../plan-runner-audit/README.md).
