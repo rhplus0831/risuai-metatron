@@ -15,7 +15,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (9)
 - [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (29)
+- [Client and plugins](#client-and-plugins) (28)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (9)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (1)
@@ -551,15 +551,6 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 **Suggested handling:** reload that plugin after a reset, or tear down each capability on revoke.
 
 **Decision (owner, 2026-11-08):** the reset button calls `loadPlugins()` after `resetPluginPermissions`, as the remove button does; other tabs queue a deferred reload when the `resets` bump reaches them.
-
-### A multi-tab plugin removal can bring its deleted data back
-
-`src/lib/Setting/Pages/PluginSettings.svelte`'s remove button awaits `loadPlugins()` and then calls `deleteOwnedPluginStorage(name)` when "also delete its stored data" is checked, so this tab's `onUnload` cannot write the data back. Another open tab still runs the plugin until its deferred reload (`queueDeferredCheck` in `src/ts/plugins/plugins.svelte.ts`); its `onUnload` or a late `setItem` writes `_ownedPluginStorage["<name>\u0000…"]` again, and the record merge keeps it key by key. Found in the Plugin Storage and Data API run (2026-11-05, slice 6). Related: the plugin reload deferral leftovers.
-
-**Why it matters:** the user asked for the data to be deleted, and some keys come back after a removal with the plugin open in another tab.
-**Suggested handling:** raise with the owner; a fix needs a tombstone or a removed-plugin refusal in `setOwnedPluginStorageItem`.
-
-**Decision (owner, 2026-11-08):** refuse owned-storage writes (v3 `_setPluginStorage`, `setOwnedPluginStorageItem`) for an owner that is not in `settings.plugins`, which covers the deferred reload's `onUnload`; the few-second window before another tab receives the plugin list change stays, as a plugin-sandbox Limitation.
 
 ### Scheme writers skip the text theme
 
