@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's Known Hazards `Issues` (or `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -9,12 +9,13 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (7)
-- [Server routes and resource store](#server-routes-and-resource-store) (6)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (9)
+- [Server routes and resource store](#server-routes-and-resource-store) (9)
+- [LLM requests and providers](#llm-requests-and-providers) (16)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
-- [Display transform](#display-transform) (8)
+- [Display transform](#display-transform) (9)
 - [Chat screen and input](#chat-screen-and-input) (5)
-- [Client and plugins](#client-and-plugins) (20)
+- [Client and plugins](#client-and-plugins) (27)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (9)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (1)
@@ -115,6 +116,22 @@ The no-memory trim question (aad461e63, 2026-10-11; `server/src/prompt/runner.ts
 **Why it matters:** long HypaV3 chats re-add every summary chunk per send.
 **Suggested handling:** build a map by content once after `addText`.
 
+### The push send cap comment says four waiting
+
+`server/src/push/pushService.ts` documents `MAX_PENDING_SENDS = 4` (~35) as "Completions waiting behind the one being delivered", but `send` (~632) counts a send in `pending` from before it is chained until its `finally`, so the cap includes the delivery in flight: at most three wait behind one active send. The module header added on 2026-11-08 says "at most four pending sends", which matches the code; the constant's own comment does not. An earlier memory note recorded this nit as fixed by 2026-11-03, which the current wording contradicts. Found in the Module Headers run (2026-11-08).
+
+**Why it matters:** a reader of the constant expects five outstanding sends; comment-only unless the owner meant four waiting.
+
+**Suggested handling:** confirm the intended bound with the owner; if four in total, reword the constant's comment; if four waiting, let the check allow `MAX_PENDING_SENDS + 1`.
+
+### The context override comment is garbled
+
+`shared/sections.ts` `maxContextOverrideOf` (~480, comment ~475–477) reads "(`maxContextOverride` on and a finite `maxContextOverrideSize` above 0, which is unset)"; the code returns the size exactly when the toggle is on and the size is finite and above 0, else `undefined`. The trailing "which is unset" probably meant "else unset" or "0 means unset". Found in the Module Headers run (2026-11-08).
+
+**Why it matters:** comment-only, but the server's job projection and request settings share this rule, so a misreading spreads.
+
+**Suggested handling:** reword the comment.
+
 ## Server routes and resource store
 
 ### The change log's bound is a row count, not 4 MB
@@ -163,6 +180,160 @@ Excluded as edge cases by the Implementation Audit Fixes plan (2026-11-05). All 
 
 **Why it matters:** a plugin's binary or dated value comes back changed after an upstream import, with nothing in the report to say so.
 **Suggested handling:** have `storedValue`/`storedForm` report a value whose JSON form differs in kind (typed array, `Date`, `Map`/`Set`), and report `copied` in the settings loop.
+
+### requireObject accepts class instances
+
+`shared/mutationValidation.ts` `requireObject` (~90) is documented "Throws unless `value` is a plain object", but it checks only `typeof value === "object"`, not null, and not an array, so a `Map`, a `Date`, or a class instance passes. `isPlainObject` in `shared/valueKinds.ts` (~26) is the stricter check. The mutation validators (`server/src/data/kinds.ts`, the normalizers under `server/src/data/normalize/`) and the tab's collection, character, and plugin storage stores call it. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** a non-plain object from a plugin or an MCP tool can reach record writes and serialize unexpectedly (a `Map` as `{}`).
+
+**Suggested handling:** use `isPlainObject`, or reword the comment if the loose check is intended.
+
+### normalizePreset can keep an `ooba` container without `formating`
+
+The doc comment of `normalizePreset` in `shared/presets.ts` (~629–636) says "a stored preset always has the containers the client reads through (`NAISettings.cfg_scale`, `ooba.formating`)". `normalizeFields` (~550) keeps any value of the right kind and fills nested defaults only for `NAISettings`, `promptSettings`, and `seperateParameters`, so an input `ooba: {}` is kept as is and `ooba.formating` can be missing. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** a client reader dereferencing `ooba.formating.*` would throw on such a stored preset.
+
+**Suggested handling:** confirm with a `normalizePreset({ ooba: {} })` probe, then either fill the `ooba` container's defaults or fix the comment.
+
+### normalizeChatLoadPages throws on a Symbol
+
+`normalizeChatLoadPages(value: unknown, fallback)` in `shared/chatLoadPages.ts` (~21) coerces with `Number(value)` (~23), which throws a TypeError for a Symbol; its header now says "Numeric coercion errors propagate". Settings come from JSON, which cannot hold a Symbol, so only the `unknown` signature admits it. Found in the Module Headers run (2026-11-08).
+
+**Why it matters:** no practical effect; recorded because the signature accepts `unknown`.
+
+**Suggested handling:** lowest priority; likely close as not worth fixing.
+
+## LLM requests and providers
+
+### AIN prompts end in NaN
+
+`stringlizeAINChat` in `server/src/llm/stringlize.ts` (~152) does ``res += +`\n\n${char} 「`;`` for a non-continued prompt: the unary `+` coerces the speaker suffix to a number, so the prompt ends in `NaN` instead of `\n\n<char> 「`. The server copy is live: `server/src/llm/request.ts` (~1257) builds the AIN-format text with it. The tab copy in `src/ts/process/stringlize.ts` (~159) has the same line but no non-test caller (only `unstringlizeChat` is imported from that file). Probably inherited from upstream; check before calling it ours. Found in the Module Headers run (2026-11-08), which documented the current behavior on the tab export's doc comment.
+
+**Why it matters:** every non-continued AIN-format request sends a malformed prompt tail with no speaker cue, which degrades replies for that format.
+
+**Suggested handling:** drop the stray `+` in the server copy (and in the tab copy, or delete the unused tab export), with a test on the serializer's non-continued tail.
+
+### `escape` loses to `forceStreaming`
+
+For an escaped request, `requestChatData` in `src/ts/process/request/request.ts` (~385) and `server/src/llm/outer.ts` (~75) clear only `useStreaming`; `forceStreaming` still wins where the adapter argument is built (`src/ts/process/request/request.ts` ~687, `server/src/llm/request.ts` ~532), and the tab's `requestPlugin` accepts a provider stream regardless. An escaped request can therefore stream and skip the buffered-success `risuEscape` step, against the llm-requests invariant "`escape` disables streaming". The module headers describe the current behavior. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** an escaped caller can receive unescaped streamed text.
+
+**Suggested handling:** decide which flag takes precedence, then make both runtimes and the guide agree.
+
+### reformater throws on an empty or all-system prompt
+
+`reformater` in `src/ts/process/request/request.ts` (~517) and `server/src/llm/request.ts` (~282): on the `hasFirstSystemPrompt` path (without `hasFullSystemPrompt`), `while (formated[0].role === "system")` reads past the end once the prompt is empty or holds only system entries, so it throws before dispatch instead of returning a normal failure. `server/src/llm/google.ts` (~77) also reads the first entry unguarded. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** an edge-case prompt surfaces as an exception rather than a failure message.
+
+**Suggested handling:** guard `formated.length` in the loop and at the Google read.
+
+### Anthropic streaming drops tool calls
+
+`requestClaude` in `server/src/llm/anthropic.ts` sends the tool schemas (~618), but its SSE parser (~1036) handles only text, thinking, redacted-thinking, and error events and emits `{ "0": text }` (~1075); streamed `tool_use` blocks (id, name, input) are dropped and never run. This contradicts the llm-requests invariant "Tool metadata must survive to the final chunk". Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** with streaming on, a Claude tool call is silently lost.
+
+**Suggested handling:** decide whether streamed tool calls are supported; if not, force a buffered request when tools are present.
+
+### A system-only Claude prompt loses its text
+
+`requestClaude` in `server/src/llm/anthropic.ts` (~283–294): when the prompt holds only system text, the adapter inserts a `Start` user turn and clears `systemPrompt`, so the actual input is dropped. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** the model answers a bare "Start" instead of the prompt's instructions.
+
+**Suggested handling:** move the system text into the user turn instead of discarding it.
+
+### The Claude reverse proxy keeps only a first text block
+
+For `reverse_proxy`, `server/src/llm/anthropic.ts` (~377) maps each message to its first content block's text; when that block is an image or tool block, the map returns `undefined` (`null` in JSON), and later text blocks are dropped. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** multimodal or tool prompts sent through the reverse proxy lose content or are rejected.
+
+**Suggested handling:** join all text blocks and skip non-text ones.
+
+### OpenRouter free-model discovery ignores the bound key
+
+With the `risu/free` model, `server/src/llm/openAI/requests.ts` (~251) calls `getFreeOpenRouterModels(arg.ctx)` without the resolved `arg.key`; `server/src/llm/openrouter.ts` (~24) sends `ctx.db.openrouterKey`, while the generation request uses `getOpenAIRequestKey` (~611). A profile bound to a named key discovers models with the flat default key, or with none. This contradicts the llm-requests invariant "Adapters use the resolved key". Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** a user with only a named OpenRouter key gets no free model, or one chosen with another key.
+
+**Suggested handling:** pass the resolved key into the discovery call.
+
+### An empty OpenRouter free list throws a TypeError
+
+`getFreeOpenRouterModels` in `server/src/llm/openrouter.ts` (~42–43) reads `[0].id` before `?? ""` applies. Its `catch` turns a network failure, an abort, or a malformed response into an empty list, so any of those, or no free model at all, throws a TypeError that hides the real cause; the function's comment notes the client throws the same way. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** the user sees a TypeError instead of "no free model" or the network error.
+
+**Suggested handling:** optional-chain the index and report an empty result as a failure.
+
+### The OpenAI tool stream wrapper keeps only choice 0
+
+`wrapToolStream` in `server/src/llm/openAI/requests.ts` (~1175, snapshots ~1359) rebuilds every snapshot with key `"0"` only, although `requestOpenAI` sends `body.n` for multi-generation (~636) and `getTranStream` accumulates per-choice keys (~1105). Every streamed response goes through the wrapper (~698), so streamed multi-generation loses the nonzero choices even without tools. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** multi-generation with streaming on yields one candidate.
+
+**Suggested handling:** carry every choice key through the wrapper.
+
+### OpenAI in-band stream errors are ignored
+
+`getTranStream` in `server/src/llm/openAI/requests.ts` (~1101) reads only `event.choices`, so a JSON event carrying an upstream `error` and no `choices` contributes nothing and does not fail the stream; a provider failure can end as an empty or partial success. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** a mid-stream provider error looks like a short reply.
+
+**Suggested handling:** surface an `error` payload as a stream failure.
+
+### A missing Content-Type header throws in OpenAI streaming
+
+`requestOpenAI` (~681) and `wrapToolStream` (~1323) in `server/src/llm/openAI/requests.ts` call `.includes` on `headers.get("Content-Type")!`, so a 200 answer without the header throws instead of taking the unsupported-response path that returns the body as a failure. The module header now states this behavior. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** a misbehaving proxy produces a TypeError instead of its response text.
+
+**Suggested handling:** default the header to `""`.
+
+### Google thought signatures are never saved on the typed path
+
+`server/src/llm/request.ts` builds the adapter argument (`targ`, ~508) without setting `saveSignatures` from `db.saveSignatures`, while `server/src/llm/google.ts` saves signatures only when `arg.saveSignatures` is set (~635, ~684); replay (~113) reads `db.saveSignatures`. The stored setting therefore has no effect on saving. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** the signature saving setting silently does nothing for Gemini thinking models.
+
+**Suggested handling:** assign it where the adapter argument is built, after checking the tab's former behavior; see the next entry before turning saving on.
+
+### Saved Google signatures replay the wrong content
+
+`server/src/llm/google.ts` (~118) replays a saved signature inlay's `signatures[0].content` as `thoughtSignature`, but the save paths (~692, ~991) store the response part's text or a function description, not the provider's signature token, so replay may fail provider validation once saving works (previous entry). Live streaming tool follow-ups keep the raw token separately. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** fixing the saving entry alone may turn the setting into rejected requests.
+
+**Suggested handling:** store the provider's signature token in the inlay and replay that; fix together with the saving entry.
+
+### A signature-only Google part marks the wrong text
+
+`processDataItem` in `server/src/llm/google.ts` (~696): a buffered part carrying only a signature prepends its inlay marker to the last `rDatas` text without checking that one exists, so it throws when none does and otherwise marks an unrelated earlier part. Only reachable with signature saving on. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** latent until signature saving works (see the two entries above).
+
+**Suggested handling:** keep the marker with a text part of its own, or skip it when no text part exists.
+
+### Google token counts can collide in the cache
+
+`countWithGoogle` in `server/src/prompt/tokens.ts` (~173, key ~175) keys its cache and in-flight map by `text + scope.model.internalID`, so two text/model pairs with the same concatenation reuse one count or pending request. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** a rare wrong token count, which shifts trim decisions.
+
+**Suggested handling:** join with a separator, or key by a tuple.
+
+### setObjectValue follows `__proto__` segments
+
+`setObjectValue` in `server/src/llm/shared.ts` (~37, recursion ~45) applies additional-parameter dotted paths and walks inherited properties, so a key `__proto__.x` writes to `Object.prototype` on the server. The input is trusted configuration, so the exposure depends on who can set additional parameters or custom model parameters. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** server-wide prototype pollution if a less trusted user can set those parameters.
+
+**Suggested handling:** reject `__proto__`, `constructor`, and `prototype` segments.
 
 ## Request history and diagnostics
 
@@ -248,6 +419,14 @@ Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it
 
 **Why it matters:** a requested Re-render can show the previous cached result after paying for a fresh one.
 **Suggested handling:** keep the forced intent until a live consumer receives its result, or let a same-generation replacement join the forced operation, without reviving the bypass for a superseded generation.
+
+### The MessageTranslation sourceHash comment names the wrong text
+
+`MessageTranslation.sourceHash` in `shared/database.ts` (~1413) is commented "`translationSourceHash(data)` (`shared/translation/hash.ts`) of the translated text", but the interface comment above it (~1410) and the readers (`shared/rerollCandidates.ts` ~180, `shared/chats.ts` ~95) hash the message's source `data`. Found in the Module Headers run (2026-11-08).
+
+**Why it matters:** a translation writer following the field comment would hash the output, and every translation would read as stale.
+
+**Suggested handling:** change "of the translated text" to "of the source `data`" (comment-only).
 
 ## Chat screen and input
 
@@ -434,6 +613,62 @@ Three writers can leave a nested number field `NaN` or `null`, which the record 
 **Why it matters:** a dead sort on every report refresh, and it misleads readers about where the owner list is computed.
 
 **Suggested handling:** remove it after `rg "controller\.owners"` confirms no reader.
+
+### AppendableBuffer can hang after a full deappend
+
+`AppendableBuffer.deappend` in `src/ts/globalApi.svelte.ts` (~1065) slices the whole backing array, spare capacity included. When the used length equals the backing array's length and the caller deappends all of it, the array becomes length 0, and the next `append` (~1049) starts from `newLength = 0 * 2`, so its doubling loop never ends and the tab freezes. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** a hang, not a wrong value; streaming readers use this buffer.
+
+**Suggested handling:** start growth from `Math.max(capacity, 128)`, or keep the capacity in `deappend`.
+
+### searchTagList never matches the OC tag by name
+
+`searchTagList` in `src/ts/util.ts` (~1045) lowercases the last query segment, then compares it with `tag.value.startsWith(...)` (~1051) and the aliases unchanged. `TagList` has `value: "OC"` (~828), so typing "OC" or "oc" never suggests it; only its alias `original-character` does. The function's comment now states the case behavior. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** a tag suggestion silently missing on realistic input; small.
+
+**Suggested handling:** compare against lowercased tag values and aliases.
+
+### replacePlaceholders ignores its name parameter
+
+`replacePlaceholders(msg, name)` in `src/ts/util.ts` (~120) never reads `name`: it replaces the char markers with `selectedCharacter().name`, which throws when nothing is selected. Its two callers in `src/lib/ChatScreens/Suggestion.svelte` (~119, ~133) pass the selected character's name after checking one exists, so the gap is latent. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** a future caller rendering another character would get the selected character's name.
+
+**Suggested handling:** use `name` (falling back to the selection), or drop the parameter.
+
+### getCharToken rejects with no selected character
+
+`getCharToken(char?)` in `src/ts/tokenizer.ts` (~317) falls back to `selectedCharacter()`, which returns `undefined` with no selection (`src/ts/storage/characterStore.svelte.ts` ~381); reading `char.type` (~322) then rejects instead of returning zero counts. Its doc comment now states this. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** a caller that runs before a character is selected gets a rejection.
+
+**Suggested handling:** return zero counts when there is no character.
+
+### The source map fetch timeout ends before the body
+
+`translateStackTrace` in `src/ts/sourcemap.ts` (~78) clears its timer as soon as `fetch` resolves with the headers, then awaits `mapRes.json()` (~82) with no timer. A source map whose body stalls keeps the translation pending, and `src/lib/Others/AlertComp.svelte` then never shows the translated trace (it ignores late results, so the output is missing, not wrong). Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** low impact (a debug aid), but the intended 10 s bound does not hold.
+
+**Suggested handling:** clear the timer after the body read.
+
+### moveRecordListItem clamps an out-of-range target
+
+`moveRecordListItem` in `src/ts/storage/records.svelte.ts` (~3000) is documented "Out-of-range indexes change nothing", but only `from` is range-checked; `to` is clamped (~3006), so `to = -1` or `to = length + 5` moves the item to the first or last slot. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** a caller trusting the comment (a drag reorder with a stale index) silently reorders a persisted record list.
+
+**Suggested handling:** decide whether the comment or the clamp is the intent; fix the comment if the clamp is wanted.
+
+### selectLoreBookPage stores any number
+
+`selectLoreBookPage` in `src/ts/storage/selection.svelte.ts` (~135) stores and persists any number, while `loadSelection` in the same file (~101) accepts only nonnegative integers, so a bad value lives until a reload resets it to 0. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
+
+**Why it matters:** low impact (callers pass UI page indexes), but the two paths disagree on what a valid page is.
+
+**Suggested handling:** apply the load check in the setter; low priority.
 
 ## Build, drivers, and e2e
 
