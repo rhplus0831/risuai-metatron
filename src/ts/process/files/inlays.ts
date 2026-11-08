@@ -25,7 +25,8 @@ import { missingAssets, readAsset, writeAsset } from "../../storage/assetClient"
  * `{{inlayeddata::id}}`) live on the server: metadata in the `inlays` resource (id = inlay id), media
  * bytes in the `assets` namespace under a content-hash name, so writing the same bytes twice (Lua
  * `getCharacterImageMain` on every call) stores one file. Blobs are deleted by the server sweep only
- * once unreferenced past the grace period, never here. A cache hit must claim server presence again.
+ * once unreferenced past the grace period, never here. A write whose bytes are already in the blob
+ * cache still asks the server (`missingAssets`) before skipping the upload.
  * Every media write also rewrites metadata, even if unchanged, so reuse advances the revision checked by sweep.
  */
 

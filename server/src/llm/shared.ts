@@ -8,7 +8,8 @@ import type { ModelModeExtended } from "../../../shared/llm/request.ts";
 /**
  * Applies request-local preset parameters and provider-specific additional parameters to adapter bodies/headers.
  * Capability markers guide reasoning effort without becoming body fields; `-1000` omits a numeric setting, and
- * renamed parameter keys may address nested objects. The same preset values serve every request mode.
+ * renamed parameter keys may address nested objects. The same preset values serve every `ModelModeExtended`
+ * mode (model, submodel, memory, ...); the provider paths differ in which parameters they apply.
  *
  * Additional parameters run in order and mutate their targets, so later entries override earlier ones; adapters
  * may still force fields afterwards. Only body values are parsed, via server/src/llm/additionalParams.ts for `json::`.

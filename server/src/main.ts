@@ -18,7 +18,8 @@ import { readListenConfig } from "./listenConfig.ts";
  * Shutdown begins context refusal/aborts before closing the listener, allows eight seconds for
  * HTTP draining, destroys remaining connections, then waits for context disposal before exit.
  * Fatal runtime errors are recorded through uncaughtExceptionMonitor without changing Node's
- * exit behavior; server errors are recorded before exit, while the startup catch only logs.
+ * exit behavior; server errors are recorded before exit, and the startup catch logs, then exits
+ * with code 1.
  */
 
 const rootDir = process.cwd();
