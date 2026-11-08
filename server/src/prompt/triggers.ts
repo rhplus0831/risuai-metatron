@@ -1,7 +1,7 @@
 import type { Chat, character, groupChat } from "../../../shared/database.ts";
 import { greetingText } from "../../../shared/greetings.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
-import type { RequestArgs, StreamResponseChunk } from "../../../shared/llm/request.ts";
+import type { RequestArgs } from "../../../shared/llm/request.ts";
 import {
     displayAllowList,
     requestAllowList,
@@ -15,6 +15,7 @@ import {
     LuaJobFatalError,
     type LuaWorkingCopy,
 } from "../lua/bindings.ts";
+import { collectStreamingText } from "../llm/outer.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 import type { RegexMatch, RegexOp } from "../scripts/worker.ts";
 import { stripThoughtsBlock } from "./thoughts.ts";
@@ -184,29 +185,6 @@ export function parseChatML(data: string, parse: (text: string) => string): Open
                 thoughts: thoughts,
             } as OpenAIChat;
         });
-}
-
-/** `collectStreamingText` of the client: the last snapshot's first key. */
-async function collectStreamingText(stream: ReadableStream<StreamResponseChunk>): Promise<string> {
-    const reader = stream.getReader();
-    let lastChunk = "";
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (value) {
-                const firstKey = Object.keys(value)[0];
-                if (firstKey) {
-                    lastChunk = (value as Record<string, string>)[firstKey] ?? lastChunk;
-                }
-            }
-            if (done) {
-                break;
-            }
-        }
-    } finally {
-        reader.releaseLock();
-    }
-    return lastChunk;
 }
 
 /** The deprecated lore effects index an entry as an array (`[key, content, active]`), as the client does. */

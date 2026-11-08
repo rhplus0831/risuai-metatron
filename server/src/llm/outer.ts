@@ -1,5 +1,5 @@
 import { risuEscape, risuUnescape } from "../../../shared/cbs/evaluator.ts";
-import type { ModelModeExtended, RequestArgs } from "../../../shared/llm/request.ts";
+import type { ModelModeExtended, RequestArgs, StreamResponseChunk } from "../../../shared/llm/request.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { requestDataResponse } from "./request.ts";
 import type { RequestDb } from "./settings.ts";
@@ -10,10 +10,65 @@ import type { RequestDb } from "./settings.ts";
  * request trigger, the attempt, success escaping, after-replacers, charset checks, and failure retries in that order.
  * Prompt changes survive retries. Ordinary trigger errors log and continue; fatal trigger errors and other hook or
  * attempt throws propagate. Abort returns an `Aborted` failure when observed between attempts/after an attempt.
- * Only buffered successes get escaping, after-replacers, and charset checks; streams return to the caller immediately.
+ * Only successes get escaping, after-replacers, and charset checks; without `escape` a stream returns to the caller
+ * immediately.
  */
 
 const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/**
+ * The text of a stream of cumulative snapshots: the last snapshot's first key, which is the whole reply. An abort of
+ * `signal` cancels the stream and the read ends with the text so far; a stream error rejects.
+ */
+export async function collectStreamingText(
+    stream: ReadableStream<StreamResponseChunk>,
+    signal?: AbortSignal,
+): Promise<string> {
+    const reader = stream.getReader();
+    const onAbort = () => {
+        reader.cancel(signal?.reason).catch(() => {});
+    };
+    let lastChunk = "";
+    try {
+        if (signal?.aborted) {
+            onAbort();
+            return lastChunk;
+        }
+        signal?.addEventListener("abort", onAbort, { once: true });
+        while (true) {
+            const { done, value } = await reader.read();
+            if (value) {
+                const firstKey = Object.keys(value)[0];
+                if (firstKey) {
+                    lastChunk = (value as Record<string, string>)[firstKey] ?? lastChunk;
+                }
+            }
+            if (done) {
+                break;
+            }
+        }
+    } finally {
+        signal?.removeEventListener("abort", onAbort);
+        reader.releaseLock();
+    }
+    return lastChunk;
+}
+
+/**
+ * A streamed answer read to its end as a buffered one: a `success` with the last snapshot's text, or a `fail` with the
+ * stream's error text. Its `model`, `special`, and `request` carry over.
+ */
+async function bufferStreamedAnswer(
+    da: Extract<requestDataResponse, { type: "streaming" }>,
+    signal: AbortSignal,
+): Promise<requestDataResponse> {
+    const { result: stream, ...fields } = da;
+    try {
+        return { ...fields, type: "success", result: await collectStreamingText(stream, signal) };
+    } catch (error) {
+        return { ...fields, type: "fail", result: error instanceof Error ? error.message : `${error}` };
+    }
+}
 
 /** What the outer loop calls; every hook it lacks is skipped. */
 export type OuterRequestDeps = {
@@ -57,8 +112,9 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
  * trigger, and `banCharacterset`, in the client's order. Tools are the caller's (`arg.tools`).
  * Charset rejections count against `requestRetrys`. The loop yields a turn of the event loop
  * before every attempt.
- * `escape` clears `useStreaming` but forwards `forceStreaming`, so an attempt may still force a stream; streamed
- * answers bypass success escaping and after-replacers.
+ * `escape` clears `useStreaming` and `forceStreaming`. An attempt that streams anyway (a plugin provider) is read to
+ * its last snapshot and continues as a buffered success (escaping, after-replacers, charset checks) or, for a stream
+ * error, as an ordinary failure. Without `escape` a stream returns as it is.
  */
 export async function requestChatDataOuter(
     input: RequestArgs & { escape?: boolean },
@@ -73,6 +129,7 @@ export async function requestChatDataOuter(
 
     if (escape) {
         arg.useStreaming = false;
+        arg.forceStreaming = false;
     }
 
     arg.formated = structuredClone(arg.formated).map((message) => {
@@ -109,6 +166,13 @@ export async function requestChatDataOuter(
 
         if (deps.signal.aborted) {
             return { type: "fail", result: "Aborted" };
+        }
+
+        if (escape && da.type === "streaming") {
+            da = await bufferStreamedAnswer(da, deps.signal);
+            if (deps.signal.aborted) {
+                return { type: "fail", result: "Aborted" };
+            }
         }
 
         if (da.type === "success" && escape) {

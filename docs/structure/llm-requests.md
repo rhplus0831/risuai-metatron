@@ -211,7 +211,8 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   on adaptive-only models and never rewrites the stored value; `claudeThinkingOnByDefault` sends an explicit disabled
   thinking mode when off, while models without it omit the field.
 - Streaming consumers expect cumulative text, not deltas. Tool metadata must survive to the final chunk.
-- `escape` disables streaming. Audio and image output modalities disable streaming.
+- `escape` disables streaming, `forceStreaming` included; an attempt that streams anyway (a plugin provider) is read to
+  its last snapshot and escaped as a buffered success. Audio and image output modalities disable streaming.
 - Mode `submodel` is not a `seperateModels` key.
 - `applyAdditionalParameters` accepts trusted configuration that can override or delete body fields and headers; its
   comment defines the syntax and notes that an adapter may still set fields afterward.

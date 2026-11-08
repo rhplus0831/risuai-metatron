@@ -168,8 +168,9 @@ export interface StreamResponseChunk {
  * half a retry with `antiServerOverloads`), the plugins' before/after request replacers, and escaping run here in the
  * tab, around each `requestChatDataMain` attempt. The character's `request`
  * trigger runs only for a server job's requests (`server/src/llm/outer.ts`); the tab's own requests go out without it.
- * `escape` clears `useStreaming` and escapes buffered successes only; `forceStreaming` still takes precedence in
- * request preparation, and a plugin provider can return a stream regardless of that preference.
+ * `escape` clears `useStreaming` and `forceStreaming`. A plugin provider can return a stream regardless: with `escape`
+ * that stream is read to its last snapshot and continues as a buffered success (escaping, after-replacers, charset
+ * checks) or, for a stream error, as an ordinary failure. Without `escape` a stream returns as it is.
  */
 export async function requestChatData(
     arg: requestDataArgument,
@@ -383,6 +384,7 @@ async function requestPinnedChatData(
 
     if (arg.escape) {
         arg.useStreaming = false;
+        arg.forceStreaming = false;
         console.warn("Escape is enabled, disabling streaming");
     }
 
@@ -445,6 +447,19 @@ async function requestPinnedChatData(
             return requestChatGone();
         }
 
+        if (arg.escape && da.type === "streaming") {
+            da = await bufferStreamedReply(da, abortSignal);
+            if (abortSignal?.aborted) {
+                return {
+                    type: "fail",
+                    result: "Aborted",
+                };
+            }
+            if (!held()) {
+                return requestChatGone();
+            }
+        }
+
         if (da.type === "success" && arg.escape) {
             da.result = risuEscape(da.result);
         }
@@ -493,6 +508,47 @@ async function requestPinnedChatData(
         if (trys > settings.providers.requestRetrys) {
             return da;
         }
+    }
+}
+
+/**
+ * A streamed reply read to its end as a buffered one: a `success` with the last cumulative snapshot's first key, or a
+ * `fail` with the stream's error text; `model` and `special` carry over. An abort cancels the stream and ends the read.
+ */
+async function bufferStreamedReply(
+    da: Extract<requestDataResponse, { type: "streaming" }>,
+    abortSignal: AbortSignal | null,
+): Promise<requestDataResponse> {
+    const { result: stream, ...fields } = da;
+    const reader = stream.getReader();
+    const onAbort = () => {
+        reader.cancel(abortSignal?.reason).catch(() => {});
+    };
+    let text = "";
+    try {
+        if (abortSignal?.aborted) {
+            onAbort();
+            return { ...fields, type: "success", result: text };
+        }
+        abortSignal?.addEventListener("abort", onAbort, { once: true });
+        while (true) {
+            const { done, value } = await reader.read();
+            if (value) {
+                const firstKey = Object.keys(value)[0];
+                if (firstKey) {
+                    text = value[firstKey] ?? text;
+                }
+            }
+            if (done) {
+                break;
+            }
+        }
+        return { ...fields, type: "success", result: text };
+    } catch (error) {
+        return { ...fields, type: "fail", result: error instanceof Error ? error.message : `${error}` };
+    } finally {
+        abortSignal?.removeEventListener("abort", onAbort);
+        reader.releaseLock();
     }
 }
 

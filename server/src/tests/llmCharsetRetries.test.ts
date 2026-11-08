@@ -6,7 +6,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { requestDataResponse } from "../llm/request.ts";
-import { requestChatDataOuter } from "../llm/outer.ts";
+import { requestChatDataOuter, type OuterRequestDeps } from "../llm/outer.ts";
 
 // A `banCharacterset` rejection in the outer request loop counts against `requestRetrys` and ends
 // with a failure, and the loop yields a turn of the event loop before every attempt, so a model that
@@ -20,30 +20,81 @@ import { requestChatDataOuter } from "../llm/outer.ts";
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const BANNED = "The model answered in a banned script (Latn)";
 
-describe("requestChatDataOuter and banCharacterset", () => {
+describe("requestChatDataOuter", () => {
     const latin: requestDataResponse = { type: "success", result: "blocked Latin text" };
     const clean: requestDataResponse = { type: "success", result: "한국어 답변" };
 
     /** Runs the loop over a fixed list of answers; a call past the list is a failure of the loop. */
     async function run(
         answers: requestDataResponse[],
-        options: { requestRetrys?: number; signal?: AbortSignal; onAttempt?: (index: number) => void } = {},
+        options: {
+            requestRetrys?: number;
+            signal?: AbortSignal;
+            onAttempt?: (index: number, arg: Parameters<OuterRequestDeps["attempt"]>[0]) => void;
+            input?: Partial<Parameters<typeof requestChatDataOuter>[0]>;
+            banCharacterset?: string[];
+            afterRequest?: OuterRequestDeps["afterRequest"];
+        } = {},
     ) {
         let attempts = 0;
-        const result = await requestChatDataOuter({ formated: [], bias: {} }, "model", {
-            db: { requestRetrys: options.requestRetrys ?? 2, antiServerOverloads: false, banCharacterset: ["Latn"] },
+        const result = await requestChatDataOuter({ formated: [], bias: {}, ...options.input }, "model", {
+            db: {
+                requestRetrys: options.requestRetrys ?? 2,
+                antiServerOverloads: false,
+                banCharacterset: options.banCharacterset ?? ["Latn"],
+            },
             signal: options.signal ?? new AbortController().signal,
-            attempt: async () => {
+            afterRequest: options.afterRequest,
+            attempt: async (arg) => {
                 const index = attempts++;
                 if (index >= answers.length) {
                     throw new Error(`attempt ${index + 1} past the ${answers.length} scripted answers`);
                 }
-                options.onAttempt?.(index);
+                options.onAttempt?.(index, arg);
                 return answers[index];
             },
         });
         return { result, attempts };
     }
+
+    it("disables both streaming flags for an escape request even with forceStreaming and escapes its success", async () => {
+        expect(
+            await run([{ type: "success", result: "{{user}} (hello)" }], {
+                input: { escape: true, forceStreaming: true, useStreaming: true },
+                banCharacterset: [],
+                onAttempt: (_index, arg) => {
+                    expect(arg).toMatchObject({ forceStreaming: false, useStreaming: false });
+                },
+            }),
+        ).toEqual({
+            result: { type: "success", result: "\uE9B8\uE9B8user\uE9B9\uE9B9 \uE9BAhello\uE9BB" },
+            attempts: 1,
+        });
+    });
+
+    it("buffers an escape stream to its last snapshot and escapes before applying after-request replacers", async () => {
+        const answer: requestDataResponse = {
+            type: "streaming",
+            result: new ReadableStream({
+                start(controller) {
+                    controller.enqueue({ "0": "{{user}} " });
+                    controller.enqueue({ "0": "{{user}} (hello)" });
+                    controller.close();
+                },
+            }),
+        };
+        const afterRequest = async (text: string) => text.replace("\uE9BAhello\uE9BB", "replaced");
+
+        // Without escape the same stream passes straight through, ready for the caller to read.
+        const passthrough = await run([answer], { banCharacterset: [], afterRequest });
+        expect(passthrough.result).toBe(answer);
+        expect(passthrough.attempts).toBe(1);
+
+        expect(await run([answer], { input: { escape: true }, banCharacterset: [], afterRequest })).toEqual({
+            result: { type: "success", result: "\uE9B8\uE9B8user\uE9B9\uE9B9 replaced" },
+            attempts: 1,
+        });
+    });
 
     it("a rejected answer with no retries left fails at once (requestRetrys 0)", async () => {
         expect(await run([latin], { requestRetrys: 0 })).toEqual({

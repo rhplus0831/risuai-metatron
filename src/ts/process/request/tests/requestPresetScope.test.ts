@@ -34,11 +34,11 @@ vi.mock("src/ts/plugins/apiV3/pluginContext", () => ({
     capturePluginContext: () => undefined,
     invokeHook: async (fn: (...args: unknown[]) => unknown, _context: unknown, ...args: unknown[]) => fn(...args),
 }));
-vi.mock("src/ts/parser/parser.svelte", () => ({
-    risuEscape: (text: string) => text,
-    risuUnescape: (text: string) => text,
-    risuChatParser: (text: string) => text,
-}));
+vi.mock("src/ts/parser/parser.svelte", async () => {
+    // The parser re-exports these functions; keep escaping real while stubbing chat parsing.
+    const { risuEscape, risuUnescape } = await import("../../../../../shared/cbs/evaluator.ts");
+    return { risuEscape, risuUnescape, risuChatParser: (text: string) => text };
+});
 vi.mock("src/ts/process/transformers", () => ({ runTransformers: vi.fn() }));
 vi.mock("src/ts/process/templates/chatTemplate", () => ({ applyChatTemplate: vi.fn() }));
 vi.mock("src/ts/process/stringlize", () => ({ unstringlizeChat: vi.fn() }));
@@ -152,6 +152,54 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.restoreAllMocks();
+});
+
+describe("an escape request in the tab", () => {
+    it("disables both streaming flags at the transport even with forceStreaming and escapes its success", async () => {
+        stubs.getModelInfo.mockReturnValue({
+            id: "custom",
+            format: LLMFormat.OpenAICompatible,
+            flags: [LLMFlags.hasFullSystemPrompt],
+            tokenizer: 0,
+        });
+        stubs.requestServer.mockResolvedValueOnce({ type: "success", result: "{{user}} (hello)" });
+
+        expect(
+            await requestChatData(argOf({ escape: true, forceStreaming: true, useStreaming: true }), "model"),
+        ).toEqual({ type: "success", result: "\uE9B8\uE9B8user\uE9B9\uE9B9 \uE9BAhello\uE9BB" });
+        expect(stubs.requestServer).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ forceStreaming: false, useStreaming: false }),
+            "model",
+            null,
+            expect.anything(),
+        );
+    });
+
+    it("buffers a plugin stream to its last snapshot and escapes before applying after-request replacers", async () => {
+        stubs.hooks.providers.set("prov-1", async () => ({
+            success: true,
+            content: new ReadableStream<string>({
+                start(controller) {
+                    controller.enqueue("{{user}} ");
+                    controller.enqueue("(hello)");
+                    controller.close();
+                },
+            }),
+        }));
+        stubs.hooks.replacerafterRequest.add(async (text) => text.replace("\uE9BAhello\uE9BB", "replaced"));
+
+        const passthrough = await requestChatData(argOf(), "model");
+        expect(passthrough.type).toBe("streaming");
+        if (passthrough.type === "streaming") {
+            await passthrough.result.cancel();
+        }
+
+        expect(await requestChatData(argOf({ escape: true }), "model")).toEqual({
+            type: "success",
+            result: "\uE9B8\uE9B8user\uE9B9\uE9B9 replaced",
+            model: "custom",
+        });
+    });
 });
 
 describe("a tab-run request's captured presets", () => {
