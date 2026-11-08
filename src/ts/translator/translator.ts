@@ -79,15 +79,11 @@ function dropMemoryCacheEntry(entry: MemoryCacheEntry): void {
     memoryCacheChars -= entry.origin.length + entry.trans.length + MEMORY_CACHE_ENTRY_OVERHEAD;
 }
 
-/** Adds a pair; one already holding either side is replaced, so each side maps to one pair. */
+/** Adds a pair, replacing one with the same origin: each origin maps to one pair, each translation to its newest. */
 function writeMemoryCache(context: string, origin: string, trans: string): void {
     const byOrigin = memoryCacheByOrigin.get(context + origin);
-    const byTrans = memoryCacheByTrans.get(context + trans);
     if (byOrigin) {
         dropMemoryCacheEntry(byOrigin);
-    }
-    if (byTrans && byTrans !== byOrigin) {
-        dropMemoryCacheEntry(byTrans);
     }
     const entry = { context, origin, trans };
     memoryCacheEntries.add(entry);

@@ -75,6 +75,30 @@ describe("the in-memory translate cache", () => {
         expect(fetches()).toBe(2);
     });
 
+    it("keeps both sources cached when translations match and reverses to the newest source", async () => {
+        const olderSource = "Cache collision older source";
+        const newestSource = "Cache collision newest source";
+        const sharedTranslation = "Cache collision shared translation";
+        const response = {
+            ok: true,
+            data: { translations: [{ text: sharedTranslation }] },
+            headers: {},
+            status: 200,
+        };
+        vi.mocked(globalFetch).mockResolvedValueOnce(response).mockResolvedValueOnce(response);
+
+        await expect(translate(olderSource, false)).resolves.toBe(sharedTranslation);
+        await expect(translate(newestSource, false)).resolves.toBe(sharedTranslation);
+        expect(fetches()).toBe(2);
+
+        // On the next render, reading the older source last must not change the reverse lookup.
+        const nextRender = [await translate(newestSource, false), await translate(olderSource, false)];
+        expect(fetches()).toBe(2);
+        expect(nextRender).toEqual([sharedTranslation, sharedTranslation]);
+        await expect(translate(sharedTranslation, true)).resolves.toBe(newestSource);
+        expect(fetches()).toBe(2);
+    });
+
     it("evicts the least recently used pair once the strings pass the budget", async () => {
         // Each pair is 1,980,002 code units: two fit in 4,000,000, a third does not.
         const a = "a".repeat(990_000);
