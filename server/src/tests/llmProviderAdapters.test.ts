@@ -1258,6 +1258,55 @@ describe("the server provider adapters", () => {
         });
     });
 
+    it.each([
+        { setting: "streaming", providers: { useStreaming: true }, useStreaming: true },
+        { setting: "batching", providers: { claudeBatching: true }, useStreaming: false },
+    ])(
+        "Anthropic tools with $setting enabled: buffers both Messages requests and executes the tool",
+        async ({ providers, useStreaming }) => {
+            const toolUse = { type: "tool_use", id: "tool-1", name: "rollDice", input: { sides: 6 } };
+            let requests = 0;
+            const recorded = await run({
+                settings: { preset: { aiModel: "claude-sonnet-4-5-20250929" }, providers },
+                arg: { ...prompt(), useStreaming },
+                tools: [ROLL_DICE],
+                toolAnswer: [{ type: "text", text: "4" }],
+                upstream: () =>
+                    json({ content: ++requests === 1 ? [toolUse] : [{ type: "text", text: "rolled a 4" }] }),
+            });
+
+            expect(recorded.calls[0].url).toBe("https://api.anthropic.com/v1/messages");
+            expect(recorded.calls[0]).toMatchObject({
+                method: "POST",
+                body: {
+                    stream: false,
+                    tools: [{ name: "rollDice", description: "roll", input_schema: ROLL_DICE.inputSchema }],
+                },
+            });
+            expect(recorded.calls).toHaveLength(2);
+            expect(recorded.calls[1]).toMatchObject({
+                method: "POST",
+                url: "https://api.anthropic.com/v1/messages",
+                body: {
+                    stream: false,
+                    messages: [
+                        ...ANTHROPIC_MESSAGES,
+                        { role: "assistant", content: [toolUse] },
+                        {
+                            role: "user",
+                            content: [
+                                { type: "tool_result", tool_use_id: "tool-1", content: [{ type: "text", text: "4" }] },
+                            ],
+                        },
+                    ],
+                },
+            });
+            expect(recorded.toolCalls).toEqual([{ name: "rollDice", args: { sides: 6 } }]);
+            expect(recorded.result).toEqual({ type: "success", result: "rolled a 4" });
+            expect(recorded.chunks).toEqual([]);
+        },
+    );
+
     it("Bedrock: the Signature V4 headers with a frozen clock", async () => {
         const recorded = await run({
             settings: {

@@ -348,6 +348,9 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 - An overload error event inside an Anthropic stream becomes redacted `Error:<message>` answer text, like other streamed
   provider errors. There is no in-stream retry; `outer.ts` `requestChatDataOuter` owns the retry policy and honors
   `antiServerOverloads`. Decision: `server/src/llm/anthropic.ts`, the stream error comment.
+- Claude tool calls are not streamed or batched: `requestClaude` sends a request that offers tools buffered and
+  directly, with `stream: false` on it and every tool follow-up, even with `useStreaming` or `claudeBatching` on. The
+  SSE and batch result parsers read text and thinking only. Upstream has the same gap. Decision: owner, 2026-11-08.
 - Auxiliary requests still tokenize bias strings with the main model, not their own profile's tokenizer. Decision:
   `shared/llm/request.ts` `tokenizer`.
 - A legacy plugin `custom` tokenizer counts with `cl100k_base` on screen and in server requests; its `tokenizerFunc` is

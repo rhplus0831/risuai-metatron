@@ -24,6 +24,8 @@ import { applyAdditionalParameters, applyParameters, getAdditionalParameters } f
  * skipped individually. EOF flushes the final line, closes any open thinking block, and ends the stream; message-stop
  * events alone do not close it. Batching emits a single full answer on success and closes without text on cancellation.
  * Tool execution and remembered output are handled by buffered Messages follow-ups, not the SSE parser.
+ * A request offering tools is therefore always buffered and never batched: the SSE parser and the batch result
+ * parser read text and thinking only, so its tool calls would be dropped.
  *
  * Unlike the shared HTTP prefix in `server/src/llm/messages.ts`, HTTP failures here carry provider text/JSON directly.
  * Buffered Messages failures containing "overload" set `failByServerError`; SSE error events append a redacted
@@ -87,7 +89,8 @@ interface Claude3ExtendedChat {
 }
 
 /**
- * Builds, previews, or sends a Claude Messages/Bedrock request, optionally returning a live HTTP or batch stream.
+ * Builds, previews, or sends a Claude Messages/Bedrock request, optionally returning a live HTTP or batch stream
+ * (never for a request offering tools, which is sent buffered, as are its tool follow-ups).
  * Empty input returns `No input`; system-only input becomes a `Start` user turn with the system text cleared. A
  * signed Bedrock request without all three `accessKeyId:secretAccessKey:region` key parts throws before preview/send.
  * Reverse-proxy messages keep only their first text block; entries starting with another block map to `undefined`.
@@ -96,7 +99,10 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
     const formated = arg.formated;
     const db = arg.ctx.db;
     const aiModel = arg.aiModel;
-    const useStreaming = arg.useStreaming;
+    // Decided once: a request offering tools is buffered, and every `requestClaudeHTTP` call gets `httpArg`.
+    const hasTools = arg.tools !== undefined && arg.tools.length > 0;
+    const httpArg: RequestDataArgumentExtended = hasTools ? { ...arg, useStreaming: false } : arg;
+    const useStreaming = httpArg.useStreaming;
     const nanogpt = aiModel === "nanogpt";
     const ollamaCloudAnthropic = aiModel === "ollama-cloud";
     // NanoGPT does not expose a subscription Messages endpoint.
@@ -653,7 +659,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
         };
     }
 
-    if (db.claudeBatching && !ollamaCloudAnthropic && !nanogpt) {
+    if (db.claudeBatching && !ollamaCloudAnthropic && !nanogpt && !hasTools) {
         if (body.stream !== undefined) {
             delete body.stream;
         }
@@ -992,7 +998,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
         });
     }
 
-    return requestClaudeHTTP(replacerURL, headers, body, arg);
+    return requestClaudeHTTP(replacerURL, headers, body, httpArg);
 }
 
 async function requestClaudeHTTP(
