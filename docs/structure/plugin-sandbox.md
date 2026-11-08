@@ -114,7 +114,8 @@ postprocessors: the tab's selection, or an ambient context of the same plugin, a
 A remote `plugins` change (another tab or device; `onRemoteRecordApplied` after a live record, a live patch, or a
 conflict reload) reloads the plugins here once plugin work is idle (`queueDeferredCheck`).
 
-- Only a change from the running signature counts; `loadSignature`'s JSDoc defines its fields and order.
+- Only a change from the running signature counts; `loadSignature`'s JSDoc defines its fields and order. A
+  [permission reset](#state) of a plugin of the latest load forces one reload with an unchanged signature.
 - Idle (`pluginWorkIdle`, `src/ts/plugins/apiV3/v3.svelte.ts`; `onPluginWorkChange` hears changes) means all of:
   - no send of this tab (`anyLocalSend`);
   - no job of this tab that may still call its hooks (`generationPluginWorkActive`, `src/ts/network/generationJobs.ts`):
@@ -161,6 +162,9 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   - Only the settings page revokes (`resetPluginPermissions`, `removeOrphanPluginPermissionGrants`); a revoked grant
     drops its cached answer in every tab. A reset always bumps `resets`: every tab drops the plugin's answers, and a
     prompt open across it (or an unload) answers `false`.
+  - A reset reloads the plugins here (the settings page calls `loadPlugins` after the revoke, even a failed one). Every
+    tab that runs the plugin hears the `resets` change (`onPermissionGrantsRemoved`) and defers a forced reload, which a
+    local load supersedes, so no running guest keeps a capability it obtained before the reset.
 - `PluginDataSettings.svelte` (component contract): namespace sizes, owned keys by owner; legacy keys assigned or
   deleted through the mutations above.
 

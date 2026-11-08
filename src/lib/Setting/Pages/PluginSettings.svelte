@@ -157,7 +157,14 @@
                                 )
                             ) {
                                 const current = settings.plugins?.find((entry) => entry.name === name);
-                                await resetPluginPermissions(name, current?.script ?? script);
+                                const failure = await resetPluginPermissions(name, current?.script ?? script).then(
+                                    () => null,
+                                    (error: unknown) => ({ error }),
+                                );
+                                // Restart running plugins so none keeps a capability it already obtained,
+                                // even when the revoke failed.
+                                await loadPlugins();
+                                if (failure) throw failure.error;
                             }
                         } catch (error) {
                             alertError(language.pluginPermissionResetError.replace("{error}", String(error)));

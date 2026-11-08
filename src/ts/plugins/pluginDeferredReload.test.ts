@@ -1,12 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+type PermissionRemovalListener = Parameters<typeof import("./apiV3/permissionStore").onPermissionGrantsRemoved>[0];
 
 // The reload after a remote `plugins` change (`plugin-sandbox.md` Deferred reload): `loadPlugins`
 // registers the remote listener once; a change to the load signature of the enabled 3.0 plugins
 // requests one reload, which waits until `pluginWorkIdle` (running work is never interrupted),
 // checks idleness again on the `pluginReload` chain, loads the newest list, and skips a
 // list equal to what runs. A local `loadPlugins` cancels it; a remote change while a local load is
-// queued is reconciled after that load. The v3 loader, the idle predicate, and the storage listener
-// are controlled here.
+// queued is reconciled after that load. Permission resets of running plugins force the same deferred
+// reload even with an unchanged signature. The v3 loader, idle predicate, storage listener, and
+// permission removal listener are controlled here.
 
 const mocks = vi.hoisted(() => ({
     alertError: vi.fn(),
@@ -14,6 +17,7 @@ const mocks = vi.hoisted(() => ({
     idle: true,
     workListeners: new Set<() => void>(),
     remoteListeners: new Set<(kind: string, id: string) => void>(),
+    permissionListeners: new Set<PermissionRemovalListener>(),
 }));
 
 vi.mock("src/ts/alert", async () =>
@@ -27,6 +31,14 @@ vi.mock("src/ts/stores.svelte", async () =>
     (await import("src/ts/tests/storesMock")).createStoresMock({ hotReloading: [] as string[] }),
 );
 vi.mock("./apiV3/transpiler", () => ({ pluginCodeTranspiler: vi.fn(async (code: string) => code) }));
+vi.mock("./apiV3/permissionStore", async () =>
+    (await import("./apiV3/tests/permissionStoreMock")).createPermissionStoreMock({
+        onPermissionGrantsRemoved: (listener) => {
+            mocks.permissionListeners.add(listener);
+            return () => mocks.permissionListeners.delete(listener);
+        },
+    }),
+);
 vi.mock("./apiV3/v3.svelte", () => ({
     loadV3Plugins: mocks.loadV3Plugins,
     pluginWorkIdle: () => mocks.idle,
@@ -68,16 +80,26 @@ const remoteChange = (kind = "plugins") => {
 const workChanged = () => {
     for (const listener of [...mocks.workListeners]) listener();
 };
+const permissionReset = (...names: string[]) => {
+    // A reset count can change even when there were no persisted grants to remove.
+    for (const listener of [...mocks.permissionListeners]) listener(new Set(), new Set(names));
+};
 /** The lists loaded so far, by plugin name. */
 const loads = () => mocks.loadV3Plugins.mock.calls.map(([plugins]) => plugins.map((p: any) => p.name));
 /** Lets every queued microtask and chain step run. */
-const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+const settle = () => vi.advanceTimersByTimeAsync(0);
 
 beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
     mocks.idle = true;
     mocks.loadV3Plugins.mockReset().mockImplementation(async () => {});
     mocks.alertError.mockClear();
     vi.spyOn(console, "log").mockImplementation(() => {});
+});
+
+afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
 });
 
 describe("the reload after a remote plugins change", () => {
@@ -244,5 +266,91 @@ describe("the reload after a remote plugins change", () => {
         remoteChange();
         await settle();
         expect(loads()).toEqual([["h1", "h2"], ["h1"], ["h1"]]);
+    });
+});
+
+describe("the reload after a permission reset", () => {
+    it("reloads once for a running plugin's reset with an unchanged load signature", async () => {
+        settings.plugins = [plugin("reset-running", { allowedIPC: ["peer"] })];
+        await loadPlugins();
+        expect(loads()).toEqual([["reset-running"]]);
+
+        permissionReset("reset-running");
+        permissionReset("reset-running");
+        expect(loads()).toEqual([["reset-running"]]);
+        await settle();
+        expect(loads()).toEqual([["reset-running"], ["reset-running"]]);
+
+        workChanged();
+        remoteChange();
+        await settle();
+        expect(loads()).toEqual([["reset-running"], ["reset-running"]]);
+    });
+
+    it("ignores resets of plugins not running in this tab", async () => {
+        settings.plugins = [
+            plugin("reset-active"),
+            plugin("reset-disabled", { enabled: false }),
+            plugin("reset-unsupported", { version: "2.1" }),
+        ];
+        await loadPlugins();
+        expect(loads()).toEqual([["reset-active"]]);
+
+        permissionReset("reset-disabled", "reset-unsupported", "reset-absent");
+        await settle();
+        workChanged();
+        await settle();
+        expect(loads()).toEqual([["reset-active"]]);
+    });
+
+    it("keeps the forced reload through busy retries and work resuming on the reload chain", async () => {
+        settings.plugins = [plugin("reset-busy")];
+        await loadPlugins();
+        const gate = deferred<void>();
+        mocks.loadV3Plugins.mockImplementationOnce(() => gate.promise);
+        const local = loadPlugins();
+        await settle();
+        expect(loads()).toEqual([["reset-busy"], ["reset-busy"]]);
+
+        mocks.idle = false;
+        permissionReset("reset-busy");
+        await settle();
+        workChanged();
+        await settle();
+        expect(loads()).toEqual([["reset-busy"], ["reset-busy"]]);
+
+        // Queue behind the local load, then become busy before that chain step can run.
+        mocks.idle = true;
+        workChanged();
+        await settle();
+        mocks.idle = false;
+        gate.resolve();
+        await local;
+        await settle();
+        expect(loads()).toEqual([["reset-busy"], ["reset-busy"]]);
+
+        mocks.idle = true;
+        workChanged();
+        await settle();
+        expect(loads()).toEqual([["reset-busy"], ["reset-busy"], ["reset-busy"]]);
+        workChanged();
+        await settle();
+        expect(loads()).toHaveLength(3);
+    });
+
+    it("lets a local load supersede a forced reload waiting for idle", async () => {
+        settings.plugins = [plugin("reset-local")];
+        await loadPlugins();
+        mocks.idle = false;
+        permissionReset("reset-local");
+        await settle();
+        expect(loads()).toEqual([["reset-local"]]);
+
+        await loadPlugins();
+        expect(loads()).toEqual([["reset-local"], ["reset-local"]]);
+        mocks.idle = true;
+        workChanged();
+        await settle();
+        expect(loads()).toEqual([["reset-local"], ["reset-local"]]);
     });
 });

@@ -12,6 +12,7 @@ import {
     pluginWorkIdle,
 } from "./apiV3/v3.svelte";
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
+import { onPermissionGrantsRemoved } from "./apiV3/permissionStore";
 import { clearPluginHooks } from "./pluginHooks";
 import { onRemoteRecordApplied } from "../storage/resourceSync.svelte";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
@@ -23,8 +24,10 @@ import type { RisuPlugin, ProviderPluginCustomLink } from "../../../shared/plugi
  * Plugin import and serialized reload ownership. Installed records live in `shared/plugins.ts`;
  * only enabled API `3.0` entries run, through `src/ts/plugins/apiV3/v3.svelte.ts` in iframes.
  * Local loads capture their list before waiting; remote record changes wait for plugin work to
- * become idle and read the newest list. Safe boot leaves persistence available but starts no guest
- * and installs no remote listener (`src/ts/safeBoot.ts`).
+ * become idle and read the newest list. A permission reset of a plugin running here (this tab's or
+ * another tab's) forces one such reload even with an unchanged signature, so the plugin loses the
+ * capabilities it already obtained. Safe boot leaves persistence available but starts no guest and
+ * installs neither listener (`src/ts/safeBoot.ts`).
  */
 
 export type { RisuPlugin } from "../../../shared/plugins.ts";
@@ -451,10 +454,16 @@ function loadSignature(plugins: readonly RisuPlugin[]): string {
 /** The running load signature: null before the first load, during replacement, or after a failed replacement. */
 let appliedSignature: string | null = null;
 let pendingLocalLoads = 0;
+/**
+ * Names of the plugins of the most recent load, recorded at its start so a permission reset arriving
+ * while that load runs still counts as a reset of a running plugin.
+ */
+let runningPluginNames = new Set<string>();
 
 /** Clears and reloads the hooks with `plugins`; runs on the `pluginReload` chain only. */
 async function applyPluginLoad(plugins: RisuPlugin[], capture?: (plugins: RisuPlugin[]) => void) {
     appliedSignature = null;
+    runningPluginNames = new Set(plugins.map((plugin) => plugin.name));
     clearPluginHooks();
     await loadV3Plugins(plugins);
     capture?.(plugins);
@@ -515,14 +524,20 @@ function captureBootGuests(plugins: RisuPlugin[]) {
 
 let watchingRemotePlugins = false;
 let deferredWanted = false;
+/** A permission reset of a running plugin: the next deferred reload runs even with a matching signature. */
+let deferredForced = false;
 let deferredQueued = false;
 let deferredCheckQueued = false;
 let deferredGeneration = 0;
 let watchingPluginWork = false;
 
 /**
- * Installs the remote `plugins` listener once. While a local load is queued or running, every remote
- * change requests a deferred check; only the comparison inside the reload chain can discard it safely.
+ * Installs the remote `plugins` listener and the permission reset listener once. While a local load
+ * is queued or running, every remote change requests a deferred check; only the comparison inside
+ * the reload chain can discard it safely. A permission reset (this tab's or another tab's, arriving
+ * live) of a plugin running here forces one deferred reload with an unchanged signature, so the
+ * plugin restarts without the capabilities it obtained; a reset of a plugin not running here does
+ * nothing.
  */
 function watchRemotePlugins() {
     if (watchingRemotePlugins) {
@@ -537,13 +552,24 @@ function watchRemotePlugins() {
         if (pendingLocalLoads === 0 && loadSignature(loadablePlugins()) === appliedSignature) {
             return;
         }
-        deferredWanted = true;
-        if (!watchingPluginWork) {
-            watchingPluginWork = true;
-            onPluginWorkChange(queueDeferredCheck);
-        }
-        queueDeferredCheck();
+        requestDeferredReload();
     });
+    onPermissionGrantsRemoved((_removed, resetPlugins) => {
+        if (![...resetPlugins].some((name) => runningPluginNames.has(name))) {
+            return;
+        }
+        deferredForced = true;
+        requestDeferredReload();
+    });
+}
+
+function requestDeferredReload() {
+    deferredWanted = true;
+    if (!watchingPluginWork) {
+        watchingPluginWork = true;
+        onPluginWorkChange(queueDeferredCheck);
+    }
+    queueDeferredCheck();
 }
 
 function loadablePlugins(): RisuPlugin[] {
@@ -552,10 +578,12 @@ function loadablePlugins(): RisuPlugin[] {
 
 /**
  * Coalesces `onRemoteRecordApplied` changes when another tab or device disables, removes, or updates
- * a plugin running here into one reload on `pluginReload`. Activity notifications retry without a
- * wait limit or interruption. It rechecks idleness inside the chain, synchronously up to
- * `clearPluginHooks`; when work resumed it waits again. It loads the list as it is then and skips a
- * matching signature. A local load supersedes the deferred request, and safe boot cancels it.
+ * a plugin running here, and permission resets of a plugin running here, into one reload on
+ * `pluginReload`. Activity notifications retry without a wait limit or interruption. It rechecks
+ * idleness inside the chain, synchronously up to `clearPluginHooks`; when work resumed it waits again
+ * (a forced request stays forced). It loads the list as it is then and skips a matching signature,
+ * except once after a permission reset of a running plugin, which forces the reload with an unchanged
+ * signature. A local load supersedes the deferred request, forced or not, and safe boot cancels it.
  */
 function queueDeferredCheck() {
     if (!deferredWanted || deferredQueued || deferredCheckQueued) {
@@ -580,9 +608,10 @@ function queueDeferredCheck() {
                 return;
             }
             const plugins = loadablePlugins();
-            if (loadSignature(plugins) === appliedSignature) {
+            if (!deferredForced && loadSignature(plugins) === appliedSignature) {
                 return;
             }
+            deferredForced = false;
             // Synchronous from the idle check to the hook reset.
             await applyPluginLoad(plugins);
         });
@@ -597,9 +626,10 @@ function queueDeferredCheck() {
 }
 
 /**
- * Reloads without inspecting guest startup. The first load installs the remote listener; every load
- * supersedes a waiting deferred reload. With plugins disabled by safe boot, returns before reporting
- * unsupported entries, resetting hooks, or registering that listener; UI edits still persist.
+ * Reloads without inspecting guest startup. The first load installs the remote and permission reset
+ * listeners; every load supersedes a waiting deferred reload, a forced one included. With plugins
+ * disabled by safe boot, returns before reporting unsupported entries, resetting hooks, or
+ * registering those listeners; UI edits still persist.
  */
 export async function loadPlugins(): Promise<void> {
     await reloadPlugins();
@@ -636,16 +666,18 @@ export async function loadPluginsForBoot() {
 }
 
 async function reloadPlugins(capture?: (plugins: RisuPlugin[]) => void) {
-    // Safe boot: nothing loads in this page load, so a toggle or an import only saves, and the remote
-    // listener of the deferred reload is never registered.
+    // Safe boot: nothing loads in this page load, so a toggle or an import only saves, and the
+    // listeners of the deferred reload are never registered.
     if (safeBootOff("plugins")) {
         console.log("Plugins are off for this page load (safe boot).");
         return;
     }
     console.log("Loading plugins...");
     watchRemotePlugins();
-    // This load reads the list as it is now, remote changes included: a waiting deferred reload is not needed.
+    // This load reads the list as it is now, remote changes included, and restarts every running plugin
+    // (dropping capabilities a permission reset revoked): a waiting deferred reload is not needed.
     deferredWanted = false;
+    deferredForced = false;
     deferredGeneration++;
 
     const enabled = safeStructuredClone(settings.plugins).filter((p: RisuPlugin) => p.enabled);
