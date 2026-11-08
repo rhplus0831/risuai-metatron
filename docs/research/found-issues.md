@@ -9,7 +9,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (12)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (11)
 - [Server routes and resource store](#server-routes-and-resource-store) (10)
 - [LLM requests and providers](#llm-requests-and-providers) (14)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -93,15 +93,6 @@ The no-memory trim question (aad461e63, 2026-10-11; `server/src/prompt/runner.ts
 
 **Why it matters:** the user is asked to turn memory on to protect history that nothing would lose.
 **Suggested handling:** ask only when a non-blank history entry is among the dropped ones.
-
-### An untargeted handoff offer blocks the creator's rescue
-
-`armOffer` in `server/src/jobs/generationJobs.ts` (~1157) replaces only a targeted `requested` offer with `absent` once the owner is gone. An untargeted `requested` offer, or the `preferred` offer opened at admission (`handoff: "prefer"`), stays as it is. Foreign workers with acceptance on can still claim it, but the creator takes its own job only through `absent` or a self-targeted offer (`evaluateOffers` in `src/ts/network/handoff.ts`, ~274–287; `handoff.test.ts` pins that own requested and preferred offers are left alone). Found in the Implementation Audit Fixes run (2026-11-05, slice H1), which kept it out of scope because it broadens the ownership policy on both sides.
-
-**Why it matters:** with no accepting worker online, an owner absence under a preferred or untargeted offer has no automatic creator rescue.
-**Suggested handling:** owner decision; either fall back untargeted offers to `absent` on absence too, or let the creator take its own untargeted offer while the owner is absent.
-
-**Decision (owner, 2026-11-08):** `armOffer` turns every open offer that is not `absent` (a `preferred` one and an untargeted `requested` one included) into `absent` one offer delay after owner absence; the client rules and `handoff.test.ts` stay.
 
 ### Slash commands address stored positions during a reroll
 
