@@ -2,11 +2,20 @@ import type { Credential, ModelProfile } from "../database.ts";
 import type { LLMModel } from "../llm.ts";
 import { credentialSlotOf } from "./credentialSlots.ts";
 
+/**
+ * Named-key binding decisions shared by `src/ts/model/credentials.ts` and `server/src/llm/credentials.ts`.
+ * Only an own string `credentialId` binds a profile; an empty string is still a binding and can refuse. Missing or
+ * invalid bindings never select another named key, and a refused binding never falls back to the provider default.
+ * Key presence is supplied by each runtime so plaintext secrets stay outside this resolver.
+ */
+
 /** The common metadata of tab records and server records (which also hold a plaintext key). */
 export type CredentialBindingRecord = Pick<Credential, "name" | "type" | "clientEmail" | "projectId">;
 
+/** The first failing named-key check, as ordered by `resolveCredentialBinding`. */
 export type CredentialRefusalReason = "missing" | "empty" | "typeMismatch" | "vertexEmailMissing" | "unsupportedModel";
 
+/** A default-key choice, a valid named record, or a refusal retaining the binding and any record found. */
 export type CredentialBinding<T extends CredentialBindingRecord> =
     | { kind: "default" }
     | { kind: "bound"; credentialId: string; record: T }

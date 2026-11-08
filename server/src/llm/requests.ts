@@ -36,6 +36,20 @@ import { type LoadedRequestDb, loadRequestDb, RequestTargetGoneError } from "./s
 import { createTransport, type ExchangeDetail, type FetchLogEntry } from "./transport.ts";
 import type { VertexTokenCache } from "./vertexToken.ts";
 
+/**
+ * Owns live tab and in-process job requests around `server/src/llm/request.ts`, constructing their settings, transport,
+ * tokenizer, callbacks, redactor, and history observer. Tab requests validate chat bindings before admission and load
+ * settings by stored ids; job requests use the job's captured settings and sinks without a per-client count limit.
+ *
+ * Tab SSE begins with `accepted`; adapter snapshots become set/append/remove patches, and one result/end/error ends
+ * delivery. Finalization fences later events, aborts upstream work, and rejects pending callbacks even if an adapter
+ * continues draining. Job streams keep their request live until read completion, cancellation, or abort.
+ * `server/src/llm/redact.ts` masks request data that can expose secrets; callback payloads and remembered tool records
+ * carrying stored secrets are refused so their protocol values are never rewritten. Tab callback timeouts, malformed
+ * answers, and CBS callback failures end a request even if an adapter catches the throw; channel barrier, timeout, and
+ * disconnect failures also end the parent job. Maintenance and shutdown refuse new work and end admitted requests.
+ */
+
 /** Live requests one client may hold at once. */
 export const MAX_REQUESTS_PER_CLIENT = 32;
 /** Unread event bytes a request may queue before it is ended (a reader that stopped reading). */
@@ -44,6 +58,7 @@ export const MAX_QUEUED_EVENT_BYTES = 64 * 1024 * 1024;
 export const DISPOSE_WAIT_MS = 5000;
 const STRONG_BAN_CACHE_SIZE = 500;
 
+/** A watched job callback whose targets and channel a tab request inherits; settling it aborts that request. */
 export type ParentCallback = {
     channel: JobChannel;
     /** The job's targets when the request came (its chat, and the ids its callbacks run with). */
@@ -104,6 +119,7 @@ export type RequestObserver = {
     ): void;
 };
 
+/** Stored settings and service dependencies shared by the live request registry, with optional transport/clock hooks. */
 export type LlmRequestsOptions = {
     store: ResourceStore;
     kinds: ResourceKindRegistry;
@@ -146,10 +162,12 @@ type LiveRequest = {
     finishedCallbacks: Set<string>;
 };
 
+/** Admission yields an id and SSE byte stream, or an HTTP refusal before a request is registered. */
 export type StartResult =
     | { ok: true; id: string; stream: ReadableStream<Uint8Array> }
     | { ok: false; status: 400 | 404 | 409 | 429 | 503; error: string; problems?: ChatBindingProblem[] };
 
+/** Accepted callback answer, ignored duplicate/late answer, or missing request/client/callback identity. */
 export type AnswerResult = "accepted" | "ignored" | "missing";
 
 /** A job's streamed answer failed while it was read (`runInJob`): the request and its provider code. */
@@ -1652,6 +1670,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
     };
 }
 
+/** The live registry's admission, callback-answer, job-request, and lifecycle operations. */
 export type LlmRequests = ReturnType<typeof createLlmRequests>;
 
 function errorText(error: unknown): string {

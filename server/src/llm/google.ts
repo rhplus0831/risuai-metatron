@@ -12,6 +12,24 @@ import { extractJSON, getGeneralJSONSchema } from "./jsonSchema.ts";
 import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "./request.ts";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters, type LLMParameter } from "./shared.ts";
 
+/**
+ * Builds Gemini generateContent/streamGenerateContent requests for Google API-key or Vertex bearer authentication:
+ * user/model `contents` with text, inline media, and function parts; separate `systemInstruction`, generation config,
+ * safety settings, and tool declarations. Media output forces buffered generation. Selected global-only Vertex model
+ * ids override the configured region; Vertex access tokens come from `server/src/llm/vertexToken.ts` via the context.
+ *
+ * Each response body gets a fresh SSE parser. It emits whole-text snapshots plus accumulated thought, signature, tool,
+ * usage, and model-status metadata, skips malformed lines, and stops parsing at `[DONE]` (the stream closes at EOF).
+ * The tool wrapper exposes cumulative text at key `"0"`, adds thought markup and prior tool turns, and continues with
+ * fresh provider requests for function calls. Metadata is sent to the interceptor on the final tool-free completion.
+ * EOF flushes an unterminated final line and emits an empty state if the parser never emitted a snapshot.
+ *
+ * `server/src/llm/messages.ts` supplies dispatch/credential refusals; this adapter's failures use provider bodies/status
+ * or its own literals. Missing Vertex auth both alerts and fails. `RESOURCE_EXHAUSTED` may retry up to `requestRetrys`
+ * with `antiServerOverloads`, except on Vertex. Exhausted tool follow-ups alert and return the answer collected so far
+ * (buffered success or stream close), while body read failures propagate to the reader.
+ */
+
 type GeminiFunctionCall = {
     id?: string;
     name: string;
@@ -41,6 +59,13 @@ interface GeminiChat {
     parts: GeminiPart[];
 }
 
+/**
+ * Builds, previews, or sends a Gemini request with media/tool follow-ups. Consumes a leading system entry from
+ * `arg.formated` and omits a blank system instruction; an empty prompt throws while reading its first entry. Signature
+ * output is saved only when `arg.saveSignatures` is set, while replay of saved signatures uses `db.saveSignatures`.
+ * Saved signature inlays contain text/function descriptions rather than the provider signature token. A first
+ * signature-only buffered part can throw while adding its marker to the most recent text result.
+ */
 export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const formated = arg.formated;
     const db = arg.ctx.db;

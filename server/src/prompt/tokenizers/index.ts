@@ -3,6 +3,16 @@ import { loadGemmaTokenizer } from "./gemma.ts";
 import { loadTiktoken } from "./tiktoken.ts";
 import { loadWebTokenizer } from "./webTokenizers.ts";
 
+/**
+ * Lazy registry of server tokenizer families selected by shared/tokenizerChoice.ts. Each registry coalesces loads
+ * per family and retains successful encoders; failed loads are removed so a later call can retry. File-backed
+ * families read through server/src/prompt/tokenizers/payloads.ts, while tiktoken uses its package data.
+ *
+ * Disposal is terminal and idempotent: pending loads settle before encoders are freed, and resumed acquisitions
+ * refuse once disposal begins. Failed loads do not fail disposal; encoder cleanup errors are aggregated. The shared
+ * instance created by server/src/app.ts serves request counts and token routes until server shutdown.
+ */
+
 type Encoder = { encode(text: string): ArrayLike<number>; dispose(): void };
 type Loader = (rootDir: string) => Promise<Encoder>;
 
@@ -55,8 +65,10 @@ const LOADERS = {
 
 // The families are the shared routing's (`shared/tokenizerChoice.ts`), no more and no fewer.
 export type { TokenizerFamily };
+/** The supported family names, in loader declaration order, matching shared/tokenizerChoice.ts. */
 export const TOKENIZER_FAMILIES = Object.keys(LOADERS) as TokenizerFamily[];
 
+/** Lazy family loading, encoding/counting, and terminal asynchronous disposal. */
 export type Tokenizers = ReturnType<typeof createTokenizers>;
 
 /**

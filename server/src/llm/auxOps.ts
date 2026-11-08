@@ -62,6 +62,7 @@ const GOOGLE = "https://generativelanguage.googleapis.com";
 const NANOGPT = "https://nano-gpt.com";
 const OPENROUTER = "https://openrouter.ai";
 
+/** Endpoint, credential-slot, and injection rules used by `planAuxOp` to admit each auxiliary operation. */
 export const AUX_OPS: Record<AuxOpName, AuxOp> = {
     "openai-tts": {
         origin: OPENAI,
@@ -201,6 +202,7 @@ export const AUX_OPS: Record<AuxOpName, AuxOp> = {
     },
 };
 
+/** A credential-injected URL/headers and redaction secrets, or a refusal returned to the caller as HTTP 400. */
 export type AuxOpPlan =
     | {
           ok: true;

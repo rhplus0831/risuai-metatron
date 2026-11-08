@@ -24,6 +24,14 @@ import { auxFetch } from "../network/auxFetch";
 import { isSecretSet } from "../storage/llmSecrets.svelte";
 import { customV3ProviderMetaStore } from "../plugins/apiV3/v3.svelte";
 
+/**
+ * The tab's model catalogue, discovery registry, and picker grouping over `shared/llm/models.ts`.
+ * Discovery appends to a detached base catalogue and tracks its ids separately; plugin descriptors are added only
+ * when listing or resolving. Profile capability overrides follow an explicit profile or captured preset scope,
+ * with null selecting schema defaults. Provider discovery uses server-held default credentials through
+ * `src/ts/network/auxFetch.ts`; dynamic-id reconstruction itself does not require discovery to have run.
+ */
+
 // Re-export types for backwards compatibility
 export { LLMFlags, LLMProvider, LLMFormat, LLMTokenizer, ProviderNames, OpenAIParameters, ClaudeParameters };
 export type { LLMModel };

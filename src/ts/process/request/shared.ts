@@ -3,8 +3,17 @@ import { parseAdditionalParamJsonValue } from "./additionalParams";
 
 import type { LLMParameter } from "../../../../shared/llm.ts";
 
+/**
+ * Tab-side request parameter selection and mutation for Plugin/WebLLM preparation in
+ * `src/ts/process/request/request.ts`; server adapters use `server/src/llm/shared.ts` instead.
+ * Preset values come from the captured scope, and a deleted captured preset throws rather than reading another.
+ * Additional parameters are trusted user configuration applied in order: dotted writes mutate nested objects,
+ * while deletions target literal keys. Reasoning capability markers select levels but are not emitted as fields.
+ */
+
 export type { LLMParameter };
 
+/** The main, sub, and auxiliary model-slot modes accepted by tab requests. */
 export type ModelModeExtended = "model" | "submodel" | "memory" | "emotion" | "otherAx" | "translate";
 
 const reasoningCapabilityParameters: LLMParameter[] = [
@@ -13,10 +22,15 @@ const reasoningCapabilityParameters: LLMParameter[] = [
     "reasoning_effort_xhigh",
 ];
 
+/** Whether the parameter advertises allowed reasoning levels instead of a body field. */
 export function isReasoningCapabilityParameter(parameter: LLMParameter): boolean {
     return reasoningCapabilityParameters.includes(parameter);
 }
 
+/**
+ * Mutates and returns `obj` at a dot-separated path, replacing falsy intermediate values with objects.
+ * Existing truthy intermediates are traversed without validation, so assignment through a primitive can throw.
+ */
 export function setObjectValue<T>(obj: T, key: string, value: any): T {
     const splitKey = key.split(".");
     if (splitKey.length > 1) {
@@ -32,6 +46,11 @@ export function setObjectValue<T>(obj: T, key: string, value: any): T {
     return obj;
 }
 
+/**
+ * Returns provider-wide pairs for reverse_proxy or opted-in ordinary models, and a custom model's own newline
+ * `key=value` pairs for xcustom ids. Missing ids or custom definitions return []; text is not trimmed and later
+ * equals signs remain in the value. Returned arrays are new, while provider-wide pair entries are shared.
+ */
 export function getAdditionalParameters(aiModel?: string): [string, string][] {
     if (!aiModel) {
         return [];

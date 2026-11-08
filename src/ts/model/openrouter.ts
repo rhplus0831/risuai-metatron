@@ -12,6 +12,7 @@ import type { ModelGridItem } from "./modelGrid";
 /** Per-1M-token price entry. undefined means the field is not available for this model. */
 export type PriceEntry = number | undefined;
 
+/** A picker model with legacy price text, clean labels, and optional per-million-token price breakdowns. */
 export type OpenRouterModelInfo = {
     id: string;
     /** Original name with price appended, kept for backward compatibility */
@@ -38,6 +39,7 @@ export type OpenRouterModelInfo = {
     internalReasoningPrice1M: PriceEntry;
 };
 
+/** Reads provider names/slugs for the profile and sorts by name; fetch/parsing/mapping failures return []. */
 export async function getOpenRouterProviders(profile?: ModelProfile): Promise<{ name: string; slug: string }[]> {
     try {
         // With the stored OpenRouter key, on the server (`auxFetch`).
@@ -53,6 +55,11 @@ export async function getOpenRouterProviders(profile?: ModelProfile): Promise<{ 
     }
 }
 
+/**
+ * Reads the profile's model list, splitting provider labels and converting available price fields to per million.
+ * Models with negative or nonnumeric weighted prices are excluded; the rest sort by (prompt * 3 + completion) / 4.
+ * Responses are parsed without checking HTTP status, and fetch/parsing/mapping failures return an empty list.
+ */
 export async function getOpenRouterModels(profile?: ModelProfile): Promise<OpenRouterModelInfo[]> {
     try {
         const aim = await auxFetch("openrouter-models", "https://openrouter.ai/api/v1/models", {
@@ -104,6 +111,7 @@ export async function getOpenRouterModels(profile?: ModelProfile): Promise<OpenR
     }
 }
 
+/** Formats available price breakdowns for the grid, using clean labels and the weighted price for sorting. */
 export function toModelGridItem(m: OpenRouterModelInfo): ModelGridItem {
     const fmt = (p: PriceEntry): string | null => {
         if (p === undefined) return null;

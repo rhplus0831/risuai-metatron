@@ -37,6 +37,16 @@ import { runTransformers } from "../transformers";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters, type ModelModeExtended } from "./shared";
 import { requestServer } from "./transport";
 
+/**
+ * Tab-side LLM request orchestration: retries and plugin replacers around model-slot routing and local adapters.
+ * A chat request retains its binding and owner lifetime across awaits; loading failure, deletion, replacement,
+ * or mismatched captured bindings refuse its reply. Streams keep the chat pinned until completion or cancellation.
+ * Only Plugin and WebLLM formats run here; other formats use `src/ts/process/request/transport.ts`, and character
+ * request triggers run only in server jobs through `server/src/llm/outer.ts`. Captured presets do not fall back to
+ * the current selection after deletion. Local adapter preparation mutates the supplied request argument.
+ */
+
+/** A tool name paired with its serialized argument text. */
 export type ToolCall = {
     name: string;
     arguments: string;
@@ -94,6 +104,7 @@ interface requestDataArgument {
     blockPlugins?: boolean;
 }
 
+/** Mutable local-adapter arguments augmented with resolved model, detached profile, preset scope, and defaults. */
 export interface RequestDataArgumentExtended extends requestDataArgument {
     aiModel?: string;
     multiGen?: boolean;
@@ -113,6 +124,7 @@ export interface RequestDataArgumentExtended extends requestDataArgument {
     presetScope?: PresetScope;
 }
 
+/** A buffered success/refusal, cumulative reply stream, or ordered user/character lines with optional metadata. */
 export type requestDataResponse =
     | {
           type: "success" | "fail";
@@ -141,6 +153,7 @@ export type requestDataResponse =
           model?: string;
       };
 
+/** Cumulative text values keyed by response index or auxiliary stream-field name. */
 export interface StreamResponseChunk {
     [key: string]: string;
 }
@@ -155,6 +168,8 @@ export interface StreamResponseChunk {
  * half a retry with `antiServerOverloads`), the plugins' before/after request replacers, and escaping run here in the
  * tab, around each `requestChatDataMain` attempt. The character's `request`
  * trigger runs only for a server job's requests (`server/src/llm/outer.ts`); the tab's own requests go out without it.
+ * `escape` clears `useStreaming` and escapes buffered successes only; `forceStreaming` still takes precedence in
+ * request preparation, and a plugin provider can return a stream regardless of that preference.
  */
 export async function requestChatData(
     arg: requestDataArgument,
@@ -485,6 +500,8 @@ async function requestPinnedChatData(
  * The tab's copy of `server/src/llm/request.ts` `reformater`, for the formats that run in the tab (Plugin, WebLLM),
  * with the profile's system replacements. The leading system block kept with `hasFirstSystemPrompt` is left out of the
  * role alternation and the start-with-user handling, and is put back in front afterwards.
+ * Message objects are mutated; the leading-system scan throws if it reaches an empty array, including an
+ * all-system prompt, when first-system support is enabled without full-system support.
  */
 export function reformater(
     formated: OpenAIChat[],

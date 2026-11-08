@@ -9,6 +9,16 @@ import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { limitedBody } from "./limitedBody.ts";
 
+/**
+ * Authenticated, rate-limited token counts and playground encodings over the shared server counter/tokenizers.
+ * Authentication and maintenance checks precede body reads, which use a cap on actual bytes rather than declared
+ * length. Neither route writes, so neither requires a resource epoch; answers disable caching.
+ *
+ * Count batches run sequentially with the tab's captured scope and the server's Google key. Only text refusals from
+ * server/src/prompt/tokens.ts become individual null counts; other failures propagate. Disconnects detach the caller
+ * from shared remote counts. These routes hold no maintenance lease, so shutdown does not wait for those counts.
+ */
+
 /** Count endpoint exempted from the app's global body cap in favor of its authenticated cap. */
 export const TOKEN_COUNT_PATH = "/api/tokens/count";
 /** Playground endpoint sharing the count route's authenticated body cap. */

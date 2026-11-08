@@ -5,6 +5,13 @@ import type { RequestDataArgumentExtended } from "../request.ts";
 import type { RequestDb } from "../settings.ts";
 
 /**
+ * Credential selection and local-network transport options shared by server/src/llm/openAI/requests.ts and
+ * server/src/llm/openAI/responses.ts. Key selection stays within the model's credential slot; local routing requires
+ * both the resolved profile's opt-in and a local-network URL. Only streaming local requests receive this module's
+ * timeout override, leaving buffered requests to the transport's default deadline.
+ */
+
+/**
  * A provider-specific key never falls through to another provider's default, even on direct calls. The key is
  * `arg.key` (a bound named key), else a `keyIdentifier` model's own `OaiCompAPIKeys` entry or `""`, else the provider
  * default (`""` for a custom model or the reverse proxy: `server/src/llm/credentials.ts` `defaultCredentialKey`).
@@ -21,6 +28,7 @@ export function getOpenAIRequestKey(arg: RequestDataArgumentExtended, defaultKey
     return defaultCredentialKey(arg.aiModel, defaultKey);
 }
 
+/** Optional transport overrides for local routing and a streaming request's deadline. */
 export interface LocalNetworkRequestOptions {
     networkRoute?: "auto" | "local_network";
     requestTimeoutMs?: number;

@@ -2,6 +2,13 @@ import { LLMTokenizer } from "./llm.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
 /**
+ * Tokenizer routing, wire-scope validation, and cache identity shared by tab and server callers.
+ * `src/ts/tokenizer.ts` captures the scope; server counters select a family or Google/plugin fallback from these
+ * rules. OpenRouter and reverse-proxy overrides precede catalogue choices, while playground names use a separate
+ * mapping. Identity retains all routing inputs so counts from different model scopes do not share cache entries.
+ */
+
+/**
  * Which tokenizer counts a model's text on the server. The tab captures `tabTokenScope`
  * (`src/ts/tokenizer.ts`) for `/api/tokens/count` and LLM requests; shared routing keeps those
  * choices aligned.
@@ -28,6 +35,7 @@ export type TokenizerFamily =
     | "GLM4"
     | "GLM5";
 
+/** A local tokenizer family or a remote/plugin counting path whose fallback is handled by the counter. */
 export type TokenizerChoice =
     | { kind: "family"; family: TokenizerFamily }
     /** Google's `countTokens` endpoint (`googleClaudeTokenizing`); `gemmaSentencePiece` when it fails. */
@@ -35,6 +43,7 @@ export type TokenizerChoice =
     /** A legacy provider's `custom` tokenizer: `tokenizerFunc` is never called; counts use `cl100k_base`. */
     | { kind: "pluginFunction" };
 
+/** The model and provider settings read by `selectTokenizer`, independent of either runtime's settings store. */
 export type TokenizerSettings = {
     /** The selected preset's `aiModel`. */
     aiModel: string;
@@ -91,6 +100,7 @@ export type TabTokenScope = {
     useTokenizerCaching: boolean;
 };
 
+/** Checks plain-object scope field types; numeric tokenizer codes and extra properties are not restricted. */
 export function isTabTokenScope(value: unknown): value is TabTokenScope {
     return (
         isPlainObject(value) &&

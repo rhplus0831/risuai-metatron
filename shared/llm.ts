@@ -1,9 +1,11 @@
 /**
  * The model descriptor vocabulary both runtimes share. `LLMFlags`, `LLMFormat`, `LLMTokenizer`, and `LLMProvider` are
  * numeric codes persisted in saves and shared files (presets, cards; a saved custom model stores the numbers): only
- * append a value, never renumber or reuse one (STRUCTURE D5).
+ * append a value, never renumber or reuse one. Catalogue entries in `shared/llm/models.ts` use these codes to select
+ * request shaping, provider routing, and token counting in both runtimes.
  */
 
+/** Persisted numeric capability flags that control prompt shaping and provider features. */
 export const LLMFlags = {
     hasImageInput: 0,
     hasImageOutput: 1,
@@ -34,8 +36,10 @@ export const LLMFlags = {
     geminiThinkingNoMinimal: 26,
     claudeThinkingOnByDefault: 27,
 } as const;
+/** A persisted model capability code. */
 export type LLMFlags = (typeof LLMFlags)[keyof typeof LLMFlags];
 
+/** Persisted numeric request formats used to select an adapter. */
 export const LLMFormat = {
     OpenAICompatible: 0,
     OpenAILegacyInstruct: 1,
@@ -62,8 +66,10 @@ export const LLMFormat = {
     NanoGPTMessages: 22,
     NanoGPTLegacy: 23,
 } as const;
+/** A persisted request-format code. */
 export type LLMFormat = (typeof LLMFormat)[keyof typeof LLMFormat];
 
+/** Persisted numeric tokenizer identifiers resolved by `shared/tokenizerChoice.ts`. */
 export const LLMTokenizer = {
     Unknown: 0,
     tiktokenCl100kBase: 1,
@@ -83,6 +89,7 @@ export const LLMTokenizer = {
     GLM4: 15,
     GLM5: 16,
 } as const;
+/** A persisted tokenizer code. */
 export type LLMTokenizer = (typeof LLMTokenizer)[keyof typeof LLMTokenizer];
 
 /** The request parameters a model accepts. */
@@ -102,6 +109,7 @@ export type LLMParameter =
     | "thinking_tokens"
     | "verbosity";
 
+/** Persisted numeric provider identifiers for catalogue grouping and credential routing. */
 export const LLMProvider = {
     OpenAI: 0,
     Anthropic: 1,
@@ -121,6 +129,7 @@ export const LLMProvider = {
     NanoGPT: 15,
     Ollama: 16,
 } as const;
+/** A persisted provider code. */
 export type LLMProvider = (typeof LLMProvider)[keyof typeof LLMProvider];
 
 /**

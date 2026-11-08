@@ -1,6 +1,14 @@
 import { CREDENTIAL_TYPES, type CredentialType } from "../database.ts";
 import { LLMFormat, LLMProvider, type LLMModel } from "../llm.ts";
 
+/**
+ * Credential routing metadata consumed by `shared/llm/credentialBinding.ts` in both runtimes.
+ * Model-id exceptions precede provider rules: custom endpoints and reverse proxies accept every non-Vertex key
+ * type without a flat default, and `keyIdentifier` entries accept only custom keys. A null slot refuses any named
+ * binding; this module describes defaults without reading secrets or injecting request credentials.
+ */
+
+/** The credential-routing identities, distinct from model-preset slots in `shared/llm/modelSlots.ts`. */
 export type CredentialSlotName =
     | "openai"
     | "anthropic"
@@ -17,6 +25,7 @@ export type CredentialSlotName =
     | "customModel"
     | "reverseProxy";
 
+/** Accepted named-key types and the adapter's default source for a credential-routing identity. */
 export type CredentialSlot = {
     slot: CredentialSlotName;
     accepts: readonly CredentialType[];

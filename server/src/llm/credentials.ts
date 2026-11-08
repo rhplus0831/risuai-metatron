@@ -4,6 +4,13 @@ import { resolveCredentialBinding, type CredentialRefusalReason } from "../../..
 import { messages } from "./messages.ts";
 import type { RequestDb } from "./settings.ts";
 
+/**
+ * Resolves server-side credential bindings through shared/llm/credentialBinding.ts and translates refusal reasons
+ * with server/src/llm/messages.ts. A missing binding leaves key selection to the adapter; an invalid binding refuses
+ * without falling back. Bound keys retain their stored spelling, and Vertex accounts carry their email and optional
+ * project id separately. Custom definitions and reverse proxies receive no flat default key.
+ */
+
 /** A binding's outcome; `default` carries no key and leaves the choice to the adapter. */
 export type ResolvedCredential =
     | { kind: "default" }

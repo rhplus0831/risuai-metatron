@@ -42,10 +42,10 @@ and what to look up.
 ### Catalogue and model resolution
 
 - `shared/llm.ts`: the persisted descriptor codes (`LLMFlags`, `LLMProvider`, `LLMFormat`, `LLMTokenizer`), `LLMModel`,
-  and `LLMParameter`. `shared/llm/types.ts` re-exports them with `ProviderNames` and the parameter presets
-  (`OpenAIParameters`, `ClaudeParameters`); static entries are in `shared/llm/providers/`.
+  and `LLMParameter`. `shared/llm/types.ts` re-exports the four code objects and `LLMModel` with `ProviderNames` and the
+  parameter presets (`OpenAIParameters`, `ClaudeParameters`); static entries are in `shared/llm/providers/`.
 - `shared/llm/models.ts`: the catalogue and resolver both runtimes share: `BASE_LLM_MODELS`, `resolveModelInfo`, and
-  `dynamicModelOf`; its comments define catalogue construction and dynamic-id resolution.
+  `dynamicModelOf`.
 - `shared/llm/thinkingResolver.ts` `resolveClaudeThinkingType`: stored versus displayed Claude thinking mode.
 - `src/ts/model/modellist.ts`: the tab's registry and lookups: `LLMModels`, `isDynamicModel`, `registerModelDynamic`,
   `getModelInfo`, `getModelInfoForMode`, `getModelList`. The server's lookup is `server/src/llm/request.ts`
@@ -70,9 +70,10 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   `credentialsUsing` (the delete confirmation), and `credentialStatusFor` (the discovery key gate `keySet` and the
   refresh identity `keyVersion`).
 - `src/ts/model/openrouter.ts`, `src/ts/model/nanogpt.ts`, `src/ts/model/ollama.ts`: discovery and account fetches with
-  the edited profile, through `auxFetch` ([network jobs](network-jobs.md)) to the server's `/proxy2` rows. Their
-  callers, the pickers and panels `src/lib/Setting/Pages/Model/ModelProfileEditor.svelte` mounts
-  (`NanoGPTDashboard.svelte` among them), refetch on `keyVersion`.
+  the edited profile, through `auxFetch` ([network jobs](network-jobs.md)) to the server's `/proxy2` rows (NanoGPT's
+  keyless public list and a local Ollama host are fetched directly; the module headers say how). Their callers, the
+  pickers and panels `src/lib/Setting/Pages/Model/ModelProfileEditor.svelte` mounts (`NanoGPTDashboard.svelte` among
+  them), refetch on `keyVersion`.
 - `server/src/llm/credentials.ts` `resolveCredential`, `defaultCredentialKey`: the server's resolver over the plaintext
   keys; refusal messages are `server/src/llm/messages.ts` `errors.credential*`.
 - `server/src/llm/auxOps.ts` `AUX_OPS`, `planAuxOp`: the `/proxy2` auxiliary operations ([server](self-host-server.md)):
@@ -87,9 +88,10 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   `RequestDataArgumentExtended.requestIds`; their comments define the tab loop, chat pinning, and dispatch boundary.
 - `src/ts/process/request/transport.ts` `requestServer`: the tab half of `POST /api/llm/request`; the server half is
   `server/src/routes/llm.ts`. A plugin callback's `channelCall` parentage: [plugins](plugin-sandbox.md).
-- `src/ts/process/request/shared.ts` `applyParameters`, `applyAdditionalParameters`: the tab's plugin path's copy of
-  `server/src/llm/shared.ts`. The provider adapters exist only on the server; `src/ts/process/stringlize.ts`
-  `unstringlizeChat` serves the tab's plugin provider path.
+- `src/ts/process/request/shared.ts` `applyParameters`, `applyAdditionalParameters`: the tab's copy of
+  `server/src/llm/shared.ts` (`applyParameters` for Plugin requests, `applyAdditionalParameters` for WebLLM). The
+  provider adapters exist only on the server; `src/ts/process/stringlize.ts` `unstringlizeChat` serves the tab's WebLLM
+  path.
 
 ### Server request layer
 
@@ -98,17 +100,14 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   `resolveJobRequestModel`, and the per-format functions; the other adapters are `server/src/llm/anthropic.ts`,
   `server/src/llm/google.ts`, and `server/src/llm/openAI/` (helpers `server/src/llm/nai.ts`,
   `server/src/llm/openrouter.ts`). `server/src/llm/outer.ts` `requestChatDataOuter` is a job's outer loop.
-- `server/src/llm/openAI/shared.ts`: `getOpenAIRequestKey` and `getLocalNetworkRequestOptions` (the profile's
-  `localNetworkMode` route and `localNetworkTimeoutSec`).
+- `server/src/llm/openAI/shared.ts`: `getOpenAIRequestKey` and `getLocalNetworkRequestOptions`.
 - `server/src/llm/shared.ts` `applyParameters`, `applyAdditionalParameters`: server parameter application and the
-  trusted custom-parameter syntax, mirrored by the tab plugin path.
-- `server/src/llm/redact.ts`: `REDACTED`, `collectSecrets`, `createRedactor`; the server projection of request data,
-  including credential fields.
+  trusted custom-parameter syntax, mirrored in `src/ts/process/request/shared.ts`.
+- `server/src/llm/redact.ts`: `REDACTED`, `collectSecrets`, `createRedactor`; the secret projection.
 - `server/src/llm/sseLines.ts` `SseLines`, and the stream parsers in `server/src/llm/openAI/requests.ts`,
   `server/src/llm/google.ts`, and `server/src/llm/anthropic.ts` (comments on each parser), under the snapshot contract
   in `Flows`.
-- `server/src/llm/settings.ts` `loadRequestDb`, `RequestTargetGoneError`, `tokenScopeFor`: the request database from one
-  store read.
+- `server/src/llm/settings.ts` `loadRequestDb`, `RequestTargetGoneError`, `tokenScopeFor`: the request database.
 - `server/src/llm/requests.ts` `createLlmRequests`: admission, `runInJob`, and the `strongBan` cache. Request history
   and observer details are in [diagnostics](diagnostics.md) and [server](self-host-server.md).
 
@@ -155,7 +154,8 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
 
 ## Flows
 
-- Every provider request except plugin providers and WebLLM runs on the server. Tab requests go through
+- Every provider request except plugin providers and WebLLM runs on the server; a job's WebLLM request runs there too,
+  through the job's `ctx.localGeneration`, and a job calls plugin providers in its tab. Tab requests go through
   `requestChatData` → `requestChatDataMain` → `requestServer`; jobs enter the server outer loop (`requestChatDataOuter`)
   directly. Plugin v3 calls `requestChatDataMain` itself (`src/ts/plugins/apiV3/v3.svelte.ts`). Both runtimes apply
   `applyReverseProxyOverride` (`shared/llm/reverseProxy.ts`) before dispatch.
@@ -164,9 +164,11 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
 - The server builds a detached request context with profile roots, resolves the named credential, reforms the prompt
   from model flags, and dispatches by `LLMFormat`. A bound Vertex account populates `vertexCredential`; other bound keys
   replace `arg.key`. See [credential binding](#credentials).
-- Streams carry cumulative `StreamResponseChunk` snapshots from server parsers through transport to the tab; adapter
-  comments own parser details. Tool calls go through the tab's `mcp.ts:callTool` callback, then results are appended
-  before the request recurses.
+- Server parsers produce cumulative `StreamResponseChunk` snapshots; `POST /api/llm/request` sends them as
+  `set`/`append`/`remove` patches (legacy Ooba strings as `chunkText`), and `requestServer` rebuilds the snapshots. Job
+  requests read the snapshots directly. Adapter comments own parser details. A tab request's tool calls go through the
+  `mcpTool` callback (`mcp.ts` `callTool`), a job's through its job tool service; the adapter appends the results and
+  sends the follow-up request.
 
 ## State
 

@@ -10,15 +10,22 @@ import type { RequestDb } from "./settings.ts";
  *   `OaiCompAPIKeys` value, every named credential's key and client email, the parts of a
  *   Bedrock `accessKeyId:secretAccessKey:region` credential, and each Vertex token handed out) is
  *   replaced by `[redacted]` wherever it occurs in a string, also in its JSON-escaped and
- *   URL-encoded forms; every non-empty value, however short. The readable siblings (`google.projectId`, `hordeConfig.model`, `hordeConfig.softPrompt`,
- *   `novelai.model`, `vertexClientEmail`) are not credentials.
- * - By name: the values of the `authorization`, `x-api-key`, `x-goog-api-key`, `api-key`, `apikey`,
- *   and `x-api-key` headers in a log entry's headers, and the `key`, `api_key`, and `token` query
- *   parameters of any URL-looking string.
+ *   URL-encoded forms; every non-empty value, however short. The readable siblings (`google.projectId`,
+ *   `hordeConfig.model`, `hordeConfig.softPrompt`, `novelai.model`, `vertexClientEmail`) are not credentials.
+ * - By name: the values of the `authorization`, `x-api-key`, `x-goog-api-key`, `api-key`, and `apikey`
+ *   headers in a log entry's headers, and the `key`, `api_key`, and `token` query parameters of any URL-looking string.
  *
  * A free-form `header::` value in `additionalParams` or a custom model's `params` that is not a
  * stored credential is user configuration, outside this guarantee.
+ *
+ * `server/src/llm/requests.ts` applies this projection to request data, leaving generated answers unchanged. Secret
+ * forms include twice-JSON-escaped values and match longest first. Deep projection masks string-valued secret headers
+ * by name and retains object keys; `carries` checks stored secret forms in both keys and values so callers can refuse
+ * opaque callback/tool data rather than rewrite it. `trimPartial` removes a trailing secret prefix from bounded
+ * captures after full-value redaction.
  */
+
+/** Replacement text for a masked credential or named secret field. */
 export const REDACTED = "[redacted]";
 
 const SECRET_HEADERS = new Set(["authorization", "x-api-key", "x-goog-api-key", "api-key", "apikey"]);
@@ -39,6 +46,7 @@ const STRING_SECRET_FIELDS = [
     "vertexAccessToken",
 ] as const;
 
+/** Per-request secret matching and deep string-value projection; `add` extends all later matching immediately. */
 export type Redactor = {
     /** Adds a value to redact from now on (a refreshed token). */
     add(secret: string | null | undefined): void;
@@ -58,6 +66,10 @@ export type Redactor = {
     trimPartial(value: string): string;
 };
 
+/**
+ * Collects stored provider credentials, compatibility keys, and named keys/client emails, including colon-separated
+ * key components. Returns duplicates and empty strings unchanged; `createRedactor` deduplicates forms and ignores empties.
+ */
 export function collectSecrets(db: Partial<RequestDb>): string[] {
     const secrets: string[] = [];
     const record = db as Record<string, unknown>;
@@ -105,6 +117,11 @@ function escapeRegExp(text: string) {
     return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * Builds a mutable secret matcher. `text` also masks named query values; `apply` copies JSON-like arrays/objects and
+ * masks string values and secret headers without rewriting keys. `carries` checks stored secret forms in values and
+ * keys, not the header/query-name rules. Cyclic inputs are not handled by either recursive traversal.
+ */
 export function createRedactor(initial: string[]): Redactor {
     const forms = new Set<string>();
     let pattern: RegExp | null = null;

@@ -2,6 +2,19 @@
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { TextContext } from "./stringlize.ts";
 
+/**
+ * NovelAI prompt text and banned-token sequences consumed by `requestNovelAI` in server/src/llm/request.ts.
+ * That adapter sends `{ input, model, parameters }` to the Kayra or Clio generation endpoint and reads buffered
+ * `output`; it has no stream parser or streamed snapshots. An HTTP failure or missing/empty output becomes `fail`
+ * text with the HTTP prefix from server/src/llm/messages.ts. This module only builds the input and token list.
+ * The formatter uses the captured effective user name and preserves the configured separator/starter conventions.
+ */
+
+/**
+ * Joins chat text with the NovelAI separator, translating new-chat system markers into the configured starter.
+ * A literal backslash followed by `n` is expanded in both settings, with newline/`⁂` fallbacks. Names and adventure
+ * prefixes follow their settings; every non-continuation appends `separator + char + ":"` even with name appending off.
+ */
 export function stringlizeNAIChat(formated: OpenAIChat[], char: string, continued: boolean, ctx: TextContext) {
     const db = ctx.db;
     let seperator = db.NAIsettings.seperator.replaceAll("\\n", "\n") || "\n";
@@ -46,6 +59,7 @@ export function stringlizeNAIChat(formated: OpenAIChat[], char: string, continue
 
 export type { NAISettings } from "../../../shared/settings.ts";
 
+/** Token sequences sent as NovelAI's `parameters.bad_words_ids` by server/src/llm/request.ts. */
 export const NovelAIBadWordIds = [
     [60],
     [62],

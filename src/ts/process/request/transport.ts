@@ -42,6 +42,16 @@ import { callTool, decodeToolCall, encodeToolCall } from "../mcp/mcp";
 import type { MCPTool } from "../mcp/mcplib";
 import type { ModelModeExtended } from "./shared";
 
+/**
+ * Browser transport for `POST /api/llm/request`, called by `src/ts/process/request/request.ts` for server adapters.
+ * Request ids, tokenizer scope, and serializable arguments are captured before saves flush; captured chats remain
+ * pinned and must retain their owners through loading and reply handling. SSE inlay/tool-record writes precede
+ * later events, while callbacks run independently and duplicate callback ids reuse one computed answer. Stream
+ * chunks become cumulative snapshots, except legacy `chunkText` values pass through as strings; missing terminal
+ * events fail the response or error an exposed stream.
+ * Cancelling the returned stream aborts the fetch and releases pins.
+ */
+
 type ClientResponse =
     | BufferedResponse
     | {

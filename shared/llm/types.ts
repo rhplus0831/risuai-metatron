@@ -2,13 +2,15 @@ import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from ".
 import type { LLMParameter } from "../llm.ts";
 
 /**
- * Re-exports the `shared/llm.ts` numeric code objects and `LLMModel`, and adds `ProviderNames` and the parameter
- * presets.
+ * Shared provider display names and parameter presets alongside the vocabulary re-exported from `shared/llm.ts`.
+ * These arrays advertise supported controls to catalogue entries; they do not hold request values. GPT-5 presets
+ * build independent arrays from a common base, with capability markers distinguishing allowed reasoning levels.
  */
 
 export { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer };
 export type { LLMModel };
 
+/** Display names keyed by the persisted provider codes. */
 export const ProviderNames = new Map<LLMProvider, string>([
     [LLMProvider.OpenAI, "OpenAI"],
     [LLMProvider.Anthropic, "Anthropic"],
@@ -29,6 +31,7 @@ export const ProviderNames = new Map<LLMProvider, string>([
     [LLMProvider.Ollama, "Ollama"],
 ]);
 
+/** The common OpenAI sampling and penalty controls. */
 export const OpenAIParameters: LLMParameter[] = ["temperature", "top_p", "frequency_penalty", "presence_penalty"];
 const GPT5BaseParameters: LLMParameter[] = [
     "temperature",
@@ -38,12 +41,17 @@ const GPT5BaseParameters: LLMParameter[] = [
     "reasoning_effort",
     "verbosity",
 ];
+/** OpenAI sampling and penalty controls plus reasoning effort and verbosity. */
 export const GPT5Parameters: LLMParameter[] = [...GPT5BaseParameters];
+/** GPT-5 controls advertising the additional `none` reasoning level. */
 export const GPT5NoneParameters: LLMParameter[] = [...GPT5BaseParameters, "reasoning_effort_none"];
+/** GPT-5 controls advertising both `none` and `xhigh` reasoning levels. */
 export const GPT5XHighParameters: LLMParameter[] = [...GPT5NoneParameters, "reasoning_effort_xhigh"];
+/** GPT-5 controls advertising a minimum of medium reasoning and the `xhigh` level. */
 export const GPT5ProParameters: LLMParameter[] = [
     ...GPT5BaseParameters,
     "reasoning_effort_min_medium",
     "reasoning_effort_xhigh",
 ];
+/** The common Claude sampling controls, without a thinking budget. */
 export const ClaudeParameters: LLMParameter[] = ["temperature", "top_k", "top_p"];

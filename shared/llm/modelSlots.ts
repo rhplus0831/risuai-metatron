@@ -28,6 +28,7 @@ export function definitionNeedsProfile(modelId: string): boolean {
     return profileDefinitions.has(modelId) || modelId.startsWith("xcustom:::");
 }
 
+/** A resolved profile, a bare model using defaults, or a refusal that forbids fallback routing. */
 export type SlotProfileResolution =
     | { kind: "profile"; profile: ModelProfile; modelId: string }
     | { kind: "none"; modelId: string }

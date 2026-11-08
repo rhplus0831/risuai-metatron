@@ -4,6 +4,15 @@ import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { requestDataResponse } from "./request.ts";
 import type { RequestDb } from "./settings.ts";
 
+/**
+ * Wraps server request attempts with the client's retry and hook ordering, used by job, Lua, memory, and translation
+ * callers around `server/src/llm/requests.ts`. It clones/unescapes the prompt once, then runs before-replacers, the
+ * request trigger, the attempt, success escaping, after-replacers, charset checks, and failure retries in that order.
+ * Prompt changes survive retries. Ordinary trigger errors log and continue; fatal trigger errors and other hook or
+ * attempt throws propagate. Abort returns an `Aborted` failure when observed between attempts/after an attempt.
+ * Only buffered successes get escaping, after-replacers, and charset checks; streams return to the caller immediately.
+ */
+
 const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /** What the outer loop calls; every hook it lacks is skipped. */
@@ -48,6 +57,8 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
  * trigger, and `banCharacterset`, in the client's order. Tools are the caller's (`arg.tools`).
  * Charset rejections count against `requestRetrys`. The loop yields a turn of the event loop
  * before every attempt.
+ * `escape` clears `useStreaming` but forwards `forceStreaming`, so an attempt may still force a stream; streamed
+ * answers bypass success escaping and after-replacers.
  */
 export async function requestChatDataOuter(
     input: RequestArgs & { escape?: boolean },

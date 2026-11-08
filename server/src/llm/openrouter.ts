@@ -1,6 +1,16 @@
 import type { RequestContext } from "./context.ts";
 
 /**
+ * Resolves OpenRouter's `risu/free` alias from a buffered GET of `/api/v1/models` using the flat stored OpenRouter key.
+ * Models with zero weighted prompt/completion pricing are labeled free, and the longest-context free model wins.
+ * Fetch, abort, and decoding errors become an empty list; an empty free list throws on `[0].id`.
+ *
+ * Chat request construction (`model`, `messages` or a template `prompt`, routing/transforms/provider filters) and
+ * SSE parsing belong to server/src/llm/openAI/requests.ts. Its snapshots, stream endings, and buffered error text
+ * from server/src/llm/messages.ts also apply to OpenRouter; this discovery helper has no stream or error-text mapping.
+ */
+
+/**
  * The client's former `getFreeOpenRouterModels` (once in `src/ts/model/openrouter.ts`) on the server: the
  * OpenRouter list fetched with the stored key, the longest-context model whose priced name ends in
  * `Free`. The client's `getOpenRouterModels` swallows every error into an empty list, so with no

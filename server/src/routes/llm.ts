@@ -20,6 +20,17 @@ import type { LlmRequests } from "../llm/requests.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
+/**
+ * HTTP validation and SSE delivery for tab-initiated LLM requests and their callback answers. Both endpoints apply
+ * the limiter and authenticate before reading JSON; only request creation checks the resource epoch. Arguments are
+ * allowlisted so credential-bearing or server-only fields cannot enter through `arg`.
+ *
+ * Admission, chat-binding checks, callback ownership, redaction, and request lifetime belong to
+ * server/src/llm/requests.ts. Accepted requests stream its events with caching/proxy buffering disabled, without
+ * acquiring a chat lock or persisting a generation. Callback answers are scoped by request id and body client id;
+ * recognized repeats are ignored, while unknown requests/callbacks return 404.
+ */
+
 const optionalString = (value: unknown) => value === undefined || typeof value === "string";
 const optionalBoolean = (value: unknown) => value === undefined || typeof value === "boolean";
 const optionalNumber = (value: unknown) => value === undefined || typeof value === "number";

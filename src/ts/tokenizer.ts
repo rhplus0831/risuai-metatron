@@ -239,6 +239,7 @@ export const tokenizerList = [
     ["glm5", "GLM5"],
 ] as const;
 
+/** Requests playground token ids from `/api/tokens/encode`; failed requests or malformed id arrays reject. */
 export async function encodeWithTokenizer(data: string, tokenizerType: string): Promise<number[]> {
     const { body, status } = await requestTokenJson("/api/tokens/encode", { tokenizer: tokenizerType, text: data });
     if (
@@ -253,6 +254,7 @@ export async function encodeWithTokenizer(data: string, tokenizerType: string): 
     return body.ids;
 }
 
+/** Counts the character's name, first message, and description joined by newlines in the main model's scope. */
 export async function tokenizerChar(char: character) {
     return countTokens(char.name + "\n" + char.firstMessage + "\n" + char.desc);
 }
@@ -269,6 +271,7 @@ function expandTokenCountText(text: string, consistantChar?: boolean): string {
     });
 }
 
+/** Synchronously captured expanded text and tokenizer identity, or the failure encountered while preparing them. */
 export type TokenCountInput = { text: string; expanded: string; scope: string } | { text: string; error: unknown };
 
 /**
@@ -306,6 +309,11 @@ export class ChatTokenizer extends ChatTokenCounter {
     }
 }
 
+/**
+ * Counts description/personality/scenario as `persistant` and lore without empty or `@@` lines as `dynamic`,
+ * replacing character-name markers. Groups return zeroes. A missing argument uses the selected character; if
+ * there is no selection, reading its type rejects rather than returning zeroes.
+ */
 export async function getCharToken(char?: AnyClientCharacter | null) {
     if (!char) {
         const c = selectedCharacter();

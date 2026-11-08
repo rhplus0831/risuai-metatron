@@ -18,9 +18,12 @@ import type { Tokenizers } from "./tokenizers/index.ts";
 
 /** The entries of the encode cache and of the Google count cache. */
 export const TOKEN_CACHE_SIZE = 1500;
+/** Deadline for an active Google count, starting when its fetch is sent rather than while queued. */
 export const GOOGLE_COUNT_TIMEOUT_MS = 30_000;
+/** Maximum simultaneous Google count calls; additional distinct counts wait in a queue. */
 export const GOOGLE_COUNT_MAX_CONCURRENT = 8;
 
+/** Captured model/tokenizer choices and the server-held Google key used for one counting scope. */
 export type TokenCountScope = {
     /** The main slot's derived `aiModel` and its profile's `currentPluginProvider`. */
     aiModel: string;
@@ -75,6 +78,7 @@ type PendingGoogleCount = {
     callers: number;
 };
 
+/** Scope-aware asynchronous encoding and counting, with optional caller cancellation. */
 export type TokenCounter = ReturnType<typeof createTokenCounter>;
 
 /**

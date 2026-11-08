@@ -36,15 +36,24 @@ import { sleep } from "./util.ts";
  * A job's request runs the character's request trigger through `server/src/llm/outer.ts`. The client's module reads
  * (`getDatabase`, `globalFetch`, the selected character, `getUserName`, `risuChatParser`, ...)
  * are the request context's (`arg.ctx`).
- *
  * The provider adapters exist only on the server: this file's per-format functions, `server/src/llm/anthropic.ts`,
  * `server/src/llm/google.ts`, and `server/src/llm/openAI/` (with the helpers `server/src/llm/nai.ts` and
  * `server/src/llm/openrouter.ts`). An adapter reads nothing outside `arg.ctx` and its arguments, so a provider change
  * goes into them.
+ *
+ * A job's WebLLM request uses the server's `ctx.localGeneration`; its Plugin request uses `ctx.pluginProvider` in the
+ * job's tab (`server/src/llm/context.ts`).
+ * Adapters receive a request-local settings overlay and a cloned prompt/descriptor. Shared English refusal and
+ * HTTP-prefix strings come from `server/src/llm/messages.ts`; provider-specific failures retain the adapter's text.
+ * `server/src/llm/requests.ts` redacts failed results, previews, notices, and thrown errors before exposing them, while
+ * generated answers pass through unchanged. Streams carry cumulative snapshots, which that layer converts to wire
+ * patches (legacy Ooba's cumulative strings travel separately); an adapter's returned stream is still live work.
  */
 
+/** The shared cumulative stream snapshot shape exposed by the server adapters. */
 export type { StreamResponseChunk };
 
+/** A tool's name and serialized arguments. */
 export type ToolCall = {
     name: string;
     arguments: string;
@@ -74,6 +83,10 @@ export interface RequestDataArgumentExtended extends RequestArgs {
  */
 export type JobRequestInfo = { id: string; providerCode: string | null };
 
+/**
+ * A buffered answer/failure or a live stream of cumulative snapshots, optionally carrying its admitted job request's
+ * history identity. Server-local refusal details stay on buffered failures for the job's outer loop.
+ */
 export type requestDataResponse = (
     | (BufferedResponse & {
           /** A server-local failure, preserved through the job's request loop. */
@@ -252,6 +265,8 @@ function normalizeOllamaStreamResponse(response: Response): Response {
 /**
  * Reshapes the prompt from the model flags. The leading system block kept with `hasFirstSystemPrompt` is left out of
  * the role alternation and the start-with-user handling, and is put back in front afterwards.
+ * Message objects are mutated. On the first-system-only path, reading the next entry's role throws for an empty
+ * prompt or after consuming a prompt made entirely of system entries.
  */
 export function reformater(
     formated: OpenAIChat[],
@@ -463,6 +478,14 @@ export function resolveJobRequestModel(
  * The named key (`server/src/llm/credentials.ts` `resolveCredential`) is resolved before `reformater` and dispatch: a
  * refusal fails with `noRetry`, a bound Vertex account populates `vertexCredential`, and any other bound key replaces
  * `arg.key`, which the adapters prefer over the flat default.
+ *
+ * Dispatch is by the resolved `LLMFormat`: OpenAICompatible/Mistral/NanoGPT use `requestOpenAI`;
+ * OpenAIResponseAPI/NanoGPTResponses use `requestOpenAIResponseAPI`; OpenAILegacyInstruct/NanoGPTLegacy use
+ * `requestOpenAILegacyInstruct` (all in `server/src/llm/openAI/requests.ts`). Anthropic/AnthropicLegacy/AWSBedrockClaude/
+ * NanoGPTMessages use `server/src/llm/anthropic.ts` `requestClaude`; GoogleCloud/VertexAIGemini use
+ * `server/src/llm/google.ts` `requestGoogleCloudVertex`. NovelAI, OobaLegacy, Ooba, Kobold, NovelList, Ollama, Cohere,
+ * Horde, Echo, WebLLM, and Plugin use this module's corresponding functions. An unhandled format returns the
+ * `server/src/llm/messages.ts` unknown-model failure.
  */
 export async function requestChatDataMain(
     arg: RequestArgs & { tools: ToolDescriptor[] },
@@ -1713,6 +1736,7 @@ async function requestHorde(arg: RequestDataArgumentExtended): Promise<requestDa
     }
 }
 
+/** Optional sampler fields accepted by a Kobold generation body. */
 export interface KoboldSamplerSettingsSchema {
     rep_pen?: number;
     rep_pen_range?: number;
@@ -1725,6 +1749,7 @@ export interface KoboldSamplerSettingsSchema {
     temperature?: number;
 }
 
+/** A Kobold generation body: prompt and generation count with optional context, formatting, and sampler settings. */
 export interface KoboldGenerationInputSchema extends KoboldSamplerSettingsSchema {
     prompt: string;
     use_memory?: boolean;

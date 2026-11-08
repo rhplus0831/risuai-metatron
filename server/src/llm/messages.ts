@@ -1,5 +1,14 @@
 // The client's `language` strings the request layer shows (`src/lang/en.ts`). Server messages are
 // English whatever the tab's language.
+/**
+ * English request-layer messages independent of the tab's locale. `server/src/llm/request.ts` uses the model/profile
+ * refusals and HTTP prefix, `server/src/llm/credentials.ts` builds named-credential refusals, and
+ * `server/src/llm/requests.ts` uses the missing-plugin text. Provider adapters may return their own error bodies and
+ * literals; this object does not translate or normalize those errors. The consent prompt retains its tool/action
+ * placeholders for the caller to substitute.
+ */
+
+/** Shared refusal strings, parameterized credential/profile messages, and the MCP consent template. */
 export const messages = {
     errors: {
         unknownModel: "Error: Unknown model selected",

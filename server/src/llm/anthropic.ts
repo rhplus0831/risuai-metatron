@@ -15,6 +15,22 @@ import { SseLines } from "./sseLines.ts";
 import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "./request.ts";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters } from "./shared.ts";
 
+/**
+ * Builds Anthropic Messages bodies with user/assistant content blocks, a separate leading system prompt, image and
+ * cache blocks, thinking settings, and tool schemas. NanoGPT fixes its Messages endpoint; Ollama Cloud uses bearer
+ * auth; Bedrock signs a nonstreaming invoke body with SigV4. Messages batching submits once and polls for results.
+ *
+ * The HTTP stream emits cumulative text at key `"0"`, wrapping thinking in `<Thoughts>`; malformed SSE lines are
+ * skipped individually. EOF flushes the final line, closes any open thinking block, and ends the stream; message-stop
+ * events alone do not close it. Batching emits a single full answer on success and closes without text on cancellation.
+ * Tool execution and remembered output are handled by buffered Messages follow-ups, not the SSE parser.
+ *
+ * Unlike the shared HTTP prefix in `server/src/llm/messages.ts`, HTTP failures here carry provider text/JSON directly.
+ * Buffered Messages failures containing "overload" set `failByServerError`; SSE error events append a redacted
+ * `Error:` message to the answer. Batch errored/expired results error their stream, while polling exceptions are logged
+ * and polling continues until its timeout. Body read failures propagate through the HTTP stream.
+ */
+
 interface Claude3TextBlock {
     type: "text";
     text: string;
@@ -70,6 +86,12 @@ interface Claude3ExtendedChat {
     content: Claude3ContentBlock[] | string;
 }
 
+/**
+ * Builds, previews, or sends a Claude Messages/Bedrock request, optionally returning a live HTTP or batch stream.
+ * Empty input returns `No input`; system-only input becomes a `Start` user turn with the system text cleared. A
+ * signed Bedrock request without all three `accessKeyId:secretAccessKey:region` key parts throws before preview/send.
+ * Reverse-proxy messages keep only their first text block; entries starting with another block map to `undefined`.
+ */
 export async function requestClaude(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const formated = arg.formated;
     const db = arg.ctx.db;

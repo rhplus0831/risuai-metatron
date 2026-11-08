@@ -20,6 +20,26 @@ import { applyAdditionalParameters, applyParameters, getAdditionalParameters } f
 import type { Contents, OpenAIChatExtra, OpenAIChatFull, ToolCall } from "./types.ts";
 
 import { getLocalNetworkRequestOptions, getOpenAIRequestKey, type LocalNetworkRequestOptions } from "./shared.ts";
+
+/**
+ * Builds OpenAI-compatible Chat Completions bodies (`model`, `messages`, generation fields, and optional tools),
+ * or legacy Completions bodies with a flattened `prompt`. OpenRouter can replace `messages` with a chat-template
+ * prompt; Mistral uses its own role conversion and a buffered request. Responses API requests are re-exported from
+ * server/src/llm/openAI/responses.ts.
+ *
+ * The Chat parser accumulates content, reasoning, and tool arguments from SSE deltas into whole-text snapshots.
+ * Malformed data lines are skipped; `[DONE]` stops parsing, and upstream EOF closes the stream after flushing any
+ * pending line. The tool wrapper exposes only key `"0"`, including prior tool-round text and remembered markers;
+ * other choice indexes and parser-only `__tool_calls` do not reach its reader. Tool follow-ups use a fresh parser.
+ * JSON events without `choices`, including in-band error payloads, contribute no text and do not fail the stream.
+ *
+ * Buffered HTTP/shape failures become `fail` text prefixed by `messages.errors.httpError` from
+ * server/src/llm/messages.ts. Initial streaming HTTP or content-type failures return the raw body as `fail` text;
+ * body read failures reject the stream, and a missing Content-Type header throws. Exhausted tool follow-ups issue an
+ * alert and retain the accumulated answer (a buffered success or a closed stream). Initial transport throws and
+ * malformed legacy success payloads propagate.
+ */
+
 export { requestOpenAIResponseAPI, __testResponsesAPI } from "./responses.ts";
 
 function isOfficialOpenAIURL(url: string): boolean {
@@ -35,6 +55,11 @@ function shouldUseOpenAIFlexProcessing(aiModel: string, url: string, provider: L
     return provider === LLMProvider.OpenAI || (isCustomEndpoint && isOfficialOpenAIURL(url));
 }
 
+/**
+ * Builds and previews or sends a Chat request, with provider/model flags, image input, biases, and tools applied.
+ * Mistral always takes the buffered branch. Other models refuse multi-generation with tools before sending;
+ * `arg.useStreaming` sets their final `stream` field after additional parameters and selects the response path.
+ */
 export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     let formatedChat: OpenAIChatExtra[] = [];
     const formated = arg.formated;
@@ -688,6 +713,12 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
     return requestHTTPOpenAI(replacerURL, body, headers, arg, localNetworkOptions);
 }
 
+/**
+ * Sends a prepared buffered Chat/Completions body and reads text, reasoning, JSON extraction, or multiple choices.
+ * Tool responses append to `body.messages` and recurse, retrying failed follow-ups up to `db.requestRetrys` times;
+ * exhausted follow-ups alert and return the text/remembered markers from the preceding round as a success.
+ * Malformed successful payloads return `fail` with the HTTP error prefix from server/src/llm/messages.ts.
+ */
 export async function requestHTTPOpenAI(
     replacerURL: string,
     body: any,
@@ -933,6 +964,11 @@ export async function requestHTTPOpenAI(
     };
 }
 
+/**
+ * Sends buffered legacy Completions with `##` role sections and a final Response cue, using NanoGPT's configured
+ * model/endpoint or `gpt-3.5-turbo-instruct`. Preview returns a success containing an unsupported-preview message.
+ * HTTP failures use server/src/llm/messages.ts; a successful payload without `choices[0].text` throws.
+ */
 export async function requestOpenAILegacyInstruct(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const formated = arg.formated;
     const db = arg.ctx.db;

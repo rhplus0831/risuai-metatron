@@ -1,4 +1,10 @@
 /**
+ * Splits a provider response body into UTF-8 lines without interpreting SSE fields. Each `SseLines` instance belongs
+ * to one body so partial code points and unfinished lines cannot leak into a tool follow-up. Callers apply each
+ * returned line once and call `end` at EOF to flush a final line even without a newline.
+ */
+
+/**
  * Incremental UTF-8 lines for one SSE response body; only the unfinished line is retained. One instance holds one
  * streaming decoder, so each response body (each tool follow-up's included) gets a fresh one. `end` flushes the
  * decoder and an unterminated final line; a trailing `\r` is dropped from every line.

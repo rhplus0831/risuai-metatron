@@ -11,6 +11,7 @@ import type { ModelGridItem } from "./modelGrid";
  * `globalFetch` with no provider credential.
  */
 
+/** Whether discovery reads a configured host or the fixed Ollama cloud endpoint. */
 export type OllamaModelSource = "local" | "cloud";
 
 type OllamaTagModel = {
@@ -32,7 +33,8 @@ type OllamaTagModel = {
 
 /**
  * The models of an Ollama host. The cloud list uses the stored Ollama key on the server
- * (`auxFetch`); a local host is read as before.
+ * (`auxFetch`); a local host is read through `globalFetch`. Non-OK responses and fetch/parsing/mapping failures
+ * return an empty list.
  */
 export async function getOllamaModels(
     host: string,
@@ -65,6 +67,7 @@ export async function getOllamaModels(
     }
 }
 
+/** Maps tag metadata to a grid row with no prices or known context length; local rows sort before cloud rows. */
 export function toModelGridItem(model: OllamaTagModel, source: OllamaModelSource): ModelGridItem {
     const id = model.model || model.name || "";
     const details = model.details;

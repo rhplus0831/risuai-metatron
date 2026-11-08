@@ -11,6 +11,7 @@ import { getModelInfo } from "./modellist";
  * empty. Every binding decision is `shared/llm/credentialBinding.ts` `resolveCredentialBinding`.
  */
 
+/** The model's accepted key slot paired with its default, bound, or refused named-key decision. */
 export type ModelCredential = { slot: CredentialSlot | null } & (
     | { state: "default" }
     | { state: "bound"; credentialId: string; record: Credential }
@@ -79,6 +80,7 @@ export function credentialsAccepted(modelId: string): Credential[] {
     return slot ? (settings.credentials ?? []).filter((record) => slot.accepts.includes(record.type)) : [];
 }
 
+/** A model profile to show when confirming deletion of a credential it names. */
 export type CredentialUsage = {
     kind: "modelProfile";
     id: string;

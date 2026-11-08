@@ -10,6 +10,19 @@ import type { ResourceStore } from "../data/resourceStore.ts";
 import type { TokenCountScope } from "../prompt/tokens.ts";
 import { collectSecrets } from "./redact.ts";
 
+/**
+ * Projects captured server records into the legacy-shaped settings read by provider requests and jobs. Prompt and
+ * model preset ids and both persona ids must still exist; missing targets throw instead of redirecting to another
+ * selection. The selected persona supplies `db.username`/`personaPrompt`, while the effective persona supplies the
+ * request's user name. Missing character records contribute null names.
+ *
+ * Projection creates a fresh root object, forwarding preset/profile fields through shared/sections.ts and joining
+ * credential metadata to values in `llmSecrets`. Forwarded model roots are copied; provider/prompt containers and
+ * model/profile collections retain their captured references. For history redaction, `loadStoredSecrets` reads current
+ * records separately and includes orphaned secret-map entries that request binding does not expose. Job tokenizer
+ * scopes derive from the main model; tab scopes enter through server/src/prompt/tokens.ts instead.
+ */
+
 type ProvidersField = (typeof SECTION_FIELDS)["providers"][number];
 type LlmSecretsField = (typeof SECTION_FIELDS)["llmSecrets"][number];
 type RootOf<F> = F extends "NAISettings"
@@ -53,6 +66,7 @@ export type RequestDb = Pick<
     pluginModels?: LLMModel[];
 };
 
+/** Record ids captured for a request, distinguishing the effective/selected personas and selected/replying characters. */
 export type RequestScopeIds = {
     /** The prompt preset. */
     presetId: string;
@@ -68,6 +82,7 @@ export type RequestScopeIds = {
     speakerId: string | null;
 };
 
+/** Projected request settings plus captured character names and the effective persona's user name. */
 export type LoadedRequestDb = {
     db: RequestDb;
     /** The names of the two characters of `RequestScopeIds`, `null` for none. */

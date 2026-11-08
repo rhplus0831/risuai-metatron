@@ -20,6 +20,14 @@ import { OpenAIModels } from "./providers/openai.ts";
 import { AnthropicModels } from "./providers/anthropic.ts";
 import { GoogleModels } from "./providers/google.ts";
 
+/**
+ * Runtime-independent model catalogue assembly and lookup for the tab and server.
+ * The base list and nested values are frozen after display defaults and Responses/Vertex variants are added;
+ * `src/ts/model/modellist.ts` clones it before discovery appends. Lookup gives static entries priority, supports
+ * caller-supplied custom/plugin records, and reconstructs supported dynamic ids without discovery state. Unknown
+ * ids become OpenAI-compatible descriptors rather than errors; plugin matches are returned by reference.
+ */
+
 function makeDeepInfraModels(id: string[]): LLMModel[] {
     return id.map((id) => {
         return {
@@ -737,6 +745,7 @@ export function dynamicModelOf(id: string): LLMModel | null {
     return null;
 }
 
+/** Caller-supplied catalogue extensions and capability overrides; no settings or discovery state is read here. */
 export type ModelResolution = {
     enableCustomFlags?: boolean;
     customFlags?: LLMFlags[];
