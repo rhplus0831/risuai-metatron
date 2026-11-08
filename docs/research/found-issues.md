@@ -11,7 +11,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (6)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (12)
 - [Server routes and resource store](#server-routes-and-resource-store) (10)
-- [LLM requests and providers](#llm-requests-and-providers) (15)
+- [LLM requests and providers](#llm-requests-and-providers) (14)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (9)
 - [Chat screen and input](#chat-screen-and-input) (6)
@@ -268,16 +268,6 @@ Left by slice 3 of the server-side Realm import (prepare/commit/cancel, 3a61ecb5
 **Why it matters:** every non-continued AIN-format request sends a malformed prompt tail with no speaker cue, which degrades replies for that format.
 
 **Suggested handling:** drop the stray `+` in the server copy (and in the tab copy, or delete the unused tab export), with a test on the serializer's non-continued tail.
-
-### `escape` loses to `forceStreaming`
-
-For an escaped request, `requestChatData` in `src/ts/process/request/request.ts` (~385) and `server/src/llm/outer.ts` (~75) clear only `useStreaming`; `forceStreaming` still wins where the adapter argument is built (`src/ts/process/request/request.ts` ~687, `server/src/llm/request.ts` ~532), and the tab's `requestPlugin` accepts a provider stream regardless. An escaped request can therefore stream and skip the buffered-success `risuEscape` step, against the llm-requests invariant "`escape` disables streaming". The module headers describe the current behavior. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** an escaped caller can receive unescaped streamed text.
-
-**Suggested handling:** decide which flag takes precedence, then make both runtimes and the guide agree.
-
-**Decision (owner, 2026-11-08):** `escape` wins: both runtimes clear `forceStreaming` too when `escape` is set, so the guide invariant stands as written.
 
 ### reformater throws on an empty or all-system prompt
 
