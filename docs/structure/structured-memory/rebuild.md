@@ -203,7 +203,8 @@ beside the rebuild buttons. The comparison starts no work; a person must press. 
 
 ## Tests
 
-- `structured/rebuild.test.ts` drives the plan, window, cost, seed, and `rebuildChanges` on plain records.
+- `structured/rebuild.test.ts` drives the plan, window, cost, seed, and `rebuildChanges` on plain records; one preview
+  pins the 3,000-token overhead per call as a literal.
 - `memoryStore.test.ts` drives the staged tables, the swap, a reopened file, and a snapshot taken mid-run on a real
   file.
 - `memoryTasks.test.ts` drives a run on `createMemoryTasks` over a real store with the scripted provider, and a service
@@ -215,7 +216,9 @@ beside the rebuild buttons. The comparison starts no work; a person must press. 
 - Focused command:
   `pnpm --silent test:agent rebuild memoryStore memoryTasks structuredMemoryRoutes StructuredMemoryPanel MemoryReceiptLine`.
   No `slow` or `e2e` membership of its own.
-- Not tested: a real browser or a real provider. `MEMORY_CALL_OVERHEAD_TOKENS` and the 3-byte rule have no measurement.
+- Not tested: a real browser or a real provider. `MEMORY_CALL_OVERHEAD_TOKENS` (3,000) and the 3-byte rule rest on the
+  [2026-11-03 fixtures](../../audit/structured-memory-2026-11-03.md), scripted pages counted by three tokenizer
+  families: about 2,100 tokens of overhead per call in English and 2,800–3,700 in Korean, growing with the cast.
 
 ## Known Hazards
 
@@ -233,6 +236,8 @@ Decisions: Structured Memory slice 6b, archive, unless an entry names another.
 - Seeded and carried text stays in its language, and a resume under another language leaves a mix.
 - A pin spreads to every staged event sharing a message, so an adopted summary's pin reaches all its turns' events.
 - The cost preview's `record` mode has no cadence, so `everyK` above 2 overstates calls.
+- The cost preview leans high on purpose: at 3,000 tokens per call it overstates a short English chat by up to
+  two-thirds and understates a long Korean one by up to a quarter. Decision: owner, 2026-11-08.
 - A build from before these tables opens an upgraded database and ignores them: no lock, so a stopped run's later swap
   would lose what that build recorded. No snapshot refuses anything, and its restore drops them.
 

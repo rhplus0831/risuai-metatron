@@ -765,9 +765,11 @@ export type StructuredMemoryCostAnswer = { calls: number; messages: number; esti
 
 /**
  * What one analysis call costs past its window's messages, in tokens: the frame, the cast, the scene, the
- * threads, and the context messages. A starting value, not a measurement of any one chat.
+ * threads, and the context messages. On the scripted 1,000-turn fixtures of 2026-11-03 it measured about 2,100
+ * per call in English and 2,800-3,700 in Korean, growing with the cast (docs/audit/structured-memory-2026-11-03.md).
+ * It is set high on purpose because a preview is better high than low (owner, 2026-11-08).
  */
-export const MEMORY_CALL_OVERHEAD_TOKENS = 1500;
+export const MEMORY_CALL_OVERHEAD_TOKENS = 3000;
 
 /**
  * One writer call's default prompt as the default-prompts route answers it: the ChatML frame as stored,

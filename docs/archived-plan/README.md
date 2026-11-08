@@ -1057,8 +1057,8 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     quote their required slots, import goes only into an empty chat, and screening reaches the
     writer only.
   - Q2 (replace HypaV3 by default) stays open until a real-model A/B from the recipe in
-    `docs/audit/structured-memory-2026-11-03.md`; `MEMORY_CALL_OVERHEAD_TOKENS` 3,000 waits on
-    the same check.
+    `docs/audit/structured-memory-2026-11-03.md`. `MEMORY_CALL_OVERHEAD_TOKENS` went to 3,000
+    without that check (owner, 2026-11-08).
   - Untested: 69 device, browser, and real-model checks listed per slice in the run's final
     report, among them Firefox and Safari, Android PWA, a real V3 plugin, and real provider costs.
   - Rollback cost: an older build refuses a snapshot with the `memory_state` column, reads a

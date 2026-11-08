@@ -38,6 +38,19 @@ function costStore(message: Message[], events: MemoryEvent[] = [], screening: ty
     } as unknown as Parameters<typeof memoryWorkCost>[0];
 }
 
+it("previews two rebuild calls with 6,000 overhead tokens and four text tokens", async () => {
+    // Two turns total 3 + 4 + 2 + 1 = 10 UTF-8 bytes, so ceil(10 / 3) = 4 text tokens.
+    const current: Message[] = [
+        { chatId: "u1", role: "user", data: "한" },
+        { chatId: "a1", role: "char", data: "😀" },
+        { chatId: "u2", role: "user", data: "é" },
+        { chatId: "a2", role: "char", data: "x" },
+    ];
+    expect(
+        await memoryWorkCost(costStore(current), { chaId: "character", chatId: "chat" }, { mode: "rebuild", turns: 1 }),
+    ).toEqual({ calls: 2, messages: 4, estimatedTokens: 6_004 });
+});
+
 it("estimates rebuild and backfill calls, messages, and UTF-8 bytes from eligible planned turns", async () => {
     const current: Message[] = [
         { chatId: "old-user", role: "user", data: "Before the reset" },
