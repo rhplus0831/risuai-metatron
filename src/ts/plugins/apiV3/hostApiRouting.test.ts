@@ -853,7 +853,9 @@ describe("reserved storage namespaces a plugin replaced", () => {
     );
 
     it("a list in _pluginStorage is read by index, listed, removed from, and written to without losing an entry", async () => {
-        const api = await makeApi();
+        // Owned writes need the plugin installed (`setOwnedPluginStorageItem`).
+        settings.plugins = [{ name: "routing-list", script: "", version: "3.0" }] as any;
+        const api = await makeApi("routing-list");
         await api.setDatabaseLite({ _pluginStorage: ["saved", { deep: true }] });
         expect(await api._getPluginStorage("0")).toBe("saved");
         expect(await api._getPluginStorage("1")).toEqual({ deep: true });
@@ -894,7 +896,9 @@ describe("reserved storage namespaces a plugin replaced", () => {
     });
 
     it("own constructor and __proto__ entries of a replaced namespace stay readable, writable, and removable", async () => {
-        const api = await makeApi();
+        // Owned writes need the plugin installed (`setOwnedPluginStorageItem`).
+        settings.plugins = [{ name: "routing-proto", script: "", version: "3.0" }] as any;
+        const api = await makeApi("routing-proto");
         await api.setDatabaseLite({ _pluginStorage: JSON.parse('{"constructor": 1, "__proto__": 2, "plain": 3}') });
         expect(await api._getPluginStorage("constructor")).toBe(1);
         expect(await api._getPluginStorage("__proto__")).toBe(2);

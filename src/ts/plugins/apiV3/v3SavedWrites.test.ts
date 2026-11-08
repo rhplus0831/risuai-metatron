@@ -77,8 +77,12 @@ async function boot() {
     expect(captured.api).not.toBeNull();
     const api = captured.api!;
     const storage = () => booted.record("pluginStorage");
-    /** Loads a second plugin on the same graph and captures its API object. */
+    /**
+     * Installs a second plugin (owned storage writes need the owner in `settings.plugins`), loads it
+     * on the same graph, and captures its API object.
+     */
     const loadPlugin = async (name: string) => {
+        booted.settings.plugins = [...(booted.settings.plugins ?? []), { name, script: "", version: "3.0" } as any];
         captured.api = null;
         await v3.executePluginV3({ name, script: "", version: "3.0" } as any);
         expect(captured.api).not.toBeNull();

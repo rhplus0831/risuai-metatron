@@ -272,6 +272,58 @@ describe("the safe local dictionary and the custom keys", () => {
     });
 });
 
+describe("owned plugin storage installation", () => {
+    it("refuses an absent owner's write without changing storage and still allows removal, clear, and deletion", async () => {
+        const { sync, pluginStorageStore: ps, settings, record, validation } = await boot();
+        const expected = {
+            custom: "untouched",
+            _pluginStorage: { prefs: "legacy", shared: "keep" },
+            _ownedPluginStorage: {
+                "removed\u0000prefs": { saved: true },
+                "removed\u0000tail": 2,
+                "plug\u0000keep": "other plugin",
+            },
+        };
+        ps.replacePluginCustomStorage(expected);
+        await sync.flushResources();
+
+        // The boot fixture installs only "plug"; stale data does not install its owner.
+        expect(() => ps.setOwnedPluginStorageItem("removed", "prefs", { late: true })).toThrow(
+            validation.MutationValidationError,
+        );
+        expect(plain(settings.pluginStorage)).toStrictEqual(expected);
+        await sync.flushResources();
+        expect(record("pluginStorage")).toStrictEqual(expected);
+
+        ps.removeOwnedPluginStorageItem("removed", "prefs");
+        expect(plain(settings.pluginStorage)).toStrictEqual({
+            custom: "untouched",
+            _pluginStorage: { shared: "keep" },
+            _ownedPluginStorage: { "removed\u0000tail": 2, "plug\u0000keep": "other plugin" },
+        });
+
+        ps.clearOwnedPluginStorage("removed");
+        expect(plain(settings.pluginStorage)).toStrictEqual({
+            custom: "untouched",
+            _pluginStorage: { shared: "keep" },
+            _ownedPluginStorage: { "plug\u0000keep": "other plugin", removed: { legacyHidden: true } },
+        });
+
+        ps.deleteOwnedPluginStorage("removed");
+        await sync.flushResources();
+        expect(plain(settings.pluginStorage)).toStrictEqual({
+            custom: "untouched",
+            _pluginStorage: { shared: "keep" },
+            _ownedPluginStorage: { "plug\u0000keep": "other plugin" },
+        });
+        expect(record("pluginStorage")).toStrictEqual({
+            custom: "untouched",
+            _pluginStorage: { shared: "keep" },
+            _ownedPluginStorage: { "plug\u0000keep": "other plugin" },
+        });
+    });
+});
+
 describe("owned storage administration", () => {
     it("reuses one owned-dictionary traversal for count, indexed keys, and detached key lists", async () => {
         const { pluginStorageStore: ps, settings } = await boot();

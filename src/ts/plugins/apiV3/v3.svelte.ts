@@ -3113,7 +3113,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             return getOwnedPluginStorageValue(identity.name, String(key));
         },
         _setPluginStorage: async (key: string, value: any) => {
-            //JSON round trip rejects values the save file cannot hold, e.g. BigInt
+            //JSON round trip rejects values the save file cannot hold, e.g. BigInt; the store rejects a removed plugin
             const json = JSON.stringify(value);
             setOwnedPluginStorageItem(identity.name, String(key), json === undefined ? null : JSON.parse(json));
         },

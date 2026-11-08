@@ -707,7 +707,8 @@ await Risuai.setArgument("max_retries", 5);
 same key without overwriting each other. The owner is the plugin's internal `name`; renaming it creates a new owner.
 Values stored before per-plugin storage are still readable until claimed: writing one moves it into that plugin's
 storage. `clear()` removes only this plugin's values and stops reading legacy values, leaving them for other plugins.
-Plugin names containing U+0000 retain the shared legacy behavior.
+Plugin names containing U+0000 retain the shared legacy behavior. Once the plugin is removed from the plugin list,
+`setItem` rejects, so an `onUnload` handler running after removal, in this or another tab, cannot write.
 
 ```javascript
 // Every call returns a Promise (iframe message passing)

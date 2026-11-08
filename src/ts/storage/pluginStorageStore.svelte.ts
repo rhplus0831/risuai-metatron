@@ -1,7 +1,7 @@
 import { untrack } from "svelte";
 import { PLUGIN_STORAGE_DICTIONARIES } from "../../../shared/pluginStorage.ts";
 import { settings } from "./settingsViews.svelte";
-import { detach, requireJsonData, requireObject, writeEntries } from "./mutationValidation";
+import { detach, MutationValidationError, requireJsonData, requireObject, writeEntries } from "./mutationValidation";
 import { batchRecordWrites, pluginStorageRevision } from "./records.svelte";
 
 /**
@@ -12,6 +12,9 @@ import { batchRecordWrites, pluginStorageRevision } from "./records.svelte";
  * writes claim visible legacy keys. Names containing U+0000 use the shared legacy area for every
  * storage call because their owner prefix would be ambiguous. Administrative deletion removes the
  * owner's values and marker; it never claims or deletes legacy keys.
+ * Owned writes (`setOwnedPluginStorageItem`) are refused unless the owner is in `settings.plugins`,
+ * so a removed plugin still running in another tab cannot restore its deleted data; removal and
+ * clear calls stay allowed.
  * Replacing `pluginCustomStorage` through either database setter removes omitted custom keys but
  * keeps reserved names absent as own keys of the input, retaining their stored values unchanged.
  * Supplied reserved names are applied normally, including `undefined` removing the field.
@@ -239,7 +242,11 @@ export function ownedPluginStorageKeyAt(owner: string, index: number): string | 
     return visibleOwnedPluginStorageKeys(owner)[index] ?? null;
 }
 
+/** Throws unless `owner` is installed (enabled or disabled), then writes as the owner. */
 export function setOwnedPluginStorageItem(owner: string, key: string, value: unknown) {
+    if (!(settings.plugins ?? []).some((plugin) => plugin.name === owner)) {
+        throw new MutationValidationError(key, `${owner} is not installed`);
+    }
     if (owner.includes("\u0000")) return setPluginStorageItem(key, value);
     requireJsonData(key, value);
     const copy = detach(value);

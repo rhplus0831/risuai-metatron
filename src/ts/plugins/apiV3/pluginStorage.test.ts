@@ -52,6 +52,7 @@ import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { executePluginV3 } from "./v3.svelte";
 import * as pluginStorageStore from "src/ts/storage/pluginStorageStore.svelte";
+import { MutationValidationError } from "src/ts/storage/mutationValidation";
 
 /** The `pluginStorage` record (the legacy `pluginCustomStorage`), through its view. */
 const stored = () => settings.pluginStorage as Record<string, any> | undefined;
@@ -63,6 +64,8 @@ const ownKey = (key: string) => `${pluginName}\u0000${key}`;
 async function makeApi(): Promise<CapturedApi> {
     captured.api = null;
     pluginName = `pluginStorage-test-${Math.random().toString(36).slice(2)}`;
+    // Owned writes need the owner installed (`setOwnedPluginStorageItem`).
+    settings.plugins = [{ name: pluginName, script: "", version: "3.0" }] as any;
     await executePluginV3({
         name: pluginName,
         script: "",
@@ -273,5 +276,42 @@ describe("v3 pluginStorage without cold storage", () => {
         read.injected = true;
 
         expect(stored()!._ownedPluginStorage[ownKey("prefs")]).toEqual({ a: 1 });
+    });
+});
+
+describe("v3 pluginStorage installation", () => {
+    it.each([
+        { enabled: true, state: "enabled" },
+        { enabled: false, state: "disabled" },
+    ])("stores values while $state and rejects late writes after uninstall", async ({ enabled }) => {
+        const plugin = {
+            name: `installed-storage-${enabled ? "enabled" : "disabled"}`,
+            script: "",
+            version: "3.0" as const,
+            enabled,
+            arguments: {},
+            realArg: {},
+            customLink: [],
+            argMeta: {},
+        };
+        installFlatDatabase({ plugins: [plugin], pluginCustomStorage: undefined });
+        captured.api = null;
+        await executePluginV3(plugin);
+        expect(captured.api).not.toBeNull();
+        const api = captured.api!;
+
+        await api._setPluginStorage("prefs", { theme: "dark" });
+        expect(await api._getPluginStorage("prefs")).toEqual({ theme: "dark" });
+        expect(stored()).toEqual({
+            _ownedPluginStorage: { [`${plugin.name}\u0000prefs`]: { theme: "dark" } },
+        });
+
+        settings.plugins = [];
+        await api._removePluginStorage("prefs");
+        expect(stored()).toEqual({ _ownedPluginStorage: {} });
+
+        await expect(api._setPluginStorage("prefs", { theme: "late" })).rejects.toThrow(MutationValidationError);
+        expect(await api._getPluginStorage("prefs")).toBeNull();
+        expect(stored()).toEqual({ _ownedPluginStorage: {} });
     });
 });

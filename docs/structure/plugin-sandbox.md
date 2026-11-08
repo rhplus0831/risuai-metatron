@@ -143,7 +143,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   - `db.pluginCustomStorage` (`pluginStorage` record): `_ownedPluginStorage` by plugin name, `_pluginStorage` legacy
     read-through until claim-on-write or owner `clear()`; U+0000 names use legacy storage (module header). Shared
     top-level custom keys are non-`allowedDbKeys` keys of `setDatabase`/`setDatabaseLite`; replacement keeps omitted
-    reserved dictionaries. `setItem` JSON-normalizes values (BigInt throws).
+    reserved dictionaries. `setItem` JSON-normalizes values (BigInt throws) and throws for an owner not in
+    `settings.plugins` (a removed plugin still running elsewhere).
   - Plugins share one record. Writes resolve when queued. Concurrent tab/device writes are
     [merged key by key](resource-sync.md#record-merge); `onStorageDiscarded` reports each listener's own lost keys and
     legacy keys.
@@ -313,6 +314,10 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - A plugin call that adds a character and also passes `characterOrder` without the new id: the order is written after
   the add and overwrites the add's repair, so the id is missing from the order until the next `checkCharOrder`.
   Decision: [`pluginKeyOrder`](../../src/ts/plugins/apiV3/v3.svelte.ts).
+- An owned `setItem` that reaches the server between a plugin's removal (with its data deleted) and another tab's
+  receipt of the plugin list change can still restore a key; delete it again from the plugin data page. A removed
+  plugin's `onUnload` writes are refused in the removing tab too, so with "Also delete its stored data" unchecked its
+  last `onUnload` write is not kept. Decision: Found Issues Decisions B1 (owner, 2026-11-08).
 
 ### Gotchas
 
