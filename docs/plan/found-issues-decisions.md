@@ -1,6 +1,6 @@
 # Found Issues Decisions Plan
 
-Status: drafted 2026-11-08 from the owner's decisions of the same day; landed: A1 (844846d9b), C1 (9deff3578), A2 (697557b4a), D2 (03f729fd4), A3 (d2f4a2596), B1 (d4b76d821), B3 (ccf6980aa). Source: the
+Status: drafted 2026-11-08 from the owner's decisions of the same day; landed: A1 (844846d9b), C1 (9deff3578), A2 (697557b4a), D2 (03f729fd4), A3 (d2f4a2596), B1 (d4b76d821), B3 (ccf6980aa), B2 (174565cde). Source: the
 eighteen entries of [found-issues](../research/found-issues.md) that asked for an owner decision, decided
 one by one against the tree at `cc08b6afd` (the decision paragraph under each entry, `Decision (owner,
 2026-11-08)`, is the record). Eight entries are code fixes, one is a server-side feature flag, eight move

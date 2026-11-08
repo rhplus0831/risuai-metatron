@@ -15,7 +15,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (8)
 - [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (28)
+- [Client and plugins](#client-and-plugins) (27)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (9)
 - [Test timing](#test-timing) (1)
 - [Structured Memory](#structured-memory) (1)
@@ -533,15 +533,6 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 
 **Why it matters:** the plan's retry for a failed asset read (its D2) rarely fires; a transient storage failure leaves a broken image until the row re-renders for another reason.
 **Suggested handling:** an opt-in failure channel in `globalApi.svelte.ts` for the render path, rather than making the shared loader reject for every caller.
-
-### Reset permissions leaves a running plugin's capabilities
-
-`resetPluginPermissions` in `src/ts/plugins/apiV3/v3.svelte.ts` revokes the plugin's grants and drops its cached answers, but a running plugin keeps what it obtained before the reset: a `SafeDocument` from `getRootDocument` (`mainDom`) and its registered replacers stay live until the plugin unloads. Found in the Plugin Storage and Data API run (2026-11-05, slice 1).
-
-**Why it matters:** a user may read "Reset permissions" as withdrawing access now; the next permission ask comes only on a new call.
-**Suggested handling:** reload that plugin after a reset, or tear down each capability on revoke.
-
-**Decision (owner, 2026-11-08):** the reset button calls `loadPlugins()` after `resetPluginPermissions`, as the remove button does; other tabs queue a deferred reload when the `resets` bump reaches them.
 
 ### Scheme writers skip the text theme
 
