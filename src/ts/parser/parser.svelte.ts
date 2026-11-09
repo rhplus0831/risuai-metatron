@@ -481,13 +481,25 @@ function getEmoSrc(emoArr: readonly (readonly string[])[], emoPaths: AssetPaths)
 
 const fileSrcCache = new Map<string, string>();
 
-async function getFileSrcCached(path: string, signal?: AbortSignal) {
+/** Controller loss invalidates parser URLs, including direct asset URLs that need the signing worker. */
+export function invalidateFileSrcCache(): void {
+    fileSrcCache.clear();
+}
+
+function readRenderFileSrc(path: string, signal?: AbortSignal, rejectFailedAssetReads = false) {
+    return readRenderIO(
+        () => (rejectFailedAssetReads ? getFileSrc(path, { rejectFailedReads: true }) : getFileSrc(path)),
+        signal,
+    );
+}
+
+async function getFileSrcCached(path: string, signal?: AbortSignal, rejectFailedAssetReads = false) {
     signal?.throwIfAborted();
-    let cached = fileSrcCache.get(path);
+    const cached = fileSrcCache.get(path);
     if (cached) {
         return cached;
     }
-    const src = await readRenderIO(() => getFileSrc(path), signal);
+    const src = await readRenderFileSrc(path, signal, rejectFailedAssetReads);
     fileSrcCache.set(path, src);
     return src;
 }
@@ -635,7 +647,7 @@ const videoExtensions = ["mp4", "webm", "avi", "m4p", "m4v"];
  * only in `back` mode. A name with several paths picks
  * one by `pickHashRand` of the chat index and character, so a message keeps its pick. A `<source>` `type` is
  * `shared/assetMime.ts` `assetMimeType` of the path's extension, left out for `application/octet-stream`.
- * `{{source::char}}`/`{{source::user}}` take `arg`'s icons.
+ * `{{source::char}}`/`{{source::user}}` read only the requested icons from `arg`.
  */
 async function parseAdditionalAssets(
     data: string,
@@ -644,6 +656,7 @@ async function parseAdditionalAssets(
     /** Source icons resolved before the render's first await, shared by both asset passes. */
     arg: { ch: number; charIcon?: string; userIcon?: string },
     signal?: AbortSignal,
+    rejectFailedAssetReads = false,
 ) {
     signal?.throwIfAborted();
     const assetWidthString =
@@ -678,7 +691,7 @@ async function parseAdditionalAssets(
 
         if (type === "emotion") {
             const srcPath = emoPaths?.[name]?.srcPaths?.[0];
-            const path = srcPath ? await getFileSrcCached(srcPath, signal) : null;
+            const path = srcPath ? await getFileSrcCached(srcPath, signal, rejectFailedAssetReads) : null;
             signal?.throwIfAborted();
             if (!path) {
                 return "";
@@ -723,7 +736,7 @@ async function parseAdditionalAssets(
             pSrc = match.srcPaths[selIndex];
         }
 
-        const p = await getFileSrcCached(pSrc, signal);
+        const p = await getFileSrcCached(pSrc, signal, rejectFailedAssetReads);
         signal?.throwIfAborted();
         const mime = assetMimeType(assetExtension(pSrc));
         const sourceType = mime === "application/octet-stream" ? "" : ` type="${mime}"`;
@@ -759,15 +772,16 @@ async function parseAdditionalAssets(
     });
 
     signal?.throwIfAborted();
-    if (needsSourceAccess) {
+    if (needsSourceAccess && data.includes("\uE9b4CHAR\uE9b4")) {
         data = data.replace(
             /\uE9b4CHAR\uE9b4/g,
-            arg.charIcon ? await readRenderIO(() => getFileSrc(arg.charIcon), signal) : "",
+            arg.charIcon ? await readRenderFileSrc(arg.charIcon, signal, rejectFailedAssetReads) : "",
         );
-
+    }
+    if (needsSourceAccess && data.includes("\uE9b4USER\uE9b4")) {
         data = data.replace(
             /\uE9b4USER\uE9b4/g,
-            arg.userIcon ? await readRenderIO(() => getFileSrc(arg.userIcon), signal) : "",
+            arg.userIcon ? await readRenderFileSrc(arg.userIcon, signal, rejectFailedAssetReads) : "",
         );
     }
 
@@ -915,13 +929,14 @@ function trimmer(str: string) {
 /**
  * Expands `{{inlay::id}}`, `{{inlayed::id}}`, and `{{inlayeddata::id}}` (the last two wrapped in a
  * `risu-inlay-image` block) from `getInlayMedia` (`src/ts/process/files/inlays.ts`: the asset key, no bytes).
- * Images use `getFileSrc`, and `hideAllImages` removes them; audio and video use `getDirectAssetSrc`, else the
- * fallback `getInlayObjectUrl`. A missing inlay, or no URL, leaves the tag in place. The `<source>` `type` is
+ * Images use `getFileSrc` with the render's failure opt-in; `hideAllImages` removes them without reading bytes.
+ * Audio and video use `getDirectAssetSrc`, else `getInlayObjectUrl`. A missing inlay, or no URL for visible
+ * media, leaves the tag in place. The `<source>` `type` is
  * `assetMimeType` of the key's extension, matching the asset route's `Content-Type`; `application/octet-stream`
- * gets none, so the browser sniffs the bytes. Both URLs are never revoked, so cached renders keep working ones;
+ * gets none, so the browser sniffs the bytes. Object URLs stay pinned for cached renders;
  * a page that loses its controlling worker renders later inlays through the fallback.
  */
-async function parseInlayAssets(data: string, signal?: AbortSignal) {
+async function parseInlayAssets(data: string, signal?: AbortSignal, rejectFailedAssetReads = false) {
     signal?.throwIfAborted();
     const inlayMatch = data.match(/{{(inlay|inlayed|inlayeddata)::(.+?)}}/g);
     if (inlayMatch) {
@@ -932,13 +947,17 @@ async function parseInlayAssets(data: string, signal?: AbortSignal) {
             let postfix = inlayType !== "inlay" ? `</div>\n\n` : "";
 
             // Images use getFileSrc; audio and video use direct asset URLs with a capable controlling
-            // worker, otherwise typed object URLs per asset key. These URLs are never revoked, so
-            // cached renders and translations never hold dead ones.
+            // worker, otherwise typed object URLs per asset key. Object URLs stay pinned for
+            // cached renders and translations.
             const media = await readRenderIO(() => getInlayMedia(id), signal);
+            if (media?.type === "image" && settings.ui.hideAllImages) {
+                data = data.replace(inlay, "");
+                continue;
+            }
             const url = !media
                 ? ""
                 : media.type === "image"
-                  ? await readRenderIO(() => getFileSrc(media.asset), signal)
+                  ? await readRenderFileSrc(media.asset, signal, rejectFailedAssetReads)
                   : (getDirectAssetSrc(media.asset) ?? (await readRenderIO(() => getInlayObjectUrl(id), signal)) ?? "");
             if (!url) {
                 continue;
@@ -947,11 +966,6 @@ async function parseInlayAssets(data: string, signal?: AbortSignal) {
             const sourceType = mime === "application/octet-stream" ? "" : ` type="${mime}"`;
             switch (media.type) {
                 case "image":
-                    // Hide inlay images when hideAllImages is enabled
-                    if (settings.ui.hideAllImages) {
-                        data = data.replace(inlay, "");
-                        break;
-                    }
                     data = data.replace(inlay, `${prefix}<img src="${url}"/>${postfix}`);
                     break;
                 case "video":
@@ -1024,7 +1038,9 @@ function parseThoughtsAndTools(data: string) {
  * Both are read untracked before the first await and shared by both asset passes.
  * The signal is checked before each awaited stage (both asset passes, the script stage, inlays and Markdown)
  * and after the last; Markdown highlighting also checks before each fence and after each language import.
- * `serverProcessScript` also checks it on entry. Rejected asset and inlay reads are marked transient for the row.
+ * `serverProcessScript` also checks it on entry. Asset failures resolve `""` unless `rejectFailedAssetReads`
+ * opts into transient rejections for ChatBody's local retries; missing/empty files still resolve `""`.
+ * Rejected inlay record and media reads are also marked transient.
  */
 export async function ParseMarkdown(
     data: string,
@@ -1035,6 +1051,7 @@ export async function ParseMarkdown(
     /** A render that captured its transform context earlier (`ChatBody`); null: no context (the script stage is skipped). */
     capturedTransform?: CapturedTransform | null,
     signal?: AbortSignal,
+    options: { rejectFailedAssetReads?: boolean } = {},
 ) {
     signal?.throwIfAborted();
     let firstParsed = "";
@@ -1067,6 +1084,7 @@ export async function ParseMarkdown(
                 ...sourceIcons,
             },
             signal,
+            options.rejectFailedAssetReads,
         );
         firstParsed = data;
     }
@@ -1099,11 +1117,12 @@ export async function ParseMarkdown(
                 ...sourceIcons,
             },
             signal,
+            options.rejectFailedAssetReads,
         );
     }
 
     signal?.throwIfAborted();
-    data = await parseInlayAssets(data ?? "", signal);
+    data = await parseInlayAssets(data ?? "", signal, options.rejectFailedAssetReads);
     signal?.throwIfAborted();
 
     data = parseThoughtsAndTools(data);

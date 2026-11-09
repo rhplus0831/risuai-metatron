@@ -1,8 +1,9 @@
 /**
  * Render I/O boundaries mark retryable failures for the chat row: in `parser.svelte.ts`, the asset and inlay
  * passes' `getFileSrcCached`, `getFileSrc`, `getInlayMedia` and `getInlayObjectUrl` reads; in `translator.ts`,
- * `translateMain`'s direct Google `fetch` and `readLLMCacheEntry`. `getFileSrc`'s loader resolves `""` on its own
- * failures, so those reads rarely reject. Aborts are never marked; unmarked errors are deterministic.
+ * `translateMain`'s direct Google `fetch` and `readLLMCacheEntry`. ChatBody opts into rejecting failed asset
+ * reads; default reads and missing/empty files still resolve `""`. Aborts are never marked;
+ * unmarked errors are deterministic.
  */
 const transientErrors = new WeakSet<object>();
 

@@ -127,6 +127,7 @@ export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer |
 type FileSource = {
     src: Promise<string>;
     url: string | null;
+    failure?: { error: unknown };
     pinned: boolean;
     holders: number;
     revokeTimer?: ReturnType<typeof setTimeout>;
@@ -134,7 +135,8 @@ type FileSource = {
 
 /**
  * One shared fallback load per path, pinned by plain reads for the page or held by previews.
- * Empty results are dropped so the next read tries again.
+ * Empty results are dropped so the next read tries again; controller loss drops resolved worker URLs.
+ * Terminal failures are retained on the source for opt-in readers without rejecting its shared promise.
  */
 const fileSources = new Map<string, FileSource>();
 /** Let rows shifted by a list edit re-hold their sources before releasing their blobs. */
@@ -142,8 +144,14 @@ const FILE_SOURCE_RELEASE_GRACE_MS = 100;
 
 /** How long a service-worker request may take before the read falls back to an object URL. */
 const SW_REQUEST_TIMEOUT_MS = 10_000;
-const knownSwPaths = new Set<string>();
 let swCache: Promise<Cache> | undefined;
+
+/** Drops resolved worker URLs on controller loss, preserving blobs and pending loads and their holds. */
+export function invalidateWorkerFileSources(): void {
+    for (const [loc, source] of fileSources) {
+        if (source.url?.startsWith("/sw/img/")) fileSources.delete(loc);
+    }
+}
 
 /**
  * Direct mode resolves `/api/asset/<hex of the UTF-8 key>` at once (`""` for an empty key), without
@@ -155,16 +163,24 @@ let swCache: Promise<Cache> | undefined;
  * Each call checks `usingSw`, `directAssets`, and a controlling worker. Controller loss or a
  * capability re-probe sends new calls through the fallback; switching modes leaves existing
  * fallback sources' pin and hold lifetimes intact.
+ * Fallback failures resolve `""` unless `rejectFailedReads` is set. Missing/empty files and empty keys
+ * always resolve `""`; direct mode never rejects. Default reads keep the shared fallback promise.
  *
  * @param {string} loc - The location of the file.
  * @returns {Promise<string>} - A promise that resolves to the source URL of the file.
  */
-export function getFileSrc(loc: string): Promise<string> {
+export function getFileSrc(loc: string, options: { rejectFailedReads?: boolean } = {}): Promise<string> {
     if (canUseDirectAssets()) {
         return Promise.resolve(directAssetSrc(loc));
     }
     const source = getFileSource(loc);
     source.pinned = true;
+    if (options.rejectFailedReads) {
+        return source.src.then((src) => {
+            if (source.failure) throw source.failure.error;
+            return src;
+        });
+    }
     return source.src;
 }
 
@@ -316,7 +332,8 @@ export async function withFileSrcFetch<T>(run: () => T | Promise<T>): Promise<T>
 function getFileSource(loc: string): FileSource {
     let source = fileSources.get(loc);
     if (!source) {
-        source = { src: loadFileSrc(loc), url: null, pinned: false, holders: 0 };
+        source = { src: Promise.resolve(""), url: null, pinned: false, holders: 0 };
+        source.src = loadFileSrc(loc, source);
         fileSources.set(loc, source);
         void source.src.then((src) => {
             source.url = src;
@@ -354,18 +371,20 @@ class MissingFileError extends Error {
 }
 
 /**
- * Fallback URL: `/sw/img/<hex>` when `public/sw.js` holds the file. The page shares `risuCache`
+ * Fallback URL: `/sw/img/<hex>` only with a controlling worker and a cached file. The page shares `risuCache`
  * with the worker, so a Cache Storage hit needs no worker request; a miss posts bytes to
  * `/sw/register/<hex>`. When Cache Storage is unavailable or denied, `/sw/check/<hex>` answers
  * instead. Every worker request is bounded by `SW_REQUEST_TIMEOUT_MS`.
  *
- * A failed worker request (an uncontrolled page, for example), or every load with `usingSw` false
- * after boot continued without a ready worker, falls back to a `blob:` URL of type `image/png`.
+ * Without a controller (checked again after worker awaits), with `usingSw` false, or after a failed
+ * worker request, falls back to a `blob:` URL of type `image/png`.
  * Never a data URL: it would inflate the text `serverProcessScript` sends to the server in
  * `src/ts/parser/transformClient.ts`. Missing or empty bytes are never registered or shown: they
- * resolve `""`, as does a failed load.
+ * resolve `""`, as does an empty key or failed load. Only terminal non-missing failures are recorded
+ * on the shared source for opt-in readers; a successful blob fallback records no failure.
  */
-async function loadFileSrc(loc: string): Promise<string> {
+async function loadFileSrc(loc: string, source: FileSource): Promise<string> {
+    if (!loc) return "";
     let bytes: Promise<Uint8Array> | null = null;
     const read = () =>
         (bytes ??= (async () => {
@@ -376,11 +395,10 @@ async function loadFileSrc(loc: string): Promise<string> {
             return data;
         })());
     try {
-        if (usingSw) {
+        if (usingSw && navigator.serviceWorker?.controller) {
             try {
                 const encoded = Buffer.from(loc, "utf-8").toString("hex");
                 const url = "/sw/img/" + encoded;
-                if (knownSwPaths.has(loc)) return url;
                 let hasCache: boolean;
                 try {
                     const cache = await (swCache ??= caches.open("risuCache"));
@@ -403,8 +421,7 @@ async function loadFileSrc(loc: string): Promise<string> {
                     }
                     await sleep(10);
                 }
-                knownSwPaths.add(loc);
-                return url;
+                if (navigator.serviceWorker?.controller) return url;
             } catch (error) {
                 if (error instanceof MissingFileError) {
                     throw error;
@@ -415,6 +432,7 @@ async function loadFileSrc(loc: string): Promise<string> {
         }
         return URL.createObjectURL(new Blob([(await read()) as Uint8Array<ArrayBuffer>], { type: "image/png" }));
     } catch (error) {
+        if (!(error instanceof MissingFileError)) source.failure = { error };
         console.error(error);
         return "";
     }
@@ -1047,7 +1065,7 @@ export class AppendableBuffer {
         // New way (faster)
         const requiredLength = this.#byteLength + data.length;
         if (this.#buffer.byteLength < requiredLength) {
-            let newLength = this.#buffer.byteLength * 2;
+            let newLength = Math.max(this.#buffer.byteLength, 128);
             while (newLength < requiredLength) {
                 newLength *= 2;
             }

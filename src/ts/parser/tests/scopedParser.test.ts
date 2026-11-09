@@ -289,7 +289,15 @@ describe("ParseMarkdown's asset pass", () => {
             return `src:${path}`;
         });
         try {
-            const out = await ParseMarkdown("{{source::user}}", characterList()[0] as never, "normal", -1, {}, null);
+            // Each icon is read only when its tag occurs; the character icon's read awaits first.
+            const out = await ParseMarkdown(
+                "{{source::char}}{{source::user}}",
+                characterList()[0] as never,
+                "normal",
+                -1,
+                {},
+                null,
+            );
             expect(getUserIcon()).toBe("icon-sel");
             expect(vi.mocked(getFileSrc).mock.calls.map(([path]) => path)).toEqual(["char-img", "icon-ctx"]);
             expect(out).toContain("src:icon-ctx");

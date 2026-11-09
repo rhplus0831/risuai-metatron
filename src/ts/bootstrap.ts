@@ -17,7 +17,8 @@ import { changeLanguage, language } from "src/lang";
 import { startObserveDom } from "./observer.svelte";
 import { updateGuisize } from "./gui/guisize";
 import { moduleUpdate } from "./process/modules";
-import { setDirectAssets, setUsingSw } from "./globalApi.svelte";
+import { invalidateWorkerFileSources, setDirectAssets, setUsingSw } from "./globalApi.svelte";
+import { invalidateFileSrcCache } from "./parser/parser.svelte";
 import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
 import { readWithDeadline } from "./storage/readDeadline";
 import { readBoot, readKinds } from "./storage/resourceClient";
@@ -366,6 +367,7 @@ async function probeSw(): Promise<Response> {
     return response;
 }
 
+/** Re-probes replacement controllers; controller loss also clears cached worker and parser source URLs. */
 function watchSwController() {
     const worker = navigator.serviceWorker;
     if (swControllerListenerInstalled || typeof worker?.addEventListener !== "function") return;
@@ -373,6 +375,9 @@ function watchSwController() {
         invalidateDirectAssets();
         if (worker.controller) {
             void probeSw().catch(() => {});
+        } else {
+            invalidateWorkerFileSources();
+            invalidateFileSrcCache();
         }
     });
     swControllerListenerInstalled = true;

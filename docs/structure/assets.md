@@ -22,9 +22,11 @@
 `src/ts/globalApi.svelte.ts` (its asset functions) turns `assets/` keys into URLs, each call in direct mode or the
 fallback ([Flows](#flows)). The mode, lifetime, and failure rules are on each export and on `loadFileSrc`.
 
-- `getFileSrc` (a fallback source stays pinned for the page), `holdFileSrc` (`{ src, release }` for previews),
-  `getThumbSrc(loc, 256 | 512)`, and `getDirectAssetSrc` (inlay audio and video, [CBS rendering](cbs-rendering.md)); the
-  fallback's `fileSources`, `loadFileSrc`, `SW_REQUEST_TIMEOUT_MS`, and `FILE_SOURCE_RELEASE_GRACE_MS`.
+- `getFileSrc` (a fallback source stays pinned for the page; a failed read resolves `""` unless the caller passes
+  `rejectFailedReads`, which only a chat row's render does, for its local retries), `holdFileSrc` (`{ src, release }`
+  for previews), `getThumbSrc(loc, 256 | 512)`, and `getDirectAssetSrc` (inlay audio and video,
+  [CBS rendering](cbs-rendering.md)); the fallback's `fileSources`, `loadFileSrc`, `SW_REQUEST_TIMEOUT_MS`, and
+  `FILE_SOURCE_RELEASE_GRACE_MS`.
 - `fetchFileSrc` (rich copy's images and icons) and `withFileSrcFetch` (screenshot capture) sign `fetch()` of displayed
   asset URLs, which the worker does not sign. `SCREENSHOT_CAPTURE_OPTIONS` (`src/lib/ChatScreens/screenshotCapture.ts`)
   keeps a captured thumbnail from standing in for the full image.
@@ -64,7 +66,9 @@ it runs on both sides.
 Asset sources use direct URLs only while boot recorded a ready worker (`setUsingSw`) and the controlling worker reports
 `directAssets: true` on `/sw/init` (`setDirectAssets`); otherwise each call takes the fallback, a worker cache URL or an
 object URL ([Asset sources](#asset-sources)). A `controllerchange` clears the capability until the new controller's
-probe answers ([Issues](#issues)). The probe and the worker's signing:
+probe answers ([Issues](#issues)); one that leaves no controller also drops the resolved `/sw/img` sources
+(`invalidateWorkerFileSources`) and the parser's `fileSrcCache`, and the fallback never returns a `/sw/img` URL without
+a controller, so later reads take an object URL. The probe and the worker's signing:
 [build/test](build-test-platforms.md#direct-assets); the asset route, thumbnails, and HTTP cache:
 [server](self-host-server.md#storage-routes).
 

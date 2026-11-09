@@ -169,6 +169,7 @@ export function createBootMock<K extends keyof BootModules>(
         },
         parser: {
             resetAssetsCache: vi.fn<BootModules["parser"]["resetAssetsCache"]>(),
+            invalidateFileSrcCache: vi.fn<BootModules["parser"]["invalidateFileSrcCache"]>(),
             getDistance: vi.fn<BootModules["parser"]["getDistance"]>(),
             ParseMarkdown: vi.fn<BootModules["parser"]["ParseMarkdown"]>(),
             trimMarkdown: vi.fn<BootModules["parser"]["trimMarkdown"]>(),
