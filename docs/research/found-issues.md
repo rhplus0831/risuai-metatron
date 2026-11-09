@@ -15,7 +15,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
-- [Client and plugins](#client-and-plugins) (18)
+- [Client and plugins](#client-and-plugins) (17)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
 
 ## Chat store, sync, and change feeds
@@ -287,13 +287,6 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 
 **Why it matters:** the capture gap lets a plugin act behind a blocking notice; the pinned URLs grow with assets rendered; the flakes return whenever suites run in parallel.
 **Suggested handling:** mention when working nearby and check the code first; treat the flakes as known unless one fails alone.
-
-### #import_preset opens the settings after a refusal
-
-`src/ts/characterCards.ts` `characterURLImport`, the `#import_preset=` branch (~860): it ignores `importPreset`'s return and always opens the prompt settings, while the drop, launch-queue and `#share_preset` paths act only on a returned id. A refused `.risup` (`errors.unsupportedPreset`) shows the refusal and then the settings page opens anyway. Found by the Found Issues Sweep's A1 (2026-11-05). Owner: characters-modules.
-
-**Why it matters:** low; the user lands on a settings page for a preset that was not imported.
-**Suggested handling:** gate `SettingsMenuIndex`/`settingsOpen` on the returned id.
 
 ### A stray }} ends CBS highlighting
 
