@@ -6,11 +6,13 @@ vi.mock("./alert", async () => (await import("./tests/alertMock")).createAlertMo
 
 let util: typeof import("./util");
 let records: typeof import("./storage/records.svelte");
+let selection: typeof import("./storage/selection.svelte");
 
 beforeAll(async () => {
     await import("./storage/database.svelte");
     util = await import("./util");
     records = await import("./storage/records.svelte");
+    selection = await import("./storage/selection.svelte");
 });
 
 beforeEach(() => {
@@ -27,6 +29,32 @@ function pickerInput() {
     expect(input).not.toBeNull();
     return input!;
 }
+
+describe("searchTagList", () => {
+    it("matches the last segment against values and aliases case-insensitively and returns stored values", () => {
+        for (const query of ["female, oc", "female, OC", "female, original-character", "female, ORIGINAL-CHARACTER"]) {
+            expect(util.searchTagList(query), query).toEqual(["OC"]);
+        }
+    });
+});
+
+describe("replacePlaceholders", () => {
+    it("uses the supplied name for every char marker, falling back to the selected name or an empty string", () => {
+        records.initializeRecords({ characters: [{ chaId: "selected", type: "character", name: "Selected" }] });
+        selection.selectCharacter("selected");
+        const message = "{{char}} / {{CHAR}} / {{cHaR}} / <char> / <CHAR> / <cHaR>";
+
+        expect(util.replacePlaceholders(message, "Passed")).toBe("Passed / Passed / Passed / Passed / Passed / Passed");
+        expect(util.replacePlaceholders(message)).toBe(
+            "Selected / Selected / Selected / Selected / Selected / Selected",
+        );
+        expect(util.replacePlaceholders(message, "")).toBe(" /  /  /  /  / ");
+
+        selection.selectCharacter(null);
+        expect(util.replacePlaceholders(message, "Passed")).toBe("Passed / Passed / Passed / Passed / Passed / Passed");
+        expect(util.replacePlaceholders(message)).toBe(" /  /  /  /  / ");
+    });
+});
 
 describe("replaceAsync", () => {
     it("replaces every match regardless of the global regexp's lastIndex", async () => {

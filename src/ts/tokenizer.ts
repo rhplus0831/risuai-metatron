@@ -311,15 +311,15 @@ export class ChatTokenizer extends ChatTokenCounter {
 
 /**
  * Counts description/personality/scenario as `persistant` and lore without empty or `@@` lines as `dynamic`,
- * replacing character-name markers. Groups return zeroes. A missing argument uses the selected character; if
- * there is no selection, reading its type rejects rather than returning zeroes.
+ * replacing character-name markers. A missing argument uses the selected character; groups and no selection
+ * return zeroes.
  */
 export async function getCharToken(char?: AnyClientCharacter | null) {
     if (!char) {
         const c = selectedCharacter();
         char = c;
     }
-    if (char.type === "group") {
+    if (!char || char.type === "group") {
         return { persistant: 0, dynamic: 0 };
     }
 

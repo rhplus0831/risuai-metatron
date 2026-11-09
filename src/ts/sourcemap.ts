@@ -4,7 +4,7 @@ import { SourceMapConsumer } from "source-map";
  * Best-effort browser stack translation for src/lib/Others/AlertComp.svelte. Importing this module
  * configures source-map's WASM loader to use the CDN below. A translation fetches each distinct
  * HTTP(S) script's `.js.map` once per call, in parallel, and retains unmapped frames in input order.
- * The ten-second timer bounds fetching response headers; body reads and map parsing follow outside
+ * The ten-second timer bounds fetching response headers and reading the body; map parsing follows outside
  * it. Fetch/parse failures leave frames unchanged, while unexpected frame-processing errors reject.
  */
 
@@ -68,6 +68,7 @@ export async function translateStackTrace(stackTrace: string): Promise<StackTrac
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+                let onBodyAbort: (() => void) | undefined;
 
                 try {
                     const mapRes = await fetch(mapUrl, {
@@ -75,14 +76,28 @@ export async function translateStackTrace(stackTrace: string): Promise<StackTrac
                         signal: controller.signal,
                     });
 
-                    clearTimeout(timeoutId);
-
                     if (mapRes.ok) {
                         try {
-                            const mapContent = await mapRes.json();
+                            const bodyAborted = new Promise<never>((_, reject) => {
+                                onBodyAbort = () => {
+                                    const error = new Error();
+                                    error.name = "AbortError";
+                                    reject(error);
+                                };
+                                if (controller.signal.aborted) {
+                                    onBodyAbort();
+                                } else {
+                                    controller.signal.addEventListener("abort", onBodyAbort, { once: true });
+                                }
+                            });
+                            const mapContent = await Promise.race([mapRes.json(), bodyAborted]);
+                            clearTimeout(timeoutId);
                             const consumer = await new SourceMapConsumer(mapContent);
                             consumerCache.set(mapUrl, consumer);
                         } catch (parseError) {
+                            if (controller.signal.aborted) {
+                                throw parseError;
+                            }
                             const errorMsg = `Failed to parse sourcemap: ${getFileName(mapUrl)}`;
                             failedUrls.set(mapUrl, errorMsg);
                             console.error(errorMsg, parseError);
@@ -93,9 +108,10 @@ export async function translateStackTrace(stackTrace: string): Promise<StackTrac
                         console.error(errorMsg);
                     }
                 } catch (fetchError) {
-                    clearTimeout(timeoutId);
-
-                    if (fetchError instanceof Error && fetchError.name === "AbortError") {
+                    if (
+                        controller.signal.aborted ||
+                        (fetchError instanceof Error && fetchError.name === "AbortError")
+                    ) {
                         const errorMsg = `Sourcemap fetch timed out: ${getFileName(mapUrl)}`;
                         failedUrls.set(mapUrl, errorMsg);
                         console.error(errorMsg);
@@ -103,6 +119,11 @@ export async function translateStackTrace(stackTrace: string): Promise<StackTrac
                         const errorMsg = `Failed to fetch sourcemap: ${getFileName(mapUrl)}`;
                         failedUrls.set(mapUrl, errorMsg);
                         console.error(errorMsg, fetchError);
+                    }
+                } finally {
+                    clearTimeout(timeoutId);
+                    if (onBodyAbort) {
+                        controller.signal.removeEventListener("abort", onBodyAbort);
                     }
                 }
             } catch (e) {

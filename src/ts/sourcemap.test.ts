@@ -85,6 +85,32 @@ describe("translateStackTrace", () => {
         });
     });
 
+    it("resolves unchanged frames with a timeout failure at 10 seconds when the sourcemap body never settles", async () => {
+        vi.useFakeTimers();
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+            const json = vi.fn(() => new Promise<never>(() => {}));
+            fetchMock.mockResolvedValue({ ok: true, json });
+            const stackTrace = `Error: boom
+    at loadTranslatedTrace (http://localhost:4173/assets/index-stalled.js:10:15)`;
+            const onTranslated = vi.fn();
+            const translation = translateStackTrace(stackTrace).then(onTranslated);
+
+            await vi.advanceTimersByTimeAsync(9_999);
+            expect(json).toHaveBeenCalledOnce();
+            expect(onTranslated).not.toHaveBeenCalled();
+            expect(errorSpy).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(onTranslated).toHaveBeenCalledExactlyOnceWith({ stackTrace, didTranslate: false });
+            expect(errorSpy).toHaveBeenCalledWith("Sourcemap fetch timed out: index-stalled.js.map");
+            await translation;
+        } finally {
+            errorSpy.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
     it("falls back immediately when the stack trace has no sourcemap-backed frames", async () => {
         const stackTrace = `Error: boom
     at loadTranslatedTrace (webpack-internal://src/lib/Others/AlertComp.svelte:10:15)`;

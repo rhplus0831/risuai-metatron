@@ -116,11 +116,11 @@ export async function selectMultipleFile(ext: string[]) {
     return arr;
 }
 
-/** Replaces character/user markers from current selection and removes set/get-var markers; name is unused. */
-export const replacePlaceholders = (msg: string, name: string) => {
-    let currentChar = selectedCharacter();
+/** Replaces character markers with the supplied name, selected name, or ""; replaces user markers and removes set/get-var markers. */
+export const replacePlaceholders = (msg: string, name?: string) => {
+    const charName = name ?? selectedCharacter()?.name ?? "";
     return msg
-        .replace(/({{char}})|({{Char}})|(<Char>)|(<char>)/gi, currentChar.name)
+        .replace(/({{char}})|({{Char}})|(<Char>)|(<char>)/gi, charName)
         .replace(/({{user}})|({{User}})|(<User>)|(<user>)/gi, getUserName())
         .replace(/(\{\{((set)|(get))var::.+?\}\})/gu, "");
 };
@@ -1036,24 +1036,24 @@ export const TagList = [
 
 /**
  * Suggests tags for the last comma-separated segment, excluding exact prior selections; over ten
- * segments returns []. The query is lowercased, but stored tag values and aliases are compared as-is.
+ * segments returns []. Matches tag values and aliases case-insensitively, returning stored tag values.
  */
 export const searchTagList = (query: string) => {
     const splited = query.split(",").map((v) => v.trim());
     if (splited.length > 10) {
         return [];
     }
-    const realQuery = splited.at(-1).trim().toLowerCase();
+    const realQuery = splited.pop().trim().toLowerCase();
 
     const result: string[] = [];
 
     for (const tag of TagList) {
-        if (tag.value.startsWith(realQuery)) {
+        if (tag.value.toLowerCase().startsWith(realQuery)) {
             result.push(tag.value);
             continue;
         }
         for (const alias of tag.alias) {
-            if (alias.startsWith(realQuery)) {
+            if (alias.toLowerCase().startsWith(realQuery)) {
                 result.push(tag.value);
                 break;
             }

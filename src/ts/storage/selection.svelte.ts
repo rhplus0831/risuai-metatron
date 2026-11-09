@@ -97,14 +97,17 @@ function read(storage: () => Storage): Partial<Record<keyof Selection, unknown>>
     }
 }
 
+function normalizeLoreBookPage(page: unknown): number {
+    return typeof page === "number" && Number.isInteger(page) && page >= 0 ? page : 0;
+}
+
 /** Reads this tab's stored selection, else the browser's last one. Runs before the database is installed; ids are checked lazily. */
 export function loadSelection() {
     const stored = read(() => sessionStorage) ?? read(() => localStorage);
     selection.presetId = typeof stored?.presetId === "string" ? stored.presetId : "";
     selection.modelPresetId = typeof stored?.modelPresetId === "string" ? stored.modelPresetId : "";
     selection.personaId = typeof stored?.personaId === "string" ? stored.personaId : "";
-    const page = stored?.loreBookPage;
-    selection.loreBookPage = Number.isInteger(page) && (page as number) >= 0 ? (page as number) : 0;
+    selection.loreBookPage = normalizeLoreBookPage(stored?.loreBookPage);
 }
 
 /** Selects a prompt preset id without checking it exists and persists the selection when it changes. */
@@ -131,10 +134,11 @@ export function selectPersona(id: string) {
     }
 }
 
-/** Stores the lorebook page as supplied, without range checks, and persists the selection when it changes. */
+/** Stores a nonnegative integer lorebook page, or 0 for invalid input, and persists the selection when it changes. */
 export function selectLoreBookPage(page: number) {
-    if (selection.loreBookPage !== page) {
-        selection.loreBookPage = page;
+    const nextPage = normalizeLoreBookPage(page);
+    if (selection.loreBookPage !== nextPage) {
+        selection.loreBookPage = nextPage;
         save();
     }
 }
