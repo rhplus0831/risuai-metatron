@@ -32,6 +32,7 @@ export function createGlobalApiMock(overrides: ModuleMockOverrides<GlobalApiModu
     const defaults = {
         downloadFile: vi.fn(async () => {}),
         getFileSrc: vi.fn(async (loc: string) => loc),
+        recoverDirectAssetElement: vi.fn(async () => false),
         holdFileSrc: vi.fn((loc: string) => ({ src: Promise.resolve(loc), release: vi.fn() })),
         invalidateWorkerFileSources: vi.fn(),
         getThumbSrc: vi.fn(async (loc: string) => loc),

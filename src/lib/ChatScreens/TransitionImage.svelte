@@ -1,4 +1,13 @@
 <script lang="ts">
+    // Defer the asset facade until a load error needs its services.
+    async function recover(event: Event) {
+        const element = event.target;
+        if (!(element instanceof Element)) return;
+        const failedSrc = element.getAttribute("src");
+        const { recoverDirectAssetElement } = await import("src/ts/globalApi.svelte");
+        if (element.getAttribute("src") === failedSrc) await recoverDirectAssetElement(element);
+    }
+
     /**
      * Shows `src` and cross-fades from the previous images when it changes. An older (promised) `src`
      * that resolves after a newer one is dropped, so a slow image never replaces the current one.
@@ -59,7 +68,12 @@
 </script>
 
 {#if currentSrc && currentSrc.length > 0}
-    <div class="image-container" class:img-waifu={classType === "waifu"} class:img-risu={classType === "risu"}>
+    <div
+        class="image-container"
+        class:img-waifu={classType === "waifu"}
+        class:img-risu={classType === "risu"}
+        onerrorcapture={recover}
+    >
         {#if !showOldImage}
             {#each currentSrc as img, i}
                 {#if styleType === "normal"}

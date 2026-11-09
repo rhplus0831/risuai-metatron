@@ -14,7 +14,7 @@
     import Hub from "./Realm/RealmMain.svelte";
     import { gridOpenStore, OpenRealmStore } from "src/ts/stores.svelte";
     import { ArrowLeft, ChevronRightIcon, Globe2Icon, PinIcon, UsersIcon } from "@lucide/svelte";
-    import { getVersionString, openPinnedChat } from "src/ts/globalApi.svelte";
+    import { getVersionString, openPinnedChat, recoverDirectAssetElement } from "src/ts/globalApi.svelte";
     import { buildId, buildInfo } from "src/ts/buildInfo";
     import { alertNormal } from "src/ts/alert";
     import { language } from "src/lang";
@@ -149,6 +149,7 @@
                                         ></span>
                                     {:then imageSource}
                                         <img
+                                            onerror={(event) => void recoverDirectAssetElement(event.currentTarget)}
                                             src={imageSource || "/none.webp"}
                                             alt=""
                                             class="h-full w-full rounded-lg object-cover object-top"
@@ -230,6 +231,7 @@
                                     ></span>
                                 {:then imageSource}
                                     <img
+                                        onerror={(event) => void recoverDirectAssetElement(event.currentTarget)}
                                         src={imageSource || "/none.webp"}
                                         alt=""
                                         class="h-11 w-11 shrink-0 rounded-lg object-cover object-top"

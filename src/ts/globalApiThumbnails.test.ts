@@ -21,6 +21,9 @@ beforeAll(async () => {
 });
 
 const worker: { controller: object | null } = { controller: {} };
+const originalNavigator = globalThis.navigator;
+const originalFetch = globalThis.fetch;
+const originalCaches = globalThis.caches;
 const fetchMock = vi.fn();
 const openCache = vi.fn();
 let create: ReturnType<typeof vi.spyOn>;
@@ -53,7 +56,77 @@ afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
-    vi.unstubAllGlobals();
+    vi.stubGlobal("navigator", originalNavigator);
+    vi.stubGlobal("fetch", originalFetch);
+    vi.stubGlobal("caches", originalCaches);
+});
+
+describe("direct asset element recovery", () => {
+    it("leaves a failed direct image alone while direct assets are usable", async () => {
+        const loc = path();
+        const image = document.createElement("img");
+        const src = await api.getFileSrc(loc);
+        image.setAttribute("src", src);
+        let attempt: Promise<boolean> | undefined;
+        image.addEventListener("error", () => {
+            attempt = api.recoverDirectAssetElement(image);
+        });
+        image.dispatchEvent(new Event("error"));
+        expect(await attempt).toBe(false);
+        expect(image.getAttribute("src")).toBe(src);
+        expect(assets.readAsset).not.toHaveBeenCalled();
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(openCache).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+    });
+
+    it("recovers a source once after capability loss and reloads its media parent", async () => {
+        const loc = path();
+        const video = document.createElement("video");
+        const source = document.createElement("source");
+        video.append(source);
+        source.setAttribute("src", await api.getFileSrc(loc));
+        const load = vi.spyOn(video, "load").mockImplementation(() => {});
+        const attempts: Promise<boolean>[] = [];
+        video.addEventListener(
+            "error",
+            (event) => {
+                attempts.push(api.recoverDirectAssetElement(event.target));
+            },
+            true,
+        );
+        api.setDirectAssets(false);
+        source.dispatchEvent(new Event("error"));
+        source.dispatchEvent(new Event("error"));
+        expect(await Promise.all(attempts)).toEqual([true, false]);
+        expect(source.getAttribute("src")).toMatch(/^blob:thumbnail-/);
+        expect(assets.readAsset).toHaveBeenCalledExactlyOnceWith(loc);
+        expect(create).toHaveBeenCalledTimes(1);
+        expect(load).toHaveBeenCalledTimes(1);
+        source.dispatchEvent(new Event("error"));
+        expect(await attempts[2]).toBe(false);
+        expect(assets.readAsset).toHaveBeenCalledTimes(1);
+        expect(load).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a newer image source when the fallback read finishes late", async () => {
+        const loc = path();
+        const image = document.createElement("img");
+        image.setAttribute("src", await api.getThumbSrc(loc, 256));
+        let finish!: (bytes: Buffer) => void;
+        vi.mocked(assets.readAsset).mockReturnValueOnce(
+            new Promise<Buffer>((resolve) => {
+                finish = resolve;
+            }),
+        );
+        worker.controller = null;
+        const attempt = api.recoverDirectAssetElement(image);
+        image.setAttribute("src", "/newer-image.png");
+        finish(Buffer.from([1, 2, 3]));
+        expect(await attempt).toBe(false);
+        expect(image.getAttribute("src")).toBe("/newer-image.png");
+        expect(assets.readAsset).toHaveBeenCalledExactlyOnceWith(loc);
+    });
 });
 
 describe("thumbnail sources", () => {

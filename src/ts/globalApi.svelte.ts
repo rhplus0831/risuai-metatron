@@ -158,8 +158,8 @@ export function invalidateWorkerFileSources(): void {
  * Direct mode resolves `/api/asset/<hex of the UTF-8 key>` at once (`""` for an empty key), without
  * a read, Cache Storage lookup, registration, shared file source, or pin: nothing needs revoking.
  * `public/sw.js` signs the subresource load; the browser HTTP cache holds the bytes. A missing file
- * is not detected here: its element receives a 404. Direct-mode 401s and network failures never
- * retry through `readAsset`.
+ * is not detected here: its element receives a 404. A failed direct element retries once through
+ * `recoverDirectAssetElement` only after the controller or direct capability is lost.
  *
  * Each call checks `usingSw`, `directAssets`, and a controlling worker. Controller loss or a
  * capability re-probe sends new calls through the fallback; switching modes leaves existing
@@ -175,6 +175,11 @@ export function getFileSrc(loc: string, options: { rejectFailedReads?: boolean }
     if (canUseDirectAssets()) {
         return Promise.resolve(directAssetSrc(loc));
     }
+    return getFallbackFileSrc(loc, options);
+}
+
+/** Resolves a pinned fallback even if direct capability returns while an element is recovering. */
+function getFallbackFileSrc(loc: string, options: { rejectFailedReads?: boolean } = {}): Promise<string> {
     const source = getFileSource(loc);
     source.pinned = true;
     if (options.rejectFailedReads) {
@@ -184,6 +189,47 @@ export function getFileSrc(loc: string, options: { rejectFailedReads?: boolean }
         });
     }
     return source.src;
+}
+
+const recoveredDirectElements = new WeakSet<Element>();
+
+/**
+ * One error-triggered retry for a direct asset after controller/capability loss. Genuine errors while
+ * direct assets remain usable are left alone. Capture listeners also handle parser-created sources;
+ * changing a source child requires its media parent to load again. A changed src wins across awaits.
+ */
+export async function recoverDirectAssetElement(element: EventTarget | null): Promise<boolean> {
+    if (
+        !(
+            element instanceof HTMLImageElement ||
+            element instanceof HTMLMediaElement ||
+            element instanceof HTMLSourceElement
+        ) ||
+        canUseDirectAssets() ||
+        recoveredDirectElements.has(element)
+    )
+        return false;
+    const failedSrc = element.getAttribute("src");
+    if (!failedSrc) return false;
+    let key: string;
+    try {
+        const url = new URL(failedSrc, location.href);
+        if (url.origin !== location.origin) return false;
+        const hex = /^\/api\/asset\/((?:[\da-fA-F]{2})+)$/.exec(url.pathname)?.[1];
+        if (!hex) return false;
+        key = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.from(hex, "hex"));
+        if (!key.startsWith("assets/")) return false;
+    } catch {
+        return false;
+    }
+    recoveredDirectElements.add(element);
+    const src = await getFallbackFileSrc(key);
+    if (!src || element.getAttribute("src") !== failedSrc) return false;
+    element.setAttribute("src", src);
+    if (element instanceof HTMLSourceElement && element.parentElement instanceof HTMLMediaElement) {
+        element.parentElement.load();
+    }
+    return true;
 }
 
 /**

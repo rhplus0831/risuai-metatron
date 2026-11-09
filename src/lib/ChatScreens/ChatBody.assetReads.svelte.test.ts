@@ -29,6 +29,7 @@ import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import ChatBody from "./ChatBody.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
+const originalNavigator = globalThis.navigator;
 let serial = 0;
 let assets: Record<"picture" | "emotion" | "char" | "user" | "inlay", string>;
 
@@ -78,12 +79,56 @@ afterEach(async () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.stubGlobal("navigator", originalNavigator);
+    setUsingSw(false);
+    setDirectAssets(false);
 });
 
 const parse = (text: string, rejectFailedAssetReads = false) =>
     ParseMarkdown(text, "c", "normal", -1, {}, null, undefined, { rejectFailedAssetReads });
 
 describe("asset read failures in chat renders", () => {
+    it("replaces an errored direct thumbnail after controller loss through the row's capture listener", async () => {
+        const worker: { controller: object | null } = { controller: {} };
+        vi.stubGlobal("navigator", { serviceWorker: worker });
+        setUsingSw(true);
+        setDirectAssets(true);
+        vi.mocked(readAsset).mockResolvedValue(Buffer.from([137, 80, 78, 71]));
+        const target = document.createElement("div");
+        document.body.append(target);
+        const instance = mount(ChatBody, {
+            target,
+            props: {
+                bodyRoot: target,
+                msgDisplay: "{{img::picture}}",
+                character: "c",
+                role: "char",
+                translated: false,
+                translating: false,
+                retranslate: false,
+            },
+        });
+        mounted.push(instance);
+        flushSync();
+        await vi.advanceTimersByTimeAsync(0);
+        await instance.whenRendered();
+        const image = target.querySelector("img")!;
+        const direct = `/api/asset/${Buffer.from(assets.picture).toString("hex")}`;
+        expect(image.getAttribute("src")).toBe(direct);
+        expect(readAsset).not.toHaveBeenCalled();
+        // The browser may already have requested a thumbnail when it loses its controller.
+        image.setAttribute("src", `${direct}?w=256`);
+        worker.controller = null;
+        image.dispatchEvent(new Event("error", { bubbles: false }));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(image.getAttribute("src")).toBe("blob:requested-icon");
+        expect(readAsset).toHaveBeenCalledExactlyOnceWith(assets.picture);
+        image.dispatchEvent(new Event("error", { bubbles: false }));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(readAsset).toHaveBeenCalledTimes(1);
+        expect(alertError).not.toHaveBeenCalled();
+    });
+
     it("alerts once for an HTTP 401 asset refusal without retrying the read", async () => {
         const failure = Object.assign(new Error("Asset access refused"), { status: 401 });
         vi.mocked(readAsset).mockRejectedValue(failure);

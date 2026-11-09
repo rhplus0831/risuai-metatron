@@ -47,7 +47,7 @@
     import { type ChatStyle, getChatStyleRegistry } from "../../ts/parser/chatStyles";
     import ChatRowStyles from "./ChatRowStyles.svelte";
     import { type CapturedTransform, captureTransform } from "../../ts/parser/transformClient";
-    import { getFileSrc } from "src/ts/globalApi.svelte";
+    import { getFileSrc, recoverDirectAssetElement } from "src/ts/globalApi.svelte";
 
     /**
      * A message row's body (`Chat.svelte`): `markParsing` translates and parses the display text, and the result
@@ -497,6 +497,17 @@
             }
         }
     };
+
+    // Media errors do not bubble; one capture listener covers all sanitized parser HTML in this row.
+    $effect(() => {
+        const root = bodyRoot;
+        if (!root) return;
+        const recover = (event: Event) => {
+            void recoverDirectAssetElement(event.target);
+        };
+        root.addEventListener("error", recover, true);
+        return () => root.removeEventListener("error", recover, true);
+    });
 
     const checkImg = () => {
         if (!settings.memoryTranslateMedia.newImageHandlingBeta || !bodyRoot) {

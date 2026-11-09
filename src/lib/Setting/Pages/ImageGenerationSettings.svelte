@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { recoverDirectAssetElement } from "src/ts/globalApi.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { language } from "src/lang";
@@ -614,6 +615,7 @@
                         </div>
                     {:then im}
                         <img
+                            onerror={(event) => void recoverDirectAssetElement(event.currentTarget)}
                             src={im}
                             class="rounded-md h-40 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"
                             alt="Base Preview"
@@ -695,6 +697,7 @@
                         </div>
                     {:then im}
                         <img
+                            onerror={(event) => void recoverDirectAssetElement(event.currentTarget)}
                             src={im}
                             class="rounded-md h-40 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"
                             alt="Base Preview"
@@ -1076,6 +1079,7 @@
                             </div>
                         {:then im}
                             <img
+                                onerror={(event) => void recoverDirectAssetElement(event.currentTarget)}
                                 src={im}
                                 class="rounded-md h-40 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"
                                 alt="Base Preview"

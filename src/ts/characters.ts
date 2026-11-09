@@ -40,6 +40,7 @@ import {
     downloadFile,
     getFileSrc,
     getThumbSrc,
+    recoverDirectAssetElement,
 } from "./globalApi.svelte";
 import { parseMarkdownSafe } from "./parser/parser.svelte";
 import { translateHTML } from "./translator/translator";
@@ -835,7 +836,9 @@ export async function makeGroupImage() {
                             images.push(img);
                             resolve();
                         };
-                        img.onerror = () => resolve();
+                        img.onerror = async () => {
+                            if (!(await recoverDirectAssetElement(img))) resolve();
+                        };
                         img.src = url;
                     }),
             ),

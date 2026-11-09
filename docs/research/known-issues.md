@@ -4,7 +4,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 
 ## Contents
 
-- [assets](#assets) (1)
 - [backup-sync-hub](#backup-sync-hub) (1)
 - [diagnostics](#diagnostics) (1)
 - [memory](#memory) (1)
@@ -13,13 +12,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [resource-sync](#resource-sync) (1)
 - [self-host-server](#self-host-server) (3)
 - [server-resources](#server-resources) (1)
-
-## assets
-
-Guide: [Assets: Sources, Client, Queues, Batch Codec](../structure/assets.md#known-hazards).
-
-- Direct URLs already handed out are not re-rendered when the page loses its controller or capability. Without a signing
-  worker they load from the browser HTTP cache or fail with 401; only new source calls use the fallback.
 
 ## backup-sync-hub
 
