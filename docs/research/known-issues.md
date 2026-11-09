@@ -8,7 +8,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [backup-sync-hub](#backup-sync-hub) (1)
 - [cbs-rendering](#cbs-rendering) (11)
 - [chat-pipeline](#chat-pipeline) (8)
-- [chat-store](#chat-store) (1)
 - [diagnostics](#diagnostics) (1)
 - [draft-recovery](#draft-recovery) (5)
 - [live-updates](#live-updates) (2)
@@ -89,14 +88,6 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
 - Lore keys keep the inherited grammar: every key is split on commas before the `/pattern/flags` parse, so `/a{1,2}/`
   becomes two malformed keys; the last slash closes a pattern, and a bare or unclosed slash, an invalid flag, or a
   malformed later entry ends that key search instead of being skipped. Kept for parity.
-
-## chat-store
-
-Guide: [Chat Store: Chat Module, Write Protocol, Checkpoints](../structure/chat-store.md#known-hazards).
-
-- Folder moves touch the character (`chatFolders`), the chat (`folderId`), and the chat order, each saved alone. A
-  conflict on one can leave a `folderId` naming no folder of its character. Nothing repairs it; an explicit write clears
-  it (a move, a plugin's chat copy without it, a branch with "Create Folder on Branch", deleting a folder of that id).
 
 ## diagnostics
 
