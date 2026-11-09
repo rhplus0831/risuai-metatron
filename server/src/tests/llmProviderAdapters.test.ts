@@ -10,6 +10,7 @@ import { normalizeProviders } from "../data/normalize/providers.ts";
 import type { RequestContext } from "../llm/context.ts";
 import { reformater, requestChatDataMain } from "../llm/request.ts";
 import { loadRequestDb } from "../llm/settings.ts";
+import { applyAdditionalParameters } from "../llm/shared.ts";
 import { createTransport } from "../llm/transport.ts";
 
 // The provider adapters of the server request layer (`server/src/llm/`), run through
@@ -1769,6 +1770,69 @@ describe("the server provider adapters", () => {
             result: { type: "success", result: "translated" },
             logs: [PROVIDER],
         });
+    });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Additional parameter safety follows the request contract rather than the browser oracle.
+
+describe("additional parameter prototype safety", () => {
+    it("skips forbidden paths with warnings in an OpenAI-compatible request and preserves ordinary nested fields", async () => {
+        const pollutionKeys = ["__risuServerAdditionalProto", "__risuServerAdditionalCtor"];
+        const originalDescriptors = pollutionKeys.map((key) => Object.getOwnPropertyDescriptor(Object.prototype, key));
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+        try {
+            const recorded = await run({
+                settings: {
+                    providers: {
+                        additionalParams: [
+                            ["options", 'json::{"keep":"sibling","nested":{"keep":"nested sibling"}}'],
+                            [`__proto__.${pollutionKeys[0]}`, "1"],
+                            [`constructor.prototype.${pollutionKeys[1]}`, "1"],
+                            ["blocked.constructor", "1"],
+                            ["blocked.prototype.value", "1"],
+                            ["a.b.c", "1"],
+                            ["options.nested.value", "2"],
+                        ],
+                    },
+                },
+                arg: prompt(),
+                upstream: () => chat("ok"),
+            });
+
+            expect(pollutionKeys.map((key) => Object.getOwnPropertyDescriptor(Object.prototype, key))).toEqual(
+                originalDescriptors,
+            );
+            expect(warn).toHaveBeenCalledTimes(4);
+            expect(recorded.calls).toHaveLength(1);
+            const body = recorded.calls[0].body as Record<string, unknown>;
+            expect(body).toMatchObject({
+                a: { b: { c: 1 } },
+                options: { keep: "sibling", nested: { keep: "nested sibling", value: 2 } },
+            });
+            for (const key of ["__proto__", "constructor", "blocked"]) {
+                expect(Object.hasOwn(body, key)).toBe(false);
+            }
+        } finally {
+            pollutionKeys.forEach((key, index) => {
+                const descriptor = originalDescriptors[index];
+                if (descriptor) Object.defineProperty(Object.prototype, key, descriptor);
+                else Reflect.deleteProperty(Object.prototype, key);
+            });
+            warn.mockRestore();
+        }
+    });
+
+    it("creates own intermediate objects instead of mutating inherited ones", () => {
+        const prototype = { branch: { keep: "prototype sibling" } };
+        const body = { existing: Object.create(prototype) as Record<string, unknown> };
+
+        applyAdditionalParameters(body, {}, [["existing.branch.a.b", "1"]]);
+
+        expect(prototype).toEqual({ branch: { keep: "prototype sibling" } });
+        expect(Object.hasOwn(body.existing, "branch")).toBe(true);
+        expect(body).toMatchObject({ existing: { branch: { a: { b: 1 } } } });
     });
 });
 

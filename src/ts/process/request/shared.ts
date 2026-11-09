@@ -7,8 +7,10 @@ import type { LLMParameter } from "../../../../shared/llm.ts";
  * Tab-side request parameter selection and mutation for Plugin/WebLLM preparation in
  * `src/ts/process/request/request.ts`; server adapters use `server/src/llm/shared.ts` instead.
  * Preset values come from the captured scope, and a deleted captured preset throws rather than reading another.
- * Additional parameters are trusted user configuration applied in order: dotted writes mutate nested objects,
- * while deletions target literal keys. Reasoning capability markers select levels but are not emitted as fields.
+ * Additional parameters are trusted user configuration applied in order: dotted writes refuse `__proto__`,
+ * `constructor`, or `prototype` segments with a warning before any mutation and traverse own properties only,
+ * creating objects for missing, inherited, or falsy intermediates. Deletions target literal keys. Reasoning
+ * capability markers select levels but are not emitted as fields.
  */
 
 export type { LLMParameter };
@@ -28,21 +30,34 @@ export function isReasoningCapabilityParameter(parameter: LLMParameter): boolean
 }
 
 /**
- * Mutates and returns `obj` at a dot-separated path, replacing falsy intermediate values with objects.
- * Existing truthy intermediates are traversed without validation, so assignment through a primitive can throw.
+ * Mutates and returns `obj` at a dot-separated path, traversing own properties only and replacing missing, inherited,
+ * or falsy intermediates with objects. A `__proto__`, `constructor`, or `prototype` segment refuses the entire key
+ * with a warning before any mutation. Traversal through a truthy primitive can throw.
  */
 export function setObjectValue<T>(obj: T, key: string, value: any): T {
     const splitKey = key.split(".");
-    if (splitKey.length > 1) {
-        const firstKey = splitKey.shift();
-        if (!obj[firstKey]) {
-            obj[firstKey] = {};
-        }
-        obj[firstKey] = setObjectValue(obj[firstKey], splitKey.join("."), value);
+    if (splitKey.some((segment) => segment === "__proto__" || segment === "constructor" || segment === "prototype")) {
+        console.warn(`Skipping parameter "${key}": forbidden path segment.`);
         return obj;
     }
 
-    obj[key] = value;
+    let target = obj as any;
+    for (let i = 0; i < splitKey.length - 1; i++) {
+        const segment = splitKey[i];
+        if (!Object.hasOwn(target, segment)) {
+            Object.defineProperty(target, segment, {
+                value: {},
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            });
+        } else if (!target[segment]) {
+            target[segment] = {};
+        }
+        target = target[segment];
+    }
+
+    target[splitKey[splitKey.length - 1]] = value;
     return obj;
 }
 

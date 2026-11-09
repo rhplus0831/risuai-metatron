@@ -227,7 +227,9 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   its last snapshot and escaped as a buffered success. Audio and image output modalities disable streaming.
 - Mode `submodel` is not a `seperateModels` key.
 - `applyAdditionalParameters` accepts trusted configuration that can override or delete body fields and headers; its
-  comment defines the syntax and notes that an adapter may still set fields afterward.
+  comment defines the syntax and notes that an adapter may still set fields afterward. `setObjectValue` (both copies)
+  skips, with a warning, a dotted key with a `__proto__`, `constructor` or `prototype` segment, and walks own properties
+  only, so no key reaches a prototype.
 - Configured provider URLs are fetched from the server, so `localhost` is the server's (in Docker, the container's: use
   `host.docker.internal` or the host's address).
 - A provider change belongs in the server adapters; they read only `arg.ctx` and their arguments
