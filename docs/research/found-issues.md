@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (5)
 - [Server routes and resource store](#server-routes-and-resource-store) (10)
 - [LLM requests and providers](#llm-requests-and-providers) (11)
@@ -41,13 +41,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 **Why it matters:** three copies of one hash invite drift; cleanup only.
 **Suggested handling:** fold them into `shared/textHash.ts` when one of those files is touched anyway.
-
-### pluginStorage adoption keeps plain input objects
-
-`src/ts/storage/records.svelte.ts` wrapper adoption (~1457, `unwrap`) keeps a plain object assigned through the `pluginStorage` wrapper instead of copying it, as characters and modules do. Mutating that object later changes the record's serialization with no write mark and no `pluginStorageRevision` bump, so the change is never saved; same-record aliasing (`custom = _ownedPluginStorage`) is accepted too. Found by the sweep's A6 challenger (2026-11-06); the v3 storage setters detach their inputs, so no producer is known.
-
-**Why it matters:** a silent unsaved divergence that A6's entry fast path would not detect either.
-**Suggested handling:** detach plain inputs at pluginStorage adoption, as for characters and modules.
 
 ## Server jobs and prompt assembly
 
