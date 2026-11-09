@@ -184,15 +184,13 @@ The client half of "Asset-scale transport and job leftovers" under Server jobs a
 
 Open after the Web Push implementation (e148f7276, 2026-10-13; the archived `docs/plan/web-push.md`) and the Open Bug Fixes slices S1 (3601b04c2) and P1 (34555e412); the VAPID key re-read landed 2026-10-28. Kept in memory until 2026-11-08 and re-checked that day. The real-browser checks (permission, subscription, click routing, Android PWA) went to the user's own checklist on 2026-10-28 and are not listed here; the `MAX_PENDING_SENDS` comment has its own entry ("The push send cap comment says four waiting").
 
-- Cross-tab opt-out race: an explicit disable racing another tab's enable within one reconcile (`src/ts/network/pushNotifications.ts`).
 - The enable button may lose user activation before `subscribe()` when it is queued behind a reconcile.
 - `public/sw.js` click handling: the `/` route only focuses.
 - `navigator.serviceWorker.ready` may be the old worker during an upgrade.
-- `no-store` is missing on middleware rejections of `/api/push/*`: the limiter, JWT and body cap in `server/src/routes/push.ts` (~26, ~49) answer before the handler sets it, push is not in `server/src/app.ts`'s no-store families (~810), and the `registerPushRoutes` header comment still promises `no-store` on every answer.
 - The P1 detail strings (`language.pushNotifications.*`) exist in en and ko and are English in de, es, vi, cn and zh-Hant.
 - Registration dedupe (Deep Audit Fixes slice 5, 2026-10-26): a subscription the server dropped while the browser keeps the same endpoint and keys comes back only at the first sync after 24 h or by off/on; `subscribed` stays true meanwhile and suppresses the tab fallback notice. Accepted.
 
-**Why it matters:** the races can leave a tab's toggle and the server's subscription list disagreeing, and a cached rejection could be replayed by an intermediary.
+**Why it matters:** the activation and worker-upgrade races can leave a tab's toggle and the server's subscription list disagreeing. (The cross-tab opt-out race and the missing `no-store` on push rejections were fixed by Found Issues Clearance slice F10.)
 **Suggested handling:** offer these as the next Web Push round; verify each against the current code first.
 
 ### Plugin reload deferral leftovers
