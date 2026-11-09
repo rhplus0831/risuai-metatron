@@ -20,6 +20,7 @@
     } from "../../../../shared/triggers.ts";
     import { onDestroy, onMount } from "svelte";
     import { RISU_EFFECT_DRAG_TYPE, RISU_TRIGGER_DRAG_TYPE } from "src/ts/dragTypes";
+    import { effectDisplayText, formatEffectDisplay as formatDisplay } from "./triggerEffectDisplay";
 
     /**
      * The v2 trigger editor's palette is `effectCategories`; `makeDefaultEditType` supplies the
@@ -2275,54 +2276,7 @@
         e.stopPropagation();
     };
 
-    const formatEffectDisplay = (effect: triggerEffect) => {
-        const type = effect.type;
-
-        if (!checkSupported(type)) {
-            return `<span class="text-red-500">${language.triggerDesc.v2UnsupportedTriggerDesc}</span>`;
-        }
-
-        const txt = ((language.triggerDesc[type + "Desc"] as string) || type).replace(/{{(.+?)}}/g, (match, p1) => {
-            const d = effect[p1];
-
-            if (type === "v2Comment" && p1 === "value") {
-                return `<span class="text-gray-400">${d || ""}</span>`;
-            }
-
-            if (typeof d === "boolean") {
-                return `<span class="text-blue-500">${d ? "true" : "false"}</span>`;
-            }
-
-            if (p1.endsWith("Type")) {
-                return `<span class="text-blue-500">${d || "null"}</span>`;
-            }
-            if (p1 === "condition" || p1 === "operator") {
-                return `<span class="text-green-500">${d || "null"}</span>`;
-            }
-            if (effect[p1 + "Type"] === "var") {
-                return `<span class="text-yellow-500">${d || "null"}</span>`;
-            }
-            if (effect[p1 + "Type"] === "value") {
-                return `<span class="text-green-500">"${d}"</span>`;
-            }
-            if (effect.type === "v2If" && p1 === "source") {
-                return `<span class="text-yellow-500">${d || "null"}</span>`;
-            }
-            if (effect.type === "v2SetVar" && p1 === "var") {
-                return `<span class="text-yellow-500">${d || "null"}</span>`;
-            }
-            if (effect.type === "v2DeclareLocalVar" && p1 === "var") {
-                return `<span class="text-cyan-500">${d || "null"}</span>`;
-            }
-            return `<span class="text-blue-500">${d || "null"}</span>`;
-        });
-
-        if (type === "v2Comment") {
-            return `<div class="text-gray-500 italic line-clamp-4" style="margin-left:${(effect as triggerEffectV2).indent}rem; word-break: break-all; overflow-wrap: break-word;">// ${txt}</div>`;
-        }
-
-        return `<div class="text-purple-500 line-clamp-4" style="margin-left:${(effect as triggerEffectV2).indent}rem; word-break: break-all; overflow-wrap: break-word;">${txt}</div>`;
-    };
+    const formatEffectDisplay = (effect: triggerEffect) => formatDisplay(effect, checkSupported(effect.type));
 
     const updateGuideLines = () => {
         guideLineKey += 1;
@@ -3004,7 +2958,7 @@
 
                                                 const dragElement = document.createElement("div");
                                                 dragElement.textContent =
-                                                    formatEffectDisplay(effect).replace(/<[^>]*>/g, "") || "Effect";
+                                                    effectDisplayText(formatEffectDisplay(effect)) || "Effect";
                                                 dragElement.className =
                                                     "absolute -top-96 -left-96 px-4 py-2 bg-darkbg text-textcolor2 rounded-sm text-sm whitespace-nowrap shadow-lg pointer-events-none z-50";
                                                 document.body.appendChild(dragElement);

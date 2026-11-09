@@ -47,6 +47,8 @@ Each module's contract is its header comment (a Svelte component's, the JSDoc bl
 - `src/lib/SideBars/Scripts/TriggerList.svelte`: picks the editor mode (v2 or Lua); `triggerLegacyUnsupported`.
 - `src/lib/SideBars/Scripts/TriggerV2List.svelte`: the v2 editor. `effectCategories`, `checkSupported`,
   `makeDefaultEditType`, and the block helpers `deleteEffect`, `copyEffect`, `getInsertIndent`, `getBlockRange`.
+- `src/lib/SideBars/Scripts/triggerEffectDisplay.ts`: the v2 effect list's summary markup (`formatEffectDisplay`, given
+  the editor's `checkSupported` answer) and its drag-preview text (`effectDisplayText`).
 - `src/lib/Playground/PlaygroundSyntax.svelte`, `src/lib/Playground/PlaygroundParser.svelte`: the CBS and
   `ParseMarkdown` playgrounds.
 
@@ -118,6 +120,9 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
   current record inside each revision-checked write: by `id`, or by index with an unchanged-value check for legacy
   entries without one), so another writer's edit to a different entry survives the run.
 - v2 block edits must preserve paired `v2EndIndent` entries and indentation.
+- The v2 effect list renders its summaries as HTML: every stored effect value, and a `type` shown without a language
+  description, is HTML-escaped there, and `indent` is written as a number (`0` when it is not one). Only the language
+  description templates are trusted markup; an imported card's or module's trigger is not.
 - Lua `request` restrictions (`server/src/lua/egress.ts`): HTTPS only, URL at most 120 characters, the three banned Risu
   prefixes, no `localhost` and only public addresses, 30 requests per minute per server, a 10 s timeout and a 2 MB
   answer; it requires low-level access.
@@ -180,7 +185,9 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 - Worker and write boundaries:
   `server/src/tests/{manualTriggerMetadata,chatMetadataCoalescing,chatResult,scriptWorker,scriptWorkerOptions}.test.ts`
   pin metadata batching, final trigger application, Lua host values, and worker limits.
-- Gaps: v2 editor behavior and `Chat.svelte`'s trigger-id owner token are not directly tested.
+- v2 editor summaries: `src/lib/SideBars/Scripts/triggerEffectDisplay.test.ts` covers escaping, the numeric indent, and
+  unchanged plain output.
+- Gaps: other v2 editor behavior and `Chat.svelte`'s trigger-id owner token are not directly tested.
 
 ## Known Hazards
 
