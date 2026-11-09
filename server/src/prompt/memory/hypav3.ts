@@ -2682,9 +2682,16 @@ class HypaProcesserEx extends HypaProcesser {
         const texts = chunks.map((chunk) => chunk.text);
         await this.addText(texts);
 
+        const vectorsByContent = new Map<string, memoryVector>();
+        for (const vector of this.vectors) {
+            if (!vectorsByContent.has(vector.content)) {
+                vectorsByContent.set(vector.content, vector);
+            }
+        }
+
         const newSummaryChunkVectors: SummaryChunkVector[] = [];
         for (const chunk of chunks) {
-            const vector = this.vectors.find((v) => v.content === chunk.text);
+            const vector = vectorsByContent.get(chunk.text);
             if (!vector) {
                 throw new Error(`Failed to create vector for summary chunk:\n${chunk.text}`);
             }

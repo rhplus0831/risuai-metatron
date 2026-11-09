@@ -13,7 +13,7 @@ import {
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { CachedVector, VectorCache } from "../data/vectorCache.ts";
 import type { requestDataResponse } from "../llm/request.ts";
-import { createEmbeddings } from "../prompt/embeddings.ts";
+import { createEmbeddings, HypaProcesser } from "../prompt/embeddings.ts";
 import type { MemoryHost, MemoryTokenizer } from "../prompt/memory/host.ts";
 import {
     appliedHypaV3Summaries,
@@ -2045,6 +2045,95 @@ describe("warming the summaries' vectors", () => {
         );
         if (!outcome.ok) throw new Error(outcome.result.error);
         await warmHypaV3Vectors(host, outcome.prepared.data.summaries);
+        expect(world.log.http).toEqual([]);
+    });
+});
+
+describe("standard summary chunk vector lookup", () => {
+    const scenarioWithSummaries = (texts: string[]) =>
+        flatScenario("v3-standard-vector-lookup", 100, {
+            settings: { hypaModel: "MiniLM" },
+            chats: makeChats(texts.length + 1),
+            preset: {
+                ...HOOKED_PRESET,
+                recentMemoryRatio: 0,
+                similarMemoryRatio: 1,
+                queryChatCount: 1,
+            },
+            room: { hypaV3Data: { summaries: texts.map((text, index) => stored([`m${index}`], text)) } },
+        });
+
+    beforeEach(() => {
+        // The separator's deadline must not depend on machine load.
+        vi.spyOn(performance, "now").mockReturnValue(0);
+    });
+
+    it("warms cached duplicate chunks without consuming their shared vector and selects both summaries", async () => {
+        const shared = "Shared paragraph.";
+        const { world, host, prepared } = await setUp(scenarioWithSummaries([shared, shared]));
+
+        // Warm one copy first: addText will admit this cached text only once for the two chunks.
+        await warmHypaV3Vectors(host, prepared.data.summaries.slice(0, 1));
+        expect(world.log.embeds.flatMap(({ texts }) => texts)).toEqual([shared]);
+        await expect(warmHypaV3Vectors(host, prepared.data.summaries)).resolves.toBeUndefined();
+        expect(world.log.embeds.flatMap(({ texts }) => texts)).toEqual([shared]);
+
+        const selection = await selectHypaV3(host, prepared, emptyHypaV3Execution(prepared));
+        expect(selection.error).toBeUndefined();
+        expect(selection.memory?.metrics?.lastSimilarSummaries).toEqual([0, 1]);
+    });
+
+    it("reuses the first vector admitted by an earlier addText call for every equal chunk", async () => {
+        const shared = "Shared paragraph.";
+        const other = "Other paragraph.";
+        const { host, prepared } = await setUp(scenarioWithSummaries([shared, shared, other]));
+        let sharedOccurrence = 0;
+        vi.spyOn(host.embeddings.transformers, "runEmbedding").mockImplementation(async (texts) =>
+            texts.map((text) =>
+                Float32Array.from(
+                    text === shared ? [sharedOccurrence++ === 0 ? 1 : -1, 0] : text === other ? [0, 1] : [1, 0],
+                ),
+            ),
+        );
+
+        // The subclass has no exported factory. Seed it through the real base admission method:
+        // cold duplicates get distinct vectors, and the later batch admits only `other`.
+        const addText = HypaProcesser.prototype.addText;
+        vi.spyOn(HypaProcesser.prototype, "addText").mockImplementation(async function (this: HypaProcesser, texts) {
+            await addText.call(this, [shared, shared]);
+            await addText.call(this, texts);
+        });
+
+        const selection = await selectHypaV3(host, prepared, emptyHypaV3Execution(prepared));
+        expect(selection.error).toBeUndefined();
+        // The query is [1, 0]: both shared chunks must score +1 using the FIRST vector,
+        // ahead of other's 0. Taking the last vector would score both shared chunks -1.
+        expect(selection.memory?.metrics?.lastSimilarSummaries).toEqual([0, 1, 2]);
+    });
+
+    it("looks up 2,000 chunk vectors with a linear number of content reads", async () => {
+        const chunks = Array.from({ length: 2000 }, (_, index) => `Chunk ${index}.`);
+        const { world, host, prepared } = await setUp(scenarioWithSummaries([chunks.join("\n\n")]));
+        let contentReads = 0;
+        const addText = HypaProcesser.prototype.addText;
+        vi.spyOn(HypaProcesser.prototype, "addText").mockImplementation(async function (this: HypaProcesser, texts) {
+            await addText.call(this, texts);
+            // Count lookup work after real admission, independently of embedding/cache work.
+            for (const vector of this.vectors) {
+                const content = vector.content;
+                Object.defineProperty(vector, "content", {
+                    get: () => {
+                        contentReads++;
+                        return content;
+                    },
+                });
+            }
+        });
+
+        await expect(warmHypaV3Vectors(host, prepared.data.summaries)).resolves.toBeUndefined();
+        expect(world.log.embeds.flatMap(({ texts }) => texts)).toEqual(chunks);
+        // Allow several passes, but reject the 2,001,000 reads of a per-chunk linear scan.
+        expect(contentReads).toBeLessThanOrEqual(4 * chunks.length);
         expect(world.log.http).toEqual([]);
     });
 });
