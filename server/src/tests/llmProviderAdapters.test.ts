@@ -2529,6 +2529,137 @@ describe("a whitespace-only system prompt (crosscheck row 2)", () => {
     });
 });
 
+describe("Gemini signature inlays", () => {
+    const model = "gemini-2.5-flash";
+    const enabled: Settings = { preset: { aiModel: model }, providers: { saveSignatures: true } };
+    const reply = (parts: unknown[]) => json({ candidates: [{ content: { parts } }] });
+    const signature = (token: string) => ({
+        source: model,
+        sourceFormat: LLMFormat.GoogleCloud,
+        signatures: [{ type: "text", content: token }],
+    });
+
+    it("saves the buffered provider token after JSON extraction and replays the store's raw JSON only while enabled", async () => {
+        const saved = await run({
+            settings: enabled,
+            arg: { ...prompt(), schema: "interface Answer {\n  answer: string\n}", extractJson: "answer" },
+            upstream: () => reply([{ text: '{"answer":"Hello"}', thoughtSignature: "opaque-token+/=" }]),
+        });
+        expect(saved.inlays).toEqual([{ kind: "signature", id: "id-1", signature: signature("opaque-token+/=") }]);
+        expect(saved.result).toEqual({ type: "success", result: "Hello{{inlayeddata::id-1}}" });
+
+        // The assembly boundary's signature multimodal contains the store's raw JSON text,
+        // despite the field's historical name `base64`. This is a save-then-replay adapter test.
+        const stored = saved.inlays[0] as { signature: Parameters<RequestContext["inlays"]["saveSignature"]>[1] };
+        for (const saveSignatures of [true, false]) {
+            const replayed = await run({
+                settings: { ...enabled, providers: { saveSignatures } },
+                arg: {
+                    bias: {},
+                    useStreaming: false,
+                    formated: [
+                        { role: "user", content: "Hello" },
+                        {
+                            role: "assistant",
+                            content: "Hello",
+                            multimodals: [{ type: "signature", base64: JSON.stringify(stored.signature) }],
+                        },
+                        { role: "user", content: "Continue" },
+                    ],
+                },
+                upstream: () => reply([{ text: "Next", thoughtSignature: "next-token" }]),
+            });
+            expect(replayed.calls).toHaveLength(1);
+            expect(replayed.calls[0].body).toMatchObject({
+                contents: [
+                    { role: "user", parts: [{ text: "Hello" }] },
+                    {
+                        role: "model",
+                        parts: [
+                            { text: "Hello" },
+                            ...(saveSignatures ? [{ thought: true, thoughtSignature: "opaque-token+/=" }] : []),
+                        ],
+                    },
+                    { role: "user", parts: [{ text: "Continue" }] },
+                ],
+            });
+            expect(replayed.result).toEqual({
+                type: "success",
+                result: saveSignatures ? "Next{{inlayeddata::id-1}}" : "Next",
+            });
+            expect(replayed.inlays).toEqual(
+                saveSignatures ? [{ kind: "signature", id: "id-1", signature: signature("next-token") }] : [],
+            );
+        }
+    });
+
+    it("appends signature-only buffered parts after all reply text without marking an unrelated part", async () => {
+        const recorded = await run({
+            settings: enabled,
+            arg: prompt(),
+            upstream: () =>
+                reply([
+                    { thoughtSignature: "leading-token" },
+                    { text: "First" },
+                    { text: "", thoughtSignature: "empty-text-token" },
+                    { text: "Last" },
+                ]),
+        });
+        expect(recorded.inlays).toEqual([
+            { kind: "signature", id: "id-1", signature: signature("leading-token") },
+            { kind: "signature", id: "id-2", signature: signature("empty-text-token") },
+        ]);
+        expect(recorded.result).toEqual({
+            type: "success",
+            result: "First\n\nLast{{inlayeddata::id-1}}{{inlayeddata::id-2}}",
+        });
+    });
+
+    it("still fails an otherwise empty buffered reply containing only a signature", async () => {
+        const recorded = await run({
+            settings: enabled,
+            arg: prompt(),
+            upstream: () => reply([{ thoughtSignature: "lonely-token" }]),
+        });
+        expect(recorded.result).toMatchObject({ type: "fail", result: expect.stringContaining("Got empty response") });
+    });
+
+    it("skips malformed stored signature JSON while preserving the message and valid signature", async () => {
+        const recorded = await run({
+            settings: enabled,
+            arg: {
+                bias: {},
+                useStreaming: false,
+                formated: [
+                    { role: "user", content: "Hello" },
+                    {
+                        role: "assistant",
+                        content: "Previous answer",
+                        multimodals: [
+                            { type: "signature", base64: "{broken-json" },
+                            { type: "signature", base64: JSON.stringify(signature("valid-token")) },
+                        ],
+                    },
+                    { role: "user", content: "Continue" },
+                ],
+            },
+            upstream: () => reply([{ text: "Continued" }]),
+        });
+        expect(recorded.result).toEqual({ type: "success", result: "Continued" });
+        expect(recorded.calls).toHaveLength(1);
+        expect(recorded.calls[0].body).toMatchObject({
+            contents: [
+                { role: "user", parts: [{ text: "Hello" }] },
+                {
+                    role: "model",
+                    parts: [{ text: "Previous answer" }, { thought: true, thoughtSignature: "valid-token" }],
+                },
+                { role: "user", parts: [{ text: "Continue" }] },
+            ],
+        });
+    });
+});
+
 describe("the Gemini retries after a tool call (crosscheck row 3)", () => {
     // The clock is fake (the waits), the I/O real: `settle` gives the request real turns, with no
     // wall-clock bound, until the condition holds.

@@ -173,6 +173,14 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   requests read the snapshots directly. Adapter comments own parser details. A tab request's tool calls go through the
   `mcpTool` callback (`mcp.ts` `callTool`), a job's through its job tool service; the adapter appends the results and
   sends the follow-up request.
+- Gemini thought signatures (`providers.saveSignatures`, the Model page's toggle for a `geminiThinking` model): only a
+  `model`-mode request saves them (`requestChatDataMain` sets `saveSignatures`; translation, memory, and the other
+  auxiliary modes never do, since their hosts' `saveSignature` throws). The marker renders as nothing
+  ([rendering](cbs-rendering.md#inlays)).
+- `server/src/llm/google.ts` stores each part's `thoughtSignature` token as a signature inlay (raw JSON text) and
+  appends its `{{inlayeddata::<id>}}` marker to the reply, after JSON extraction on the buffered path; a streaming tool
+  follow-up's text drops the markers. Assembly passes the inlay back as a `signature` multimodal, and while the setting
+  is on the adapter replays the token as `thoughtSignature` (an unparsable value is skipped).
 
 ## State
 

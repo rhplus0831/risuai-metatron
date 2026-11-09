@@ -106,8 +106,9 @@ section.
   array, then `SettingsSections`), `DisplaySettings` (sectioned per tab), `ChatFormatSettings`, and `LanguageSettings`
   (the UI language only).
 - Hybrid handwritten/registry pages: `ModelSettings` (the model preset and the aux selector owned by
-  [media-aux](media-aux.md)) and `PromptPresetSettings` (the prompt preset). Connections, profile editing, and slot
-  selection belong to [LLM requests](llm-requests.md).
+  [media-aux](media-aux.md); its handwritten provider toggles include `saveSignatures`, shown for a `geminiThinking`
+  model whether or not streaming is on) and `PromptPresetSettings` (the prompt preset). Connections, profile editing,
+  slot selection, and what the toggles do belong to [LLM requests](llm-requests.md).
 - `MemorySettings`: memory providers, presets, the embedding model, `supaMemoryKey`, and the HypaV3 budget controls.
   Summarization, budget, and task behavior belong to [memory](memory.md), the structured-memory branch to
   [writer settings](structured-memory/writer.md#state); the prompt-preset max-context override it reads is in

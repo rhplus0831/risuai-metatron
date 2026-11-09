@@ -1,6 +1,8 @@
 import { Buffer } from "buffer";
 import { flushSync } from "svelte";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { InlayResource } from "../../../../shared/resources.ts";
+import { LLMFormat } from "../../../../shared/llm.ts";
 
 vi.mock("../../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
@@ -12,10 +14,13 @@ vi.mock("../../stores.svelte", async () => {
 vi.mock("../../storage/database.svelte", () => ({ appVer: "test", defaultSdDataFunc: () => [] }));
 vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 vi.mock("../transformClient", () => ({ captureTransform: () => null, serverProcessScript: vi.fn() }));
-vi.mock("../../process/files/inlays", () => ({ getInlayMedia: vi.fn(), getInlayObjectUrl: vi.fn() }));
+vi.mock("../../storage/resourceClient", async () =>
+    (await import("../../storage/tests/resourceClientMock")).createResourceClientMock(),
+);
 
 import { getDirectAssetSrc } from "../../globalApi.svelte";
-import { getInlayMedia, getInlayObjectUrl } from "../../process/files/inlays";
+import { getInlayMedia, getInlayObjectUrl, seedInlays } from "../../process/files/inlays";
+import * as inlays from "../../process/files/inlays";
 import { selectedCharacter } from "../../storage/characterStore.svelte";
 import { selectCharacter } from "../../storage/selection.svelte";
 import { installFlatDatabase } from "../../storage/tests/installFlatDatabase";
@@ -50,6 +55,9 @@ async function renderSource(
 
 beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(inlays, "getInlayMedia").mockResolvedValue(null);
+    vi.spyOn(inlays, "getInlayObjectUrl").mockResolvedValue(null);
+    seedInlays([]);
     vi.mocked(getDirectAssetSrc).mockReturnValue(null);
     installFlatDatabase({
         legacyMediaFindings: false,
@@ -63,6 +71,8 @@ beforeEach(() => {
     selectCharacter("c");
     flushSync();
 });
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("additional asset media rendering", () => {
     it("uses each asset's MIME type for media tags and omits unknown types", async () => {
@@ -92,6 +102,40 @@ describe("additional asset media rendering", () => {
 });
 
 describe("inlay media rendering", () => {
+    it("distinguishes signature metadata from a missing inlay and hides only the signature marker", async () => {
+        vi.mocked(getInlayMedia).mockRestore();
+        seedInlays([
+            {
+                id: "signature",
+                revision: "1",
+                data: {
+                    type: "signature",
+                    name: "signature",
+                    ext: "json",
+                    text: JSON.stringify({
+                        source: "gemini-2.5-flash",
+                        sourceFormat: LLMFormat.GoogleCloud,
+                        signatures: [{ type: "text", content: "opaque-token" }],
+                    }),
+                } satisfies InlayResource,
+            },
+        ]);
+        expect(await getInlayMedia("signature")).toEqual({ type: "signature" });
+        expect(await getInlayMedia("missing-signature")).toBeNull();
+        const container = document.createElement("div");
+        container.innerHTML = await ParseMarkdown(
+            "Answer{{inlayeddata::signature}} / {{inlayeddata::missing-signature}}",
+            "c",
+            "normal",
+            -1,
+            {},
+            null,
+        );
+        expect(container.textContent?.trim()).toBe("Answer / {{inlayeddata::missing-signature}}");
+        expect(container.querySelector("img, audio, video, source")).toBeNull();
+        expect(getInlayObjectUrl).not.toHaveBeenCalled();
+    });
+
     it("uses direct asset URLs and real MIME types for video and audio without creating object URLs", async () => {
         vi.mocked(getDirectAssetSrc).mockImplementation(directAssetUrl);
 

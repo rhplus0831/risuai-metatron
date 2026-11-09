@@ -512,6 +512,7 @@ export async function requestChatDataMain(
         modelInfo: resolved.modelInfo,
         mode: model,
     };
+    targ.saveSignatures = model === "model" && db.saveSignatures === true;
 
     // On the format dispatch calls (a reverse proxy's `customAPIFormat` included).
     if (

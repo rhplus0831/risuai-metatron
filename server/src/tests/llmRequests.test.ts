@@ -310,6 +310,65 @@ afterEach(() => {
 });
 
 describe("a buffered request", () => {
+    it("saves signed replies only for model mode with provider opt-in, ignoring client opt-in", async () => {
+        const cases = [
+            { mode: "model", saveSignatures: true, clientSaving: undefined, saves: true },
+            { mode: "translate", saveSignatures: true, clientSaving: true, saves: false },
+            { mode: "memory", saveSignatures: true, clientSaving: true, saves: false },
+            { mode: "model", saveSignatures: false, clientSaving: true, saves: false },
+        ] as const;
+        for (const { mode, saveSignatures, clientSaving, saves } of cases) {
+            const records = makeRecords({
+                preset: { aiModel: "gemini-2.5-flash" },
+                secrets: { google: { accessToken: "google-key" } },
+            });
+            records.providers = normalizeProviders({ saveSignatures });
+            const { registry, calls } = harness(records, () =>
+                json({
+                    candidates: [{ content: { parts: [{ text: "Signed answer", thoughtSignature: "opaque-token" }] } }],
+                }),
+            );
+            try {
+                const { events } = await run(
+                    registry,
+                    body(clientSaving === undefined ? {} : { saveSignatures: clientSaving }, { mode }),
+                );
+                const inlays = events.filter((event) => event.type === "inlay");
+                const label = `${mode}, providers.saveSignatures=${saveSignatures}`;
+                expect(inlays, label).toEqual(
+                    saves
+                        ? [
+                              {
+                                  type: "inlay",
+                                  inlay: {
+                                      kind: "signature",
+                                      id: expect.stringMatching(UUID),
+                                      signature: {
+                                          source: "gemini-2.5-flash",
+                                          sourceFormat: LLMFormat.GoogleCloud,
+                                          signatures: [{ type: "text", content: "opaque-token" }],
+                                      },
+                                  },
+                              },
+                          ]
+                        : [],
+                );
+                expect(terminal(events), label).toEqual([
+                    {
+                        type: "result",
+                        response: {
+                            type: "success",
+                            result: saves ? `Signed answer{{inlayeddata::${inlays[0].inlay.id}}}` : "Signed answer",
+                        },
+                    },
+                ]);
+                expect(calls, label).toHaveLength(1);
+            } finally {
+                await registry.dispose();
+            }
+        }
+    });
+
     it("reads the profile's model and its bound proxy key, logs the upstream call with its credential masked, and answers one result", async () => {
         const { registry, calls } = harness(makeRecords(), () => chat("plain answer"));
         const { events, raw } = await run(registry, body());

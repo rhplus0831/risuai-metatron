@@ -61,10 +61,10 @@ interface GeminiChat {
 
 /**
  * Builds, previews, or sends a Gemini request with media/tool follow-ups. Consumes a leading system entry from
- * `arg.formated` and omits a blank system instruction; an empty prompt throws while reading its first entry. Signature
- * output is saved only when `arg.saveSignatures` is set, while replay of saved signatures uses `db.saveSignatures`.
- * Saved signature inlays contain text/function descriptions rather than the provider signature token. A first
- * signature-only buffered part can throw while adding its marker to the most recent text result.
+ * `arg.formated` when present and omits a blank system instruction. Provider signature tokens are saved only when
+ * `arg.saveSignatures` is set; buffered markers are appended after text processing and do not make an empty reply
+ * succeed. Replay uses `db.saveSignatures` and reads raw JSON inlays for the matching model, skipping malformed
+ * signatures. Signature-only parts are saved without changing another part's text.
  */
 export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const formated = arg.formated;
@@ -74,7 +74,7 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
     let reformatedChat: GeminiChat[] = [];
     let systemPrompt = "";
 
-    if (formated[0].role === "system") {
+    if (formated[0]?.role === "system") {
         systemPrompt = formated[0].content;
         formated.shift();
     }
@@ -111,8 +111,16 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
                 }
 
                 if (modal.type === "signature" && db.saveSignatures) {
-                    const sig: InlaySignature = JSON.parse(Buffer.from(modal.base64, "base64").toString("utf-8"));
-                    if (sig.source === arg.modelInfo.internalID || sig.source === arg.modelInfo.id) {
+                    let sig: InlaySignature;
+                    try {
+                        sig = JSON.parse(modal.base64);
+                    } catch {
+                        continue;
+                    }
+                    if (
+                        typeof sig?.signatures?.[0]?.content === "string" &&
+                        (sig.source === arg.modelInfo.internalID || sig.source === arg.modelInfo.id)
+                    ) {
                         geminiParts.push({
                             thought: true,
                             thoughtSignature: sig.signatures[0].content,
@@ -667,6 +675,7 @@ async function requestGoogle(
     }
 
     let rDatas: { text: string; thought?: boolean }[] = [];
+    const signatureMarkers: string[] = [];
     const processDataItem = async (data: any): Promise<GeminiPart[]> => {
         const parts = data?.candidates?.[0]?.content?.parts as GeminiPart[];
 
@@ -688,12 +697,12 @@ async function requestGoogle(
                         sourceFormat: arg.modelInfo.format,
                         signatures: [
                             {
-                                type: "text",
-                                content: part.text as string,
+                                type: part.functionCall ? "function" : "text",
+                                content: part.thoughtSignature,
                             },
                         ],
                     });
-                    rDatas[rDatas.length - 1].text = `{{inlayeddata::${sigId}}}\n\n` + rDatas[rDatas.length - 1].text;
+                    signatureMarkers.push(`{{inlayeddata::${sigId}}}`);
                 }
 
                 if (part.inlineData) {
@@ -888,7 +897,9 @@ async function requestGoogle(
 
         // Does not include the text response if simplifiedToolUse is enabled
         const result =
-            (db.simplifiedToolUse ? "" : (await processTextResponse(rDatas)) + "\n\n") + callCodes.join("\n\n");
+            (db.simplifiedToolUse ? "" : (await processTextResponse(rDatas)) + "\n\n") +
+            callCodes.join("\n\n") +
+            signatureMarkers.join("");
 
         // If the next request fails, only the responses so far are returned
         if (resRec.type === "fail") {
@@ -919,7 +930,7 @@ async function requestGoogle(
 
     return {
         type: "success",
-        result: result,
+        result: result + signatureMarkers.join(""),
     };
 }
 
@@ -948,7 +959,9 @@ function initStreamState(state?: { [key: string]: string }): { [key: string]: st
  * event is applied once; a malformed line is skipped on its own, and `[DONE]` ends the parse. At most one cumulative
  * `StreamResponseChunk` snapshot is emitted per read that applied an event (the flush emits one if none was): text at
  * key `"0"`, and the tool calls, thoughts, signatures, usage, and model status as metadata keys that survive to the
- * final snapshot. A signature's inlay save is started (not awaited) before its marker is appended to the text.
+ * final snapshot. Provider signature tokens from text, function-call, and signature-only parts are saved in inlays
+ * when enabled. Each save is started (not awaited) before its marker is appended to the text; signature-only parts
+ * leave the raw text/function signature metadata unchanged.
  */
 function getTranStream(args: {
     modelInfo: LLMModel;
@@ -988,7 +1001,7 @@ function getTranStream(args: {
                         }
                         if (part.thoughtSignature) {
                             readed["__sign_text"] = part.thoughtSignature;
-                            signatures.push({ type: "text", content: part.text });
+                            signatures.push({ type: "text", content: part.thoughtSignature });
                         }
                     }
                     if (part.functionCall) {
@@ -997,9 +1010,12 @@ function getTranStream(args: {
                             readed["__sign_function"] = part.thoughtSignature;
                             signatures.push({
                                 type: "function",
-                                content: `${part.functionCall.name}(${JSON.stringify(part.functionCall.args)})`,
+                                content: part.thoughtSignature,
                             });
                         }
+                    }
+                    if (!part.text && !part.functionCall && part.thoughtSignature) {
+                        signatures.push({ type: "text", content: part.thoughtSignature });
                     }
                     if (saveSignature && signatures.length > 0) {
                         const sigId = randomUUID();
@@ -1112,7 +1128,7 @@ function wrapToolStream(
                                 role: "model",
                                 parts: [
                                     {
-                                        text: content,
+                                        text: content.replace(/{{inlayeddata::.*?}}/g, ""),
                                         ...(signText ? { thoughtSignature: signText } : {}),
                                     } as GeminiPart,
                                 ].concat(

@@ -1214,6 +1214,7 @@ export const languageEnglish = {
         vertexRegion: "Vertex region",
         responseStreaming: "Response streaming",
         streamGeminiThoughts: "Stream Gemini thoughts",
+        saveSignatures: "Save Gemini thought signatures",
     },
     sharedApiKeys: {
         description:

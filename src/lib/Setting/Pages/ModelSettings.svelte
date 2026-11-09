@@ -22,8 +22,8 @@
     /**
      * Model preset page: main/sub pickers (`src/lib/Setting/Pages/Model/ProfileSlotSelect.svelte`),
      * aux slots (`src/lib/Setting/Pages/Model/AuxModelSelectors.svelte`), Vertex region, global request
-     * toggles including streaming, and Additional Params. At mount, an available `currentJump()` from
-     * `src/ts/setting/settingJump.svelte.ts` naming `model.additionalParams` starts that accordion open.
+     * toggles including streaming and Gemini signature saving, and Additional Params. At mount, an available
+     * `currentJump()` from `src/ts/setting/settingJump.svelte.ts` naming `model.additionalParams` starts that accordion open.
      */
 
     const models = $derived(
@@ -69,6 +69,15 @@
                 name={language.modelProfiles.streamGeminiThoughts}
             />
         {/if}
+    {/if}
+    {#if models.some((model) => model.flags.includes(LLMFlags.geminiThinking))}
+        <Check
+            bind:check={
+                () => settings.providers.saveSignatures === true,
+                (value) => (settings.providers.saveSignatures = value === true)
+            }
+            name={language.modelProfiles.saveSignatures}
+        />
     {/if}
     {#if models.some((model) => model.id === "reverse_proxy")}
         <Check bind:check={settings.providers.reverseProxyOobaMode} name={language.reverseProxyOobaMode} />

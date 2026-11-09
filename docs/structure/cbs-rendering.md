@@ -65,8 +65,9 @@ and the module headers.
 ### Inlays
 
 `parseInlayAssets` in `src/ts/parser/parser.svelte.ts` expands the inlay tags inside `ParseMarkdown`; its comment has
-the tags, the missing-file rule, and the `<source>` `type` rule. Images use `getFileSrc` ([assets](assets.md)). Audio
-and video have two modes:
+the tags, the missing-file rule, and the `<source>` `type` rule. A signature inlay's tag (a saved Gemini thought
+signature, [LLM requests](llm-requests.md#flows)) is removed, since `getInlayMedia` reports it apart from a missing
+inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). Audio and video have two modes:
 
 - Direct (`src/ts/globalApi.svelte.ts` `getDirectAssetSrc` answers a URL: worker use enabled, the `directAssets`
   capability, and a controlling worker at the call): `/api/asset/<hex(utf-8 key)>`, the URL `getFileSrc` gives, served

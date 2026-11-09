@@ -526,13 +526,21 @@ export async function getInlayAsset(id: string): Promise<(InlayAsset & { data: s
 }
 
 /**
- * An inlay's media type and asset key (metadata only, no bytes; null: missing, or a signature). Images
- * render through `getFileSrc`; audio and video use direct asset URLs with a capable controlling
- * worker, otherwise `getInlayObjectUrl`.
+ * An inlay's media type and asset key, or its signature type without an asset (metadata only, no bytes).
+ * Returns null for a missing inlay or media without an asset. Images render through `getFileSrc`; audio
+ * and video use direct asset URLs with a capable controlling worker, otherwise `getInlayObjectUrl`.
  */
-export async function getInlayMedia(id: string): Promise<{ type: "image" | "video" | "audio"; asset: string } | null> {
+export async function getInlayMedia(
+    id: string,
+): Promise<{ type: "image" | "video" | "audio"; asset: string } | { type: "signature" } | null> {
     const meta = await getMeta(id);
-    if (!meta || meta.data.type === "signature" || !meta.data.asset) {
+    if (!meta) {
+        return null;
+    }
+    if (meta.data.type === "signature") {
+        return { type: "signature" };
+    }
+    if (!meta.data.asset) {
         return null;
     }
     return { type: meta.data.type, asset: meta.data.asset };

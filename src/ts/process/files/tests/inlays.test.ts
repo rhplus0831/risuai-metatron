@@ -229,7 +229,7 @@ describe("reads", () => {
         expect(await I.getInlayAsset("nodims")).not.toHaveProperty("width");
     });
 
-    test("getInlayMedia gives the type and asset key without reading bytes; null for a signature or a miss", async () => {
+    test("getInlayMedia gives the type and asset key without reading bytes, a signature without an asset, and null for a miss", async () => {
         // Bytes this tab has not cached: any read would reach the asset store.
         assets.set("assets/elsewhere.png", new TextEncoder().encode("hello"));
         fake.set("inlays", "img", { name: "i", ext: "png", type: "image", asset: "assets/elsewhere.png" });
@@ -237,7 +237,7 @@ describe("reads", () => {
         const { readAsset } = await import("../../../storage/assetClient");
         expect(await I.getInlayMedia("img")).toEqual({ type: "image", asset: "assets/elsewhere.png" });
         expect(readAsset).not.toHaveBeenCalled();
-        expect(await I.getInlayMedia("sig")).toBeNull();
+        expect(await I.getInlayMedia("sig")).toEqual({ type: "signature" });
         expect(await I.getInlayMedia("missing")).toBeNull();
     });
 

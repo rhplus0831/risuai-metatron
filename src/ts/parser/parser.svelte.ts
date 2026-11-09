@@ -934,8 +934,8 @@ function trimmer(str: string) {
  * Expands `{{inlay::id}}`, `{{inlayed::id}}`, and `{{inlayeddata::id}}` (the last two wrapped in a
  * `risu-inlay-image` block) from `getInlayMedia` (`src/ts/process/files/inlays.ts`: the asset key, no bytes).
  * Images use `getFileSrc` with the render's failure opt-in; `hideAllImages` removes them without reading bytes.
- * Audio and video use `getDirectAssetSrc`, else `getInlayObjectUrl`. A missing inlay, or no URL for visible
- * media, leaves the tag in place. The `<source>` `type` is
+ * Audio and video use `getDirectAssetSrc`, else `getInlayObjectUrl`. Signature inlay markers are removed;
+ * a missing inlay, or no URL for visible media, leaves the tag in place. The `<source>` `type` is
  * `assetMimeType` of the key's extension, matching the asset route's `Content-Type`; `application/octet-stream`
  * gets none, so the browser sniffs the bytes. Object URLs stay pinned for cached renders;
  * a page that loses its controlling worker renders later inlays through the fallback.
@@ -954,15 +954,19 @@ async function parseInlayAssets(data: string, signal?: AbortSignal, rejectFailed
             // worker, otherwise typed object URLs per asset key. Object URLs stay pinned for
             // cached renders and translations.
             const media = await readRenderIO(() => getInlayMedia(id), signal);
-            if (media?.type === "image" && settings.ui.hideAllImages) {
+            if (!media) {
+                continue;
+            }
+            if (media.type === "signature" || (media.type === "image" && settings.ui.hideAllImages)) {
                 data = data.replace(inlay, "");
                 continue;
             }
-            const url = !media
-                ? ""
-                : media.type === "image"
-                  ? await readRenderFileSrc(media.asset, signal, rejectFailedAssetReads)
-                  : (getDirectAssetSrc(media.asset) ?? (await readRenderIO(() => getInlayObjectUrl(id), signal)) ?? "");
+            const url =
+                media.type === "image"
+                    ? await readRenderFileSrc(media.asset, signal, rejectFailedAssetReads)
+                    : (getDirectAssetSrc(media.asset) ??
+                      (await readRenderIO(() => getInlayObjectUrl(id), signal)) ??
+                      "");
             if (!url) {
                 continue;
             }

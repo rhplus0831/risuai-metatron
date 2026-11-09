@@ -1148,6 +1148,7 @@ export const languageKorean = {
         vertexRegion: "Vertex 리전",
         responseStreaming: "응답 스트리밍",
         streamGeminiThoughts: "Gemini 추론 과정 스트리밍",
+        saveSignatures: "Gemini 추론 서명 저장",
     },
     chatGenerating: "이 채팅에서 답변을 생성하고 있습니다. 완료될 때까지 기다려 주세요.",
     rerollRepliesNotRestored:
