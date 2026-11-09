@@ -1,9 +1,10 @@
 # Upstream Intake 2 Plan
 
 Status: drafted 2026-11-10 at `3cc8b2d56`; the owner accepted every decision's default and answered both open
-questions the same day (Decisions, Open Questions); not audited, not started. This is the second upstream
-intake, run by the [ledger](../research/upstream-ledger.md)'s procedure over `f50b5942..4d87a70ff` (upstream
-release 2026.10.295):
+questions the same day (Decisions, Open Questions); audited the same day
+([report](../plan-runner-audit/upstream-intake-2-2026-11-10.md)), not started. This is the second upstream intake,
+run by the [ledger](../research/upstream-ledger.md)'s procedure over `f50b5942..4d87a70ff` (upstream release
+2026.10.295):
 53 non-merge commits and 13 merges. Nine read-only Luna workers compared the commits with Metatron by group; the
 session then re-read in source every claim a slice below rests on: the two bridge callback returns and the
 `Math.random` ref ids in `factory.ts`, the dropped `removedNodes` and the substring URL blocklist in `v3.svelte.ts`,
@@ -52,10 +53,11 @@ only in upstream's Tauri `main.rs`, which Metatron does not have. No merge needs
 
 ## Order
 
-- Plugins, serial (slices 1–6 share `factory.ts`, `v3.svelte.ts`, the language files, or `plugins.md`):
-  1 → 2 → 3 → 4 → 5 → 6.
+- Plugins, serial (slices 1–6 share `factory.ts`, `v3.svelte.ts`, the language files, or `plugins.md`): 1 → 2 → 3 → 4 →
+  5 → 6. Slice 12 may run alongside 1–3 and must land before 4, because it adds keys to the same `src/lang/en.ts` and
+  `src/lang/ko.ts`.
 - Server: 7 is independent.
-- Client, independent of each other and of the chains above: 8, 9, 10, 11, 12, 13.
+- Client, independent of each other and of the chains above: 8, 9, 10, 11, 13; and 12, apart from landing before 4.
 - Close-out: 14 after every other slice landed or was dropped by a decision.
 
 Priority when slots are short: 7, 8, 9, 10, 12 first (authorization and markup boundaries), then 4, 3, 1, 2, then
@@ -98,8 +100,10 @@ Depends: 1 (`factory.ts`). Upstream `0b4eb929b`, `89efce436`, `bb49b30ca`, `1309
 - Keep the message-source check (~993), the teardown that clears the registry (~1203), and the callback cache.
 - `plugin-sandbox.md`: the release contract, in `Invariants`.
 - Test, with a fake `FinalizationRegistry` (no real garbage collection, V3):
-  - `guestBridge.test.ts`: finalizing three proxies in one turn posts one message carrying three ids; a method
-    taken from a proxy keeps its owner registered.
+  - `guestBridge.test.ts`: finalizing three proxies in one turn posts one message carrying three ids; the fake registry
+    receives each proxy with its ref id, and each simulated finalization releases its id once. That a method taken from
+    a proxy keeps its owner alive is a source-review point (the closure references the owner proxy, as upstream's does),
+    not a test: a fake finalizer cannot prove reachability.
   - `sandboxActivity.test.ts`: a batched release empties those registry entries; a released ref passed as an
     argument rejects and the host API is not called; two serialized instances get distinct increasing ids.
 
@@ -114,12 +118,14 @@ Depends: 2 (the serial chain). Upstream `afb5918bb`.
   strip trailing dots, refuse when a hostname equals a blocked name or ends with `.` plus it, and throw
   `Invalid URL` for a non-string or unparsable value. Call it first in both functions.
 - Test, in `src/ts/plugins/apiV3/nativeFetch.test.ts`, for both functions: a blocked host, a subdomain, a
-  trailing-dot host and a mixed-case host are refused; a blocked name in a path or query passes; a relative URL
-  resolves against the page; a non-string throws.
+  trailing-dot host and a mixed-case host are refused; a blocked name in a path or query passes; a
+  protocol-relative URL naming a blocked host (`//risuai.xyz/x`) is refused; a relative path is checked against the
+  page URL and passes when its resolved hostname is allowed; a non-string throws. Each transport still receives the
+  caller's original string, so `risuFetch`'s handling of relative URLs is unchanged.
 
 ## Slice 4. Database writes need the `dbWrite` permission (_hard_, `plugin-sandbox.md`)
 
-Depends: 3. Upstream `43e5576df`. Decision D1.
+Depends: 3, and 12 (`src/lang/en.ts`, `src/lang/ko.ts`). Upstream `43e5576df`. Decision D1.
 
 - Today a plugin holding no grant at all can call `setDatabase`, `setDatabaseLite`, `setChar`, `setCharacter`,
   `setCharacterToIndex` and `setChatToIndex` (`v3.svelte.ts` ~2341, ~2475, ~2480, ~2723, ~2854, ~2923): `db` gates
@@ -127,8 +133,11 @@ Depends: 3. Upstream `43e5576df`. Decision D1.
 - Add `dbWrite` to `pluginPermissions` (~795) and its consent text to the prompt chain (~924–940; a record keyed
   by permission, as upstream did, removes the `Error` fallback). Language key `dbWriteConsent` in
   `src/lang/en.ts` and `src/lang/ko.ts`.
-- One guard, asked `periodically` like `db`, placed after `refuseTransformWrite` and before validation, chat
-  loading and the plugin-install confirmation. A refusal warns and changes nothing (the guide's write rule).
+- One guard, asked `periodically` like `db`, placed after `refuseTransformWrite` and before validation, chat loading and
+  the plugin-install confirmation. Capture the call's plugin context and settings write scope, the selected target ids
+  for selection-based setters, and the ids resolved from supplied indexes for indexed setters before awaiting the guard;
+  after a grant, validate and write only those captured targets. A refusal warns and changes nothing (the guide's write
+  rule).
 - Grants stay in Metatron's server-owned permission resource, keyed by script hash and permission. No record is
   written directly.
 - A `db` grant does not count as `dbWrite`: a plugin that already reads is asked again before its first write
@@ -137,18 +146,21 @@ Depends: 3. Upstream `43e5576df`. Decision D1.
   drop the part of the Known Hazards capability entry this closes, if any.
 - Test, in `src/ts/plugins/apiV3/permissions.test.ts`: each of the six calls prompts once, writes after a grant,
   and writes nothing after a refusal; a transform continuation is refused before any prompt; a grant for one
-  script hash does not cover a changed script; a plugin holding only `db` is still asked.
+  script hash does not cover a changed script; a plugin holding only `db` is still asked. Update
+  `src/ts/plugins/apiV3/v3SetDatabase.test.ts` and `v3SetPersonas.test.ts`: their setter calls arrange a `dbWrite`
+  grant with a current `lastGrantTime` (the seeded fixture holds only `db`) and await the setter.
 
 ## Slice 5. The install confirmation names the plugin and says when it replaces one (_small_, `plugin-sandbox.md`)
 
-Depends: 4 (`src/lang/en.ts`). Upstream `83eb7880b`.
+Depends: 4 (`src/lang/en.ts`, `src/lang/ko.ts`). Upstream `83eb7880b`.
 
 - `src/ts/plugins/plugins.svelte.ts` `handlePluginInstallViaPlugin` (~736–756) already replaces `{plugin}`, but
-  `confirmInstallPluginViaPlugin` in `src/lang/en.ts` (~3565) and `src/lang/zh-Hant.ts` (~1423) has no such
+  `confirmInstallPluginViaPlugin` in `src/lang/en.ts` (~3565), `src/lang/ko.ts` (~3455) and `src/lang/zh-Hant.ts`
+  (~1423) has no such
   placeholder, so the dialog never names the plugin. A same-name plugin with a different script gets the same
   install wording.
-- Put `{plugin}` into the install text, add `confirmReplacePluginViaPlugin`, and pick it when `settings.plugins`
-  already holds the name. `risuai.d.ts`: the two documentation blocks upstream reworded.
+- Put `{plugin}` into the install text in all three files, add `confirmReplacePluginViaPlugin` to all three, and
+  pick it when `settings.plugins` already holds the name. `risuai.d.ts`: the two documentation blocks upstream reworded.
 - Test (no test reads the dialog text today; `src/ts/plugins/apiV3/v3SetDatabase.test.ts` covers the setter): a
   new plugin's dialog contains its name; a changed script under an installed name gets the replace text; an
   identical plugin asks nothing.
@@ -191,10 +203,11 @@ Upstream `8a50627b1` (the `TriggerV2List.svelte` hunk).
   `style` attribute unchecked.
 - Escape `&`, `<`, `>`, `"` and `'` in every interpolated field and in the fallback `type`; numbers and booleans
   pass through; `indent` becomes `Number(indent) || 0`.
-- Move `formatEffectDisplay`'s string building into a small module the component imports, so it can be tested
-  without mounting the editor.
-- Test, a new file beside that module: a value with markup comes back as text; a quote cannot close an
-  attribute; a non-numeric `indent` yields `0rem`; a plain effect's output is unchanged.
+- Move `formatEffectDisplay`'s string building into `src/lib/SideBars/Scripts/triggerEffectDisplay.ts`, which the
+  component imports, so it can be tested without mounting the editor; keep the component's existing support decision
+  (~601, ~2281) by passing it in or keeping it in the component.
+- Test, `src/lib/SideBars/Scripts/triggerEffectDisplay.test.ts`: a value with markup comes back as text; a quote
+  cannot close an attribute; a non-numeric `indent` yields `0rem`; a plain effect's output is unchanged.
 
 ## Slice 9. Rendered Markdown is parsed in its node's own document, and external links carry `rel` (_small_, `cbs-rendering.md`)
 
@@ -207,8 +220,10 @@ Upstream `8a50627b1` (the parser hunk) and `2229a7f4d` (the parser hunk).
 - The `href` case of the `uponSanitizeAttribute` hook (~165–170) sets `target="_blank"` on external links and
   nothing else: add `rel="noopener noreferrer"` to those links (upstream adds a `rel` case that always writes
   that value).
-- Test, in `src/ts/parser/tests/trimMarkdownStyle.test.ts` or a sibling: a node of a `DOMParser` document gets a
-  span owned by that document; an external link renders with the `rel` value and a card-supplied `rel` is
+- Test, in `src/ts/parser/tests/trimMarkdownStyle.test.ts` or a sibling: with the parsed document arranged first and
+  then the live document's `createElement` made to throw, a node of a `DOMParser` document holding Markdown such as
+  `**bold**` still gets its rendered span (ownership after insertion proves nothing: insertion adopts the node); an
+  external link renders with the `rel` value and a card-supplied `rel` is
   replaced.
 
 ## Slice 10. Translated HTML is rebuilt in the parsed document (_small_, `translation.md`)
@@ -227,10 +242,13 @@ Upstream `8a50627b1` (the translator hunk).
 Upstream `d5f3bc325`. Decision D5.
 
 - A plugin's container frame is fixed to the body at `z-index: 1000` (`v3.svelte.ts` ~2948); the alert overlays
-  in `src/lib/Others/AlertComp.svelte` are `z-50` (~309, ~953, ~1027, ~1048, ~1056). A confirmation raised while
+  in `src/lib/Others/AlertComp.svelte` are `z-50` (~309, ~953, ~1027, ~1048, ~1056), with the
+  delegated branches at ~1036, ~1133 and ~1137 (their child overlays use layers 40 or 50). A confirmation raised while
   the frame is open, a permission prompt included, can open underneath it.
 - Upstream raised its one overlay to `z-1100`. Here the overlays are `absolute` inside the app root, so first
-  confirm in a browser which stacking context they sit in; raise the overlays (or their root) above the frame.
+  confirm in a browser which stacking context they sit in; raise the overlays above the frame, or wrap
+  every alert branch in a real alert-only stacking wrapper (the existing `class="contents"` wrappers do not make
+  one). `v3.svelte.ts` is read only here.
 - Test: a browser check, since happy-dom has no layout. No spec opens a container today; in
   `e2e/pluginSandbox.spec.ts`, a plugin calls `showContainer("fullscreen")` and then a call that asks for a
   permission: `document.elementFromPoint` at the dialog's center is inside `[data-alert-dialog]`.
@@ -249,12 +267,17 @@ Upstream `a0598d546`. Decision D2.
   `normalizeModule` and the stores keep the field: MCP modules stay supported, they are just not importable
   from a file.
 - Say so (owner, 2026-11-10): when a module the user picked (a file, JSON, or a link) carried an `mcp` field, show
-  one toast (`alertToast`, `src/ts/alert.ts`) that its tool server was not imported; a new language key in
+  one toast (`alertToast`, `src/ts/alert.ts`) that its tool server was not imported. Toasts share one status slot
+  with the import's own progress (`src/ts/alertQueue.ts`), so carry a transient was-present flag from the strip and
+  install the toast after a successful import's final status handling (`addImportedModule`, `modules.ts`
+  ~520–551); keep any success dialog, after whose dismissal the toast shows. Declined or failed imports keep their
+  existing error or cancellation behavior. A new language key in
   `src/lang/en.ts` and `src/lang/ko.ts`. No toast when the field was absent. `readModule` itself strips without
   a message, since it also reads modules embedded in cards.
 - `characters-modules.md`: the import rule.
 - Test, in `src/ts/process/modulesImport.test.ts`: each of those paths yields a module without `mcp`; the three
-  user-facing paths show the toast once when the field was present and nothing otherwise; `importMCPModule`
+  user-facing paths leave the toast in the status slot when the field was present (and, after the success dialog is
+  dismissed where there is one, as the visible alert) and add nothing otherwise; `importMCPModule`
   still stores its URL.
 
 ## Slice 13. `fetchNative` keeps the caller's abort after the headers arrive (_small_, `network-jobs.md`)
@@ -266,9 +289,11 @@ Upstream `34f04fd76` (the behavior; its code is Tauri's).
   The cleanup removes the abort listener, so with `requestTimeoutMs` set an abort during the body no longer
   reaches the request and the stream keeps running. Without a timeout the caller's signal is passed through
   and works.
-- Keep the abort forwarding alive until the body ends: clear only the timer when the headers arrive (the
-  timeout stays a limit on the wait for headers, as now), and drop the listener when the body finishes, errors
-  or is cancelled.
+- Keep the abort forwarding alive until the body ends: clear only the client timer when the headers arrive
+  (the client timeout stays a limit on the wait for headers, as now; the `/proxy2` server timer set from
+  `risu-timeout-ms` keeps covering the body, unchanged), and drop the listener when the body finishes, errors or
+  is cancelled, on all three return branches (userscript ~1251, `/proxy2` ~1287, direct ~1292), a rejected fetch
+  and a response without a body included.
 - `globalFetch` (~772) uses the same helper but reads the whole body before its cleanup; leave it.
 - Test, in `src/ts/globalApiNativeFetch.test.ts`: with a timeout set, aborting after the headers errors the body
   read and aborts the underlying request; the timer no longer fires after the headers; no listener is left on
@@ -365,8 +390,10 @@ The owner accepted every default on 2026-11-10; the slices are written for them.
 - D1. Scope of `dbWrite`. Options: (a) the six calls upstream gates; (b) those plus Metatron's other record
   writers that pass `refuseTransformWrite` (`setArg`, `saveAsset`, the theme and color-scheme setters,
   `checkCharOrder`). Default (a): the permission's name and consent text are upstream's contract, and plugins
-  written for upstream expect a prompt on exactly those calls. Every installed plugin that writes is asked once
-  after this lands, and again after three days, like `db`.
+  written for upstream expect a prompt on exactly those calls. Every installed plugin that writes is asked at its
+  first gated write after this lands; like `db`, the answer stays cached until unload or an earlier permission
+  invalidation, and a grant older than three days is asked again on the next uncached check. Reset and revocation
+  stay as they are.
 - D2. A module's `mcp` field on import. Options: (a) drop it on file and link imports, as upstream does; (b) keep
   it behind a confirmation that shows the URL. Default (a), with a toast when a field was dropped; a user adds a
   tool server through the MCP import.
