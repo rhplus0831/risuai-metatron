@@ -5,8 +5,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 // of the server's `/api/read` and `/api/write` routes, reached through `authFetch` (mocked: the
 // authentication is `serverAuth.test.ts`'s). The wire contract is the old one: the key travels
 // hex-encoded in the `file-path` header, a write is an octet-stream `POST`, a non-2xx answer throws
-// the old error strings, a 2xx answer carrying `error` throws it, and a missing or empty file reads
-// as `null`.
+// a status-bearing Error for reads or the old error string for writes, a 2xx answer carrying
+// `error` throws it, and a missing or empty file reads as `null`.
 
 const { calls, answer } = vi.hoisted(() => ({
     calls: [] as { path: string; init: RequestInit }[],
@@ -53,9 +53,16 @@ afterEach(() => {
 
 // Run the shared transport contract through both public operations. All waits below are virtual.
 const operations = [
-    { run: (signal?: AbortSignal) => writeAsset(KEY, BYTES, { signal }), error: "setItem Error" },
-    { run: (signal?: AbortSignal) => readAsset(KEY, { signal }), error: "getItem Error" },
+    {
+        run: (signal?: AbortSignal) => writeAsset(KEY, BYTES, { signal }),
+        expectError: (error: unknown, _status: number) => expect(error).toBe("setItem Error"),
+    },
+    { run: (signal?: AbortSignal) => readAsset(KEY, { signal }), expectError: expectReadError },
 ];
+function expectReadError(error: unknown, status: number) {
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ name: "AssetReadError", message: "getItem Error", status });
+}
 const success = () => new Response("{}", { status: 200 });
 
 describe("asset request retries", () => {
@@ -85,8 +92,8 @@ describe("asset request retries", () => {
         }
     });
 
-    it("backs off 503 at 1, 2, 4, 8, 16, 30, 30 seconds and stops at eight attempts with the old error", async () => {
-        for (const { run, error } of operations) {
+    it("backs off 503 at 1, 2, 4, 8, 16, 30, 30 seconds and stops at eight attempts with the operation's error", async () => {
+        for (const { run, expectError } of operations) {
             calls.length = 0;
             answer.current = () => new Response(null, { status: 503 });
             const failure = run().then(
@@ -99,7 +106,7 @@ describe("asset request retries", () => {
                 await vi.advanceTimersByTimeAsync(1);
                 expect(calls).toHaveLength(index + 2);
             }
-            expect(await failure).toBe(error);
+            expectError(await failure, 503);
             await vi.advanceTimersByTimeAsync(60_000);
             expect(calls).toHaveLength(8);
         }
@@ -128,13 +135,13 @@ describe("asset request retries", () => {
     });
 
     it("does not retry 500, 403, or 404", async () => {
-        for (const { run, error } of operations) {
+        for (const { run, expectError } of operations) {
             for (const status of [500, 403, 404]) {
                 calls.length = 0;
                 answer.current = () => new Response(null, { status });
-                const rejected = expect(run()).rejects.toBe(error);
+                const rejected = run().catch((error: unknown) => error);
                 await vi.runAllTimersAsync();
-                await rejected;
+                expectError(await rejected, status);
                 expect(calls).toHaveLength(1);
             }
         }
@@ -227,11 +234,11 @@ describe("readAsset", () => {
         await expect(readAsset("assets/missing.png")).resolves.toBeNull();
     });
 
-    it('throws "getItem Error" for a non-2xx answer', async () => {
+    it('throws an AssetReadError with "getItem Error" and the HTTP status for a non-2xx answer', async () => {
         answer.current = () => new Response("nope", { status: 404 });
-        await expect(readAsset(KEY)).rejects.toBe("getItem Error");
+        expectReadError(await readAsset(KEY).catch((error: unknown) => error), 404);
         answer.current = () => new Response(BYTES, { status: 500 });
-        await expect(readAsset(KEY)).rejects.toBe("getItem Error");
+        expectReadError(await readAsset(KEY).catch((error: unknown) => error), 500);
     });
 });
 

@@ -84,6 +84,41 @@ const parse = (text: string, rejectFailedAssetReads = false) =>
     ParseMarkdown(text, "c", "normal", -1, {}, null, undefined, { rejectFailedAssetReads });
 
 describe("asset read failures in chat renders", () => {
+    it("alerts once for an HTTP 401 asset refusal without retrying the read", async () => {
+        const failure = Object.assign(new Error("Asset access refused"), { status: 401 });
+        vi.mocked(readAsset).mockRejectedValue(failure);
+        const target = document.createElement("div");
+        document.body.append(target);
+        const text = "Look {{img::picture}}";
+        const instance = mount(ChatBody, {
+            target,
+            props: {
+                msgDisplay: text,
+                character: "c",
+                role: "char",
+                translated: false,
+                translating: false,
+                retranslate: false,
+            },
+        });
+        mounted.push(instance);
+        flushSync();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(alertError).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+                message: "Error while parsing chat message: Asset access refused",
+                stack: failure.stack,
+            }),
+        );
+        expect(isTransient(failure)).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+        await instance.whenRendered();
+        expect(target.textContent).toBe(text);
+        await vi.runAllTimersAsync();
+        expect(readAsset).toHaveBeenCalledExactlyOnceWith(assets.picture);
+        expect(alertError).toHaveBeenCalledTimes(1);
+    });
+
     it("retries a failed asset read after 250 ms and 1 s, then alerts once and renders the input", async () => {
         const failure = new TypeError("Asset storage unavailable");
         vi.mocked(readAsset).mockRejectedValue(failure);

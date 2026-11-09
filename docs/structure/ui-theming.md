@@ -66,7 +66,7 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 - `src/lib/ChatScreens/Chat.svelte`: one message row, its theme branches, controls, and display/streaming props.
 - `src/lib/ChatScreens/ChatBody.svelte`: sanitized body rendering and parse lifecycle; its component contract owns
-  abort, retry, and pending-body behavior.
+  abort, retry, and pending-body behavior. Permanent HTTP asset refusals skip its retries.
 - `src/lib/ChatScreens/TransitionImage.svelte`: an image that drops an older `src` resolving late.
 
 ### Message editors

@@ -304,9 +304,21 @@ export async function writeAsset(key: string, value: Uint8Array, options: AssetR
     }
 }
 
+/** A refused asset read, retaining its HTTP status for the caller's retry decision. */
+class AssetReadError extends Error {
+    readonly status: number;
+
+    constructor(status: number) {
+        super("getItem Error");
+        this.name = "AssetReadError";
+        this.status = status;
+    }
+}
+
 /**
  * Reads the bytes under `key`, retrying as described above: `null` when there are none (a missing or
- * empty file). Throws `"getItem Error"` for a non-2xx answer.
+ * empty file). Throws an `AssetReadError` with the response's numeric `status` and message
+ * `"getItem Error"` for a non-2xx answer.
  */
 export async function readAsset(key: string, options: AssetRequestOptions = {}): Promise<Buffer | null> {
     const { signal } = options;
@@ -321,7 +333,7 @@ export async function readAsset(key: string, options: AssetRequestOptions = {}):
         signal,
     );
     if (da.status < 200 || da.status >= 300) {
-        throw "getItem Error";
+        throw new AssetReadError(da.status);
     }
 
     let data: Buffer;

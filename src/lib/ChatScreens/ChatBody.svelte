@@ -66,7 +66,7 @@
      * writes nothing and settles `pendingAutoTranslate`, so the next run probes again.
      *
      * ParseMarkdown opts into rejecting failed asset reads. Abort resolves quietly: no alert, retry or
-     * `lastParsed` write. Errors marked transient in
+     * `lastParsed` write. Permanent HTTP asset refusals alert immediately without retrying. Errors marked transient in
      * `src/ts/parser/renderErrors.ts` retry after 250 ms, then 1,000 ms, while the run is live. Other errors, or a
      * third failure, alert once with the original stack and show the input text.
      * Raw streaming (`renderRawStreaming`, untranslated) shows the text as it is and needs no parse.

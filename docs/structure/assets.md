@@ -23,10 +23,10 @@
 fallback ([Flows](#flows)). The mode, lifetime, and failure rules are on each export and on `loadFileSrc`.
 
 - `getFileSrc` (a fallback source stays pinned for the page; a failed read resolves `""` unless the caller passes
-  `rejectFailedReads`, which only a chat row's render does, for its local retries), `holdFileSrc` (`{ src, release }`
-  for previews), `getThumbSrc(loc, 256 | 512)`, and `getDirectAssetSrc` (inlay audio and video,
-  [CBS rendering](cbs-rendering.md)); the fallback's `fileSources`, `loadFileSrc`, `SW_REQUEST_TIMEOUT_MS`, and
-  `FILE_SOURCE_RELEASE_GRACE_MS`.
+  `rejectFailedReads`, which only a chat row's render does; only network failures, 408, 429 and 5xx retry),
+  `holdFileSrc` (`{ src, release }` for previews), `getThumbSrc(loc, 256 | 512)`, and `getDirectAssetSrc` (inlay audio
+  and video, [CBS rendering](cbs-rendering.md)); the fallback's `fileSources`, `loadFileSrc`, `SW_REQUEST_TIMEOUT_MS`,
+  and `FILE_SOURCE_RELEASE_GRACE_MS`.
 - `fetchFileSrc` (rich copy's images and icons) and `withFileSrcFetch` (screenshot capture) sign `fetch()` of displayed
   asset URLs, which the worker does not sign. `SCREENSHOT_CAPTURE_OPTIONS` (`src/lib/ChatScreens/screenshotCapture.ts`)
   keeps a captured thumbnail from standing in for the full image.
@@ -39,7 +39,8 @@ has the routes, the record framing ([batch codec](#batch-codec)), and the retry 
 errors.
 
 - One file: `readAsset`, `writeAsset`, behind globalApi's `saveAsset` (key from `assetKey`; a canonical save asks
-  `missingAssets` first; present means a one-hour lease), `loadAsset`, and `readImage`.
+  `missingAssets` first; present means a one-hour lease), `loadAsset`, and `readImage`. A non-2xx `readAsset` response
+  throws an `AssetReadError` with numeric `status` and message `"getItem Error"`.
 - Batches: `writeAssets` (the skip rule for `AssetWriteItem.sha256`, asked per batch), `readAssets`, and
   `missingAssets`, behind globalApi's `saveAssetBatch` and `loadAssets`; `ASSET_BATCH_CLIENT_RECORDS`,
   `ASSET_BATCH_CLIENT_BYTES`, `MISSING_CHECK_DEADLINE_MS`, and `assetContentHash`.

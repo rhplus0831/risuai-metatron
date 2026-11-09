@@ -10,16 +10,9 @@ The inbox was emptied on 2026-11-09 by the Found Issues Clearance plan (retired;
 
 ## Contents
 
-- [Client and plugins](#client-and-plugins) (2)
+- [Client and plugins](#client-and-plugins) (1)
 
 ## Client and plugins
-
-### readAsset throws a bare string for every non-2xx answer
-
-`src/ts/storage/assetClient.ts` `readAsset` (~324) throws `"getItem Error"` for any non-2xx answer (401, 403, 400 and 500 alike) with no status. Since Found Issues Clearance F1, ChatBody's rejecting read (`getFileSrc(loc, { rejectFailedReads: true })`) treats every failure as transient: a persistent 401 or 400 is retried twice and then alerts, after `requestWithRetry` has already spent up to eight attempts on network, 429 and 503 failures. Found 2026-11-09 by F1.
-
-**Why it matters:** permanent failures cost retries and an alert instead of failing fast, and the status is lost at the asset-client boundary, so `globalApi` cannot classify them.
-**Suggested handling:** throw an Error carrying the HTTP status from `readAsset` and let `loadFileSrc` record only retryable statuses as failures.
 
 ### searchTagList has no production caller
 

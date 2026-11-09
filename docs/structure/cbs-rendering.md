@@ -137,8 +137,8 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
 2. `src/lib/ChatScreens/ChatBody.svelte` `markParsing` captures the transform context and calls `ParseMarkdown` in
    `notrim` mode for the body (`pretranslate` for translation inputs); its steps are the `ParseMarkdown` comment. Only
    the `editdisplay` step leaves the browser: [Display transform](#display-transform). The run's abort signal goes on to
-   `ParseMarkdown`, `serverProcessScript`, `translateHTML`, and `postTranslationParse`; the reads a failed run retries
-   are `src/ts/parser/renderErrors.ts`, the retry policy the `ChatBody` contract
+   `ParseMarkdown`, `serverProcessScript`, `translateHTML`, and `postTranslationParse`. `src/ts/parser/renderErrors.ts`
+   marks retryable reads (network, HTTP 408, 429, 5xx); the `ChatBody` contract defines retries
    ([ui-theming](ui-theming.md#message-row)).
 3. `ChatBody`'s `shownBody` sanitizes the result (`pruneEmptyBilingualPairs(trimMarkdown(...))`). Under the chat screen
    (`DefaultChatScreen` provides a `ChatStyleRegistry`), a body that holds a `<style>` or `<risu-style>` goes through

@@ -439,6 +439,32 @@ describe("ChatBody render lifetime", () => {
         );
     });
 
+    it("alerts once for an HTTP 401 parse failure without scheduling a retry", async () => {
+        const failure = Object.assign(new Error("Asset access refused"), { status: 401 });
+        await vi.mocked(ParseMarkdown).withImplementation(
+            async () => {
+                throw markTransient(failure);
+            },
+            async () => {
+                const { instance, target } = mountBody(bodyProps());
+                await drain();
+                expect(ParseMarkdown).toHaveBeenCalledTimes(1);
+                expect(alertError).toHaveBeenCalledExactlyOnceWith(
+                    expect.objectContaining({
+                        message: "Error while parsing chat message: Asset access refused",
+                        stack: failure.stack,
+                    }),
+                );
+                expect(vi.getTimerCount()).toBe(0);
+                await instance.whenRendered();
+                expect(target.textContent).toBe("Old text");
+                await vi.runAllTimersAsync();
+                expect(ParseMarkdown).toHaveBeenCalledTimes(1);
+                expect(alertError).toHaveBeenCalledTimes(1);
+            },
+        );
+    });
+
     it("cancels a transient retry when its text changes during the first delay", async () => {
         await vi.mocked(ParseMarkdown).withImplementation(
             async (text) => {

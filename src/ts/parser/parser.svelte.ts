@@ -1047,7 +1047,8 @@ function parseThoughtsAndTools(data: string) {
  * The signal is checked before each awaited stage (both asset passes, the script stage, inlays and Markdown)
  * and after the last; Markdown highlighting also checks before each fence and after each language import.
  * `serverProcessScript` also checks it on entry. Asset failures resolve `""` unless `rejectFailedAssetReads`
- * opts into transient rejections for ChatBody's local retries; missing/empty files still resolve `""`.
+ * opts into rejections for ChatBody: network failures, 408, 429 and 5xx are transient, while permanent
+ * HTTP refusals are not retried; missing/empty files still resolve `""`.
  * Rejected inlay record and media reads are also marked transient.
  */
 export async function ParseMarkdown(

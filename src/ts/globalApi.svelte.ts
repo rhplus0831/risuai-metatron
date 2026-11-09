@@ -17,6 +17,7 @@ import {
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertConfirm, alertError, alertMd, alertNormal, waitAlert } from "./alert";
 import { hasher } from "./parser/parser.svelte";
+import { markTransient } from "./parser/renderErrors";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
 import { chatEntry, chatList, currentChatRef, ensureChat, selectChat, type ChatRef } from "./storage/chatStore.svelte";
@@ -165,6 +166,7 @@ export function invalidateWorkerFileSources(): void {
  * fallback sources' pin and hold lifetimes intact.
  * Fallback failures resolve `""` unless `rejectFailedReads` is set. Missing/empty files and empty keys
  * always resolve `""`; direct mode never rejects. Default reads keep the shared fallback promise.
+ * Rejecting reads retain HTTP status; only network failures, 408, 429 and 5xx are marked for render retries.
  *
  * @param {string} loc - The location of the file.
  * @returns {Promise<string>} - A promise that resolves to the source URL of the file.
@@ -381,7 +383,8 @@ class MissingFileError extends Error {
  * Never a data URL: it would inflate the text `serverProcessScript` sends to the server in
  * `src/ts/parser/transformClient.ts`. Missing or empty bytes are never registered or shown: they
  * resolve `""`, as does an empty key or failed load. Only terminal non-missing failures are recorded
- * on the shared source for opt-in readers; a successful blob fallback records no failure.
+ * on the shared source for opt-in readers, marking network failures, 408, 429 and 5xx as retryable;
+ * permanent HTTP refusals reject without render retries. A successful blob fallback records no failure.
  */
 async function loadFileSrc(loc: string, source: FileSource): Promise<string> {
     if (!loc) return "";
@@ -432,7 +435,7 @@ async function loadFileSrc(loc: string, source: FileSource): Promise<string> {
         }
         return URL.createObjectURL(new Blob([(await read()) as Uint8Array<ArrayBuffer>], { type: "image/png" }));
     } catch (error) {
-        if (!(error instanceof MissingFileError)) source.failure = { error };
+        if (!(error instanceof MissingFileError)) source.failure = { error: markTransient(error) };
         console.error(error);
         return "";
     }
