@@ -10,18 +10,8 @@ The inbox was emptied on 2026-11-09 by the Found Issues Clearance plan (retired;
 
 ## Contents
 
-- [LLM requests and providers](#llm-requests-and-providers) (1)
 - [Display transform](#display-transform) (2)
 - [Client and plugins](#client-and-plugins) (2)
-
-## LLM requests and providers
-
-### Gemini streaming JSON extraction sees the signature markers
-
-`server/src/llm/google.ts` `wrapToolStream` (~1087) runs `extractJSON(value["0"], …)` on the streaming snapshot text, and `getTranStream` appends the `{{inlayeddata::<id>}}` signature markers to that same text. With `saveSignatures` on (a `model`-mode request since Found Issues Clearance C4), `extractJson` and a JSON schema, a signed streamed reply's extraction sees the JSON followed by the marker and returns both instead of the extracted value. C4 fixed the buffered path and the tool follow-up only. Found 2026-11-09 by the C4 challenger.
-
-**Why it matters:** structured output from a Gemini thinking model with signature saving on comes back unextracted when streaming.
-**Suggested handling:** split the markers off before `extractJSON` in `wrapToolStream` and append them after; test in `server/src/tests/llmStreamParsing.test.ts`.
 
 ## Display transform
 

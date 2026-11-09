@@ -1084,7 +1084,12 @@ function wrapToolStream(
                 value = initStreamState(value);
 
                 if (arg.extractJson && (db.jsonSchemaEnabled || arg.schema)) {
-                    value["0"] = await extractJSON(value["0"], arg.extractJson, arg.ctx);
+                    const markers: string[] = [];
+                    const text = value["0"].replace(/\{\{inlayeddata::[^}]+\}\}/g, (marker) => {
+                        markers.push(marker);
+                        return "";
+                    });
+                    value["0"] = (await extractJSON(text, arg.extractJson, arg.ctx)) + markers.join("");
                 }
 
                 let content = value["0"];

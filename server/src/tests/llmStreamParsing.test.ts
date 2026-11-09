@@ -483,6 +483,35 @@ describe("Gemini final state", () => {
         }
     });
 
+    it("extracts streamed JSON before appending signature markers in their original order", async () => {
+        const run = await start(
+            "gemini-2.5-flash",
+            () =>
+                response([
+                    frame({
+                        candidates: [
+                            { content: { parts: [{ text: '{"answer":"', thoughtSignature: "first-token+/=" }] } },
+                        ],
+                    }),
+                    frame({
+                        candidates: [{ content: { parts: [{ text: "", thoughtSignature: "empty-token+/=" }] } }],
+                    }),
+                    frame(gemini('visible"}')),
+                ]),
+            {
+                saveSignatures: true,
+                arg: { schema: '{"type":"object","properties":{"answer":{"type":"string"}}}', extractJson: "answer" },
+            },
+        );
+        const chunks = await drain(run.stream);
+        expect(run.signatures.map(([, signature]) => signature.signatures)).toEqual([
+            [{ type: "text", content: "first-token+/=" }],
+            [{ type: "text", content: "empty-token+/=" }],
+        ]);
+        const markers = run.signatures.map(([id]) => `{{inlayeddata::${id}}}`);
+        expect(chunks.at(-1)).toEqual({ "0": "visible" + markers.join("") });
+    });
+
     it("keeps raw text and function tokens in the streaming tool follow-up without inlay markers in its text", async () => {
         const run = await start(
             "gemini-2.5-flash",
