@@ -15,7 +15,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (6)
 - [Chat screen and input](#chat-screen-and-input) (6)
-- [Client and plugins](#client-and-plugins) (25)
+- [Client and plugins](#client-and-plugins) (23)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
 - [Test timing](#test-timing) (1)
 
@@ -423,20 +423,6 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 
 **Why it matters:** the plan's retry for a failed asset read (its D2) rarely fires; a transient storage failure leaves a broken image until the row re-renders for another reason.
 **Suggested handling:** an opt-in failure channel in `globalApi.svelte.ts` for the render path, rather than making the shared loader reject for every caller.
-
-### Scheme writers skip the text theme
-
-`src/ts/gui/colorscheme.ts` `changeColorScheme` (~217) and `updateCustomColorScheme` (~226) call only `updateColorScheme()`, but `updateTextThemeAndCSS` (~310) picks the `standard`/`highcontrast` font colors by `settings.ui.colorScheme.type`; the plugin API's `setColorScheme` (`src/ts/plugins/apiV3/v3.svelte.ts` ~2297) has the same omission (`changeColorSchemeType` calls both). A probe saw a light scheme keep the dark text color (`--FontColorStandard` `#fafafa`). Found by the D2 challenger of the Found Issues Sweep (2026-11-05). Owner: ui-theming.
-
-**Why it matters:** switching from a dark to a light preset leaves light text on a light background until the text theme is touched or the page reloads.
-**Suggested handling:** call `updateTextThemeAndCSS()` after `updateColorScheme()` in those writers.
-
-### Local ui writers skip the display apply
-
-The Found Issues Sweep's D2 re-applies the display only for remote `ui` records (`watchRemoteRecords` in `src/ts/bootstrap.ts`). Applying a recovered `ui` draft (`src/ts/storage/journalRecovery.ts` ~901) replaces the record and updates the language but calls none of `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, `updateGuisize`, and fires no `onRemoteRecordApplied`; the generic plugin database setters (`src/ts/plugins/apiV3/v3.svelte.ts` ~1701) can write display fields of `settings.ui` without applying them. Found by the D2 challenger (2026-11-05). Owner: ui-theming.
-
-**Why it matters:** the page shows a theme or size that differs from its settings until a reload.
-**Suggested handling:** run the same apply step D2 runs for remote records.
 
 ### #import_preset opens the settings after a refusal
 
