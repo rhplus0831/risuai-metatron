@@ -1,5 +1,7 @@
 // Browser checks of generation receipts, server command sequences, foreign Stop, owner absence,
 // and crash checkpoints, with a real installed v3 plugin provider in system Chrome.
+// Report unexpected document reloads as harness noise; retry a failed case once after a Vite
+// dependency-optimization reload, retaining the discarded error and client errors as diagnostics.
 // Usage: node util/playwright/checkJobProtocol.mjs
 // Prefer: util/playwright/offline.sh node util/playwright/checkJobProtocol.mjs
 // Optional: SERVER_PORT=6281 VITE_PORT=5381 DEBUG=1 (ports must be free).
@@ -23,7 +25,7 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 import {
     chromePath,
     isolateContext,
-    openApp,
+    openApp as stackOpenApp,
     openCharacterChat,
     pluginFixtureOp,
     repoRoot,
@@ -144,6 +146,20 @@ globalThis.fetch = async (input, init) => {
     });
     browser = await chromium.launch({ executablePath: chromePath, headless: true });
 
+    let caseAttempt = null;
+    async function openApp(page, baseURL) {
+        const c = clients.find((entry) => entry.page === page);
+        c.openingApp = true;
+        try {
+            await stackOpenApp(page, baseURL);
+            // Boot may itself ride out a Vite reload. Only navigations after the most recent
+            // completed driver open count, including for an open in the middle of a case.
+            if (caseAttempt) caseAttempt.navigations = caseAttempt.navigations.filter((nav) => nav.client !== c);
+        } finally {
+            c.openingApp = false;
+        }
+    }
+
     async function client() {
         const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
         blocked.push(await isolateContext(context));
@@ -153,8 +169,32 @@ globalThis.fetch = async (input, init) => {
             if (window === window.top) localStorage.removeItem("risu.safeBoot.attempts");
         });
         const page = await context.newPage();
-        const c = { context, page, auth: null, epoch: null, posts: [], events: [], outgoing: [], errors: [] };
+        const c = {
+            context,
+            page,
+            label: `client-${clients.length + 1}`,
+            openingApp: false,
+            auth: null,
+            epoch: null,
+            posts: [],
+            events: [],
+            outgoing: [],
+            errors: [],
+        };
         clients.push(c);
+        const navigation = await context.newCDPSession(page);
+        // CDP reports document commits here; pushState/anchor changes instead emit
+        // Page.navigatedWithinDocument, so SPA routing cannot be mistaken for a reload.
+        navigation.on("Page.frameNavigated", ({ frame }) => {
+            if (frame.parentId || !caseAttempt || c.openingApp) return;
+            caseAttempt.navigations.push({
+                client: c,
+                page: c === owner ? `owner (${c.label})` : c.label,
+                elapsed: Date.now() - caseAttempt.began,
+                url: frame.url,
+            });
+        });
+        await navigation.send("Page.enable");
         page.on("pageerror", (error) => c.errors.push(String(error)));
         page.on("request", (req) => {
             const headers = req.headers();
@@ -410,16 +450,51 @@ globalThis.fetch = async (input, init) => {
     }
     async function run(name, fn) {
         activeCase = name;
-        const began = Date.now();
-        caseStarted = began;
-        await fn();
-        assert(
-            clients.every((c) => c.errors.length === 0),
-            JSON.stringify(clients.flatMap((c) => c.errors)),
-        );
-        const elapsed = ((Date.now() - began) / 1000).toFixed(2);
-        results.push(name);
-        console.log(`PASS ${name} (${elapsed}s)`);
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const began = Date.now();
+            caseStarted = began;
+            caseAttempt = { began, logStart: serverLog.length, navigations: [] };
+            const errorStarts = new Map(clients.map((c) => [c, c.errors.length]));
+            try {
+                // The owner-close case may throw before its final owner reassignment.
+                if (attempt > 0 && owner.page.isClosed()) owner = await client();
+                await fn();
+                assert(
+                    clients.every((c) => c.errors.length === 0),
+                    JSON.stringify(clients.flatMap((c) => c.errors)),
+                );
+                const elapsed = ((Date.now() - began) / 1000).toFixed(2);
+                results.push(name);
+                console.log(`PASS ${name} (${elapsed}s)`);
+                return;
+            } catch (error) {
+                // The stack callback receives chunks from both server and Vite; join them so a
+                // reload line split between chunks is still recognized for this attempt only.
+                const viteReload = serverLog
+                    .slice(caseAttempt.logStart)
+                    .join("")
+                    .includes("optimized dependencies changed. reloading");
+                for (const nav of caseAttempt.navigations) {
+                    console.error(
+                        `HARNESS ${name}: unexpected main-frame reload caused this attempt to fail: ${nav.page} at +${(nav.elapsed / 1000).toFixed(2)}s (${nav.url}); Vite reload line seen: ${viteReload ? "yes" : "no"}`,
+                    );
+                }
+                if (attempt > 0 || !viteReload) throw error;
+                console.error(
+                    `DISCARDED ${name} attempt 1 (${((Date.now() - began) / 1000).toFixed(2)}s): ${error.stack ?? error}`,
+                );
+                const discardedErrors = clients.flatMap((c) => {
+                    const errors = c.errors.splice(errorStarts.get(c) ?? 0);
+                    return errors.length ? [{ page: c.label, errors }] : [];
+                });
+                console.error(`DISCARDED ${name} client errors: ${JSON.stringify(discardedErrors)}`);
+                console.log(
+                    `RERUN ${name}: Vite logged "optimized dependencies changed. reloading" during the failed attempt; retrying once with a fresh fixture.`,
+                );
+            } finally {
+                caseAttempt = null;
+            }
+        }
     }
 
     await run(names[0], async () => {

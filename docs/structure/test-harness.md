@@ -82,6 +82,9 @@ None is in the gate; all are in `util/playwright/`.
   `checkAssetLifecycle.mjs` (asset sweep via the dev clock offset), `checkSidebarChatStatus.mjs`, `checkBootCache.mjs`,
   `checkServerRestartRaces.mjs`, and, with real v3 plugins under `offline.sh`, `checkJobProtocol.mjs` and
   `checkJobHandoff.mjs` (two tabs hand a job off).
+- Harness noise in two drivers: `checkJobProtocol.mjs` names a page reload the driver did not start as a failed case's
+  cause (`HARNESS`) and reruns the case once when Vite logged its dependency reload (`RERUN`); `checkServerSend.mjs`
+  prints any open alert's text before each chat open (`ALERT`).
 - `measurePluginData.mjs`: dev-stack database reads, storage/toggle write bytes, unchanged `getDatabase` → `setDatabase`
   setter costs, then the developer recorder check.
 - Against a running production server, normally the Docker image on a fresh volume (`--base`, `--password`,
