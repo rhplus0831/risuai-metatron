@@ -187,6 +187,9 @@ export function repoPath(root, file) {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+    process.stdout.on("error", (error) => {
+        if (error.code !== "EPIPE") throw error;
+    });
     const files = process.argv.slice(2);
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     if (files.length === 0) {

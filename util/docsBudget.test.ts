@@ -167,6 +167,19 @@ describe("documentation budgets", () => {
         }
     });
 
+    it("rejects a blockquoted list item over the item budget", () => {
+        const text = guide({ Scope: `> - ${"x".repeat(601)}` });
+        expect(checkDocs(measureDocs(tree({ [GUIDE]: text })))).toEqual([finding(GUIDE, 5, "item")]);
+    });
+
+    it("counts spaces inside table code spans but collapses column padding", () => {
+        const spaces = " ".repeat(601);
+        const body = ["| Value |", "| --- |", `| \`${spaces}\` |`, `|${spaces}value${spaces}|`].join("\n");
+        const measure = measureDocs(tree({ [GUIDE]: guide({ Scope: body }) }));
+
+        expect(checkDocs(measure)).toEqual([finding(GUIDE, 7, "item")]);
+    });
+
     it("rejects three nested parentheses while ignoring parentheses inside a code span", () => {
         expect(PAREN_DEPTH_BUDGET).toBe(2);
         for (const depth of [2, 3]) {
@@ -223,6 +236,25 @@ describe("documentation budgets", () => {
             "src/{a,missing}.ts (no such path: src/missing.ts)",
             "src/d*.ts (no such path: src/d*.ts)",
             "src/a.ts/ (not a directory: src/a.ts)",
+        ]);
+    });
+
+    it("checks a missing brace alternative after a git-ignored alternative", () => {
+        const root = tree({
+            [GUIDE]: guide({ Files: "`src/{ignored.local,missing.ts}`" }),
+            ".gitignore": "*.local\n",
+            "src/present.ts": "",
+            "docs/structure/ownership.json": JSON.stringify({
+                rules: [{ match: "src/**", guide: "example" }],
+            }),
+        });
+        execFileSync("git", ["init", "--quiet"], { cwd: root, stdio: "pipe" });
+        execFileSync("git", ["add", "--", "."], { cwd: root, stdio: "pipe" });
+
+        const findings = checkDocs(measureDocs(root));
+        expect(findings).toEqual([finding(GUIDE, 7, "missing-path")]);
+        expect(findings.map((entry) => entry.message)).toEqual([
+            "src/{ignored.local,missing.ts} (no such path: src/missing.ts)",
         ]);
     });
 

@@ -362,6 +362,9 @@ export function sourceFiles(dir) {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+    process.stdout.on("error", (error) => {
+        if (error.code !== "EPIPE") throw error;
+    });
     const args = process.argv.slice(2);
     if (args.length === 0 || args.some((arg) => arg.startsWith("-"))) {
         process.stderr.write("usage: pnpm docs:contracts <file-or-dir>...\n");

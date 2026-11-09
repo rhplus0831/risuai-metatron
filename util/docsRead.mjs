@@ -83,6 +83,9 @@ export function sectionText(text, query) {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+    process.stdout.on("error", (error) => {
+        if (error.code !== "EPIPE") throw error;
+    });
     const [name, ...rest] = process.argv.slice(2);
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     if (!name) {

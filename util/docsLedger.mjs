@@ -363,6 +363,9 @@ export function formatStale({ guides, checked, stale, files }) {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+    process.stdout.on("error", (error) => {
+        if (error.code !== "EPIPE") throw error;
+    });
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const args = process.argv.slice(2);
     const usage = (message) => {

@@ -285,9 +285,6 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
 
 ### Issues
 
-- When a backticked path mixes source and Git-ignored runtime files in one brace expression, check each alternative. An
-  ignored missing path can end validation early. See the
-  [reproduction](../research/found-issues.md#an-ignored-path-can-hide-a-broken-sibling-in-a-guide).
 - `tsconfig.node.json` pairs `module: ESNext` with `moduleResolution: nodenext`, producing TS5110 when checked directly.
   `pnpm check` does not include this project.
 

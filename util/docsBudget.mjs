@@ -84,8 +84,8 @@ const INLINE_LINK =
     /(?<!\\)(!?)\[((?:[^[\]]|\[[^[\]]*\])*)\]\([ \t]*(<[^>]*>|(?:[^()\s]|\([^()\s]*\))*)(?:[ \t]+(?:"[^"]*"|'[^']*'|\([^()]*\)))?[ \t]*\)/g;
 
 /**
- * `text` with each code span replaced by `replace(content)`. A run of N backticks closes at the next
- * run of exactly N; an unclosed run is literal text.
+ * `text` with each code span replaced by `replace(content, span)`, where `span` includes the backticks.
+ * A run of N backticks closes at the next run of exactly N; an unclosed run is literal text.
  */
 function replaceCodeSpans(text, replace) {
     const runs = [...text.matchAll(/`+/g)];
@@ -95,7 +95,12 @@ function replaceCodeSpans(text, replace) {
         const size = runs[i][0].length;
         const close = runs.findIndex((run, j) => j > i && run[0].length === size);
         if (close < 0) continue;
-        out += text.slice(copied, runs[i].index) + replace(text.slice(runs[i].index + size, runs[close].index));
+        out +=
+            text.slice(copied, runs[i].index) +
+            replace(
+                text.slice(runs[i].index + size, runs[close].index),
+                text.slice(runs[i].index, runs[close].index + size),
+            );
         copied = runs[close].index + size;
         i = close;
     }
@@ -124,7 +129,8 @@ function fenceOpened(text) {
 /**
  * One Markdown file as `{ bytes, segments, sections }`. A segment is `{ kind, line, text }`, with
  * `level` on a heading: kinds `heading`, `item`, `row`, `paragraph`. A row's text has each run of
- * whitespace collapsed to one space, so column padding is not measured. A section is one heading of any
+ * whitespace outside code spans collapsed to one space, so column padding is not measured. Leading
+ * blockquote markers are stripped before recognizing list markers. A section is one heading of any
  * level: `{ level, heading, line, bytes, ownBytes }`, where `bytes` runs to the next heading of
  * the same or a higher level and `ownBytes` to the next heading of any level. Fenced code is opaque.
  * A line starting with `|` is a row only in a table, so a wrapped item can continue on one.
@@ -179,7 +185,7 @@ export function parseGuide(text) {
             paragraph = null;
             continue;
         }
-        const marker = LIST_MARKER.exec(line);
+        const marker = LIST_MARKER.exec(line.replace(/^(?:>[ \t]*)+/, ""));
         if (marker) {
             closeItems(indent);
             // An item opening with a fence has no text of its own: the fence is the rest of the marker line.
@@ -196,7 +202,13 @@ export function parseGuide(text) {
             paragraph = null;
             inTable = true;
             if (!TABLE_SEPARATOR.test(line)) {
-                segments.push({ kind: "row", line: index + 1, text: line.replace(/\s+/g, " ") });
+                const spans = [];
+                const masked = replaceCodeSpans(line, (_, span) => {
+                    spans.push(span);
+                    return `\0${spans.length - 1}\0`;
+                });
+                const text = masked.replace(/\s+/g, " ").replace(/\0(\d+)\0/g, (_, index) => spans[Number(index)]);
+                segments.push({ kind: "row", line: index + 1, text });
             }
             continue;
         }
@@ -372,8 +384,8 @@ function gitIgnores(root, pattern) {
 }
 
 /**
- * Why the repository path `span` names under `root` is missing, or null when every expansion exists or is a
- * runtime file git ignores.
+ * The first problem with the repository path `span` names under `root`, checking brace alternatives in order.
+ * Returns null only when every alternative exists or is a runtime file git ignores.
  */
 function pathProblem(root, span) {
     const wantsDir = span.endsWith("/");
@@ -383,7 +395,10 @@ function pathProblem(root, span) {
             : existsSync(path.join(root, pattern))
               ? [pattern]
               : [];
-        if (matches.length === 0) return gitIgnores(root, pattern) ? null : `no such path: ${pattern}`;
+        if (matches.length === 0) {
+            if (gitIgnores(root, pattern)) continue;
+            return `no such path: ${pattern}`;
+        }
         if (wantsDir && !matches.every((match) => statSync(path.join(root, match)).isDirectory())) {
             return `not a directory: ${pattern}`;
         }
@@ -840,6 +855,9 @@ export function formatReport(measure, stale = null) {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+    process.stdout.on("error", (error) => {
+        if (error.code !== "EPIPE") throw error;
+    });
     const args = process.argv.slice(2);
     if (args.some((arg) => arg !== "--report")) {
         process.stderr.write("usage: node util/docsBudget.mjs [--report]\n");
