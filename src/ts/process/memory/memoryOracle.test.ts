@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import { installFlatDatabase } from "../../storage/tests/installFlatDatabase";
@@ -440,7 +441,9 @@ describe("the tab's Voyage embedding processors", () => {
 
     it("keeps the tab and server group keys equal while separating old collisions and NUL chunk boundaries", async () => {
         const { contextHash } = await import("./hypamemory");
-        const { contextHash: serverHash } = await import("../../../../server/src/prompt/embeddings.ts");
+        // Load the Node port at runtime without adding it to the browser TypeScript project.
+        const serverModule = "../../../../server/src/prompt/embeddings.ts";
+        const { contextHash: serverHash } = await import(serverModule);
         // The first pair shared FNV-1a key 0xa7bbb898; the second pair shared NUL-joined input.
         const groups = [
             ["shared", "473817d277027566"],
@@ -508,6 +511,33 @@ describe("the tab's Voyage embedding processors", () => {
             "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
             "HyperBlaze/BGE-m3-ko",
         ] as const satisfies readonly Parameters<typeof runEmbedding>[1][];
+        const transformersFile = path.resolve(import.meta.dirname, "../transformers.ts");
+        const virtualFile = path.resolve(import.meta.dirname, "local-embedding-contract.ts");
+        const source = `import type { runEmbedding } from ${JSON.stringify(transformersFile)};
+            const models: Parameters<typeof runEmbedding>[1][] = ${JSON.stringify(models)};`;
+        const options: ts.CompilerOptions = {
+            noEmit: true,
+            noResolve: true,
+            skipLibCheck: true,
+            allowImportingTsExtensions: true,
+            target: ts.ScriptTarget.ES2023,
+            module: ts.ModuleKind.ESNext,
+            moduleResolution: ts.ModuleResolutionKind.Bundler,
+            lib: ["lib.es2023.d.ts", "lib.dom.d.ts"],
+            types: [],
+        };
+        const compilerHost = ts.createCompilerHost(options);
+        const originalGetSourceFile = compilerHost.getSourceFile.bind(compilerHost);
+        compilerHost.getSourceFile = (file, languageVersion, onError, shouldCreateNewSourceFile) =>
+            file === virtualFile
+                ? ts.createSourceFile(file, source, ts.ScriptTarget.ES2023, true)
+                : originalGetSourceFile(file, languageVersion, onError, shouldCreateNewSourceFile);
+        const program = ts.createProgram([transformersFile, virtualFile], options, compilerHost);
+        expect(
+            program
+                .getSemanticDiagnostics(program.getSourceFile(virtualFile)!)
+                .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")),
+        ).toEqual([]);
         expect([...new Set(Object.values(localModels.models))]).toEqual(models);
         const embed = vi.spyOn(await import("../transformers"), "runEmbedding");
         for (const [name, model] of Object.entries(localModels.models)) {

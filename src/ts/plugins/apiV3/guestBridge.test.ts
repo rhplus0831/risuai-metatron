@@ -1,6 +1,22 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
+import path from "node:path";
+import ts from "typescript";
 import { SandboxHost } from "./factory";
+
+const guestGlobals = new Map(
+    ["HTMLIFrameElement", "window", "ImageBitmap"].map((name) => [
+        name,
+        Object.getOwnPropertyDescriptor(globalThis, name),
+    ]),
+);
+function restoreGuestGlobals(names: string[]) {
+    for (const name of names) {
+        const descriptor = guestGlobals.get(name);
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+    }
+}
 
 // The guest half of the sandbox RPC (`GUEST_BRIDGE_SCRIPT`) as the iframe runs it: taken from the
 // srcdoc `SandboxHost.run` writes, then evaluated over a fake window. Node's own `ReadableStream`,
@@ -26,7 +42,7 @@ function guestScripts(userCode = ""): { main: string; fallback: string } {
         host.run(iframe as unknown as HTMLIFrameElement, userCode);
         host.terminate();
     } finally {
-        vi.unstubAllGlobals();
+        restoreGuestGlobals(["HTMLIFrameElement", "window"]);
     }
     const scripts = [...iframe.srcdoc.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/g)].map((match) => match[1]);
     if (scripts.length !== 2) throw new Error(`expected two guest scripts in the srcdoc, found ${scripts.length}`);
@@ -151,10 +167,87 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 afterEach(() => {
     vi.restoreAllMocks();
-    vi.unstubAllGlobals();
+    restoreGuestGlobals([...guestGlobals.keys()]);
 });
 
 describe("the guest bridge's data copies", () => {
+    it("type-checks the declared legacy calls and awaits remote createElement instances across the guest bridge", async () => {
+        const declaration = path.resolve(import.meta.dirname, "risuai.d.ts");
+        const virtualFile = path.resolve(import.meta.dirname, "guest-api-contract.ts");
+        const source = `async function pluginCalls() {
+            const buffered: { ok: boolean; data: unknown; headers: Record<string, string>; status: number } =
+                await risuai.risuFetch('https://example.test', { method: 'POST', body: { text: 'hello' },
+                    headers: { Accept: 'application/json' }, abortSignal: new AbortController().signal,
+                    requestTimeoutMs: 100, networkRoute: 'local_network', plainFetchForce: true,
+                    plainFetchDeforce: false, rawResponse: false, useRisuToken: true, chatId: 'chat', interceptor: 'plugin' });
+            const panel: UIPartResponse = await risuai.setChatPanel('<p>panel</p>', { id: 'panel', className: 'panel' });
+            await risuai.setChatPanel(null);
+            await risuai.saveSecretHeader('key', 'value');
+            await risuai.saveSecretHeader('key', ['value']);
+            // @ts-expect-error The runtime accepts only key and value.
+            await risuai.saveSecretHeader('key', 'Bearer', 'value');
+            const root = await risuai.getRootDocument();
+            const pending: Promise<SafeElement> = root.createElement('div');
+            const element: SafeElement = await pending;
+            await element.setAttribute('title', String(buffered.status));
+        }`;
+        const options: ts.CompilerOptions = {
+            noEmit: true,
+            skipLibCheck: true,
+            strict: true,
+            target: ts.ScriptTarget.ES2023,
+            lib: ["lib.es2023.d.ts", "lib.dom.d.ts"],
+            types: [],
+        };
+        const compilerHost = ts.createCompilerHost(options);
+        const originalGetSourceFile = compilerHost.getSourceFile.bind(compilerHost);
+        compilerHost.getSourceFile = (file, languageVersion, onError, shouldCreateNewSourceFile) =>
+            file === virtualFile
+                ? ts.createSourceFile(file, source, ts.ScriptTarget.ES2023, true)
+                : originalGetSourceFile(file, languageVersion, onError, shouldCreateNewSourceFile);
+        const program = ts.createProgram([declaration, virtualFile], options, compilerHost);
+        expect(
+            ts
+                .getPreEmitDiagnostics(program)
+                .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")),
+        ).toEqual([]);
+
+        const guest = await startGuest();
+        const gettingRoot = guest.risuai.getRootDocument();
+        const rootCall = guest.calls.at(-1)!;
+        await guest.deliver({
+            type: "RESPONSE",
+            reqId: rootCall.reqId,
+            result: { __type: "REMOTE_REF", id: "document" },
+        });
+        const root = await gettingRoot;
+        const creating = root.createElement("div");
+        expect(creating).toBeInstanceOf(Promise);
+        const createCall = guest.calls.at(-1)!;
+        expect(createCall).toMatchObject({
+            type: "CALL_INSTANCE",
+            id: "document",
+            method: "createElement",
+            args: ["div"],
+        });
+        await guest.deliver({
+            type: "RESPONSE",
+            reqId: createCall.reqId,
+            result: { __type: "REMOTE_REF", id: "element" },
+        });
+        const element = await creating;
+        const setting = element.setAttribute("title", "created asynchronously");
+        const setCall = guest.calls.at(-1)!;
+        expect(setCall).toMatchObject({
+            type: "CALL_INSTANCE",
+            id: "element",
+            method: "setAttribute",
+            args: ["title", "created asynchronously"],
+        });
+        await guest.deliver({ type: "RESPONSE", reqId: setCall.reqId });
+        await setting;
+    });
+
     it("preserves an own __proto__ data property in host results and guest callback returns", async () => {
         const guest = await startGuest();
         const data = () => JSON.parse('{"__proto__":{"stored":"plugin data"}}');

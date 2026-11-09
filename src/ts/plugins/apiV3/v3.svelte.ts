@@ -161,6 +161,7 @@ import {
 } from "../../../../shared/structuredMemory.ts";
 import type { Chat } from "../../../../shared/database.ts";
 import { compareRevision } from "../../../../shared/resources.ts";
+import { isModelDescriptor } from "../../../../shared/llm/validate.ts";
 import { requestChatDataMain, withRequestChat } from "src/ts/process/request/request";
 import { getModuleLorebooks } from "src/ts/process/modules";
 import {
@@ -200,6 +201,8 @@ type TrackedEventListener = {
     options: AddEventListenerOptions;
 };
 const pluginEventListeners: TrackedEventListener[] = [];
+// Re-querying the same target must retain the IDs returned by earlier wrappers.
+const pluginEventIds = new WeakMap<EventTarget, Map<string, TrackedEventListener>>();
 
 class SafeElement {
     #element: HTMLElement;
@@ -212,6 +215,8 @@ class SafeElement {
         }
         this.#element = element;
         this.#eventTarget = eventTarget;
+        this.#eventIdMap = pluginEventIds.get(eventTarget) ?? new Map();
+        pluginEventIds.set(eventTarget, this.#eventIdMap);
     }
 
     public appendChild(child: SafeElement) {
@@ -388,7 +393,7 @@ class SafeElement {
     public scrollIntoView(options?: boolean | ScrollIntoViewOptions) {
         this.#element.scrollIntoView(options);
     }
-    #eventIdMap = new Map<string, TrackedEventListener>();
+    #eventIdMap: Map<string, TrackedEventListener>;
 
     public async addEventListener(
         type: string,
@@ -483,7 +488,12 @@ class SafeElement {
         const tracked: TrackedEventListener = {
             eventTarget: this.#eventTarget,
             type,
-            listener: modifiedListener,
+            listener: realOptions.once
+                ? (event) => {
+                      this.removeEventListener(type, id);
+                      modifiedListener(event);
+                  }
+                : modifiedListener,
             options: realOptions,
         };
         this.#eventIdMap.set(id, tracked);
@@ -673,7 +683,7 @@ const removePluginChatPanels = (pluginName: string) => {
  * Runs per-plugin cleanup before terminating the sandbox (which rejects pending RPC callbacks).
  * Hook registrations remove their replacers/script handlers; `registerMCP` unregisters only the
  * client it installed, preserving a replacement at the same identifier. Async cleanup gets up to
- * one second; registrations can still arrive before termination, so reload clears providers again.
+ * one second; the instance refuses new registrations from the start of its unload callbacks.
  * Invalidates pending consent so a replacement script cannot inherit the unloaded instance's answer.
  */
 const unloadV3Plugin = async (pluginName: string) => {
@@ -2163,6 +2173,16 @@ const readAssetImage = (path: string) => {
  */
 const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity: PluginIdentity) => {
     const safeLocalStorage = new SafeLocalStorage();
+    let unloading = false;
+    // Installed first, so every user unload callback and later async registration sees the fence.
+    addPluginUnloadCallback(plugin.name, () => {
+        unloading = true;
+    });
+    const refuseRegistration = (api: string): boolean => {
+        if (!unloading) return false;
+        console.warn(`[RisuAI Plugin: ${identity.name}] Refused ${api} after unload began`);
+        return true;
+    };
     // Keyed by the original callback so removal finds its registered wrapper.
     const hookWrappers = new WeakMap<Function, Function>();
     const contextOwner = {};
@@ -2276,9 +2296,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         },
         /**
          * Replaces registrations by name: the latest callback, options, and model metadata win,
-         * with one entry in each provider list. Every invocation checks `provider` permission with
-         * periodic reconfirmation (answers are cached for this page). Denial or an abort while
-         * awaiting permission returns `{ success: false, content }` without calling the guest;
+         * with one entry in each provider list. Invalid model descriptors throw before any registry
+         * changes, using the same validator as the server's hook list. Every invocation checks
+         * `provider` permission with periodic reconfirmation (answers are cached for this page).
+         * Denial or an abort while awaiting permission returns `{ success: false, content }` without calling the guest;
          * `src/ts/network/jobChannel.ts` and `src/ts/process/request/request.ts` expose that failure.
          */
         addProvider: (
@@ -2289,9 +2310,35 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             ) => Promise<{ success: boolean; content: string | ReadableStream<string> }>,
             options?: PluginV3ProviderOptions,
         ) => {
+            if (refuseRegistration("addProvider")) return;
             console.warn(
                 `[WARN] addProvider is a powerful API that can potentially be unsafe if used incorrectly. addProvider's functionality might be limited or changed in future updates to ensure security. please use other APIs if possible.`,
             );
+            const modelData: LLMModel = {
+                id: `pluginmodel:::${name}`,
+                name: options?.model?.name ?? name,
+                shortName: options?.model?.shortName ?? name,
+                fullName: options?.model?.fullName ?? name,
+                internalID: options?.model?.internalID ?? `pluginmodel:::${name}`,
+                provider: LLMProvider.AsIs,
+                format: LLMFormat.Plugin,
+                flags: options?.model?.flags ?? [LLMFlags.hasFullSystemPrompt],
+                parameters: options?.model?.parameters ?? [
+                    "temperature",
+                    "top_p",
+                    "frequency_penalty",
+                    "presence_penalty",
+                    "repetition_penalty",
+                    "min_p",
+                    "top_a",
+                    "top_k",
+                    "thinking_tokens",
+                ],
+                tokenizer: options?.model?.tokenizer ?? LLMTokenizer.Unknown,
+            };
+            if (!isModelDescriptor(modelData)) {
+                throw new TypeError("Invalid plugin provider model descriptor");
+            }
             const provs = get(customProviderStore);
             (pluginHooks.providers.set(name, async (arg, abortSignal) => {
                 // The request's call context is taken before the first await (the permission prompt).
@@ -2324,28 +2371,6 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 customProviderStore.set([...provs, name]);
             }
 
-            const modelData: LLMModel = {
-                id: `pluginmodel:::${name}`,
-                name: options?.model?.name ?? name,
-                shortName: options?.model?.shortName ?? name,
-                fullName: options?.model?.fullName ?? name,
-                internalID: options?.model?.internalID ?? `pluginmodel:::${name}`,
-                provider: LLMProvider.AsIs,
-                format: LLMFormat.Plugin,
-                flags: options?.model?.flags ?? [LLMFlags.hasFullSystemPrompt],
-                parameters: options?.model?.parameters ?? [
-                    "temperature",
-                    "top_p",
-                    "frequency_penalty",
-                    "presence_penalty",
-                    "repetition_penalty",
-                    "min_p",
-                    "top_a",
-                    "top_k",
-                    "thinking_tokens",
-                ],
-                tokenizer: options?.model?.tokenizer ?? LLMTokenizer.Unknown,
-            };
             const modelIndex = customV3ProviderMetaStore.findIndex((model) => model.id === modelData.id);
             if (modelIndex === -1) {
                 customV3ProviderMetaStore.push(modelData);
@@ -2354,14 +2379,17 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             }
         },
         addTTSPreprocessor: async (func: TTSHookFn<BeforeTTSContext, BeforeTTSResult>) => {
+            if (refuseRegistration("addTTSPreprocessor")) return;
             registerTTSPreprocessor(func);
             addPluginUnloadCallback(plugin.name, () => unregisterTTSPreprocessor(func));
         },
         addTTSPostprocessor: async (func: TTSHookFn<AfterTTSContext, AfterTTSResult>) => {
+            if (refuseRegistration("addTTSPostprocessor")) return;
             registerTTSPostprocessor(func);
             addPluginUnloadCallback(plugin.name, () => unregisterTTSPostprocessor(func));
         },
         addRisuScriptHandler: (name: ScriptMode, func: EditFunction) => {
+            if (refuseRegistration("addRisuScriptHandler")) return;
             const handler = withContext(func);
             addRisuScriptHandler(name, handler);
             addPluginUnloadCallback(plugin.name, () => pluginHooks["edit" + name]?.delete(handler));
@@ -2369,9 +2397,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         removeRisuScriptHandler: (name: ScriptMode, func: EditFunction) =>
             removeRisuScriptHandler(name, registered(func)),
         addRisuReplacer: async (name: string, func: Function) => {
+            if (refuseRegistration("addRisuReplacer")) return;
             //permission check for replacer
             const conf = await getPluginPermission(identity, "replacer", "periodically");
-            if (!conf) {
+            if (!conf || refuseRegistration("addRisuReplacer")) {
                 return;
             }
             // Removed when the plugin unloads: the registry is not reset on reload, and a replacer of an
@@ -2382,9 +2411,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         },
         removeRisuReplacer: (name: string, func: ReplacerFunction) => removeRisuReplacer(name, registered(func)),
         addRisuChatListener: async (mode: "output", func: Function) => {
+            if (refuseRegistration("addRisuChatListener")) return;
             //permission check, lets use same as replacer
             const conf = await getPluginPermission(identity, "replacer", "periodically");
-            if (!conf) {
+            if (!conf || refuseRegistration("addRisuChatListener")) {
                 return;
             }
             const listener = withContext(func) as any;
@@ -2887,6 +2917,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             iconType: "html" | "img" | "none" = "none",
             id?: string,
         ) => {
+            if (refuseRegistration("registerSetting")) return;
             if (iconType !== "html" && iconType !== "img" && iconType !== "none") {
                 throw new Error("iconType must be 'html', 'img' or 'none'");
             }
@@ -2912,9 +2943,11 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             return { id: menuId };
         },
         registerBodyIntercepter: async (callback: (body: any, type: string) => any) => {
+            if (refuseRegistration("registerBodyIntercepter")) return;
             if ((await getPluginPermission(identity, "replacer")) === false) {
                 return null;
             }
+            if (refuseRegistration("registerBodyIntercepter")) return null;
 
             const id = v4();
             bodyIntercepterStore.push({
@@ -2947,6 +2980,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             },
             callback: () => void,
         ) => {
+            if (refuseRegistration("registerButton")) return;
             let { name, icon, iconType, location, id: providedId } = arg;
             location = location || "action";
             if (iconType !== "html" && iconType !== "img" && iconType !== "none") {
@@ -3009,6 +3043,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 className?: string;
             } = {},
         ) => {
+            if (refuseRegistration("setChatPanel")) return;
             const id = options.id || `${plugin.name}:default`;
 
             if (content === null || content === "") {
@@ -3040,6 +3075,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             return { id };
         },
         registerMCP: (...[arg, getToolList, callTool]: Parameters<typeof registerMCPModule>) => {
+            if (refuseRegistration("registerMCP")) return;
             const client = registerMCPModule(arg, withContext(getToolList), withContext(callTool));
             addPluginUnloadCallback(plugin.name, () => {
                 if (registeredCustomPluginMCPs.get(arg.identifier) === client) {
@@ -3066,6 +3102,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             console.log(`[RisuAI Plugin: ${plugin.name}] ${message}`);
         },
         createMutationObserver(callback: SafeMutationCallback): SafeMutationObserver {
+            if (refuseRegistration("createMutationObserver")) return;
             const observer = new SafeMutationObserver(callback);
             addPluginUnloadCallback(plugin.name, () => {
                 observer.disconnect();
@@ -3073,6 +3110,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             return observer;
         },
         onUnload: (callback: () => void) => {
+            if (refuseRegistration("onUnload")) return;
             addPluginUnloadCallback(plugin.name, callback);
         },
         /**
@@ -3083,6 +3121,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
          * rejections are logged and unload removes it.
          */
         onStorageDiscarded: (callback: (event: StorageDiscardedEvent) => unknown) => {
+            if (refuseRegistration("onStorageDiscarded")) return;
             const unsubscribe = onPluginStorageDiscarded((lost) => {
                 const keys = new Set(lost.pluginStorage);
                 if (!identity.name.includes("\u0000")) {
@@ -3354,6 +3393,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             );
         },
         addPluginChannelListener: (channelName: string, callback: Function) => {
+            if (refuseRegistration("addPluginChannelListener")) return;
             pluginChannel.set(plugin.name + channelName, callback);
             addPluginUnloadCallback(plugin.name, () => {
                 pluginChannel.delete(plugin.name + channelName);
@@ -3410,7 +3450,7 @@ const v3PluginInstances: V3PluginInstance[] = [];
 
 /**
  * Replaces a snapshot of the loaded instances, waiting for unload cleanup and termination first.
- * Resets providers and model metadata again in place to discard registrations during unload, then
+ * Resets providers and model metadata again in place as a backstop after fenced unload, then
  * removes tracked DOM listeners from their original targets before starting replacements.
  * `src/ts/plugins/plugins.svelte.ts` serializes callers and passes only enabled API `3.0` entries.
  */
@@ -3421,12 +3461,13 @@ export async function loadV3Plugins(plugins: RisuPlugin[]) {
         }),
     );
 
-    // Unloading instances can still register providers until their sandboxes terminate.
+    // Keep the final reset as a backstop; unloading instances refuse all new registrations.
     clearPluginProviders();
     customV3ProviderMetaStore.length = 0;
 
     for (const entry of pluginEventListeners) {
         entry.eventTarget.removeEventListener(entry.type, entry.listener, entry.options);
+        pluginEventIds.get(entry.eventTarget)?.clear();
     }
     pluginEventListeners.length = 0;
 

@@ -67,7 +67,7 @@ export function clearPluginProviders() {
 /**
  * Resets provider, script-handler, and chat-output registries before unload starts. Replacers rely
  * on per-plugin unload cleanup. `apiV3/v3.svelte.ts:loadV3Plugins` clears providers and model metadata
- * again after termination, discarding registrations made during unload.
+ * again after termination as a backstop; each unloading instance refuses new registrations.
  */
 export function clearPluginHooks() {
     clearPluginProviders();

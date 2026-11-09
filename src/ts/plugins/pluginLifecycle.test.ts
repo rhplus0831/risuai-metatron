@@ -3,7 +3,14 @@ import { get } from "svelte/store";
 import type { RisuPlugin } from "./plugins.svelte";
 
 type Api = Record<string, (...args: any[]) => any>;
-const harness = vi.hoisted(() => ({ hosts: [] as any[], mcps: [] as string[] }));
+const harness = vi.hoisted(() => ({
+    hosts: [] as any[],
+    mcps: [] as string[],
+    fetch: vi.fn<typeof import("src/ts/storage/serverAuth").authFetch>(),
+}));
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: harness.fetch }),
+);
 vi.mock("./apiV3/factory", () => ({
     SandboxHost: class {
         result: unknown;
@@ -46,7 +53,18 @@ import { loadPlugins } from "./plugins.svelte";
 import { SandboxHost } from "./apiV3/factory";
 import { customV3ProviderMetaStore, executePluginV3, getV3PluginInstance, loadV3Plugins } from "./apiV3/v3.svelte";
 import { customProviderStore, pluginHooks } from "./pluginHooks";
-import { getModelInfo, getModelList, LLMTokenizer } from "src/ts/model/modellist";
+import { getModelInfo, getModelList, LLMTokenizer, LLMFlags } from "src/ts/model/modellist";
+import {
+    additionalSettingsMenu,
+    additionalFloatingActionButtons,
+    additionalHamburgerMenu,
+    additionalChatMenu,
+    bodyIntercepterStore,
+    chatPanelStore,
+} from "src/ts/stores.svelte";
+import { getTTSPreprocessors, getTTSPostprocessors } from "src/ts/process/ttsHooks";
+import * as resourceSync from "src/ts/storage/resourceSync.svelte";
+import { registeredHooks } from "src/ts/network/jobChannel";
 import { registeredCustomPluginMCPs } from "src/ts/process/mcp/pluginmcp";
 import { callTool, getTools, initializeMCPs, MCPs, callOnlyMCPs } from "src/ts/process/mcp/mcp";
 import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -97,9 +115,11 @@ const deferred = () => {
 };
 
 beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     installFlatDatabase({ characters: [], plugins: [], modules: [], enabledModules: [] });
     harness.hosts.length = 0;
     harness.mcps = [];
+    harness.fetch.mockReset();
 });
 afterEach(async () => {
     // Also clean up after a mutation that deliberately leaves alternate instances alive.
@@ -107,9 +127,116 @@ afterEach(async () => {
     await initializeMCPs();
     document.querySelectorAll("iframe").forEach((frame) => frame.remove());
     vi.restoreAllMocks();
+    vi.clearAllTimers();
+    vi.useRealTimers();
 });
 
 describe("plugin reload lifecycle", () => {
+    it("refuses every hook and UI registration throughout unload and on the replaced instance, while the replacement accepts them", async () => {
+        const name = "fenced-instance";
+        const entry = { ...plugin(name), allowedIPC: [name] };
+        settings.plugins = [entry];
+        await executePluginV3(entry);
+        const old = host(name);
+        const late = vi.fn<(...args: any[]) => any>(() => []);
+        const fresh = vi.fn<(...args: any[]) => any>(() => []);
+        const storageRegistration = vi.spyOn(resourceSync, "onPluginStorageDiscarded");
+        const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const menus = [
+            additionalSettingsMenu,
+            additionalFloatingActionButtons,
+            additionalHamburgerMenu,
+            additionalChatMenu,
+            chatPanelStore,
+        ];
+        async function registerAll(api: Api, callback: typeof late) {
+            api.addProvider(name, callback);
+            for (const mode of ["input", "output", "process", "display"]) api.addRisuScriptHandler(mode, callback);
+            await api.addRisuReplacer("beforeRequest", callback);
+            await api.addRisuReplacer("afterRequest", callback);
+            await api.addRisuChatListener("output", callback);
+            await api.addTTSPreprocessor(callback);
+            await api.addTTSPostprocessor(callback);
+            await api.registerBodyIntercepter(callback);
+            api.registerMCP(metadata, async () => tools, callback);
+            api.addPluginChannelListener("events", callback);
+            api.onStorageDiscarded(callback);
+            api.onUnload(callback);
+            api.registerSetting("Setting", callback);
+            for (const location of ["action", "chat", "hamburger"])
+                api.registerButton({ name: "Button", icon: "", iconType: "none", location }, callback);
+            api.setChatPanel("<p>panel</p>");
+            return api.createMutationObserver(callback);
+        }
+        const expectEmpty = () => {
+            expectProviders([]);
+            for (const key of [
+                "editinput",
+                "editoutput",
+                "editprocess",
+                "editdisplay",
+                "replacerbeforeRequest",
+                "replacerafterRequest",
+                "chatOutput",
+            ] as const)
+                expect.soft(pluginHooks[key].size, key).toBe(0);
+            expect.soft(getTTSPreprocessors()).toEqual([]);
+            expect.soft(getTTSPostprocessors()).toEqual([]);
+            expect.soft(bodyIntercepterStore).toEqual([]);
+            for (const menu of menus) expect.soft(menu).toEqual([]);
+            expect.soft(registeredCustomPluginMCPs.has(metadata.identifier)).toBe(false);
+            expect.soft(storageRegistration).not.toHaveBeenCalled();
+            old.api.postPluginChannelMessage(name, "events", "after unload");
+            expect.soft(late).not.toHaveBeenCalled();
+        };
+        const entered = deferred();
+        const hold = deferred();
+        let duringUnload!: Promise<unknown>;
+        old.api.onUnload(() => {
+            duringUnload = registerAll(old.api, late);
+            entered.resolve();
+            return duringUnload.then(() => hold.promise);
+        });
+        const reloading = loadV3Plugins([entry]);
+        try {
+            await entered.promise;
+            expect(await duringUnload).toBeUndefined();
+            expect(old.terminate).not.toHaveBeenCalled();
+            expectEmpty();
+            // The sandbox stays alive for the entire one-second cleanup allowance.
+            await vi.advanceTimersByTimeAsync(999);
+            expect(await registerAll(old.api, late)).toBeUndefined();
+            expectEmpty();
+            await vi.advanceTimersByTimeAsync(1);
+            await reloading;
+            expect(old.terminate).toHaveBeenCalledTimes(1);
+            expect(host(name)).not.toBe(old);
+            expect(await registerAll(old.api, late)).toBeUndefined();
+            expectEmpty();
+            const observer = await registerAll(host(name).api, fresh);
+            expect(observer).toBeDefined();
+            expectProviders([name]);
+            expect(pluginHooks.editinput.size).toBe(1);
+            expect(pluginHooks.replacerbeforeRequest.size).toBe(1);
+            expect(pluginHooks.chatOutput.size).toBe(1);
+            expect(getTTSPreprocessors()).toEqual([fresh]);
+            expect(getTTSPostprocessors()).toEqual([fresh]);
+            expect(bodyIntercepterStore).toHaveLength(1);
+            for (const menu of menus) expect(menu).toHaveLength(1);
+            expect(storageRegistration).toHaveBeenCalledTimes(1);
+            expect(registeredCustomPluginMCPs.has(metadata.identifier)).toBe(true);
+            host(name).api.postPluginChannelMessage(name, "events", "new instance");
+            expect(fresh).toHaveBeenCalledTimes(1);
+            expect(warnings.mock.calls.some(([message]) => String(message).includes("Refused"))).toBe(true);
+            await loadV3Plugins([]);
+            expect(late).not.toHaveBeenCalled();
+            expect(fresh).toHaveBeenCalledTimes(2); // IPC, then the replacement's own unload.
+        } finally {
+            hold.resolve();
+            await reloading;
+        }
+    });
+
     it("rejects a failed sandbox start, terminates its host and removes its instance and iframe", async () => {
         const entry = plugin("failed-start");
         const error = new Error("sandbox start failed");
@@ -189,6 +316,95 @@ describe("plugin reload lifecycle", () => {
             expect.objectContaining({ id: "pluginmodel:::duplicate-provider", ...latestModel }),
         ]);
         expect(getModelInfo("pluginmodel:::duplicate-provider")).toMatchObject(latestModel);
+    });
+
+    it("rejects invalid new descriptors atomically while valid partial options default and reach job creation", async () => {
+        await executePluginV3(plugin("descriptor-owner"));
+        const api = host("descriptor-owner").api;
+        const callback = vi
+            .fn<NonNullable<ReturnType<typeof pluginHooks.providers.get>>>()
+            .mockResolvedValue({ success: true, content: "invalid" });
+        for (const model of [
+            { name: 42 },
+            { internalID: {} },
+            { flags: ["system"] },
+            { parameters: [42] },
+            { tokenizer: "unknown" },
+        ]) {
+            expect(() => api.addProvider("invalid", callback, { tokenizer: "custom", model })).toThrow(
+                new TypeError("Invalid plugin provider model descriptor"),
+            );
+            expectProviders([]);
+        }
+        expect(callback).not.toHaveBeenCalled();
+        api.addProvider("partial", callback, { model: { name: "Partial model" } });
+        const descriptor = customV3ProviderMetaStore[0];
+        expect(descriptor).toMatchObject({
+            id: "pluginmodel:::partial",
+            name: "Partial model",
+            shortName: "partial",
+            fullName: "partial",
+            internalID: "pluginmodel:::partial",
+            tokenizer: LLMTokenizer.Unknown,
+        });
+        expect(descriptor.flags).toEqual([LLMFlags.hasFullSystemPrompt]);
+        expect(descriptor.parameters).toContain("temperature");
+        const { createGenerationJob, releaseGenerationJob } = await import("src/ts/network/generationJobs");
+        harness.fetch.mockResolvedValue(Response.json({ jobId: "partial-provider-job" }));
+        try {
+            await expect(
+                createGenerationJob({
+                    kind: "send",
+                    context: {
+                        characterId: "c",
+                        chatId: "chat",
+                        presetId: null,
+                        modelPresetId: null,
+                        personaId: null,
+                        mode: "normal",
+                        input: "hello",
+                        chatRevision: "r1",
+                    },
+                }),
+            ).resolves.toEqual({ outcome: "created", jobId: "partial-provider-job" });
+            const sent = JSON.parse(String(harness.fetch.mock.calls[0][1]?.body));
+            expect(sent.hooks.providers).toEqual([{ name: "partial", model: descriptor }]);
+        } finally {
+            releaseGenerationJob("partial-provider-job");
+        }
+    });
+
+    it("rejects a provider replacement atomically and keeps its old callback and complete metadata", async () => {
+        await executePluginV3(plugin("replacement-owner"));
+        const api = host("replacement-owner").api;
+        const original = vi
+            .fn<NonNullable<ReturnType<typeof pluginHooks.providers.get>>>()
+            .mockResolvedValue({ success: true, content: "original reply" });
+        const rejected = vi
+            .fn<NonNullable<ReturnType<typeof pluginHooks.providers.get>>>()
+            .mockResolvedValue({ success: true, content: "rejected reply" });
+        const options = { tokenizer: "old-tokenizer", model: { name: "Original model", parameters: ["temperature"] } };
+        api.addProvider("preserved", original, options);
+        const callback = pluginHooks.providers.get("preserved")!;
+        const descriptor = structuredClone(customV3ProviderMetaStore[0]);
+        expect(() =>
+            api.addProvider("preserved", rejected, {
+                tokenizer: "replacement-tokenizer",
+                model: { name: "Replacement", flags: ["invalid"] },
+            }),
+        ).toThrow("Invalid plugin provider model descriptor");
+        expectProviders(["preserved"]);
+        expect(pluginHooks.providers.get("preserved")).toBe(callback);
+        expect(pluginHooks.providerOptions.get("preserved")).toEqual(options);
+        expect(customV3ProviderMetaStore).toEqual([descriptor]);
+        expect(getModelInfo("pluginmodel:::preserved")).toMatchObject(descriptor);
+        await expect(callback({} as Parameters<typeof callback>[0], new AbortController().signal)).resolves.toEqual({
+            success: true,
+            content: "original reply",
+        });
+        expect(original).toHaveBeenCalledTimes(1);
+        expect(rejected).not.toHaveBeenCalled();
+        expect((await registeredHooks()).providers).toEqual([{ name: "preserved", model: descriptor }]);
     });
 
     it("terminates every old sandbox once and executes both updated scripts", async () => {
@@ -277,7 +493,7 @@ describe("plugin reload lifecycle", () => {
         settings.plugins = [plugin("unrequested")];
         try {
             // Let a non-serialized reload finish if it can; no wall-clock sleep is needed.
-            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            await vi.advanceTimersByTimeAsync(0);
             expect(started).not.toHaveBeenCalled();
         } finally {
             release.resolve();

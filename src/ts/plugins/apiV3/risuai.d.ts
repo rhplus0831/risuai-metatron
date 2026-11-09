@@ -895,11 +895,11 @@ interface SafeElement {
  * 
  * @example
  * ```typescript
- * const doc = risuai.getRootDocument();
+ * const doc = await risuai.getRootDocument();
  *
  * // Create elements (whitelist only)
- * const div = doc.createElement('div');
- * const button = doc.createElement('button');
+ * const div = await doc.createElement('div');
+ * const button = await doc.createElement('button');
  *
  * // Create anchor with URL validation
  * const link = doc.createAnchorElement('https://example.com');
@@ -909,17 +909,17 @@ interface SafeDocument extends SafeElement {
     /**
      * Creates an element (limited to whitelisted tags)
      * @param tagName - HTML tag name
-     * @returns SafeElement
+     * @returns Promise resolving to SafeElement across the iframe bridge
      *
      * @note Non-whitelisted tags are replaced with 'div'
      *
      * @example
      * ```typescript
-     * const div = doc.createElement('div'); // ✅ Allowed
-     * const custom = doc.createElement('custom-element'); // Creates <div> instead
+     * const div = await doc.createElement('div'); // ✅ Allowed
+     * const custom = await doc.createElement('custom-element'); // Creates <div> instead
      * ```
      */
-    createElement(tagName: string): SafeElement;
+    createElement(tagName: string): Promise<SafeElement>;
 
     /**
      * Creates an anchor element with URL validation
@@ -1644,6 +1644,22 @@ interface RisuaiPluginAPI {
 
     // ========== Network APIs ==========
 
+    /** @deprecated Use nativeFetch. Returns the buffered globalFetch result, not a Response. */
+    risuFetch(url: string, options?: {
+        plainFetchForce?: boolean;
+        plainFetchDeforce?: boolean;
+        body?: any;
+        headers?: { [key: string]: string };
+        rawResponse?: boolean;
+        method?: 'POST' | 'GET';
+        abortSignal?: AbortSignal;
+        useRisuToken?: boolean;
+        chatId?: string;
+        interceptor?: string;
+        requestTimeoutMs?: number;
+        networkRoute?: 'auto' | 'local_network';
+    }): Promise<{ ok: boolean; data: any; headers: { [key: string]: string }; status: number }>;
+
     /**
      * Makes a native fetch request; omitted options or {} make a GET.
      * Only method, headers, body, and signal are honored. GET/HEAD reject a body.
@@ -1661,7 +1677,7 @@ interface RisuaiPluginAPI {
      * Not implemented in this fork. The host only logs a warning and stores nothing.
      * `nativeFetch` does not support `{ secretHeader }`, so the secret header is not sent.
      */
-    saveSecretHeader(key: string, prefix: string, value: string|string[]): Promise<void>;
+    saveSecretHeader(key: string, value: string|string[]): Promise<void>;
 
     // ========== UI Registration ==========
 
@@ -1748,6 +1764,9 @@ interface RisuaiPluginAPI {
      * @param id - UI part ID returned during registration
      */
     unregisterUIPart(id: string): Promise<void>;
+
+    /** Sets sanitized chat-panel HTML; null or an empty string removes the panel. */
+    setChatPanel(content: string | null, options?: { id?: string; className?: string }): Promise<UIPartResponse>;
 
     // ========== MCP APIs ==========
 

@@ -208,7 +208,11 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - `changeColorScheme` with an unknown name changes neither the active scheme nor its stored name.
 - A `SafeElement` listener hears only events reaching its element through DOM propagation; `SafeDocument` from
   `getRootDocument` registers on `document`. Each registration keeps its target, type and options; removal by id and
-  reload teardown replay that record whatever the caller passes to `removeEventListener`.
+  reload teardown replay that record whatever the caller passes to `removeEventListener`. Wrappers for the same target
+  share listener IDs, and a fired `once` listener leaves the teardown list.
+- Hook registrations after an instance begins unloading are discarded with a warning, including registrations that
+  awaited permission. The same instance fence covers providers, script/replacer/chat/TTS hooks, MCP, IPC, storage
+  listeners, and UI registrations; replacements get a fresh fence.
 - Plugin key listeners (`keydown`/`keyup`/`keypress`, on any element or the document, capture phase included) receive
   nothing from the terminal notice's opening until reload, its acknowledgement key release included
   (`terminalNoticeShown`): the notice stops only bubbling.

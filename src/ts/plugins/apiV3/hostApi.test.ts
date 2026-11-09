@@ -721,6 +721,84 @@ describe("v3 DOM listener targets and cleanup", () => {
         }
     });
 
+    it("removes prior listener IDs through re-queried wrappers while keeping document and element targets independent", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const target = root.querySelector("#plugin-event-target");
+        const elementListener = vi.fn<(event: unknown) => void>();
+        const documentListener = vi.fn<(event: unknown) => void>();
+        const htmlListener = vi.fn<(event: unknown) => void>();
+        const elementId = await target.addEventListener("click", elementListener);
+        const documentId = await root.addEventListener("click", documentListener);
+        const html = root.querySelector("body");
+        const htmlId = await html.addEventListener("click", htmlListener);
+        const again = await api.getRootDocument();
+        again.removeEventListener("click", elementId);
+        html.removeEventListener("click", documentId);
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(elementListener).toHaveBeenCalledTimes(1);
+        expect(documentListener).toHaveBeenCalledTimes(1);
+        expect(htmlListener).toHaveBeenCalledTimes(1);
+
+        again.querySelectorAll("#plugin-event-target").at(0).removeEventListener("click", elementId);
+        again.removeEventListener("click", documentId);
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(elementListener).toHaveBeenCalledTimes(1);
+        expect(documentListener).toHaveBeenCalledTimes(1);
+        expect(htmlListener).toHaveBeenCalledTimes(2);
+        again.querySelector("body").removeEventListener("click", htmlId);
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(htmlListener).toHaveBeenCalledTimes(2);
+    });
+
+    it("forgets a once listener before a reentrant throwing callback and does not tear it down again on reload", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const target = root.querySelector("#plugin-event-target");
+        const added = vi.spyOn(element, "addEventListener");
+        const removed = vi.spyOn(element, "removeEventListener");
+        let id!: string;
+        const listener = vi.fn<(event: unknown) => void>(() => {
+            expect(removed).toHaveBeenCalledTimes(1);
+            target.removeEventListener("click", id);
+            element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+            throw new Error("callback failed");
+        });
+        id = await target.addEventListener("click", listener, { once: true });
+        // Invoke the browser callback directly so a guest exception can be asserted synchronously.
+        const native = added.mock.calls[0][1] as EventListener;
+        expect(() => native(new MouseEvent("click"))).toThrow("callback failed");
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect(removed).toHaveBeenCalledTimes(1);
+        await loadV3Plugins([]);
+        expect(removed).toHaveBeenCalledTimes(1);
+    });
+
+    it("forgets a delayed once key listener before delivering its callback and never tears it down twice", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const removed = vi.spyOn(document, "removeEventListener");
+        const listener = vi.fn<(event: unknown) => void>();
+        const options = { once: true, capture: true };
+        await root.addEventListener("keydown", listener, options);
+        element.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+        expect(listener).not.toHaveBeenCalled();
+        expect(
+            removed.mock.calls.filter(
+                ([type, , registeredOptions]) => type === "keydown" && registeredOptions === options,
+            ),
+        ).toHaveLength(1);
+        element.dispatchEvent(new KeyboardEvent("keydown", { key: "b", bubbles: true }));
+        await vi.advanceTimersByTimeAsync(100);
+        expect(listener).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ key: "a" }));
+        await loadV3Plugins([]);
+        expect(
+            removed.mock.calls.filter(
+                ([type, , registeredOptions]) => type === "keydown" && registeredOptions === options,
+            ),
+        ).toHaveLength(1);
+    });
+
     it("delivers an element's own event without delivering a sibling's event", async () => {
         const api = await makeApi();
         const root = await api.getRootDocument();
@@ -856,6 +934,39 @@ describe("v3 document key listeners and the terminal notice", () => {
         } finally {
             root.removeEventListener("keydown", captureId, true);
             root.removeEventListener("keydown", bubbleId);
+        }
+    });
+
+    it("forgets a suppressed once key listener even when the terminal notice prevents the callback", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const removed = vi.spyOn(document, "removeEventListener");
+        const listener = vi.fn<(event: unknown) => void>();
+        const options = { once: true };
+        const notice = alertTerminal("restored");
+        let id!: string;
+        try {
+            id = await root.addEventListener("keydown", listener, options);
+            press("a");
+            await settle();
+            expect(listener).not.toHaveBeenCalled();
+            expect(
+                removed.mock.calls.filter(
+                    ([type, , registeredOptions]) => type === "keydown" && registeredOptions === options,
+                ),
+            ).toHaveLength(1);
+            await loadV3Plugins([]);
+            expect(
+                removed.mock.calls.filter(
+                    ([type, , registeredOptions]) => type === "keydown" && registeredOptions === options,
+                ),
+            ).toHaveLength(1);
+        } finally {
+            root.removeEventListener("keydown", id);
+            acknowledgeTerminalNotice();
+            await notice;
+            removed.mockRestore();
         }
     });
 });

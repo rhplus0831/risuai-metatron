@@ -71,6 +71,7 @@ import * as resourceSync from "src/ts/storage/resourceSync.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { pluginHooks, type PluginProviderArgument } from "../pluginHooks";
 import { invokeHook } from "./pluginContext";
+import { bodyIntercepterStore } from "src/ts/stores.svelte";
 
 installFlatDatabase({ characters: [], plugins: [] });
 
@@ -139,6 +140,55 @@ afterEach(async () => {
 });
 
 describe("pluginWorkIdle", () => {
+    it.each(["addRisuReplacer", "addRisuChatListener", "registerBodyIntercepter"] as const)(
+        "refuses %s when a granted permission's continuation resumes after unload begins",
+        async (method) => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            try {
+                const { api } = await makeApi();
+                const prime = vi.fn<() => Promise<[]>>().mockResolvedValue([]);
+                await api.addRisuReplacer("beforeRequest", prime);
+                api.removeRisuReplacer("beforeRequest", prime);
+                const callback = vi.fn<(...args: unknown[]) => Promise<[]>>().mockResolvedValue([]);
+                const pending =
+                    method === "registerBodyIntercepter"
+                        ? api[method](callback)
+                        : api[method](method === "addRisuReplacer" ? "beforeRequest" : "output", callback);
+                // Consent is already granted, but each API still yields at its permission await.
+                const unloading = loadV3Plugins([]);
+                await Promise.all([pending, unloading]);
+                expect(pluginHooks.replacerbeforeRequest.size).toBe(0);
+                expect(pluginHooks.chatOutput.size).toBe(0);
+                expect(bodyIntercepterStore).toEqual([]);
+                expect(callback).not.toHaveBeenCalled();
+                expect(pluginWorkIdle()).toBe(true);
+
+                const consent = deferred<boolean>();
+                const prompted = deferred<void>();
+                harness.confirm.mockImplementationOnce(() => {
+                    prompted.resolve();
+                    return consent.promise;
+                });
+                const replacement = await makeApi();
+                const awaitingConsent =
+                    method === "registerBodyIntercepter"
+                        ? replacement.api[method](callback)
+                        : replacement.api[method](method === "addRisuReplacer" ? "beforeRequest" : "output", callback);
+                await prompted.promise;
+                const unloadingDuringPrompt = loadV3Plugins([]);
+                consent.resolve(true);
+                await Promise.all([awaitingConsent, unloadingDuringPrompt]);
+                expect(pluginHooks.replacerbeforeRequest.size).toBe(0);
+                expect(pluginHooks.chatOutput.size).toBe(0);
+                expect(bodyIntercepterStore).toEqual([]);
+                expect(callback).not.toHaveBeenCalled();
+            } finally {
+                vi.clearAllTimers();
+                vi.useRealTimers();
+            }
+        },
+    );
+
     it("is false while a provider awaits its permission prompt, before any guest callback exists", async () => {
         const consent = deferred<boolean>();
         harness.confirm.mockReturnValueOnce(consent.promise);
