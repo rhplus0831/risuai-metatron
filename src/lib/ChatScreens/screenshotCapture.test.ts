@@ -12,6 +12,18 @@ function htmlToImage(fontEmbedCSS: string) {
     };
 }
 
+function addStylesheet(css: string) {
+    const style = document.createElement("style");
+    style.textContent = css;
+    document.body.append(style);
+    if (!style.sheet) throw new Error("Expected a live stylesheet");
+    return style.sheet;
+}
+
+function stylesheetRules() {
+    return Array.from(document.styleSheets, (sheet) => Array.from(sheet.cssRules, (rule) => rule.cssText));
+}
+
 afterEach(() => {
     document.body.replaceChildren();
 });
@@ -67,4 +79,63 @@ it("passes an empty prepared CSS string to every capture so no row scans fonts a
     for (const row of rows) {
         expect(lib.toCanvas).toHaveBeenCalledWith(row, { includeQueryParams: true, fontEmbedCSS: "" });
     }
+});
+
+it("keeps the original rules and total rule count across two font preparations", async () => {
+    const row = document.createElement("div");
+    document.body.append(row);
+    const preparedCSS = '@font-face { font-family: Screenshot; src: url("data:font/woff2;base64,AA=="); }';
+    // happy-dom does not parse @import reliably; mimic html-to-image inserting the imported rules into live sheets.
+    const sheets = [
+        addStylesheet(`${preparedCSS} .chattext { color: navy; }`),
+        addStylesheet(".caption { color: green; } .chattext { color: blue; }"),
+    ];
+    const originalRules = stylesheetRules();
+    const originalRuleCount = originalRules.flat().length;
+    const lib = htmlToImage(preparedCSS);
+    lib.getFontEmbedCSS.mockImplementation(async () => {
+        for (const sheet of sheets) {
+            sheet.insertRule(preparedCSS, sheet.cssRules.length);
+            sheet.insertRule(".chattext { color: red; }", sheet.cssRules.length);
+        }
+        return preparedCSS;
+    });
+
+    for (let preparation = 0; preparation < 2; preparation++) {
+        const capture = await prepareScreenshotCapture(lib, [row]);
+
+        expect(stylesheetRules().flat()).toHaveLength(originalRuleCount);
+        expect(stylesheetRules()).toEqual(originalRules);
+        await capture(row);
+        expect(lib.toCanvas).toHaveBeenLastCalledWith(row, { includeQueryParams: true, fontEmbedCSS: preparedCSS });
+    }
+    expect(lib.getFontEmbedCSS).toHaveBeenCalledTimes(2);
+    expect(lib.toCanvas).toHaveBeenCalledTimes(2);
+});
+
+it("restores the original rules and propagates a rejected font preparation", async () => {
+    const row = document.createElement("div");
+    document.body.append(row);
+    const fontCSS = '@font-face { font-family: Screenshot; src: url("data:font/woff2;base64,AA=="); }';
+    const sheets = [
+        addStylesheet(`${fontCSS} .chattext { color: navy; }`),
+        addStylesheet(".caption { color: green; } .chattext { color: blue; }"),
+    ];
+    const originalRules = stylesheetRules();
+    const originalRuleCount = originalRules.flat().length;
+    const failure = new Error("Font embedding failed");
+    const lib = htmlToImage(fontCSS);
+    lib.getFontEmbedCSS.mockImplementation(async () => {
+        for (const sheet of sheets) {
+            sheet.insertRule(fontCSS, sheet.cssRules.length);
+            sheet.insertRule(".chattext { color: red; }", sheet.cssRules.length);
+        }
+        throw failure;
+    });
+
+    await expect(prepareScreenshotCapture(lib, [row])).rejects.toBe(failure);
+
+    expect(stylesheetRules().flat()).toHaveLength(originalRuleCount);
+    expect(stylesheetRules()).toEqual(originalRules);
+    expect(lib.toCanvas).not.toHaveBeenCalled();
 });

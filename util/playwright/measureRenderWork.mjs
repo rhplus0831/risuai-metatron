@@ -4,8 +4,11 @@
 // Linux /proc is used for renderer and GPU memory; canvas memory is not represented by JS heap.
 //
 // Each scenario gets a new context and a newly bound chat: N alternating user/assistant messages,
-// plus one plain greeting (reported separately). Assistant messages repeat exactly one 500-rule
-// sheet and 12 short JS fences. Every message and the greeting has a fresh scenario nonce, outside
+// plus one plain greeting (reported separately). Assistant messages repeat exactly one sheet
+// (a leading webfont @import, one font-family rule, 500 selector rules) and 12 short JS fences.
+// Their prose uses RenderWorkFixture (KaTeX_Main-Regular.woff2 resolved from the installed katex).
+// The mock provider serves the imported CSS and font locally with CORS; fixtureRequests records
+// both request counts. Every message and the greeting has a fresh scenario nonce, outside
 // the sheet. One chat is seeded per batch, below the API's 100 MiB body cap even at 600 messages.
 // The translation target language is en (an empty language disables a chat's auto-translate).
 // Translation uses the rendered target, not stored message translations. Both formatting flags
@@ -67,6 +70,7 @@ import { execFileSync } from "node:child_process";
 import { open, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { gzipSync } from "node:zlib";
 import { chromium } from "playwright-core";
 import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfiles.mjs";
@@ -106,6 +110,10 @@ const SCREENSHOT_TIMEOUT_MS = Number(process.env.SCREENSHOT_TIMEOUT_MS ?? 900_00
 const QUIET_MS = 1500;
 const SETTLE_TIMEOUT_MS = 600_000;
 const PREFIX = "Translated: ";
+const FONT_FAMILY = "RenderWorkFixture";
+const FONT_CSS_PATH = "/render-fixture/font.css";
+const FONT_PATH = "/render-fixture/font.woff2";
+const FONT_SOURCE = "katex/dist/fonts/KaTeX_Main-Regular.woff2";
 const SHEET = Array.from({ length: 500 }, (_, n) => `.panel${n} .item${n}:hover{color:red;padding:1px 2px}`).join("");
 const FENCES = Array.from({ length: 12 }, (_, n) => `\`\`\`js\nconst item${n} = ${n};\n\`\`\``).join("\n\n");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -130,8 +138,16 @@ const report = {
         settleTimeoutMs: SETTLE_TIMEOUT_MS,
         viewport: { width: 1280, height: 800 },
         distinctSheets: 1,
-        sheetRules: 500,
-        sheetBytes: Buffer.byteLength(SHEET),
+        sheetRules: 502,
+        sheetBytes: null,
+        webfont: {
+            family: FONT_FAMILY,
+            stylesheetUrl: null,
+            fontPath: FONT_PATH,
+            source: FONT_SOURCE,
+            accessControlAllowOrigin: "*",
+            importedRules: 1,
+        },
         fencesPerAssistant: 12,
         providerDelayMs: 75,
         extraGreetingRows: 1,
@@ -139,6 +155,7 @@ const report = {
             "first function range with detailed:true is its invocation count; async resumptions excluded (verified with an inspector probe)",
     },
     results: [],
+    fixtureRequests: { fontCss: 0, font: 0 },
     errors: [],
 };
 
@@ -770,8 +787,24 @@ try {
         : await mkdtemp(path.join(os.tmpdir(), "risu-render-traces-"));
     await mkdir(report.traceDirectory, { recursive: true });
     log(`Trace directory (kept): ${report.traceDirectory}`);
+    const font = await readFile(createRequire(path.join(repoRoot, "package.json")).resolve(FONT_SOURCE));
     provider = http.createServer(async (req, res) => {
         try {
+            const pathname = new URL(req.url, "http://127.0.0.1").pathname;
+            if (pathname === FONT_CSS_PATH || pathname === FONT_PATH) {
+                const css = pathname === FONT_CSS_PATH;
+                report.fixtureRequests[css ? "fontCss" : "font"]++;
+                res.writeHead(200, {
+                    "content-type": css ? "text/css" : "font/woff2",
+                    "access-control-allow-origin": "*",
+                });
+                res.end(
+                    css
+                        ? `@font-face{font-family:"${FONT_FAMILY}";src:url("${FONT_PATH}") format("woff2");font-weight:400;font-style:normal}`
+                        : font,
+                );
+                return;
+            }
             const parts = [];
             for await (const part of req) parts.push(part);
             const body = JSON.parse(Buffer.concat(parts).toString() || "{}");
@@ -790,7 +823,13 @@ try {
         }
     });
     await new Promise((resolve) => provider.listen(0, "127.0.0.1", resolve));
-    const providerUrl = `http://127.0.0.1:${provider.address().port}/v1/chat/completions`;
+    const providerOrigin = `http://127.0.0.1:${provider.address().port}`;
+    const providerUrl = `${providerOrigin}/v1/chat/completions`;
+    const fontCssUrl = `${providerOrigin}${FONT_CSS_PATH}`;
+    // Rendered translation runs Markdown's quote styling over inline CSS; keep these values unquoted.
+    const fixtureSheet = `@import url(${fontCssUrl});.fixture-font{font-family:${FONT_FAMILY},serif}${SHEET}`;
+    report.configuration.sheetBytes = Buffer.byteLength(fixtureSheet);
+    report.configuration.webfont.stylesheetUrl = fontCssUrl;
     let stackOutput = "";
     const start = () =>
         startStack({
@@ -1001,7 +1040,7 @@ try {
                 data:
                     i % 2 === 0
                         ? `${nonce} row ${i}: short user prose.`
-                        : `<style>${SHEET}</style>\n\nRender prose ${nonce} row ${i}.\n\n${FENCES}\n\nEnd ${nonce} row ${i}.`,
+                        : `<style>${fixtureSheet}</style>\n\n<p class="fixture-font">Render prose ${nonce} row ${i}.</p>\n\n${FENCES}\n\nEnd ${nonce} row ${i}.`,
             }));
             const batch = {
                 ops: [
