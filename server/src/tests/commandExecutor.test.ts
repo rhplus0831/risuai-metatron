@@ -175,10 +175,24 @@ function setup(options: { type?: "character" | "group" } = {}) {
 }
 
 describe("the command executor", () => {
+    it("keeps inner quotes and unmatched surrounding quotes in arguments", async () => {
+        const s = setup();
+        expect(await s.run('/pass say "hi" now')).toBe('say "hi" now');
+        expect(await s.run('/pass "starts here')).toBe('"starts here');
+        expect(await s.run('/pass ends here"')).toBe('ends here"');
+    });
+
+    it("preserves surrounding quotes in piped values substituted into {{pipe}} and {{slot}}", async () => {
+        const s = setup();
+        s.state.answer = async () => '"quoted value"';
+        expect(await s.run("/input Value? | /pass {{pipe}}")).toBe('"quoted value"');
+        expect(await s.run("/input Value? | /pass {{slot}}")).toBe('"quoted value"');
+    });
+
     it("splits pipes outside quotes, feeds the pipe to an empty argument and to `{{pipe}}`/`{{slot}}`, and runs CBS on the arguments", async () => {
         const s = setup();
-        // The quotes guard the split and stay in the argument, as in the tab.
-        expect(await s.run('/pass "a|b" | /pass [{{slot}}] | /pass')).toBe('["a|b"]');
+        // The quotes guard the split, and their surrounding pair leaves the argument, as in the tab.
+        expect(await s.run('/pass "a|b" | /pass [{{slot}}] | /pass')).toBe("[a|b]");
         expect(await s.run("/pass {{char}} | /pass {{pipe}}!")).toBe("Cora!");
         expect(await s.run('/len ["x","y","z"]')).toBe("3");
         expect(await s.run("/pass seed | /len not-json")).toBe("seed");
@@ -299,7 +313,7 @@ describe("the command executor", () => {
 
     it("hands `/multisend` to the host split on `|||` with a leading `clear` as the mode, and refuses `setinput`/unknown commands with false", async () => {
         const s = setup();
-        // The parts go to the host as the tab splits them (the quotes stay, as in the tab); the
+        // The parts go to the host as the tab splits them (without the surrounding quotes, as in the tab); the
         // executor itself sends nothing and shows nothing. An unquoted `|` splits the command line,
         // so the second line's separators come out of CBS (`{{u::7c}}` is `|`), as the argument
         // is parsed before the split.
@@ -307,7 +321,7 @@ describe("the command executor", () => {
         expect(await s.run('/multisend "one|||two"')).toBe("");
         expect(await s.run(`/multisend clear ${sep} first ${sep} second`)).toBe("");
         expect(s.multisends).toEqual([
-            { clear: false, parts: ['"one', 'two"'] },
+            { clear: false, parts: ["one", "two"] },
             { clear: true, parts: [" first ", " second"] },
         ]);
         expect(s.notices).toEqual([]);

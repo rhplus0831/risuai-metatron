@@ -281,6 +281,16 @@ describe("/cut and /del", () => {
 });
 
 describe("messages and variables", () => {
+    it("preserves inner and unmatched quotes in arguments and surrounding quotes in piped values", async () => {
+        const ref = freshChat();
+        expect(await processMultiCommand('/pass say "hi" now', ref)).toBe('say "hi" now');
+        expect(await processMultiCommand('/pass "starts here', ref)).toBe('"starts here');
+        expect(await processMultiCommand('/pass ends here"', ref)).toBe('ends here"');
+        hooks.input = async () => '"quoted value"';
+        expect(await processMultiCommand("/input Value? | /pass {{pipe}}", ref)).toBe('"quoted value"');
+        expect(await processMultiCommand("/input Value? | /pass {{slot}}", ref)).toBe('"quoted value"');
+    });
+
     it("/send, /sendas, and /comment write through the module", async () => {
         const ref = freshChat();
         expect(await processMultiCommand("/send hello there")).toBe("");
@@ -431,7 +441,7 @@ describe("/multisend", () => {
             { index: -1, arg: { target: ref } },
             { index: -1, arg: { target: ref } },
         ]);
-        expect(texts(ref).slice(4)).toEqual(['"one', 'two"']);
+        expect(texts(ref).slice(4)).toEqual(["one", "two"]);
         expect(texts(other)).toEqual(["A", "B", "C", "D"]);
 
         // A local send in the other chat: `sendChat` admits this chat's parts beside it (the real
@@ -446,7 +456,7 @@ describe("/multisend", () => {
                 { index: -1, arg: { target: ref } },
                 { index: -1, arg: { target: ref } },
             ]);
-            expect(texts(ref).slice(6)).toEqual(['"three', 'four"']);
+            expect(texts(ref).slice(6)).toEqual(["three", "four"]);
             // The other chat's entry is still held, and nothing of this chat's remains.
             expect([...get(localSends).keys()]).toEqual([keyOf(other)]);
             expect(texts(other)).toEqual(["A", "B", "C", "D"]);
@@ -461,7 +471,7 @@ describe("/multisend", () => {
         hooks.onSend = () => lockFromFeed(ref);
         expect(await processMultiCommand('/multisend "one|||two|||three"')).toBe("");
         expect(hooks.sends).toHaveLength(1);
-        expect(texts(ref).slice(4)).toEqual(['"one']);
+        expect(texts(ref).slice(4)).toEqual(["one"]);
         expect(get(localSends).size).toBe(0);
     });
 
@@ -471,13 +481,13 @@ describe("/multisend", () => {
         const held: string[][] = [];
         const unsubscribe = localSends.subscribe((sends) => held.push([...sends.keys()]));
         try {
-            // Quoted: `|` outside quotes separates commands (the quotes stay part of the segments).
+            // Quoted: `|` outside quotes separates commands; the surrounding quotes are not sent.
             expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
             expect(hooks.sends).toEqual([
                 { index: -1, arg: { target: ref } },
                 { index: -1, arg: { target: ref } },
             ]);
-            expect(texts(ref).slice(4)).toEqual(['"one', 'two"']);
+            expect(texts(ref).slice(4)).toEqual(["one", "two"]);
             // Each send held the chat's entry alone and released it before the next.
             expect(held).toEqual([[], [entry], [], [entry], []]);
 
@@ -486,7 +496,7 @@ describe("/multisend", () => {
             hooks.sendResult.push(true, false);
             expect(await processMultiCommand('/multisend "three|||four|||five"')).toBe("");
             expect(hooks.sends).toHaveLength(2);
-            expect(texts(ref).slice(6)).toEqual(['"three', "four"]);
+            expect(texts(ref).slice(6)).toEqual(["three", "four"]);
             expect(held).toEqual([[entry], [], [entry], []]);
         } finally {
             unsubscribe();

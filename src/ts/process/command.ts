@@ -63,10 +63,11 @@ export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: read
  * server trigger's `v2Command` runs on the server too). The chat is pinned (kept loaded) for the
  * whole line, and loaded first.
  *
- * Commands are piped with `|` (outside double quotes): each one's result fills the first `{{pipe}}` and
- * the first `{{slot}}` of the next one's argument, and is that argument when it has none. `false` means
- * the line contains an unknown command, even when an earlier part of it ran: the screen then sends
- * the line as ordinary text. `/send` only appends a user message; it does not generate.
+ * Commands are piped with `|` (outside double quotes). One pair of surrounding double quotes is removed
+ * from each argument before substitution: each command's result fills the first `{{pipe}}` and the first
+ * `{{slot}}` of the next one's argument, and is that argument when it has none. `false` means the line
+ * contains an unknown command, even when an earlier part of it ran: the screen then sends the line as
+ * ordinary text. `/send` only appends a user message; it does not generate.
  */
 export async function processMultiCommand(command: string, ref: ChatRef | null = currentChatRef()) {
     const release = ref ? pinChat(ref) : null;
@@ -365,8 +366,11 @@ function commandParser(command: string, pipe: string) {
             argArray.push(sliced[i]);
         }
     }
-    const arg = argArray
-        .join(" ")
+    let arg = argArray.join(" ");
+    if (arg.length >= 2 && arg.startsWith('"') && arg.endsWith('"')) {
+        arg = arg.slice(1, -1);
+    }
+    arg = arg
         .replace("{{pipe}}", pipe) //STScript compatibility
         .replace("{{slot}}", pipe); //Risu default
     return { commandName, arg, namedArg };

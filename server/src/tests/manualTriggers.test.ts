@@ -752,10 +752,10 @@ describe("`/multisend` in a command job", () => {
     // An unquoted `|` splits the command line, so the separators of the `clear` form come out of
     // the executor's CBS of the argument (`{{u::7c}}` is `|`), as `commandExecutor.test.ts` does;
     // the trigger evaluates its value's CBS first, so the braces are escaped once more for it. The
-    // quoted form keeps its quotes in the parts, as the tab's own `/multisend` does.
+    // quoted form's surrounding quotes leave the parts, as in the tab's own `/multisend`.
     const sep = "{{u::7b}}{{u::7b}}u::7c}}".repeat(3);
     it(
-        "sends the queued parts on the server after the trigger's own effects, in order and with the quoted form's quotes kept, and refuses too many parts with an alertError and no sequence",
+        "sends the queued parts on the server after the trigger's own effects, in order and without the quoted form's quotes, and refuses too many parts with an alertError and no sequence",
         async () => {
             const chaId = await seedCharacter({
                 triggers: [
@@ -774,7 +774,7 @@ describe("`/multisend` in a command job", () => {
             // Three parts across both commands. This harness has no provider, so the first part's send
             // fails after its user message was appended behind the trigger's own effects.
             expect(terminal).toMatchObject({ type: "error", sequence: { total: 3, sent: 0 } });
-            expect(texts(await readChat(chaId))).toEqual(["char:greeting", "user:second", "char:after", 'user:"one']);
+            expect(texts(await readChat(chaId))).toEqual(["char:greeting", "user:second", "char:after", "user:one"]);
             expect(notices(events, "alertError")).toEqual([]);
             const many = await runManual(chaId, "many");
             expect(many.terminal?.type).toBe("done");

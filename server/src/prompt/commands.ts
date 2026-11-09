@@ -80,8 +80,9 @@ const HELP_TEXT = `
 
 /**
  * `processMultiCommand` of `src/ts/process/command.ts` on the job's chat: the same pipe and quote
- * splitting, argument parsing, and CBS of the arguments, each command reading and writing the job's
- * chat as stored when it runs. `/comment`, indexed/ranged `/cut`, and `/del` resolve through the job's
+ * splitting, argument parsing (removing one pair of surrounding double quotes before pipe/slot
+ * substitution), and CBS of the arguments, each command reading and writing the job's chat as stored
+ * when it runs. `/comment`, indexed/ranged `/cut`, and `/del` resolve through the job's
  * history view of that stored chat. Alerts and questions go through the job's channel (`/speak` as a
  * `tts` notice, `/?` as `alertMd`). `/multisend` splits parts on `|||` with an optional leading
  * `clear`, then delegates queueing to `server/src/jobs/runSetup.ts` through host.multisend for
@@ -354,8 +355,11 @@ function commandParser(command: string, pipe: string) {
             argArray.push(sliced[i]);
         }
     }
-    const arg = argArray
-        .join(" ")
+    let arg = argArray.join(" ");
+    if (arg.length >= 2 && arg.startsWith('"') && arg.endsWith('"')) {
+        arg = arg.slice(1, -1);
+    }
+    arg = arg
         .replace("{{pipe}}", pipe) //STScript compatibility
         .replace("{{slot}}", pipe); //Risu default
     return { commandName, arg, namedArg };

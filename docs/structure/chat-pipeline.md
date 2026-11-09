@@ -97,8 +97,10 @@
 ### Slash commands, groups, and search
 
 - `src/ts/process/command.ts`: the chat input's slash commands (`processMultiCommand`, `processCommand`,
-  `runMultisend`). Manual-trigger internals: [scripts and triggers](scripts-triggers.md). A command job runs its queued
-  `/multisend` parts on the server under one job id and chat slot ([generation](server-generation.md)).
+  `runMultisend`); `|` outside double quotes pipes commands, and one pair of surrounding quotes is removed from an
+  argument, so `/multisend "a|||b"` sends `a` and `b` (server twin: `server/src/prompt/commands.ts`). Manual-trigger
+  internals: [scripts and triggers](scripts-triggers.md). A command job runs its queued `/multisend` parts on the server
+  under one job id and chat slot ([generation](server-generation.md)).
 - `src/ts/process/files/multisend.ts`: file attachments (`postChatFile`).
 - `src/ts/process/group.ts`: group membership (`addGroupChar`, `rmCharFromGroup`).
 - `src/ts/process/infunctions.ts`: the tab's CBS calculator adapter (`calcString`).
