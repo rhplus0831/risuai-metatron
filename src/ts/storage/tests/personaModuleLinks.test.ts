@@ -1,6 +1,7 @@
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain, refJ, refK, warmMutationGraph } from "./mutationStoresHarness";
+import type { RisuModule } from "../../../../shared/modules.ts";
 
 // The persona module links (`RisuPersona.modules`) on the tab, over the real stores
 // (`mutationStoresHarness.ts`: character `c` with chats `k` and `j`): `getModules` adds the links of
@@ -104,6 +105,86 @@ afterEach(() => {
 });
 
 describe("getModules with persona module links", () => {
+    it("appends an unstored embedded module after stored namespace matches, feeds derived readers, and prefers a stored id", async () => {
+        const h = await boot();
+        const embedded: RisuModule = {
+            id: "shared-ns",
+            name: "Embedded",
+            description: "",
+            lorebook: [
+                {
+                    key: "key",
+                    secondkey: "",
+                    comment: "Embedded lore",
+                    content: "embedded lore",
+                    mode: "normal",
+                    insertorder: 0,
+                    alwaysActive: false,
+                    selective: false,
+                    bookVersion: 2,
+                },
+            ],
+            assets: [["embedded", "assets/embedded.png", "png"]],
+            regex: [{ comment: "Embedded regex", in: "old", out: "new", type: "editdisplay" }],
+            trigger: [{ comment: "Embedded trigger", type: "manual", conditions: [], effect: [] }],
+            lowLevelAccess: true,
+            customModuleToggle: "embedded-toggle",
+            mcp: { url: "http://embedded" },
+        };
+        h.collectionStore.updatePersona(h.minaId, { embeddedModule: embedded });
+        h.collectionStore.setEnabledModules(["global", "shared-ns"]);
+        expect(h.ids(refK)).toEqual(["global", "plain", "nsmod", "shared-ns"]);
+        expect(h.modules.getModules(refK).map((module) => module.name)).toEqual([
+            "Global",
+            "Plain",
+            "Namespaced",
+            "Embedded",
+        ]);
+        expect(plain(h.modules.getModuleLorebooks(refK))).toEqual(embedded.lorebook);
+        expect(h.modules.getModuleAssets(refK)).toEqual(embedded.assets);
+        expect(plain(h.modules.getModuleRegexScripts(refK))).toEqual(embedded.regex);
+        expect(plain(h.modules.getModuleTriggers(refK))).toEqual([{ ...embedded.trigger![0], lowLevelAccess: true }]);
+        expect(h.modules.getModuleToggles(refK)).toBe("\nembedded-toggle\n");
+        expect(h.modules.getModuleMcps(refK)).toEqual(["http://embedded"]);
+
+        h.collectionStore.addModule({ id: embedded.id, name: "Stored wins", description: "" });
+        expect(h.modules.getModules(refK).map((module) => module.name)).toEqual([
+            "Global",
+            "Plain",
+            "Namespaced",
+            "Stored wins",
+        ]);
+        expect(h.modules.getModuleAssets(refK)).toEqual([]);
+        expect(h.modules.getModuleLorebooks(refK)).toEqual([]);
+    });
+
+    it("reads same-id embedded replacements and each ref's bound persona when the stored-module cache is warm", async () => {
+        const { collectionStore: c, minaId, tabPersonaId, binding, modules, chat } = await boot();
+        const embedded = (name: string): RisuModule => ({
+            id: "shared-embedded",
+            name,
+            description: "",
+            assets: [[name, `assets/${name}.png`, "png"]],
+        });
+        c.updatePersona(minaId, { modules: [], embeddedModule: embedded("Mina first") });
+        c.updatePersona(tabPersonaId, { modules: [], embeddedModule: embedded("Other persona") });
+        chat.setChatMeta(refJ, { modules: [] });
+        binding.chatBindingPatch(refJ, { personaId: tabPersonaId });
+        const names = (ref = refK) => modules.getModules(ref).map((module) => module.name);
+        expect(names()).toEqual(["Global", "Mina first"]);
+        expect(names()).toEqual(["Global", "Mina first"]);
+        c.updatePersona(minaId, { embeddedModule: embedded("Mina replaced") });
+        expect(names()).toEqual(["Global", "Mina replaced"]);
+        expect(modules.getModuleAssets(refK)).toEqual([["Mina replaced", "assets/Mina replaced.png", "png"]]);
+        // Same enabled ids, linked ids and embedded id; only the bound object's contents differ.
+        expect(names(refJ)).toEqual(["Global", "Other persona"]);
+        expect(modules.getModuleAssets(refJ)).toEqual([["Other persona", "assets/Other persona.png", "png"]]);
+        expect(names(refK)).toEqual(["Global", "Mina replaced"]);
+        expect(modules.getModules().map((module) => module.name)).toEqual(["Global", "Mina replaced"]);
+        binding.chatBindingPatch(refK, { personaId: tabPersonaId });
+        expect(modules.getModules().map((module) => module.name)).toEqual(["Global", "Other persona"]);
+    });
+
     it("adds the bound persona's links by id only, once each, in stored order, MCP modules excepted; the legacy lists still match namespaces", async () => {
         const { ids, settings, minaId, collectionStore } = await boot();
         // `addPersona` stored the canonical links.

@@ -57,6 +57,9 @@ vi.mock("./tokenizer", () => ({ tokenize: vi.fn(async () => 0) }));
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+const originalGlobals = new Map(
+    ["location", "safeStructuredClone"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+);
 
 async function boot() {
     vi.resetModules();
@@ -129,7 +132,10 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    for (const [key, descriptor] of originalGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+    }
     server.current?.close();
 });
 
@@ -207,6 +213,28 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(character).toMatchObject({ name: "Off", desc: "off desc", firstMessage: "hi off" });
         expect(record).toMatchObject({ name: "Off", desc: "off desc" });
         expect(alerts.normal).toHaveBeenCalledWith(language.importedCharacter);
+    });
+
+    it("imports the off-spec char_name alias, preferring name and keeping the missing-name fallback", async () => {
+        const { cards, ids, added } = await boot();
+        for (const [names, expected] of [
+            [{ char_name: "Alias" }, "Alias"],
+            [{ name: "Explicit", char_name: "Alias" }, "Explicit"],
+            [{}, "unknown name"],
+        ] as const) {
+            const before = ids();
+            const card = { ...names, description: "off desc", first_mes: "off greeting" };
+            // JSON admission requires a name; unnamed PNG cards reach the same converter's fallback.
+            await cards.importCharacterProcess(
+                Object.keys(names).length > 0
+                    ? { name: "off.json", data: encode(card) }
+                    : { name: "off.png", data: pngWithText({ chara: card }) },
+            );
+            const { character, record } = await added(before);
+            expect(character).toMatchObject({ name: expected, desc: "off desc", firstMessage: "off greeting" });
+            expect(record).toMatchObject({ name: expected, desc: "off desc", firstMessage: "off greeting" });
+        }
+        expect(alerts.error).not.toHaveBeenCalled();
     });
 
     it.each([

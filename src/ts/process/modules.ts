@@ -725,30 +725,29 @@ export type ModuleChatRef = { chaId: string; chatId: string } | null | undefined
  * list, the chat's and the character's modules, the bound persona's embedded module's id, and the
  * prompt preset's integration list, all matched by id or namespace against `settings.modules` only
  * (`getModuleByIds`), plus the bound persona's linked modules, matched apart (by id only, MCP modules
- * excepted: `personaLinksModule`). The persona's `embeddedModule.id` joins the id list like the
- * others, so the embedded module itself is never returned: the id resolves only when a stored module
- * has that id (or namespace), and an embedded module that is not stored contributes nothing (the
- * server's `jobModules`, `server/src/jobs/cbsHost.ts`, does the same). The integration
+ * excepted: `personaLinksModule`). The persona's embedded object is appended when no stored module
+ * has its id; a stored module of that id takes precedence (the server's `jobModules` does the same).
+ * The integration
  * list is `scope`'s preset's (a parse for a captured context, a `presetChain` pick included), else
  * `chatRef`'s display preset's (the chat's binding), else the settings view's, which
  * follows the selected chat.
  */
 export function getModules(chatRef?: ModuleChatRef, scope?: PresetScope) {
     const revision = moduleMembershipRevision();
-    const { ids, personaIds } = enabledModuleIds(chatRef, scope);
+    const { ids, personaIds, embeddedModule } = enabledModuleIds(chatRef, scope);
     // The persona's links resolve apart from the other ids (by id only), so they key apart too.
     const idsJoined = JSON.stringify([ids, [...personaIds]]);
-    if (lastModules === idsJoined && lastModuleRevision === revision) {
-        return lastModuleData;
+    if (lastModules !== idsJoined || lastModuleRevision !== revision) {
+        // Membership is tracked by the revision, including on cache hits. Filtering need not track
+        // every wrapper read, which would give a cache miss different dependencies from a hit.
+        lastModuleData = untrack(() => getModuleByIds(ids, personaIds));
+        lastModules = idsJoined;
+        lastModuleRevision = revision;
     }
-
-    // Membership is tracked by the revision, including on cache hits. Filtering need not track
-    // every wrapper read, which would give a cache miss different dependencies from a hit.
-    const modules = untrack(() => getModuleByIds(ids, personaIds));
-    lastModules = idsJoined;
-    lastModuleRevision = revision;
-    lastModuleData = modules;
-    return modules;
+    // Read the bound object on cache hits too: another persona or replacement can reuse its id.
+    return embeddedModule && !untrack(() => lastModuleData.some((module) => module.id === embeddedModule.id))
+        ? [...lastModuleData, embeddedModule]
+        : lastModuleData;
 }
 
 /** The ids and persona links `getModules` resolves. */
@@ -775,7 +774,7 @@ function enabledModuleIds(chatRef: ModuleChatRef, scope: PresetScope | undefined
         const intList = integration.split(",").map((s) => s.trim());
         ids = ids.concat(intList);
     }
-    return { ids, personaIds };
+    return { ids, personaIds, embeddedModule: persona?.embeddedModule };
 }
 
 /** The lorebooks of `getModules(chatRef, scope)`. */

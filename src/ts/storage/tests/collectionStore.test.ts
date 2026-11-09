@@ -11,6 +11,7 @@ const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
+const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location")!;
 
 vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
@@ -62,7 +63,7 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    Object.defineProperty(globalThis, "location", originalLocation);
     server.current?.close();
 });
 
@@ -325,7 +326,57 @@ describe("personas", () => {
 });
 
 describe("modules", () => {
-    it("adds, replaces, patches, and removes modules by id, and keeps enabledModules on removal", async () => {
+    it("refuses duplicate module ids before changing modules or global enablement", async () => {
+        const { collectionStore: c, sync, settings, record, validation, fake } = await boot();
+        c.addModule({ id: "same", name: "Original", description: "kept" });
+        c.setEnabledModules(["same", "missing"]);
+        await sync.flushResources();
+        fake.requests.length = 0;
+        const before = plain(settings.modules);
+        expect(() => c.addModule({ id: "same", name: "Duplicate", description: "refused" })).toThrow(
+            validation.MutationValidationError,
+        );
+        expect(plain(settings.modules)).toEqual(before);
+        expect(plain(settings.enabledModules)).toEqual(["same", "missing"]);
+        await sync.flushResources();
+        expect(record("modules")).toEqual(before);
+        expect(record("enabledModules")).toEqual(["same", "missing"]);
+        expect(fake.batchCount()).toBe(0);
+    });
+
+    it("persists module removal with cleared global enablement while retaining persona, character and chat links", async () => {
+        const { collectionStore: c, characterStore, chat, sync, settings, record, fake } = await boot();
+        c.addModule({ id: "removed", name: "Removed" });
+        c.addModule({ id: "kept", name: "Kept" });
+        c.setEnabledModules(["removed", "kept"]);
+        const personaId = c.addPersona({ name: "Linked", modules: ["removed"] });
+        characterStore.updateCharacter("c", { modules: ["removed"] });
+        chat.setChatMeta({ chaId: "c", chatId: "k" }, { modules: ["removed"] });
+        await sync.flushResources();
+        fake.requests.length = 0;
+        expect(c.removeModule("removed")).toBe(true);
+        expect(plain(settings.enabledModules)).toEqual(["kept"]);
+        expect(plain(settings.personas.find((persona) => persona.id === personaId)?.modules)).toEqual(["removed"]);
+        expect(plain(characterStore.findCharacter("c")?.modules)).toEqual(["removed"]);
+        expect(chat.findChat({ chaId: "c", chatId: "k" })?.modules).toEqual(["removed"]);
+        await sync.flushResources();
+        expect(record("modules").map((module: { id: string }) => module.id)).toEqual(["kept"]);
+        expect(record("enabledModules")).toEqual(["kept"]);
+        expect(record("personas").find((persona: { id: string }) => persona.id === personaId).modules).toEqual([
+            "removed",
+        ]);
+        expect(record("characters", "c").modules).toEqual(["removed"]);
+        expect(fake.chat("c", "k")!.data.modules).toEqual(["removed"]);
+        expect(
+            fake
+                .batchBodies()[0]
+                .ops.map((op: { kind: string }) => op.kind)
+                .sort(),
+        ).toEqual(["enabledModules", "modules"]);
+        expect(c.removeModule("removed")).toBe(false);
+    });
+
+    it("adds, replaces, patches, and removes modules by id, and clears enabledModules on removal", async () => {
         const { sync, collectionStore, record, settings, refused, validation } = await boot();
         const generated = collectionStore.addModule({ name: "gen" });
         expect(collectionStore.addModule({ name: "given", id: "given" })).toBe("given");
@@ -340,7 +391,7 @@ describe("modules", () => {
         expect(plain(collectionStore.findModule("given"))).toEqual({ id: "given", name: "patched", toString: "t" });
         expect(collectionStore.removeModule(generated)).toBe(true);
         expect(collectionStore.removeModule(generated)).toBe(false);
-        expect(settings.enabledModules).toEqual(["given", generated]);
+        expect(settings.enabledModules).toEqual(["given"]);
         collectionStore.setModuleEnabled(generated, false);
         collectionStore.setModuleEnabled("third", true);
         collectionStore.setModuleEnabled("third", true);

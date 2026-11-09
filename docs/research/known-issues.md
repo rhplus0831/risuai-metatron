@@ -9,7 +9,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [backup-sync-hub](#backup-sync-hub) (2)
 - [build-test-platforms](#build-test-platforms) (1)
 - [cbs-rendering](#cbs-rendering) (13)
-- [characters-modules](#characters-modules) (3)
 - [chat-pipeline](#chat-pipeline) (9)
 - [chat-store](#chat-store) (1)
 - [diagnostics](#diagnostics) (1)
@@ -91,19 +90,6 @@ Guide: [CBS Template Language and Message Rendering](../structure/cbs-rendering.
   load the same scope.
 - A screenshot taken while a provisional display awaits a replacing answer can capture the cached text:
   `ChatBody.svelte`'s `whenRendered` waits for current parses and auto-translation, not the transform confirmation.
-
-## characters-modules
-
-Guide: [Characters, Cards, Modules, Personas](../structure/characters-modules.md#known-hazards).
-
-- An off-spec card with only `char_name` imports as "unknown name": the check accepts `char_name`, but
-  `convertOffSpecCards` reads `name`.
-- A bound persona's embedded module joins the effective modules only when a module with its id exists in
-  `settings.modules`: the tab's `getModules` and the server's `jobModules` add the persona's `embeddedModule.id`, then
-  resolve ids against the stored list only (`getModuleByIds`, `modulesByIds`), so an embedded module never stored
-  contributes nothing. Kept for parity as a candidate for a later fix.
-- `addModule` does not refuse a duplicate module id, so two modules can share one; `removeModule` removes the module but
-  leaves its id in `enabledModules` until that list changes.
 
 ## chat-pipeline
 

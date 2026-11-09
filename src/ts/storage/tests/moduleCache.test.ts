@@ -107,6 +107,34 @@ afterEach(() => {
 });
 
 describe("module membership cache", () => {
+    it("keeps a removed and re-added module globally disabled until explicitly enabled, invalidating tracked membership", async () => {
+        const { collectionStore: c, ids, modules, createProbe, flushSync, sync, record } = await boot();
+        await sync.flushResources();
+        const probe = createProbe(() => modules.getModules().map((entry) => entry.name));
+        try {
+            expect(probe.derived()).toEqual(["a", "b"]);
+            c.removeModule("a");
+            expect(ids()).toEqual(["b"]);
+            c.addModule(module("a", { name: "Replacement A" }));
+            expect(ids()).toEqual(["b"]);
+            expect(probe.derived()).toEqual(["b"]);
+            flushSync();
+            expect(probe.seen.at(-1)).toEqual(["b"]);
+            await sync.flushResources();
+            expect(record("enabledModules")).toEqual(["b"]);
+            expect(record("modules").find((entry: { id: string }) => entry.id === "a").name).toBe("Replacement A");
+            c.setModuleEnabled("a", true);
+            expect(ids()).toEqual(["b", "a"]);
+            expect(probe.derived()).toEqual(["b", "Replacement A"]);
+            flushSync();
+            expect(probe.seen.at(-1)).toEqual(["b", "Replacement A"]);
+            await sync.flushResources();
+            expect(record("enabledModules")).toEqual(["b", "a"]);
+        } finally {
+            probe.dispose();
+        }
+    });
+
     it("resolves a remote replacement immediately and wakes tracked readers without reading displaced wrappers", async () => {
         const { fake, sync, modules, ids, createProbe, flushSync } = await boot();
         await sync.flushResources();
@@ -169,6 +197,7 @@ describe("module membership cache", () => {
             c.removeModule("a");
             check(["b"]);
             c.addModule(module("a"));
+            c.setModuleEnabled("a", true);
             check(["b", "a"]);
             settings.modules.reverse();
             check(["a", "b"]);

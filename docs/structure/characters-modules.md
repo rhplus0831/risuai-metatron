@@ -203,7 +203,9 @@ module is added ([module import](#module-import)).
 - `getModules` combines global, character, chat, bound-persona, and prompt-preset sources. Id/namespace matching and
   persona-link matching differ; the server's `jobModules` in `server/src/jobs/cbsHost.ts` must stay aligned.
 - Persona links use the chat's bound persona, match stored modules by id, and skip MCP modules. The bound persona's
-  embedded-module id resolves against stored modules; an un-stored embedded object contributes nothing (see Issues).
+  embedded module resolves to a stored module with its id when present; otherwise the embedded object is appended.
+- `addModule` refuses duplicate ids; `removeModule` also clears the id from global `enabledModules`. Persona, character
+  and chat module links keep their ids.
 - Keep `character.modules`, `chat.modules`, `enabledModules`, and `moduleIntergration` distinct. Membership revisions
   invalidate the `getModules` memo synchronously; `getModuleAssets` returns detached tuples and must not be mutated.
 

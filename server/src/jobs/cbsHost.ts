@@ -351,8 +351,8 @@ function modulesByIds(modules: RisuModule[], ids: string[], personaIds: Readonly
  * `getModules` of `src/ts/process/modules.ts` over the scope: the global enabled list, the chat's and
  * the character's modules, the bound persona's embedded module id, and `moduleIntergration` (by id
  * or namespace), plus the bound persona's linked modules, matched apart (by id only, MCP modules
- * excepted: `personaLinksModule`); each id resolves only to a stored module (so an embedded module
- * resolves only when one with its id is in `modules`, as on the client).
+ * excepted: `personaLinksModule`). The embedded object is appended when no stored module has its
+ * id; a stored module of that id takes precedence, as on the client.
  */
 export function jobModules(scope: JobScope, ref?: ChatRef): RisuModule[] {
     const db = scope.db;
@@ -373,7 +373,12 @@ export function jobModules(scope: JobScope, ref?: ChatRef): RisuModule[] {
     if (db.moduleIntergration) {
         ids = ids.concat(db.moduleIntergration.split(",").map((s) => s.trim()));
     }
-    return modulesByIds(db.modules ?? [], ids, personaModuleIdSet(bound));
+    const modules = modulesByIds(db.modules ?? [], ids, personaModuleIdSet(bound));
+    const embeddedModule = bound?.embeddedModule;
+    if (embeddedModule && !modules.some((module) => module.id === embeddedModule.id)) {
+        modules.push(embeddedModule);
+    }
+    return modules;
 }
 
 /** `getModuleLorebooks`: the lore of `jobModules`, in module order. */

@@ -286,9 +286,12 @@ export function setModules(list: unknown) {
     settings.modules = Array.from(list, (module, index) => checkedModule(`modules[${index}]`, module));
 }
 
-/** Adds a module (a missing id is assigned). Returns the id. */
+/** Adds a module (a missing id is assigned), refusing a duplicate id without a write. Returns the id. */
 export function addModule(module: unknown): string {
     const entry = checkedModule("module", module);
+    if (findModule(entry.id)) {
+        throw new MutationValidationError("module", `a module with id ${entry.id} already exists`);
+    }
     settings.modules ??= [];
     settings.modules.push(entry);
     return entry.id;
@@ -321,13 +324,18 @@ export function updateModule(id: string, patch: Record<string, unknown>): boolea
     return true;
 }
 
-/** Deletes the module with `id`. Returns `false` when there is none. */
+/** Deletes the module with `id` and its global enablement. Returns `false` when there is none. */
 export function removeModule(id: string): boolean {
     const index = (settings.modules ?? []).findIndex((module) => module?.id === id);
     if (index === -1) {
         return false;
     }
-    settings.modules.splice(index, 1);
+    batchRecordWrites(() => {
+        settings.modules.splice(index, 1);
+        if (settings.enabledModules?.includes(id)) {
+            settings.enabledModules = settings.enabledModules.filter((enabled) => enabled !== id);
+        }
+    });
     return true;
 }
 
