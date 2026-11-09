@@ -1586,7 +1586,7 @@ interface RisuaiPluginAPI {
      * with an id and string name, icon, personaPrompt, and note).
      * Model roots follow the slot/profile rules in DatabaseSubset. Inside a hook they use its
      * captured model preset. A refused key warns and keeps its old value; other keys still apply.
-     * The `plugins` property is ignored; use setDatabase() to install plugins with user confirmation.
+     * The `plugins` property is ignored.
      * Existing characters with chats omitted or undefined keep their chats without loading them.
      * chatSummaries is ignored by character setters and never saved in a character record.
      * @param db - DatabaseSubset object to save
@@ -1600,6 +1600,9 @@ interface RisuaiPluginAPI {
      * Sets the database (full save with sync)
      * Model roots and per-key refusals follow the same rules as setDatabaseLite().
      * Omitted/undefined chats and chatSummaries follow the same rules as setDatabaseLite().
+     * In `plugins`, only API 3.0 plugins that are new or whose script changed are applied, each
+     * after the user confirms. Removing or reordering plugins and changes that only enable or
+     * disable them are ignored.
      * @param db - DatabaseSubset object to save
      * In a read-only transform/display continuation the entire call warns and returns undefined,
      * without writing or throwing, including custom keys. Use pluginStorage for plugin-private data.

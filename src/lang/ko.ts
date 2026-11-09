@@ -3457,7 +3457,9 @@ export const languageKorean = {
     blockquoteStyling: "인용문(Blockquote) 스타일 적용",
     dynamicModelRegistry: "동적 모델 목록 갱신",
     confirmInstallPluginViaPlugin:
-        "플러그인이 다른 플러그인을 추가로 설치하려고 합니다. 요청한 플러그인을 신뢰할 수 없다면 보안상 위험할 수 있습니다. 계속 설치하시겠습니까?",
+        '플러그인이 다른 플러그인 "{plugin}"을(를) 추가로 설치하려고 합니다. 요청한 플러그인을 신뢰할 수 없다면 보안상 위험할 수 있습니다. 계속 설치하시겠습니까?',
+    confirmReplacePluginViaPlugin:
+        '플러그인이 이미 설치된 플러그인 "{plugin}"을(를) 다른 스크립트로 교체하려고 합니다. 요청한 플러그인을 신뢰할 수 없다면 보안상 위험할 수 있습니다. 계속 교체하시겠습니까?',
     disableSeperateParameterChangeOnPresetChange: "프리셋 변경 시 분리된 모델 파라미터 유지",
     keepSessionAlive: "백그라운드 세션 유지",
     keepSessionAlivePip: "PIP 화면 사용",

@@ -3567,7 +3567,9 @@ export const languageEnglish = {
     blockquoteStyling: "Blockquote Styling",
     dynamicModelRegistry: "Dynamic Model Registry",
     confirmInstallPluginViaPlugin:
-        "You are trying to install a plugin via another plugin. This can be dangerous if the source plugin is not trustworthy. Do you want to continue?",
+        'You are trying to install the plugin "{plugin}" via another plugin. This can be dangerous if the source plugin is not trustworthy. Do you want to continue?',
+    confirmReplacePluginViaPlugin:
+        'Another plugin is trying to replace the installed plugin "{plugin}" with a different script. This can be dangerous if the source plugin is not trustworthy. Do you want to continue?',
     disableSeperateParameterChangeOnPresetChange: "Disable Separate Parameter Change on Preset Change",
     keepSessionAlive: "Keep Session Alive",
     keepSessionAlivePip: "Via PIP",

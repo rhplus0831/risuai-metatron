@@ -743,9 +743,10 @@ export async function handlePluginInstallViaPlugin(plugins: RisuPlugin[]) {
                 );
                 continue;
             }
-            const confirmation = await alertConfirm(
-                language.confirmInstallPluginViaPlugin.replace("{plugin}", plugin.name),
-            );
+            const confirmationMessage = settings.plugins.some((p: RisuPlugin) => p.name === plugin.name)
+                ? language.confirmReplacePluginViaPlugin
+                : language.confirmInstallPluginViaPlugin;
+            const confirmation = await alertConfirm(confirmationMessage.replace("{plugin}", plugin.name));
             if (confirmation) {
                 trimmedPlugins.push(plugin);
             }

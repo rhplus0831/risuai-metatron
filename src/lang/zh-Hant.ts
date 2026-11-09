@@ -1421,7 +1421,9 @@ export const languageChineseTraditional = {
     blockquoteStyling: "引用區塊樣式",
     dynamicModelRegistry: "動態模型註冊",
     confirmInstallPluginViaPlugin:
-        "您正嘗試透過另一個外掛安裝此外掛。若來源外掛不可信，可能會帶來安全風險。確定要繼續嗎？",
+        "您正嘗試透過另一個外掛安裝外掛「{plugin}」。若來源外掛不可信，可能會帶來安全風險。確定要繼續嗎？",
+    confirmReplacePluginViaPlugin:
+        "另一個外掛正嘗試以不同的程式碼取代已安裝的外掛「{plugin}」。若來源外掛不可信，可能會帶來安全風險。確定要繼續嗎？",
     disableSeperateParameterChangeOnPresetChange: "切換預設集時不要變更獨立參數設定",
     keepSessionAlive: "維持工作階段",
     keepSessionAlivePip: "透過子母畫面（PiP）",

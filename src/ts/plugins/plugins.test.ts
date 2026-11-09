@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Plugin API 2.0/2.1 was removed. Two contracts replaced it:
 // - `importPlugin` installs a script only when one of its `//@api` tokens is
@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
     alertError: vi.fn(),
-    alertConfirm: vi.fn(async () => true),
+    alertConfirm: vi.fn(async (_message: string) => true),
     loadV3Plugins: vi.fn(async (_plugins: any[]) => {}),
 }));
 
@@ -42,11 +42,11 @@ vi.mock("./apiV3/transpiler", () => ({
     pluginCodeTranspiler: vi.fn(async (code: string) => code),
 }));
 
-import { language } from "src/lang";
+import { changeLanguage, language } from "src/lang";
 import { hotReloading } from "src/ts/stores.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { importPlugin, loadPlugins } from "./plugins.svelte";
+import { handlePluginInstallViaPlugin, importPlugin, loadPlugins, type RisuPlugin } from "./plugins.svelte";
 import { pluginHooks } from "./pluginHooks";
 
 // The plugin functions read and write the plugin list through the settings views: the records are
@@ -91,6 +91,55 @@ describe("importPlugin API version gate", () => {
             enabled: true,
         });
         expect(mocks.loadV3Plugins).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("handlePluginInstallViaPlugin", () => {
+    const plugin: RisuPlugin = {
+        name: "Dialog Test Plugin",
+        script: 'console.log("incoming script");',
+        version: "3.0",
+        arguments: {},
+        realArg: {},
+        customLink: [],
+        argMeta: {},
+    };
+
+    beforeEach(() => {
+        mocks.alertConfirm.mockClear();
+    });
+
+    describe.each(["en", "ko", "zh-Hant"])("%s confirmations", (locale) => {
+        beforeEach(() => changeLanguage(locale));
+        afterEach(() => changeLanguage("en"));
+
+        it("names a new plugin using install wording", async () => {
+            await handlePluginInstallViaPlugin([{ ...plugin }]);
+
+            expect(mocks.alertConfirm).toHaveBeenCalledTimes(1);
+            const message = mocks.alertConfirm.mock.calls[0][0];
+            expect(message).toContain(plugin.name);
+            expect(message).toBe(language.confirmInstallPluginViaPlugin.replace("{plugin}", plugin.name));
+        });
+
+        it("names an installed plugin with a changed script using distinct replace wording", async () => {
+            settings.plugins = [{ ...plugin, script: 'console.log("installed script");' }];
+
+            await handlePluginInstallViaPlugin([{ ...plugin }]);
+
+            expect(mocks.alertConfirm).toHaveBeenCalledTimes(1);
+            const message = mocks.alertConfirm.mock.calls[0][0];
+            expect(message).toContain(plugin.name);
+            expect(message).toBe(language.confirmReplacePluginViaPlugin.replace("{plugin}", plugin.name));
+        });
+    });
+
+    it("does not ask about an installed plugin with the same name and script", async () => {
+        settings.plugins = [{ ...plugin }];
+
+        await handlePluginInstallViaPlugin([{ ...plugin }]);
+
+        expect(mocks.alertConfirm).not.toHaveBeenCalled();
     });
 });
 
