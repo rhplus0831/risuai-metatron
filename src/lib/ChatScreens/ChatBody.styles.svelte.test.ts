@@ -150,7 +150,6 @@ describe("ChatBody under a chat style registry", () => {
             translated: false,
             translating: false,
             retranslate: false,
-            modelShortName: "",
         });
         mounted.push(mount(ChatBody, { target, props }));
         await until(() => target.querySelector("p.x-risu-probe") !== null);

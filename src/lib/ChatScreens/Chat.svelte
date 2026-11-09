@@ -1419,9 +1419,6 @@
                     {bodyRoot}
                     renderRevision={chatBodyRevision}
                     {onMixedRender}
-                    modelShortName={messageGenerationInfo?.model
-                        ? getModelInfo(messageGenerationInfo.model).shortName
-                        : ""}
                     role={role ?? null}
                     bind:translated
                     bind:translating

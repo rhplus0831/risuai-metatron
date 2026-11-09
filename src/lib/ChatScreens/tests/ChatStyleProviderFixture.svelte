@@ -31,7 +31,6 @@
                 translated={false}
                 translating={false}
                 retranslate={false}
-                modelShortName=""
             />
         </div>
     {/each}

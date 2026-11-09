@@ -243,6 +243,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `ContextMeter.svelte.test.ts` stubs the chip's rectangle (happy-dom has no layout) and the count route: each count is
   one request the test answers when it chooses, so fake timers and deferred answers drive the debounce and the races.
 - `ChatBody.svelte.test.ts` mocks `ParseMarkdown` as deferred parses (`hoisted.parses`) the test settles by text.
+- `DefaultChatScreen.drafts.test.ts` mounts the screen with its children mocked; `tests/ChatsStub.svelte` stands in for
+  `Chats` (`followsLatest`, `scrollToLatestMessage`, bindable `holding`, the props it got) for the notification reveal,
+  swiped-reroll alignment, and the held load-more skip.
 - `screenshotExport.test.ts` fakes canvases (happy-dom has no 2D context), counting sizes, draws, and releases.
 - `src/lib/UI/tests/`: `reactiveProps.svelte.ts` changes a mounted component's props from a `.test.ts` file;
   `LazyCharImageFixture.svelte` awaits the image as real consumers do. `ChatStyleProviderFixture.svelte`

@@ -71,7 +71,6 @@ function render(additionalAssets: Asset[]) {
         translated: false,
         translating: false,
         retranslate: false,
-        modelShortName: "",
     });
     mounted.push(mount(ChatBody, { target, props }));
     return { target, props };

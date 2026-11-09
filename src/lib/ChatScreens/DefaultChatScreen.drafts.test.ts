@@ -5,6 +5,17 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createFakeLockManager } from "src/ts/storage/tests/fakeLockManager";
 import { FakeResourceServer } from "src/ts/storage/tests/fakeResourceServer";
 import { language } from "src/lang";
+import type { ChatGroup } from "../../../shared/chats";
+import type { Chat } from "../../../shared/database";
+import type { ResourceBatchResult } from "../../../shared/resources";
+import type { ChatsControl } from "./tests/ChatsStub.svelte";
+
+const transcript = vi.hoisted(() => ({
+    followsLatest: vi.fn<ChatsControl["followsLatest"]>(),
+    scrollToLatestMessage: vi.fn<ChatsControl["scrollToLatestMessage"]>(),
+    readProps: null as ChatsControl["readProps"],
+    setHolding: null as ChatsControl["setHolding"],
+}));
 
 const io = vi.hoisted(() => ({
     server: null as FakeResourceServer | null,
@@ -38,7 +49,6 @@ vi.mock("src/ts/util", async (original) => ({
 }));
 for (const child of [
     "./Chat.svelte",
-    "./Chats.svelte",
     "./Suggestion.svelte",
     "./CreatorQuote.svelte",
     "./ContextMeter.svelte",
@@ -91,7 +101,15 @@ afterEach(async () => {
     else Reflect.deleteProperty(navigator, "locks");
 });
 
-async function mountComposer({ reload = false } = {}) {
+async function mountComposer({
+    reload = false,
+    configureChat,
+    chatLoadInitialPages,
+}: {
+    reload?: boolean;
+    configureChat?: (chat: Chat) => void;
+    chatLoadInitialPages?: number;
+} = {}) {
     // Clearing the old page's timers also resets the fake clock; retain its time across reload.
     const pageTime = reload ? Date.now() : 1_700_000_000_000;
     if (reload) {
@@ -103,10 +121,19 @@ async function mountComposer({ reload = false } = {}) {
     }
     // On reload, keep IndexedDB and the server but discard every client module, including the composer.
     vi.resetModules();
+    vi.doMock("./Chats.svelte", async () => {
+        const stub = await import("./tests/ChatsStub.svelte");
+        stub.setChatsControl(transcript);
+        return { default: stub.default };
+    });
     io.createJob.mockReset();
     io.generationFetch.mockReset();
     io.confirm.mockReset().mockResolvedValue(false);
     io.alertError.mockReset();
+    transcript.followsLatest.mockReset().mockReturnValue(false);
+    transcript.scrollToLatestMessage.mockReset();
+    transcript.readProps = null;
+    transcript.setHolding = null;
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.setSystemTime(pageTime);
     if (!reload) {
@@ -152,6 +179,7 @@ async function mountComposer({ reload = false } = {}) {
         globalLore: [],
         customscript: [],
     };
+    configureChat?.(chats[0]);
     installFlatDatabaseWithChats({
         characters: [{ ...character, chats }],
         botPresets: [{ id: "preset", name: "Preset" }],
@@ -160,6 +188,7 @@ async function mountComposer({ reload = false } = {}) {
         plugins: [],
         theme: "classic",
         autoScrollToNewMessage: false,
+        ...(chatLoadInitialPages === undefined ? {} : { chatLoadInitialPages }),
         useAutoTranslateInput: false,
     });
     seedChats(
@@ -198,6 +227,129 @@ async function mountComposer({ reload = false } = {}) {
 
     return { target, input, type, click, menuItem, menu, hide, journal };
 }
+
+it("reveals the latest message once after a notification request and clears the request before the tick", async () => {
+    await mountComposer();
+    const { ShowLatestMessageStore } = await import("src/ts/stores.svelte");
+    expect(transcript.readProps!().messages.at(-1)?.chatId).toBe("a-answer");
+    expect(transcript.scrollToLatestMessage).not.toHaveBeenCalled();
+
+    ShowLatestMessageStore.value = true;
+    flushSync();
+    expect(ShowLatestMessageStore.value).toBe(false);
+    expect(transcript.scrollToLatestMessage).not.toHaveBeenCalled();
+
+    await tick();
+    expect(transcript.scrollToLatestMessage).toHaveBeenCalledTimes(1);
+    expect(transcript.scrollToLatestMessage.mock.calls[0][0].messages.at(-1)?.chatId).toBe("a-answer");
+    await drive(Promise.resolve());
+    expect(ShowLatestMessageStore.value).toBe(false);
+    expect(transcript.scrollToLatestMessage).toHaveBeenCalledTimes(1);
+});
+
+it("aligns swapped replies from the reader's follow state before the swap and only in the same chat", async () => {
+    const { target, click, menu, menuItem } = await mountComposer({
+        configureChat: (chat) => {
+            Object.assign(chat.message[1], {
+                candidates: [
+                    { id: "first", data: "earlier answer" },
+                    { id: "second", data: "another answer" },
+                ],
+                selected: 0,
+            });
+        },
+    });
+    const { settings } = await import("src/ts/storage/settingsViews.svelte");
+    const { flushResources } = await import("src/ts/storage/resourceSync.svelte");
+    // This screen harness's resource fake handles records; acknowledge its candidate writes too.
+    const fetch = io.server!.fetch;
+    let revision = 1;
+    vi.spyOn(io.server!, "fetch").mockImplementation(async (path, init) => {
+        const response = await fetch(path, init);
+        if (path !== "/api/resources/batch" || !response.ok) return response;
+        const body = JSON.parse(String(init?.body)) as { chats?: ChatGroup[] };
+        const result = (await response.json()) as ResourceBatchResult;
+        return Response.json({
+            ...result,
+            chats: (body.chats ?? []).map(({ characterId, chatId }) => ({
+                characterId,
+                id: chatId,
+                revision: `r${++revision}`,
+                selections: ["applied"],
+            })),
+        });
+    });
+    settings.ui.autoScrollToNewMessage = true;
+    settings.ui.alwaysScrollToNewMessage = false;
+    settings.ui.sideMenuRerollButton = true;
+    // Swapping replies changes the transcript's follow answer. Both directions must
+    // use the old answer, even though the new reply has rendered before the save settles.
+    transcript.followsLatest.mockImplementation((props) => props.messages.at(-1)?.selected === 0);
+    flushSync();
+    menu();
+    click(menuItem(language.reroll));
+    expect(transcript.readProps!().messages.at(-1)?.data).toBe("another answer");
+    expect(transcript.scrollToLatestMessage).not.toHaveBeenCalled();
+    await drive(flushResources());
+    await tick();
+    expect(transcript.scrollToLatestMessage).toHaveBeenCalledTimes(1);
+    expect(transcript.scrollToLatestMessage.mock.calls[0][0].messages.at(-1)?.data).toBe("another answer");
+
+    transcript.scrollToLatestMessage.mockClear();
+    click(target.querySelector(".button-icon-unreroll"));
+    expect(transcript.readProps!().messages.at(-1)?.data).toBe("earlier answer");
+    await drive(flushResources());
+    await tick();
+    expect(transcript.scrollToLatestMessage).not.toHaveBeenCalled();
+
+    // A follow that was requested in A must not align B when A's candidate save finishes.
+    click(target.querySelector(".button-icon-reroll"));
+    selectChat("c", "b");
+    flushSync();
+    await drive(flushResources());
+    await tick();
+    expect(transcript.readProps!().messages.at(-1)?.chatId).toBe("b-answer");
+    expect(transcript.scrollToLatestMessage).not.toHaveBeenCalled();
+    expect(io.alertError).not.toHaveBeenCalled();
+    expect(io.createJob).not.toHaveBeenCalled();
+});
+
+it("skips loading older messages while transcript rows are held and resumes within 100px after release", async () => {
+    const { target } = await mountComposer({
+        chatLoadInitialPages: 2,
+        configureChat: (chat) => {
+            for (let index = 2; index < 8; index++) {
+                chat.message.push({ role: "char", data: `reply ${index}`, chatId: `a-answer-${index}` });
+            }
+        },
+    });
+    const { settings } = await import("src/ts/storage/settingsViews.svelte");
+    settings.ui.chatLoadAdditionalPages = 3;
+    const scroller = target.querySelector<HTMLElement>(".default-chat-screen")!;
+    Object.defineProperties(scroller, {
+        scrollHeight: { value: 1000, configurable: true },
+        clientHeight: { value: 400, configurable: true },
+    });
+    const scroll = (distanceFromOldest: number) => {
+        scroller.scrollTop = distanceFromOldest - 600;
+        scroller.dispatchEvent(new Event("scroll"));
+        flushSync();
+    };
+    expect(transcript.readProps!().loadPages).toBe(2);
+    expect(transcript.readProps!().messages).toHaveLength(8);
+
+    transcript.setHolding!(true);
+    flushSync();
+    scroll(99);
+    expect(transcript.readProps!().loadPages).toBe(2);
+
+    transcript.setHolding!(false);
+    flushSync();
+    scroll(100);
+    expect(transcript.readProps!().loadPages).toBe(2);
+    scroll(99);
+    expect(transcript.readProps!().loadPages).toBe(5);
+});
 
 it("names the shown persona and character in the placeholder and asks for the setup of an incomplete chat", async () => {
     const { input } = await mountComposer();

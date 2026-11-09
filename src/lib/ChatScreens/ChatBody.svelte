@@ -53,8 +53,8 @@
      * A message row's body (`Chat.svelte`): `markParsing` translates and parses the display text, and the result
      * goes in through `{@html}`. While a render is pending the body shows `lastParsed`: the last finished render,
      * or the loading markup a translation sets with `showTranslationLoading`.
-     * `prepareShownBody` reuses the last prepared body while pending only for the same source, `modelShortName`
-     * and `hideAllImages`; `:then` always prepares again and refreshes it, so CBS variables read inside a pending
+     * `prepareShownBody` reuses the last prepared body while pending only for the same source and
+     * `hideAllImages`; `:then` always prepares again and refreshes it, so CBS variables read inside a pending
      * body update on the next run.
      *
      * Each render run owns an `AbortController` (`parseController`), aborted when the next run starts in
@@ -86,7 +86,6 @@
         /** Reports a completed render whose server display transform may have mixed chat states. */
         onMixedRender?: (capture: CapturedTransform) => void;
         bodyRoot?: HTMLElement | null;
-        modelShortName: string;
         /** The row's message is streaming: the rendered path shows the original and translates once it ends. */
         streaming?: boolean;
         renderRawStreaming?: boolean;
@@ -126,7 +125,6 @@
         renderRevision = 0,
         onMixedRender,
         bodyRoot,
-        modelShortName = "",
         streaming = false,
         renderRawStreaming = false,
         rawStreamingText = "",
@@ -574,25 +572,18 @@
     let shownMemo:
         | {
               source: string;
-              model: string;
               hideImages: boolean;
               body: ReturnType<typeof shownBody>;
           }
         | undefined;
 
     function prepareShownBody(source: string, pending = false) {
-        const model = modelShortName;
         const hideImages = settings.ui.hideAllImages;
-        if (
-            pending &&
-            shownMemo?.source === source &&
-            shownMemo.model === model &&
-            shownMemo.hideImages === hideImages
-        ) {
+        if (pending && shownMemo?.source === source && shownMemo.hideImages === hideImages) {
             return shownMemo.body;
         }
         const body = shownBody(source);
-        shownMemo = { source, model, hideImages, body };
+        shownMemo = { source, hideImages, body };
         return body;
     }
 

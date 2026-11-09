@@ -99,7 +99,6 @@ describe("asset read failures in chat renders", () => {
                 translated: false,
                 translating: false,
                 retranslate: false,
-                modelShortName: "",
             },
         });
         mounted.push(instance);

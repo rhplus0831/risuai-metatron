@@ -11,7 +11,7 @@ type Deferred = { text: string; resolve: (html: string) => void };
 const hoisted = vi.hoisted(() => ({
     parses: [] as Deferred[],
     settings: {
-        ui: { showTranslationLoading: true },
+        ui: { showTranslationLoading: true, hideAllImages: false },
         memoryTranslateMedia: {} as Partial<
             typeof import("src/ts/storage/settingsViews.svelte").settings.memoryTranslateMedia
         >,
@@ -69,6 +69,7 @@ afterEach(async () => {
     hoisted.parses.length = 0;
     document.body.innerHTML = "";
     hoisted.settings.memoryTranslateMedia = {};
+    hoisted.settings.ui.hideAllImages = false;
     vi.mocked(translateHTML)
         .mockReset()
         .mockImplementation(async (html) => html);
@@ -97,7 +98,6 @@ describe("ChatBody pending body", () => {
             translated: false,
             translating: false,
             retranslate: false,
-            modelShortName: "",
             autoTranslate: true,
         });
         const instance = mount(ChatBody, { target, props });
@@ -133,7 +133,6 @@ describe("ChatBody pending body", () => {
             translated: false,
             translating: false,
             retranslate: false,
-            modelShortName: "",
         });
         mounted.push(mount(ChatBody, { target, props }));
         flushSync();
@@ -170,7 +169,6 @@ describe("ChatBody pending body", () => {
             translated: false,
             translating: false,
             retranslate: false,
-            modelShortName: "",
             autoTranslate: true,
             streaming: true,
         });
@@ -239,7 +237,6 @@ describe("ChatBody parse errors", () => {
                         translated: false,
                         translating: false,
                         retranslate: false,
-                        modelShortName: "",
                     },
                 });
                 mounted.push(instance);
@@ -275,7 +272,6 @@ function bodyProps() {
         translated: false,
         translating: false,
         retranslate: false,
-        modelShortName: "",
         renderRevision: 0,
         autoTranslate: false,
     };
@@ -707,7 +703,7 @@ describe("ChatBody render lifetime", () => {
         expect(target.textContent).toBe("Newest translation");
     });
 
-    it("reuses a pending body for the same source and prepares it again when the model name changes", async () => {
+    it("reuses a pending body for the same source and prepares it again when hideAllImages changes", async () => {
         const props = $state(bodyProps());
         const { instance, target } = mountBody(props);
         hoisted.parses[0].resolve("<p>Settled body</p>");
@@ -715,24 +711,23 @@ describe("ChatBody render lifetime", () => {
         await instance.whenRendered();
         vi.mocked(trimMarkdown).mockClear();
 
-        // The settled branch primed reuse. A new model makes the first pending render prepare once.
-        props.modelShortName = "model-a";
+        // The settled branch primed reuse: a pending render of the same source prepares nothing.
         props.renderRevision++;
         flushSync();
-        expect(trimMarkdown).toHaveBeenCalledExactlyOnceWith("<p>Settled body</p>");
+        expect(ParseMarkdown).toHaveBeenCalledTimes(2);
+        expect(trimMarkdown).not.toHaveBeenCalled();
+        expect(target.textContent).toBe("Settled body");
+
+        // Settled again with images shown; once they are hidden, the next pending render prepares again.
+        hoisted.parses[1].resolve("<p>Settled body</p>");
+        await drain();
+        await instance.whenRendered();
+        vi.mocked(trimMarkdown).mockClear();
+        hoisted.settings.ui.hideAllImages = true;
         props.renderRevision++;
         flushSync();
         expect(ParseMarkdown).toHaveBeenCalledTimes(3);
-        expect(trimMarkdown).toHaveBeenCalledTimes(1);
-        expect(target.textContent).toBe("Settled body");
-
-        props.modelShortName = "model-b";
-        flushSync();
-        expect(trimMarkdown).toHaveBeenCalledTimes(2);
-        expect(vi.mocked(trimMarkdown).mock.calls.map(([source]) => source)).toEqual([
-            "<p>Settled body</p>",
-            "<p>Settled body</p>",
-        ]);
+        expect(trimMarkdown).toHaveBeenCalledExactlyOnceWith("<p>Settled body</p>");
         expect(target.textContent).toBe("Settled body");
     });
 });

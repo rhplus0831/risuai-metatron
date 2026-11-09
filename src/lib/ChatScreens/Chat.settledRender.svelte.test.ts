@@ -626,7 +626,6 @@ describe("confirmed text on remount", () => {
                 autoTranslate: true,
                 translating: false,
                 retranslate: false,
-                modelShortName: "",
             },
         });
         mounted.push(instance);
