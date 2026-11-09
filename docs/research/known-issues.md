@@ -10,7 +10,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [chat-pipeline](#chat-pipeline) (1)
 - [diagnostics](#diagnostics) (1)
 - [draft-recovery](#draft-recovery) (2)
-- [llm-requests](#llm-requests) (2)
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
 - [plugin-sandbox](#plugin-sandbox) (3)
@@ -67,16 +66,6 @@ Guide: [Draft Recovery: Journal, Composer Rows, Recovery Drafts](../structure/dr
 - A stale `pending` row can name ops that landed under a merged or reanchored id. If its before value matches again (or
   an appended id has since been deleted), a later recovery can re-apply those ops. Coalescing and deliberate withdrawal
   also mean a remembered id does not prove that every older form of its intent was applied.
-
-## llm-requests
-
-Guide: [LLM Requests, Model Catalogue, Tokenizers](../structure/llm-requests.md#known-hazards).
-
-- The `/proxy2` media, memory, and count rows and the Google/Anthropic/OpenAI discovery lists keep flat default keys;
-  they do not accept a profile. A model-profile follow-up (Remaining Follow-Ups in the
-  [archive](../archived-plan/README.md)).
-- A profile whose `modelId` names a catalogue id that is later renamed or removed keeps it: unless the id matches a
-  dynamic template, the profile resolves as an as-is OpenAI-compatible model until the user picks another model.
 
 ## memory
 

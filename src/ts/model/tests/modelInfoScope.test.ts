@@ -6,7 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // refused, never redirected to the selection).
 
 vi.mock("src/ts/plugins/apiV3/v3.svelte", () => ({ customV3ProviderMetaStore: [] }));
-vi.mock("src/ts/network/auxFetch", () => ({ auxFetch: vi.fn() }));
+vi.mock("src/ts/network/auxFetch", async (importOriginal) => {
+    const original = await importOriginal<typeof import("src/ts/network/auxFetch")>();
+    return { ...original, auxFetch: vi.fn<typeof original.auxFetch>() };
+});
 vi.mock("src/ts/storage/llmSecrets.svelte", () => ({ isSecretSet: () => true }));
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
@@ -96,10 +99,44 @@ const catalogueLength = LLMModels.length;
 afterEach(() => {
     LLMModels.splice(catalogueLength);
     customV3ProviderMetaStore.length = 0;
+    vi.mocked(auxFetch).mockReset();
     vi.restoreAllMocks();
 });
 
 describe("dynamic registry discovery", () => {
+    it("discovers only the edited profile's provider, with all default keys set, once the registry is enabled", async () => {
+        settings.modelProfiles.push(
+            normalizeModelProfile({ id: "edited", modelId: "claude-opus-5", credentialId: "named" }),
+        );
+        vi.mocked(auxFetch).mockImplementation(async () => Response.json({ data: [] }));
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        settings.providers.dynamicModelRegistry = false;
+        await registerModelDynamic("edited");
+        expect(auxFetch).not.toHaveBeenCalled();
+
+        settings.providers.dynamicModelRegistry = true;
+        await registerModelDynamic("edited");
+        expect(auxFetch).toHaveBeenCalledExactlyOnceWith("anthropic-models", "https://api.anthropic.com/v1/models", {
+            method: "GET",
+            profileId: "edited",
+            headers: { "anthropic-version": "2023-06-01" },
+        });
+    });
+
+    it("skips a deleted profile without falling back to default discovery, while a call without a profile still uses defaults", async () => {
+        settings.providers.dynamicModelRegistry = true;
+        vi.mocked(auxFetch).mockImplementation(async () => Response.json({ models: [], data: [] }));
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        await registerModelDynamic("deleted-profile");
+        expect(auxFetch).not.toHaveBeenCalled();
+
+        await registerModelDynamic();
+        expect(vi.mocked(auxFetch).mock.calls.map(([op, , init]) => [op, init?.profileId])).toEqual([
+            ["google-models", undefined],
+            ["anthropic-models", undefined],
+            ["openai-models", undefined],
+        ]);
+    });
     it("resolves a saved Anthropic id with static capabilities before registry discovery", () => {
         selectModelPreset("plain");
         settings.providers.dynamicModelRegistry = false;

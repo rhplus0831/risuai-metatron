@@ -1130,6 +1130,8 @@ export const languageKorean = {
         keepOne: "연결을 최소 하나 이상 유지해야 합니다.",
         profileLabel: (name: string, model: string) => `${name} — ${model}`,
         missingProfile: (id: string) => `연결 없음 (${id})`,
+        unresolvedModelNotice:
+            "이 모델 ID는 현재 모델 목록에 없습니다. 다른 모델을 선택할 때까지 OpenAI 호환 엔드포인트로 ID를 그대로 전송합니다.",
         missingSlotHint: "이 슬롯에 지정된 연결이 삭제되었습니다. 요청을 보내기 전에 다른 연결을 선택해 주세요.",
         noProfile: (model: string) => `연결 없이 사용 (${model})`,
         createFromBare: "이 모델로 연결 만들기",

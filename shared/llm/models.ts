@@ -765,6 +765,32 @@ export type ModelResolution = {
  * string; an unmatched `xcustom:::` or `pluginmodel:::` id falls through to the later steps.
  */
 export function resolveModelInfo(id: string | null | undefined, from: ModelResolution = {}): LLMModel {
+    return (
+        resolveKnownModelInfo(id, from) ?? {
+            id: id ?? "",
+            name: id ?? "",
+            shortName: id ?? "",
+            fullName: id ?? "",
+            internalID: id ?? "",
+            provider: LLMProvider.AsIs,
+            format: LLMFormat.OpenAICompatible,
+            flags: [],
+            parameters: OpenAIParameters,
+            tokenizer: LLMTokenizer.Unknown,
+        }
+    );
+}
+
+/**
+ * Whether `resolveModelInfo` reaches its final as-is OpenAI-compatible fallback. Uses the same lookup, including
+ * custom, plugin, extra, and dynamic models; an empty id's separate Unknown descriptor is not this fallback.
+ */
+export function isUnresolvedModelId(id: string | null | undefined, from: ModelResolution = {}): boolean {
+    return resolveKnownModelInfo(id, from) === null;
+}
+
+/** Resolution before the final as-is fallback, shared by the descriptor reader and the editor's notice. */
+function resolveKnownModelInfo(id: string | null | undefined, from: ModelResolution): LLMModel | null {
     if (!id) {
         return {
             id: "",
@@ -860,16 +886,5 @@ export function resolveModelInfo(id: string | null | undefined, from: ModelResol
         return dynamic;
     }
 
-    return {
-        id,
-        name: id,
-        shortName: id,
-        fullName: id,
-        internalID: id,
-        provider: LLMProvider.AsIs,
-        format: LLMFormat.OpenAICompatible,
-        flags: [],
-        parameters: OpenAIParameters,
-        tokenizer: LLMTokenizer.Unknown,
-    };
+    return null;
 }

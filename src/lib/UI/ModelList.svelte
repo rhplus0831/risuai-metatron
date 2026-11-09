@@ -4,7 +4,7 @@
     import Accordion from "./Accordion.svelte";
     import { language } from "src/lang";
     import CheckInput from "./GUI/CheckInput.svelte";
-    import { getModelInfo, getModelList } from "src/ts/model/modellist";
+    import { getModelInfo, getModelList, registerModelDynamic } from "src/ts/model/modellist";
     import { ArrowLeft } from "@lucide/svelte";
 
     /**
@@ -12,8 +12,9 @@
      * (`src/ts/model/modellist.ts` `getModelList`, grouped by provider, catalogue entries recommended only unless the
      * user asks for all; registered plugin models stay listed), the Horde models (`src/ts/horde/getModels.ts`), the
      * custom models, and a "none" entry when `blankable`. Choosing writes only the bindable `value` and calls
-     * `onChange`; it writes no slot or profile itself (the profile editor binds it to a profile's `modelId`). It
-     * fetches nothing on credential changes.
+     * `onChange`; it writes no slot or profile itself (the profile editor binds it to a profile's `modelId`).
+     * With `profileId`, opening also discovers that profile's provider models when the dynamic registry is enabled
+     * and refreshes the list after discovery. It fetches nothing on credential changes alone.
      */
 
     interface Props {
@@ -27,10 +28,28 @@
         blankable?: boolean;
         excludesPrefix?: string;
         noMargin?: boolean;
+        profileId?: string;
     }
 
-    let { value = $bindable(""), onChange = (v) => {}, onclick, blankable, excludesPrefix, noMargin }: Props = $props();
+    let {
+        value = $bindable(""),
+        onChange = (v) => {},
+        onclick,
+        blankable,
+        excludesPrefix,
+        noMargin,
+        profileId,
+    }: Props = $props();
     let openOptions = $state(false);
+    let discoveryVersion = $state(0);
+
+    async function openModels() {
+        openOptions = true;
+        if (profileId !== undefined) {
+            await registerModelDynamic(profileId);
+            discoveryVersion += 1;
+        }
+    }
 
     function changeModel(name: string) {
         value = name;
@@ -38,12 +57,13 @@
         onChange(name);
     }
     let showUnrec = $state(false);
-    let providers = $derived(
-        getModelList({
+    let providers = $derived.by(() => {
+        discoveryVersion;
+        return getModelList({
             recommendedOnly: !showUnrec,
             groupedByProvider: true,
-        }),
-    );
+        });
+    });
 </script>
 
 {#if openOptions}
@@ -159,9 +179,7 @@
 {/if}
 
 <button
-    onclick={() => {
-        openOptions = true;
-    }}
+    onclick={openModels}
     class={{
         "drop-shadow-lg p-3 flex justify-center items-center ml-2 mr-2 rounded-lg bg-darkbutton border-darkborderc border": true,
         "my-4": !noMargin,

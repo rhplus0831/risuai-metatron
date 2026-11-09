@@ -17,6 +17,7 @@ import {
     type LLMModel,
 } from "./types";
 import { BASE_LLM_MODELS, dynamicModelOf, resolveModelInfo } from "../../../shared/llm/models.ts";
+import { credentialSlotOf } from "../../../shared/llm/credentialSlots.ts";
 import type { ModelProfile } from "../../../shared/database.ts";
 import type { ModelModeExtended } from "../../../shared/llm/request.ts";
 import { presetFieldValue } from "../../../shared/presets.ts";
@@ -28,7 +29,7 @@ import { customV3ProviderMetaStore } from "../plugins/apiV3/v3.svelte";
  * The tab's model catalogue, discovery registry, and picker grouping over `shared/llm/models.ts`.
  * Discovery appends to a detached base catalogue and tracks its ids separately; plugin descriptors are added only
  * when listing or resolving. Profile capability overrides follow an explicit profile or captured preset scope,
- * with null selecting schema defaults. Provider discovery uses server-held default credentials through
+ * with null selecting schema defaults. Provider discovery uses server-held default or profile credentials through
  * `src/ts/network/auxFetch.ts`; dynamic-id reconstruction itself does not require discovery to have run.
  */
 
@@ -56,21 +57,28 @@ function pushDynamicModel(model: LLMModel) {
 
 /**
  * When `dynamicModelRegistry` is on, fetches the Google (models with `generateContent` only), Anthropic, and OpenAI
- * (`gpt-` ids only) model lists, each only while that provider's default credential is set, and appends to `LLMModels`
- * every model whose id or `internalID` is not already listed. Every descriptor field comes from
+ * (`gpt-` ids only) model lists. With `profileId`, only that stored profile's credential slot is discovered, using
+ * its binding (including the server's default/refusal rules); otherwise each provider needs its default key set.
+ * Appends to `LLMModels` every model whose id or `internalID` is not already listed. Every descriptor field comes from
  * `shared/llm/models.ts` `dynamicModelOf` except the display names and recommendations; an OpenAI model also gets its
  * `-response-api` twin. A failed list is logged (OpenAI's silently dropped) and the others still register.
  */
-export async function registerModelDynamic() {
+export async function registerModelDynamic(profileId?: string) {
     if (!settings.providers.dynamicModelRegistry) {
         return;
     }
+    const profile = profileId === undefined ? undefined : settings.modelProfiles.find((p) => p.id === profileId);
+    if (profileId !== undefined && !profile) return;
+    const profileSlot = profile
+        ? credentialSlotOf(profile.modelId, getModelInfo(profile.modelId, undefined, profile))?.slot
+        : undefined;
     //google
     try {
         // The three lists use the stored keys on the server (`auxFetch`).
-        if (isSecretSet({ kind: "nested", field: "google" })) {
+        if (profile ? profileSlot === "google" : isSecretSet({ kind: "nested", field: "google" })) {
             const res = await auxFetch("google-models", "https://generativelanguage.googleapis.com/v1beta/models", {
                 method: "GET",
+                profileId,
             });
             const json = await res.json();
             console.log("Google models response", json);
@@ -102,9 +110,10 @@ export async function registerModelDynamic() {
 
     //Anthropic
     try {
-        if (isSecretSet({ kind: "flat", field: "claudeAPIKey" })) {
+        if (profile ? profileSlot === "anthropic" : isSecretSet({ kind: "flat", field: "claudeAPIKey" })) {
             const res = await auxFetch("anthropic-models", "https://api.anthropic.com/v1/models", {
                 method: "GET",
+                profileId,
                 headers: {
                     "anthropic-version": "2023-06-01",
                 },
@@ -135,8 +144,11 @@ export async function registerModelDynamic() {
     }
 
     try {
-        if (isSecretSet({ kind: "flat", field: "openAIKey" })) {
-            const res = await auxFetch("openai-models", "https://api.openai.com/v1/models", { method: "GET" });
+        if (profile ? profileSlot === "openai" : isSecretSet({ kind: "flat", field: "openAIKey" })) {
+            const res = await auxFetch("openai-models", "https://api.openai.com/v1/models", {
+                method: "GET",
+                profileId,
+            });
             const json = await res.json();
             console.log(json);
             if (!json.data) {

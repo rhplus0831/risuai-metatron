@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-vi.mock("src/ts/network/auxFetch", () => ({ auxFetch: vi.fn() }));
 vi.mock("src/ts/plugins/apiV3/v3.svelte", () => ({ customV3ProviderMetaStore: [] }));
 vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 import type { ModelProfile } from "../../../../shared/database.ts";
 import { auxFetch } from "src/ts/network/auxFetch";
+import * as auxRequests from "src/ts/network/auxFetch";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { setMaskedSecrets } from "src/ts/storage/llmSecrets.svelte";
 import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
@@ -19,11 +19,16 @@ import {
 } from "../nanogpt";
 import { getOpenRouterModels, getOpenRouterProviders } from "../openrouter";
 import { getOllamaModels } from "../ollama";
+import { getModelList, LLMModels, registerModelDynamic } from "../modellist";
+import { settings } from "src/ts/storage/settingsViews.svelte";
+
+const originalFetch = globalThis.fetch;
+const catalogueLength = LLMModels.length;
 
 beforeEach(() => {
     installFlatDatabase({ credentials: [{ id: "named", name: "Named", type: "custom" }] });
     setMaskedSecrets(maskLlmSecrets({ credentials: { named: { key: "named-key" } } }), "all");
-    vi.mocked(auxFetch).mockImplementation(async () =>
+    vi.spyOn(auxRequests, "auxFetch").mockImplementation(async () =>
         Response.json({
             data: [{ id: "private-model", name: "Private", pricing: { prompt: "0", completion: "0" } }],
             models: [{ name: "private-model" }],
@@ -31,15 +36,65 @@ beforeEach(() => {
     );
     vi.stubGlobal(
         "fetch",
-        vi.fn(async () => Response.json({ data: [{ id: "public-model" }] })),
+        vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: "public-model" }] })),
     );
 });
 afterEach(() => {
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    globalThis.fetch = originalFetch;
+    LLMModels.splice(catalogueLength);
+    vi.restoreAllMocks();
 });
 
 describe("profile discovery calls", () => {
+    it.each([
+        [
+            "google-models",
+            "gemini-4-argon",
+            "google",
+            "dynamic_google_gemini-private",
+            "Gemini Private",
+            {
+                models: [
+                    {
+                        name: "models/gemini-private",
+                        displayName: "Gemini Private",
+                        supportedGenerationMethods: ["generateContent"],
+                    },
+                ],
+            },
+        ],
+        [
+            "anthropic-models",
+            "claude-opus-5",
+            "anthropic",
+            "dynamic_anthropic_claude-private",
+            "Claude Private",
+            {
+                data: [{ id: "claude-private", display_name: "Claude Private" }],
+            },
+        ],
+        ["openai-models", "gpt-5.5", "openai", "gpt-private", "gpt-private", { data: [{ id: "gpt-private" }] }],
+    ] as const)(
+        "registers %s models through the named profile without any default key",
+        async (op, modelId, type, id, name, answer) => {
+            settings.credentials = [{ id: "named", name: "Named", type }];
+            settings.modelProfiles = [normalizeModelProfile({ id: "edited", modelId, credentialId: "named" })];
+            settings.providers.dynamicModelRegistry = true;
+            vi.spyOn(console, "log").mockImplementation(() => {});
+            vi.mocked(auxFetch).mockResolvedValueOnce(Response.json(answer));
+
+            await registerModelDynamic("edited");
+
+            expect(auxFetch).toHaveBeenCalledExactlyOnceWith(
+                op,
+                expect.any(String),
+                expect.objectContaining({ method: "GET", profileId: "edited" }),
+            );
+            expect(getModelList({ groupedByProvider: false })).toContainEqual(expect.objectContaining({ id, name }));
+            expect(fetch).not.toHaveBeenCalled();
+        },
+    );
     it.each([
         ["nanogpt-models", "nanogpt", getNanoGPTModels],
         ["nanogpt-subscription-models", "nanogpt", getNanoGPTSubscriptionModels],

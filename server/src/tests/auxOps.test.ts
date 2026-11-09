@@ -532,6 +532,11 @@ async function profileRecords(
     await putCollection("credentials", [{ id: "named", name: "Named key", type }]);
     if (key) await writeSecret({ kind: "entry", field: "credentials", id: "named" }, key);
 }
+const DISCOVERY_ROWS = [
+    ["google-models", "gemini-4-argon", "https://generativelanguage.googleapis.com/v1beta/models", SECRET.google],
+    ["anthropic-models", "claude-opus-5", "https://api.anthropic.com/v1/models", SECRET.claude],
+    ["openai-models", "gpt-5.5", "https://api.openai.com/v1/models", SECRET.openai],
+] as const;
 const PROFILE_ROWS = [
     ["nanogpt-models", "nanogpt", "https://nano-gpt.com/api/personalized/v1/models?detailed=true", SECRET.nanogpt],
     [
@@ -546,6 +551,7 @@ const PROFILE_ROWS = [
     ["ollama-cloud-tags", "ollama-cloud", "https://ollama.com/api/tags", SECRET.ollama],
     ["openrouter-models", "openrouter", "https://openrouter.ai/api/v1/models", SECRET.openrouter],
     ["openrouter-providers", "openrouter", "https://openrouter.ai/api/v1/providers", SECRET.openrouter],
+    ...DISCOVERY_ROWS,
 ] as const;
 
 describe("auxiliary profile credentials", () => {
@@ -561,6 +567,97 @@ describe("auxiliary profile credentials", () => {
             expect(credentialOf(upstreamRequests[1])).toBe(defaultKey);
         },
     );
+    it.each(DISCOVERY_ROWS)(
+        "strips profile headers and protects the named key in %s responses",
+        async (name, modelId, url) => {
+            await seed();
+            await profileRecords(modelId);
+            upstreamMode = "echo-header";
+            const header = await aux(name, url, {
+                profileId: "edited",
+                headers: { "risu-aux-profile": "embedded-profile" },
+            });
+            expect(header.status).toBe(200);
+            expect(credentialOf(upstreamRequests[0])).toBe(NAMED);
+            expect(upstreamRequests[0].headers["risu-aux-profile"]).toBeUndefined();
+            expect(header.headers.get("x-provider-debug")).toBe("key was [redacted]");
+            expect(await header.json()).toEqual({ data: [{ id: "m" }] });
+
+            upstreamMode = "echo-escaped";
+            const body = await aux(name, url, { profileId: "edited", rawHeaders: true });
+            expect(body.status).toBe(502);
+            expect(upstreamRequests[1].headers["risu-aux-profile"]).toBeUndefined();
+            const text = await body.text();
+            expect(text).not.toContain(NAMED);
+            expect(text).not.toContain(escaped(NAMED));
+        },
+    );
+    it.each([
+        [
+            "missing",
+            "openai-models",
+            "gpt-5.5",
+            "gone",
+            "openai",
+            NAMED,
+            'Cannot request model "GPT 5.5 (gpt-5.5)": The bound credential no longer exists.',
+        ],
+        [
+            "empty",
+            "anthropic-models",
+            "claude-opus-5",
+            "named",
+            "anthropic",
+            "",
+            'Cannot request model "Claude 5 Opus (claude-opus-5)" with credential "Named key": The bound credential has no key.',
+        ],
+        [
+            "wrong-type",
+            "google-models",
+            "gemini-4-argon",
+            "named",
+            "openai",
+            NAMED,
+            'Cannot request model "Gemini 4 Argon (gemini-4-argon)" with credential "Named key": The bound credential\'s type is not accepted by this model.',
+        ],
+    ])(
+        "refuses a %s discovery binding with the generation error instead of using defaults",
+        async (_reason, name, modelId, credentialId, type, key, error) => {
+            await seed();
+            await profileRecords(modelId, credentialId, type, key);
+            const response = await aux(
+                name,
+                AUX_OPS[name as AuxOpName].origin + (name === "google-models" ? "/v1beta/models" : "/v1/models"),
+                { profileId: "edited" },
+            );
+            expect(response.status).toBe(400);
+            expect(await response.json()).toEqual({ error });
+            expect(upstreamRequests).toHaveLength(0);
+        },
+    );
+    it("refuses a discovery profile from another credential slot without forwarding", async () => {
+        await seed();
+        await profileRecords("gpt-5.5", "named", "openai");
+        const response = await aux("google-models", DISCOVERY_ROWS[0][2], { profileId: "edited" });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: "The model profile does not use the google credential slot" });
+        expect(upstreamRequests).toHaveLength(0);
+    });
+    it("requires an API key for discovery even when a Google profile resolves to a Vertex account", () => {
+        expect(
+            planAuxOp(
+                "google-models",
+                DISCOVERY_ROWS[0][2],
+                "GET",
+                new Headers(),
+                { google: { accessToken: SECRET.google } },
+                {
+                    slot: "google",
+                    credential: { kind: "vertex", clientEmail: "service@example.test", privateKey: NAMED },
+                },
+            ),
+        ).toEqual({ ok: false, status: 400, error: "google-models requires an API key" });
+    });
     it.each(["echo-escaped", "echo-header", "error-json-escaped"] as const)(
         "redacts the named credential from %s",
         async (mode) => {
@@ -659,9 +756,8 @@ describe("auxiliary profile credentials", () => {
     it.each([
         ["openai-tts", "https://api.openai.com/v1/audio/speech"],
         ["openai-embeddings", "https://api.openai.com/v1/embeddings"],
-        ["openai-models", "https://api.openai.com/v1/models"],
         ["google-count-tokens", "https://generativelanguage.googleapis.com/v1beta/models/gemini:countTokens"],
-    ])("rejects a profile on the slotless %s row (a media, memory, provider-list, or count row)", async (name, url) => {
+    ])("rejects a profile on the slotless %s row (a media, memory, or count row)", async (name, url) => {
         await seed();
         await profileRecords();
         expect((await aux(name, url, { profileId: "edited" })).status).toBe(400);

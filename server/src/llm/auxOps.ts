@@ -107,6 +107,7 @@ export const AUX_OPS: Record<AuxOpName, AuxOp> = {
         inject: "query-key",
     },
     "google-models": {
+        slot: "google",
         origin: GOOGLE,
         method: "GET",
         path: /^\/v1beta\/models$/,
@@ -114,6 +115,7 @@ export const AUX_OPS: Record<AuxOpName, AuxOp> = {
         inject: "query-key",
     },
     "anthropic-models": {
+        slot: "anthropic",
         origin: "https://api.anthropic.com",
         method: "GET",
         path: /^\/v1\/models$/,
@@ -121,6 +123,7 @@ export const AUX_OPS: Record<AuxOpName, AuxOp> = {
         inject: "x-api-key",
     },
     "openai-models": {
+        slot: "openai",
         origin: OPENAI,
         method: "GET",
         path: /^\/v1\/models$/,
@@ -222,9 +225,10 @@ export type AuxOpPlan =
  * `profile` is the stored profile's credential decision, when the request names one (`risu-aux-profile`), resolved by
  * `server/src/app.ts` `auxCredential` with `resolveCredential` over the stored records. Only the rows with a `slot`
  * accept a profile: the five NanoGPT rows (`nanogpt`), `ollama-cloud-tags` (`ollama`), and the OpenRouter models and
- * providers rows (`openrouter`). A profile on any other row, a profile whose slot differs, or a non-key binding
- * refuses (400); an invalid binding refuses with generation's refusal message, never a default key. A bound key
- * replaces the row's secret and so joins the plan's redaction `secrets`.
+ * providers rows (`openrouter`), and Google, Anthropic, and OpenAI model discovery (`google`, `anthropic`, `openai`).
+ * A profile on any other row, a profile whose slot differs, or a binding other than a key or default refuses (400).
+ * An invalid binding refuses with generation's refusal message, never a default key. An unbound profile keeps the
+ * row's default; a bound key replaces the row's secret and so joins the plan's redaction `secrets`.
  */
 export function planAuxOp(
     name: string,

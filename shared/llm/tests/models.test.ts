@@ -1,6 +1,144 @@
 import { describe, expect, it } from "vitest";
-import { BASE_LLM_MODELS, dynamicModelOf, resolveModelInfo } from "../models.ts";
-import { ClaudeParameters, LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "../types.ts";
+import {
+    BASE_LLM_MODELS,
+    dynamicModelOf,
+    isUnresolvedModelId,
+    resolveModelInfo,
+    type ModelResolution,
+} from "../models.ts";
+import {
+    ClaudeParameters,
+    OpenAIParameters,
+    LLMFlags,
+    LLMFormat,
+    LLMProvider,
+    LLMTokenizer,
+    type LLMModel,
+} from "../types.ts";
+
+describe("unresolved model ids", () => {
+    it.each([
+        "retired-vendor-model",
+        "xcustom:::deleted",
+        "pluginmodel:::removed",
+        "dynamic_google_",
+        "dynamic_anthropic_",
+        "gpt--response-api",
+    ])("marks %s unresolved and preserves its as-is request descriptor", (id) => {
+        const overrides = { enableCustomFlags: true, customFlags: [LLMFlags.hasImageInput] };
+        expect(isUnresolvedModelId(id, overrides)).toBe(true);
+        expect(resolveModelInfo(id, overrides)).toEqual({
+            id,
+            name: id,
+            shortName: id,
+            fullName: id,
+            internalID: id,
+            provider: LLMProvider.AsIs,
+            format: LLMFormat.OpenAICompatible,
+            flags: [],
+            parameters: OpenAIParameters,
+            tokenizer: LLMTokenizer.Unknown,
+        });
+    });
+
+    it.each(["", null, undefined])("keeps the separate Unknown descriptor for %j resolved", (id) => {
+        expect(isUnresolvedModelId(id)).toBe(false);
+        expect(resolveModelInfo(id)).toEqual({
+            id: "",
+            name: "Unknown",
+            shortName: "Unknown",
+            fullName: "Unknown",
+            internalID: "",
+            provider: LLMProvider.AsIs,
+            format: LLMFormat.OpenAICompatible,
+            flags: [],
+            parameters: OpenAIParameters,
+            tokenizer: LLMTokenizer.Unknown,
+        });
+    });
+
+    it.each([
+        ["reverse_proxy", "reverse_proxy", LLMProvider.AsIs, LLMFormat.OpenAICompatible],
+        ["hf:::local-model", "local-model", LLMProvider.WebLLM, LLMFormat.WebLLM],
+        ["horde:::remote-model", "remote-model", LLMProvider.Horde, LLMFormat.Horde],
+        ["dynamic_google_gemini-private", "gemini-private", LLMProvider.GoogleCloud, LLMFormat.GoogleCloud],
+        ["dynamic_anthropic_claude-private", "claude-private", LLMProvider.Anthropic, LLMFormat.Anthropic],
+        ["gpt-private-response-api", "gpt-private", LLMProvider.OpenAI, LLMFormat.OpenAIResponseAPI],
+    ] as const)("recognizes %s without an extra registry entry", (id, internalID, provider, format) => {
+        expect(isUnresolvedModelId(id)).toBe(false);
+        expect(resolveModelInfo(id)).toMatchObject({ id, internalID, provider, format });
+    });
+
+    it("recognizes a supplied custom endpoint even with an AsIs provider and keeps its definition's flags", () => {
+        const id = "xcustom:::private";
+        const from: ModelResolution = {
+            customModels: [
+                {
+                    id,
+                    name: "Private endpoint",
+                    internalId: "wire-private",
+                    url: "https://private.example",
+                    params: "",
+                    flags: [LLMFlags.hasStreaming],
+                    format: LLMFormat.Anthropic,
+                    tokenizer: LLMTokenizer.Claude,
+                },
+            ],
+            enableCustomFlags: true,
+            customFlags: [],
+        };
+        expect(isUnresolvedModelId(id, from)).toBe(false);
+        expect(resolveModelInfo(id, from)).toMatchObject({
+            id,
+            name: "Private endpoint",
+            internalID: "wire-private",
+            provider: LLMProvider.AsIs,
+            format: LLMFormat.Anthropic,
+            tokenizer: LLMTokenizer.Claude,
+            flags: [LLMFlags.hasStreaming],
+        });
+        expect(isUnresolvedModelId(id, { customModels: [] })).toBe(true);
+    });
+
+    it("recognizes extra catalogue descriptors, clones them, and applies profile flags without changing the source", () => {
+        const extra: LLMModel = {
+            id: "private-listed-model",
+            name: "Private list",
+            internalID: "wire-extra",
+            provider: LLMProvider.AsIs,
+            format: LLMFormat.OpenAICompatible,
+            tokenizer: LLMTokenizer.Unknown,
+            flags: [LLMFlags.hasStreaming],
+            parameters: ["temperature"],
+            endpoint: "https://private.example/v1/chat/completions",
+        };
+        const from = { extraModels: [extra], enableCustomFlags: true, customFlags: [LLMFlags.hasImageInput] };
+        expect(isUnresolvedModelId(extra.id, from)).toBe(false);
+        const resolved = resolveModelInfo(extra.id, from);
+        expect(resolved).toEqual({ ...extra, flags: [LLMFlags.hasImageInput] });
+        expect(resolved).not.toBe(extra);
+        expect(extra.flags).toEqual([LLMFlags.hasStreaming]);
+        expect(isUnresolvedModelId(extra.id)).toBe(true);
+    });
+
+    it("recognizes a plugin descriptor and preserves its reference despite profile flag overrides", () => {
+        const plugin: LLMModel = {
+            id: "pluginmodel:::private",
+            name: "Plugin",
+            internalID: "plugin-wire",
+            provider: LLMProvider.AsIs,
+            format: LLMFormat.Plugin,
+            tokenizer: LLMTokenizer.Unknown,
+            flags: [LLMFlags.hasStreaming],
+            parameters: [],
+        };
+        const from = { pluginModels: [plugin], enableCustomFlags: true, customFlags: [] };
+        expect(isUnresolvedModelId(plugin.id, from)).toBe(false);
+        expect(resolveModelInfo(plugin.id, from)).toBe(plugin);
+        expect(plugin.flags).toEqual([LLMFlags.hasStreaming]);
+        expect(isUnresolvedModelId(plugin.id)).toBe(true);
+    });
+});
 
 describe("static model catalogue", () => {
     it("offers only reasoning_effort for Gemini 3.6 Flash", () => {

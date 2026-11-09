@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { LLMFormat, LLMTokenizer } from "../../../../shared/llm.ts";
 import { selectTokenizer } from "../../../../shared/tokenizerChoice.ts";
-import { flushSync, mount, unmount } from "svelte";
+import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The Chat Bot page is split into the Model page (`ModelSettings.svelte`, the selected model
@@ -28,7 +28,13 @@ vi.mock("src/ts/tokenizer", () => ({
 vi.mock("src/ts/process/prompt", () => ({ tokenizePreset: vi.fn(async () => 0) }));
 
 import { get } from "svelte/store";
-import { language } from "src/lang";
+import { changeLanguage, language } from "src/lang";
+import * as modelRegistry from "src/ts/model/modellist";
+import * as auxRequests from "src/ts/network/auxFetch";
+import * as hordeModels from "src/ts/horde/getModels";
+import { customV3ProviderMetaStore } from "src/ts/plugins/apiV3/v3.svelte";
+import { setMaskedSecrets } from "src/ts/storage/llmSecrets.svelte";
+import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
 import { alertConfirm } from "src/ts/alert";
 import { deleteModelProfile, translatorPresetsUsingModelProfile } from "src/ts/storage/collectionStore.svelte";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets.ts";
@@ -55,6 +61,15 @@ import PromptPresetSettings from "./PromptPresetSettings.svelte";
 import CustomModelsSettings from "./Advanced/CustomModelsSettings.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
+const catalogueLength = modelRegistry.LLMModels.length;
+
+function button(page: HTMLElement, label: string) {
+    const found = [...page.querySelectorAll<HTMLButtonElement>("button")].find(
+        (entry) => entry.textContent?.trim() === label,
+    );
+    expect(found, `button ${label}`).toBeDefined();
+    return found!;
+}
 
 function render(
     component:
@@ -77,6 +92,9 @@ function chooseOption(element: HTMLSelectElement, value: string) {
 }
 
 beforeEach(() => {
+    changeLanguage("en");
+    setMaskedSecrets(maskLlmSecrets({}), "all");
+    vi.spyOn(hordeModels, "getHordeModels").mockResolvedValue([]);
     installFlatDatabase({
         characters: [],
         customModels: [],
@@ -105,7 +123,11 @@ afterEach(() => {
         unmount(instance);
     }
     document.body.innerHTML = "";
+    modelRegistry.LLMModels.splice(catalogueLength);
+    customV3ProviderMetaStore.length = 0;
     vi.clearAllMocks();
+    vi.restoreAllMocks();
+    changeLanguage("en");
 });
 
 describe("the Model page", () => {
@@ -156,6 +178,156 @@ describe("the Model page", () => {
 });
 
 describe("the Connections tab", () => {
+    it("discovers through the edited profile and refreshes a provider list that was opened before discovery finished", async () => {
+        settings.modelProfiles[1].modelId = "claude-opus-5";
+        settings.modelProfiles[1].credentialId = "named";
+        settings.providers.dynamicModelRegistry = true;
+        let answer!: (response: Response) => void;
+        const pending = new Promise<Response>((resolve) => {
+            answer = resolve;
+        });
+        const aux = vi.spyOn(auxRequests, "auxFetch").mockReturnValueOnce(pending);
+        const discovery = vi.spyOn(modelRegistry, "registerModelDynamic");
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        const page = render(ModelProfilesSettings);
+        page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();
+        flushSync();
+
+        button(page, modelRegistry.getModelInfo("claude-opus-5").fullName!).click();
+        flushSync();
+        expect(discovery).toHaveBeenCalledExactlyOnceWith("spare");
+        expect(aux).toHaveBeenCalledExactlyOnceWith(
+            "anthropic-models",
+            "https://api.anthropic.com/v1/models",
+            expect.objectContaining({ profileId: "spare" }),
+        );
+        button(page, "Anthropic").click();
+        flushSync();
+        expect(page.textContent).not.toContain("Connection Private Model");
+
+        answer(
+            Response.json({ data: [{ id: "claude-connection-private", display_name: "Connection Private Model" }] }),
+        );
+        await discovery.mock.results[0].value;
+        await tick();
+        button(page, "Connection Private Model").click();
+        flushSync();
+        expect(settings.modelProfiles[1].modelId).toBe("dynamic_anthropic_claude-connection-private");
+        expect(settings.modelProfiles[0].modelId).toBe("echo_model");
+        expect(settings.modelPresets[0].mainSlot).toEqual({ profileId: "echo" });
+    });
+
+    it("discovers again with the current profile after switching connections or changing its binding", async () => {
+        settings.modelProfiles.forEach((profile) => {
+            profile.modelId = "claude-opus-5";
+        });
+        settings.providers.dynamicModelRegistry = true;
+        const aux = vi.spyOn(auxRequests, "auxFetch");
+        const discovery = vi.spyOn(modelRegistry, "registerModelDynamic");
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        const page = render(ModelProfilesSettings);
+        for (const [index, profileId, credentialId] of [
+            [0, "spare", "first"],
+            [1, "echo", "second"],
+            [2, "echo", "replacement"],
+        ] as const) {
+            const profile = settings.modelProfiles.find((entry) => entry.id === profileId)!;
+            profile.credentialId = credentialId;
+            page.querySelector<HTMLElement>(`[data-profile-id=${profileId}]`)!.click();
+            flushSync();
+            const name = `Private models for ${credentialId}`;
+            aux.mockResolvedValueOnce(Response.json({ data: [{ id: `claude-reopen-${index}`, display_name: name }] }));
+            button(page, modelRegistry.getModelInfo(profile.modelId).fullName!).click();
+            flushSync();
+            expect(aux).toHaveBeenCalledTimes(index + 1);
+            expect(aux).toHaveBeenLastCalledWith(
+                "anthropic-models",
+                expect.any(String),
+                expect.objectContaining({ profileId }),
+            );
+            await discovery.mock.results[index].value;
+            await tick();
+            button(page, "Anthropic").click();
+            flushSync();
+            expect(button(page, name)).toBeDefined();
+            page.querySelector<HTMLButtonElement>('button[title="Back"]')!.click();
+            flushSync();
+        }
+    });
+
+    it.each([
+        [
+            "en",
+            "retired-vendor-model",
+            "This model ID is not in the current model list. It will be sent as-is to an OpenAI-compatible endpoint until you choose another model.",
+        ],
+        [
+            "ko",
+            "intentional-private-model",
+            "이 모델 ID는 현재 모델 목록에 없습니다. 다른 모델을 선택할 때까지 OpenAI 호환 엔드포인트로 ID를 그대로 전송합니다.",
+        ],
+    ])(
+        "shows the %s fallback notice without rewriting the stored id and removes it after a model pick",
+        async (locale, modelId, notice) => {
+            changeLanguage(locale);
+            settings.modelProfiles[1].modelId = modelId;
+            const before = settings.modelProfiles.map(({ id, modelId }) => ({ id, modelId }));
+            const page = render(ModelProfilesSettings);
+            page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();
+            flushSync();
+            expect(page.textContent).toContain(notice);
+            expect(settings.modelProfiles.map(({ id, modelId }) => ({ id, modelId }))).toEqual(before);
+
+            button(page, modelId).click();
+            flushSync();
+            button(page, "OpenAI").click();
+            flushSync();
+            button(page, "GPT 5.5").click();
+            await tick();
+            expect(settings.modelProfiles[1].modelId).toBe("gpt-5.5");
+            expect(page.textContent).not.toContain(notice);
+            expect(settings.modelProfiles[0].modelId).toBe("echo_model");
+        },
+    );
+
+    it("clears the fallback notice for recognized custom endpoints, plugins, and dynamic ids", () => {
+        settings.customModels = [
+            {
+                id: "xcustom:::private",
+                name: "Private",
+                internalId: "wire-private",
+                url: "https://private.example",
+                params: "",
+                format: LLMFormat.OpenAICompatible,
+                tokenizer: LLMTokenizer.Unknown,
+                flags: [],
+            },
+        ];
+        customV3ProviderMetaStore.push({
+            ...modelRegistry.getModelInfo("reverse_proxy"),
+            id: "pluginmodel:::private",
+            name: "Private plugin",
+            format: LLMFormat.Plugin,
+        });
+        settings.modelProfiles[1].modelId = "retired-vendor-model";
+        const page = render(ModelProfilesSettings);
+        page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();
+        flushSync();
+        expect(page.textContent).toContain(language.modelProfiles.unresolvedModelNotice);
+
+        for (const modelId of [
+            "reverse_proxy",
+            "xcustom:::private",
+            "pluginmodel:::private",
+            "dynamic_anthropic_claude-private",
+        ]) {
+            settings.modelProfiles[1].modelId = modelId;
+            flushSync();
+            expect(page.textContent, modelId).not.toContain(language.modelProfiles.unresolvedModelNotice);
+            expect(settings.modelProfiles[1].modelId).toBe(modelId);
+        }
+    });
+
     it("offers flags 25, 26, and 27 and stores their numbers on the edited profile", () => {
         const page = render(ModelProfilesSettings);
         page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();

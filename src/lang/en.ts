@@ -1191,6 +1191,8 @@ export const languageEnglish = {
         keepOne: "Keep at least one connection.",
         profileLabel: (name: string, model: string) => `${name} — ${model}`,
         missingProfile: (id: string) => `Missing connection (${id})`,
+        unresolvedModelNotice:
+            "This model ID is not in the current model list. It will be sent as-is to an OpenAI-compatible endpoint until you choose another model.",
         missingSlotHint: "This slot's connection was deleted. Choose another connection before sending a request.",
         noProfile: (model: string) => `No connection (${model})`,
         createFromBare: "Create a connection for this model",

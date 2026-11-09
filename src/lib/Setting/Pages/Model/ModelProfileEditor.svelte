@@ -32,7 +32,8 @@
     import type { ModelGridPinnedItem } from "src/ts/model/modelGrid";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import ChatFormatSettings from "../ChatFormatSettings.svelte";
-    import { getModelInfo, LLMFlags, LLMFormat } from "src/ts/model/modellist";
+    import { getModelInfo, getModelList, LLMFlags, LLMFormat } from "src/ts/model/modellist";
+    import { isUnresolvedModelId } from "../../../../../shared/llm/models.ts";
     import SettingRenderer from "../../SettingRenderer.svelte";
     import { modelParameterItems } from "src/ts/setting/botSettingsParamsData";
     import { currentJump } from "src/ts/setting/settingJump.svelte";
@@ -41,6 +42,8 @@
      * Edit `profileId` through `profileForSlot` in `src/ts/storage/settingsViews.svelte.ts`: model,
      * `src/lib/UI/GUI/CredentialSelect.svelte`, reverse proxy, OpenRouter, local URLs, Ollama/NanoGPT,
      * chat format, system replacement, custom flags, tools, maxContext, and image output.
+     * The model picker discovers with this profile's credential. An unresolved stored id shows an as-is notice;
+     * profiles have no marker distinguishing an intentional unknown id from a removed catalogue entry.
      * At mount, an available `currentJump()` from `src/ts/setting/settingJump.svelte.ts` naming
      * `profile.chatFormat` starts Chat Formatting open.
      */
@@ -52,6 +55,12 @@
     const profile = profileForSlot(() => ({ profileId }));
     const record = $derived(settings.modelProfiles.find((entry) => entry.id === profileId));
     const modelInfo = $derived(getModelInfo(profile.modelId, undefined, record ?? null));
+    const unresolvedModel = $derived(
+        isUnresolvedModelId(profile.modelId, {
+            customModels: settings.customModels,
+            extraModels: getModelList({ groupedByProvider: false }),
+        }),
+    );
     const usesOllamaLocal = $derived(profile.modelId === "ollama-hosted");
     const usesOllamaCloud = $derived(profile.modelId === "ollama-cloud");
     const openrouterPinnedItems: ModelGridPinnedItem[] = [
@@ -98,7 +107,10 @@
 </script>
 
 <span class="text-textcolor mt-4">{language.model} <Help key="model" /></span>
-<ModelList bind:value={profile.modelId} />
+<ModelList bind:value={profile.modelId} {profileId} />
+{#if unresolvedModel}
+    <span class="text-draculared text-xs mb-2">{language.modelProfiles.unresolvedModelNotice}</span>
+{/if}
 <CredentialSelect {profileId} />
 <SettingRenderer items={modelParameterItems} {modelInfo} subModelInfo={modelInfo} modelProfile={profile} />
 <Check bind:check={profile.outputImageModal} name={language.outputImageModal} className="mt-2" />
