@@ -84,13 +84,18 @@ describe("createTokenCounter", () => {
         });
 
         it.each(Object.keys(baselineCounts.routing).filter((name) => name !== "plugin-legacy-custom-func"))(
-            "%s gives the browser's ids for every captured text",
+            "%s gives the captured family ids with corrected llama3 overrides",
             async (name) => {
                 const entry = routing[name];
                 for (const [textName, record] of Object.entries(entry.texts)) {
+                    // These overrides now select Llama 3. Both captures use the same text fixtures.
+                    const expected =
+                        name === "reverse-proxy-llama3" || name === "plugin-legacy-llama3"
+                            ? fixture.families.llama3[textName]
+                            : record;
                     await expectBrowserRecord(
                         () => counter.encode(materialize(texts[textName]), scopeOf(name)),
-                        record,
+                        expected,
                     );
                 }
             },
@@ -107,6 +112,24 @@ describe("createTokenCounter", () => {
                 await expectBrowserRecord(() => counter.encode(materialize(texts[textName]), scopeOf(name)), record);
             }
         }, 60_000);
+    });
+
+    it("counts Llama 3 custom and legacy-plugin overrides against frozen ids with caching enabled", async () => {
+        const counter = createTokenCounter({ tokenizers });
+        const text = materialize(fixture.texts.mixed);
+        const record = fixture.families.llama3.mixed;
+        if (!("ids" in record)) throw new Error("The mixed Llama 3 fixture needs ids");
+        for (const aiModel of ["reverse_proxy", "custom"]) {
+            const selected = scope({
+                aiModel,
+                customTokenizer: "llama3",
+                pluginTokenizer: "llama3",
+                useTokenizerCaching: true,
+            });
+            expect(await counter.count(text, selected)).toBe(record.ids.length);
+            await expectBrowserRecord(() => counter.encode(text, selected), record);
+            expect(await counter.count(text, selected)).toBe(record.ids.length);
+        }
     });
 
     describe("the lore prompt's token delta (deltas/lore-regex-fix-token-counts.json)", () => {

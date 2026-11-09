@@ -198,11 +198,11 @@ const family = (name: string): TokenizerChoice => ({ kind: "family", family: nam
 describe("selectTokenizer (the shared routing)", () => {
     const base = { aiModel: "gpt-5.5", customTokenizer: "tik", pluginTokenizer: "none", googleClaudeTokenizing: false };
 
-    it("routes openrouter and reverse_proxy by customTokenizer, llama3 to the llama model, unknown names to o200k_base", () => {
+    it("routes openrouter and reverse_proxy by customTokenizer, llama3 to its own family, unknown names to o200k_base", () => {
         const byName: Record<string, string> = {
             mistral: "mistral",
             llama: "llama",
-            llama3: "llama",
+            llama3: "llama3",
             novelai: "novelai",
             claude: "claude",
             novellist: "novellist",
@@ -239,7 +239,7 @@ describe("selectTokenizer (the shared routing)", () => {
         expect(custom("none")).toEqual(family("o200k_base"));
         expect(custom("o200k_base")).toEqual(family("o200k_base"));
         expect(custom("cl100k_base")).toEqual(family("cl100k_base"));
-        expect(custom("llama3")).toEqual(family("llama"));
+        expect(custom("llama3")).toEqual(family("llama3"));
         expect(custom("claude")).toEqual(family("claude"));
         expect(custom("deepseek-v4")).toEqual(family("DeepSeekV4"));
         expect(custom("whatever")).toEqual(family("o200k_base"));
@@ -255,6 +255,22 @@ describe("selectTokenizer (the shared routing)", () => {
                 modelTokenizer: LLMTokenizer.Unknown,
             }),
         ).toEqual(family("cl100k_base"));
+    });
+
+    it("switches custom and legacy plugin overrides between Llama 3 and Llama without changing catalogue defaults", () => {
+        for (const aiModel of ["reverse_proxy", "openrouter", "custom"]) {
+            const override = (name: string) =>
+                selectTokenizer({
+                    ...base,
+                    aiModel,
+                    customTokenizer: name,
+                    pluginTokenizer: name,
+                    modelTokenizer: LLMTokenizer.Claude,
+                });
+            expect(override("llama3")).toEqual(family("llama3"));
+            expect(override("llama")).toEqual(family("llama"));
+        }
+        expect(selectTokenizer({ ...base, modelTokenizer: LLMTokenizer.Llama3 })).toEqual(family("cl100k_base"));
     });
 
     it("routes every catalogue family; GoogleCloud counts remotely only with googleClaudeTokenizing", () => {

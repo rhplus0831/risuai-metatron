@@ -1,5 +1,8 @@
 // @vitest-environment happy-dom
 
+import { readFileSync } from "node:fs";
+import { LLMFormat, LLMTokenizer } from "../../../../shared/llm.ts";
+import { selectTokenizer } from "../../../../shared/tokenizerChoice.ts";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -273,6 +276,49 @@ describe("the Connections tab", () => {
 });
 
 describe("custom model definitions", () => {
+    it("offers every supported format and tokenizer and persists newly exposed numeric codes", () => {
+        settings.customModels = [
+            {
+                id: "xcustom:::test",
+                name: "Definition",
+                internalId: "test",
+                url: "",
+                format: 0,
+                tokenizer: 1,
+                params: "",
+                flags: [],
+            },
+        ];
+        const page = render(CustomModelsSettings);
+        for (const label of [language.customModels, "Definition"]) {
+            [...page.querySelectorAll("button")].find((button) => button.textContent?.trim() === label)!.click();
+            flushSync();
+        }
+        const [tokenizer, format] = [...page.querySelectorAll("select")];
+        expect([...format.options].map((option) => Number(option.value))).toEqual(Object.values(LLMFormat));
+        expect([...tokenizer.options].map((option) => Number(option.value))).toEqual(Object.values(LLMTokenizer));
+        // The UI's persisted discriminator must have a dispatch branch, including local/plugin dispatch.
+        const dispatch = readFileSync("server/src/llm/request.ts", "utf8");
+        for (const [name] of Object.entries(LLMFormat)) expect(dispatch).toContain(`case LLMFormat.${name}:`);
+        for (const code of [10, 12, 15, 16, 19, 20, 21, 22, 23]) {
+            chooseOption(format, String(code));
+            flushSync();
+            expect(settings.customModels[0].format).toBe(code);
+        }
+        chooseOption(tokenizer, "12");
+        flushSync();
+        expect(settings.customModels[0].tokenizer).toBe(12);
+        expect(
+            selectTokenizer({
+                aiModel: "xcustom:::test",
+                modelTokenizer: settings.customModels[0].tokenizer,
+                customTokenizer: "tik",
+                pluginTokenizer: "none",
+                googleClaudeTokenizing: false,
+            }),
+        ).toEqual({ kind: "family", family: "cl100k_base" });
+    });
+
     it("offers flags 11, 25, 26, and 27 and stores their numbers on the custom model", () => {
         settings.customModels = [
             {

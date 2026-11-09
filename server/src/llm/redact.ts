@@ -19,7 +19,8 @@ import type { RequestDb } from "./settings.ts";
  * stored credential is user configuration, outside this guarantee.
  *
  * `server/src/llm/requests.ts` applies this projection to request data, leaving generated answers unchanged. Secret
- * forms include twice-JSON-escaped values and match longest first. Deep projection masks string-valued secret headers
+ * forms include twice-JSON-escaped values and match longest first, ignoring percent-escape hex case.
+ * Deep projection masks string-valued secret headers
  * by name and retains object keys; `carries` checks stored secret forms in both keys and values so callers can refuse
  * opaque callback/tool data rather than rewrite it. `trimPartial` removes a trailing secret prefix from bounded
  * captures after full-value redaction.
@@ -113,8 +114,16 @@ export function collectSecrets(db: Partial<RequestDb>): string[] {
     return secrets;
 }
 
-function escapeRegExp(text: string) {
-    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function secretPattern(text: string) {
+    return text
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        .replace(/%[0-9a-f]{2}/gi, (escape) =>
+            escape.replace(/[a-f]/gi, (letter) => `[${letter.toLowerCase()}${letter.toUpperCase()}]`),
+        );
+}
+
+function normalizePercentEscapes(text: string): string {
+    return text.replace(/%[0-9a-f]{2}|%[0-9a-f]$/gi, (escape) => escape.toUpperCase());
 }
 
 /**
@@ -138,7 +147,7 @@ export function createRedactor(initial: string[]): Redactor {
         if (forms.size !== before) {
             // Longest first, so a secret containing another is replaced whole.
             const sorted = [...forms].filter((form) => form !== "").sort((a, b) => b.length - a.length);
-            pattern = new RegExp(sorted.map(escapeRegExp).join("|"), "g");
+            pattern = new RegExp(sorted.map(secretPattern).join("|"), "g");
         }
     }
 
@@ -191,13 +200,19 @@ export function createRedactor(initial: string[]): Redactor {
 
     function trimPartial(value: string): string {
         let cut = value.length;
-        for (const form of forms) {
+        const normalized = normalizePercentEscapes(value);
+        for (const stored of forms) {
+            const form = normalizePercentEscapes(stored);
             if (form.length < 2) {
                 continue;
             }
             // A proper prefix of the form that ends the text (the whole form is already replaced).
             for (let i = Math.max(0, value.length - (form.length - 1)); i < cut; i++) {
-                if (value.charCodeAt(i) === form.charCodeAt(0) && form.startsWith(value.slice(i))) {
+                // A hex digit inside a percent escape is not a secret's first letter (`%a` is an unmatched escape).
+                if (normalized[i - 1] === "%" || (normalized[i - 2] === "%" && /[0-9A-F]/.test(normalized[i - 1]))) {
+                    continue;
+                }
+                if (normalized.charCodeAt(i) === form.charCodeAt(0) && form.startsWith(normalized.slice(i))) {
                     cut = i;
                     break;
                 }

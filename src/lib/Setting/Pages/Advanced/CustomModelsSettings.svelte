@@ -14,8 +14,8 @@
     /**
      * Edits the `settings.customModels` entries (`shared/database.ts` `CustomModel`): definitions with no key; a
      * profile that uses one picks the key. The add button creates an `xcustom:::<uuid>` model; a deleted definition
-     * leaves the profiles naming it with their model id. The format, tokenizer, and flag lists are kept by hand and do
-     * not cover every value.
+     * leaves the profiles naming it with their model id. The format and tokenizer lists cover the values accepted by
+     * request dispatch and tokenizer selection. The lists and flags are kept by hand.
      */
 
     let openedModels = $state(new Set<string>());
@@ -140,6 +140,7 @@
                         <OptionInput value="9">Gemma</OptionInput>
                         <OptionInput value="10">GoogleCloud</OptionInput>
                         <OptionInput value="11">Cohere</OptionInput>
+                        <OptionInput value="12">Local</OptionInput>
                         <OptionInput value="13">DeepSeek</OptionInput>
                         <OptionInput value="14">DeepSeek V4</OptionInput>
                         <OptionInput value="15">GLM4</OptionInput>
@@ -163,11 +164,20 @@
                         <OptionInput value="7">NovelList</OptionInput>
                         <OptionInput value="8">Cohere</OptionInput>
                         <OptionInput value="9">NovelAI</OptionInput>
+                        <OptionInput value="10">WebLLM</OptionInput>
                         <OptionInput value="11">OobaLegacy</OptionInput>
+                        <OptionInput value="12">Plugin</OptionInput>
                         <OptionInput value="13">Ooba</OptionInput>
                         <OptionInput value="14">Kobold</OptionInput>
+                        <OptionInput value="15">Ollama</OptionInput>
+                        <OptionInput value="16">Horde</OptionInput>
                         <OptionInput value="17">AWSBedrockClaude</OptionInput>
                         <OptionInput value="18">OpenAIResponseAPI</OptionInput>
+                        <OptionInput value="19">Echo</OptionInput>
+                        <OptionInput value="20">NanoGPT</OptionInput>
+                        <OptionInput value="21">NanoGPTResponses</OptionInput>
+                        <OptionInput value="22">NanoGPTMessages</OptionInput>
+                        <OptionInput value="23">NanoGPTLegacy</OptionInput>
                     </SelectInput>
                     <span class="text-textcolor">{language.additionalParams}</span>
                     <TextAreaInput

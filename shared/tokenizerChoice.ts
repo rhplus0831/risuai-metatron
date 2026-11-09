@@ -115,7 +115,7 @@ export function isTabTokenScope(value: unknown): value is TabTokenScope {
     );
 }
 
-/** The tab's `encodeWithTokenizer` names; unlike model overrides, `llama3` uses its own family. */
+/** The tab's `encodeWithTokenizer` names, including the distinct `llama3` family. */
 export function playgroundFamily(name: string): TokenizerFamily {
     switch (name) {
         case "mistral":
@@ -142,14 +142,14 @@ export function playgroundFamily(name: string): TokenizerFamily {
 
 const family = (name: TokenizerFamily): TokenizerChoice => ({ kind: "family", family: name });
 
-/** A `customTokenizer` or plugin `tokenizer` name; `llama3` counts with the `llama` model. */
+/** Resolves a `customTokenizer` or plugin `tokenizer` name to its matching family. */
 function byName(name: string): TokenizerChoice | null {
     switch (name) {
         case "mistral":
             return family("mistral");
         case "llama":
         case "llama3":
-            return family("llama");
+            return family(name);
         case "novelai":
             return family("novelai");
         case "claude":

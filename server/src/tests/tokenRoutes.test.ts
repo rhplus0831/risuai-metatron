@@ -105,7 +105,7 @@ afterAll(async () => {
         await tokenizers.dispose();
     } finally {
         if (savePath) rmSync(savePath, { recursive: true, force: true });
-        vi.unstubAllGlobals();
+        vi.stubGlobal("fetch", httpFetch);
         vi.useRealTimers();
     }
 });
@@ -258,6 +258,23 @@ describe("token routes", () => {
         );
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual({ counts: [browserIds("cl100k_base", "mixed").length] });
+    });
+
+    it("counts custom and legacy-plugin Llama 3 overrides with the same frozen ids as playground encoding", async () => {
+        const ids = browserIds("llama3", "mixed");
+        for (const aiModel of ["reverse_proxy", "custom"]) {
+            const scope = { ...tabScope, aiModel, customTokenizer: "llama3", pluginTokenizer: "llama3" };
+            const response = await context.app.request(TOKEN_COUNT_PATH, json({ scope, texts: [mixed] }, headers));
+            expect(response.status).toBe(200);
+            expect(await response.json()).toEqual({ counts: [ids.length] });
+        }
+        const encoded = await context.app.request(
+            TOKEN_ENCODE_PATH,
+            json({ tokenizer: "llama3", text: mixed }, headers),
+        );
+        expect(encoded.status).toBe(200);
+        expect(await encoded.json()).toEqual({ ids });
+        expect(fetchImpl).not.toHaveBeenCalled();
     });
 
     it("count sends the stored Google key and the tab's model and text to countTokens", async () => {

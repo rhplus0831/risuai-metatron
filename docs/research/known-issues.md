@@ -15,7 +15,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [diagnostics](#diagnostics) (1)
 - [draft-recovery](#draft-recovery) (7)
 - [live-updates](#live-updates) (3)
-- [llm-requests](#llm-requests) (7)
+- [llm-requests](#llm-requests) (4)
 - [mcp](#mcp) (4)
 - [media-aux](#media-aux) (2)
 - [memory](#memory) (10)
@@ -194,15 +194,8 @@ Guide: [LLM Requests, Model Catalogue, Tokenizers](../structure/llm-requests.md#
   the [archive](../archived-plan/README.md)).
 - A profile whose `modelId` names a catalogue id that is later renamed or removed keeps it: unless the id matches a
   dynamic template, the profile resolves as an as-is OpenAI-compatible model until the user picks another model.
-- The server counter's `selectTokenizer` maps a `llama3` custom or plugin tokenizer override to `llama`; the playground
-  route uses the `llama3` family.
-- `CustomModelsSettings` does not expose every format or tokenizer value (Plugin, Ollama, Horde, Echo, NanoGPT variants,
-  WebLLM, and `Local` are missing).
 - Multimodal counts remain approximate: Claude/Gemini images use the GPT-4o fallback; video/audio/signature entries use
   a flat 85 tokens.
-- `server/src/llm/redact.ts` matches a credential's stored, JSON-escaped, and `encodeURIComponent` forms. Its exact
-  string matcher does not normalize lowercase percent escapes; designated `key`, `api_key`, and `token` query parameters
-  are still redacted by name.
 
 ## mcp
 
