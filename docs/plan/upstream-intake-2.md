@@ -2,9 +2,9 @@
 
 Status: drafted 2026-11-10 at `3cc8b2d56`; the owner accepted every decision's default and answered both open
 questions the same day (Decisions, Open Questions); audited the same day
-([report](../plan-runner-audit/upstream-intake-2-2026-11-10.md)), not started. This is the second upstream intake,
-run by the [ledger](../research/upstream-ledger.md)'s procedure over `f50b5942..4d87a70ff` (upstream release
-2026.10.295):
+([report](../plan-runner-audit/upstream-intake-2-2026-11-10.md)); landed: 7 (`43fbd918e`). This is the second
+upstream intake, run by the [ledger](../research/upstream-ledger.md)'s procedure over `f50b5942..4d87a70ff` (upstream
+release 2026.10.295):
 53 non-merge commits and 13 merges. Nine read-only Luna workers compared the commits with Metatron by group; the
 session then re-read in source every claim a slice below rests on: the two bridge callback returns and the
 `Math.random` ref ids in `factory.ts`, the dropped `removedNodes` and the substring URL blocklist in `v3.svelte.ts`,
