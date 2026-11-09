@@ -3,11 +3,41 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 import { UNKNOWN_BUILD } from "../../../shared/buildInfo.ts";
 import { type GitRunner, readServerBuildInfo, resolveBuildInfo, resolveNormalizationIdentity } from "../buildInfo.ts";
 
 const COMMIT = "a9fa6f8c5d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a";
+
+it("type-checks the standalone Vite project and emits its declarations only inside the compiler cache", () => {
+    const root = path.resolve(import.meta.dirname, "../../..");
+    const filename = path.join(root, "tsconfig.node.json");
+    const config = ts.readConfigFile(filename, ts.sys.readFile);
+    expect(config.error).toBeUndefined();
+    const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, root, undefined, filename);
+    expect(parsed.errors).toEqual([]);
+    const program = ts.createProgram(parsed.fileNames, parsed.options);
+    const diagnostics = ts.getPreEmitDiagnostics(program);
+    expect(diagnostics.map((entry) => ts.flattenDiagnosticMessageText(entry.messageText, "\n"))).toEqual([]);
+
+    // Capture real compiler output without writing generated files into the checkout.
+    const emitted: string[] = [];
+    const result = program.emit(undefined, (file) => emitted.push(path.resolve(file)));
+    expect(result.emitSkipped).toBe(false);
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toEqual(
+        expect.arrayContaining([
+            path.join(root, "node_modules/.cache/tsc/vite/vite.config.d.ts"),
+            path.join(root, "node_modules/.cache/tsc/vite/server/src/buildInfo.d.ts"),
+            path.join(root, "node_modules/.cache/tsc/vite/shared/buildInfo.d.ts"),
+            path.join(root, "node_modules/.cache/tsc/vite.tsbuildinfo"),
+        ]),
+    );
+    for (const file of emitted) {
+        expect(path.relative(path.join(root, "node_modules/.cache/tsc"), file)).not.toMatch(/^\.\./);
+    }
+});
 
 const dirs: string[] = [];
 const tempDir = () => {

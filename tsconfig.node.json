@@ -1,8 +1,15 @@
 {
   "compilerOptions": {
     "composite": true,
+    "target": "ES2023",
     "module": "ESNext",
-    "moduleResolution": "nodenext"
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "tsBuildInfoFile": "node_modules/.cache/tsc/vite.tsbuildinfo",
+    "emitDeclarationOnly": true,
+    "outDir": "node_modules/.cache/tsc/vite"
   },
-  "include": ["vite.config.ts"]
+  "include": ["vite.config.ts", "server/src/buildInfo.ts", "shared/buildInfo.ts"]
 }
