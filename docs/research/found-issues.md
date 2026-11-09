@@ -9,7 +9,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (4)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
 - [Server routes and resource store](#server-routes-and-resource-store) (8)
 - [LLM requests and providers](#llm-requests-and-providers) (9)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -42,13 +42,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 **Suggested handling:** fold them into `shared/textHash.ts` when one of those files is touched anyway.
 
 ## Server jobs and prompt assembly
-
-### Tool schemas are outside the assembly token budget
-
-`server/src/prompt/assemble.ts`'s final recheck counts messages; `AssemblyHost` has no tool-schema input, and the OpenAI adapter (`server/src/llm/openAI/requests.ts`) adds `body.tools` from descriptors supplied later in `server/src/llm/requests.ts`. A prompt assembled to the budget can therefore exceed the provider's context by the schemas' tokens. Traced by the [cross-plan review](../manual-audit/archive/cross-plan-2026-10-29.md#hypotheses-not-reproduced) (memory seam) and not reproduced with a real tokenizer; unverified.
-
-**Why it matters:** with many or large tool definitions a send near the budget could be refused by the provider although the meter shows room.
-**Suggested handling:** measure with a real tool set and tokenizer; if the gap is real, charge an estimate of the schemas in the recheck (the token-counting follow-up group of the Deep Audit Fixes plan).
 
 ### Asset-scale transport and job leftovers
 
