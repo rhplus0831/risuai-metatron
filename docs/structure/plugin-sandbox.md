@@ -146,7 +146,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
     top-level custom keys are non-`allowedDbKeys` keys of `setDatabase`/`setDatabaseLite`; replacement keeps omitted
     reserved dictionaries. `setItem` JSON-normalizes values (BigInt throws) and throws for an owner not in
     `settings.plugins` (a removed plugin still running elsewhere).
-  - Plugins share one record. Writes resolve when queued. Concurrent tab/device writes are
+  - Plugins share one record. A plain value written into it is copied (`adoptPluginStorageValue`), so the caller's
+    object stays outside it. Writes resolve when queued. Concurrent tab/device writes are
     [merged key by key](resource-sync.md#record-merge); `onStorageDiscarded` reports each listener's own lost keys and
     legacy keys.
   - Shared `getLocalPluginStorage()` (`SafeLocalPluginStorage`) is saved under `_safeLocalPluginStorage`; boot imports

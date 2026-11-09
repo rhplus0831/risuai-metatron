@@ -50,14 +50,19 @@ import { PLUGIN_STORAGE_DICTIONARIES } from "../../../shared/pluginStorage.ts";
  *   by its path. A write through a wrapper whose item is gone throws `DetachedWrapperError`, and one
  *   through a by-id wrapper whose id now matches several elements `DuplicateIdError`, before anything
  *   changes.
- * - Assignment: a wrapper of the same record stores its item's current object; a wrapper of another
- *   record, or a `$state` object the record does not own (a component's editing copy), is stored as a
- *   detached copy, so a record never holds a wrapper or shares another object's state. Array mutators
- *   run in a mutator scope (the elements they displace are written back as they were read), and an
- *   element a write displaced in the current task may be assigned back (an indexed swap).
- *   Plain JSON written under a character or `modules` is copied. Their field-text caches are
- *   disabled by non-JSON data or state shared across cached fields; modules may move whole elements
- *   between root list slots without disabling the cache, which follows element identity, not id.
+ * - Assignment (except `pluginStorage` below): a wrapper of the same record stores its item's current
+ *   object; a wrapper of another record, or a `$state` object the record does not own (a component's
+ *   editing copy), is stored as a detached copy, so a record never holds a wrapper or shares another
+ *   object's state. Array mutators run in a mutator scope (the elements they displace are written
+ *   back as they were read), and an element a write displaced in the current task may be assigned
+ *   back (an indexed swap).
+ *   Plain JSON written under a character, `modules`, or `pluginStorage` is copied. In `pluginStorage`,
+ *   a directly assigned wrapper or state is detached even on self-assignment, except for element
+ *   writeback by a running list mutator; nested own state in a copied plain container is reused so
+ *   rebuilt dictionaries keep their existing entries.
+ *   Character and module field-text caches are disabled by non-JSON data or state shared across
+ *   cached fields; modules may move whole elements between root list slots without disabling the
+ *   cache, which follows element identity, not id.
  * - A module's `assets` list is immutable: every install (`applyRaw`) and adoption
  *   freezes a list of plain JSON tuples, and a read returns the frozen list and tuples themselves,
  *   never a wrapper. An edit replaces the whole list (`module.assets = next`; unchanged frozen
@@ -276,7 +281,7 @@ interface RecordMeta {
     itemFieldStamps: WeakMap<object, Map<string, number>>;
     uncacheable: boolean;
     children: WeakMap<object, TrackedNode>;
-    /** The `$state` objects this record's wrappers have reached (a written proxy that is one is stored as is). */
+    /** The `$state` objects this record's wrappers have reached (eligible for reuse during adoption). */
     owned: WeakSet<object>;
     /** Objects a write through a wrapper overwrote or deleted in the current task, and the latest per id. */
     displaced: Set<object>;
@@ -836,7 +841,7 @@ export function replaceRecord(kind: RecordKind, value: unknown) {
         const plain =
             kind === "modules"
                 ? adoptModuleValue(prepared.value, metaOf(kind), { type: "list" })
-                : unwrap(prepared.value, metaOf(kind));
+                : unwrapInto(prepared.value, metaOf(kind), null);
         records[kind] = plain;
         refreshRoot(kind);
         if (kind === "pluginStorage") {
@@ -877,7 +882,7 @@ export function writeRecordField(kind: RecordKind, field: string, value: unknown
         const plain =
             kind === "modules"
                 ? adoptModuleValue(stored, metaOf(kind), isIndex(field) ? { type: "item" } : null)
-                : unwrap(stored, metaOf(kind));
+                : unwrapInto(stored, metaOf(kind), null);
         const created: Record<string, unknown> = {};
         Object.defineProperty(created, field, { value: plain, enumerable: true, writable: true, configurable: true });
         records[kind] = created;
@@ -1421,9 +1426,9 @@ function resolve(node: TrackedNode): any {
 }
 
 /**
- * The `$state` object an assignment of a wrapper stores: its current identity. Inside a mutator
- * scope, the object the mutator read during its own run. A wrapper whose element is gone throws,
- * unless the element was displaced by a write in the current task (an indexed swap).
+ * The `$state` object a wrapper supplies for adoption (which may copy it): its current identity.
+ * Inside a mutator scope, the object the mutator read during its own run. A wrapper whose element is
+ * gone throws, unless the element was displaced by a write in the current task (an indexed swap).
  */
 function assignedTarget(node: TrackedNode): object {
     if (node.parent !== null && mutatorDepth > 0 && node.target !== undefined) {
@@ -1497,7 +1502,10 @@ function containsRecordState(value: unknown, seen = new Set<object>()): value is
  * - a wrapper of another record stores a detached copy;
  * - a Svelte proxy the record owns is stored as is; any other Svelte proxy a detached copy;
  * - a plain object or array is kept, with the wrappers in it replaced in place by these rules.
- * Character and module writes first use their adoption rules, which copy plain JSON inputs.
+ * Character, module, and pluginStorage writes first use their adoption rules, which copy plain
+ * JSON inputs. PluginStorage also detaches directly assigned state, including its own, except for
+ * element writeback by a running list mutator; nested own state inside a copied plain container
+ * follows these reuse rules for dictionary rebuilds.
  */
 function unwrap(value: unknown, meta: RecordMeta, seen = new Set<object>()): unknown {
     if (!isObject(value)) {
@@ -1540,8 +1548,8 @@ function unwrapPlain(value: unknown): unknown {
 }
 
 /**
- * A value written into a record (`unwrap`); under a character (`adoptCharacterValue`), `field` names
- * the character's top-level field it goes under (null: unknown).
+ * A value written into a record (`unwrap`, or `adoptPluginStorageValue` for pluginStorage); under
+ * a character (`adoptCharacterValue`), `field` names its top-level field (null: unknown).
  */
 function unwrapInto(
     value: unknown,
@@ -1549,7 +1557,27 @@ function unwrapInto(
     field: string | null,
     taint: Pick<RecordMeta, "uncacheable"> = meta,
 ): unknown {
+    if (meta.key === "pluginStorage") {
+        return adoptPluginStorageValue(value, meta);
+    }
     return meta.chaId === null ? unwrap(value, meta) : adoptCharacterValue(value, meta, field, taint);
+}
+
+/**
+ * Plugin storage owns plain JSON inputs and directly assigned state, including self-assignments.
+ * Native mutator element writeback uses `unwrap` in `writeThrough` to keep moved state by identity.
+ * Nested own state in a plain input is reused: dictionary rebuilds move entries into a new container
+ * instead of copying large owned dictionaries. Other non-JSON inputs keep `unwrap`'s behavior.
+ */
+function adoptPluginStorageValue(value: unknown, meta: RecordMeta): unknown {
+    if (!isObject(value)) {
+        return value;
+    }
+    if (nodeOf.has(value) || STATE in value) {
+        return detachedCopy(value);
+    }
+    const copy = inertCopy(value, (entry) => unwrap(entry, meta));
+    return copy === NOT_INERT ? unwrap(value, meta) : copy;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2080,12 +2108,12 @@ function adoptCharacterValue(
     }
     if (node || STATE in value) {
         const copy = detachedCopy(value);
-        if (inertCopy(copy as object, meta, field, new Set(), taint) === NOT_INERT) {
+        if (inertCopy(copy as object, (entry) => adoptCharacterValue(entry, meta, field, taint)) === NOT_INERT) {
             taint.uncacheable = true;
         }
         return copy;
     }
-    const copy = inertCopy(value, meta, field, new Set(), taint);
+    const copy = inertCopy(value, (entry) => adoptCharacterValue(entry, meta, field, taint));
     if (copy === NOT_INERT) {
         taint.uncacheable = true;
         return unwrap(value, meta);
@@ -2094,18 +2122,13 @@ function adoptCharacterValue(
 }
 
 /**
- * A fresh copy of plain JSON data written into a character (`adoptCharacterValue`): arrays and
+ * A fresh copy of plain JSON data written into a character or pluginStorage: arrays and
  * `Object.prototype` objects of enumerable data properties (own `__proto__` kept as a key), with no
- * `toJSON` key, symbol key, function, or cycle; this character's state inside is kept as itself and
- * another record's copied (`adoptCharacterValue`). `NOT_INERT` for anything else.
+ * `toJSON` key, symbol key, function, or cycle. Nested state follows `adoptState`: own state is
+ * reused and foreign state detached, with character cache tainting when needed. `NOT_INERT` for
+ * anything else.
  */
-function inertCopy(
-    value: object,
-    meta: RecordMeta,
-    field: string | null,
-    path: Set<object>,
-    taint: Pick<RecordMeta, "uncacheable">,
-): unknown {
+function inertCopy(value: object, adoptState: (value: object) => unknown, path = new Set<object>()): unknown {
     const isArray = Array.isArray(value);
     if (Object.getPrototypeOf(value) !== (isArray ? Array.prototype : Object.prototype) || path.has(value)) {
         return NOT_INERT;
@@ -2128,10 +2151,7 @@ function inertCopy(
             return NOT_INERT;
         }
         if (isObject(entry)) {
-            entry =
-                nodeOf.has(entry) || STATE in entry
-                    ? adoptCharacterValue(entry, meta, field, taint)
-                    : inertCopy(entry, meta, field, path, taint);
+            entry = nodeOf.has(entry) || STATE in entry ? adoptState(entry) : inertCopy(entry, adoptState, path);
             if (entry === NOT_INERT) {
                 return NOT_INERT;
             }
@@ -2590,11 +2610,18 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
         incoming = prepared.value;
         route = prepared.route;
     }
-    // Unwrapped (and validated: a gone wrapper throws) before anything changes.
+    // Unwrapped (and validated: a gone wrapper throws) before anything changes. Plugin storage
+    // reuses state written back by this list's native mutator; inserted values were adopted in its plan.
     const plain =
         mutatorWriteback?.node === node && isIndex(prop) && mutatorWriteback.values.has(incoming)
             ? incoming
-            : unwrapNodeValue(incoming, node, prop);
+            : node.kind === "pluginStorage" &&
+                isIndex(prop) &&
+                runningMutators.has(node) &&
+                isObject(incoming) &&
+                (nodeOf.has(incoming) || STATE in incoming)
+              ? unwrap(incoming, node.meta)
+              : unwrapNodeValue(incoming, node, prop);
     if (!Array.isArray(target) && assignsInheritedName(target, prop)) {
         install(node, writeEntries(target, [[prop, plain]])!);
     } else {

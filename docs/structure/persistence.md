@@ -76,7 +76,7 @@ contract; use these identifiers to trace installation, writes, and save-loop cou
 - Wrapper identity and list operations: `trackedRecord`, `BY_ID_FIELDS`, `moveRecordListItem`, `replaceRecordList`,
   `DetachedWrapperError`, `DuplicateIdError`.
 - Save projections and adoption: `characterFieldStamp`, `moduleItemFieldStamp`, `adoptCharacterValue`,
-  `adoptModuleValue`, `applyRawCharacter`, `patchRawCharacter`.
+  `adoptModuleValue`, `adoptPluginStorageValue`, `applyRawCharacter`, `patchRawCharacter`.
 - Credential routing: `CredentialRefusedError`; the external mutation boundary is described above.
 
 ## Flows
