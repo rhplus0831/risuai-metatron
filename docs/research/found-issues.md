@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [LLM requests and providers](#llm-requests-and-providers) (11)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (6)
-- [Chat screen and input](#chat-screen-and-input) (6)
+- [Chat screen and input](#chat-screen-and-input) (5)
 - [Client and plugins](#client-and-plugins) (23)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
 - [Test timing](#test-timing) (1)
@@ -361,13 +361,6 @@ A single row is outside the page budget too: the planner (`src/lib/ChatScreens/s
 
 **Why it matters:** every use of the documented example sends stray quotes in the first and last messages.
 **Suggested handling:** strip one pair of surrounding quotes from a command argument on client and server, and update the pinned test.
-
-### Repeated screenshot exports grow the live stylesheet
-
-The Implementation Audit Fixes run's R6 (d94380fa5, 2026-11-06) prepares the font CSS once per export (`prepareScreenshotCapture` in `src/lib/ChatScreens/screenshotCapture.ts`, ~12–26, `getFontEmbedCSS` on the rows' common ancestor). html-to-image still re-expands a surviving `@import` into the live stylesheet once per call, so one export adds no duplicates but each later export adds one more copy of those rules; library behavior. Also unmeasured: the driver fixture (`util/playwright/measureRenderWork.mjs`) has no `@import` webfont, so R6's measurement does not show the per-row cost it removed for such fonts. Found by R6.
-
-**Why it matters:** a session that exports many times keeps growing the document's rules for an `@import`ed font.
-**Suggested handling:** if it matters, inline or drop the `@import` rules before calling `getFontEmbedCSS`, or remove the added copies after each export; add an `@import` webfont to the fixture before measuring.
 
 ### Chat rendering leftovers
 
