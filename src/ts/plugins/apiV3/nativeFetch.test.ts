@@ -10,6 +10,8 @@ vi.mock("./factory", () => ({
         run() {}
         terminate() {}
     },
+    // Called directly, not through the bridge: no host call is in progress.
+    hostCallSignal: () => undefined,
 }));
 vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/alert", async () =>

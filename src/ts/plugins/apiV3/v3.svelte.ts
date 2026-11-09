@@ -11,7 +11,7 @@ import {
     type PluginProviderOptions,
     type ReplacerFunction,
 } from "../pluginHooks";
-import { SandboxHost } from "./factory";
+import { hostCallSignal, SandboxHost } from "./factory";
 import { databaseAccessRecorderScript } from "./developMode";
 import {
     cachedDetachedChat,
@@ -2221,6 +2221,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             return globalFetch(url, options);
         },
         nativeFetch: async (url: string, options: RequestInit = {}) => {
+            const callSignal = hostCallSignal();
             for (const blocked of urlBlacklist) {
                 if (url.toLowerCase().includes(blocked)) {
                     throw new Error(`Requests to ${blocked} are blocked for security reasons.`);
@@ -2266,7 +2267,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 }
             }
             // RequestInit is public; internal routing, logging and interceptor options are not.
-            return fetchNative(url, { method, headers, body, signal: options.signal });
+            return fetchNative(url, { method, headers, body, signal: options.signal ?? callSignal });
         },
         getChar: () => getChar(currentContext(contextOwner)),
         setChar: async (char: any) => {
@@ -3451,16 +3452,22 @@ export async function executePluginV3(plugin: RisuPlugin) {
     const identity: PluginIdentity = { name: plugin.name, script: plugin.script };
     const host = new SandboxHost(makeRisuaiAPIV3(iframe, plugin, identity));
     host.onActivityChanged?.(notifyPluginWork);
+    try {
+        // Developer diagnostics are selected at load time; changing the setting applies on the next load.
+        host.run(
+            iframe,
+            identity.script,
+            settings.ui.enableDevTools ? { guestPrelude: databaseAccessRecorderScript(plugin.name) } : undefined,
+        );
+    } catch (error) {
+        host.terminate();
+        if (iframe.isConnected) iframe.remove();
+        throw error;
+    }
     v3PluginInstances.push({
         ...identity,
         host,
     });
-    // Developer diagnostics are selected at load time; changing the setting applies on the next load.
-    host.run(
-        iframe,
-        identity.script,
-        settings.ui.enableDevTools ? { guestPrelude: databaseAccessRecorderScript(plugin.name) } : undefined,
-    );
     console.log(`[RisuAI Plugin: ${plugin.name}] Loaded API V3 plugin.`);
 }
 

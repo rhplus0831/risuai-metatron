@@ -236,6 +236,31 @@ describe("unread nativeFetch bodies expire", () => {
 });
 
 describe("terminate ends host calls", () => {
+    it("aborts a nativeFetch without a guest signal when unloaded before headers arrive", async () => {
+        let resolveFetch!: (response: Response) => void;
+        let fetchStarted!: () => void;
+        const started = new Promise<void>((resolve) => (fetchStarted = resolve));
+        vi.mocked(fetchNative).mockImplementationOnce(
+            () =>
+                new Promise<Response>((resolve) => {
+                    resolveFetch = resolve;
+                    fetchStarted();
+                }),
+        );
+        replyToGuest = () => {};
+        send({ type: "CALL_ROOT", reqId: "unsignalled", method: "nativeFetch", args: [url] });
+        await started;
+        const signal = hostSignal();
+        try {
+            expect(signal).toBeDefined();
+            expect(signal.aborted).toBe(false);
+            await loadV3Plugins([]);
+            expect(signal.aborted).toBe(true);
+        } finally {
+            resolveFetch(new Response(null, { status: 204 }));
+        }
+    });
+
     it("aborts a nativeFetch still waiting for headers, and bridges nothing when it resolves later", async () => {
         let resolveFetch!: (response: Response) => void;
         vi.mocked(fetchNative).mockImplementationOnce(

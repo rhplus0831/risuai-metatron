@@ -8,28 +8,27 @@ import { SandboxHost } from "./factory";
 // main one (the bridge, then the plugin's code, reporting `SCRIPT_SETTLED` once both settled) and a
 // fallback that reports it when the main one never ran (a syntax error).
 
+class FakeIframe {
+    style = {};
+    sandbox = { add() {} };
+    contentWindow: Window | null = null;
+    srcdoc = "";
+    setAttribute() {}
+    remove() {}
+}
+
 function guestScripts(userCode = ""): { main: string; fallback: string } {
-    let html = "";
-    class FakeIframe {
-        style = {};
-        sandbox = { add() {} };
-        contentWindow = null;
-        setAttribute() {}
-        remove() {}
-        set srcdoc(value: string) {
-            html = value;
-        }
-    }
+    const iframe = new FakeIframe();
     vi.stubGlobal("HTMLIFrameElement", FakeIframe);
     vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
     try {
         const host = new SandboxHost({});
-        host.run(new FakeIframe() as unknown as HTMLIFrameElement, userCode);
+        host.run(iframe as unknown as HTMLIFrameElement, userCode);
         host.terminate();
     } finally {
         vi.unstubAllGlobals();
     }
-    const scripts = [...html.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+    const scripts = [...iframe.srcdoc.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/g)].map((match) => match[1]);
     if (scripts.length !== 2) throw new Error(`expected two guest scripts in the srcdoc, found ${scripts.length}`);
     return { main: scripts[0], fallback: scripts[1] };
 }
@@ -153,6 +152,52 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+});
+
+describe("the guest bridge's data copies", () => {
+    it("preserves an own __proto__ data property in host results and guest callback returns", async () => {
+        const guest = await startGuest();
+        const data = () => JSON.parse('{"__proto__":{"stored":"plugin data"}}');
+        let returnedOnHost: unknown;
+        const host = new SandboxHost({
+            getStoredValue: data,
+            async receiveCallback(callback: () => Promise<unknown>) {
+                returnedOnHost = await callback();
+            },
+        });
+        let receiveOnHost!: (event: MessageEvent) => void;
+        vi.stubGlobal("window", {
+            addEventListener(_type: string, listener: typeof receiveOnHost) {
+                receiveOnHost = listener;
+            },
+            removeEventListener() {},
+        });
+        vi.stubGlobal("HTMLIFrameElement", FakeIframe);
+        const iframe = new FakeIframe();
+        iframe.contentWindow = guest.window as unknown as Window;
+        // Simulate the two window endpoints, including postMessage's structured clone.
+        guest.window.postMessage = (message: unknown, _origin: string, ports: MessagePort[] = []) =>
+            guest.deliver(structuredClone(message), ports);
+        guest.window.parent.postMessage = (message: unknown, _origin: string, ports: MessagePort[] = []) =>
+            receiveOnHost({ data: structuredClone(message), ports, source: guest.window } as unknown as MessageEvent);
+        host.run(iframe as unknown as HTMLIFrameElement, "");
+        try {
+            const receivedInGuest = await guest.risuai.getStoredValue();
+            await guest.risuai.receiveCallback(data);
+            for (const [receiver, value] of [
+                ["guest", receivedInGuest],
+                ["host", returnedOnHost],
+            ] as const) {
+                expect.soft(Object.hasOwn(value, "__proto__"), receiver).toBe(true);
+                expect.soft(Object.getOwnPropertyDescriptor(value, "__proto__"), receiver).toMatchObject({
+                    value: { stored: "plugin data" },
+                });
+                expect.soft(Object.getPrototypeOf(value), receiver).toBe(Object.prototype);
+            }
+        } finally {
+            host.terminate();
+        }
+    });
 });
 
 describe("the guest bridge's message sources", () => {

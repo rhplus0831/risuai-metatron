@@ -43,6 +43,7 @@ vi.mock("./apiV3/permissionStore", async () =>
 );
 
 import { loadPlugins } from "./plugins.svelte";
+import { SandboxHost } from "./apiV3/factory";
 import { customV3ProviderMetaStore, executePluginV3, getV3PluginInstance, loadV3Plugins } from "./apiV3/v3.svelte";
 import { customProviderStore, pluginHooks } from "./pluginHooks";
 import { getModelInfo, getModelList, LLMTokenizer } from "src/ts/model/modellist";
@@ -109,6 +110,26 @@ afterEach(async () => {
 });
 
 describe("plugin reload lifecycle", () => {
+    it("rejects a failed sandbox start, terminates its host and removes its instance and iframe", async () => {
+        const entry = plugin("failed-start");
+        const error = new Error("sandbox start failed");
+        let iframe!: HTMLIFrameElement;
+        vi.spyOn(SandboxHost.prototype, "run").mockImplementation((frame) => {
+            iframe = frame as HTMLIFrameElement;
+            expect(document.body.contains(iframe)).toBe(true);
+            throw error;
+        });
+
+        try {
+            await expect(executePluginV3(entry)).rejects.toBe(error);
+            expect.soft(getV3PluginInstance(entry.name)).toBeUndefined();
+            expect.soft(document.body.contains(iframe)).toBe(false);
+            expect.soft(harness.hosts[0].terminate).toHaveBeenCalledTimes(1);
+        } finally {
+            await loadV3Plugins([]);
+        }
+    });
+
     it("removes disabled and deleted providers, including registrations made during unload", async () => {
         const disabled = providerPlugin("disabled-provider");
         const removed = providerPlugin("removed-provider");

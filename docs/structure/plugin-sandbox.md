@@ -79,6 +79,8 @@ entrypoints.
 - Reset: `clearPluginHooks`, then `loadV3Plugins` with the enabled `'3.0'` plugins: it unloads a snapshot of the
   instances, waits for their callbacks and termination, resets the providers and `customV3ProviderMetaStore` again,
   removes every plugin event listener from its target, and starts the replacements.
+- Start (`executePluginV3`) lists an instance only after `SandboxHost.run` returns; a `run` that throws terminates the
+  host, removes its iframe, and rethrows.
 - Unload (`unloadV3Plugin`) unregisters each instance's MCP clients (an identifier replaced by another client is kept),
   removes the plugin's replacers and script handlers, and rejects its pending callbacks.
 - `loadPluginsForBoot` captures its guests' startup right after `loadV3Plugins` (`captureBootGuests`): `ready` succeeds,
@@ -181,10 +183,13 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   use script hashes. Updates must keep the name.
 - Only API 3.0 exists. Plugins run only inside the iframe, never in the main document.
 - RPC values and streams: `v3.svelte.ts` and `factory.ts` module headers.
-- A host call's abort controllers live until every response stream finishes (done, error, guest cancel, unread expiry,
-  rollback, or termination). A guest callback's mirrored controllers likewise live until every returned stream ends, so
-  a host abort still reaches the plugin and requests using its signal after the callback returns. Calls and callbacks
-  that throw or return no streams release their controllers at once. Termination closes both bridges.
+- A host call's abort controllers (one the host creates per call, plus one per guest-supplied signal) live until every
+  response stream finishes (done, error, guest cancel, unread expiry, rollback, or termination). Calls and callbacks
+  that throw or return no streams release their controllers at once. Termination aborts the live ones and closes both
+  bridges; `nativeFetch` without a plugin signal uses the per-call one (`hostCallSignal`, read on its first line).
+- A guest callback's mirrored controllers likewise live until every returned stream ends, so a host abort still reaches
+  the plugin and requests using its signal after the callback returns.
+- Bridge copies define own properties, so a plain object's own `__proto__` key crosses the bridge as data.
 - The sandbox host never logs an RPC message or its answer: their arguments carry the plugin's `nativeFetch` headers
   (API keys) and bodies.
 - Main-document DOM access requires the v3 `getRootDocument` permission plus the Safe wrappers.

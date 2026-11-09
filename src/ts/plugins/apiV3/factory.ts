@@ -52,6 +52,13 @@ interface AbortSignalRef {
     aborted: boolean;
 }
 
+let currentHostCallSignal: AbortSignal | undefined;
+
+/** Like currentContext, read only on an API method's first synchronous line, before any await. */
+export function hostCallSignal(): AbortSignal | undefined {
+    return currentHostCallSignal;
+}
+
 const GUEST_BRIDGE_SCRIPT = `
 await (async function() {
     const pendingRequests = new Map();
@@ -230,7 +237,9 @@ await (async function() {
             if (obj instanceof ReadableStream) return { result: replace(obj), ports, cleanups };
             if (obj.constructor === Object) {
                 const out = {};
-                for (const k of Object.keys(obj)) out[k] = replace(obj[k]);
+                for (const k of Object.keys(obj)) {
+                    Object.defineProperty(out, k, { value: replace(obj[k]), enumerable: true, writable: true, configurable: true });
+                }
                 return { result: out, ports, cleanups };
             }
         } catch (error) {
@@ -279,7 +288,9 @@ await (async function() {
         if (obj.__type === 'STREAM_PORT') return reconstruct(obj);
         if (obj.constructor === Object) {
             const out = {};
-            for (const k of Object.keys(obj)) out[k] = reconstruct(obj[k]);
+            for (const k of Object.keys(obj)) {
+                Object.defineProperty(out, k, { value: reconstruct(obj[k]), enumerable: true, writable: true, configurable: true });
+            }
             return out;
         }
 
@@ -485,6 +496,7 @@ export class SandboxHost {
 
     private instanceRegistry = new Map<string, any>();
     private abortControllers = new Map<string, AbortController>();
+    private hostCallControllers = new Set<AbortController>();
     private messageHandlerRef: ((event: MessageEvent) => void) | null = null;
     private callbackWrapperCache = new Map<string, Function>();
 
@@ -822,7 +834,14 @@ export class SandboxHost {
             if (obj instanceof ReadableStream) return { result: replace(obj), ports, cleanups };
             if (obj.constructor === Object) {
                 const out: any = {};
-                for (const k of Object.keys(obj)) out[k] = replace(obj[k]);
+                for (const k of Object.keys(obj)) {
+                    Object.defineProperty(out, k, {
+                        value: replace(obj[k]),
+                        enumerable: true,
+                        writable: true,
+                        configurable: true,
+                    });
+                }
                 return { result: out, ports, cleanups };
             }
         } catch (error) {
@@ -904,7 +923,14 @@ export class SandboxHost {
             if (obj.__type === "STREAM_PORT") return reconstruct(obj);
             if (obj.constructor === Object) {
                 const out: any = {};
-                for (const k of Object.keys(obj)) out[k] = reconstruct(obj[k]);
+                for (const k of Object.keys(obj)) {
+                    Object.defineProperty(out, k, {
+                        value: reconstruct(obj[k]),
+                        enumerable: true,
+                        writable: true,
+                        configurable: true,
+                    });
+                }
                 return out;
             }
         } catch (error) {
@@ -1009,11 +1035,14 @@ export class SandboxHost {
             if (data.type === "CALL_ROOT" || data.type === "CALL_INSTANCE") {
                 const response: RpcMessage = { type: "RESPONSE", reqId: data.reqId };
                 const usedAbortIds: string[] = [];
+                const callController = new AbortController();
+                this.hostCallControllers.add(callController);
                 let transferables: Transferable[] = [];
                 let streamCleanups: (() => void)[] = [];
 
                 const releaseAbortControllers = () => {
                     for (const id of usedAbortIds) this.abortControllers.delete(id);
+                    this.hostCallControllers.delete(callController);
                 };
 
                 const rollbackStreams = () => {
@@ -1030,17 +1059,24 @@ export class SandboxHost {
                     const args = this.deserializeArgs(data.args || [], usedAbortIds);
                     let result: any;
 
-                    if (data.type === "CALL_ROOT") {
-                        const fn = this.apiFactory[data.method!];
-                        if (typeof fn !== "function") throw new Error(`API method ${data.method} not found`);
-                        result = await fn(...args);
-                    } else {
-                        const instance = this.instanceRegistry.get(data.id!);
-                        if (!instance) throw new Error("Instance not found or released");
-                        if (typeof instance[data.method!] !== "function")
-                            throw new Error(`Method ${data.method} missing on instance`);
-                        result = await instance[data.method!](...args);
+                    const previousCallSignal = currentHostCallSignal;
+                    currentHostCallSignal = callController.signal;
+                    try {
+                        if (data.type === "CALL_ROOT") {
+                            const fn = this.apiFactory[data.method!];
+                            if (typeof fn !== "function") throw new Error(`API method ${data.method} not found`);
+                            result = fn(...args);
+                        } else {
+                            const instance = this.instanceRegistry.get(data.id!);
+                            if (!instance) throw new Error("Instance not found or released");
+                            if (typeof instance[data.method!] !== "function")
+                                throw new Error(`Method ${data.method} missing on instance`);
+                            result = instance[data.method!](...args);
+                        }
+                    } finally {
+                        currentHostCallSignal = previousCallSignal;
                     }
+                    result = await result;
 
                     // Unloaded while the call ran: bridge nothing, and end the streams nobody will read.
                     if (this.terminated) {
@@ -1145,9 +1181,9 @@ export class SandboxHost {
     }
 
     /**
-     * Aborts retained controllers before closing streams and rejecting callbacks. Only host calls
-     * given a guest signal can be aborted; unsignalled calls may keep running. A call resolving after
-     * termination posts nothing, creates no bridge, and cancels its undelivered response streams.
+     * Aborts retained host-call and guest-signal controllers before closing streams and rejecting
+     * callbacks. A call resolving after termination posts nothing, creates no bridge, and cancels
+     * its undelivered response streams.
      */
     public terminate() {
         this.terminated = true;
@@ -1155,6 +1191,7 @@ export class SandboxHost {
         this.settleStartup("stopped");
         // An in-flight host call (a `nativeFetch` still waiting for headers) stops with its sandbox.
         for (const controller of this.abortControllers.values()) controller.abort();
+        for (const controller of this.hostCallControllers) controller.abort();
         if (this.messageHandlerRef) {
             window.removeEventListener("message", this.messageHandlerRef);
             this.messageHandlerRef = null;
@@ -1170,6 +1207,7 @@ export class SandboxHost {
         }
         this.pendingCallbacks.clear();
         this.abortControllers.clear();
+        this.hostCallControllers.clear();
         this.callbackWrapperCache.clear();
         this.activityChanged();
         this.activityListener = null;
