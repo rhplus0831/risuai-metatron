@@ -13,7 +13,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Server routes and resource store](#server-routes-and-resource-store) (9)
 - [LLM requests and providers](#llm-requests-and-providers) (9)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
-- [Display transform](#display-transform) (6)
+- [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (5)
 - [Client and plugins](#client-and-plugins) (23)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
@@ -273,34 +273,12 @@ Both sockets send `proto=1` (Incremental Chat Transport D4, Slice 2). The server
 **Why it matters:** heavy scrolling with plugin handlers can show raw rows and a retry round.
 **Suggested handling:** if `SnapshotExpired` shows up under heavy scrolling, drop an unclaimed snapshot on the server when its request signal aborted after return, or release by a client-chosen snapshot id.
 
-### The experimental Google translator does not check the status
-
-`translateMain` in `src/ts/translator/translator.ts`, the `useExperimentalGoogleTranslator` branch (~500–523, a `globalFetch` of `translate.google.com/m`): it parses `d.data` and returns the `.result-container` text without checking `d.ok`, and any error falls through to the direct adapter silently. The direct Google adapter rejects HTTP and shape errors as transient since the Implementation Audit Fixes run's R1 (2026-11-06), but an error page that still carries a `.result-container` would be cached as a pair by `translate`. Found in that run (slice R1). Owner: translation.
-
-**Why it matters:** the same cache-poisoning class as the direct adapter's fixed 429 case, reachable only with the experimental toggle on.
-**Suggested handling:** check `d.ok` before parsing when touching that branch.
-
-### A provider switch during a translation caches a mixed result
-
-`translateShared` in `src/ts/translator/translator.ts` (~226) keys a producer by `memoryTranslationContext().key`, but `runTranslator` (~329) and `translateMain` (~399) reread `settings.memoryTranslateMedia` (provider type, the DeepLX URL after its wait) for each `translateProtectingLines` chunk. Switching DeepL → DeepLX → DeepL during one multi-chunk producer passes the final key guard, so the mixed result enters the pair cache and every joiner gets it. Switching through `llm` mid-run also bypasses the `failure` object (passed to `translateMain` only on the exclude-thoughts path), so an LLM failure can still be cached. Found by the R1 challenger of the Implementation Audit Fixes run (2026-11-06); pre-existing, now shared with joiners. Owner: translation.
-
-**Why it matters:** needs a settings change during one in-flight request, an edge class the run excluded.
-**Suggested handling:** if `runTranslator` is reworked, capture the provider settings once per producer and use them for the key and every chunk.
-
 ### A withdrawn forced refresh can leave its replacement on the old cache
 
 Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it needs a Re-render whose target is withdrawn while a sibling keeps the chunk alive, and a same-input replacement created before the result lands. In `src/ts/parser/transformClient.ts` the bypass (`noCacheNext`, ~178) is consumed when the operation is created and restored only on withdrawal before dispatch or a whole-chunk cancel (~325); a dispatched target withdrawn from a surviving chunk loses it, so the replacement sends `noCache: false`, cannot join the forced operation, and can read the server's old cache entry (`server/src/prompt/transform.ts` invalidates when processing reaches the forced target, not at admission). Source: [RW3](../manual-audit/archive/render-work-budget-2026-11-05.md#rw3--a-departed-forced-refresh-can-leave-its-replacement-using-the-old-server-cache).
 
 **Why it matters:** a requested Re-render can show the previous cached result after paying for a fresh one.
 **Suggested handling:** keep the forced intent until a live consumer receives its result, or let a same-generation replacement join the forced operation, without reviving the bypass for a superseded generation.
-
-### The MessageTranslation sourceHash comment names the wrong text
-
-`MessageTranslation.sourceHash` in `shared/database.ts` (~1413) is commented "`translationSourceHash(data)` (`shared/translation/hash.ts`) of the translated text", but the interface comment above it (~1410) and the readers (`shared/rerollCandidates.ts` ~180, `shared/chats.ts` ~95) hash the message's source `data`. Found in the Module Headers run (2026-11-08).
-
-**Why it matters:** a translation writer following the field comment would hash the output, and every translation would read as stale.
-
-**Suggested handling:** change "of the translated text" to "of the source `data`" (comment-only).
 
 ## Chat screen and input
 
