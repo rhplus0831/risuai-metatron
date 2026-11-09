@@ -313,8 +313,16 @@ describe("plugin MCP call context", () => {
             expect(await callTool("local_tool", {}, refB, capturePluginContext(refB))).toEqual([
                 { type: "text", text: "local result" },
             ]);
-            for (const args of harness.internal.list.mock.calls) expect(args).toEqual([]);
-            for (const args of harness.internal.call.mock.calls) expect(args).toHaveLength(2);
+            // No plugin context reaches a tab client; the trailing argument is the caller's abort signal when it has one.
+            const signalOrNone = (value: unknown) => value === undefined || value instanceof AbortSignal;
+            for (const args of harness.internal.list.mock.calls as unknown[][]) {
+                expect(args[0]).toBeUndefined();
+                expect(signalOrNone(args[1])).toBe(true);
+            }
+            for (const args of harness.internal.call.mock.calls as unknown[][]) {
+                expect(args[2]).toBeUndefined();
+                expect(signalOrNone(args[3])).toBe(true);
+            }
         },
     );
 });

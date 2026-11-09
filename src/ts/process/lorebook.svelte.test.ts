@@ -217,7 +217,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         expect(await sources()).toEqual(["lore-i", "lore-h", "lore-c"]);
     });
 
-    it("resolves a bound persona's embedded module through the module list, as before the move (inherited)", async () => {
+    it("resolves a bound persona's embedded module itself, and a stored module of its id takes precedence", async () => {
         const { collectionStore, chat, ref, sources } = await boot([message("m1", "user", "mina")]);
         const embedded = { ...module("$embedded", "mina"), name: "Mina's module" };
         const personaId = collectionStore.addPersona({
@@ -227,9 +227,8 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
             embeddedModule: embedded,
         });
         chat.setChatMeta(ref, { bindedPersona: personaId });
-        // `getModules` concatenates the embedded module's id but resolves ids over `db.modules`
-        // only, so the embedded lore joins once a module with that id is in the list.
-        expect(await sources()).toEqual([]);
+        // `getModules` appends the persona's embedded object when no stored module has its id.
+        expect(await sources()).toEqual(["lore-$embedded"]);
         collectionStore.addModule(module("other", "zzz"));
         collectionStore.addModule(embedded);
         // `getModules` caches by the joined id list: enabling another module changes the list.
