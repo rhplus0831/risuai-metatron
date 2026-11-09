@@ -15,7 +15,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
-- [Client and plugins](#client-and-plugins) (23)
+- [Client and plugins](#client-and-plugins) (20)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
 
 ## Chat store, sync, and change feeds
@@ -319,21 +319,6 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 **Why it matters:** the capture gap lets a plugin act behind a blocking notice; the pinned URLs grow with assets rendered; the flakes return whenever suites run in parallel.
 **Suggested handling:** mention when working nearby and check the code first; treat the flakes as known unless one fails alone.
 
-### loadFileSrc can return /sw/img on an uncontrolled page
-
-`src/ts/globalApi.svelte.ts` `loadFileSrc` (~360) returns `/sw/img/<hex>` on a `knownSwPaths` hit or a `risuCache` hit while `usingSw` is true, without asking the worker. On a page no worker controls (the controller was lost or never claimed it) nothing serves that URL: the server has no `/sw/img` route (`server/src/tests/diagnostics.test.ts` lists `/sw/` as worker-only), and only a miss reaches `/sw/register`, whose failure gives the `blob:` fallback. The comment and the assets guide say an uncontrolled page gets a `blob:` URL. Found by a lookup trial of the Guides To Source run (2026-11-05); unconfirmed, and rare because worker activation clears the `/sw/img` entries. Owner: assets.
-
-**Why it matters:** an image rendered from such a URL is broken until a reload.
-
-**Suggested handling:** reproduce with a lost controller and a cached entry, then check `navigator.serviceWorker.controller` before returning a `/sw/img` URL.
-
-### getFileSrc never rejects, so asset reads are never retried
-
-`getFileSrc` in `src/ts/globalApi.svelte.ts` (~141) returns `getFileSource(loc).src`, whose loader's outer `catch` (~396) logs and resolves `""`. The render's transient classification (`src/ts/parser/renderErrors.ts`, the asset and inlay passes in `src/ts/parser/parser.svelte.ts`) marks `getFileSrc`/`getFileSrcCached` rejections transient, but a real read failure never rejects: the asset renders with an empty `src` and is not retried. `getFileSrcCached` does not cache `""` (falsy check), so the next render reads again. Found in the Render Work Budget run (2026-11-05).
-
-**Why it matters:** the plan's retry for a failed asset read (its D2) rarely fires; a transient storage failure leaves a broken image until the row re-renders for another reason.
-**Suggested handling:** an opt-in failure channel in `globalApi.svelte.ts` for the render path, rather than making the shared loader reject for every caller.
-
 ### #import_preset opens the settings after a refusal
 
 `src/ts/characterCards.ts` `characterURLImport`, the `#import_preset=` branch (~860): it ignores `importPreset`'s return and always opens the prompt settings, while the drop, launch-queue and `#share_preset` paths act only on a returned id. A refused `.risup` (`errors.unsupportedPreset`) shows the refusal and then the settings page opens anyway. Found by the Found Issues Sweep's A1 (2026-11-05). Owner: characters-modules.
@@ -403,14 +388,6 @@ Three writers can leave a nested number field `NaN` or `null`, which the record 
 **Why it matters:** a dead sort on every report refresh, and it misleads readers about where the owner list is computed.
 
 **Suggested handling:** remove it after `rg "controller\.owners"` confirms no reader.
-
-### AppendableBuffer can hang after a full deappend
-
-`AppendableBuffer.deappend` in `src/ts/globalApi.svelte.ts` (~1065) slices the whole backing array, spare capacity included. When the used length equals the backing array's length and the caller deappends all of it, the array becomes length 0, and the next `append` (~1049) starts from `newLength = 0 * 2`, so its doubling loop never ends and the tab freezes. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** a hang, not a wrong value; streaming readers use this buffer.
-
-**Suggested handling:** start growth from `Math.max(capacity, 128)`, or keep the capacity in `deappend`.
 
 ### searchTagList never matches the OC tag by name
 
