@@ -1339,6 +1339,55 @@ describe("chat, character, persona, and UI effects", () => {
         }
     });
 
+    it("deprecated lore effects read and write object fields without adding numeric properties", async () => {
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+        const entries = ["first", "target"].map((key) => ({
+            key,
+            comment: `comment-${key}`,
+            content: `content-${key}`,
+            mode: "normal" as const,
+            insertorder: 5,
+            alwaysActive: false,
+            secondkey: "",
+            selective: false,
+        }));
+        const h = harness({
+            char: { globalLore: entries },
+            triggers: [
+                trig([
+                    out("v2GetLorebook", "before", { targetType: "value", target: "target" }),
+                    ef("v2ModifyLorebook", { targetType: "value", target: "target", ...v("updated") }),
+                    out("v2GetLorebook", "after", { targetType: "value", target: "target" }),
+                    out("v2GetLorebookEntry", "indexed", { indexType: "value", index: "1" }),
+                    out("v2GetLorebookIndexViaName", "index", { nameType: "value", name: "target" }),
+                    ef("v2SetLorebookActivation", { indexType: "var", index: "index", value: true }),
+                    out("v2GetLorebook", "missing", { targetType: "value", target: "missing" }),
+                    out("v2GetLorebookIndexViaName", "missingIndex", { nameType: "value", name: "missing" }),
+                    out("v2GetLorebookEntry", "badIndex", { indexType: "value", index: "8" }),
+                    out("v2GetLorebookEntry", "nanIndex", { indexType: "value", index: "NaN" }),
+                    ...["-1", "1.5", "NaN", "8"].map((index) =>
+                        ef("v2SetLorebookActivation", { indexType: "value", index, value: false }),
+                    ),
+                ]),
+            ],
+        });
+
+        expect((await h.run())?.chat.scriptstate).toMatchObject({
+            $before: "content-target",
+            $after: "updated",
+            $indexed: "updated",
+            $index: "1",
+            $missing: "null",
+            $missingIndex: "-1",
+            $badIndex: "null",
+            $nanIndex: "content-first",
+        });
+        expect(h.stored.globalLore).toEqual([entries[0], { ...entries[1], content: "updated", alwaysActive: true }]);
+        for (const entry of h.stored.globalLore) {
+            for (const key of ["0", "1", "2"]) expect(Object.hasOwn(entry, key)).toBe(false);
+        }
+    });
+
     it("writes the character effects one field at a time on the copy's character, and goes on with a warning when it is gone", async () => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
         const loreFields = (name: string, content: string, insertOrder = "5") => ({

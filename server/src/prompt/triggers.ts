@@ -187,9 +187,6 @@ export function parseChatML(data: string, parse: (text: string) => string): Open
         });
 }
 
-/** The deprecated lore effects index an entry as an array (`[key, content, active]`), as the client does. */
-type LegacyLore = Record<number, unknown>;
-
 /** A pause that ends early with the run's abort. */
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -1081,14 +1078,15 @@ export function createTriggerRuntime(host: TriggerHost) {
                         setVar(parse(effect.outputVar), chat.message.length.toString());
                         break;
                     }
+                    // Deprecated lore effects use key, content and alwaysActive on stored lore objects.
                     case "v2ModifyLorebook": {
                         char.globalLore = char.globalLore ?? [];
                         const target = operand(effect.targetType, effect.target);
                         const value = operand(effect.valueType, effect.value);
 
-                        const at = char.globalLore.findIndex((v) => (v as unknown as LegacyLore)[0] === target);
+                        const at = char.globalLore.findIndex((v) => v.key === target);
                         if (at !== -1) {
-                            (char.globalLore[at] as unknown as LegacyLore)[1] = value;
+                            char.globalLore[at].content = value;
                         }
 
                         writeCharacter({ globalLore: char.globalLore });
@@ -1097,11 +1095,8 @@ export function createTriggerRuntime(host: TriggerHost) {
                     case "v2GetLorebook": {
                         char.globalLore = char.globalLore ?? [];
                         const target = operand(effect.targetType, effect.target);
-                        const at = char.globalLore.findIndex((v) => (v as unknown as LegacyLore)[0] === target);
-                        setVar(
-                            parse(effect.outputVar),
-                            (at === -1 ? "null" : (char.globalLore[at] as unknown as LegacyLore)[1]) as string,
-                        );
+                        const at = char.globalLore.findIndex((v) => v.key === target);
+                        setVar(parse(effect.outputVar), at === -1 ? "null" : char.globalLore[at].content);
                         break;
                     }
                     case "v2GetLorebookCount": {
@@ -1118,10 +1113,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                         if (Number.isNaN(at)) {
                             at = 0;
                         }
-                        setVar(
-                            parse(effect.outputVar),
-                            ((char.globalLore[at] as unknown as LegacyLore | undefined)?.[1] ?? "null") as string,
-                        );
+                        setVar(parse(effect.outputVar), char.globalLore[at]?.content ?? "null");
                         break;
                     }
                     case "v2SetLorebookActivation": {
@@ -1135,7 +1127,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                             console.warn("[Trigger] No lorebook entry at this index; the activation was not changed");
                             break;
                         }
-                        (char.globalLore[at] as unknown as LegacyLore)[2] = value;
+                        char.globalLore[at].alwaysActive = value;
 
                         writeCharacter({ globalLore: char.globalLore });
 
@@ -1144,7 +1136,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                     case "v2GetLorebookIndexViaName": {
                         char.globalLore = char.globalLore ?? [];
                         const name = operand(effect.nameType, effect.name);
-                        const at = char.globalLore.findIndex((v) => (v as unknown as LegacyLore)[0] === name);
+                        const at = char.globalLore.findIndex((v) => v.key === name);
                         setVar(parse(effect.outputVar), at.toString());
                         break;
                     }

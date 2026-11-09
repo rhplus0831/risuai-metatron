@@ -21,7 +21,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [persistence](#persistence) (2)
 - [plugin-sandbox](#plugin-sandbox) (6)
 - [resource-sync](#resource-sync) (2)
-- [scripts-triggers](#scripts-triggers) (6)
+- [scripts-triggers](#scripts-triggers) (4)
 - [self-host-server](#self-host-server) (4)
 - [server-generation](#server-generation) (1)
 - [settings-i18n](#settings-i18n) (3)
@@ -265,9 +265,6 @@ Guide: [Resource Sync: Boot, Save Adapter, Conflicts, Transport](../structure/re
 
 Guide: [Regex Scripts, Triggers, Lua Scripting](../structure/scripts-triggers.md#known-hazards).
 
-- The deprecated `v2ModifyLorebook`, `v2SetLorebookActivation`, and their reads address lore entries as arrays
-  (`entry[0]`, `entry[2]`), but entries are objects: the first never matches, the second adds a junk `"2"` key
-  (pre-existing).
 - Trigger and command runs are not atomic: each trigger effect and each mutating command is its own job write (a command
   pipeline rereads the chat before each command), so a later refused effect leaves the earlier writes committed, and a
   command's wait can expose an intermediate revision; only the final `applyTriggerChat` diff is one write.
@@ -275,8 +272,6 @@ Guide: [Regex Scripts, Triggers, Lua Scripting](../structure/scripts-triggers.md
   starting copy overwrites lore edits made after that copy was taken.
 - A regex script with `ableFlag` set whose action metadata leaves the flags empty runs with the legacy `g` flag.
   `server/src/tests/regex.test.ts` pins it as a quirk.
-- A Lua button ignores `stopSending`: `stopChat` marks the run but neither stops the later button triggers nor changes
-  the `done` event, while the trigger runtime honors it.
 - `v2Calculate` substitutes chat variables and calls the calculator directly, outside the CBS evaluator's cooperative
   work/time budget; expensive expressions can hold the server thread.
 

@@ -208,6 +208,33 @@ async function runCommand(characterId: string, command: GenerationCommand) {
 }
 
 describe("Lua form command jobs", () => {
+    it.each([
+        { type: "button", data: "stop" },
+        { type: "form", key: "stop", values: { answer: "kept" } },
+    ] satisfies GenerationCommand[])(
+        "$type stopChat retains earlier writes and skips later character and module handlers",
+        async (command) => {
+            const handlers = (body: string) => `
+            onButtonClick = async(function(id, data) ${body} end)
+            onFormSubmit = async(function(id, key, meta) ${body} end)
+        `;
+            const characterId = await seedCharacter({
+                codes: [
+                    handlers('addChat(id, "char", "before stop")'),
+                    handlers('setChatVar(id, "kept", "yes"); addChat(id, "char", "stopping"); stopChat(id)'),
+                    handlers('addChat(id, "char", "late character")'),
+                ],
+                moduleCode: handlers('addChat(id, "char", "late module")'),
+            });
+            const { terminal, events } = await runCommand(characterId, command);
+            const stored = await readChat(characterId);
+            expect(stored.data.message.map(({ data }) => data)).toEqual(["before submit", "before stop", "stopping"]);
+            expect(stored.data.scriptstate).toMatchObject({ $kept: "yes" });
+            expect(terminal).toEqual({ type: "done", epoch, revision: stored.revision });
+            expect(events.filter(({ type }) => type === "done" || type === "error")).toEqual([terminal]);
+        },
+    );
+
     it("delivers the form key and JSON data to both character triggers and a module trigger", async () => {
         const record = (label: string) =>
             formHandler(`
