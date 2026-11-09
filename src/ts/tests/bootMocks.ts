@@ -153,6 +153,7 @@ export function createBootMock<K extends keyof BootModules>(
             exportModuleLegacy: vi.fn<BootModules["modules"]["exportModuleLegacy"]>(),
             readModule: vi.fn<BootModules["modules"]["readModule"]>(),
             prepareModuleImport: vi.fn<BootModules["modules"]["prepareModuleImport"]>(),
+            stripImportedModuleMcp: vi.fn<BootModules["modules"]["stripImportedModuleMcp"]>(),
             importModuleFile: vi.fn<BootModules["modules"]["importModuleFile"]>(),
             serverImportErrorMessage: vi.fn<BootModules["modules"]["serverImportErrorMessage"]>(),
             addImportedModule: vi.fn<BootModules["modules"]["addImportedModule"]>(),

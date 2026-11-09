@@ -3,6 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { language } from "src/lang";
 import { cardV3, characterBook, charx } from "../storage/tests/importFixtures";
 import { bootMutations, plain } from "../storage/tests/mutationStoresHarness";
+import type { RisuModule } from "./modules";
 
 // `importModule` creates its record through `addModule` for every file kind, over the real save
 // adapter and the real server store (`storeBackedServer.ts`): a `.risum` (written by
@@ -23,6 +24,7 @@ const { server, alerts, picker } = vi.hoisted(() => {
         error: vi.fn((msg: unknown) => alerts.show("error")(msg)),
         normal: vi.fn((msg: unknown) => alerts.show("normal")(msg)),
         wait: vi.fn((msg: unknown) => alerts.show("wait")(msg)),
+        toast: vi.fn((msg: unknown) => alerts.show("toast")(msg)),
         clear: vi.fn(() => alerts.current?.set({ type: "none", msg: "" })),
         reload: vi.fn(),
         normalWait: vi.fn(async () => undefined),
@@ -49,6 +51,7 @@ vi.mock("../alert", async () =>
         alertReloadNotice: alerts.reload,
         alertStore: alerts.store,
         alertWait: alerts.wait,
+        alertToast: alerts.toast,
         alertClear: alerts.clear,
     }),
 );
@@ -359,6 +362,153 @@ describe("importModule adds the module through addModule", () => {
     });
 });
 
+describe("module imports remove MCP servers", () => {
+    const paths = [".risum dialog", ".risum file boundary", "risuModule JSON", "#import_module= link"] as const;
+    const source = (extra: Partial<RisuModule> = {}) => ({
+        type: "risuModule",
+        id: "source-id",
+        name: "Imported module",
+        description: "Keep this description",
+        lorebook: [],
+        regex: [regex("Kept rule")],
+        ...extra,
+    });
+    const startImport = async (
+        h: Awaited<ReturnType<typeof boot>>,
+        path: (typeof paths)[number],
+        data: ReturnType<typeof source>,
+    ) => {
+        if (path === "#import_module= link") {
+            const encoded = Buffer.from(encode(data)).toString("base64");
+            vi.stubGlobal("location", new URL(`http://localhost/#import_module=${encodeURIComponent(encoded)}`));
+            return h.cards.characterURLImport();
+        }
+        if (path === "risuModule JSON") {
+            picker.file = { name: "module.json", data: encode(data) };
+        } else {
+            const bytes = await h.modules.exportModuleLegacy(data, { saveData: false, alertEnd: false });
+            if (path === ".risum file boundary") {
+                const module = await h.modules.importModuleFile(new Blob([new Uint8Array(bytes!)]));
+                if (module) await h.modules.addImportedModule(module, { announce: true });
+                return module;
+            }
+            picker.file = { name: "module.risum", data: bytes! };
+        }
+        return h.modules.importModule();
+    };
+
+    it.each(paths)(
+        "%s drops MCP and leaves one toast after the save acknowledgement and success dialog",
+        async (path) => {
+            const h = await boot();
+            const data = source({ mcp: { url: "https://module.example/mcp" } });
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => (release = resolve));
+            let applied!: () => void;
+            const batchApplied = new Promise<void>((resolve) => (applied = resolve));
+            const realFetch = h.fake.fetch.bind(h.fake);
+            vi.spyOn(h.fake, "fetch").mockImplementation(async (url, init) => {
+                const response = await realFetch(url, init);
+                if (url === "/api/resources/batch") {
+                    applied();
+                    await held;
+                }
+                return response;
+            });
+            const importing = startImport(h, path, data);
+            await batchApplied;
+            try {
+                // The server has saved the record, but the tab has not received its acknowledgement.
+                expect(h.list()).toHaveLength(1);
+                expect(h.list()[0]).not.toHaveProperty("mcp");
+                expect(h.record("modules")).toEqual(h.list());
+                expect(h.shown()).toEqual({ type: "wait", msg: language.moduleImportSaving });
+                expect(h.stores.alertStore.status()).toEqual({ type: "wait", msg: language.moduleImportSaving });
+                expect(alerts.toast).not.toHaveBeenCalled();
+                expect(alerts.normal).not.toHaveBeenCalled();
+            } finally {
+                release();
+                await importing;
+            }
+            if (path === ".risum file boundary") expect(await importing).not.toHaveProperty("mcp");
+            expect(h.list()[0]).toMatchObject({
+                name: "Imported module",
+                description: "Keep this description",
+                lorebook: [],
+                regex: [regex("Kept rule")],
+            });
+            expect(alerts.toast).toHaveBeenCalledExactlyOnceWith(language.moduleImportMcpDropped);
+            const toast = { type: "toast", msg: language.moduleImportMcpDropped };
+            expect(h.stores.alertStore.status()).toEqual(toast);
+            if (path === "risuModule JSON") {
+                expect(alerts.normal).not.toHaveBeenCalled();
+            } else {
+                expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successImport);
+                expect(h.shown()).toEqual({ type: "normal", msg: language.successImport });
+                h.stores.alertStore.answer("");
+            }
+            expect(h.shown()).toEqual(toast);
+            h.collectionStore.setEnabledModules([h.list()[0].id]);
+            expect(h.modules.getModuleMcps()).toEqual([]);
+            await h.sync.flushResources();
+            expect(h.record("modules")).toEqual(h.list());
+            expect(alerts.toast).toHaveBeenCalledExactlyOnceWith(language.moduleImportMcpDropped);
+            expect(alerts.error).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each(paths)("%s imports a module without an MCP field without a removal toast", async (path) => {
+        const h = await boot();
+        await startImport(h, path, source());
+        expect(h.list()).toHaveLength(1);
+        expect(h.list()[0]).toMatchObject({ name: "Imported module", description: "Keep this description" });
+        expect(h.list()[0]).not.toHaveProperty("mcp");
+        expect(h.record("modules")).toEqual(h.list());
+        if (path !== "risuModule JSON") {
+            expect(h.shown()).toEqual({ type: "normal", msg: language.successImport });
+            h.stores.alertStore.answer("");
+        }
+        expect(alerts.toast).not.toHaveBeenCalled();
+        expect(h.stores.alertStore.status()).toBeNull();
+        expect(h.shown().type).toBe("none");
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)("%s adds nothing and shows no removal toast when low-level access is declined", async (path) => {
+        const h = await boot();
+        alerts.confirm.mockResolvedValueOnce(false);
+        await startImport(h, path, source({ lowLevelAccess: true, mcp: { url: "https://module.example/mcp" } }));
+        expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+        expect(h.list()).toEqual([]);
+        await h.sync.flushResources();
+        expect(h.record("modules")).toEqual([]);
+        expect(h.fake.batchCount()).toBe(0);
+        expect(alerts.toast).not.toHaveBeenCalled();
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(h.stores.alertStore.status()?.type).not.toBe("toast");
+        expect(h.shown().type).not.toBe("toast");
+    });
+
+    it("readModule removes MCP silently before the embedded module is saved", async () => {
+        const h = await boot();
+        const bytes = await h.modules.exportModuleLegacy(source({ mcp: { url: "https://module.example/mcp" } }), {
+            saveData: false,
+            alertEnd: false,
+        });
+        const module = await h.modules.readModule(Buffer.from(bytes!));
+        expect(module).not.toHaveProperty("mcp");
+        expect(module).toMatchObject({ name: "Imported module", regex: [regex("Kept rule")] });
+        expect(alerts.toast).not.toHaveBeenCalled();
+        expect(await h.modules.addImportedModule(module, { announce: false })).toBe(true);
+        expect(h.list()).toHaveLength(1);
+        expect(h.list()[0]).not.toHaveProperty("mcp");
+        expect(h.record("modules")).toEqual(h.list());
+        expect(alerts.toast).not.toHaveBeenCalled();
+        expect(h.stores.alertStore.status()).toBeNull();
+        expect(h.shown().type).toBe("none");
+    });
+});
+
 describe("a CharX whose converted module is refused", () => {
     it("reports noData only, never success, and inserts nothing", async () => {
         const { modules, cards, list, sync, record, mirrorText } = await boot();
@@ -404,10 +554,14 @@ describe("the import alert waits for the acknowledgement", () => {
         return alerts.clear.mock.invocationCallOrder.some((order) => order > last);
     };
     /** A `.risum` of a module named `name` (the dialog's announcing branch). */
-    const risum = async (modules: Awaited<ReturnType<typeof boot>>["modules"], name: string) => ({
+    const risum = async (
+        modules: Awaited<ReturnType<typeof boot>>["modules"],
+        name: string,
+        extra: Partial<RisuModule> = {},
+    ) => ({
         name: `${name}.risum`,
         data: await modules.exportModuleLegacy(
-            { id: "file-id", name, description: "" },
+            { id: "file-id", name, description: "", ...extra },
             { saveData: false, alertEnd: false },
         ),
     });
@@ -545,21 +699,23 @@ describe("the import alert waits for the acknowledgement", () => {
         expect(names(record("presets"))).toContain("p3");
     });
 
-    it("a failed flush with the module still listed reports moduleImportUnconfirmed with the reason; the module is saved later", async () => {
+    it("a failed flush with the module still listed reports moduleImportUnconfirmed with the reason and no MCP removal toast; the module is saved later", async () => {
         const h = await boot();
         const { modules, list, record, fake, sync } = h;
         fake.failNext = { status: 0, times: 1, match: (path: string) => path === "/api/resources/batch" };
-        picker.file = await risum(modules, "Unconfirmed");
+        picker.file = await risum(modules, "Unconfirmed", { mcp: { url: "https://module.example/mcp" } });
         await modules.importModule();
         expect(alerts.error).toHaveBeenCalledExactlyOnceWith(
             language.moduleImportUnconfirmed.replace("{{error}}", "Failed to fetch"),
         );
         expect(alerts.normal).not.toHaveBeenCalled();
+        expect(alerts.toast).not.toHaveBeenCalled();
         expect(names(list())).toEqual(["Unconfirmed"]);
         expect(record("modules") ?? []).toEqual([]);
         await vi.advanceTimersByTimeAsync(35_000);
         await sync.flushResources();
         expect(names(record("modules"))).toEqual(["Unconfirmed"]);
+        expect(alerts.toast).not.toHaveBeenCalled();
     });
 
     it("keeps an error alert that appeared while the import waited: no success alert and no clear over it", async () => {

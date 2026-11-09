@@ -186,6 +186,10 @@ module is added ([module import](#module-import)).
   emotions and additional assets; V3 is the full-fidelity export.
 - Cards and modules with low-level access require confirmation on import. A `.risum` asks before upload, and declining a
   card imports nothing without falling through to the off-spec JSON reader.
+- A module file or link never brings an MCP server: `readModule`, `importModuleFile`, the module JSON branch of
+  `importModule`, and `#import_module=` delete `mcp` (`stripImportedModuleMcp`); only `importMCPModule` adds one. The
+  user-facing paths report a dropped field with one `moduleImportMcpDropped` toast that `addImportedModule` installs
+  after a confirmed save, behind any success dialog; `readModule` (CharX embeds) drops it silently.
 
 ### Asset list rows
 

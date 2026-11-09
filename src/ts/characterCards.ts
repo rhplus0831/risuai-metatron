@@ -62,6 +62,7 @@ import {
     readModule,
     type RisuModule,
     serverImportErrorMessage,
+    stripImportedModuleMcp,
 } from "./process/modules";
 import { loadAssetsInBatches, saveAssets, type AssetSaveItem } from "./storage/assetQueue";
 import { assetContentHash, missingAssets, writeAssets } from "./storage/assetClient";
@@ -758,7 +759,9 @@ async function importPendingShare(
  *
  * The module settings open only when `addImportedModule` reports the save. `#share_module` consumes its pending share
  * once the module was added, whatever the save's outcome (a second import would add it twice); a declined or failed
- * read keeps it.
+ * read keeps it. Module files and `#import_module=` data have `mcp` removed before the low-level access question;
+ * `addImportedModule` reports its removal with one toast only after a confirmed save, after queuing the success
+ * dialog so the toast appears when it is dismissed.
  */
 export async function characterURLImport() {
     // Read now: the router (started later in `loadData`) writes URLs without a query or hash.
@@ -816,6 +819,7 @@ export async function characterURLImport() {
     if (hash.startsWith("#import_module=")) {
         const data = hash.replace("#import_module=", "");
         const importData = JSON.parse(Buffer.from(decodeURIComponent(data), "base64").toString("utf-8"));
+        stripImportedModuleMcp(importData);
         importData.id = v4();
 
         if (importData.lowLevelAccess) {

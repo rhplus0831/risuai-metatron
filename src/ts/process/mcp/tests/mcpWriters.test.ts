@@ -182,7 +182,11 @@ describe("importMCPModule", () => {
         const added = settings.modules[0];
         expect(added.id).toEqual(expect.any(String));
         expect(added.id).not.toBe("");
-        expect(added).toMatchObject({ name: "Remote Server", description: "MCP from https://mcp.example/sse" });
+        expect(added).toMatchObject({
+            name: "Remote Server",
+            description: "MCP from https://mcp.example/sse",
+            mcp: { url: "https://mcp.example/sse" },
+        });
         await sync.flushResources();
         expect(record("modules")).toEqual([
             {

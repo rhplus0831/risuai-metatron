@@ -1475,6 +1475,8 @@ export const languageEnglish = {
     moduleImportDiscarded:
         "Another tab or device changed the modules at the same time, and its version was kept: the imported module was not added. Import it again.",
     moduleImportUnconfirmed: "The module was added, but its save could not be confirmed ({{error}}).",
+    moduleImportMcpDropped:
+        "This module carried an MCP tool server, which was not imported. Add MCP servers through the MCP import.",
     moduleImportInterrupted:
         "The upload was interrupted. The server may have refused the file (another import running, a file too large, or maintenance), or the connection was lost. Try again.",
     charxImportUploading: "Uploading the character file... A large file can take several minutes.",

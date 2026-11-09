@@ -9,6 +9,7 @@ import {
     alertModuleSelect,
     alertNormal,
     alertStore,
+    alertToast,
     alertWait,
     waitAlert,
     type alertData,
@@ -54,7 +55,9 @@ import {
  * instead.
  *
  * The import entry points: `importModuleFile` (a `.risum` file, through the server), `addImportedModule` (the add
- * every file or data module import ends with), and `importModule` (the module dialog). The MCP URL import
+ * every file or data module import ends with), and `importModule` (the module dialog). File and link boundaries
+ * remove `mcp`; user-facing module imports report its removal only after a confirmed save, while `readModule`
+ * removes it silently, including in CharX embeds. The MCP URL import
  * (`importMCPModule`, `src/ts/process/mcp/mcp.ts`) is the exception: it adds through `addModule` directly and alerts
  * success without waiting for the save. The effective set: `getModules` and the
  * `getModule*` getters built on it, and `moduleUpdate`, which publishes the selected chat's icon and background
@@ -206,7 +209,8 @@ export async function exportModuleLegacy(
 
 /**
  * The in-tab `.risum` reader: the CharX-embedded `module.risum` (small) and tests. A `.risum` file
- * goes through `importModuleFile` instead, which never holds the file.
+ * goes through `importModuleFile` instead, which never holds the file. Removes `mcp` silently,
+ * without tracking a notice for the embedded module.
  */
 export async function readModule(buf: Buffer): Promise<RisuModule> {
     let pos = 0;
@@ -253,6 +257,7 @@ export async function readModule(buf: Buffer): Promise<RisuModule> {
     }
 
     let module = main.module;
+    delete module.mcp;
 
     // Each asset record is decoded inside its queue item's `load()`, so no more than the queue's
     // concurrency decoded copies exist at once; the asset client retries a refused write itself.
@@ -334,11 +339,27 @@ export async function prepareModuleImport(module: { name?: unknown; lorebook?: u
     return true;
 }
 
+const modulesWithDroppedMcp = new WeakSet<object>();
+
+/**
+ * Removes a file or link module's own `mcp` field, regardless of its value. Returns whether it was
+ * present and remembers the removal by object identity for `addImportedModule`'s success toast.
+ */
+export function stripImportedModuleMcp(module: { mcp?: unknown }): boolean {
+    if (!Object.prototype.hasOwnProperty.call(module, "mcp")) {
+        return false;
+    }
+    delete module.mcp;
+    modulesWithDroppedMcp.add(module);
+    return true;
+}
+
 /**
  * Imports a `.risum` file through the server; every `.risum` file entry point (the module dialog,
  * the drop, `#share_module`, `#import=`, the launch queue) calls it, then adds the module through
  * `addImportedModule`. Only the file's header and main record are read here (`file.slice`, decoded
- * with the reader the server uses, `shared/moduleImport.ts`), and on that module, before anything
+ * with the reader the server uses, `shared/moduleImport.ts`). Its `mcp` field is removed immediately
+ * after decoding, with a notice deferred to `addImportedModule` after a confirmed save. Before anything
  * is sent, the low-level access question is asked and `prepareModuleImport` runs. Then the file
  * itself is uploaded (`importModuleOverServer`, its progress in the wait alert), and only the
  * stored assets' keys (`assets[i][1]`) are copied from the server's module into the prepared one; a
@@ -351,6 +372,7 @@ export async function importModuleFile(file: Blob): Promise<RisuModule | null> {
     let module: RisuModule;
     try {
         module = await readModuleFileMain(file);
+        stripImportedModuleMcp(module);
     } catch (error) {
         console.error(error);
         alertError(language.errors.noData);
@@ -513,8 +535,13 @@ function moduleImportErrorMessage(error: unknown): string {
  * The flush saves every pending change, not only the module.
  * With `announce`, `successImport` comes only after that acknowledgement, and only while its
  * `moduleImportSaving` wait alert is still the status: an alert that replaced it meanwhile stays.
+ * Consumes the boundary's transient MCP-removal marker once. In that same status branch, a saved
+ * module whose `mcp` was removed gets one toast after the success dialog is queued or the wait is
+ * cleared; the dialog stays until dismissed, then the toast appears. Failed or discarded saves
+ * show no toast.
  */
 export async function addImportedModule(module: unknown, { announce }: { announce: boolean }): Promise<boolean> {
+    const mcpDropped = modulesWithDroppedMcp.delete(module as object);
     const scope = beginMutationScope();
     const id = addModule(module);
     alertWait(language.moduleImportSaving);
@@ -547,6 +574,9 @@ export async function addImportedModule(module: unknown, { announce }: { announc
         } else {
             alertClear();
         }
+        if (mcpDropped) {
+            alertToast(language.moduleImportMcpDropped);
+        }
     }
     return true;
 }
@@ -558,8 +588,10 @@ export async function addImportedModule(module: unknown, { announce }: { announc
  * alerted), `false` (a declined question) cancels silently, and a string is `noData`. A CharX whose embedded module
  * `readModule` refuses alerts `noData` and adds neither a module nor a character (the counted import and the stored
  * assets stay).
- * The JSON branches (a `risuModule`, a risu or external lorebook, a regex list) stay silent: `addImportedModule` only
- * clears its wait alert. A file none of them reads is `noData`.
+ * The JSON branches (a `risuModule`, a risu or external lorebook, a regex list) clear their saving wait without a
+ * success dialog. A `risuModule` JSON's `mcp` is removed before the low-level access question, with one toast after
+ * a confirmed save; `.risum` imports defer the same notice, while CharX embeds drop it silently in `readModule`.
+ * A file none of them reads is `noData`.
  */
 export async function importModule() {
     const file = await selectSingleFileHandle(["json", "lorebook", "risum", "charx"]);
@@ -613,6 +645,7 @@ export async function importModule() {
         const fileData = new Uint8Array(await file.arrayBuffer());
         const importData = JSON.parse(Buffer.from(fileData).toString());
         if (importData.type === "risuModule") {
+            stripImportedModuleMcp(importData);
             if (!importData.name || !importData.id) {
                 alertError(language.errors.noData);
                 return;

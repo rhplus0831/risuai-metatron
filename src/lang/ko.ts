@@ -1747,6 +1747,8 @@ export const languageKorean = {
     moduleImportDiscarded:
         "다른 탭이나 기기에서 동시에 모듈 목록을 변경하여 그쪽 버전이 유지되었습니다. 가져온 모듈이 반영되지 않았으니 다시 가져와 주세요.",
     moduleImportUnconfirmed: "모듈을 추가했으나 저장 완료 여부를 확인하지 못했습니다 ({{error}}).",
+    moduleImportMcpDropped:
+        "이 모듈에 포함된 MCP 도구 서버는 가져오지 않았습니다. MCP 서버는 MCP 가져오기를 통해 추가해 주세요.",
     moduleImportFileTooLarge: "모듈 파일 크기가 서버의 허용 한도를 초과합니다.",
     moduleImportAssetTooLarge: "모듈에 포함된 에셋 중 서버의 허용 한도를 초과하는 파일이 있습니다.",
     moduleImportBusy: "서버가 다른 가져오기 작업 등을 처리 중입니다. 잠시 후 다시 시도해 주세요.",
