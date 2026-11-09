@@ -10,7 +10,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (4)
-- [Server routes and resource store](#server-routes-and-resource-store) (9)
+- [Server routes and resource store](#server-routes-and-resource-store) (8)
 - [LLM requests and providers](#llm-requests-and-providers) (9)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
@@ -113,17 +113,6 @@ Excluded by the Implementation Audit Fixes plan (2026-11-05) as an unverified le
 
 **Why it matters:** an export taken while a plugin or script rewrites a custom-key asset may not be a consistent snapshot.
 **Suggested handling:** pause an export before it opens such an asset, replace the asset through the normal write path, and inspect the archive; then decide what consistency custom keys promise.
-
-### Upstream swipe import edge cases
-
-Excluded as edge cases by the Implementation Audit Fixes plan (2026-11-05). All three are in the swipe conversion of `server/src/data/upstream/importCharacters.ts` (~617–698):
-
-- The missing-inlay report (`inlays-not-in-backup`, ~524) scans only `message.data`, so an alternate swipe referencing an image the backup lacks is kept but not reported. Needs an upstream backup whose non-selected swipes reference missing images; the selected text is reported. Source: [RC4](../manual-audit/archive/reroll-candidates-2026-11-05.md#rc4--the-import-report-misses-unavailable-inlays-in-retained-candidates).
-- Every foreign swipe becomes a candidate before `trimCandidates` (~696) removes the oldest one at a time with `splice` (`shared/rerollCandidates.ts` ~241–253): quadratic over 1,000 swipes on one message, where the live ring holds 17. Source: [RC7](../manual-audit/archive/reroll-candidates-2026-11-05.md#rc7--importing-many-foreign-swipes-repeatedly-shifts-almost-the-entire-array).
-- A malformed native `candidates: []` beside valid foreign `swipes` sets `hadCandidates` (~626), so swipe conversion is refused and the alternate texts are dropped; the audit's own "narrow import edge case". Source: [the import edge case](../manual-audit/archive/reroll-candidates-2026-11-05.md#additional-narrow-import-edge-case).
-
-**Why it matters:** an undisclosed missing image behind a later swipe, a slow import of a message with thousands of swipes, and lost alternates from a malformed file.
-**Suggested handling:** if the importer's report or conversion is touched: scan `candidates[].data` once per chat for the report, keep the selected entry plus a bounded newest window before building candidates, and test the normalized `candidates` field before refusing swipe conversion.
 
 ### Upstream `.bin` import converts MessagePack-only values without a report
 
