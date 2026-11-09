@@ -11,7 +11,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [persistence](#persistence) (1)
 - [plugin-sandbox](#plugin-sandbox) (2)
 - [resource-sync](#resource-sync) (1)
-- [scripts-triggers](#scripts-triggers) (1)
 - [self-host-server](#self-host-server) (3)
 - [server-resources](#server-resources) (1)
 
@@ -69,13 +68,6 @@ Guide: [Resource Sync: Boot, Save Adapter, Conflicts, Transport](../structure/re
 - A save's echo arriving before its acknowledgement schedules a cycle 50 ms later (`noteRemoteChanges`), so continuous
   typing can save more often than the debounce. [Measurements](../audit/projection-bindings-2026-10-04.md) no longer
   show extra saves; coalescing would bound the 50 ms echo cycle.
-
-## scripts-triggers
-
-Guide: [Regex Scripts, Triggers, Lua Scripting](../structure/scripts-triggers.md#known-hazards).
-
-- Trigger character effects write one patch per effect; a long run that writes a whole `globalLore` array from its
-  starting copy overwrites lore edits made after that copy was taken.
 
 ## self-host-server
 

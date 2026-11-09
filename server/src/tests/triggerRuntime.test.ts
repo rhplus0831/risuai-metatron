@@ -1,11 +1,16 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { calcString } from "../../../shared/cbs/calc.ts";
-import type { Chat, Message, character, groupChat } from "../../../shared/database.ts";
+import type { Chat, Message, character, groupChat, loreBook } from "../../../shared/database.ts";
 import type { GenerationQuestion } from "../../../shared/jobs.ts";
 import type { RequestArgs } from "../../../shared/llm/request.ts";
 import type { triggerEffect, triggerscript } from "../../../shared/triggers.ts";
-import { type LuaBindingServices, LuaJobFatalError, type LuaWorkingCopy } from "../lua/bindings.ts";
+import {
+    applyGlobalLoreChange,
+    type LuaBindingServices,
+    LuaJobFatalError,
+    type LuaWorkingCopy,
+} from "../lua/bindings.ts";
 import { createCommandExecutor } from "../prompt/commands.ts";
 import {
     createTriggerRuntime,
@@ -172,10 +177,15 @@ function harness(options: {
             return true;
         },
         getChatVar: (key) => String(live.scriptstate?.[`$${key}`] ?? "null"),
-        patchCharacter(patch, ctx) {
+        patchCharacter(patch, ctx, lore) {
             fence(ctx);
             if (state.characterGone) {
                 return false;
+            }
+            if (lore) {
+                const globalLore = applyGlobalLoreChange(stored.globalLore, lore);
+                if (!globalLore) return false;
+                patch = { ...patch, globalLore };
             }
             characterPatches.push(structuredClone(patch));
             Object.assign(stored, structuredClone(patch));
@@ -1287,6 +1297,114 @@ describe("the regex sites", () => {
             expect((await h.run())?.chat.scriptstate).toEqual({ $o: "src" });
             expect(h.trace.filter((entry) => entry === "parse:src")).toHaveLength(2);
         });
+    });
+});
+
+describe("concurrent lore effects", () => {
+    const entry = (key: string, id?: string): loreBook => ({
+        key,
+        id,
+        comment: key,
+        content: `before-${key}`,
+        mode: "normal",
+        insertorder: 100,
+        alwaysActive: false,
+        secondkey: "",
+        selective: false,
+    });
+    const pause = () => out("v2GetAlertInput", "answer", { display: "pause", displayType: "value" });
+
+    it("preserves another writer's lore edit and reorder while modifying the run's entry by id", async () => {
+        const target = entry("target", "target-id");
+        const other = entry("other", "other-id");
+        const h = harness({
+            char: { globalLore: [target, other] },
+            triggers: [
+                trig([
+                    pause(),
+                    ef("v2ModifyLorebook", { targetType: "value", target: "target", ...v("from-trigger") }),
+                    out("v2GetLorebook", "after", { targetType: "value", target: "target" }),
+                ]),
+            ],
+        });
+        h.answers.push(async () => {
+            h.stored.globalLore = [
+                { ...other, content: "from-other-writer" },
+                { ...target, alwaysActive: true },
+            ];
+            return "continue";
+        });
+        const result = await h.run();
+        expect(h.stored.globalLore).toEqual([
+            { ...other, content: "from-other-writer" },
+            { ...target, content: "from-trigger", alwaysActive: true },
+        ]);
+        expect(result?.chat.scriptstate?.$after).toBe("from-trigger");
+    });
+
+    it("appends a created lore entry to the current array after another writer appends", async () => {
+        const original = entry("original");
+        const concurrent = entry("concurrent", "new-id");
+        const h = harness({
+            char: { globalLore: [original] },
+            triggers: [
+                trig([
+                    pause(),
+                    ef("v2CreateLorebook", {
+                        name: "created",
+                        nameType: "value",
+                        key: "created",
+                        keyType: "value",
+                        content: "from-trigger",
+                        contentType: "value",
+                        insertOrder: "7",
+                        insertOrderType: "value",
+                    }),
+                    out("v2GetLorebookCountNew", "count"),
+                ]),
+            ],
+        });
+        h.answers.push(async () => {
+            h.stored.globalLore = [original, concurrent];
+            return "continue";
+        });
+        const result = await h.run();
+        expect(h.stored.globalLore).toEqual([
+            original,
+            concurrent,
+            {
+                key: "created",
+                comment: "created",
+                content: "from-trigger",
+                mode: "normal",
+                insertorder: 7,
+                alwaysActive: false,
+                secondkey: "",
+                selective: false,
+            },
+        ]);
+        // Later effects see this run's own append, rather than rereading external edits.
+        expect(result?.chat.scriptstate?.$count).toBe("2");
+    });
+
+    it("warns and refuses deletion of a legacy entry changed while the trigger waits", async () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const target = entry("legacy");
+        const other = entry("other");
+        const h = harness({
+            char: { globalLore: [target, other] },
+            triggers: [trig([pause(), ef("v2DeleteLorebookByIndex", { index: "0", indexType: "value" })])],
+        });
+        h.answers.push(async () => {
+            h.stored.globalLore = [{ ...target, content: "newer-content" }, other];
+            return "continue";
+        });
+        await h.run();
+        expect(h.stored.globalLore).toEqual([{ ...target, content: "newer-content" }, other]);
+        expect(h.characterPatches).toEqual([]);
+        expect(warn).toHaveBeenCalledExactlyOnceWith(
+            "[Trigger] The character or lore entry is gone or changed; the lore change was not saved",
+        );
     });
 });
 

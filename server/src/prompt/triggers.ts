@@ -1,15 +1,17 @@
-import type { Chat, character, groupChat } from "../../../shared/database.ts";
+import type { Chat, character, groupChat, loreBook } from "../../../shared/database.ts";
 import { greetingText } from "../../../shared/greetings.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { RequestArgs } from "../../../shared/llm/request.ts";
 import {
     displayAllowList,
     requestAllowList,
+    type GlobalLoreChange,
     type triggerEffect,
     type triggerEffectV2,
     type triggerscript,
 } from "../../../shared/triggers.ts";
 import {
+    applyGlobalLoreChange,
     type CharacterPatchListener,
     type LuaBindingServices,
     LuaJobFatalError,
@@ -37,7 +39,9 @@ export { displayAllowList, requestAllowList };
  * `v2RunTrigger` keeps the display mode, display data, and temporary variables; `v2Command` always
  * targets the job's chat; Lua character setters reach the native getters of the running triggers;
  * `v2CheckSimilarity` searches with the server's embeddings (a failure of the search is the run's
- * error, as on the client); `v2ConsoleLog` goes to the server log.
+ * error, as on the client); `v2ConsoleLog` goes to the server log. Lore effects write only their target
+ * entry in the current record (by id, or a checked index for legacy entries); their working copy follows
+ * each effect.
  */
 
 export type TriggerMode = "start" | "manual" | "output" | "input" | "display" | "request";
@@ -425,6 +429,13 @@ export function createTriggerRuntime(host: TriggerHost) {
             }
             if (!services.patchCharacter(patch as Record<string, unknown>, ctx)) {
                 console.warn("[Trigger] The character is gone; a character change was not saved");
+            }
+        };
+        const writeLore = (change: GlobalLoreChange) => {
+            const next = applyGlobalLoreChange(char.globalLore, change);
+            if (next) char.globalLore = next;
+            if (!arg.displayMode && !services.patchCharacter({}, ctx, change)) {
+                console.warn("[Trigger] The character or lore entry is gone or changed; the lore change was not saved");
             }
         };
         let additonalSysPrompt: AdditionalSysPrompt = arg.additonalSysPrompt ?? {
@@ -1086,10 +1097,8 @@ export function createTriggerRuntime(host: TriggerHost) {
 
                         const at = char.globalLore.findIndex((v) => v.key === target);
                         if (at !== -1) {
-                            char.globalLore[at].content = value;
+                            writeLore({ type: "set", index: at, before: char.globalLore[at], set: { content: value } });
                         }
-
-                        writeCharacter({ globalLore: char.globalLore });
                         break;
                     }
                     case "v2GetLorebook": {
@@ -1127,9 +1136,12 @@ export function createTriggerRuntime(host: TriggerHost) {
                             console.warn("[Trigger] No lorebook entry at this index; the activation was not changed");
                             break;
                         }
-                        char.globalLore[at].alwaysActive = value;
-
-                        writeCharacter({ globalLore: char.globalLore });
+                        writeLore({
+                            type: "set",
+                            index: at,
+                            before: char.globalLore[at],
+                            set: { alwaysActive: value },
+                        });
 
                         break;
                     }
@@ -1705,18 +1717,19 @@ export function createTriggerRuntime(host: TriggerHost) {
                                 ? Number(parse(effect.insertOrder))
                                 : Number(getVar(parse(effect.insertOrder)));
 
-                        char.globalLore.push({
-                            key: key,
-                            comment: name,
-                            content: content,
-                            mode: "normal",
-                            insertorder: Number.isFinite(insertOrder) ? insertOrder : 100,
-                            alwaysActive: false,
-                            secondkey: "",
-                            selective: false,
+                        writeLore({
+                            type: "append",
+                            entry: {
+                                key: key,
+                                comment: name,
+                                content: content,
+                                mode: "normal",
+                                insertorder: Number.isFinite(insertOrder) ? insertOrder : 100,
+                                alwaysActive: false,
+                                secondkey: "",
+                                selective: false,
+                            },
                         });
-
-                        writeCharacter({ globalLore: char.globalLore });
                         break;
                     }
                     case "v2ModifyLorebookByIndex": {
@@ -1731,27 +1744,28 @@ export function createTriggerRuntime(host: TriggerHost) {
                         }
 
                         const currentLore = char.globalLore[at];
+                        const set: Partial<loreBook> = {};
 
                         let name = operand(effect.nameType, effect.name);
                         name = name.replace(/{{slot}}/g, currentLore.comment || "");
-                        char.globalLore[at].comment = name;
+                        set.comment = name;
 
                         let key = operand(effect.keyType, effect.key);
                         key = key.replace(/{{slot}}/g, currentLore.key || "");
-                        char.globalLore[at].key = key;
+                        set.key = key;
 
                         let content = operand(effect.contentType, effect.content);
                         content = content.replace(/{{slot}}/g, currentLore.content || "");
-                        char.globalLore[at].content = content;
+                        set.content = content;
 
                         let insertOrder = operand(effect.insertOrderType, effect.insertOrder);
                         insertOrder = insertOrder.replace(/{{slot}}/g, (currentLore.insertorder || 100).toString());
                         const insertOrderNum = Number(insertOrder);
                         if (Number.isFinite(insertOrderNum)) {
-                            char.globalLore[at].insertorder = insertOrderNum;
+                            set.insertorder = insertOrderNum;
                         }
 
-                        writeCharacter({ globalLore: char.globalLore });
+                        writeLore({ type: "set", index: at, before: currentLore, set });
                         break;
                     }
                     case "v2DeleteLorebookByIndex": {
@@ -1765,9 +1779,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                             break;
                         }
 
-                        char.globalLore.splice(at, 1);
-
-                        writeCharacter({ globalLore: char.globalLore });
+                        writeLore({ type: "remove", index: at, before: char.globalLore[at] });
                         break;
                     }
                     case "v2GetLorebookCountNew": {
@@ -1786,9 +1798,12 @@ export function createTriggerRuntime(host: TriggerHost) {
                             break;
                         }
 
-                        char.globalLore[at].alwaysActive = effect.value;
-
-                        writeCharacter({ globalLore: char.globalLore });
+                        writeLore({
+                            type: "set",
+                            index: at,
+                            before: char.globalLore[at],
+                            set: { alwaysActive: effect.value },
+                        });
                         break;
                     }
                     case "v2RegexTest": {

@@ -1,3 +1,11 @@
+import type { loreBook } from "./database.ts";
+
+/** A server-side trigger write to one globalLore entry; never sent as a resource wire patch. */
+export type GlobalLoreChange =
+    | { type: "append"; entry: loreBook }
+    | { type: "set"; index: number; before: loreBook; set: Partial<loreBook> }
+    | { type: "remove"; index: number; before: loreBook };
+
 /**
  * Trigger script shapes persisted in characters, modules, and shared cards. Never rename
  * `type` discriminators (STRUCTURE D5).

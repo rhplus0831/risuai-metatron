@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import type { loreBook } from "../../../shared/database.ts";
 import type { CallbackName, CallbackResult, GenerationQuestion } from "../../../shared/jobs.ts";
 import { NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import type { RPCToolCallContent } from "../../../shared/llm/request.ts";
@@ -527,6 +528,37 @@ describe("internal:risuai on the server: reads", () => {
 });
 
 describe("internal:risuai on the server: consent and writes", () => {
+    it("rebuilds a lore entry write against current stored entries after a revision conflict", () => {
+        const s = setup();
+        const target: loreBook = { ...lore("target", "before"), mode: "normal", id: "target-id" };
+        const other: loreBook = { ...lore("other", "before"), mode: "normal", id: "other-id" };
+        s.put("characters", "c", { ...s.stored("c"), globalLore: [target, other] });
+        s.hooks.beforeApply = (attempt) => {
+            if (attempt === 0)
+                s.put("characters", "c", {
+                    ...s.stored("c"),
+                    globalLore: [
+                        { ...other, content: "concurrent" },
+                        { ...target, alwaysActive: true },
+                    ],
+                });
+        };
+        expect(
+            s.bindings.services.patchCharacter({}, s.ctx, {
+                type: "set",
+                index: 0,
+                before: target,
+                set: { content: "from-trigger" },
+            }),
+        ).toBe(true);
+        expect(s.log.conflicts).toBe(1);
+        expect(s.stored("c").globalLore).toEqual([
+            { ...other, content: "concurrent" },
+            { ...target, content: "from-trigger", alwaysActive: true },
+        ]);
+        expect(s.bindings.fatal()).toBeNull();
+    });
+
     it("asks in English, writes the confirmed patch to the stored record, refreshes the job's copy, and sends the record to the tab", async () => {
         const s = setup();
         expect(s.text(await s.tool("risu-set-character-lorebook", { id: "o", name: "A", content: "edited" }))).toBe(

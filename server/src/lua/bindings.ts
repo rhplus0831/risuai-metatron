@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { CbsEvaluator, CbsHost } from "../../../shared/cbs/evaluator.ts";
 import { CbsLimitError, type CbsUsage } from "../../../shared/cbs/limits.ts";
+import type { GlobalLoreChange } from "../../../shared/triggers.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message, character, groupChat, loreBook } from "../../../shared/database.ts";
 import type {
@@ -70,9 +71,10 @@ import { createCbsEvaluator } from "../../../shared/cbs/evaluator.ts";
 
 /**
  * Lua and native trigger host bindings for one job. Character effects and Lua character setters
- * patch one field of the run's character by id, never the tab's selected index or the whole working
- * copy. `server/src/prompt/triggers.ts` warns and skips a character effect when that character
- * is gone; a patch the store refuses is latched as `LuaJobFatalError` and ends the job.
+ * patch one field of the run's character by id; lore effects apply one entry operation to the current
+ * record on each write attempt. Entries use their id, or an unchanged index/value for legacy lore.
+ * `server/src/prompt/triggers.ts` warns and skips a character effect when its character or lore target
+ * is gone or changed; a patch the store refuses is latched as `LuaJobFatalError` and ends the job.
  * That runtime's `v2SetLorebookActivation` warns and changes no lore entry for a non-integer,
  * negative, or missing lore index.
  */
@@ -151,6 +153,25 @@ export type LuaWorkingCopy = {
     setVar(key: string, value: string): boolean;
 };
 
+/** Applies one lore effect to current entries; legacy entries without ids require an unchanged index. */
+export function applyGlobalLoreChange(entries: loreBook[], change: GlobalLoreChange): loreBook[] | null {
+    if (change.type === "append") return [...entries, change.entry];
+    const id = change.before.id;
+    const index = id ? entries.findIndex((entry) => entry.id === id) : change.index;
+    const current = entries[index];
+    if (
+        !current ||
+        (id
+            ? entries.filter((entry) => entry.id === id).length !== 1
+            : JSON.stringify(current) !== JSON.stringify(change.before))
+    )
+        return null;
+    const next = [...entries];
+    if (change.type === "remove") next.splice(index, 1);
+    else next[index] = { ...current, ...change.set };
+    return next;
+}
+
 /** The executing character's fields a Lua setter wrote (the trigger merges them into its copy). */
 export type CharacterPatchListener = (characterId: string, patch: Record<string, unknown>) => void;
 
@@ -173,8 +194,10 @@ export type LuaBindingServices = {
     /** The stored-merge `setChatVarOf` of the job's chat: true when it changed. */
     setChatVar(key: string, value: string, ctx?: HostContext): boolean;
     getChatVar(key: string): string;
-    /** Patches the run's character; false when it is gone, a latched `LuaJobFatalError` on a refused write. */
-    patchCharacter(patch: Record<string, unknown>, ctx: HostContext): boolean;
+    /** Patches the run's character, optionally one lore entry against the current record on each retry.
+     * False when the character or lore target is gone/changed; a refused write latches `LuaJobFatalError`.
+     */
+    patchCharacter(patch: Record<string, unknown>, ctx: HostContext, lore?: GlobalLoreChange): boolean;
     /** Sets `personaPrompt` of the persona `personaId`; false when it is gone. */
     patchPersonaPrompt(personaId: string, value: string, ctx: HostContext): boolean;
     /** `options.signal` withdraws the question: an ordinary failure, not the job's. */
@@ -601,7 +624,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     };
 
     /** Patches the run's character (`updateCharacter`): the record read again on the one retry. */
-    const patchCharacter = (patch: Record<string, unknown>, ctx: HostContext): boolean => {
+    const patchCharacter = (patch: Record<string, unknown>, ctx: HostContext, lore?: GlobalLoreChange): boolean => {
         fence(ctx);
         const id = deps.runCharacterId;
         if (!id || !store.get(charactersKind, id)) {
@@ -611,15 +634,17 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         try {
             job.write(() => {
                 const row = store.get(charactersKind, id);
-                applied = !!row;
-                return row
+                const globalLore =
+                    lore && row ? applyGlobalLoreChange((row.data as character).globalLore ?? [], lore) : undefined;
+                applied = !!row && globalLore !== null;
+                return applied && row
                     ? {
                           ops: [
                               {
                                   kind: charactersKind,
                                   id,
                                   baseRevision: row.revision,
-                                  patch: { set: patch },
+                                  patch: { set: globalLore ? { ...patch, globalLore } : patch },
                               },
                           ],
                       }
