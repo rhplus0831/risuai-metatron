@@ -153,9 +153,10 @@ it matches a removable entry), so a prompt still over the context with them ends
 ### The no-memory trim question
 
 When a memory method is configured but the owner's `supaMemory` is off, a no-memory trim asks before dropping chat
-history. The owner sees `alertSelect` in [the job channel](network-jobs.md#job-channel): enable memory, trim once, or
-ignore future prompts by recording `memoryTrimAck`. An unanswered or invalid answer ends the job. The late
-removable-message cleanup after formatting still applies.
+history; a trim that drops only blank history entries (no text, no multimodals: the final re-check's rule) asks nothing.
+The owner sees `alertSelect` in [the job channel](network-jobs.md#job-channel): enable memory, trim once, or ignore
+future prompts by recording `memoryTrimAck`. An unanswered or invalid answer ends the job. The late removable-message
+cleanup after formatting still applies.
 
 ## State
 

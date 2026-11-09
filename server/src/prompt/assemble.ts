@@ -118,6 +118,9 @@ import { parseChatML, type TriggerResult } from "./triggers.ts";
 /** The English text of `language.errors.toomuchtoken`. */
 const TOO_MUCH_TOKEN = "Error: The minimum required token is greater than the max context size.";
 
+/** Whether a prompt entry has text or multimodals, so it counts in the final recheck and the no-memory trim question. */
+const keptEntry = (chat: OpenAIChat) => chat.content !== "" || (chat.multimodals?.length ?? 0) > 0;
+
 /** `prebuiltAssetCommand` of `src/ts/util.ts`. */
 const PREBUILT_ASSET_COMMAND = `
 <Image Tag Instruction>Insert HTML image tags between paragraphs based on context.
@@ -1902,15 +1905,15 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         structuredMemory || db.supaModelType !== "none" || db.hanuraiEnable || db.hypav2 || db.hypaV3;
     let useMemory = memoryConfigured && (!!nowChatroom.supaMemory || host.memoryTrim.enabled());
     if (memoryConfigured && !useMemory && currentTokens > maxContextTokens) {
-        // The entries the trim below would drop, counted as it counts them: the question is asked only
-        // when they reach the chat history.
+        // Count the entries the trim below would drop using the same token accounting. Ask only
+        // when at least one dropped chat history entry has text or multimodals.
         let tokens = currentTokens;
         let dropped = 0;
         while (tokens > maxContextTokens && chats.length - dropped > 1) {
             tokens -= await tokenizeChat(chats[dropped]);
             dropped++;
         }
-        if (dropped > historyStart) {
+        if (chats.slice(historyStart, dropped).some(keptEntry)) {
             useMemory = (await host.memoryTrim.confirm()) === "memory";
             host.fence();
         }
@@ -2517,7 +2520,6 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     // HypaV2's legacy one, for which this recheck frees it (its last two chats are protected).
     const promptBudget = maxContextTokens - db.maxResponse;
     if (inputTokens > promptBudget) {
-        const keptEntry = (chat: OpenAIChat) => chat.content !== "" || (chat.multimodals?.length ?? 0) > 0;
         // Overlapping ranges can share an entry: clearing it removes every occurrence from the prompt.
         const keptTokens = () =>
             formated.reduce((sum, chat) => sum + (keptEntry(chat) ? recheckTokens.get(chat)! : 0), 0);

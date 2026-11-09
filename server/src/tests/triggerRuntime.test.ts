@@ -271,6 +271,7 @@ function harness(options: {
             ...arg,
         });
     return {
+        host,
         runtime,
         run,
         live,
@@ -1801,6 +1802,45 @@ describe("the fences", () => {
 });
 
 describe("the run's character copy", () => {
+    it("returns null without copying the character or observing patches when neither character nor modules have triggers", async () => {
+        const h = harness({ triggers: [], moduleTriggers: [] });
+        const clone = vi.spyOn(globalThis, "structuredClone");
+        const observe = vi.spyOn(h.host, "observeCharacterPatches");
+
+        const result = await h.runtime.runTrigger(h.stored, "display", {
+            chat: h.live,
+            displayMode: true,
+            displayData: "hello",
+        });
+
+        expect(result).toBeNull();
+        expect(clone).not.toHaveBeenCalled();
+        expect(observe).not.toHaveBeenCalled();
+    });
+
+    it("copies the character and observes patches with one character or module trigger", async () => {
+        const clone = vi.spyOn(globalThis, "structuredClone");
+        for (const source of ["character", "module"] as const) {
+            const trigger = trig([], { type: "display" });
+            const h = harness({
+                triggers: source === "character" ? [trigger] : [],
+                moduleTriggers: source === "module" ? [trigger] : [],
+            });
+            const observe = vi.spyOn(h.host, "observeCharacterPatches");
+            clone.mockClear();
+
+            const result = await h.runtime.runTrigger(h.stored, "display", {
+                chat: h.live,
+                displayMode: true,
+                displayData: "hello",
+            });
+
+            expect(result?.displayData, source).toBe("hello");
+            expect(clone, source).toHaveBeenCalledWith(expect.objectContaining({ chaId: "c", desc: "d0" }));
+            expect(observe, source).toHaveBeenCalledExactlyOnceWith(expect.any(Function));
+        }
+    });
+
     it("shares the asset lists with the source and copies every other field, so the run's edits leave the source alone", async () => {
         const additionalAssets: [string, string, string][] = [["a", "assets/a.png", "png"]];
         const emotionImages: [string, string][] = [["happy", "assets/happy.png"]];

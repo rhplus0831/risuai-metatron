@@ -223,6 +223,36 @@ afterAll(async () => {
 });
 
 describe("the transform's stages", () => {
+    it("renders a no-trigger character's display text without copying the character", async () => {
+        await batch({
+            ops: [character("no-triggers")],
+            chats: [chatCreate("no-triggers", "k")],
+        });
+        const clone = vi.spyOn(globalThis, "structuredClone");
+        try {
+            const rendered = await render("no-triggers", "k", [target("row", "no-triggers", "Hello {{char}}")]);
+
+            expect(rendered.status, JSON.stringify(rendered.body)).toBe(200);
+            expect(rendered.body.results).toEqual([
+                {
+                    id: "row",
+                    ok: true,
+                    text: "Hello NO-TRIGGERS",
+                    emotions: [],
+                    key: expect.stringMatching(/^[0-9a-f]{64}$/),
+                    cached: false,
+                },
+            ]);
+            expect(
+                clone.mock.calls.filter(
+                    ([value]) => (value as { chaId?: unknown } | undefined)?.chaId === "no-triggers",
+                ),
+            ).toHaveLength(0);
+        } finally {
+            clone.mockRestore();
+        }
+    });
+
     it(
         "editdisplay: Lua editDisplay, the display trigger, CBS, the regex scripts in order; @@emo answered, @@inject and the variables not stored",
         async () => {

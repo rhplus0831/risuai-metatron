@@ -1717,6 +1717,60 @@ describe("the context report", () => {
         });
     });
 
+    describe("the no-memory trim question", () => {
+        it("asks nothing when the dropped history prefix is entirely blank after editprocess", async () => {
+            const { run, host } = contextAssembly({
+                greeting: "ERASE",
+                messages: [
+                    { chatId: "blank", data: "ERASE" },
+                    { chatId: "kept", data: "keep" },
+                ],
+                maxContext: 67,
+                db: { supaModelType: "subModel" },
+            });
+            host.scripts.process = async (_char, data, mode) => ({
+                data: mode === "editprocess" && data === "ERASE" ? "" : data,
+                emoChanged: false,
+            });
+            const confirm = vi.spyOn(host.memoryTrim, "confirm");
+
+            // 10 response + 50 allowance + two blank entries (3 each) + "keep" (7) = 73.
+            // The 67-token context drops both blanks and keeps the non-blank tail.
+            const { formated } = await run();
+
+            expect(confirm).not.toHaveBeenCalled();
+            expect(formated.map(({ memo, content }) => ({ memo, content }))).toEqual([
+                { memo: "kept", content: "keep" },
+            ]);
+        });
+
+        it("asks when a dropped history entry contains whitespace after a blank greeting", async () => {
+            const { run, host } = contextAssembly({
+                greeting: "ERASE",
+                messages: [
+                    { chatId: "space", data: " " },
+                    { chatId: "kept", data: "keep" },
+                ],
+                maxContext: 67,
+                db: { supaModelType: "subModel" },
+            });
+            host.scripts.process = async (_char, data, mode) => ({
+                data: mode === "editprocess" && data === "ERASE" ? "" : data,
+                emoChanged: false,
+            });
+            const confirm = vi.spyOn(host.memoryTrim, "confirm");
+
+            // 60 reserved + 3 blank greeting + 4 whitespace entry + 7 tail = 74.
+            // Reaching 67 drops the greeting and the space, which is not exactly "".
+            const { formated } = await run();
+
+            expect(confirm).toHaveBeenCalledTimes(1);
+            expect(formated.map(({ memo, content }) => ({ memo, content }))).toEqual([
+                { memo: "kept", content: "keep" },
+            ]);
+        });
+    });
+
     it("attributes a template prompt with full history by section and records the trim ledger", async () => {
         const { run, chat, counts } = contextAssembly({
             template: [plain("main", "MAIN"), plain("globalNote", "NOTE!"), plain("normal", "P"), CHAT_CARD],

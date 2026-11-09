@@ -472,9 +472,9 @@ export function forwardPresetRoots(
 }
 
 /**
- * The prompt preset's main-model context size (`maxContextOverride` on and a finite
- * `maxContextOverrideSize` above 0, which is unset), or `undefined` when the main profile's
- * `maxContext` applies. Reads a prompt preset record or any object carrying the two fields under
+ * The prompt preset's main-model context size when `maxContextOverride` is on and
+ * `maxContextOverrideSize` is finite and above 0; otherwise `undefined` (unset: the main profile's
+ * `maxContext` applies). Reads a prompt preset record or any object carrying the two fields under
  * their root names (a job or request database).
  */
 export function maxContextOverrideOf(promptPreset: Record<string, unknown> | undefined): number | undefined {

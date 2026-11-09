@@ -380,6 +380,9 @@ export function createTriggerRuntime(host: TriggerHost) {
         await yieldTurn();
         lastEffectYieldAt = now();
         services.fence(ctx);
+        if (!hasTriggers(sourceChar)) {
+            return null;
+        }
         // Always a copy: display and request runs edit their lore effects on it, not on a stored record.
         const char = triggerCopy(sourceChar);
         // A Lua setter of this run (or a nested one) writes the record; the run's copy follows it.
