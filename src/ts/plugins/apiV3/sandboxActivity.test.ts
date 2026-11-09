@@ -32,6 +32,22 @@ const send = (data: unknown, ports: MessagePort[] = []) => {
     window.dispatchEvent(event);
 };
 const lastPosted = () => posted[posted.length - 1];
+
+async function callHost(data: { type: string; reqId: string; method: string; id?: string; args?: unknown[] }) {
+    const answered = deferred<{ type: string; reqId: string; result?: any; error?: string }>();
+    const postMessage = guestWindow!.postMessage;
+    const posting = vi.spyOn(guestWindow!, "postMessage").mockImplementation((response, origin, ports) => {
+        postMessage(response, origin, ports);
+        if (response.type === "RESPONSE" && response.reqId === data.reqId) answered.resolve(response);
+    });
+    try {
+        send(data);
+        return await answered.promise;
+    } finally {
+        posting.mockRestore();
+    }
+}
+
 const settledScript = () => {
     send({ type: "SCRIPT_SETTLED" });
     expect(host.isIdle()).toBe(true);
@@ -106,6 +122,80 @@ it("serializes remote-required callback arguments as callable host references", 
         send({ type: "CALLBACK_RETURN", reqId: invoke.reqId, result: "delivered" });
         await expect(running).resolves.toBe("delivered");
     }
+});
+
+describe("SandboxHost remote instance lifetime", () => {
+    beforeEach(() => {
+        api.create = (value: string) =>
+            new (class {
+                __classType = "REMOTE_REQUIRED";
+                getValue() {
+                    return value;
+                }
+            })();
+    });
+
+    async function createRef(value: string): Promise<{ __type: "REMOTE_REF"; id: string }> {
+        const response = await callHost({
+            type: "CALL_ROOT",
+            reqId: `create-${value}`,
+            method: "create",
+            args: [value],
+        });
+        expect(response).toEqual({
+            type: "RESPONSE",
+            reqId: `create-${value}`,
+            result: { __type: "REMOTE_REF", id: expect.any(String) },
+        });
+        return response.result;
+    }
+
+    it("releases every batched id while leaving other instances callable", async () => {
+        const first = await createRef("first");
+        const second = await createRef("second");
+        const retained = await createRef("retained");
+        send({ type: "RELEASE_INSTANCE", ids: [first.id, second.id] });
+
+        for (const ref of [first, second]) {
+            expect(await callHost({ type: "CALL_INSTANCE", reqId: ref.id, id: ref.id, method: "getValue" })).toEqual({
+                type: "RESPONSE",
+                reqId: ref.id,
+                error: "Instance not found or released",
+            });
+        }
+        expect(
+            await callHost({ type: "CALL_INSTANCE", reqId: "retained", id: retained.id, method: "getValue" }),
+        ).toEqual({ type: "RESPONSE", reqId: "retained", result: "retained" });
+    });
+
+    it("rejects a released ref argument before calling the host API", async () => {
+        const ref = await createRef("argument");
+        const accept = vi.fn(() => "accepted");
+        api.accept = accept;
+        send({ type: "RELEASE_INSTANCE", id: ref.id });
+
+        expect(await callHost({ type: "CALL_ROOT", reqId: "accept", method: "accept", args: [ref] })).toEqual({
+            type: "RESPONSE",
+            reqId: "accept",
+            error: "Instance not found or released",
+        });
+        expect(accept).not.toHaveBeenCalled();
+    });
+
+    it("assigns distinct increasing ids to serialized instances even after a release", async () => {
+        // ID uniqueness must not depend on random values happening to differ.
+        vi.spyOn(Math, "random").mockReturnValue(0.5);
+        const first = await createRef("first");
+        send({ type: "RELEASE_INSTANCE", id: first.id });
+        const second = await createRef("second");
+
+        expect(second.id).not.toBe(first.id);
+        const firstCounter = Number(first.id.match(/-?\d+$/)?.[0]);
+        const secondCounter = Number(second.id.match(/-?\d+$/)?.[0]);
+        expect(Number.isSafeInteger(firstCounter)).toBe(true);
+        expect(Number.isSafeInteger(secondCounter)).toBe(true);
+        expect(secondCounter).toBeGreaterThan(firstCounter);
+    });
 });
 
 describe("SandboxHost activity", () => {

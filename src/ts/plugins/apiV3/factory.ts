@@ -2,6 +2,8 @@
  * Iframe-only plugin execution and bidirectional RPC. `SandboxHost.run` installs the sandbox, CSP,
  * and `GUEST_BRIDGE_SCRIPT`; calls, callbacks, abort signals, and stream credit/cancel cross this bridge.
  * Host callback arguments use the same value conversion as call results.
+ * Finalized guest proxies release refs in microtask batches; IDs are monotonic per host and released
+ * refs passed back are refused.
  * Both message listeners check source before data: the host accepts only its iframe window and the
  * guest only its parent. Never log RPC payloads or answers: fetch headers and bodies can contain secrets.
  * Abort controllers outlive a returned stream until every stream finishes or is cleaned up;
@@ -22,6 +24,7 @@ interface RpcMessage {
     type: MsgType;
     reqId?: string;
     id?: string;
+    ids?: string[];
     method?: string;
     args?: any[];
     result?: any;
@@ -65,7 +68,20 @@ await (async function() {
     const pendingRequests = new Map();
     const callbackRegistry = new Map();
     const callbackIdByFunction = new WeakMap();
-    const proxyRefRegistry = new Map();
+    const proxyRefRegistry = new WeakMap();
+    const pendingReleases = [];
+    const releaseRegistry = new FinalizationRegistry((id) => {
+        pendingReleases.push(id);
+        if (pendingReleases.length !== 1) return;
+        queueMicrotask(() => {
+            const ids = pendingReleases.splice(0);
+            try {
+                send({ type: 'RELEASE_INSTANCE', ids });
+            } catch (_) {
+                // The frame may be tearing down; termination clears the host registry.
+            }
+        });
+    });
     const abortControllers = new Map();
 
     function serializeArg(arg) {
@@ -114,8 +130,9 @@ await (async function() {
                     if (prop === 'release') {
                         return () => send({ type: 'RELEASE_INSTANCE', id: val.id });
                     }
+                    // Reading the ID through the owner keeps it alive while an extracted method is held.
                     return (...args) => sendRequest('CALL_INSTANCE', {
-                        id: val.id,
+                        id: proxyRefRegistry.get(proxy),
                         method: prop,
                         args: args
                     });
@@ -123,6 +140,8 @@ await (async function() {
             });
             // Store the mapping so we can serialize it back
             proxyRefRegistry.set(proxy, val.id);
+            // The held value is only the ID, so the registry cannot retain the proxy.
+            releaseRegistry.register(proxy, val.id);
             return proxy;
         }
         if (val && typeof val === 'object' && val.__type === 'CALLBACK_STREAMS') {
@@ -496,6 +515,7 @@ export class SandboxHost {
     private csp = `connect-src 'none'; script-src 'nonce-${this.nonce}' 'wasm-unsafe-eval'; frame-src 'none'; object-src 'none'; style-src * 'unsafe-inline'; default-src 'none'; img-src * data: blob:; font-src * data: blob:; media-src * data: blob:; base-uri 'none';`;
 
     private instanceRegistry = new Map<string, any>();
+    private refIdCounter = 0;
     private abortControllers = new Map<string, AbortController>();
     private hostCallControllers = new Set<AbortController>();
     private messageHandlerRef: ((event: MessageEvent) => void) | null = null;
@@ -609,7 +629,7 @@ export class SandboxHost {
             if (val === null) return null;
             if (Array.isArray(val)) return val;
 
-            const id = "ref_" + Math.random().toString(36).substring(2);
+            const id = "ref_" + ++this.refIdCounter;
             this.instanceRegistry.set(id, val);
             return { __type: "REMOTE_REF", id } as RemoteRef;
         }
@@ -723,6 +743,7 @@ export class SandboxHost {
                 if (instance) {
                     return instance;
                 }
+                throw new Error("Instance not found or released");
             }
             if (arg && typeof arg === "object" && arg.constructor === Object) {
                 let out: any = null;
@@ -1029,7 +1050,12 @@ export class SandboxHost {
             }
 
             if (data.type === "RELEASE_INSTANCE") {
-                this.instanceRegistry.delete(data.id!);
+                if (typeof data.id === "string") this.instanceRegistry.delete(data.id);
+                if (Array.isArray(data.ids)) {
+                    for (const id of data.ids) {
+                        if (typeof id === "string") this.instanceRegistry.delete(id);
+                    }
+                }
                 return;
             }
 

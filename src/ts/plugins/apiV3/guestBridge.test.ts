@@ -5,7 +5,7 @@ import ts from "typescript";
 import { SandboxHost } from "./factory";
 
 const guestGlobals = new Map(
-    ["HTMLIFrameElement", "window", "ImageBitmap"].map((name) => [
+    ["HTMLIFrameElement", "window", "ImageBitmap", "FinalizationRegistry"].map((name) => [
         name,
         Object.getOwnPropertyDescriptor(globalThis, name),
     ]),
@@ -52,6 +52,7 @@ function guestScripts(userCode = ""): { main: string; fallback: string } {
 type HostMessage = {
     type: string;
     reqId: string;
+    ids?: string[];
     method?: string;
     args?: unknown[];
     result?: unknown;
@@ -162,12 +163,91 @@ function pullFromGuest(port: MessagePort) {
     return next;
 }
 
+function stubFinalizationRegistry() {
+    const registrations: { target: object; heldValue: string }[] = [];
+    let cleanup!: (id: string) => void;
+    vi.stubGlobal(
+        "FinalizationRegistry",
+        class {
+            constructor(callback: typeof cleanup) {
+                cleanup = callback;
+            }
+            register(target: object, heldValue: string) {
+                registrations.push({ target, heldValue });
+            }
+        },
+    );
+    return { registrations, finalize: (id: string) => cleanup(id) };
+}
+
+async function remoteResult(guest: Awaited<ReturnType<typeof startGuest>>, pending: Promise<any>, id: string) {
+    const call = guest.calls.at(-1)!;
+    await guest.deliver({ type: "RESPONSE", reqId: call.reqId, result: { __type: "REMOTE_REF", id } });
+    return pending;
+}
+
 const settledReports = (calls: HostMessage[]) => calls.filter((call) => call.type === "SCRIPT_SETTLED");
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 afterEach(() => {
     vi.restoreAllMocks();
     restoreGuestGlobals([...guestGlobals.keys()]);
+});
+
+describe("the guest bridge's remote instance lifetime", () => {
+    it("registers result and callback proxies for finalization with only their ref ids", async () => {
+        const registry = stubFinalizationRegistry();
+        const guest = await startGuest();
+        const root = await remoteResult(guest, guest.risuai.getRootDocument(), "document");
+        const element = await remoteResult(guest, root.createElement("div"), "element");
+        let records: unknown;
+        const registering = guest.risuai.createMutationObserver((value: unknown) => {
+            records = value;
+        });
+        const registration = guest.calls.at(-1)!;
+        const callback = registration.args![0] as { id: string };
+        await guest.deliver({ type: "RESPONSE", reqId: registration.reqId });
+        await registering;
+        await guest.deliver({
+            type: "INVOKE_CALLBACK",
+            reqId: "mutation-callback",
+            id: callback.id,
+            args: [{ __type: "REMOTE_REF", id: "records" }],
+        });
+
+        expect(registry.registrations.map(({ heldValue }) => heldValue)).toEqual(["document", "element", "records"]);
+        for (const [index, proxy] of [root, element, records].entries()) {
+            expect(registry.registrations[index].target).toBe(proxy);
+        }
+    });
+
+    it("batches finalized refs once per microtask burst without releasing an id again", async () => {
+        const registry = stubFinalizationRegistry();
+        const guest = await startGuest();
+        const ids = ["first", "second", "third", "later"];
+        for (const id of ids) await remoteResult(guest, guest.risuai.getRootDocument(), id);
+        const releases = () => guest.calls.filter((message) => message.type === "RELEASE_INSTANCE");
+
+        // Simulate each registered proxy being finalized once; no real garbage collection is involved.
+        for (const id of ids.slice(0, 3)) registry.finalize(id);
+        expect(releases()).toEqual([]);
+        await Promise.resolve();
+        expect(releases()).toEqual([{ type: "RELEASE_INSTANCE", ids: expect.arrayContaining(ids.slice(0, 3)) }]);
+        expect(releases()[0].ids).toHaveLength(3);
+
+        registry.finalize(ids[3]);
+        expect(releases()).toHaveLength(1);
+        await Promise.resolve();
+        expect(releases()).toEqual([
+            { type: "RELEASE_INSTANCE", ids: expect.arrayContaining(ids.slice(0, 3)) },
+            { type: "RELEASE_INSTANCE", ids: ["later"] },
+        ]);
+        expect(
+            releases()
+                .flatMap(({ ids }) => ids)
+                .sort(),
+        ).toEqual([...ids].sort());
+    });
 });
 
 describe("the guest bridge's data copies", () => {
