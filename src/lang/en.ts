@@ -711,6 +711,7 @@ export const languageEnglish = {
     },
     playground: {
         playground: "Playground",
+        inlayDelete: "Delete",
         inlayDeleteSelected: "Delete Selected",
         inlayDeselectAll: "Deselect All",
         inlayEmpty: "No saved inlay assets",
@@ -720,6 +721,7 @@ export const languageEnglish = {
         inlayDeleteConfirm: "Are you sure you want to delete {name}?",
         inlayDeleteMultipleConfirm: "Are you sure you want to delete the selected {count} assets?",
         inlayTotalAssets: "Total {count} assets",
+        inlayLoading: "Loading...",
     },
     confirm: "Confirm",
     goback: "Go Back",

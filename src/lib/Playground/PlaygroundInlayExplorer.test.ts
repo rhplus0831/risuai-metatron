@@ -2,6 +2,7 @@
 
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { changeLanguage, language } from "src/lang";
 import type { InlayResource } from "../../../shared/resources.ts";
 
 type Inlays = typeof import("src/ts/process/files/inlays");
@@ -62,6 +63,7 @@ afterEach(async () => {
     if (instance) await destroyExplorer();
     target.remove();
     vi.restoreAllMocks();
+    changeLanguage("en");
 });
 
 async function openExplorer() {
@@ -102,13 +104,14 @@ describe("inlay preview object URLs", () => {
         expectNoLeakedURLs();
     });
 
-    it("leaves no object URL when a pending preview resolves after confirmed deletion", async () => {
+    it("uses the localized delete button and leaves no object URL when a pending preview resolves after confirmed deletion", async () => {
+        changeLanguage("ko");
         const deletion = deferred<void>();
         deps.removeInlayAsset.mockReturnValue(deletion.promise);
         await openExplorer();
 
         const deleteButton = [...target.querySelectorAll("button")].find(
-            (button) => button.textContent?.trim() === "Delete",
+            (button) => button.textContent?.trim() === language.playground.inlayDelete,
         );
         expect(deleteButton).toBeDefined();
         deleteButton!.click();

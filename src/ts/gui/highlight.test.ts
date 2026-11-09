@@ -90,6 +90,27 @@ describe("editor highlight registry", () => {
         expect(ranges[0].startOffset).toBe(300);
     });
 
+    it("preserves the category and exact {{char}} range after an unmatched }}", () => {
+        const id = highlighting.getNewHighlightId();
+        const dom = editor("{{char}}");
+        highlighting.highlighter(dom, id);
+        const categories = [...registry.keys()];
+        expect(categories).toHaveLength(1);
+        expect(registeredRanges().map((range) => range.toString())).toEqual(["{{char}}"]);
+
+        dom.textContent = "}} {{char}}";
+        highlighting.highlighter(dom, id);
+
+        expect([...registry.keys()]).toEqual(categories);
+        const ranges = registeredRanges();
+        expect(ranges).toHaveLength(1);
+        expect(ranges[0].toString()).toBe("{{char}}");
+        expect(ranges[0].startContainer).toBe(dom.firstChild);
+        expect(ranges[0].endContainer).toBe(dom.firstChild);
+        expect(ranges[0].startOffset).toBe(3);
+        expect(ranges[0].endOffset).toBe(11);
+    });
+
     it("deletes CBS categories when the same editor changes from {{user}} to plain text", () => {
         const id = highlighting.getNewHighlightId();
         const dom = editor("{{user}}");

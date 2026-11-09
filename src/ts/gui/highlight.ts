@@ -476,7 +476,7 @@ function simpleCBSHighlightParser(text: string) {
             pointer++;
             depthStarts[depth] = pointer + 1;
             highlightMode[depth] = 0;
-        } else if (c === "}" && nextC === "}") {
+        } else if (c === "}" && nextC === "}" && depth > 0) {
             if (highlightMode[depth] === 0) {
                 checkHighlight();
             } else {
