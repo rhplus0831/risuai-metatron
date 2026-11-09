@@ -205,6 +205,11 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - A plugin or MCP write goes through a mutation module (`characterStore.svelte.ts`, `collectionStore.svelte.ts`,
   `pluginStorageStore.svelte.ts`, the chat module); a new host setter or tool never writes a record or a chat directly.
   A refused value warns (plugins) or answers an error (MCP) and changes nothing.
+- `setDatabase`, `setDatabaseLite`, `setChar`, `setCharacter`, `setCharacterToIndex` and `setChatToIndex` need the
+  `dbWrite` grant (asked `periodically`; a `db` grant does not count), checked after `refuseTransformWrite` and before
+  validation, chat loading or the install prompt. The context, settings write scope, target ids, their owner tokens and
+  a hook `chatPage` match are captured before that await, so a change during the prompt cannot retarget the write; a
+  refusal warns and writes nothing. `getPluginPermission` refuses a name outside `permissionConsentTexts` first.
 - Transform continuations refuse durable-data writes at host entry without throwing. `hasReadOnlyContext` checks every
   active context of the calling instance before any await; `currentContext` still selects targets. Job-channel callbacks
   remain writable unless a transform on the same instance overlaps. API returns and exclusions are in the

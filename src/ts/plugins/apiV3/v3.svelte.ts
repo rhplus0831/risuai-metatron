@@ -800,7 +800,16 @@ export function onPluginWorkChange(listener: () => void): () => void {
     };
 }
 
-const pluginPermissions = ["fetchLogs", "db", "mainDom", "replacer", "provider", "sendChat", "inlay"] as const;
+const pluginPermissions = [
+    "fetchLogs",
+    "db",
+    "dbWrite",
+    "mainDom",
+    "replacer",
+    "provider",
+    "sendChat",
+    "inlay",
+] as const;
 type PluginPermission = (typeof pluginPermissions)[number];
 
 /** The plugin as it was loaded: the hash of this script, not of the database copy, keys its grants. */
@@ -885,10 +894,24 @@ type PluginV3ProviderOptions = PluginProviderOptions & {
 /** Provider model metadata; reset this array in place after unload because model-list consumers retain it. */
 export const customV3ProviderMetaStore: LLMModel[] = [];
 
+/** Read at prompt time so consent uses the current UI language. */
+const permissionConsentTexts: Record<PluginPermission, () => string> = {
+    fetchLogs: () => language.fetchLogConsent,
+    db: () => language.getFullDatabaseConsent,
+    dbWrite: () => language.dbWriteConsent,
+    mainDom: () => language.mainDomAccessConsent,
+    replacer: () => language.replacerPermissionConsent,
+    provider: () => language.providerPermissionConsent,
+    sendChat: () => language.sendChatConsent,
+    inlay: () => language.inlayPermissionConsent,
+};
+
 /**
- * Asks the user for a permission unless it was granted before (a grant is kept in the server-owned
- * `pluginPermissions` record, which no plugin API can read or write). `"periodically"` asks again
- * three days after the last grant. A reset learned locally, through a live update, or on a write
+ * Rejects unknown permission names before consulting grants or prompting. Known permissions use
+ * page-cached answers until unload, reset, or revocation. On an uncached check, a grant in the
+ * server-owned `pluginPermissions` resource avoids a prompt unless reconfirmation is required;
+ * `"periodically"` asks again when the last grant is older than three days. A reset learned locally,
+ * through a live update, or on a write
  * conflict invalidates pending consent; unload does too. Invalidated answers neither persist nor
  * remain cached, including while the consent write waits in the permission store's queue.
  */
@@ -897,6 +920,7 @@ const getPluginPermission = async (
     permissionDesc: PluginPermission,
     reconfirm: boolean | "periodically" = false,
 ) => {
+    if (!Object.hasOwn(permissionConsentTexts, permissionDesc)) return false;
     const generation = permissionResetGenerations.get(plugin.name) ?? 0;
     const isCurrent = () => generation === (permissionResetGenerations.get(plugin.name) ?? 0);
     const answerKey = permissionAnswerKey(plugin.name, permissionDesc);
@@ -928,26 +952,7 @@ const getPluginPermission = async (
     }
 
     const pluginName = plugin.name;
-    let alertTitle =
-        permissionDesc === "fetchLogs"
-            ? language.fetchLogConsent.replace("{}", pluginName)
-            : permissionDesc === "db"
-              ? language.getFullDatabaseConsent.replace("{}", pluginName)
-              : permissionDesc === "mainDom"
-                ? language.mainDomAccessConsent.replace("{}", pluginName)
-                : permissionDesc === "replacer"
-                  ? language.replacerPermissionConsent.replace("{}", pluginName)
-                  : permissionDesc === "provider"
-                    ? language.providerPermissionConsent.replace("{}", pluginName)
-                    : permissionDesc === "sendChat"
-                      ? language.sendChatConsent.replace("{}", pluginName)
-                      : permissionDesc === "inlay"
-                        ? language.inlayPermissionConsent.replace("{}", pluginName)
-                        : `Error`;
-    if (alertTitle === "Error") {
-        return false;
-    }
-    const conf = await alertConfirm(alertTitle);
+    const conf = await alertConfirm(permissionConsentTexts[permissionDesc]().replace("{}", pluginName));
     if (!isCurrent()) return false;
     if (conf) {
         const answer = { granted: true, grantKey: pluginHash };
@@ -1177,7 +1182,8 @@ async function refreshChatProjections(refs: readonly ChatRef[]): Promise<void> {
  * Runs `run` (synchronous) once the chats of `chaIds` are loaded, with them pinned from before the
  * load until it returns. A character can gain a chat (not loaded) while another one loads, so every
  * target is checked again right before `run`, and loaded again (a few rounds) when it is incomplete.
- * The targets are captured by id before the load and found again inside `run`.
+ * The targets are captured by id before the load and found again inside `run`. Setters can pass
+ * owners captured before consent, so a replacement during the prompt also refuses the operation.
  *
  * A read that returns chats passes `refreshed`, the chats it returns once they are loaded, and waits for
  * their projections (`refreshChatProjections`). The targets are checked once more after that await, since
@@ -1187,9 +1193,10 @@ async function withChatsLoaded<T>(
     chaIds: readonly (string | undefined)[],
     run: () => T,
     refreshed?: () => readonly ChatRef[],
+    capturedOwners?: ReadonlyMap<string, string>,
 ): Promise<T> {
     const ids = [...new Set(chaIds.filter((chaId): chaId is string => typeof chaId === "string"))];
-    const owners = new Map(ids.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+    const owners = capturedOwners ?? new Map(ids.map((chaId) => [chaId, chatOwnerToken(chaId)]));
     const releases = ids.map((chaId) => pinChats(chaId));
     try {
         let round = 0;
@@ -1706,34 +1713,40 @@ const getChar = async (context: PluginCallContext | undefined, owner: object) =>
 };
 
 /**
- * Applies a character to the hook's character with a context, else to the selected one (the one
- * selected when the call came; its chats are loaded first). Inside a hook, a `chatPage` naming the
- * hook's chat is what `getChar` reported, not a change of the user's chat selection, so it is not
- * applied.
+ * After dbWrite consent, applies to the character and owner captured at API entry, loading its chats
+ * first. The caller also captures whether `chatPage` reported the hook's chat: that value is omitted
+ * even if chats reorder during consent. Gone hook targets still throw after consent.
  */
-const setChar = async (context: PluginCallContext | undefined, char: any, owner: object) => {
-    const chaId = context ? context.chatRef.chaId : selectedCharacter()?.chaId;
-    if (context) {
-        // Before the load: a `chatPage` naming the hook's chat (as `getChar` reported it then) is not
-        // a selection change, whatever the order is after the load.
-        const { chatIndex } = contextMember(context);
-        if (char && typeof char === "object" && char.chatPage === chatIndex) {
-            const { chatPage: _reported, ...rest } = char;
-            char = rest;
-        }
+const setChar = async (
+    context: PluginCallContext | undefined,
+    char: any,
+    owner: object,
+    chaId: string | undefined,
+    owners: ReadonlyMap<string, string>,
+    reportedHookChatPage: boolean,
+) => {
+    if (context) contextMember(context);
+    if (reportedHookChatPage) {
+        const { chatPage: _reported, ...rest } = char;
+        char = rest;
     }
-    await withChatsLoaded([chaId], () => {
-        if (!context) {
-            applyPluginCharacter(
-                chaId === undefined ? -1 : characterList().findIndex((entry) => entry?.chaId === chaId),
-                char,
-                undefined,
-                owner,
-            );
-            return;
-        }
-        applyPluginCharacter(contextTarget(context).characterIndex, char, undefined, owner);
-    });
+    await withChatsLoaded(
+        [chaId],
+        () => {
+            if (!context) {
+                applyPluginCharacter(
+                    chaId === undefined ? -1 : characterList().findIndex((entry) => entry?.chaId === chaId),
+                    char,
+                    undefined,
+                    owner,
+                );
+                return;
+            }
+            applyPluginCharacter(contextTarget(context).characterIndex, char, undefined, owner);
+        },
+        undefined,
+        owners,
+    );
 };
 
 /**
@@ -2075,7 +2088,7 @@ function charactersReconciled(newDb: Record<string, unknown>): string[] {
         .filter((chaId): chaId is string => typeof chaId === "string" && existing.has(chaId));
 }
 
-/** Which of `targets` (existing characters captured before the load) left the list during it. */
+/** Which existing targets left the list after capture, including during consent or chat loading. */
 function vanishedOf(targets: readonly string[]): Set<string> {
     const present = new Set(characterList().map((character) => character?.chaId));
     return new Set(targets.filter((chaId) => !present.has(chaId)));
@@ -2123,16 +2136,17 @@ function pluginChatsMatch(
 
 /**
  * Both database setters skip loading and reconciling omitted chats and exact chat round trips. Loaded matches stay
- * pinned while other characters load; all matches and original owners are checked synchronously
+ * pinned while other characters load; targets and owners captured before consent are required.
+ * All matches and original owners are checked synchronously
  * before applying. A changed match falls back once to loading targets that supply chats before any key applies.
  */
 async function applyPluginDatabaseWithChats(
     newDb: Record<string, unknown>,
     context: PluginCallContext | undefined,
     scope: PresetScope,
+    targets: readonly string[],
+    owners: ReadonlyMap<string, string>,
 ) {
-    const targets = charactersReconciled(newDb);
-    const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
     const matches = new Map<string, { chats: unknown; hits: Map<string, DetachedChatCacheHit> }>();
     const omitted = new Set<string>();
     for (const char of Array.isArray(newDb?.characters) ? newDb.characters : []) {
@@ -2187,22 +2201,29 @@ async function applyPluginDatabaseWithChats(
 }
 
 /**
+ * Called after dbWrite consent with the context, scope, characters and owners captured at API entry.
  * Plugin installation needs the full setter's consent flow, so this setter drops `plugins`.
  * Omitted chats and exact chat round trips skip loading and reconciliation; other targets load before applying.
  * Character fields and a numeric `chatPage` still apply for unchanged chats. Preset fields use the hook's
  * captured ids, or the settings write scope captured at call start. A missing target needed by those
  * fields refuses the whole call before any key applies.
  */
-const setPluginDatabaseLite = async (newDb: any, context: PluginCallContext | undefined) => {
-    const scope = context ?? settingsWriteScope();
+const setPluginDatabaseLite = async (
+    newDb: any,
+    context: PluginCallContext | undefined,
+    scope: PresetScope,
+    targets: readonly string[],
+    owners: ReadonlyMap<string, string>,
+) => {
     if (newDb && typeof newDb === "object" && Object.hasOwn(newDb, "plugins")) {
         newDb = { ...newDb };
         delete newDb.plugins;
     }
-    await applyPluginDatabaseWithChats(newDb, context, scope);
+    await applyPluginDatabaseWithChats(newDb, context, scope, targets, owners);
 };
 
 /**
+ * Called after dbWrite consent with the context, scope, characters and owners captured at API entry.
  * Preflights every supplied plugin and awaits all installation prompts before assigning any key,
  * then loads supplied chats except for exact round trips and applies keys synchronously. Unchanged chats
  * skip reconciliation while character fields and a numeric `chatPage` still apply. Preset fields target
@@ -2210,8 +2231,13 @@ const setPluginDatabaseLite = async (newDb: any, context: PluginCallContext | un
  * (`src/ts/storage/collectionStore.svelte.ts:settingsWriteScope`), before any waits. A missing target
  * needed by those fields refuses the whole call before any key applies.
  */
-const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefined) => {
-    const scope = context ?? settingsWriteScope();
+const setPluginDatabase = async (
+    newDb: any,
+    context: PluginCallContext | undefined,
+    scope: PresetScope,
+    targets: readonly string[],
+    owners: ReadonlyMap<string, string>,
+) => {
     if (Object.hasOwn(newDb, "plugins")) {
         console.warn(
             "[WARN] Plugin attempted to access plugin directly. this would be blocked in future versions. Instead, use the provided APIs to manage plugins. Attempting to handle plugin installation via plugin for new plugins in the provided database object.",
@@ -2228,7 +2254,7 @@ const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefi
         newDb = { ...newDb, plugins: await handlePluginInstallViaPlugin(plugins) };
     }
     // After chats load, no await: preflight the captured scope and apply every key synchronously.
-    await applyPluginDatabaseWithChats(newDb, context, scope);
+    await applyPluginDatabaseWithChats(newDb, context, scope, targets, owners);
 };
 
 const readAssetImage = (path: string) => {
@@ -2271,6 +2297,27 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         if (!hasReadOnlyContext(contextOwner)) return false;
         console.warn(`[RisuAI Plugin: ${identity.name}] Refused ${api} during a read-only transform continuation`);
         return true;
+    };
+    /** Checks dbWrite once per setter call, warning without throwing when consent is refused. */
+    const refuseDbWrite = async (api: string): Promise<boolean> => {
+        if (await getPluginPermission(identity, "dbWrite", "periodically")) return false;
+        console.warn(`[RisuAI Plugin: ${identity.name}] Refused ${api}: the dbWrite permission was not granted`);
+        return true;
+    };
+    /** Both character aliases capture their target and hook chatPage interpretation before consent. */
+    const setCharacterWithPermission = async (api: string, char: any) => {
+        if (refuseTransformWrite(api)) return;
+        const context = currentContext(contextOwner);
+        const chaId = context ? context.chatRef.chaId : selectedCharacter()?.chaId;
+        const owners = new Map(chaId === undefined ? [] : [[chaId, chatOwnerToken(chaId)]]);
+        // Membership lookup cannot throw for a gone hook target; validation follows consent.
+        const hookChatIndex = context
+            ? chatList(context.chatRef.chaId).findIndex((entry) => entry.id === context.chatRef.chatId)
+            : -1;
+        const reportedHookChatPage =
+            hookChatIndex >= 0 && char && typeof char === "object" && char.chatPage === hookChatIndex;
+        if (await refuseDbWrite(api)) return;
+        return setChar(context, char, contextOwner, chaId, owners, !!reportedHookChatPage);
     };
     const withContext = <F extends Function>(hook: F): F => {
         const cached = hookWrappers.get(hook);
@@ -2360,10 +2407,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             return fetchNative(url, { method, headers, body, signal: options.signal ?? callSignal });
         },
         getChar: () => getChar(currentContext(contextOwner), contextOwner),
-        setChar: async (char: any) => {
-            if (refuseTransformWrite("setChar")) return;
-            return setChar(currentContext(contextOwner), char, contextOwner);
-        },
+        /** Requires dbWrite and keeps the character captured at entry; see `setChar`. */
+        setChar: (char: any) => setCharacterWithPermission("setChar", char),
         /**
          * Replaces registrations by name: the latest callback, options, and model metadata win,
          * with one entry in each provider list. Invalid model descriptors throw before any registry
@@ -2493,15 +2538,25 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         },
         removeRisuChatListener: (mode: string, func: ChatOutputListener) =>
             removeRisuChatListener(mode, registered(func)),
-        /** Contract: `setPluginDatabaseLite`. */
+        /** Captures all targets before dbWrite consent; then follows `setPluginDatabaseLite`. */
         setDatabaseLite: async (newDb: any) => {
             if (refuseTransformWrite("setDatabaseLite")) return;
-            return setPluginDatabaseLite(newDb, currentContext(contextOwner));
+            const context = currentContext(contextOwner);
+            const scope = context ?? settingsWriteScope();
+            const targets = charactersReconciled(newDb);
+            const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+            if (await refuseDbWrite("setDatabaseLite")) return;
+            return setPluginDatabaseLite(newDb, context, scope, targets, owners);
         },
-        /** Contract: `setPluginDatabase`. */
+        /** Captures all targets before dbWrite consent and the install prompts in `setPluginDatabase`. */
         setDatabase: async (newDb: any) => {
             if (refuseTransformWrite("setDatabase")) return;
-            return setPluginDatabase(newDb, currentContext(contextOwner));
+            const context = currentContext(contextOwner);
+            const scope = context ?? settingsWriteScope();
+            const targets = charactersReconciled(newDb);
+            const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+            if (await refuseDbWrite("setDatabase")) return;
+            return setPluginDatabase(newDb, context, scope, targets, owners);
         },
         loadPlugins: loadPlugins,
         readImage: readAssetImage,
@@ -2742,19 +2797,26 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 () => chatsOfRead([chaId], context),
             );
         },
+        /** Captures the indexed character and owner before dbWrite consent, then loads and writes it. */
         setCharacterToIndex: async (index: number, char: any) => {
             if (refuseTransformWrite("setCharacterToIndex")) return;
-            // The character at the index when the call came, found again by id after its chats load.
             const chaId = characterList()[index]?.chaId;
+            const owners = new Map(chaId === undefined ? [] : [[chaId, chatOwnerToken(chaId)]]);
+            if (await refuseDbWrite("setCharacterToIndex")) return;
             if (chaId === undefined) {
                 return;
             }
-            await withChatsLoaded([chaId], () => {
-                const at = characterList().findIndex((entry) => entry?.chaId === chaId);
-                if (at !== -1) {
-                    applyPluginCharacter(at, char, undefined, contextOwner);
-                }
-            });
+            await withChatsLoaded(
+                [chaId],
+                () => {
+                    const at = characterList().findIndex((entry) => entry?.chaId === chaId);
+                    if (at !== -1) {
+                        applyPluginCharacter(at, char, undefined, contextOwner);
+                    }
+                },
+                undefined,
+                owners,
+            );
         },
         /** Captures one member's id before loading; a non-integer or negative chat index returns null. */
         getChatFromIndex: async (characterIndex: number, chatIndex: number) => {
@@ -2872,18 +2934,25 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             return (await serverProcessScript(char, parsed, "editprocess", chatID, cbsConditions, transform, "message"))
                 .data;
         },
-        /** Captures one member's id before loading; a non-integer or negative chat index writes nothing. */
+        /**
+         * Captures the indexed chat and owner before dbWrite consent and loading. Invalid indexes and
+         * deleted or replaced owners write nothing; even invalid indexes require consent first.
+         */
         setChatToIndex: async (characterIndex: number, chatIndex: number, chat: any) => {
             if (refuseTransformWrite("setChatToIndex")) return;
-            if (!Number.isInteger(chatIndex) || chatIndex < 0) return;
-            // The chat at the indexes when the call came, by id, loaded first.
             const chaId = characterList()[characterIndex]?.chaId;
-            const chatId = chaId === undefined ? undefined : chatMemberPage(chaId, chatIndex, chatIndex + 1)[0]?.id;
+            const chatId =
+                chaId !== undefined && Number.isInteger(chatIndex) && chatIndex >= 0
+                    ? chatMemberPage(chaId, chatIndex, chatIndex + 1)[0]?.id
+                    : undefined;
+            const owner = chaId === undefined ? undefined : chatOwnerToken(chaId);
+            if (await refuseDbWrite("setChatToIndex")) return;
             if (chaId === undefined || chatId === undefined || !chat || typeof chat !== "object") {
                 return;
             }
+            if (chatOwnerToken(chaId) !== owner) return;
             const ref = { chaId, chatId };
-            if (!(await ensureChatLoaded(ref))) {
+            if (!(await ensureChatLoaded(ref)) || chatOwnerToken(chaId) !== owner) {
                 return;
             }
             // Consume the last retained read once; writes without one diff against the current chat.
@@ -2942,10 +3011,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         },
         //New names for character APIs, to match API naming conventions
         getCharacter: () => getChar(currentContext(contextOwner), contextOwner),
-        setCharacter: async (char: any) => {
-            if (refuseTransformWrite("setCharacter")) return;
-            return setChar(currentContext(contextOwner), char, contextOwner);
-        },
+        /** Requires dbWrite and keeps the character captured at entry; see `setChar`. */
+        setCharacter: (char: any) => setCharacterWithPermission("setCharacter", char),
 
         showContainer: (
             //more types may be added in future

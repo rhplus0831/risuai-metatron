@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 // `getPluginPermission` in the v3 host API: a grant is keyed by the hash of the script captured when
 // the plugin was loaded plus the permission, so one consent answers one permission of one plugin,
@@ -66,9 +66,13 @@ import { language } from "src/lang";
 import { endJobChannel, handleChannelEvent } from "src/ts/network/jobChannel";
 import { requestChatData } from "src/ts/process/request/request";
 import * as resourceSync from "src/ts/storage/resourceSync.svelte";
-import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { characterList } from "src/ts/storage/characterStore.svelte";
+import { findChat } from "src/ts/storage/chatStore.svelte";
+import { selectCharacter } from "src/ts/storage/selection.svelte";
+import { settings } from "src/ts/storage/settingsViews.svelte";
 import { pluginHooks, type PluginProviderArgument } from "../pluginHooks";
-import { invokeHook } from "./pluginContext";
+import { capturePluginContext, invokeHook } from "./pluginContext";
 
 let counter = 0;
 
@@ -355,5 +359,164 @@ describe("periodic permissions", () => {
             },
             expect.any(Function),
         );
+    });
+});
+
+describe("dbWrite", () => {
+    const now = Date.UTC(2026, 8, 29);
+    const threeDays = 3 * 24 * 60 * 60 * 1000;
+    const ref = { chaId: "write-character", chatId: "write-chat" };
+    const character = (name: string) => ({ chaId: ref.chaId, type: "character", name });
+    const setters = [
+        { name: "setDatabase", args: (value: string) => [{ theme: value }], field: "theme" },
+        { name: "setDatabaseLite", args: (value: string) => [{ theme: value }], field: "theme" },
+        { name: "setChar", args: (value: string) => [character(value)], field: "name" },
+        { name: "setCharacter", args: (value: string) => [character(value)], field: "name" },
+        { name: "setCharacterToIndex", args: (value: string) => [0, character(value)], field: "name" },
+        { name: "setChatToIndex", args: (value: string) => [0, 0, { note: value }], field: "note" },
+    ];
+    const stored = () => ({
+        theme: settings.ui.theme,
+        name: characterList()[0]?.name,
+        note: findChat(ref)?.note,
+    });
+    const original = { theme: "before", name: "before", note: "before" };
+
+    beforeEach(() => {
+        const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+        onTestFinished(() => clock.mockRestore());
+        installFlatDatabaseWithChats({
+            theme: "before",
+            characters: [
+                {
+                    ...character("before"),
+                    chats: [{ id: ref.chatId, name: "Chat", note: "before", message: [], localLore: [] }],
+                },
+            ],
+        });
+        selectCharacter(ref.chaId);
+    });
+
+    it.each(setters)(
+        "$name requires separate consent from db, writes on grant, and caches grant and refusal",
+        async ({ name, args, field }) => {
+            const { api, plugin } = await makeApi();
+            grants.add("h(script-a)_db");
+            times.set(`${plugin.name}_db_lastGrantTime`, now);
+            // A recent timestamp alone is not a dbWrite grant.
+            times.set(`${plugin.name}_dbWrite_lastGrantTime`, now);
+            expect(await api.requestPluginPermission("db")).toBe(true);
+            expect(confirm).not.toHaveBeenCalled();
+
+            let answer!: (value: boolean) => void;
+            confirm.mockReturnValueOnce(new Promise<boolean>((resolve) => (answer = resolve)));
+            const pending = api[name](...args("granted"));
+            await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+            expect(confirm).toHaveBeenCalledWith(language.dbWriteConsent.replace("{}", plugin.name));
+            expect(stored()).toEqual(original);
+            answer(true);
+            expect(await pending).toBeUndefined();
+            expect(stored()).toEqual({ ...original, [field]: "granted" });
+            expect(recorded).toHaveBeenCalledExactlyOnceWith(
+                { grants: ["h(script-a)_dbWrite"], lastGrantTime: { [`${plugin.name}_dbWrite_lastGrantTime`]: now } },
+                expect.any(Function),
+            );
+            await api[name](...args("cached grant"));
+            expect(stored()).toEqual({ ...original, [field]: "cached grant" });
+            expect(confirm).toHaveBeenCalledTimes(1);
+
+            const { api: denied, plugin: deniedPlugin } = await makeApi("denied-script");
+            confirm.mockClear();
+            confirm.mockResolvedValue(false);
+            recorded.mockClear();
+            const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+            onTestFinished(() => warn.mockRestore());
+            for (let call = 0; call < 2; call++) {
+                await expect(denied[name](...args("must not write"))).resolves.toBeUndefined();
+                expect(stored()).toEqual({ ...original, [field]: "cached grant" });
+                expect(warn).toHaveBeenNthCalledWith(
+                    call + 1,
+                    `[RisuAI Plugin: ${deniedPlugin.name}] Refused ${name}: the dbWrite permission was not granted`,
+                );
+            }
+            expect(confirm).toHaveBeenCalledExactlyOnceWith(language.dbWriteConsent.replace("{}", deniedPlugin.name));
+            expect(recorded).not.toHaveBeenCalled();
+        },
+    );
+
+    it("rechecks dbWrite only when uncached and the last grant is older than three days", async () => {
+        const { api, plugin } = await makeApi();
+        grants.add("h(script-a)_dbWrite");
+        const timeKey = `${plugin.name}_dbWrite_lastGrantTime`;
+        times.set(timeKey, now - threeDays);
+        await api.setDatabaseLite({ theme: "at three days" });
+        expect(settings.ui.theme).toBe("at three days");
+        expect(confirm).not.toHaveBeenCalled();
+
+        vi.mocked(Date.now).mockReturnValue(now + 1);
+        await api.setDatabaseLite({ theme: "page cached" });
+        expect(settings.ui.theme).toBe("page cached");
+        expect(confirm).not.toHaveBeenCalled();
+
+        await loadV3Plugins([]);
+        await executePluginV3(plugin);
+        await captured.api!.setDatabaseLite({ theme: "renewed" });
+        expect(settings.ui.theme).toBe("renewed");
+        expect(confirm).toHaveBeenCalledExactlyOnceWith(language.dbWriteConsent.replace("{}", plugin.name));
+        expect(recorded).toHaveBeenCalledExactlyOnceWith(
+            { grants: ["h(script-a)_dbWrite"], lastGrantTime: { [timeKey]: now + 1 } },
+            expect.any(Function),
+        );
+    });
+
+    it("binds dbWrite to the loaded script and asks again after loading changed code", async () => {
+        const { api, plugin } = await makeApi("original-write-script");
+        grants.add("h(original-write-script)_dbWrite");
+        times.set(`${plugin.name}_dbWrite_lastGrantTime`, now);
+        plugin.script = "changed-write-script";
+        await api.setDatabaseLite({ theme: "original loaded script" });
+        expect(settings.ui.theme).toBe("original loaded script");
+        expect(confirm).not.toHaveBeenCalled();
+
+        await loadV3Plugins([]);
+        await executePluginV3(plugin);
+        await captured.api!.setDatabaseLite({ theme: "changed loaded script" });
+        expect(settings.ui.theme).toBe("changed loaded script");
+        expect(confirm).toHaveBeenCalledExactlyOnceWith(language.dbWriteConsent.replace("{}", plugin.name));
+        expect(recorded).toHaveBeenCalledExactlyOnceWith(
+            {
+                grants: ["h(changed-write-script)_dbWrite"],
+                lastGrantTime: { [`${plugin.name}_dbWrite_lastGrantTime`]: now },
+            },
+            expect.any(Function),
+        );
+    });
+
+    it("refuses all six setters in a read-only transform continuation before asking for consent", async () => {
+        const { api, plugin } = await makeApi();
+        grants.add("h(script-a)_replacer");
+        times.set(`${plugin.name}_replacer_lastGrantTime`, now);
+        const before = new Set(pluginHooks.chatOutput);
+        await api.addRisuChatListener("output", async () => {
+            for (const { name, args } of setters) {
+                await expect(api[name](...args("must not write"))).resolves.toBeUndefined();
+                expect(stored()).toEqual(original);
+            }
+        });
+        const listener = [...pluginHooks.chatOutput].find((entry) => !before.has(entry))!;
+        expect(listener).toBeDefined();
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warn.mockRestore());
+        await invokeHook(listener, { ...capturePluginContext(ref)!, purpose: "transform" }, {} as any);
+        expect(confirm).not.toHaveBeenCalled();
+        expect(recorded).not.toHaveBeenCalled();
+    });
+
+    it("rejects an unknown permission even with a stored grant, without a prompt", async () => {
+        const { api } = await makeApi();
+        grants.add("h(script-a)_unknownPermission");
+        expect(await api.requestPluginPermission("unknownPermission")).toBe(false);
+        expect(confirm).not.toHaveBeenCalled();
+        expect(recorded).not.toHaveBeenCalled();
     });
 });

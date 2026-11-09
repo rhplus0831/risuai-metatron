@@ -78,11 +78,14 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
 }));
 
 import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
-import { selectCharacter, selectPreset } from "src/ts/storage/selection.svelte";
+import { selectCharacter, selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
 import { reconcileSelection, settings } from "src/ts/storage/settingsViews.svelte";
 import * as chatStore from "src/ts/storage/chatStore.svelte";
 import { characterList, removeCharacter } from "src/ts/storage/characterStore.svelte";
 import { executePluginV3 } from "./v3.svelte";
+import { alertConfirm } from "src/ts/alert";
+import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import * as permissionStore from "./permissionStore";
 
 const refK = { chaId: "c", chatId: "k" };
 /** The fixture's chat revision: a parsable token (a load compares the read's token with the held one). */
@@ -553,11 +556,11 @@ describe("the setters", () => {
         expect(chatStore.isChatPinned("d")).toBe(false);
     });
 
-    it("setDatabaseLite applies at once when no chats load, after the load when a characters list names existing characters", async () => {
+    it("setDatabaseLite applies without a load when no chats load, after the load when a characters list names existing characters", async () => {
         const api = await makeApi();
-        const atOnce = api.setDatabaseLite({ theme: "sync" });
+        await api.setDatabaseLite({ theme: "sync" });
         expect(settings.ui.theme).toBe("sync");
-        await atOnce;
+        expect(reads.count).toBe(0);
 
         // `d`'s chat is held as its summary: the list names `d`, so its chats load first; the read
         // is held until the test releases it.
@@ -566,8 +569,7 @@ describe("the setters", () => {
         const later = api.setDatabaseLite({
             characters: [{ ...liveCharacters()[0], name: "Later" }, liveCharacters()[1]],
         });
-        await Promise.resolve();
-        expect(reads.count).toBe(1);
+        await vi.waitFor(() => expect(reads.count).toBe(1));
         expect(characterList()[0].name).toBe("C");
         release();
         await later;
@@ -590,8 +592,7 @@ describe("the setters", () => {
                 { name: "new one", chats: [] },
             ],
         });
-        await Promise.resolve();
-        expect(reads.count).toBe(1);
+        await vi.waitFor(() => expect(reads.count).toBe(1));
         removeCharacter("d");
         release();
         await running;
@@ -733,8 +734,7 @@ describe("lazy loading", () => {
         const { release } = holdReads();
         const [, d] = liveCharacters();
         const setting = api.setCharacterToIndex(1, { ...d, name: "Later" });
-        await Promise.resolve();
-        expect(reads.count).toBe(1);
+        await vi.waitFor(() => expect(reads.count).toBe(1));
         // A re-import of `d` under the same ids while the setter's load is out.
         chatStore.installCharacterChats("d", [chat("kd", "KD again")] as any, { firstMsgIndex: -1 });
         release();
@@ -788,6 +788,106 @@ describe("plugin character activity snapshots", () => {
                 expect(characterList()[0]).not.toHaveProperty("lastInteraction");
             }
             expect((await api.getChar()).lastInteraction).toBe(300);
+        },
+    );
+});
+
+describe("setter targets across dbWrite consent", () => {
+    beforeEach(() => {
+        vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 8, 29));
+        vi.spyOn(permissionStore, "hasPermissionGrant").mockReturnValue(false);
+        vi.spyOn(permissionStore, "getLastGrantTime").mockReturnValue(undefined);
+        vi.spyOn(permissionStore, "recordPermissionGrants").mockResolvedValue(undefined);
+    });
+
+    function holdConsent() {
+        let answer!: (granted: boolean) => void;
+        vi.mocked(alertConfirm).mockClear();
+        vi.mocked(alertConfirm).mockReturnValueOnce(new Promise<boolean>((resolve) => (answer = resolve)));
+        return {
+            shown: () => vi.waitFor(() => expect(alertConfirm).toHaveBeenCalledTimes(1)),
+            grant: () => answer(true),
+        };
+    }
+
+    it.each(["setChar", "setCharacter", "setCharacterToIndex"])(
+        "%s keeps its entry target across a consent-time selection or index change",
+        async (setter) => {
+            const api = await makeApi();
+            const indexed = setter === "setCharacterToIndex";
+            const target = liveCharacters()[indexed ? 1 : 0];
+            selectCharacter(target.chaId);
+            const consent = holdConsent();
+            const changed = { ...target, name: "Written to the original character" };
+            const pending = api[setter](...(indexed ? [1, changed] : [changed]));
+            await consent.shown();
+            expect(characterList().map(({ name }) => name)).toEqual(["C", "D"]);
+            selectCharacter(indexed ? "c" : "d");
+            // Removing an earlier character moves the indexed target from 1 to 0.
+            if (indexed) removeCharacter("c");
+            consent.grant();
+            await pending;
+            expect(characterList().map(({ chaId, name }) => [chaId, name])).toEqual(
+                indexed
+                    ? [["d", "Written to the original character"]]
+                    : [
+                          ["c", "Written to the original character"],
+                          ["d", "D"],
+                      ],
+            );
+        },
+    );
+
+    it("setChatToIndex keeps the chat chosen before consent when chats reorder", async () => {
+        const api = await makeApi();
+        const consent = holdConsent();
+        const pending = api.setChatToIndex(0, 0, { note: "Written to K" });
+        await consent.shown();
+        expect(chatStore.findChat(refK)?.note).toBe("");
+        chatStore.reorderChats("c", ["j", "k"]);
+        selectCharacter("d");
+        consent.grant();
+        await pending;
+        expect(chatIds("c")).toEqual(["j", "k"]);
+        expect(chatStore.findChat(refK)?.note).toBe("Written to K");
+        expect(chatStore.findChat({ chaId: "c", chatId: "j" })?.note).toBe("");
+    });
+
+    it.each(["setDatabase", "setDatabaseLite"])(
+        "%s keeps both selected presets and does not recreate a character deleted during consent",
+        async (setter) => {
+            installFlatDatabaseWithChats({
+                botPresets: [
+                    { id: "a", name: "A", temperature: 10, aiModel: "gpt-4o", maxContext: 1000 },
+                    { id: "b", name: "B", temperature: 20, aiModel: "gpt-4o", maxContext: 2000 },
+                ],
+                characters: liveCharacters(),
+            });
+            selectPreset("a");
+            selectModelPreset("a");
+            const api = await makeApi();
+            const consent = holdConsent();
+            const pending = api[setter]({
+                temperature: 33,
+                maxContext: 3333,
+                characters: liveCharacters().map((character) => ({ ...character, name: `${character.name} written` })),
+            });
+            await consent.shown();
+            expect(settings.presets.map(({ temperature }) => temperature)).toEqual([10, 20]);
+            expect(characterList().map(({ name }) => name)).toEqual(["C", "D"]);
+            selectPreset("b");
+            selectModelPreset("b");
+            removeCharacter("d");
+            consent.grant();
+            await pending;
+            expect(settings.presets.map(({ id, temperature }) => [id, temperature])).toEqual([
+                ["a", 33],
+                ["b", 20],
+            ]);
+            expect(settings.modelProfiles.find(({ id }) => id === "a")?.maxContext).toBe(3333);
+            expect(settings.modelProfiles.find(({ id }) => id === "b")?.maxContext).toBe(2000);
+            expect(characterList().map(({ chaId, name }) => [chaId, name])).toEqual([["c", "C written"]]);
+            expect(chatIds("d")).toEqual([]);
         },
     );
 });

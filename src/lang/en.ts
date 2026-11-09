@@ -3506,6 +3506,8 @@ export const languageEnglish = {
         "Plugin {} is requesting to fetch logs, which may expose sensitive information. Do you want to allow this?",
     getFullDatabaseConsent:
         "Plugin {} is requesting to access the full database, which may expose sensitive information. Do you want to allow this?",
+    dbWriteConsent:
+        "Plugin {} is requesting permission to modify your database, including characters, chats, modules and settings. Do you want to allow this?",
     mainDomAccessConsent:
         "Plugin {} is requesting to access the main Document, which may expose sensitive information. Do you want to allow this?",
     replacerPermissionConsent:

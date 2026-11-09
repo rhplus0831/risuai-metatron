@@ -666,7 +666,7 @@ describe("settings inside a hook", () => {
         expect(preset("a").temperature).toBe(33);
     });
 
-    it("a read and a write keep the hook's preset across the database consent and the install prompt", async () => {
+    it("a read and a write keep the hook's preset across the database consents and the install prompt", async () => {
         const api = await makeApi();
         let read: unknown;
         const listener = await listenerOf(api, async () => {
@@ -678,7 +678,7 @@ describe("settings inside a hook", () => {
         });
         // From here on the permissions are asked for (the listener was registered under a grant).
         grants.value = false;
-        const prompts = heldPrompts(2);
+        const prompts = heldPrompts(3);
         const running = invokeHook(listener, capturePluginContext(refB1), listenerArg);
 
         // The consent for the read is pending; the user switches presets meanwhile.
@@ -686,14 +686,17 @@ describe("settings inside a hook", () => {
         selectPreset("b");
         consent(true);
 
-        // The install prompt is pending (the read is done); the write still goes to the hook's
-        // preset when answered.
-        const install = await prompts.shown(1, running);
+        // The write's own consent is pending (the read is done).
+        const writeConsent = await prompts.shown(1, running);
         expect(read).toEqual({ temperature: 10 });
+        writeConsent(true);
+
+        // The install prompt is pending; the write still goes to the hook's preset when answered.
+        const install = await prompts.shown(2, running);
         preset("b").temperature = 21;
         install(true);
         await running;
-        expect(prompts.asked()).toBe(2);
+        expect(prompts.asked()).toBe(3);
         expect(preset("a").temperature).toBe(55);
         expect(preset("b").temperature).toBe(21);
         expect(settings.plugins.map((plugin: any) => plugin.name)).toEqual(["installed-by-hook"]);
@@ -866,7 +869,7 @@ describe("the runners", () => {
         });
         // From here on the permissions are asked for: the provider's, then the read's.
         grants.value = false;
-        const prompts = heldPrompts(2);
+        const prompts = heldPrompts(3);
         // `aiModel` is the model id of the model preset's main profile: the request reads it from
         // the model preset of its captured context, else the selected one.
         mainProfile("a").modelId = "pluginmodel:::ctx";

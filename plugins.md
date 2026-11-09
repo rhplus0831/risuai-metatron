@@ -1333,7 +1333,15 @@ if (granted) {
 }
 ```
 
-**Available permissions:** `'fetchLogs'`, `'db'`, `'mainDom'`, `'replacer'`
+**Available permissions:** `'fetchLogs'`, `'db'`, `'dbWrite'`, `'mainDom'`, `'replacer'`
+
+`'dbWrite'` is requested automatically by `setDatabase`, `setDatabaseLite`, `setCharacter`, `setChar`,
+`setCharacterToIndex` and `setChatToIndex`, separately from `'db'`: a plugin that may read the database is still asked
+before its first write. Like `'db'`, the answer holds for the page load and is asked again when the last grant is older
+than three days. If the user declines, the call writes nothing, logs a warning and resolves `undefined`. The call's
+target (the selected character and presets, or the character and chat at the given indexes) is the one when the call
+was made, even if the user changes the selection while the prompt is open. A name that is not a permission answers
+`false` without a prompt.
 
 A grant is not permanent: the user can reset a plugin's permissions in Settings > Plugins, and removing a plugin
 revokes its grants. After a reset, `requestPluginPermission` and the APIs that need consent ask again; a prompt that

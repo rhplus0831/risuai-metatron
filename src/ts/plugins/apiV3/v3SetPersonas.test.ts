@@ -9,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // the object's key order, so the index names a persona of the list the same call sets. The
 // direct-index readers of the UI (`DefaultChatScreen`, `PersonaSettings`:
 // `personas[selectedPersona]`) must find a record after every call. A persona import whose image is
-// still being saved when the full setter replaces the list reaches the live list.
+// still being saved when the full setter replaces the list reaches the live list. The plugin holds a
+// current `dbWrite` grant, so the setters write without asking for it.
 
 await vi.hoisted(async () => {
     const { Buffer: BufferPolyfill } = await import("buffer");
@@ -47,7 +48,10 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleLorebooks: vi.fn(() => []),
     getModuleAssets: vi.fn(() => []),
 }));
-vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text), hasher: vi.fn() }));
+vi.mock("src/ts/parser/parser.svelte", () => ({
+    risuChatParser: vi.fn((text: string) => text),
+    hasher: vi.fn(async () => "host-persona-script"),
+}));
 vi.mock("src/ts/process/index.svelte", () => ({
     sendChat: vi.fn(),
 }));
@@ -71,6 +75,7 @@ import { activePersona, selectedPersonaIndex, settings } from "src/ts/storage/se
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { importUserPersona } from "src/ts/persona";
 import { executePluginV3 } from "./v3.svelte";
+import { seedPluginPermissions } from "./permissionStore";
 
 const personas = () => settings.personas as any[];
 const names = () => personas().map((entry: { name: string }) => entry.name);
@@ -99,6 +104,14 @@ beforeEach(async () => {
     captured.chunks = [];
     vi.spyOn(console, "warn").mockImplementation(() => {});
     install();
+    seedPluginPermissions({
+        id: "main",
+        revision: "00000000-0000-4000-8000-000000000000:1:1",
+        data: {
+            grants: { "host-persona-script_dbWrite": true },
+            lastGrantTime: { "host-persona-test_dbWrite_lastGrantTime": Number.MAX_SAFE_INTEGER },
+        },
+    });
     if (!captured.api) {
         await executePluginV3({ name: "host-persona-test", script: "", version: "3.0" } as any);
     }
@@ -113,7 +126,7 @@ afterEach(() => {
 /** Runs `check` for both setters, each from the same starting state. */
 async function withBothSetters(check: (set: (value: unknown) => Promise<void>, label: string) => Promise<void>) {
     await check(async (value) => {
-        captured.api!.setDatabaseLite(value);
+        await captured.api!.setDatabaseLite(value);
     }, "setDatabaseLite");
     install();
     await check(async (value) => {

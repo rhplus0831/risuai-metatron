@@ -3138,6 +3138,8 @@ export const languageKorean = {
         "플러그인 {}에서 요청 로그를 열람하려고 합니다. 민감한 정보가 포함될 수 있습니다. 허용하시겠습니까?",
     getFullDatabaseConsent:
         "플러그인 {}에서 전체 데이터베이스에 접근하려고 합니다. 민감한 데이터가 포함될 수 있습니다. 허용하시겠습니까?",
+    dbWriteConsent:
+        "플러그인 {}이(가) 캐릭터, 채팅, 모듈, 설정 등 데이터베이스를 수정할 권한을 요청하고 있습니다. 허용하시겠습니까?",
     mainDomAccessConsent:
         "플러그인 {}에서 메인 화면 DOM(Document)에 직접 접근하려고 합니다. 보안상 위험할 수 있습니다. 허용하시겠습니까?",
     replacerPermissionConsent:

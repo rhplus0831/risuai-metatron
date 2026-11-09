@@ -1360,6 +1360,7 @@ interface RisuaiPluginAPI {
      * await risuai.setCharacter(char);
      * ```
      * Read-only transform/display continuations warn and return undefined without writing or throwing.
+     * Requires the `dbWrite` permission; the write is skipped if the user declines.
      */
     setCharacter(character: any): Promise<void>;
 
@@ -1371,6 +1372,7 @@ interface RisuaiPluginAPI {
     /**
      * @deprecated Use setCharacter() instead
      * Read-only transform/display continuations warn and return undefined without writing or throwing.
+     * Requires the `dbWrite` permission; the write is skipped if the user declines.
      */
     setChar(character: any): Promise<void>;
 
@@ -1389,6 +1391,7 @@ interface RisuaiPluginAPI {
      * @param index - Character index
      * @param character - Character object to save
      * Read-only transform/display continuations warn and return undefined without writing or throwing.
+     * Requires the `dbWrite` permission; the write is skipped if the user declines.
      */
     setCharacterToIndex(index: number, character: any): Promise<void>;
 
@@ -1453,6 +1456,7 @@ interface RisuaiPluginAPI {
      * @param chatIndex - Chat index
      * @param chat - Chat object to save
      * Read-only transform/display continuations warn and return undefined without writing or throwing.
+     * Requires the `dbWrite` permission; the write is skipped if the user declines.
      */
     setChatToIndex(characterIndex: number, chatIndex: number, chat: any): Promise<void>;
 
@@ -1588,6 +1592,7 @@ interface RisuaiPluginAPI {
      * @param db - DatabaseSubset object to save
      * In a read-only transform/display continuation the entire call warns and returns undefined,
      * without writing or throwing, including custom keys. Use pluginStorage for plugin-private data.
+     * Requires the `dbWrite` permission; the write is skipped if the user declines.
      */
     setDatabaseLite(db: Omit<DatabaseSubset, "plugins">): Promise<void>;
 
@@ -1598,6 +1603,7 @@ interface RisuaiPluginAPI {
      * @param db - DatabaseSubset object to save
      * In a read-only transform/display continuation the entire call warns and returns undefined,
      * without writing or throwing, including custom keys. Use pluginStorage for plugin-private data.
+     * Requires the `dbWrite` permission; the write is skipped if the user declines.
      */
     setDatabase(db: DatabaseSubset): Promise<void>;
 
@@ -2208,7 +2214,7 @@ interface RisuaiPluginAPI {
 
     /**
      * Requests permission for a specific action
-     * @param permission - Permission string (e.g. 'fetchLogs'|'db'|'mainDom')
+     * @param permission - Permission string (e.g. 'fetchLogs'|'db'|'dbWrite'|'mainDom')
      * @returns True if permission granted, false otherwise
      */
     requestPluginPermission(permission: string): Promise<boolean>;

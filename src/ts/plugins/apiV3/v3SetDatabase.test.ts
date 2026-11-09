@@ -6,7 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // `allowedDbKeys` (`temperature`, `maxContext`, ...) lands in the preset this client has selected.
 // When the object also carries `plugins`, the install prompt is awaited before anything is
 // assigned, and every field lands in the presets selected when the call started, whatever the
-// user selects while the prompt is open.
+// user selects while the prompt is open. The plugin holds a current `dbWrite` grant, so the setter
+// writes without asking for it.
 
 const captured = vi.hoisted(() => ({
     api: null as null | Record<string, any>,
@@ -57,6 +58,20 @@ import { executePluginV3 } from "./v3.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { seedPluginPermissions } from "./permissionStore";
 
+/** Seeds the permission record with a current `dbWrite` grant, plus `extra` grants. */
+const seedGrants = (extra: { grants?: Record<string, true>; lastGrantTime?: Record<string, number> } = {}) =>
+    seedPluginPermissions({
+        id: "main",
+        revision: "00000000-0000-4000-8000-000000000000:1:1",
+        data: {
+            grants: { "host-setter-script_dbWrite": true, ...extra.grants },
+            lastGrantTime: {
+                "host-setter-test_dbWrite_lastGrantTime": Number.MAX_SAFE_INTEGER,
+                ...extra.lastGrantTime,
+            },
+        },
+    });
+
 const preset = (id: string) => settings.presets.find((entry: { id: string }) => entry.id === id) as any;
 /** The main profile of the model preset `id`: `m-a` or `m-b`. */
 const mainProfile = (id: string) =>
@@ -71,6 +86,7 @@ beforeEach(async () => {
     llmSecretState.queue.splice(0);
     setMaskedSecrets(maskLlmSecrets({}));
     captured.confirm.length = 0;
+    seedGrants();
     // The records installed as the app installs them (there is no whole-database aggregate).
     installFlatDatabase({
         characters: [],
@@ -152,13 +168,9 @@ describe("the plugin setDatabase host setter", () => {
             type: "character",
         }));
         installFlatDatabase({ characters });
-        seedPluginPermissions({
-            id: "main",
-            revision: "00000000-0000-4000-8000-000000000000:1:1",
-            data: {
-                grants: { "host-setter-script_db": true },
-                lastGrantTime: { "host-setter-test_db_lastGrantTime": Number.MAX_SAFE_INTEGER },
-            },
+        seedGrants({
+            grants: { "host-setter-script_db": true },
+            lastGrantTime: { "host-setter-test_db_lastGrantTime": Number.MAX_SAFE_INTEGER },
         });
         const snapshot = await captured.api!.getDatabase(["characters"], { chats: "summaries" });
         const incoming = snapshot.characters
@@ -217,8 +229,7 @@ describe("the plugin setDatabase host setter", () => {
             maxContext: 9100,
         });
         // The prompt is open: nothing has been assigned, whatever the key order.
-        await Promise.resolve();
-        expect(captured.confirm).toHaveLength(1);
+        await vi.waitFor(() => expect(captured.confirm).toHaveLength(1));
         expect(preset("a")).toMatchObject({ temperature: 80 });
         expect(mainProfile("a")).toMatchObject({ maxContext: 4000 });
 
@@ -247,8 +258,7 @@ describe("the plugin setDatabase host setter", () => {
             maxContext: 9100,
         });
         const rejected = expect(pending).rejects.toBeInstanceOf(MutationTargetGoneError);
-        await Promise.resolve();
-        expect(captured.confirm).toHaveLength(1);
+        await vi.waitFor(() => expect(captured.confirm).toHaveLength(1));
 
         expect(removeModelPreset("a")).toBe(true);
         expect(selection.modelPresetId).toBe("b");
@@ -265,8 +275,7 @@ describe("the plugin setDatabase host setter", () => {
     it("accepts a call without preset fields when the selected model preset is deleted during plugin consent", async () => {
         const plugin = { name: "installed-via-plugin", script: "", version: "3.0" };
         const pending = captured.api!.setDatabase({ theme: "from-plugin", plugins: [plugin] });
-        await Promise.resolve();
-        expect(captured.confirm).toHaveLength(1);
+        await vi.waitFor(() => expect(captured.confirm).toHaveLength(1));
 
         expect(removeModelPreset("a")).toBe(true);
         expect(selection.modelPresetId).toBe("b");
