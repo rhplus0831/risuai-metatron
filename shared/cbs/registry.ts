@@ -1526,8 +1526,9 @@ export function registerCBS(arg: CBSRegisterArg) {
             if (args.length > 0) {
                 const count = Number(args[0]) < 1 ? 1 : Number(args[0]);
                 // `repeat` truncates the count, takes NaN as zero, and throws on an infinite one.
-                spend(Number.isFinite(count) ? Math.floor(count) * str.length : 0);
-                return str.repeat(count);
+                // Repeat the escaped newline, not the matched CBS expression.
+                spend(Number.isFinite(count) ? Math.floor(count) * 2 : 0);
+                return "\\n".repeat(count);
             }
             return "\\n";
         },

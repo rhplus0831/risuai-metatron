@@ -48,8 +48,26 @@ test("br", () => {
 
 test("cbr", () => {
     expect(parse("{{cbr}}")).toBe("\\n");
-    // FIXME: Broken => cbr::3cbr::3cbr::3
-    // expect(parse('{{cbr::3}}')).toBe('\\n\\n\\n')
+    expect(parse("{{cbr::3}}")).toBe("\\n\\n\\n");
+});
+
+test("escaped newline aliases repeat newlines with minimum and numeric count coercion", () => {
+    for (const alias of ["cbr", "cnl", "cnewline"]) {
+        for (const [count, expected] of [
+            ["3", "\\n\\n\\n"],
+            ["2.7", "\\n\\n"],
+            ["0", "\\n"],
+            ["-3", "\\n"],
+            ["0.5", "\\n"],
+            ["-Infinity", "\\n"],
+            ["NaN", ""],
+            ["abc", ""],
+        ]) {
+            expect(parse(`{{${alias}::${count}}}`), `${alias}::${count}`).toBe(expected);
+        }
+        expect(parse(`{{${alias}}}`)).toBe("\\n");
+        expect(parse(`{{${alias}::Infinity}}`)).toBe(`{{${alias}::Infinity}}`);
+    }
 });
 
 test("decbo, decbc", () => {

@@ -8,7 +8,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [assets](#assets) (1)
 - [backup-sync-hub](#backup-sync-hub) (2)
 - [build-test-platforms](#build-test-platforms) (1)
-- [cbs-rendering](#cbs-rendering) (13)
+- [cbs-rendering](#cbs-rendering) (11)
 - [chat-pipeline](#chat-pipeline) (9)
 - [chat-store](#chat-store) (1)
 - [diagnostics](#diagnostics) (1)
@@ -60,8 +60,6 @@ Guide: [Build, Service Worker, Release](../structure/build-test-platforms.md#kno
 
 Guide: [CBS Template Language and Message Rendering](../structure/cbs-rendering.md#known-hazards).
 
-- `escapes.test.ts` documents a known broken `cbr` repetition case.
-- `chatML.ts` references `OpenAIChat` without importing it and relies on an ambient declaration.
 - A permanent display failure is not remembered: when another target of the same row fails transiently (a legacy
   rendered translation's paragraph beside an oversized original), that row's retry round rerenders it whole, so the
   permanent target is requested and its toast shown again every round. A fix would remember terminal outcomes per

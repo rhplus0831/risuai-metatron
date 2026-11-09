@@ -1,3 +1,4 @@
+import type { OpenAIChat } from "../../../shared/openai.ts";
 import { risuChatParser } from "./parser.svelte";
 import type { ChatRef } from "../storage/chatStore.svelte";
 
