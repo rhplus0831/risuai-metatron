@@ -20,6 +20,7 @@ import { moduleUpdate } from "./process/modules";
 import { invalidateWorkerFileSources, setDirectAssets, setUsingSw } from "./globalApi.svelte";
 import { invalidateFileSrcCache } from "./parser/parser.svelte";
 import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
+import { isCharacterTrashExpired } from "../../shared/characters.ts";
 import { readWithDeadline } from "./storage/readDeadline";
 import { readBoot, readKinds } from "./storage/resourceClient";
 import { indexedDbBootCacheStore, loadBootSnapshot, scheduleBootCacheCommit } from "./storage/bootCache";
@@ -489,7 +490,7 @@ function maintainCharacters() {
     const now = Date.now();
     removeCharacters(
         characterList()
-            .filter((v) => v.trashTime && v.trashTime + 1000 * 60 * 60 * 24 * 3 < now)
+            .filter((v) => isCharacterTrashExpired(v, now))
             .map((v) => v.chaId),
     );
     checkCharOrderAtBoot();

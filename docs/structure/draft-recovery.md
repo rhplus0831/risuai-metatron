@@ -159,6 +159,8 @@
   chat with a snapshot uses `createChat` under the draft's id.
 - A real `hypaV3Data` that Structured Memory refuses (`setChatMeta`'s recovery source) is filed as a draft of its own
   before the flush, or a memory-only draft is kept; the dialog says which.
+- A non-delete character edit past the boot's three-day trash threshold becomes a draft instead of replaying. Explicit
+  Apply skips it and keeps the draft, reporting the character in its skipped result.
 - `flushResources({ scope })` must save the affected keys without `discarded` or `refused` before
   `recoveryDrafts.remove` deletes the draft. A conflict retains it; a second Apply uses the revision the conflict reload
   installed.

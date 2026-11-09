@@ -8,6 +8,12 @@ import type { character, groupChat } from "./database.ts";
  * (`characterStore.svelte.ts`'s `prepareNewCharacter`).
  */
 
+/** The boot's existing three-day trash threshold, shared with recovery to keep edits from being pruned. */
+export function isCharacterTrashExpired(value: { trashTime?: unknown } | undefined, now: number): boolean {
+    const time = value?.trashTime;
+    return typeof time === "number" && !!time && time + 1000 * 60 * 60 * 24 * 3 < now;
+}
+
 /** Thrown when a character's shape cannot be normalized (a group whose `characters` is not a list). */
 export class CharacterShapeError extends Error {
     constructor(message: string) {

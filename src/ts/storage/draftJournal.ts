@@ -1824,7 +1824,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         });
     }
 
-    /** One composer transaction; a skipped row is reported once it committed. */
+    /** One composer transaction; report the number of skipped rows per reason after commit. */
     function composerTransaction<T>(
         off: T,
         failed: T,
@@ -1832,14 +1832,14 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
     ): Promise<T> {
         return afterStart<T>(off, async () => {
             try {
-                let skipped: SyncReason | undefined;
+                const skipped = new Map<SyncReason, number>();
                 const result = await withDatabase("readwrite", (store) =>
                     body(store, (reason) => {
-                        skipped = reason;
+                        skipped.set(reason, (skipped.get(reason) ?? 0) + 1);
                     }),
                 );
-                if (skipped) {
-                    report({ kind: "sync", phase: "journalSkipped", reason: skipped, entries: 1 });
+                for (const [reason, entries] of skipped) {
+                    report({ kind: "sync", phase: "journalSkipped", reason, entries });
                 }
                 return result;
             } catch (error) {

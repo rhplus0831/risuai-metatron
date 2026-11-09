@@ -1,6 +1,7 @@
 import { changeLanguage, language } from "src/lang";
 import { v4 as uuidv4 } from "uuid";
 import type { ChatOp } from "../../../shared/chats.ts";
+import { isCharacterTrashExpired } from "../../../shared/characters.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
@@ -652,7 +653,7 @@ function recordAddress(target: string): { kind: string; id: string } | null {
     return { kind, id };
 }
 
-function prepare(entry: RecordEntry): Installation | null {
+function prepare(entry: RecordEntry, now: number): Installation | null {
     const address = recordAddress(entry.target);
     if (!address) return null;
     const { kind, id } = address;
@@ -670,13 +671,21 @@ function prepare(entry: RecordEntry): Installation | null {
     const decision = decideRecordRecovery(entry.layers, server);
     if (decision.action === "draft") return null;
     const text = decision.action === "replay" ? decision.text : server?.text;
+    const value = text != null ? checkedValue(kind, id, text) : undefined;
+    if (
+        kind === "characters" &&
+        decision.action === "replay" &&
+        text !== null &&
+        (isCharacterTrashExpired(findCharacter(id), now) || isCharacterTrashExpired(value as AnyClientCharacter, now))
+    )
+        return null;
     return {
         entry,
         kind,
         id,
         server,
         decision,
-        value: text != null ? checkedValue(kind, id, text) : undefined,
+        value,
     };
 }
 
@@ -975,6 +984,7 @@ async function keepRecoveryMemory(
  * draft. Refused unsealed memory is filed separately before flushing, deduplicated by target/value
  * and retaining the source's expiry. A memory-only refusal keeps the source without flushing;
  * failed filing also keeps it. The result reports whether memory was filed or the source kept.
+ * Non-delete character intent past the boot's trash threshold is skipped and its draft retained.
  * src/ts/storage/resourceSync.svelte.ts
  * flushResources must confirm the scope without relevant discarded/refused keys before deletion.
  * If deletion fails after saving, src/ts/storage/recoveryDrafts.svelte.ts marks Apply off for this
@@ -1000,6 +1010,13 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
             keys.add(`${kind}/${id}`);
             if (kind === "characters") {
                 if (isCharacterGenerating(id)) throw new Error(language.chatGenerating);
+                if (
+                    text !== null &&
+                    (isCharacterTrashExpired(findCharacter(id), Date.now()) ||
+                        isCharacterTrashExpired(value as AnyClientCharacter, Date.now()))
+                ) {
+                    return { skipped: [`characters/${id}: ${language.recoveryDrafts.trashExpired}`] };
+                }
                 if (text === null) {
                     changedMembership.add(id);
                     keys.add(`characterOrder/${SINGLETON_RESOURCE_ID}`);
@@ -1142,7 +1159,7 @@ export async function recoverJournal(
             let item: Installation | null = null;
             if (entry.epoch === epoch && entry.scope === "record") {
                 try {
-                    item = prepare(entry);
+                    item = prepare(entry, now());
                 } catch {
                     // One malformed row becomes a draft; it never blocks another target's recovery.
                 }

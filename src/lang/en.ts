@@ -1697,6 +1697,8 @@ export const languageEnglish = {
         expired: "This recovery draft has expired.",
         otherEpoch: "The data was restored or imported since this draft was created. Export or discard it.",
         missingCharacter: "The character is no longer available. Export or discard this draft.",
+        trashExpired:
+            "The character is past the trash retention period. This draft was kept; export it to keep its changes.",
         noSnapshot: "This chat is gone and the draft has no snapshot to restore. Export or discard it.",
         invalid: "This draft cannot be applied. Export or discard it.",
         unavailable: "The chat changed or is no longer available. The draft has been kept.",
@@ -1710,7 +1712,8 @@ export const languageEnglish = {
             "This chat's memory belongs to Structured Memory, so the recovered HypaV3 memory was not applied. This draft was kept. Export it, or apply it after switching the memory algorithm to HypaV3.",
         memoryDraftFailed:
             "The recovered HypaV3 memory could not be kept as a draft of its own, so this draft was kept. Export it to keep a copy of the memory.",
-        skipped: "Skipped operations (missing targets, whole-chat changes, or a translation whose source changed):",
+        skipped:
+            "Skipped operations (missing targets, expired trash, whole-chat changes, or a translation whose source changed):",
         failed: "Could not complete this action. The recovery draft has been kept.",
         refreshFailed: "Could not refresh recovery drafts.",
         removeFailed: "The recovery draft could not be removed.",

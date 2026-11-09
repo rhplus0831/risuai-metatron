@@ -13,7 +13,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [chat-pipeline](#chat-pipeline) (9)
 - [chat-store](#chat-store) (1)
 - [diagnostics](#diagnostics) (1)
-- [draft-recovery](#draft-recovery) (7)
+- [draft-recovery](#draft-recovery) (5)
 - [live-updates](#live-updates) (2)
 - [llm-requests](#llm-requests) (4)
 - [mcp](#mcp) (1)
@@ -148,8 +148,6 @@ Guide: [Draft Recovery: Journal, Composer Rows, Recovery Drafts](../structure/dr
 
 - Apply removes a draft once its save succeeds even when it skipped ops: the skipped content is named only in Apply's
   result, not kept. A draft of edits answered `missing` therefore keeps their text only until Apply; Export keeps it.
-- A recovered field edit to a character whose `trashTime` is already past the boot prune threshold can become a deletion
-  during maintenance.
 - The conservative `sent`/`resend` marks of a cycle can outlive an early exit, leaving a dispatched mark for a later
   batch that never went: harmless for an update, but recovery treats such a create as a draft rather than creating it.
 - A stale `pending` row can name ops that landed under a merged or reanchored id. If its before value matches again (or
@@ -163,8 +161,6 @@ Guide: [Draft Recovery: Journal, Composer Rows, Recovery Drafts](../structure/dr
   retyped text is lost. Keeping it would bring already-sent text back after every uncertain end that landed
   ([JR1](../manual-audit/archive/cross-plan-2026-10-29.md#jr1--a-landed-send-deletes-an-identical-drafts-journal-row),
   remaining case).
-- `updateComposerRequest` reports one `journalSkipped` event with `entries: 1` even when both of the chat's rows are
-  unreadable and skipped; both rows stay untouched.
 
 ## live-updates
 

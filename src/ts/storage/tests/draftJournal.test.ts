@@ -3,6 +3,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import type { DiagnosticEventInput } from "../../../../shared/diagnostics.ts";
 import {
     checkJournalRow,
+    composerKey,
+    composerSendKey,
     chatTarget,
     orderTarget,
     createDraftJournal,
@@ -45,8 +47,12 @@ const CHARACTER = recordTarget("characters", "c1");
 const SECRET = "sk-live-0123456789abcdef";
 const UNKNOWN_FORMAT_ROW = { format: 2, type: "mutation", size: 10, createdAt: T0, tabId: "elsewhere" };
 
+const originalKeyRange = Object.getOwnPropertyDescriptor(globalThis, "IDBKeyRange");
 vi.stubGlobal("IDBKeyRange", IDBKeyRange);
-afterAll(() => vi.unstubAllGlobals());
+afterAll(() => {
+    if (originalKeyRange) Object.defineProperty(globalThis, "IDBKeyRange", originalKeyRange);
+    else Reflect.deleteProperty(globalThis, "IDBKeyRange");
+});
 
 const latest = (text: string | null, op: RecordOp = "update") => ({ op, baseRevision: "r1", text });
 const sent = (text: string | null, op: RecordOp = "update") => ({
@@ -1051,6 +1057,81 @@ describe("writes, removals, and versions", () => {
         expect(await rows(h.factory)).toEqual({});
         expect(await tab.journal.removeDraft("id-404")).toBe(true);
         expect(tab.events).toEqual([]);
+    });
+});
+
+describe("composer skip diagnostics", () => {
+    it("counts one and two unreadable composer rows per committed request update without changing them", async () => {
+        const h = harness();
+        const tab = await started(h);
+        const key = "c\0k";
+        const send = { ...UNKNOWN_FORMAT_ROW, note: "unreadable hand-off" };
+        const draft = { ...UNKNOWN_FORMAT_ROW, note: "unreadable draft" };
+        try {
+            await rawPut(h.factory, composerSendKey(key), send);
+            await tab.journal.updateComposerRequest(key, { userMessageId: "m" });
+            expect(tab.events).toEqual([{ kind: "sync", phase: "journalSkipped", reason: "format", entries: 1 }]);
+            tab.events.length = 0;
+            await rawPut(h.factory, composerKey(key), draft);
+            const before = await rows(h.factory);
+            await tab.journal.updateComposerRequest(key, { userMessageId: "m" });
+            expect(tab.events).toEqual([{ kind: "sync", phase: "journalSkipped", reason: "format", entries: 2 }]);
+            expect(await rows(h.factory)).toEqual(before);
+        } finally {
+            await tab.journal.close();
+        }
+    });
+
+    it("reports each distinct composer skip reason instead of keeping only the last reason", async () => {
+        const h = harness();
+        const tab = await started(h);
+        const key = "c\0k";
+        try {
+            await tab.journal.putComposer(key, { input: "typed", translate: "", files: [], userMessageId: "m" });
+            await rawPut(h.factory, composerSendKey(key), UNKNOWN_FORMAT_ROW);
+            await rawPut(h.factory, "opaque", { ...UNKNOWN_FORMAT_ROW, size: MAX_JOURNAL_TOTAL_BYTES });
+            const before = await rows(h.factory);
+            await tab.journal.updateComposerRequest(
+                key,
+                { userMessageId: "m" },
+                { requestId: "r", requestEpoch: EPOCH },
+            );
+            expect(tab.events).toEqual([
+                { kind: "sync", phase: "journalSkipped", reason: "format", entries: 1 },
+                { kind: "sync", phase: "journalSkipped", reason: "budget", entries: 1 },
+            ]);
+            expect(await rows(h.factory)).toEqual(before);
+        } finally {
+            await tab.journal.close();
+        }
+    });
+
+    it("emits no skipped count for an aborted update and counts both rows when the retry commits", async () => {
+        const h = harness();
+        const tab = await started(h);
+        const key = "c\0k";
+        await rawPut(h.factory, composerSendKey(key), UNKNOWN_FORMAT_ROW);
+        await rawPut(h.factory, composerKey(key), UNKNOWN_FORMAT_ROW);
+        const before = await rows(h.factory);
+        const get = IDBObjectStore.prototype.get;
+        const abort = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (...args) {
+            const request = get.apply(this, args);
+            if (args[0] === composerKey(key)) request.addEventListener("success", () => this.transaction.abort());
+            return request;
+        });
+        try {
+            await tab.journal.updateComposerRequest(key, { userMessageId: "m" });
+            expect(tab.events).toEqual([expect.objectContaining({ kind: "sync", phase: "journalFailed" })]);
+            expect(await rows(h.factory)).toEqual(before);
+            abort.mockRestore();
+            tab.events.length = 0;
+            await tab.journal.updateComposerRequest(key, { userMessageId: "m" });
+            expect(tab.events).toEqual([{ kind: "sync", phase: "journalSkipped", reason: "format", entries: 2 }]);
+            expect(await rows(h.factory)).toEqual(before);
+        } finally {
+            abort.mockRestore();
+            await tab.journal.close();
+        }
     });
 });
 

@@ -41,6 +41,12 @@ function latch() {
 
 const UI = "ui\0main";
 const CHARACTER = "characters\0c";
+const originalGlobals = new Map(
+    ["indexedDB", "IDBKeyRange", "requestIdleCallback", "location"].map((key) => [
+        key,
+        Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+);
 const batchPath = (path: string) => path === "/api/resources/batch";
 let server: StoreBackedServer;
 let transport: Awaited<ReturnType<typeof recoveryBootServer>>;
@@ -240,12 +246,93 @@ afterEach(async () => {
     else delete (navigator as { serviceWorker?: unknown }).serviceWorker;
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    for (const [key, descriptor] of originalGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+    }
     vi.useRealTimers();
     server?.close();
 });
 
 describe("boot journal recovery", () => {
+    it.each(["field edit", "untrash"] as const)(
+        "drafts an expired-trash %s before maintenance deletes the character",
+        async (kind) => {
+            const trashTime = Date.now() - 3 * 24 * 60 * 60 * 1000 - 1;
+            server.set("characters", "c", { chaId: "c", name: "Expired", desc: "server", trashTime });
+            const stored = server.record("characters", "c")!;
+            page = await newPage();
+            expect(await page.journal.start()).toBe(true);
+            const intended = {
+                ...plain(stored.data),
+                desc: "recover this edit",
+                ...(kind === "untrash" ? { trashTime: 0 } : {}),
+            };
+            await put(page.journal, CHARACTER, { latest: intent(JSON.stringify(intended), stored.revision) });
+            const [source] = await page.journal.readOwn();
+
+            await boot(page);
+            expect(page.characters.findCharacter("c")).toBeUndefined();
+            expect(await page.journal.readOwn()).toEqual([]);
+            expect(await page.journal.listDrafts()).toMatchObject([
+                { scope: "record", target: CHARACTER, createdAt: source.createdAt, layers: source.layers },
+            ]);
+            expect(page.recoveryDrafts.entries).toMatchObject([{ target: CHARACTER, layers: source.layers }]);
+            await flush();
+            expect(server.record("characters", "c")).toBeNull();
+            expect(ops("characters")).toEqual([expect.objectContaining({ id: "c", delete: true })]);
+        },
+    );
+
+    it("drafts an expired-trash create without recreating a missing character", async () => {
+        page = await newPage();
+        expect(await page.journal.start()).toBe(true);
+        const target = "characters\0missing";
+        await put(page.journal, target, {
+            latest: intent(
+                JSON.stringify({
+                    chaId: "missing",
+                    name: "Gone",
+                    desc: "keep",
+                    trashTime: Date.now() - 3 * 24 * 60 * 60 * 1000 - 1,
+                }),
+                null,
+            ),
+        });
+        const [source] = await page.journal.readOwn();
+        await boot(page);
+        expect(page.characters.findCharacter("missing")).toBeUndefined();
+        expect(await page.journal.listDrafts()).toMatchObject([{ target, layers: source.layers }]);
+        await flush();
+        expect(server.record("characters", "missing")).toBeNull();
+        expect(ops("characters").filter((op) => op.id === "missing")).toEqual([]);
+    });
+
+    it("replays trash edits just under and exactly at three days, drafting only the edit beyond the boundary", async () => {
+        const age = 3 * 24 * 60 * 60 * 1000;
+        page = await newPage();
+        expect(await page.journal.start()).toBe(true);
+        for (const [id, offset] of [
+            ["under", -1],
+            ["exact", 0],
+            ["over", 1],
+        ] as const) {
+            server.set("characters", id, { chaId: id, name: id, trashTime: Date.now() - age - offset });
+            const record = server.record("characters", id)!;
+            await put(page.journal, `characters\0${id}`, {
+                latest: intent(JSON.stringify({ ...plain(record.data), desc: "local edit" }), record.revision),
+            });
+        }
+        await boot(page);
+        for (const id of ["under", "exact"])
+            expect(page.characters.findCharacter(id)).toMatchObject({ desc: "local edit" });
+        expect(page.characters.findCharacter("over")).toBeUndefined();
+        expect((await page.journal.listDrafts()).map((entry) => entry.target)).toEqual(["characters\0over"]);
+        await flush();
+        for (const id of ["under", "exact"]) expect(server.record("characters", id)!.data.desc).toBe("local edit");
+        expect(server.record("characters", "over")).toBeNull();
+    });
+
     it("applying a recovered ui draft repaints colors, text, custom CSS, speed, and sizes without reloading", async () => {
         const initial = plain(server.record("ui", "main")!.data);
         server.set("ui", "main", {

@@ -46,6 +46,9 @@ const listeners: [EventTarget, string, EventListenerOrEventListenerObject][] = [
 const batchPath = (path: string) => path === "/api/resources/batch";
 const epoch = () => h.fake.store.epoch();
 const recordTarget = "ui\0main";
+const originalGlobals = new Map(
+    ["indexedDB", "IDBKeyRange"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+);
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
@@ -208,12 +211,102 @@ afterEach(async () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
-    vi.unstubAllGlobals();
+    for (const [key, descriptor] of originalGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+    }
     io.server?.close();
     io.server = null;
 });
 
 describe("recovery drafts", () => {
+    it.each(["current trash", "untrash", "missing character"] as const)(
+        "skips Apply for expired %s while retaining an exportable draft and sending no writes",
+        async (kind) => {
+            const trashTime = Date.now() - 3 * 24 * 60 * 60 * 1000 - 1;
+            const id = kind === "missing character" ? "missing" : "c";
+            if (id === "c") {
+                h.characterStore.updateCharacter(id, { trashTime });
+                await h.sync.flushResources();
+            }
+            const before = h.serverText();
+            h.fake.requests.length = 0;
+            const intended = {
+                ...(id === "c" ? plain(h.characterStore.findCharacter(id)) : { chaId: id, name: "Gone" }),
+                desc: "durable edit",
+                trashTime: kind === "untrash" ? 0 : trashTime,
+            };
+            const entry = await put({
+                epoch: epoch(),
+                scope: "record",
+                target: `characters\0${id}`,
+                layers: {
+                    latest: {
+                        op: id === "c" ? "update" : "create",
+                        baseRevision: h.fake.record("characters", id)?.revision ?? null,
+                        text: JSON.stringify(intended),
+                    },
+                },
+            });
+
+            expect(await recovery.applyRecoveryDraft(entry)).toEqual({
+                skipped: [`characters/${id}: ${language.recoveryDrafts.trashExpired}`],
+            });
+            await drafts.recoveryDrafts.refresh();
+            expect(await journal.listDrafts()).toMatchObject([
+                { id: entry.id, target: entry.target, layers: entry.layers },
+            ]);
+            expect(drafts.recoveryDrafts.entries).toEqual([entry]);
+            expect(h.serverText()).toBe(before);
+            if (id === "c") expect(h.characterStore.findCharacter(id)?.trashTime).toBe(trashTime);
+            else expect(h.characterStore.findCharacter(id)).toBeUndefined();
+            await h.sync.flushResources();
+            expect(h.fake.batchBodies()).toEqual([]);
+            await render();
+            button(language.export, row()).click();
+            await settle();
+            expect(strings(JSON.parse(io.download.mock.calls[0][1] as string))).toContain(JSON.stringify(intended));
+            expect(await journal.listDrafts()).toMatchObject([
+                { id: entry.id, target: entry.target, layers: entry.layers },
+            ]);
+        },
+    );
+
+    it("allows Apply up to the exact trash deadline and retains the draft one millisecond beyond it", async () => {
+        const now = Date.now();
+        const age = 3 * 24 * 60 * 60 * 1000;
+        for (const offset of [-1, 0, 1]) {
+            const trashTime = now - age - offset;
+            h.characterStore.updateCharacter("c", { trashTime });
+            await h.sync.flushResources();
+            const intended = { ...plain(h.characterStore.findCharacter("c")), desc: `edit ${offset}` };
+            const entry = await put({
+                epoch: epoch(),
+                scope: "record",
+                target: "characters\0c",
+                layers: {
+                    latest: {
+                        op: "update",
+                        baseRevision: h.fake.record("characters", "c")!.revision,
+                        text: JSON.stringify(intended),
+                    },
+                },
+            });
+            const result = await recovery.applyRecoveryDraft(entry);
+            if (offset <= 0) {
+                expect(result).toEqual({ skipped: [] });
+                expect(h.fake.record("characters", "c")!.data.desc).toBe(`edit ${offset}`);
+                expect(await journal.listDrafts()).toEqual([]);
+            } else {
+                expect(result.skipped).toEqual([`characters/c: ${language.recoveryDrafts.trashExpired}`]);
+                expect(h.fake.record("characters", "c")!.data.desc).toBe("edit 0");
+                expect(await journal.listDrafts()).toMatchObject([
+                    { id: entry.id, target: entry.target, layers: entry.layers },
+                ]);
+            }
+        }
+    });
+
     it.each(["record", "chat", "gone chat with snapshot", "gone chat without snapshot", "order", "another epoch"])(
         "exports %s without removal and discards it only after confirmation",
         async (kind) => {
