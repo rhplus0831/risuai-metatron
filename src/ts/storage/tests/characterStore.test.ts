@@ -10,6 +10,7 @@ const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
+const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location")!;
 
 vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
@@ -59,7 +60,7 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    Object.defineProperty(globalThis, "location", originalLocation);
     server.current?.close();
 });
 
@@ -304,9 +305,11 @@ describe("checkCharacterInput and the render key", () => {
 
 describe("replaceCharacterAt", () => {
     it("refuses the same id, an index outside the list, a taken id, and a generating character", async () => {
-        const { chat, characterStore, refused, validation, sync } = await boot();
+        const { chat, characterStore, refused, validation, sync, settings } = await boot();
         characterStore.addCharacter({ chaId: "d", name: "D" });
+        settings.characterOrder = ["c", { id: "f", name: "Folder", color: "blue", data: ["d"] }];
         await sync.flushResources();
+        const orderBefore = plain(settings.characterOrder);
         await refused(
             () => characterStore.replaceCharacterAt(0, { chaId: "c", name: "x" }),
             validation.MutationValidationError,
@@ -323,26 +326,62 @@ describe("replaceCharacterAt", () => {
         );
         chat.applyServerGeneration(refK, { jobId: "J", messageId: "a", generationId: "g", text: "A", seq: 0 });
         await refused(() => characterStore.replaceCharacterAt(0, { name: "x" }), validation.MutationValidationError);
+        expect(plain(settings.characterOrder)).toEqual(orderBefore);
         chat.endServerJob("J");
     });
 
     it("puts a different character at the index, saving it with its chats and deleting the old one", async () => {
-        const { fake, sync, characterStore, characterOrder, record, settings, characterList } = await boot();
+        const { fake, sync, characterStore, record, settings, characterList } = await boot();
         const id = characterStore.replaceCharacterAt(0, { name: "Swap", chats: [{ message: [m(undefined, "s")] }] });
         expect(characterList().map((entry: any) => entry.chaId)).toEqual([id]);
+        expect(plain(settings.characterOrder)).toEqual([id]);
         await sync.flushResources();
         expect(fake.record("characters", "c")).toBeNull();
         expect(fake.chat("c", "k")).toBeNull();
         expect(record("characters", id)).toMatchObject({ name: "Swap" });
         expect(fake.texts(id, fake.order(id)!.ids[0])).toEqual(["s"]);
-        // Like the plugin branch it replaces, it leaves the order to the next repair (an add, a removal, a boot).
-        characterOrder.checkCharOrder();
-        expect(plain(settings.characterOrder)).toEqual([id]);
+        expect(record("characterOrder")).toEqual([id]);
         // The list's length appends.
         const appended = characterStore.replaceCharacterAt(1, { name: "Appended" });
+        expect(plain(settings.characterOrder)).toEqual([id, appended]);
         await sync.flushResources();
         expect(characterList().map((entry: any) => entry.chaId)).toEqual([id, appended]);
         expect(record("characters", appended)).toMatchObject({ name: "Appended" });
+        expect(record("characterOrder")).toEqual([id, appended]);
+    });
+
+    it("substitutes folder members immediately and persists the folder with the replacement", async () => {
+        const { fake, sync, characterStore, record, settings } = await boot();
+        const folder = { id: "f", name: "Folder", color: "blue", data: ["unread", "c"] };
+        settings.characterOrder = ["other", folder];
+        await sync.flushResources();
+        fake.requests.length = 0;
+
+        characterStore.replaceCharacterAt(0, { chaId: "replacement", name: "Replacement" });
+        const expected = ["other", { ...folder, data: ["unread", "replacement"] }];
+        expect(plain(settings.characterOrder)).toEqual(expected);
+        await sync.flushResources();
+        expect(record("characterOrder")).toEqual(expected);
+        expect(record("characters", "replacement")).toMatchObject({ name: "Replacement" });
+        expect(fake.record("characters", "c")).toBeNull();
+        expect(fake.batchBodies()[0].ops).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ kind: "characterOrder", id: "main" }),
+                expect.objectContaining({ kind: "characters", id: "replacement" }),
+            ]),
+        );
+    });
+
+    it("appends an unordered replacement and an append-at-length without waiting for repair", async () => {
+        const { sync, characterStore, settings, record } = await boot();
+        settings.characterOrder = ["unread"];
+        await sync.flushResources();
+        characterStore.replaceCharacterAt(0, { chaId: "replacement", name: "Replacement" });
+        expect(plain(settings.characterOrder)).toEqual(["unread", "replacement"]);
+        characterStore.replaceCharacterAt(1, { chaId: "appended", name: "Appended" });
+        expect(plain(settings.characterOrder)).toEqual(["unread", "replacement", "appended"]);
+        await sync.flushResources();
+        expect(record("characterOrder")).toEqual(["unread", "replacement", "appended"]);
     });
 });
 

@@ -19,7 +19,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [mcp](#mcp) (1)
 - [media-aux](#media-aux) (2)
 - [memory](#memory) (10)
-- [persistence](#persistence) (3)
+- [persistence](#persistence) (2)
 - [plugin-sandbox](#plugin-sandbox) (6)
 - [resource-sync](#resource-sync) (3)
 - [scripts-triggers](#scripts-triggers) (6)
@@ -243,8 +243,6 @@ Guide: [Persistence: Database, Records, Mutation Stores](../structure/persistenc
 
 - The browser-local import has no cross-tab lock: a change another tab lands between `removeIfUnchanged`'s comparison
   and its deletion is lost.
-- `replaceCharacterAt` does not repair `characterOrder`: a new id is missing until the next `checkCharOrder`. The old id
-  is removed then only if a repair observed it; otherwise boot removes it.
 - A character trashed or deleted on the server after the remote repair's read and before its write, with no order change
   between, can be appended. Its id leaves only once this tab holds the trash or deletion and a later `checkCharOrder`
   runs (arrival alone does not run the repair).

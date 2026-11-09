@@ -323,7 +323,9 @@ export function replaceCharacterFields(char: unknown, indexHint?: number): boole
  * append) in place of the one there: a plugin's `setCharacterToIndex` with a different character.
  * Refused when `char` has the id of the character there (that is `replaceCharacterFields` plus the
  * chat module's `reconcileCharacterChats`), when the character there is generating a reply, or when
- * another character already has the new `chaId`. Returns the new id.
+ * another character already has the new `chaId`. Replaces the old id in the character order,
+ * including folder members, in the same mutation; an unordered live replacement is appended.
+ * Returns the new id.
  */
 export function replaceCharacterAt(index: number, char: unknown): string {
     const characters = list();
@@ -345,7 +347,20 @@ export function replaceCharacterAt(index: number, char: unknown): string {
     const replacedId = current?.chaId;
     installCharacterChats(chaId, chats, copy);
     try {
-        replaceCharacterRecordAt(index, copy as unknown as Record<string, unknown>);
+        batchRecordWrites(() => {
+            replaceCharacterRecordAt(index, copy as unknown as Record<string, unknown>);
+            let ordered = false;
+            const replaceId = (id: string) => {
+                const next = id === replacedId ? chaId : id;
+                if (next === chaId) ordered = true;
+                return next;
+            };
+            const order = (settings.characterOrder ?? []).map((entry) =>
+                typeof entry === "string" ? replaceId(entry) : { ...entry, data: entry.data?.map(replaceId) },
+            );
+            if (!ordered && !copy.trashTime && chaId !== "§playground") order.push(chaId);
+            settings.characterOrder = order;
+        });
     } catch (error) {
         forgetCharacterChats(chaId);
         throw error;
