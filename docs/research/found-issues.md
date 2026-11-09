@@ -10,7 +10,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (1)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
-- [Server routes and resource store](#server-routes-and-resource-store) (4)
+- [Server routes and resource store](#server-routes-and-resource-store) (2)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (3)
@@ -68,20 +68,6 @@ The `changes` table in `resources.sqlite` (Incremental Chat Transport D5, `serve
 **Why it matters:** with typical UUID ids the log is a few MB, but the Asset Lifecycle snapshot budget counts 40 copies of it at a byte size the code does not bound.
 
 **Suggested handling:** size snapshot storage as rows × id length; add a VACUUM or a byte bound if a real store comes near it.
-
-### Lua image shortcuts reuse an asset key without a claim
-
-`isImageInlay` in `server/src/lua/bindings.ts` (~774, used by `usableImage` for `getCharacterImageMain` / `getPersonaImageMain`) checks the inlay's media with `storageFileExists` (an unlocked `lstat`), and the existing-image shortcut then hands out the marker. The Invariants of `docs/structure/self-host-server.md` say every server reuse of an asset key goes through `claimAssetKey`. Low risk today: an existing inlay record keeps its asset in the sweep's re-mark, and A1 (inlay-id claims) protects the record itself, so the file cannot be a deletion candidate while the record exists. Found in the Implementation Audit Fixes run (2026-11-05, slice A1).
-
-**Why it matters:** a guide invariant with one known exception; a later sweep change could make it a real race.
-**Suggested handling:** if `isImageInlay` is touched again, use `claimAssetKey(savePath, meta.asset, { verify })` and keep the post-await fence.
-
-### The inlay recognizer is quadratic on unterminated openings
-
-Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it needs a string with thousands of `{{inlay::` openings and no terminator, and ordinary text has one or a few. `recognize` in `server/src/data/assetLifecycle.ts` (~124) searches for a closing `}}` separately from each opening, so `"{{inlay::".repeat(n)` costs about n² (the audit measured 0.9 s at 144,000 bytes). The SQL prefilter admits such a value, and both the chunked scan and the deletion recheck run it in one synchronous turn. Source: [AL5](../manual-audit/archive/asset-lifecycle-code-audit-2026-11-05.md#al5--malformed-inlay-text-makes-the-server-scanner-quadratic).
-
-**Why it matters:** one stored string of incomplete markers can block the server's event loop during a scan or a sweep.
-**Suggested handling:** a linear recognizer is a small change if `recognize` is touched: match the three prefixes and their terminators in one pass, and stop when the remaining suffix has no terminator, without truncating real references.
 
 ### A custom-key asset can change during a version-2 export
 
