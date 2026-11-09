@@ -151,6 +151,9 @@ and video have two modes:
   header.
 - The server (`server/src/prompt/transform.ts`) runs Lua `editDisplay`, the `display` trigger, CBS, and the regex
   scripts; the tab's `editdisplay` plugin handlers run read-only between its two calls ([Invariants](#invariants)).
+- Capacity (2026-11-09, `measureTransformLua.mjs --snapshot`): on a 2,000-message chat of 6 MiB, a scope charges 39 KB
+  of `MAX_SNAPSHOT_BYTES` (8 MiB; the transcript is a shared entry) and a 3 KB message 55 KB, so a 64-target chunk fits
+  whole up to about 40 KB per message ([measurement](../audit/transform-snapshot-2026-11.md)).
 - `ChatBody` shows provisional text on its stored and plain display paths; translation inputs and auto-translate probes
   wait for the answer.
 
