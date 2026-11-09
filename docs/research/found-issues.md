@@ -11,7 +11,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (5)
 - [Server routes and resource store](#server-routes-and-resource-store) (9)
-- [LLM requests and providers](#llm-requests-and-providers) (11)
+- [LLM requests and providers](#llm-requests-and-providers) (9)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (6)
 - [Chat screen and input](#chat-screen-and-input) (5)
@@ -164,22 +164,6 @@ The doc comment of `normalizePreset` in `shared/presets.ts` (~629–636) says "a
 **Suggested handling:** lowest priority; likely close as not worth fixing.
 
 ## LLM requests and providers
-
-### A system-only Claude prompt loses its text
-
-`requestClaude` in `server/src/llm/anthropic.ts` (~283–294): when the prompt holds only system text, the adapter inserts a `Start` user turn and clears `systemPrompt`, so the actual input is dropped. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** the model answers a bare "Start" instead of the prompt's instructions.
-
-**Suggested handling:** move the system text into the user turn instead of discarding it.
-
-### The Claude reverse proxy keeps only a first text block
-
-For `reverse_proxy`, `server/src/llm/anthropic.ts` (~377) maps each message to its first content block's text; when that block is an image or tool block, the map returns `undefined` (`null` in JSON), and later text blocks are dropped. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** multimodal or tool prompts sent through the reverse proxy lose content or are rejected.
-
-**Suggested handling:** join all text blocks and skip non-text ones.
 
 ### OpenRouter free-model discovery ignores the bound key
 
