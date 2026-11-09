@@ -11,7 +11,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (1)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
-- [LLM requests and providers](#llm-requests-and-providers) (7)
+- [LLM requests and providers](#llm-requests-and-providers) (4)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
@@ -116,30 +116,6 @@ Excluded by the Implementation Audit Fixes plan (2026-11-05) as an unverified le
 **Why it matters:** a misbehaving proxy produces a TypeError instead of its response text.
 
 **Suggested handling:** default the header to `""`.
-
-### Google thought signatures are never saved on the typed path
-
-`server/src/llm/request.ts` builds the adapter argument (`targ`, ~508) without setting `saveSignatures` from `db.saveSignatures`, while `server/src/llm/google.ts` saves signatures only when `arg.saveSignatures` is set (~635, ~684); replay (~113) reads `db.saveSignatures`. The stored setting therefore has no effect on saving. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** the signature saving setting silently does nothing for Gemini thinking models.
-
-**Suggested handling:** assign it where the adapter argument is built, after checking the tab's former behavior; see the next entry before turning saving on.
-
-### Saved Google signatures replay the wrong content
-
-`server/src/llm/google.ts` (~118) replays a saved signature inlay's `signatures[0].content` as `thoughtSignature`, but the save paths (~692, ~991) store the response part's text or a function description, not the provider's signature token, so replay may fail provider validation once saving works (previous entry). Live streaming tool follow-ups keep the raw token separately. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** fixing the saving entry alone may turn the setting into rejected requests.
-
-**Suggested handling:** store the provider's signature token in the inlay and replay that; fix together with the saving entry.
-
-### A signature-only Google part marks the wrong text
-
-`processDataItem` in `server/src/llm/google.ts` (~696): a buffered part carrying only a signature prepends its inlay marker to the last `rDatas` text without checking that one exists, so it throws when none does and otherwise marks an unrelated earlier part. Only reachable with signature saving on. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** latent until signature saving works (see the two entries above).
-
-**Suggested handling:** keep the marker with a text part of its own, or skip it when no text part exists.
 
 ### setObjectValue follows `__proto__` segments
 
