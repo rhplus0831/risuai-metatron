@@ -44,7 +44,9 @@ import type { WriterMemory } from "./writer.ts";
  * (`store.memory.rebuild`), so the live records and the memory revision stay as they are until one
  * atomic swap, and a run that fails or is abandoned leaves them so. The run is a row, not a task, so it
  * outlives a process. `rebuild` takes every confirmed turn and replaces what the transcript can
- * reproduce; `backfill` takes only the turns no event cites and adds to the records.
+ * reproduce; `fresh` takes every confirmed turn and replaces every record, a person's work and the trash
+ * included, so the chat's memory starts over from its messages; `backfill` takes only the turns no event
+ * cites and adds to the records.
  *
  * - The plan: the windows are worked out once, at the start, as message ids (`rebuildPlan`), so a step
  *   parses no event to find what is next. Planning and rebuild/backfill cost previews read the transcript
@@ -52,6 +54,8 @@ import type { WriterMemory } from "./writer.ts";
  * - What a rebuild keeps: a person's work is seeded at the start (`rebuildSeed`), so the writer sees those
  *   pages and a lock binds it. No event is seeded: carrying is decided at the swap (`rebuildChanges`), so a
  *   retraction that lands during the run counts, and the writer reads only what the run wrote.
+ * - A fresh rebuild seeds nothing and its swap removes every live record, so only the adoption lineage
+ *   crosses it: with none kept, an adopted chat's stored summaries would stop being resettable.
  * - A backfill stands behind records that already exist, so each of its windows is a historical write
  *   (`server/src/prompt/memory/structured/writer.ts`) on a copy of the live pages, and its swap adds events
  *   and new pages and nothing else.
@@ -97,8 +101,8 @@ function retractedMessages(events: readonly MemoryEvent[]): Set<string> {
  * The windows of a run, oldest first, each the message ids of `turns` turns. The confirmed messages run
  * through the newest eligible reply, inclusive, because a person's start confirms it, as a press of record
  * now does. Unlike the writer's own windows, a turn does not drop out for a recorded reply: each lists the
- * messages `mode` does not exclude, and one with any left counts, which is what takes the user messages an
- * adopted chat's summaries left uncovered. A reply `screening` keeps out of the writer's windows is dropped
+ * messages `mode` does not exclude (a fresh rebuild excludes none, a retraction included), and one with
+ * any left counts, which is what takes the user messages an adopted chat's summaries left uncovered. A reply `screening` keeps out of the writer's windows is dropped
  * before the turns are made, so the user message before it folds into the next turn. Empty when there is
  * nothing to do. Reads the transcript once and hashes nothing; the cost preview uses the same entries.
  */
@@ -128,7 +132,12 @@ function rebuildEntryPlan(
     const confirmed = anchored
         .slice(0, anchored.findLastIndex(({ message }) => message.role === "char") + 1)
         .filter(({ message }) => memoryScreenReason(message, screening) === null);
-    const excluded = mode === "rebuild" ? retractedMessages(events) : recordedMessages(events);
+    const excluded =
+        mode === "backfill"
+            ? recordedMessages(events)
+            : mode === "rebuild"
+              ? retractedMessages(events)
+              : new Set<string>();
     const open = turnsOf(confirmed)
         .map((turn) => turn.filter(({ id }) => !excluded.has(id)))
         .filter((entries) => entries.length > 0);
@@ -175,8 +184,9 @@ function seededPage(page: MemoryPage, namedByThread: boolean): MemoryPage | null
 /**
  * The staged records a run starts from. A rebuild keeps the pages with a person's work on them
  * (`seededPage`), the threads a person added, and the live pages their `who` names, keeping those ids.
- * Other pages are written anew and a language change retitles them. A backfill takes the live pages
- * verbatim, so its cast is real, and no thread, since it moves none.
+ * Other pages are written anew and a language change retitles them. A fresh rebuild seeds nothing: the
+ * writer starts from an empty chat. A backfill takes the live pages verbatim, so its cast is real, and no
+ * thread, since it moves none.
  * Seeded pages keep their ids for patches by `server/src/prompt/memory/structured/writer.ts`; their locks
  * still bind that writer.
  */
@@ -186,6 +196,9 @@ export function rebuildSeed(
 ): Pick<MemoryChanges, "pages" | "threads"> {
     if (mode === "backfill") {
         return { pages };
+    }
+    if (mode === "fresh") {
+        return { pages: [], threads: [] };
     }
     const retainedThreads = threads.filter(({ openedBy }) => openedBy === undefined);
     const namedPages = new Set(retainedThreads.flatMap(({ who }) => who));
@@ -239,6 +252,10 @@ function withMarkedSections(staged: MemoryPage, live: MemoryPage): MemoryPage {
     };
 }
 
+/** Whether `event` descends from an adoption: the adopted summary itself, or an event rebuilt over one. */
+const adoptedLineage = ({ writerRun, adoptedSummaries }: Pick<MemoryEvent, "writerRun" | "adoptedSummaries">) =>
+    writerRun === ADOPTED_WRITER_RUN || adoptedSummaries === true;
+
 /**
  * A staged event as it goes live, with no revision, which the store stamps. `pinned`, `suppressed` and
  * `userCorrected` are the union from standing overlapping live events, carried ones included, so a
@@ -256,9 +273,7 @@ function swappedEvent(
         ...(standing.some(({ pinned }) => pinned) ? { pinned: true } : {}),
         ...(standing.some(({ suppressed }) => suppressed) ? { suppressed: true } : {}),
         ...(standing.some(({ userCorrected }) => userCorrected) ? { userCorrected: true } : {}),
-        ...(overlapping.some(({ writerRun, adoptedSummaries }) => writerRun === ADOPTED_WRITER_RUN || adoptedSummaries)
-            ? { adoptedSummaries: true }
-            : {}),
+        ...(overlapping.some(adoptedLineage) ? { adoptedSummaries: true } : {}),
     };
 }
 
@@ -278,14 +293,20 @@ function swappedEvent(
  * replace it in an ordinary run, with its heading's history, so the history never sits under a body it
  * does not lead to.
  *
+ * A fresh rebuild writes the staged records whole and removes every live record: every event, retracted
+ * ones included, every page, the trash with them, and every thread, a person's marks and choices with
+ * them. Its staged events take only the adoption lineage, from any live event, so the stored summaries
+ * of an adopted chat stay resettable; the page tools' reverts and corrections are gone with the pages.
+ *
  * A backfill writes the staged events and the pages that are not live: a page that is stays as it stands,
  * with any flag it gained during the run, and a link a historical event would add to it is dropped.
- * Trashed pages stay untouched: `live.pages` comes from `contents.pages`, which excludes trash in
- * `server/src/data/memoryStore.ts`, so their ids are never removed here.
+ * Trashed pages stay untouched in a rebuild and a backfill: `live.pages` comes from `contents.pages`, which
+ * excludes trash in `server/src/data/memoryStore.ts`, so their ids are never removed there; a fresh rebuild
+ * reads them from `live.contents.trash`.
  */
 export function rebuildChanges(
     mode: StructuredMemoryRebuildMode,
-    live: MemoryRecordSet,
+    live: MemoryRecordSet & { contents?: Pick<MemoryContents, "trash"> },
     staged: MemoryRecordSet,
 ): MemoryChanges | null {
     if (staged.events.length === 0) {
@@ -296,6 +317,19 @@ export function rebuildChanges(
         return {
             events: staged.events.map((event) => swappedEvent(event, [])),
             pages: staged.pages.filter(({ id }) => !livePages.has(id)),
+        };
+    }
+    if (mode === "fresh") {
+        const lineage = live.events.some(adoptedLineage) ? { adoptedSummaries: true } : {};
+        return {
+            events: staged.events.map(({ createdRevision, ...event }) => ({ ...event, ...lineage })),
+            pages: staged.pages,
+            threads: staged.threads,
+            remove: {
+                events: live.events.map(({ id }) => id),
+                pages: [...live.pages, ...(live.contents?.trash ?? [])].map(({ id }) => id),
+                threads: live.threads.map(({ id }) => id),
+            },
         };
     }
     const cited = new Set(staged.events.flatMap(sourceIds));

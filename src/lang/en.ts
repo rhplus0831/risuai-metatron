@@ -2971,13 +2971,16 @@ export const languageEnglish = {
             resetNothing: "Nothing to reset: this chat holds no adopted summaries.",
         },
         rebuild: {
-            offer: "Rebuild writes this chat's records again from its messages. Fill gaps records only the turns no event cites.",
+            offer: "Rebuild writes this chat's records again from its messages, keeping what you locked, pinned, corrected, or added. Start over discards every record first. Fill gaps records only the turns no event cites.",
             languageChanged: (recorded: string, current: string) =>
                 `This chat's records were written in "${recorded}", and the writer now writes in "${current}". A rebuild applies the change.`,
             rebuild: "Rebuild",
+            fresh: "Start over",
             fillGaps: "Fill gaps",
             confirmRebuild: (cost: string) =>
                 `Rebuild this chat's memory from its messages? ${cost} The records stay as they are until the last turn is done, and this chat cannot generate until the rebuild ends or you abandon it. Pages and threads are then written anew, except what you locked, pinned, corrected, or added.`,
+            confirmFresh: (cost: string) =>
+                `Discard every memory record of this chat and write it again from its messages? ${cost} The records stay as they are until the last turn is done, and this chat cannot generate until this ends or you abandon it. Every page, event, and thread is then replaced, including what you locked, pinned, corrected, or added, and the trash is emptied. This cannot be undone.`,
             confirmBackfill: (cost: string) =>
                 `Record the turns no event cites? ${cost} The records stay as they are until the last turn is done, and this chat cannot generate until this ends or you abandon it. Existing pages and threads do not change: a rebuild is what refreshes them.`,
             cost: (calls: number, tokens: number) => memoryCostText(calls, tokens),
@@ -2987,6 +2990,7 @@ export const languageEnglish = {
             resumed: "Rebuild resumed",
             progress: (done: number, total: number) => `Rebuilding ${done} of ${total}`,
             backfillProgress: (done: number, total: number) => `Filling gaps ${done} of ${total}`,
+            freshProgress: (done: number, total: number) => `Starting over ${done} of ${total}`,
             readOnly: "This chat holds a rebuild, so this panel is read-only until it ends or you abandon it.",
             paused: "Paused. This chat cannot generate until you resume or abandon.",
             stopped: (reason: string) => `Stopped: ${reason}. This chat cannot generate until you resume or abandon.`,

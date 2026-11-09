@@ -19,7 +19,7 @@ the resource store's connection, epoch, and transactions → [server resources](
 | The writer: settings, windows, the task kind, a run, the gap run, prompts, admission, pages, compaction, record now     | [writer](writer.md)         |
 | The read path: lanes, the card, manifest and report, receipts, the panel, prompt tuning, the test run, the health badge | [read](read.md)             |
 | Lifecycle: reconciliation and repairs, retraction, checkpoints, copies and branches, chat files, adoption               | [lifecycle](lifecycle.md)   |
-| Rebuild and backfill: a run, the plan, staging, the swap, the lock, the cost preview                                    | [rebuild](rebuild.md)       |
+| Rebuild, fresh rebuild, and backfill: a run, the plan, staging, the swap, the lock, the cost preview                    | [rebuild](rebuild.md)       |
 | Page tools: trash, merge, split, lorebook export, package import                                                        | [pages](pages.md)           |
 
 ## Files

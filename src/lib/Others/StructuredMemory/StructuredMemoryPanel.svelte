@@ -268,7 +268,9 @@
         const { done = 0, total = 0 } = rebuildProgress ?? {};
         return rebuild?.mode === "backfill"
             ? rebuildText.backfillProgress(done, total)
-            : rebuildText.progress(done, total);
+            : rebuild?.mode === "fresh"
+              ? rebuildText.freshProgress(done, total)
+              : rebuildText.progress(done, total);
     });
     /** Why the run is not going on, past what the task line says while its terminal is retained. */
     const rebuildStop = $derived.by(() => {
@@ -656,6 +658,14 @@
                             onclick={() => pressRebuild("rebuild")}
                         >
                             <span data-memory-rebuild-action="rebuild">{rebuildText.rebuild}</span>
+                        </Button>
+                        <Button
+                            size="sm"
+                            styled="outlined"
+                            disabled={pressing || readOnly || taskLive}
+                            onclick={() => pressRebuild("fresh")}
+                        >
+                            <span data-memory-rebuild-action="fresh">{rebuildText.fresh}</span>
                         </Button>
                     </div>
                 </div>

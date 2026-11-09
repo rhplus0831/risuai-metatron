@@ -29,10 +29,11 @@ export const ADOPTED_WRITER_RUN = "adopted-hypav3";
 
 /**
  * How a chat's records are made again from its transcript: `rebuild` takes every confirmed turn and
- * replaces what the transcript can reproduce, `backfill` only the turns no event cites and adds to the
- * records. Persisted: never rename one.
+ * replaces what the transcript can reproduce, keeping a person's work; `fresh` takes every confirmed turn
+ * and replaces every record, a person's work and the trash included; `backfill` only the turns no event
+ * cites and adds to the records. Persisted: never rename one.
  */
-export const STRUCTURED_MEMORY_REBUILD_MODES = ["rebuild", "backfill"] as const;
+export const STRUCTURED_MEMORY_REBUILD_MODES = ["rebuild", "fresh", "backfill"] as const;
 export type StructuredMemoryRebuildMode = (typeof STRUCTURED_MEMORY_REBUILD_MODES)[number];
 
 /** What a page describes. A chat has exactly one `scene` page, rewritten rather than appended to. */
@@ -669,9 +670,10 @@ export type StructuredMemoryContents = {
 export type StructuredMemoryAdoption = { adoptable: number; declined: boolean; resettable: boolean };
 
 /**
- * A chat's rebuild or backfill, which goes on until a swap or a person abandons it: `done` of `total`
- * windows, and why it last stopped, when it did for a reason. `resumable` falls for good when the whole
- * chat was replaced after it began, since that may have changed every message, and only abandoning is left.
+ * A chat's rebuild, fresh rebuild, or backfill, which goes on until a swap or a person abandons it: `done`
+ * of `total` windows, and why it last stopped, when it did for a reason. `resumable` falls for good when
+ * the whole chat was replaced after it began, since that may have changed every message, and only
+ * abandoning is left.
  */
 export type StructuredMemoryRebuild = {
     mode: StructuredMemoryRebuildMode;
@@ -753,7 +755,7 @@ export type StructuredMemoryContentsAnswer = StructuredMemoryContents & {
 /** The abandon route's answer: the chat's memory revision, which it left alone, and whether a run went. */
 export type StructuredMemoryAbandonAnswer = { revision: string; abandoned: boolean };
 
-/** What a cost preview prices: a rebuild, a backfill, or a press of record now. */
+/** What a cost preview prices: a rebuild of either kind, a backfill, or a press of record now. */
 export type StructuredMemoryCostMode = StructuredMemoryRebuildMode | "record";
 
 /**

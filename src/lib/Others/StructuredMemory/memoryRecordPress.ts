@@ -126,7 +126,7 @@ async function runRebuildCommand(
 }
 
 /**
- * A press of Rebuild or Fill gaps: preview through `readStructuredMemoryCost` in
+ * A press of Rebuild, Start over, or Fill gaps: preview through `readStructuredMemoryCost` in
  * `src/ts/process/structuredMemory.svelte.ts`, then confirmation before the command. A zero-window
  * preview only shows the nothing-to-record toast; an unreadable preview asks with an unknown cost.
  * Windows hold one turn under the `everyTurn` cadence and two under any other.
@@ -144,7 +144,12 @@ export async function pressMemoryRebuild(
         return;
     }
     const costText = cost.outcome === "ok" ? text.cost(cost.value.calls, cost.value.estimatedTokens) : text.costUnknown;
-    const question = mode === "rebuild" ? text.confirmRebuild(costText) : text.confirmBackfill(costText);
+    const question =
+        mode === "rebuild"
+            ? text.confirmRebuild(costText)
+            : mode === "fresh"
+              ? text.confirmFresh(costText)
+              : text.confirmBackfill(costText);
     if (await alertConfirm(question)) {
         await runRebuildCommand(owner, chatRef, { type: "memoryRebuild", mode, turns }, text.started);
     }

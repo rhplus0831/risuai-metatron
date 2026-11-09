@@ -2,8 +2,9 @@
 
 ## Scope
 
-- Owns a chat's rebuild and backfill: a run from its plan to its swap, the staged tables, what a rebuild keeps of a
-  person's work, the lock a run puts on the chat, and the cost preview that rebuild, backfill, and record now share.
+- Owns a chat's rebuild, fresh rebuild, and backfill: a run from its plan to its swap, the staged tables, what a rebuild
+  keeps of a person's work and a fresh rebuild discards, the lock a run puts on the chat, and the cost preview that
+  rebuild, backfill, and record now share.
 - Paths: `server/src/prompt/memory/structured/rebuild.ts`, the rebuild part of `server/src/prompt/memory/memoryTasks.ts`
   (`rebuildWork`, `commitOfRebuild`, `swapRebuild`, `noteRebuildStop`), the `rebuild` surface of
   `server/src/data/memoryStore.ts`, and the controls in `src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte`
@@ -99,6 +100,12 @@ is decided against live records at the swap, so a retraction during the run coun
 
 No chat or `hypaV3Data` is written. An adopted chat's stored summaries stay until [reset](projection.md#the-reset), and
 the projection stands aside while they remain. The live store's write also preserves an adoption decline.
+
+A fresh rebuild (`fresh`, the panel's Start over) keeps nothing: `rebuildSeed` gives it an empty seed, its plan excludes
+no message, a retraction included, and `rebuildChanges` removes every live event, page, thread, and trashed page, so
+marks, reverts, grades, context modes, merges, and a person's threads all go. Only the adoption lineage crosses: with
+any live event adopted or rebuilt over one, every staged event takes `adoptedSummaries`, so the stored summaries stay
+resettable. It is the one path that empties the trash in one write.
 
 ### Backfill
 
@@ -231,6 +238,8 @@ Decisions: Structured Memory slice 6b, archive, unless an entry names another.
   nothing from it. A rebuild refreshes them.
 - A rebuild forgets reverts on sections with no mark: such a section is written anew, its history goes, and the writer
   can propose the change again. Decision: Structured Memory slice 7b, archive.
+- A fresh rebuild forgets everything a person did to the records, and the confirmation says so; it does not touch the
+  chat's stored HypaV3 summaries, which keep their own reset. Decision: owner, 2026-11-09.
 - A person's state change on a writer's thread does not survive a rebuild: only `openedBy` says whose a thread is.
 - Old receipts stay on their messages, with their event and run ids.
 - Seeded and carried text stays in its language, and a resume under another language leaves a mix.

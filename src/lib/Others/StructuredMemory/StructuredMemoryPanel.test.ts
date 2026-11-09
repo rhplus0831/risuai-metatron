@@ -1712,7 +1712,7 @@ function serveRebuildContents() {
     return state;
 }
 
-it("offers a language rebuild without starting it and confirms both rebuild and fill gaps even for one call, hiding both while held", async () => {
+it("offers a language rebuild without starting it and confirms rebuild, start over, and fill gaps even for one call, hiding them while held", async () => {
     const state = serveRebuildContents();
     settings.hypaV3Presets.items[0].settings.structured!.language = "Korean";
     settings.hypaV3Presets.items[0].settings.structured!.cadence = "everyTurn";
@@ -1722,15 +1722,14 @@ it("offers a language rebuild without starting it and confirms both rebuild and 
     expect(query("[data-memory-rebuild-language]")?.textContent).toContain("English");
     expect(query("[data-memory-rebuild-language]")?.textContent).toContain("Korean");
     expect(io.runServerJob).not.toHaveBeenCalled();
-    for (const mode of ["rebuild", "backfill"] as const) {
+    const text = language.structuredMemory.rebuild;
+    const questions = { rebuild: text.confirmRebuild, fresh: text.confirmFresh, backfill: text.confirmBackfill };
+    for (const mode of ["rebuild", "fresh", "backfill"] as const) {
         confirm.mockResolvedValue(false);
         const prior = io.runServerJob.mock.calls.length;
         press(`[data-memory-rebuild-action="${mode}"]`);
         await settle();
-        const text = language.structuredMemory.rebuild;
-        expect(confirm).toHaveBeenLastCalledWith(
-            mode === "rebuild" ? text.confirmRebuild(text.cost(1, 1700)) : text.confirmBackfill(text.cost(1, 1700)),
-        );
+        expect(confirm).toHaveBeenLastCalledWith(questions[mode](text.cost(1, 1700)));
         expect(io.runServerJob).toHaveBeenCalledTimes(prior);
         confirm.mockResolvedValue(true);
         press(`[data-memory-rebuild-action="${mode}"]`);
@@ -1760,6 +1759,13 @@ it("shows run progress and pause or resumable controls and always permits abando
     await open();
     expect(query("[data-memory-panel-read-only]")).not.toBeNull();
     expect(query("[data-memory-rebuild-progress]")?.textContent).toBe(language.structuredMemory.rebuild.progress(1, 5));
+    state.rebuild = { ...state.rebuild, mode: "fresh" };
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-rebuild-progress]")?.textContent).toBe(
+        language.structuredMemory.rebuild.freshProgress(1, 5),
+    );
+    state.rebuild = { ...state.rebuild, mode: "rebuild" };
     press("[data-memory-rebuild-resume]");
     await settle();
     expect(io.runServerJob).toHaveBeenLastCalledWith(

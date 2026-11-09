@@ -148,6 +148,48 @@ it("rebuilds retired replacements but excludes personal retractions and backfill
         ["u1", "a1", "u3", "a3"],
     ]);
     expect(rebuildPlan({ messages, events, mode: "backfill", turns: 1, screening: NO_SCREENING })).toEqual([["u3"]]);
+    expect(rebuildPlan({ messages, events, mode: "fresh", turns: 1, screening: NO_SCREENING })).toEqual([
+        ["u1", "a1"],
+        ["u2", "a2"],
+        ["u3", "a3"],
+    ]);
+});
+
+it("seeds nothing for a fresh rebuild and its swap removes every live record and the trash, keeping only the adoption lineage", () => {
+    const base = memoryRecords(["place"]).pages[0];
+    const personal = {
+        ...base,
+        sections: [{ ...base.sections[0], heading: "locked", locked: true }],
+        gradeByUser: true,
+        reshaped: true as const,
+    };
+    const live = {
+        pages: [personal, { ...base, id: "ordinary" }],
+        threads: [{ id: "personal", title: "A person's thread", state: "open" as const, who: ["place"] }],
+        events: [
+            event("pinned", ["u1", "a1"], { pinned: true, suppressed: true, userCorrected: true }),
+            event("retracted", ["u2", "a2"], { status: "retracted" }),
+        ],
+        contents: { trash: [{ id: "binned", title: "Binned", bytes: 1 }] },
+    };
+    expect(rebuildSeed("fresh", live)).toEqual({ pages: [], threads: [] });
+    const staged = {
+        pages: [{ ...base, id: "written" }],
+        threads: [{ id: "opened", title: "Writer's thread", state: "open" as const, who: [], openedBy: "new" }],
+        events: [event("new", ["u1", "a1"])],
+    };
+    const changes = rebuildChanges("fresh", live, staged)!;
+    expect(changes).toEqual({
+        events: [{ ...memoryRecords(["new"]).events[0], sources: staged.events[0].sources }],
+        pages: staged.pages,
+        threads: staged.threads,
+        remove: { events: ["pinned", "retracted"], pages: ["place", "ordinary", "binned"], threads: ["personal"] },
+    });
+    expect(rebuildChanges("fresh", live, { ...staged, events: [] })).toBeNull();
+    const adopted = { ...live, events: [event("summary", [], { writerRun: ADOPTED_WRITER_RUN, status: "retracted" })] };
+    expect(rebuildChanges("fresh", adopted, staged)?.events).toEqual([
+        { ...memoryRecords(["new"]).events[0], sources: staged.events[0].sources, adoptedSummaries: true },
+    ]);
 });
 
 it("reads planned windows from current messages with fresh anchors and skips removed or disabled sources", () => {

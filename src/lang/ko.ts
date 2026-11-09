@@ -2858,13 +2858,16 @@ export const languageKorean = {
             resetNothing: "비울 요약본이 없습니다. 이 채팅에는 채택 후 남아 있는 이전 요약본이 없습니다.",
         },
         rebuild: {
-            offer: "'전체 재생성'은 처음부터 모든 메시지를 다시 분석해 메모리 기록을 새로 작성하며, '빈 곳 채우기'는 아직 이벤트로 기록되지 않은 누락된 턴만 기록합니다.",
+            offer: "'전체 재생성'은 처음부터 모든 메시지를 다시 분석해 메모리 기록을 새로 작성하되 사용자가 잠그거나 고정·수정·추가한 항목은 유지하며, '초기화'는 기존 기록을 전부 버리고 새로 작성합니다. '빈 곳 채우기'는 아직 이벤트로 기록되지 않은 누락된 턴만 기록합니다.",
             languageChanged: (recorded: string, current: string) =>
                 `이 채팅의 기존 기록은 "${recorded}" 언어로 작성되었으며 현재 기록 언어 설정은 "${current}"입니다. 전체 기록에 새 언어를 적용하려면 전체 재생성을 실행해 주세요.`,
             rebuild: "전체 재생성",
+            fresh: "초기화",
             fillGaps: "빈 곳 채우기",
             confirmRebuild: (cost: string) =>
                 `이 채팅의 메모리를 처음부터 전체 재생성할까요? ${cost} 마지막 턴 처리가 끝날 때까지 기존 기록이 유지되며, 전체 재생성이 완료되거나 중단하기 전까지 이 채팅에서는 새 응답을 생성할 수 없습니다. 완료되면 사용자가 직접 잠그거나 고정·수정한 항목을 제외한 모든 페이지와 스레드가 새로 작성됩니다.`,
+            confirmFresh: (cost: string) =>
+                `이 채팅의 메모리 기록을 전부 버리고 처음부터 새로 작성할까요? ${cost} 마지막 턴 처리가 끝날 때까지 기존 기록이 유지되며, 작업이 완료되거나 중단하기 전까지 이 채팅에서는 새 응답을 생성할 수 없습니다. 완료되면 사용자가 직접 잠그거나 고정·수정·추가한 항목을 포함한 모든 페이지·이벤트·스레드가 교체되고 휴지통도 비워집니다. 이 작업은 되돌릴 수 없습니다.`,
             confirmBackfill: (cost: string) =>
                 `아직 이벤트로 기록되지 않은 빈 구간을 기록할까요? ${cost} 마지막 턴 처리가 끝날 때까지 기존 기록이 유지되며, 작업이 완료되거나 중단하기 전까지 이 채팅에서는 새 응답을 생성할 수 없습니다. 기존 페이지와 스레드는 그대로 유지되며, 전체 페이지까지 새로 고치려면 '전체 재생성'을 사용해 주세요.`,
             cost: (calls: number, tokens: number) => memoryCostText(calls, tokens),
@@ -2874,6 +2877,7 @@ export const languageKorean = {
             resumed: "전체 재생성을 재개했습니다",
             progress: (done: number, total: number) => `전체 재생성 진행 중 (${done}/${total})`,
             backfillProgress: (done: number, total: number) => `빈 곳 채우는 중 (${done}/${total})`,
+            freshProgress: (done: number, total: number) => `초기화 진행 중 (${done}/${total})`,
             readOnly:
                 "이 채팅에서 메모리 전체 재생성이 진행 중이므로 완료되거나 중단할 때까지 패널이 읽기 전용으로 전환됩니다.",
             paused: "일시 중지됨. 작업을 재개하거나 포기할 때까지 이 채팅에서 새 응답을 생성할 수 없습니다.",
