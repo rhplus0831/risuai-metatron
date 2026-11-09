@@ -197,6 +197,9 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - Bridge copies define own properties, so a plain object's own `__proto__` key crosses the bridge as data.
 - The sandbox host never logs an RPC message or its answer: their arguments carry the plugin's `nativeFetch` headers
   (API keys) and bodies.
+- `risuFetch` and `nativeFetch` refuse a URL whose host is a blocked name or a subdomain of one (`urlBlacklist`,
+  `assertPluginUrlAllowed`): the URL is parsed alone and against the page, the hostname lowercased and its trailing dots
+  stripped. A blocked name in a path or query passes, and the transport receives the caller's original string.
 - Main-document DOM access requires the v3 `getRootDocument` permission plus the Safe wrappers.
 - Any new v3 UI or hook must call `addPluginUnloadCallback` and sanitize external HTML and URLs.
 - A plugin or MCP write goes through a mutation module (`characterStore.svelte.ts`, `collectionStore.svelte.ts`,

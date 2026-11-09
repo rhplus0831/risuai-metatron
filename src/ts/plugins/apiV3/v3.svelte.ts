@@ -974,6 +974,28 @@ const getPluginPermission = async (
 
 const urlBlacklist = ["risuai.xyz", "risuai.net", "sionyw.com"];
 
+/** Validates standalone and page-relative hostnames, blocking listed domains and subdomains without changing the URL. */
+const assertPluginUrlAllowed = (url: string) => {
+    if (typeof url !== "string") {
+        throw new Error("Invalid URL");
+    }
+    const hostnames: string[] = [];
+    const pageUrl = globalThis.location?.href;
+    for (const base of pageUrl ? [undefined, pageUrl] : [undefined]) {
+        try {
+            hostnames.push(new URL(url, base).hostname.toLowerCase().replace(/\.+$/, ""));
+        } catch {}
+    }
+    if (hostnames.length === 0) {
+        throw new Error("Invalid URL");
+    }
+    for (const blocked of urlBlacklist) {
+        if (hostnames.some((hostname) => hostname === blocked || hostname.endsWith("." + blocked))) {
+            throw new Error(`Requests to ${blocked} are blocked for security reasons.`);
+        }
+    }
+};
+
 const authorizationHeaders = ["x-api-key", "authorization", "proxy-authorization"];
 
 /**
@@ -2279,11 +2301,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             console.error(
                 `[DEPRECATION WARNING] risuFetch is deprecated and will be removed in future versions. Please use nativeFetch instead.`,
             );
-            for (const blocked of urlBlacklist) {
-                if (url.toLowerCase().includes(blocked)) {
-                    throw new Error(`Requests to ${blocked} are blocked for security reasons.`);
-                }
-            }
+            assertPluginUrlAllowed(url);
 
             //scan headers
             const headers = options?.headers || {};
@@ -2298,11 +2316,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         },
         nativeFetch: async (url: string, options: RequestInit = {}) => {
             const callSignal = hostCallSignal();
-            for (const blocked of urlBlacklist) {
-                if (url.toLowerCase().includes(blocked)) {
-                    throw new Error(`Requests to ${blocked} are blocked for security reasons.`);
-                }
-            }
+            assertPluginUrlAllowed(url);
 
             // Normalize both sandbox-supported forms before scanning or logging their names.
             const normalizedHeaders = new Headers(options.headers ?? {});
