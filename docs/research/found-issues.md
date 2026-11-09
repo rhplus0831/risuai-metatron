@@ -9,7 +9,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (8)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (5)
 - [Server routes and resource store](#server-routes-and-resource-store) (10)
 - [LLM requests and providers](#llm-requests-and-providers) (14)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -58,34 +58,12 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 **Why it matters:** with many or large tool definitions a send near the budget could be refused by the provider although the meter shows room.
 **Suggested handling:** measure with a real tool set and tokenizer; if the gap is real, charge an estimate of the schemas in the recheck (the token-counting follow-up group of the Deep Audit Fixes plan).
 
-### The trim question counts blank history
-
-`server/src/prompt/assemble.ts` (~1890–1902): with a memory method configured but off, the dry-run trim loop asks the no-memory trim question (`host.memoryTrim.confirm()`) when `dropped > historyStart`. A greeting or message its editprocess scripts blanked (`blankEntry`, `ContextSource.empty`) counts as history there, so a trim that would drop only blank entries still asks. The Found Issues Sweep's F2 (2026-11-05) fixed the gap question (`trimHistoryToContext`) and the trim ledger, not this one.
-
-**Why it matters:** the user is asked to turn memory on to protect history that nothing would lose.
-**Suggested handling:** ask only when a non-blank history entry is among the dropped ones.
-
 ### Slash commands address stored positions during a reroll
 
 `server/src/prompt/commands.ts` (~218–262: `comment`, `cut`, `del`) resolves indexes and "the last message" against the unfiltered stored chat in `services.writeChat`. During reroll assembly (`scope.rerollHistoryMessageId` set) the Lua getters and indexed setters address the history view with the carrier hidden (`scopeHistoryMessages` in `server/src/lua/bindings.ts`), so a trigger's `v2Command` (`server/src/prompt/triggers.ts`) running `/cut 2` can target a different message than a script reading the view, and `/comment` hits the hidden carrier as "last" and is refused by the lock. Found in the Implementation Audit Fixes run (2026-11-05, slice C1).
 
 **Why it matters:** the same read/write address mismatch C1 fixed for Lua, on a rarer path (slash commands from triggers during a reroll).
 **Suggested handling:** resolve these commands through the same history-view helper the Lua bindings use.
-
-### runTrigger copies the character before seeing no triggers
-
-`runTrigger` in `server/src/prompt/triggers.ts` (~372) calls `triggerCopy(sourceChar)` (~384, a `structuredClone` of every character field except the shared asset lists and chats) and registers a patch observer before `run()` checks for an empty trigger list (~444). The display transform (`head` in `server/src/prompt/transform.ts`, ~668–680) runs a `display` trigger per rendered message, so a character with no character or module triggers still pays one character deep copy per row render. Found in the Implementation Audit Fixes run (2026-11-06, slice C7), which skipped the two chat copies but not this one.
-
-**Why it matters:** per-row render cost on long chats; perf only, low priority.
-**Suggested handling:** check `hasTriggers(sourceChar)` (already on the runtime) before `triggerCopy`, keeping the `yieldTurn` and the fence.
-
-### The context override comment is garbled
-
-`shared/sections.ts` `maxContextOverrideOf` (~480, comment ~475–477) reads "(`maxContextOverride` on and a finite `maxContextOverrideSize` above 0, which is unset)"; the code returns the size exactly when the toggle is on and the size is finite and above 0, else `undefined`. The trailing "which is unset" probably meant "else unset" or "0 means unset". Found in the Module Headers run (2026-11-08).
-
-**Why it matters:** comment-only, but the server's job projection and request settings share this rule, so a misreading spreads.
-
-**Suggested handling:** reword the comment.
 
 ### Asset-scale transport and job leftovers
 
