@@ -151,6 +151,8 @@
   outside flush obligations, in `refused`, and still protects page close.
 - Chat refusal retention and release: `quarantineChat`, `releaseChatRefusal`, `retryRefusedChat` and `deleteChat` in
   `chatStore.svelte.ts`.
+- A chat group above the batch cap is quarantined before dispatch. Each edit or Retry that still exceeds the cap shows
+  the quarantine notice again; unchanged quarantined work is not retried automatically.
 - Read `refusedItems`, `retryRefused` and `discardRefused` for opaque keys, reactive reads, halt admission and read
   fences. Discard accepts the server copy only if newer local intent has not superseded it.
 

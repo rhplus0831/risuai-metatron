@@ -3044,7 +3044,7 @@ async function cycle() {
     const { batches, oversized } = planBatches(ops, chatWork);
     for (const group of oversized) {
         const reason = `The chat ${group.chatId} is too large to save`;
-        quarantineChat(group, reason, reason);
+        quarantineChat(group, reason, reason, true);
     }
     // Later batches are conservatively marked sent too: recovery treats an unanswered create
     // as dispatched even if an earlier batch prevented its request from going out.

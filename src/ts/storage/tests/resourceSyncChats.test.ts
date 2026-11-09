@@ -6,6 +6,7 @@ import { SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 import { createFakeLockManager } from "./fakeLockManager";
 import { translationSourceHash } from "../../../../shared/translation/hash.ts";
+import type { ChatOp } from "../../../../shared/chats.ts";
 
 // The save adapter (`resourceSync.svelte.ts`) together with the chat module (`chatStore.svelte.ts`)
 // against the real server store: mixed batches, the request caps, quarantine, conflicts, deferral,
@@ -54,6 +55,12 @@ const KINDS = Object.values(RESOURCE_KIND);
 const m = (id: string | undefined, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
 const refK = { chaId: "c", chatId: "k" };
 const refJ = { chaId: "c", chatId: "j" };
+const originalGlobals = new Map(
+    ["location", "indexedDB", "IDBKeyRange", "fetch"].map((key) => [
+        key,
+        Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+);
 
 /**
  * Boots the adapter and the chat module the way `loadData` does: the server holds the collections
@@ -161,7 +168,10 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    for (const [key, descriptor] of originalGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+    }
     server.current?.close();
 });
 
@@ -503,6 +513,66 @@ describe("a new character whose create answer was lost", () => {
 // Each case needs more than the 5,000 operations one batch may carry (the server's cap), queued one
 // call at a time and applied by the store: about a quarter second of CPU.
 describe("request caps", () => {
+    it("repeats pre-dispatch oversized notices after an edit and Retry without automatic attempts or blocking unrelated saves", async () => {
+        const { fake, sync, chat, settings } = await boot();
+        const collect = chat.takeChatWork;
+        const padding: ChatOp = { op: "meta", set: {} };
+        // Simulate an indivisible oversized group at the collection boundary. The real planner
+        // checks its existing operation cap, avoiding a 100 MiB byte-cap fixture; quarantine,
+        // serialization, explicit release and all unrelated work stay real.
+        const oversized = vi.spyOn(chat, "takeChatWork").mockImplementation((...args) => {
+            const work = collect(...args);
+            return {
+                ...work,
+                groups: work.groups.map((group) =>
+                    group.chatId === "k"
+                        ? {
+                              ...group,
+                              ops: [
+                                  ...group.ops,
+                                  ...Array<ChatOp>(sync.MAX_BATCH_OPERATIONS + 1 - group.ops.length).fill(padding),
+                              ],
+                          }
+                        : group,
+                ),
+            };
+        });
+        chat.setMessageText(refK, "a", "kept draft");
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: ["chats/c/k"] });
+        const [item] = sync.refusedItems();
+        expect(item).toMatchObject({ kind: "chat", chatId: "k", reason: "The chat k is too large to save" });
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith("The chat k is too large to save");
+        expect(fake.batchCount()).toBe(0);
+
+        chat.setMessageText(refK, "a", "edited but still oversized");
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: ["chats/c/k"] });
+        expect(alerts.error).toHaveBeenCalledTimes(2);
+        expect(sync.refusedItems()[0].key).toBe(item.key);
+        sync.retryRefused(item.key);
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: ["chats/c/k"] });
+        expect(alerts.error.mock.calls.map(([text]) => text)).toEqual(Array(3).fill("The chat k is too large to save"));
+        expect(fake.batchCount()).toBe(0);
+        expect(chat.findChat(refK)!.message[0].data).toBe("edited but still oversized");
+        expect(fake.texts("c", "k")[0]).toBe("A");
+
+        const attempts = oversized.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(oversized).toHaveBeenCalledTimes(attempts);
+        expect(fake.batchCount()).toBe(0);
+        chat.setChatMeta(refJ, { note: "unrelated save" });
+        settings.ui.theme = "unrelated theme";
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: ["chats/c/k"] });
+        expect(fake.chat("c", "j")!.data.note).toBe("unrelated save");
+        expect(fake.record("ui", "main")!.data.theme).toBe("unrelated theme");
+        expect(
+            fake
+                .batchBodies()
+                .flatMap((body) => body.chats ?? [])
+                .map((group: { chatId: string }) => group.chatId),
+        ).toEqual(["j"]);
+        expect(alerts.error).toHaveBeenCalledTimes(3);
+    });
+
     it("sends more than 5,000 unsent ops of one chat over several requests without losing any or blocking other chats", async () => {
         const { fake, sync, chat } = await boot();
         for (let index = 0; index <= 5000; index += 1) {

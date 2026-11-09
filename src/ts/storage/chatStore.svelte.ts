@@ -6208,11 +6208,15 @@ export function requeueChatWork(work: ChatWork, options: { lost?: boolean } = {}
     }
 }
 
-/** Holds refused work locally, reporting it discarded to flush callers, until an explicit release. */
+/**
+ * Holds refused work until an explicit release, reporting it discarded to flush callers. Alerts
+ * once per chat/session unless `repeatAlert` surfaces each oversized pre-dispatch attempt.
+ */
 export function quarantineChat(
     group: Pick<SentChatGroup, "key" | "seq" | "ops" | "recoveredAt">,
     reason = language.chatSaveRefused,
     alertText = `${language.chatSaveRefused}\n${reason}`,
+    repeatAlert = false,
 ) {
     const entry = pending.get(group.key);
     const ops = [...group.ops, ...(entry?.resend?.ops ?? []), ...(entry?.ops ?? [])];
@@ -6232,7 +6236,7 @@ export function quarantineChat(
     staleChats.delete(group.key);
     pending.delete(group.key);
     markDiscarded(group.key, seq);
-    if (!chatAlerts.has(group.key)) {
+    if (repeatAlert || !chatAlerts.has(group.key)) {
         chatAlerts.add(group.key);
         alertError(alertText);
     }

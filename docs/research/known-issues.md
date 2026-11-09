@@ -21,7 +21,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [memory](#memory) (10)
 - [persistence](#persistence) (2)
 - [plugin-sandbox](#plugin-sandbox) (6)
-- [resource-sync](#resource-sync) (3)
+- [resource-sync](#resource-sync) (2)
 - [scripts-triggers](#scripts-triggers) (6)
 - [self-host-server](#self-host-server) (4)
 - [server-generation](#server-generation) (1)
@@ -278,8 +278,6 @@ Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure
 
 Guide: [Resource Sync: Boot, Save Adapter, Conflicts, Transport](../structure/resource-sync.md#known-hazards).
 
-- A single oversized chat group is quarantined before dispatch and cannot be chunked (cap:
-  [Batch composition](../structure/resource-sync.md#batch-composition)); an edit or Retry still over it quarantines again silently.
 - A page restored from the back-forward cache may still wait for an unload answer; `flushResources` gives up after 20 s.
 - A save's echo arriving before its acknowledgement schedules a cycle 50 ms later (`noteRemoteChanges`), so continuous
   typing can save more often than the debounce. [Measurements](../audit/projection-bindings-2026-10-04.md) no longer
