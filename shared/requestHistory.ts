@@ -91,6 +91,11 @@ export type RequestHistoryPage = {
  */
 export const REQUEST_HISTORY_SHARE_PATH = "/api/request-history/share";
 
+/** The share route's 500 body carries this `code` beside `error` when an older copy remains. */
+export const REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN = "share-older-copies-remain";
+
+export type RequestHistoryErrorCode = typeof REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN;
+
 /** `GET`: the shares the folder holds (`RequestHistoryShareList`), kept even when their rows are gone. */
 export const REQUEST_HISTORY_SHARES_PATH = "/api/request-history/shares";
 

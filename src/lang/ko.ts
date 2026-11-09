@@ -3159,6 +3159,7 @@ export const languageKorean = {
     loadMore: "더 보기",
     pluginUpdateFoundInstallIt: "플러그인의 새 업데이트가 발견되었습니다. 지금 설치하시겠습니까?",
     noRequestLogs: "기록된 요청 로그가 없습니다.",
+    requestLogCopyFailed: "복사하지 못했습니다",
     requestHistoryServerTab: "서버 기록",
     requestHistoryThisTab: "이 탭",
     copyDebugInfo: "디버그 정보 복사",

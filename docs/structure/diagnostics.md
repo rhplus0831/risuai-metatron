@@ -28,7 +28,8 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
 - `server/src/routes/requestHistory.ts` `registerRequestHistoryRoutes`: list, read, delete, share, and shares list. Its
   comment owns query shapes, status codes, and write order. Client entrypoints in `src/ts/network/requestHistory.ts`:
   `listRequestHistory`, `readRequestHistory`, `deleteRequestHistory`, `shareRequestHistory`, `listRequestHistoryShares`,
-  `RequestHistoryError`.
+  `RequestHistoryError`. The older-copies 500 carries `code` (`REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN`); the viewer
+  maps by it.
 
 ### Journal, reports, and support copies
 

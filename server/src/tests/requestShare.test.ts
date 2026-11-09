@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeSecretPath } from "../../../shared/llmSecrets.ts";
 import {
     REQUEST_HISTORY_PATH,
+    REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN,
     REQUEST_HISTORY_SHARE_PATH,
     REQUEST_HISTORY_SHARES_PATH,
     type RequestHistoryShareResult,
@@ -499,6 +500,7 @@ describe("the share module: the protocol", () => {
             ok: false,
             status: 500,
             error: "The share was updated, but an older copy could not be removed. Withdraw the share to remove every copy.",
+            code: REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN,
         });
         expect(shareFiles(base.shared)).toEqual([`${stamp(t1)}-job-${JOB}.json`, `${stamp(clock)}-job-${JOB}.json`]);
         expect(base.history.get(REQ(1))?.sharedAt).toBe(clock);
@@ -921,6 +923,27 @@ describe("the routes", () => {
         expect(await withdrawn.json()).toEqual({ jobId: JOB, requestId: null, shared: false, sharedAt: null, ids: [] });
         expect(readdirSync(sharedDir(s))).toEqual([]);
         expect((await listShares(s)).body).toEqual({ items: [] });
+    });
+
+    it("answers 500 with the older-copies refusal code beside the error when commitShare fails", async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(NOON);
+        try {
+            const s = await server();
+            seed(s.context.requestHistory);
+            expect((await share(s, { jobId: JOB, shared: true })).status).toBe(200);
+            vi.spyOn(s.context.diagnostics, "commitShare").mockReturnValue(false);
+
+            const refused = await share(s, { jobId: JOB, shared: true });
+
+            expect(refused.status).toBe(500);
+            expect(await refused.json()).toEqual({
+                error: "The share was updated, but an older copy could not be removed. Withdraw the share to remove every copy.",
+                code: REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN,
+            });
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it("redacts a named key stored on the server (through `/api/llm-secrets/`, with no credential record) from the shared copy", async () => {

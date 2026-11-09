@@ -2,17 +2,18 @@
     import { ChevronDownIcon, ChevronUpIcon, XIcon } from "@lucide/svelte";
     import { untrack } from "svelte";
     import { language } from "src/lang";
-    import { languageEnglish } from "src/lang/en";
     import { alertConfirm, alertError, alertRequestLogs } from "src/ts/alert";
     import {
         deleteRequestHistory,
         listRequestHistory,
         listRequestHistoryShares,
         readRequestHistory,
+        RequestHistoryError,
         shareRequestHistory,
     } from "src/ts/network/requestHistory";
     import { findCharacter } from "src/ts/storage/characterStore.svelte";
     import { chatEntry, currentChatRef } from "src/ts/storage/chatStore.svelte";
+    import { REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN } from "../../../../shared/requestHistory.ts";
     import type {
         RequestHistoryRecord,
         RequestHistoryShareBody,
@@ -121,7 +122,7 @@
             // The error replaces the popup (when it is still the one shown), as it did before alerts queued.
             closePopup();
             alertError(
-                message === languageEnglish.requestHistoryShareOlderCopiesRemain
+                error instanceof RequestHistoryError && error.code === REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN
                     ? language.requestHistoryShareOlderCopiesRemain
                     : language.requestHistoryShareFailed.replace("{{error}}", message),
             );

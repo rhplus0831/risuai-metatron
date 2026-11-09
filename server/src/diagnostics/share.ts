@@ -1,5 +1,7 @@
 import type { DiagnosticEvent } from "../../../shared/diagnostics.ts";
+import { REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN } from "../../../shared/requestHistory.ts";
 import type {
+    RequestHistoryErrorCode,
     RequestHistoryRecord,
     RequestHistoryShareEntry,
     RequestHistoryShareResult,
@@ -16,7 +18,8 @@ export const SHARE_MAX_BYTES = 32 * 1024 * 1024;
 export const SHARE_FORMAT = "metatron-request-share";
 
 export type ShareOutcome =
-    { ok: true; result: RequestHistoryShareResult } | { ok: false; status: 404 | 413 | 500 | 503; error: string };
+    | { ok: true; result: RequestHistoryShareResult }
+    | { ok: false; status: 404 | 413 | 500 | 503; error: string; code?: RequestHistoryErrorCode };
 
 export type RequestShares = {
     share(query: RequestHistoryShareQuery): ShareOutcome;
@@ -69,7 +72,12 @@ export function createRequestShares(options: {
 }): RequestShares {
     const { history, journal, secrets } = options;
     const now = options.now ?? Date.now;
-    const failed = (status: 404 | 413 | 500 | 503, error: string): ShareOutcome => ({ ok: false, status, error });
+    const failed = (status: 404 | 413 | 500 | 503, error: string, code?: RequestHistoryErrorCode): ShareOutcome => ({
+        ok: false,
+        status,
+        error,
+        ...(code === undefined ? {} : { code }),
+    });
     const unavailable = () => failed(503, "The request history is unavailable");
 
     function share(query: RequestHistoryShareQuery): ShareOutcome {
@@ -127,6 +135,7 @@ export function createRequestShares(options: {
             return failed(
                 500,
                 "The share was updated, but an older copy could not be removed. Withdraw the share to remove every copy.",
+                REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN,
             );
         }
         return { ok: true, result: { ...target, shared: true, sharedAt: at, ids } };

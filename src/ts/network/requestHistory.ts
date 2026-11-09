@@ -27,11 +27,12 @@ export type RequestHistoryQuery = {
     status?: RequestHistoryStatus | null;
 };
 
-/** An unsuccessful HTTP answer's status and server error text, falling back to `HTTP <status>`. */
+/** An unsuccessful HTTP answer's status, optional code, and server error text, falling back to `HTTP <status>`. */
 export class RequestHistoryError extends Error {
     constructor(
         message: string,
         readonly status: number,
+        readonly code: string | null = null,
     ) {
         super(message);
         this.name = "RequestHistoryError";
@@ -40,13 +41,17 @@ export class RequestHistoryError extends Error {
 
 async function failure(response: Response): Promise<RequestHistoryError> {
     let message = `HTTP ${response.status}`;
+    let code: string | null = null;
     try {
-        const body = (await response.json()) as { error?: unknown };
+        const body = (await response.json()) as { error?: unknown; code?: unknown };
         if (typeof body?.error === "string" && body.error !== "") {
             message = body.error;
         }
+        if (typeof body?.code === "string" && body.code !== "") {
+            code = body.code;
+        }
     } catch {}
-    return new RequestHistoryError(message, response.status);
+    return new RequestHistoryError(message, response.status, code);
 }
 
 /** A page of summaries, newest first. */

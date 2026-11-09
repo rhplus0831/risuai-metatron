@@ -3196,6 +3196,7 @@ export const languageEnglish = {
     collapseAll: "Collapse All",
     expandAll: "Expand All",
     noRequestLogs: "No request logs available.",
+    requestLogCopyFailed: "Could not copy",
     requestHistoryServerTab: "Server history",
     requestHistoryThisTab: "This tab",
     copyDebugInfo: "Copy debug info",

@@ -74,6 +74,8 @@ const PAGE_SIZE = /^[0-9]{1,4}$/;
  *   `RequestHistoryShareResult`: 404 when there is no such request to share, 413 when its requests
  *   exceed `SHARE_MAX_BYTES` (32 MiB of stored row bytes, from `server/src/diagnostics/share.ts`),
  *   500 when the copy or the mark could not be written or a withdrawal could not remove the copy.
+ *   A 500 when an older copy could not be removed also carries `code`
+ *   (`REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN`) beside `error`.
  *   A body over the separate 4 KiB cap also answers 413.
  * - `GET /api/request-history/shares`: `{ items }`, the shares the folder holds (also those whose
  *   rows the caps removed), newest first; 500 when `shared/` could not be read.
@@ -173,7 +175,10 @@ export function registerRequestHistoryRoutes(
             if (outcome.status === 503) {
                 return unavailable(c);
             }
-            return c.json({ error: outcome.error }, outcome.status);
+            return c.json(
+                outcome.code ? { error: outcome.error, code: outcome.code } : { error: outcome.error },
+                outcome.status,
+            );
         }
         return c.json(outcome.result);
     });
