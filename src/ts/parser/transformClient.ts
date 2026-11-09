@@ -71,7 +71,9 @@ import {
  * shows one toast on its first failure; there is no browser fallback on the server path. A failure
  * is `permanent` (`displayTransformRecovery` does not retry it) for a source over
  * `MAX_TRANSFORM_TEXT_BYTES` (never sent), a 400 or 413 answer to either call of a chunk whose first
- * request held that target alone, and a target the server marks so.
+ * request held that target alone, and a target the server marks so. Multi-target 400/413 refusals
+ * and transient server scope-limit results split immediately, recursively, within the original deadline.
+ * The split batches share subscribers and the original batch's single failure toast.
  * With the tab's plugin handlers for the mode, the server answers the texts before them; the tab
  * runs each text's handlers in order (with the captured plugin context), the texts side by side,
  * and sends the second call. Two-call chunks enter a tab-wide FIFO among eligible waiters: at most
@@ -295,6 +297,7 @@ type Chunk = {
     waiting: boolean;
     snapshot?: TransformContinueRequest;
     snapshotGone: boolean;
+    snapshotExpires: number;
 };
 
 type Batch = {
@@ -648,12 +651,13 @@ async function runHandlers(
     }
 }
 
-async function sendBatch(batch: Batch): Promise<void> {
+async function sendBatch(batch: Batch, pending = batch.pending, deadline?: number): Promise<void> {
     // Split at the server's caps (an oversized single target fails alone, never requeued).
     const chunks: Operation[][] = [];
     let chunk: Operation[] = [];
     let bytes = 0;
-    for (const entry of batch.pending) {
+    for (const entry of pending) {
+        if (entry.settled) continue;
         const size = textBytes(entry.target.source);
         if (size > MAX_TRANSFORM_TEXT_BYTES) {
             settle(entry, {
@@ -675,13 +679,13 @@ async function sendBatch(batch: Batch): Promise<void> {
     if (chunk.length > 0) {
         chunks.push(chunk);
     }
-    await Promise.all(chunks.map((entries) => sendChunk(batch, entries)));
+    await Promise.all(chunks.map((entries) => sendChunk(batch, entries, deadline)));
 }
 
 /** Releases abandoned server work, or keeps the permit through the snapshot TTL and transit margin. */
 async function releaseChunkSnapshot(chunk: Chunk): Promise<void> {
     if (chunk.snapshotGone) return;
-    const expires = chunk.deadline + (TRANSFORM_SNAPSHOT_TTL_MS - CHUNK_DEADLINE_MS);
+    const expires = chunk.snapshotExpires;
     if (chunk.snapshot && Date.now() < expires) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), expires - Date.now());
@@ -712,25 +716,40 @@ async function releaseChunkSnapshot(chunk: Chunk): Promise<void> {
 }
 
 /** Every target settles once; the permit outlives any snapshot the chunk still owns. */
-async function sendChunk(batch: Batch, entries: Operation[]): Promise<void> {
+async function sendChunk(batch: Batch, entries: Operation[], deadline = Infinity): Promise<void> {
     const open = new Map(entries.map((entry) => [entry.target.id, entry]));
     const controller = new AbortController();
-    const chunk: Chunk = { open, controller, deadline: Infinity, cancelled: false, waiting: true, snapshotGone: true };
+    const chunk: Chunk = {
+        open,
+        controller,
+        deadline,
+        cancelled: false,
+        waiting: true,
+        snapshotGone: true,
+        snapshotExpires: Infinity,
+    };
+    const expire = () => controller.abort(new DOMException("The render took too long", "TimeoutError"));
+    let timer = Number.isFinite(deadline) ? setTimeout(expire, Math.max(0, deadline - Date.now())) : undefined;
+    let retry: Operation[] = [];
     for (const entry of entries) entry.chunk = chunk;
     const release = batch.handlers
         ? await acquireChunk(chunk, batch.captured.pluginContext?.purpose === "transform")
         : undefined;
     // Install cleanup immediately after acquisition, including admission-time withdrawals.
     try {
-        if (batch.handlers && !release) return;
+        if (batch.handlers && !release) {
+            for (const entry of open.values()) {
+                settle(entry, { id: entry.target.id, ok: false, error: "The render took too long" });
+            }
+            return;
+        }
         for (const id of open.keys()) departed(chunk, id);
         if (open.size === 0) return;
         chunk.waiting = false;
-        chunk.deadline = Date.now() + CHUNK_DEADLINE_MS;
-        const timer = setTimeout(
-            () => controller.abort(new DOMException("The render took too long", "TimeoutError")),
-            CHUNK_DEADLINE_MS,
-        );
+        chunk.snapshotExpires = Date.now() + TRANSFORM_SNAPSHOT_TTL_MS;
+        chunk.deadline = Math.min(deadline, Date.now() + CHUNK_DEADLINE_MS);
+        clearTimeout(timer);
+        timer = setTimeout(expire, Math.max(0, chunk.deadline - Date.now()));
         const answer = (results: Answer[]) => {
             for (const received of results) {
                 const result: Answer = chunk.cancelled ? { id: received.id, cancelled: true } : received;
@@ -738,12 +757,25 @@ async function sendChunk(batch: Batch, entries: Operation[]): Promise<void> {
                 if (entry) {
                     // An unrecognized confirmation leaves the target unanswered, like a missing result.
                     if (!("ok" in result) && !("cancelled" in result) && result.key !== entry.target.knownKey) continue;
-                    settle(entry, result);
+                    // Scope limits arrive as target failures, rather than HTTP refusals. A smaller
+                    // request can omit the unrelated source character that made this scope too large.
+                    if (
+                        entries.length > 1 &&
+                        "ok" in result &&
+                        result.ok === false &&
+                        !result.permanent &&
+                        result.error === "The render's texts are over the limit of one request"
+                    ) {
+                        retry.push(entry);
+                    } else {
+                        settle(entry, result);
+                    }
                 }
             }
         };
         const targets = [...open.values()].map((entry) => entry.target);
         try {
+            if (Date.now() >= chunk.deadline) throw new Error("The render took too long");
             const clientId = generationClientId();
             const first = await post(
                 "/api/transform",
@@ -794,32 +826,38 @@ async function sendChunk(batch: Batch, entries: Operation[]): Promise<void> {
                 batch.reported = true;
             }
             const message = error instanceof Error ? error.message : String(error);
-            // A refused request of several targets may be refused only for their sum: they retry.
-            const permanent =
-                targets.length === 1 && typeof error === "object" && error !== null && permanentRefusals.has(error);
-            answer(
-                [...open.keys()].map((id) =>
-                    chunk.cancelled
-                        ? { id, cancelled: true as const }
-                        : {
-                              id,
-                              ok: false as const,
-                              error: message,
-                              ...(permanent ? { permanent: true as const } : {}),
-                          },
-                ),
-            );
+            const refused = typeof error === "object" && error !== null && permanentRefusals.has(error);
+            const permanent = targets.length === 1 && refused;
+            if (!chunk.cancelled && refused && targets.length > 1) {
+                retry = [...open.values()];
+            } else
+                answer(
+                    [...open.keys()].map((id) =>
+                        chunk.cancelled
+                            ? { id, cancelled: true as const }
+                            : {
+                                  id,
+                                  ok: false as const,
+                                  error: message,
+                                  ...(permanent ? { permanent: true as const } : {}),
+                              },
+                    ),
+                );
         } finally {
             clearTimeout(timer);
         }
+        const retrying = new Set(retry);
         answer(
-            [...open.keys()].map((id) =>
-                chunk.cancelled
-                    ? { id, cancelled: true as const }
-                    : { id, ok: false as const, error: "The render did not answer" },
-            ),
+            [...open.values()]
+                .filter((entry) => !retrying.has(entry))
+                .map(({ target: { id } }) =>
+                    chunk.cancelled
+                        ? { id, cancelled: true as const }
+                        : { id, ok: false as const, error: "The render did not answer" },
+                ),
         );
     } finally {
+        clearTimeout(timer);
         if (release) {
             try {
                 await releaseChunkSnapshot(chunk);
@@ -827,6 +865,17 @@ async function sendChunk(batch: Batch, entries: Operation[]): Promise<void> {
                 release();
             }
         }
+    }
+    // Release the original snapshot/permit before acquiring any child permit. A continuation's
+    // snapshot cannot be partitioned, so a refused continuation restarts the read-only pipeline.
+    retry = retry.filter((entry) => !entry.settled);
+    if (retry.length > 0) {
+        const middle = Math.ceil(retry.length / 2);
+        await Promise.all(
+            [retry.slice(0, middle), retry.slice(middle)]
+                .filter((half) => half.length > 0)
+                .map((half) => sendBatch(batch, half, chunk.deadline)),
+        );
     }
 }
 

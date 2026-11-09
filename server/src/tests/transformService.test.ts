@@ -616,6 +616,42 @@ describe("the transform snapshot's memory budget", () => {
         expect(service.stats().snapshots).toBe(0);
     };
 
+    it("keeps a combined scope refusal transient, then succeeds without the large non-member and permanently refuses it alone", async () => {
+        const h = open();
+        h.setHold(false);
+        const kind = h.kinds.get("characters")!;
+        const owner = h.store.get(kind, "a")!.data as object;
+        // Match the existing projection-budget fixture; only targets naming this source load it.
+        h.store.put(kind, "outsider", { ...owner, chaId: "outsider", desc: "x".repeat(9 * 1024 * 1024) }, null);
+        const service = createTransformService(h.deps);
+        const normal = h.request("normal").targets[0];
+        const large = { ...h.request("large").targets[0], sourceId: "outsider" };
+        const request = h.request("unused", { mode: "editdisplay", handlers: "display", targets: [normal, large] });
+        const error = "The render's texts are over the limit of one request";
+        try {
+            const combined = await service.transform(request, signal());
+            expect(combined.results).toEqual([
+                { id: "normal", ok: false, error },
+                { id: "large", ok: false, error },
+            ]);
+            expect(combined.snapshotId).toBeUndefined();
+            expect(h.counts.lua).toBe(0);
+            const separated = await service.transform({ ...request, targets: [normal] }, signal());
+            expect(separated.pending).toEqual([{ id: "normal", text: "Xnormal" }]);
+            const completed = await service.resume(
+                { clientId: request.clientId, snapshotId: separated.snapshotId!, texts: separated.pending! },
+                signal(),
+            );
+            expect(completed.results).toEqual([expect.objectContaining({ id: "normal", ok: true, text: "Xnormal" })]);
+            const singleton = await service.transform({ ...request, targets: [large] }, signal());
+            expect(singleton.results).toEqual([{ id: "large", ok: false, error, permanent: true }]);
+            expect(singleton.snapshotId).toBeUndefined();
+            expect(service.stats().snapshots).toBe(0);
+        } finally {
+            await service.close();
+        }
+    });
+
     it("a request's own projection over the snapshot budget fails every uncached target without running Lua or retaining a snapshot", async () => {
         const h = open();
         h.setHold(false);
@@ -632,9 +668,9 @@ describe("the transform snapshot's memory budget", () => {
                 const first = await service.transform(request, signal());
                 expect(first.snapshotId).toBeUndefined();
                 expect(first.pending ?? []).toEqual([]);
-                // Alone over the budget, each fails again on a retry: the tab is told not to retry.
+                // A multi-target scope may include unrelated source characters: allow smaller requests.
                 expect(first.results).toEqual(
-                    request.targets.map(({ id }) => ({ id, ok: false, error: expect.any(String), permanent: true })),
+                    request.targets.map(({ id }) => ({ id, ok: false, error: expect.any(String) })),
                 );
                 expect(service.stats().snapshots).toBe(0);
             }
@@ -738,10 +774,10 @@ describe("the transform snapshot's memory budget", () => {
                 },
                 signal(),
             );
-            // The loaded scope alone is over the budget, so the uncached targets fail for good.
+            // A smaller request can omit the extra source character, so these failures stay transient.
             expect(mixed.results).toEqual([
-                { id: "fresh", ok: false, error: expect.any(String), permanent: true },
-                { id: "extra", ok: false, error: expect.any(String), permanent: true },
+                { id: "fresh", ok: false, error: expect.any(String) },
+                { id: "extra", ok: false, error: expect.any(String) },
                 expect.objectContaining({ id: cached.id, ok: true, cached: true }),
             ]);
             expect(mixed.snapshotId).toBeUndefined();

@@ -195,8 +195,8 @@ function partitionKnownResults(targets: TransformTarget[], results: TransformRes
  * next trigger; the display trigger: the text kept); an abort, a spent limit, a latched host
  * failure, a worker failure, or a refused write fails the target (`{ ok: false }`, nothing cached).
  * A text after the stages before the plugin handlers is bounded as the second call's texts are.
- * A target over a limit on its own (that text, or the scope alone over the snapshot or retained
- * budget) fails `permanent`, so the tab does not retry it; a limit the request's other targets or
+ * A target over its own text limit, or a single-target request over the snapshot or retained
+ * scope budget, fails `permanent`, so the tab does not retry it; a limit the request's other targets or
  * the global reservation reached does not.
  * A kept snapshot is charged its request-owned projection plus each target's setup, copied
  * containers, texts, changed variables and default-variable map allowance, up to 8 MiB. Shared raw
@@ -827,8 +827,8 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                             (pending.length ? ownBytes : scopeBytes) + SNAPSHOT_TARGET_BYTES > MAX_SNAPSHOT_BYTES ||
                             entries.some((entry) => entry.bytes > MAX_RETAINED_BYTES)
                         ) {
-                            // Alone, the scope itself is over the limit: every later request fails the same way.
-                            const Refusal = pending.length ? Error : TransformLimitError;
+                            // Only a single-target request proves that this target alone exceeds the scope limit.
+                            const Refusal = request.targets.length > 1 || pending.length ? Error : TransformLimitError;
                             throw new Refusal("The render's texts are over the limit of one request");
                         }
                     }
@@ -846,7 +846,7 @@ export function createTransformService(runnerDeps: GenerationRunnerDeps) {
                         ownBytes + bytes > MAX_SNAPSHOT_BYTES ||
                         pendingText + Buffer.byteLength(run.text) > MAX_TRANSFORM_REQUEST_TEXT_BYTES
                     ) {
-                        const Refusal = pending.length ? Error : TransformLimitError;
+                        const Refusal = request.targets.length > 1 || pending.length ? Error : TransformLimitError;
                         throw new Refusal("The render's texts are over the limit of one request");
                     }
                     stillValid(life);

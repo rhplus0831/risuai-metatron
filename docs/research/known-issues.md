@@ -6,7 +6,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 
 - [assets](#assets) (1)
 - [backup-sync-hub](#backup-sync-hub) (1)
-- [cbs-rendering](#cbs-rendering) (2)
 - [diagnostics](#diagnostics) (1)
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
@@ -29,17 +28,6 @@ Guide: [Backups, Realm Hub](../structure/backup-sync-hub.md#known-hazards).
 
 - The RisuRealm terms gate is client-side only: `GET /hub-proxy/*` (unauthenticated) and `POST /api/import/realm` do not
   check `ui.realmTermsAccepted`.
-
-## cbs-rendering
-
-Guide: [CBS Template Language and Message Rendering](../structure/cbs-rendering.md#known-hazards).
-
-- A refused request of several targets (a sum over the continuation's text limit, or a JSON body over its cap from
-  escaped sources that fit the source-byte chunking) stays transient and is batched the same way each round. A fix would
-  split a refused request.
-- The server checks scope limits on the scope loaded for that request, so a target whose request also named a large
-  non-member source character fails permanently beside it; a chat's own members are always loaded, so its rows normally
-  load the same scope.
 
 ## diagnostics
 

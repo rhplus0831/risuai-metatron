@@ -197,6 +197,8 @@ const settledFlag = <T>(promise: Promise<T>) => {
 const flush = () => vi.advanceTimersByTimeAsync(20);
 
 let frames: FrameRequestCallback[] = [];
+const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
 
 beforeEach(() => {
     vi.useFakeTimers();
@@ -227,7 +229,8 @@ afterEach(() => {
     setEpochMismatchListener(null);
     vi.restoreAllMocks();
     vi.useRealTimers();
-    vi.unstubAllGlobals();
+    vi.stubGlobal("requestAnimationFrame", originalRequestAnimationFrame);
+    vi.stubGlobal("cancelAnimationFrame", originalCancelAnimationFrame);
 });
 
 describe("captureTransform", () => {
@@ -624,6 +627,86 @@ describe("shared transform subscribers", () => {
 });
 
 describe("batching and splitting", () => {
+    it.each([400, 413])("splits a %s refusal of an escaped JSON body and sends both halves", async (status) => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        const sources = ["left", "right"].map((name) => "\u0000".repeat(200) + name);
+        state.handler = (path, body) =>
+            Buffer.byteLength(JSON.stringify(body)) > 2_000
+                ? { status, body: { error: "Request body too large" } }
+                : defaultHandler(path, body);
+        const calls = sources.map((source) =>
+            serverProcessScript(char(ref.chaId), source, "editdisplay", 0, {}, captured, "message"),
+        );
+        await flush();
+        expect((await Promise.all(calls)).map(({ data }) => data)).toEqual(sources.map((source) => `<${source}>`));
+        expect(transformPosts().map(({ body }) => body.targets.map((target: any) => target.source))).toEqual([
+            sources,
+            [sources[0]],
+            [sources[1]],
+        ]);
+        expect(state.toasts).toEqual([]);
+    });
+
+    it("bisects repeated refusals down to permanent singletons with one toast", async () => {
+        const ref = newChat(4);
+        const failed = vi.spyOn(recovery, "markDisplayTransformFailed");
+        const sources = ["a", "b", "c", "d"];
+        state.handler = () => ({ status: 413, body: { error: "Still too large" } });
+        const calls = sources.map((source, i) =>
+            serverProcessScript(char(ref.chaId), source, "editdisplay", i, {}, captureTransform(i)!, "message"),
+        );
+        await flush();
+        expect((await Promise.all(calls)).map(({ data }) => data)).toEqual(sources);
+        expect(
+            transformPosts()
+                .map(({ body }) => body.targets.length)
+                .sort(),
+        ).toEqual([1, 1, 1, 1, 2, 2, 4]);
+        expect(
+            transformPosts()
+                .filter(({ body }) => body.targets.length === 1)
+                .map(({ body }) => body.targets[0].source)
+                .sort(),
+        ).toEqual(sources);
+        expect(failed).not.toHaveBeenCalled();
+        expect(state.toasts).toEqual(["Render failed: Still too large"]);
+    });
+
+    it("separates transient scope failures while retaining the batch's cached success", async () => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        const reason = "The render's texts are over the limit of one request";
+        state.handler = (path, body) => {
+            if (body.targets.length === 3)
+                return {
+                    body: {
+                        results: body.targets.map((target: any) =>
+                            target.source === "cached"
+                                ? ok(target.id, "cached answer", { cached: true })
+                                : { id: target.id, ok: false, error: reason },
+                        ),
+                    },
+                };
+            if (body.targets[0].source === "large")
+                return {
+                    body: { results: [{ id: body.targets[0].id, ok: false, error: reason, permanent: true }] },
+                };
+            return defaultHandler(path, body);
+        };
+        const calls = ["normal", "large", "cached"].map((source) =>
+            serverProcessScript(char(ref.chaId), source, "editdisplay", 0, {}, captured, "message"),
+        );
+        await flush();
+        expect((await Promise.all(calls)).map(({ data }) => data)).toEqual(["<normal>", "large", "cached answer"]);
+        expect(transformPosts().map(({ body }) => body.targets.map((target: any) => target.source))).toEqual([
+            ["normal", "large", "cached"],
+            ["normal"],
+            ["large"],
+        ]);
+        expect(state.toasts).toEqual([`Render failed: ${reason}`]);
+    });
+
     it("batches a frame's calls into one request, shares identical targets, and maps the target kinds", async () => {
         const ref = newChat();
         const captured = captureTransform(1)!;
@@ -834,6 +917,65 @@ describe("batching and splitting", () => {
 });
 
 describe("plugin handlers (the two calls)", () => {
+    it("releases a refused continuation's snapshot before restarting both smaller requests", async () => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        const hook = vi.fn<(text: string) => string>((text) => `${text}+plugin`);
+        state.hooks.editdisplay.add(hook);
+        let releaseCleanup!: (reply: Reply) => void;
+        const cleanup = new Promise<Reply>((resolve) => {
+            releaseCleanup = resolve;
+        });
+        state.handler = (path, body) => {
+            if (path === "/api/transform")
+                return {
+                    body: {
+                        results: [],
+                        snapshotId: body.targets.length === 2 ? "original" : body.targets[0].source,
+                        pending: body.targets.map((target: any) => ({ id: target.id, text: `pre(${target.source})` })),
+                    },
+                };
+            if (body.snapshotId === "original")
+                return body.texts.every((text: any) => text.cancelled)
+                    ? cleanup
+                    : { status: 400, body: { error: "Continuation texts too large" } };
+            return defaultHandler(path, body);
+        };
+        const calls = ["left", "right"].map((source) =>
+            serverProcessScript(char(ref.chaId), source, "editdisplay", 0, {}, captured, "message"),
+        );
+        await flush();
+        expect(continuePosts().map(({ body }) => body)).toEqual([
+            {
+                clientId: "client-1",
+                snapshotId: "original",
+                texts: transformPosts()[0].body.targets.map((target: any) => ({
+                    id: target.id,
+                    text: `pre(${target.source})+plugin`,
+                })),
+            },
+            {
+                clientId: "client-1",
+                snapshotId: "original",
+                texts: transformPosts()[0].body.targets.map((target: any) => ({ id: target.id, cancelled: true })),
+            },
+        ]);
+        expect(transformPosts()).toHaveLength(1);
+        releaseCleanup({ body: { results: [] } });
+        await vi.advanceTimersByTimeAsync(0);
+        expect((await Promise.all(calls)).map(({ data }) => data)).toEqual([
+            "post(pre(left)+plugin)",
+            "post(pre(right)+plugin)",
+        ]);
+        expect(transformPosts().map(({ body }) => body.targets.map((target: any) => target.source))).toEqual([
+            ["left", "right"],
+            ["left"],
+            ["right"],
+        ]);
+        expect(hook.mock.calls.map(([text]) => text)).toEqual(["pre(left)", "pre(right)", "pre(left)", "pre(right)"]);
+        expect(state.toasts).toEqual([]);
+    });
+
     it("transforms all 320 targets without evicting snapshots while plugin hooks hold five chunks", async () => {
         const ref = newChat();
         const captured = captureTransform(0)!;
