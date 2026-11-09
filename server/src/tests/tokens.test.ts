@@ -695,6 +695,23 @@ describe("createTokenCounter", () => {
             expect(fetchImpl).toHaveBeenCalledTimes(1);
         });
 
+        it("keeps ab with model c separate from a with model bc in both in-flight counts and cached counts", async () => {
+            const { tokenizers } = stubTokenizers();
+            const fetchImpl = vi.fn<typeof fetch>(async (url) =>
+                ok(new URL(String(url)).pathname === "/v1beta/models/c:countTokens" ? 7 : 19),
+            );
+            const counter = createTokenCounter({ tokenizers, fetchImpl });
+            const c = google({ model: { tokenizer: LLMTokenizer.GoogleCloud, internalID: "c" } });
+            const bc = google({ model: { tokenizer: LLMTokenizer.GoogleCloud, internalID: "bc" } });
+
+            await expect(Promise.all([counter.count("ab", c), counter.count("a", bc)])).resolves.toEqual([7, 19]);
+            expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+            expect(await counter.count("ab", c)).toBe(7);
+            expect(await counter.count("a", bc)).toBe(19);
+            expect(fetchImpl).toHaveBeenCalledTimes(2);
+        });
+
         it("two scopes that resolve one aiModel to different models count separately, cached or not", async () => {
             // The two-scope case: the cache key carries the model's internalID.
             const { tokenizers } = stubTokenizers();

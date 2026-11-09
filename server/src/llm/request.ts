@@ -265,8 +265,8 @@ function normalizeOllamaStreamResponse(response: Response): Response {
 /**
  * Reshapes the prompt from the model flags. The leading system block kept with `hasFirstSystemPrompt` is left out of
  * the role alternation and the start-with-user handling, and is put back in front afterwards.
- * Message objects are mutated. On the first-system-only path, reading the next entry's role throws for an empty
- * prompt or after consuming a prompt made entirely of system entries.
+ * Message objects are mutated. Empty and all-system prompts still apply start-with-user handling and return with
+ * any collected system block restored at the front.
  */
 export function reformater(
     formated: OpenAIChat[],
@@ -279,7 +279,7 @@ export function reformater(
 
     if (!flags.includes(LLMFlags.hasFullSystemPrompt)) {
         if (flags.includes(LLMFlags.hasFirstSystemPrompt)) {
-            while (formated[0].role === "system") {
+            while (formated.length > 0 && formated[0].role === "system") {
                 if (systemPrompt) {
                     systemPrompt.content += "\n\n" + formated[0].content;
                 } else {

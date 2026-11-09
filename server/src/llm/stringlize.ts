@@ -149,7 +149,7 @@ export function stringlizeAINChat(formated: OpenAIChat[], char: string, continue
     }
     let res = resultString.join("\n\n");
     if (!continued) {
-        res += +`\n\n${char} 「`;
+        res += `\n\n${char} 「`;
     } else {
         res += " 「";
     }

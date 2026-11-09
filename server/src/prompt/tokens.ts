@@ -172,7 +172,7 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
 
     async function countWithGoogle(text: string, scope: TokenCountScope, signal?: AbortSignal): Promise<Encoded> {
         signal?.throwIfAborted();
-        const cacheKey = text + scope.model.internalID;
+        const cacheKey = JSON.stringify([text, scope.model.internalID ?? null]);
         const cached = googleCache.get(cacheKey);
         if (cached !== undefined) {
             return new Uint32Array(cached);

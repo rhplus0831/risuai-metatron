@@ -8,7 +8,7 @@ import { normalizeModelPresets, normalizeModelProfiles, normalizePresets } from 
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeProviders } from "../data/normalize/providers.ts";
 import type { RequestContext } from "../llm/context.ts";
-import { requestChatDataMain } from "../llm/request.ts";
+import { reformater, requestChatDataMain } from "../llm/request.ts";
 import { loadRequestDb } from "../llm/settings.ts";
 import { createTransport } from "../llm/transport.ts";
 
@@ -537,6 +537,34 @@ afterEach(() => {
 });
 
 describe("the server provider adapters", () => {
+    it("reformats empty and all-system prompts with first-system support and restores the system block at the adapter", async () => {
+        const replacements = {
+            systemContentReplacement: "system: {{slot}}",
+            systemRoleReplacement: "assistant" as const,
+        };
+        for (const mustStartWithUser of [false, true]) {
+            const flags: LLMFlags[] = [LLMFlags.hasFirstSystemPrompt];
+            if (mustStartWithUser) flags.push(LLMFlags.mustStartWithUserInput);
+            const user = mustStartWithUser ? [{ role: "user", content: " " }] : [];
+            const expected = [{ role: "system", content: "Be brief.\n\nStay in character." }, ...user];
+            const systemOnly = (): RequestArgs["formated"] => [
+                { role: "system", content: "Be brief." },
+                { role: "system", content: "Stay in character." },
+            ];
+
+            expect(reformater([], flags, replacements)).toEqual(user);
+            expect(reformater(systemOnly(), flags, replacements)).toEqual(expected);
+
+            const recorded = await run({
+                settings: { preset: { enableCustomFlags: true, customFlags: flags, ...replacements } },
+                arg: { ...prompt(), formated: systemOnly() },
+                upstream: () => chat("ok"),
+            });
+            expect(recorded.calls.map((call) => (call.body as { messages: unknown }).messages)).toEqual([expected]);
+            expect(recorded.result).toMatchObject({ type: "success", result: "ok" });
+        }
+    });
+
     it("OpenAI-compatible, buffered: the proxy key, model, parameters, bias strings, additional parameters and headers, and the answer", async () => {
         const recorded = await run({
             settings: {

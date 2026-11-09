@@ -231,6 +231,22 @@ describe("the legacy formats on the server", () => {
         await registry.dispose();
     });
 
+    it("NovelList: appends the character cue for a new turn and only the quote when continuing", async () => {
+        const { registry, calls } = harness({ aiModel: "novellist" }, {}, () => json({ data: ["こんにちは」"] }));
+        try {
+            await run(registry, body({ continue: false }));
+            expect(calls).toHaveLength(1);
+            expect((calls[0].body as { text: string }).text).toMatch(/\n\nCara 「$/);
+
+            await run(registry, body({ continue: true }));
+            expect(calls).toHaveLength(2);
+            expect((calls[1].body as { text: string }).text).toMatch(/ 「$/);
+            expect((calls[1].body as { text: string }).text).not.toMatch(/\n\nCara 「$/);
+        } finally {
+            await registry.dispose();
+        }
+    });
+
     it("NovelList: the AIN-formatted text and a multiline answer", async () => {
         const { registry, calls } = harness({ aiModel: "novellist" }, {}, () =>
             json({ data: ["こんにちは」Cara「元気？"] }),

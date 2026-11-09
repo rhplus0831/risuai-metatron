@@ -556,8 +556,8 @@ async function bufferStreamedReply(
  * The tab's copy of `server/src/llm/request.ts` `reformater`, for the formats that run in the tab (Plugin, WebLLM),
  * with the profile's system replacements. The leading system block kept with `hasFirstSystemPrompt` is left out of the
  * role alternation and the start-with-user handling, and is put back in front afterwards.
- * Message objects are mutated; the leading-system scan throws if it reaches an empty array, including an
- * all-system prompt, when first-system support is enabled without full-system support.
+ * Message objects are mutated. Empty and all-system prompts still apply start-with-user handling and return with
+ * any collected system block restored at the front.
  */
 export function reformater(
     formated: OpenAIChat[],
@@ -570,7 +570,7 @@ export function reformater(
 
     if (!flags.includes(LLMFlags.hasFullSystemPrompt)) {
         if (flags.includes(LLMFlags.hasFirstSystemPrompt)) {
-            while (formated[0].role === "system") {
+            while (formated.length > 0 && formated[0].role === "system") {
                 if (systemPrompt) {
                     systemPrompt.content += "\n\n" + formated[0].content;
                 } else {

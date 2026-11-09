@@ -68,7 +68,7 @@ import { trackedRecord } from "src/ts/storage/records.svelte";
 import { selectModelPreset, selectPreset, selection } from "src/ts/storage/selection.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../../shared/presets";
-import { requestChatData, requestChatDataMain } from "../request";
+import { reformater, requestChatData, requestChatDataMain } from "../request";
 import { applyChatTemplate } from "src/ts/process/templates/chatTemplate";
 import { applyAdditionalParameters } from "../shared";
 import { runTransformers } from "src/ts/process/transformers";
@@ -152,6 +152,29 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.restoreAllMocks();
+});
+
+describe("the tab reformater", () => {
+    it("returns empty and joined all-system prompts with first-system support and still applies start-with-user handling", () => {
+        const profile = { systemContentReplacement: "system: {{slot}}", systemRoleReplacement: "assistant" as const };
+        for (const mustStartWithUser of [false, true]) {
+            const flags: LLMFlags[] = [LLMFlags.hasFirstSystemPrompt];
+            if (mustStartWithUser) flags.push(LLMFlags.mustStartWithUserInput);
+            const user = mustStartWithUser ? [{ role: "user", content: " " }] : [];
+
+            expect(reformater([], flags, profile)).toEqual(user);
+            expect(
+                reformater(
+                    [
+                        { role: "system", content: "Be brief." },
+                        { role: "system", content: "Stay in character." },
+                    ],
+                    flags,
+                    profile,
+                ),
+            ).toEqual([{ role: "system", content: "Be brief.\n\nStay in character." }, ...user]);
+        }
+    });
 });
 
 describe("an escape request in the tab", () => {

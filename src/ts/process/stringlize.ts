@@ -3,7 +3,7 @@ import type { OpenAIChat } from "./index.svelte";
 import { getUserName } from "../util";
 
 /**
- * Serializes prompt messages for plain-text and AIN formats and trims generated text at speaker
+ * Serializes plain-text prompt messages and trims generated plain-text and AIN output at speaker
  * markers. Defaults read the active preset/persona through `src/ts/storage/settingsViews.svelte.ts`
  * and `getUserName` in `src/ts/util.ts`; request-bound callers must pass names where supported.
  */
@@ -134,35 +134,6 @@ export function getUnstringlizerChunks(
     return { chunks, extChunk: charNames.concat(chunks) };
 }
 
-/** Formats AIN dialogue; a non-continued suffix currently appends `NaN` through numeric coercion. */
-export function stringlizeAINChat(formated: OpenAIChat[], char: string, continued: boolean) {
-    let resultString: string[] = [];
-
-    for (const form of formated) {
-        console.log(form);
-        if ((form.memo && form.memo.startsWith("newChat")) || form.content === "[Start a new chat]") {
-            resultString.push("[新しいチャットの始まり]");
-            continue;
-        }
-        if (form.role === "system") {
-            resultString.push(form.content);
-        } else if (form.role === "user") {
-            resultString.push(...formatToAIN(getUserName(), form.content));
-        } else if (form.name || form.role === "assistant") {
-            resultString.push(...formatToAIN(form.name ?? char, form.content));
-        } else {
-            resultString.push(form.content);
-        }
-    }
-    let res = resultString.join("\n\n");
-    if (!continued) {
-        res += +`\n\n${char} 「`;
-    } else {
-        res += " 「";
-    }
-    return res;
-}
-
 function extractAINOutputStrings(inputString: string, characters: string[]) {
     let results: {
         content: string;
@@ -239,68 +210,4 @@ export function unstringlizeAIN(data: string, formated: OpenAIChat[], char: stri
     }
 
     return result;
-}
-
-function formatToAIN(name: string, content: string) {
-    function extractContent(str: string) {
-        let result: {
-            type: "outside" | "inside";
-            content: string;
-        }[] = [];
-        let lastEndIndex = 0;
-        let regex = /「(.*?)」/g;
-        let match: RegExpExecArray | null = null;
-
-        while ((match = regex.exec(str)) !== null) {
-            let start = match.index;
-            let end = start + match[0].length;
-            let inside = match[1];
-
-            if (start != lastEndIndex) {
-                let outside = str.slice(lastEndIndex, start);
-                result.push({
-                    type: "outside",
-                    content: outside,
-                });
-            }
-
-            result.push({
-                type: "inside",
-                content: inside,
-            });
-
-            lastEndIndex = end;
-        }
-
-        if (lastEndIndex < str.length) {
-            let outside = str.slice(lastEndIndex);
-            result.push({
-                type: "outside",
-                content: outside,
-            });
-        }
-
-        return result;
-    }
-
-    let quoteCounter = 0;
-    content = content.replace(/"/g, () => {
-        quoteCounter++;
-        if (quoteCounter % 2 !== 0) {
-            return "「";
-        } else {
-            return "」";
-        }
-    });
-
-    const conts = extractContent(content);
-    let strs: string[] = [];
-    for (const cont of conts) {
-        if (cont.type === "inside") {
-            strs.push(`${name} 「${cont.content}」`);
-        } else {
-            strs.push(cont.content);
-        }
-    }
-    return strs;
 }
