@@ -15,7 +15,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
-- [Client and plugins](#client-and-plugins) (20)
+- [Client and plugins](#client-and-plugins) (18)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
 
 ## Chat store, sync, and change feeds
@@ -346,20 +346,6 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 
 **Why it matters:** a large JSON card keeps all of its assets' base64 text (about 4/3 of the decoded bytes) alive until the whole save finishes.
 **Suggested handling:** raise on a JSON or V3 card import memory complaint; the text is a JSON string in hand with no byte range to reread, so a fix drops references from the card object or decodes up front under the queue's byte cap. The PNG stream path keeps the same retention by owner decision (`assets.md` Known Hazards).
-
-### Bulk plugin character adds stay quadratic
-
-`addPreparedCharacter` in `src/ts/storage/characterStore.svelte.ts` (~232) runs `indexOf` (~73, a `findIndex` over the list), then `insertCharacterRecord` → `requireNewId` (`src/ts/storage/records.svelte.ts` ~3079, `list.some`), then `checkCharOrder()`, once per added character. The Implementation Audit Fixes run's P4 (2026-11-06) made `applyPluginCharacters` (`src/ts/plugins/apiV3/v3.svelte.ts` ~1704) index existing characters once, so a round trip with no new characters is linear, but a `setDatabase` that appends N characters still costs N × list inside these helpers. Also in `v3.svelte.ts`: `getChatFromIndex` (~2597) and `setChatToIndex` (~2708) resolve one id with `chatList(chaId)[chatIndex]?.id`, building every member's list entry for one lookup, where `chatMemberPage(chaId, i, i + 1)` would not. Found during P4.
-
-**Why it matters:** bulk character imports through the plugin API, and per-index chat accessors on characters with many chats.
-**Suggested handling:** take it when the character add path or those two accessors are next touched.
-
-### A memory algorithm switch during a detached read omits its projection
-
-Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it needs a memory-algorithm settings change between the server's response and the client's assembly of one plugin read; one incorrect read, nothing stored. The detached `getDatabase` read in `src/ts/plugins/apiV3/v3.svelte.ts` checks cache hits against the current algorithm (`detachedChatCache.ts`), but a fresh response keeps the algorithm captured before its await; final assembly can remove a sealed projection when leaving Structured Memory but cannot add one when entering it, and `refreshChatProjections` (~1063) serves loaded chats only. Source: [PS2](../manual-audit/archive/plugin-storage-data-api-2026-11-05.md#ps2--switching-to-structured-memory-during-a-detached-read-omits-its-projection).
-
-**Why it matters:** a plugin reading across the switch gets no `hypaV3Data` for an unloaded chat while a loaded chat has it.
-**Suggested handling:** fence fresh detached responses by the captured algorithm as cache hits are, and retry or refresh when it changed; test both switch directions.
 
 ### The sandbox bridge drops an own `__proto__` key
 
