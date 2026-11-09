@@ -16,7 +16,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
 - [Client and plugins](#client-and-plugins) (8)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (2)
 
 ## Chat store, sync, and change feeds
 
@@ -314,18 +313,3 @@ Left on purpose by slice P2 of the RisuNest Small Wins plan (ed9d207c5, 2026-10-
 
 **Why it matters:** a reload can run a job against a half-unloaded hook list. (The failed-start and unsignalled-fetch bullets were fixed by Found Issues Clearance slice F8.)
 **Suggested handling:** pick these up when a change touches plugin reload timing (S1 safe boot uses P2's reload guard) or a bug report does. Related: "A multi-tab plugin removal can bring its deleted data back".
-
-## Build, drivers, and e2e
-
-### pnpm check does not type-check e2e specs
-
-`pnpm check` (svelte-check over `tsconfig.json`, then the server's `tsc`) never sees `e2e/`: `tsconfig.json` `include` covers `src/`, `shared/` and `public/sw.js` only, there is no e2e tsconfig, and Playwright transpiles without type checks. An ad-hoc `tsc` over `e2e/` (a temporary tsconfig extending the root one) reported a real TS2339 at `e2e/multiClient.spec.ts` ~396 (`characterId` on `ResourceConflict | ChatOrderConflict`, which needs the `kind === "chatOrder"` narrowing to apply); the other errors were missing node types and absolute `/src/...` dynamic imports. Found 2026-11-06 by Multi-Client Data Safety Checks slice B.
-
-**Why it matters:** type errors in specs and harnesses ship silently, and briefs that count `pnpm check` as type verification for an e2e-only change are wrong.
-**Suggested handling:** add an e2e tsconfig (node and Playwright types, a `/src/*` path mapping) and wire it into `pnpm check`; fix the `multiClient.spec.ts` narrowing in the same change.
-
-### Automatic browser spec selection misses extensionless imports
-
-Both multi-client specs import `./multiClient` and `./fixtures`. In `util/agentE2e.mjs`, `staticImports` records those literal paths, while Git reports `e2e/multiClient.ts` and `e2e/fixtures.ts`. Reproduced on 2026-11-07 by passing each changed path separately to `selectSpecs` with `loadSpecs(".")` and `repositoryFiles(".")`. Each result had an empty `selected` list and put the helper in `unnamed`.
-
-A helper-only change can therefore miss its browser tests during automatic selection. Name the affected specs explicitly until the selector resolves extensionless imports to their on-disk paths. All current specs import `./fixtures`, while only the two multi-client specs import `./multiClient`. The [test harness guide](../structure/test-harness.md#browser-specs) gives both commands.
