@@ -741,11 +741,11 @@ export async function translateHTML(
                         // reconstruct the p tag
                         node.innerHTML = "";
                         for (const sentence of sentences) {
-                            const newNode = document.createElement("span");
+                            const newNode = dom.createElement("span");
                             newNode.textContent = sentence;
                             node.appendChild(newNode);
                             collectNodeText(newNode, true);
-                            node.appendChild(document.createElement("br"));
+                            node.appendChild(dom.createElement("br"));
                         }
                     } else {
                         // Single sentence
@@ -864,7 +864,7 @@ export async function translateHTML(
             node.textContent = processedTranslated;
             applyMarkdownToNode(node);
         } else {
-            const newNode = document.createElement(node.nodeType === Node.TEXT_NODE ? "span" : node.nodeName);
+            const newNode = dom.createElement(node.nodeType === Node.TEXT_NODE ? "span" : node.nodeName);
             // Preserve the HTML produced by the editdisplay script.
             newNode.innerHTML = processedTranslated;
             node.parentNode.replaceChild(newNode, node);

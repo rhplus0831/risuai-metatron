@@ -11,6 +11,8 @@ vi.mock("src/ts/process/request/request", async () =>
 );
 
 import { isTransient } from "src/ts/parser/renderErrors";
+import type { CapturedTransform } from "src/ts/parser/transformClient";
+import * as transformClient from "src/ts/parser/transformClient";
 import { globalFetch } from "src/ts/globalApi.svelte";
 import { requestChatData } from "src/ts/process/request/request";
 import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -128,5 +130,93 @@ describe("translateHTML render lifetime", () => {
         expect(read).toHaveBeenCalledTimes(1);
         expect(provider).toHaveBeenCalledTimes(0);
         expect(requestChatData).toHaveBeenCalledTimes(0);
+    });
+});
+
+describe("translateHTML document ownership", () => {
+    it("replaces an editdisplay-rewritten combined paragraph in the parsed document", async () => {
+        settings.memoryTranslateMedia.combineTranslation = true;
+        const source = "<p>Paragraph rewritten after translation</p>";
+        const dom = new DOMParser().parseFromString(source, "text/html");
+        const originalParagraph = dom.body.firstElementChild;
+        vi.spyOn(DOMParser.prototype, "parseFromString").mockReturnValueOnce(dom);
+        const createElement = vi.spyOn(dom, "createElement");
+        // Inserting a live-document element would adopt it, hiding where its markup was parsed.
+        vi.spyOn(document, "createElement").mockImplementation(() => {
+            throw new Error("Translation must create elements in the parsed document");
+        });
+        const transform: CapturedTransform = {
+            chatRef: { chaId: "simple", chatId: "chat" },
+            context: {
+                characterId: "simple",
+                chatId: "chat",
+                presetId: "preset",
+                modelPresetId: "model-preset",
+                personaId: "persona",
+                selectedPersonaId: "persona",
+            },
+            pluginContext: undefined,
+            generation: 0,
+            cacheGeneration: 0,
+            noCache: false,
+            locked: false,
+            installVersion: 0,
+            hadUnackedWork: false,
+            mixedDisplay: false,
+        };
+        vi.spyOn(transformClient, "serverProcessScript").mockResolvedValueOnce({
+            data: '<strong data-editdisplay="rewritten">Processed translation</strong>',
+            emoChanged: false,
+        });
+
+        const result = await translateHTML(source, false, "", 7, false, transform);
+
+        expect(transformClient.serverProcessScript).toHaveBeenCalledOnce();
+        const replacement = dom.body.firstElementChild;
+        expect(replacement).not.toBe(originalParagraph);
+        expect(createElement.mock.results.map(({ value }) => value)).toContain(replacement);
+        expect(replacement?.ownerDocument).toBe(dom);
+        const rendered = new DOMParser().parseFromString(result, "text/html");
+        expect(rendered.querySelector("p > strong[data-editdisplay='rewritten']")?.textContent?.trim()).toBe(
+            "Processed translation",
+        );
+    });
+
+    it("rebuilds combined paragraph lines with spans and breaks from the parsed document", async () => {
+        settings.memoryTranslateMedia.combineTranslation = true;
+        const translations = new Map([
+            ["First combined line", "First translated line"],
+            ["Second combined line", "Second translated line"],
+            ["Third combined line", "Third translated line"],
+        ]);
+        provider.mockImplementation(async (input) => {
+            const text = new URL(String(input)).searchParams.get("q");
+            return Response.json([[[translations.get(text!)]]]);
+        });
+        const source = "<p>First combined line<br>Second combined line<br>Third combined line</p>";
+        const dom = new DOMParser().parseFromString(source, "text/html");
+        vi.spyOn(DOMParser.prototype, "parseFromString").mockReturnValueOnce(dom);
+        const createElement = vi.spyOn(dom, "createElement");
+        vi.spyOn(document, "createElement").mockImplementation(() => {
+            throw new Error("Translation must create elements in the parsed document");
+        });
+
+        const result = await translateHTML(source, false, "", -1, false, null);
+
+        const rendered = new DOMParser().parseFromString(result, "text/html");
+        const lines = [...rendered.querySelectorAll("p > span")];
+        expect(lines.map((line) => line.textContent?.trim())).toEqual([
+            "First translated line",
+            "Second translated line",
+            "Third translated line",
+        ]);
+        for (const line of lines.slice(0, -1)) {
+            expect(line.nextElementSibling?.tagName).toBe("BR");
+        }
+        const createdElements = createElement.mock.results.map(({ value }) => value);
+        for (const node of dom.querySelectorAll("p > span, p > br")) {
+            expect(createdElements).toContain(node);
+            expect(node.ownerDocument).toBe(dom);
+        }
     });
 });
