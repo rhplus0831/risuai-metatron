@@ -16,7 +16,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [live-updates](#live-updates) (2)
 - [llm-requests](#llm-requests) (4)
 - [mcp](#mcp) (1)
-- [media-aux](#media-aux) (2)
 - [memory](#memory) (10)
 - [persistence](#persistence) (2)
 - [plugin-sandbox](#plugin-sandbox) (6)
@@ -181,13 +180,6 @@ Guide: [MCP: Client Registry, Remote and Internal Clients, RisuAccess, Tool Disp
   same collection is not hydrated into the tab): another writer of the collection can make the tab's write conflict and
   be discarded, and the next refresh then sends a token the server may have spent (an unsuccessful refresh answer goes
   on to a full login; a rejected refresh fetch rejects the login).
-
-## media-aux
-
-Guide: [Media and Auxiliary Features: TTS, Image Generation, Media, Playground](../structure/media-aux.md#known-hazards).
-
-- `sayTTS` passes no hook timeout, so a hanging plugin hook stalls speech.
-- `compressImage`'s lossy path (`doLossyCompression`) labels its input as PNG regardless of the detected type.
 
 ## memory
 

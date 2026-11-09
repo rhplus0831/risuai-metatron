@@ -6,8 +6,6 @@
  * or removal during an awaited hook cannot change the current iteration.
  */
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 /** Text before synthesis, with the literal provider mode and character id for plugin preprocessing. */
 export interface BeforeTTSContext {
     text: string;
@@ -81,8 +79,8 @@ export function getTTSPostprocessors(): ReadonlyArray<TTSHookFn<AfterTTSContext,
  * next hook. `skip` ends the pipeline immediately without merging that result.
  * Thrown/rejected errors are logged and ignored. A positive `timeoutMs` logs and
  * ignores a timed-out result without cancelling the hook; absent or non-positive
- * timeouts wait indefinitely. `src/ts/process/tts.ts` supplies no hook timeout and
- * uses its own disposable-buffer pipeline for audio postprocessors.
+ * timeouts wait indefinitely. `src/ts/process/tts.ts` supplies the shared callback timeout and
+ * uses its own disposable-buffer pipeline with the same timeout for audio postprocessors.
  */
 export async function runHookPipeline<Ctx extends object, Res extends { skip?: boolean }>(
     hooks: ReadonlyArray<TTSHookFn<Ctx, Res>>,
@@ -94,12 +92,15 @@ export async function runHookPipeline<Ctx extends object, Res extends { skip?: b
 
     for (const hook of hooks) {
         let result: Res | void | typeof TIMEOUT;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
             const hookPromise = Promise.resolve().then(() => hook(current));
             if (timeoutMs !== undefined && timeoutMs > 0) {
                 result = await Promise.race<Res | void | typeof TIMEOUT>([
                     hookPromise,
-                    sleep(timeoutMs).then(() => TIMEOUT),
+                    new Promise<typeof TIMEOUT>((resolve) => {
+                        timer = setTimeout(() => resolve(TIMEOUT), timeoutMs);
+                    }),
                 ]);
             } else {
                 result = await hookPromise;
@@ -107,6 +108,8 @@ export async function runHookPipeline<Ctx extends object, Res extends { skip?: b
         } catch (err) {
             console.error("[TTS hook] threw, continuing with next hook:", err);
             continue;
+        } finally {
+            clearTimeout(timer);
         }
 
         if (result === TIMEOUT) {

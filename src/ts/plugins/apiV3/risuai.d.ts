@@ -1852,11 +1852,8 @@ interface RisuaiPluginAPI {
      * receives the previous hook's output. If a hook throws, its result is
      * discarded and the next hook runs.
      *
-     * No timeout is enforced on hook execution (consistent with
-     * `addRisuScriptHandler` and `addRisuReplacer`), so a hook that hangs will
-     * stall TTS playback for that message. Plugins that call slow services
-     * (auxiliary LLMs, remote analysis) should implement their own
-     * `AbortController` + timer if cancellation is needed.
+     * Hooks use the shared 60-second callback allowance. A timed-out result is
+     * discarded and the next hook runs; the hook itself is not cancelled.
      *
      * Applies to all providers (including 'webspeech'). No permission prompt.
      * Auto-unregistered when the plugin unloads.
@@ -1878,9 +1875,8 @@ interface RisuaiPluginAPI {
      * The hook receives the raw encoded audio bytes and may return replacement
      * audio (with optional new mimeType) or `{ skip: true }` to suppress playback.
      *
-     * Sequential pipeline semantics identical to `addTTSPreprocessor`. No
-     * timeout is enforced on hook execution; plugins that perform long-running
-     * audio transforms should self-manage cancellation.
+     * Sequential pipeline and timeout semantics identical to `addTTSPreprocessor`.
+     * Timed-out hooks should self-manage cancellation of their audio work.
      *
      * Skipped for the 'webspeech' provider (browser-native synthesis does not
      * produce an audio buffer) and the 'vits' provider (uses a separate playback

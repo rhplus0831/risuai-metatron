@@ -1,3 +1,4 @@
+import { LLM_CALLBACK_TIMEOUT_MS } from "../../../shared/llm/request.ts";
 import { type ClientCharacter, selectedCharacter } from "../storage/characterStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";
 import { auxFetch } from "../network/auxFetch";
@@ -127,8 +128,8 @@ async function playProcessedAudio(audio: ArrayBuffer, ctx: TTSPlaybackContext, v
  *
  * Returns the final audio bytes (possibly replaced by a hook), the final
  * mimeType, and whether a hook requested a skip. Hooks run sequentially; a thrown
- * error is logged and the next hook runs. There is no timeout, so a hanging hook
- * stalls this speech run.
+ * error or a timeout at the shared callback allowance is logged and the next hook runs.
+ * Timed-out hooks may finish, but their results are ignored.
  */
 async function runPostprocessorPipeline(
     audio: ArrayBuffer,
@@ -144,18 +145,26 @@ async function runPostprocessorPipeline(
     for (const hook of hooks) {
         const disposable = currentAudio.slice(0); // fresh clone per hook
         let result: AfterTTSResult | void;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-            result = await Promise.resolve().then(() =>
-                hook({
-                    audio: disposable,
-                    mimeType: currentMime,
-                    ttsMode: ctx.ttsMode,
-                    characterId: ctx.characterId,
+            result = await Promise.race([
+                Promise.resolve().then(() =>
+                    hook({
+                        audio: disposable,
+                        mimeType: currentMime,
+                        ttsMode: ctx.ttsMode,
+                        characterId: ctx.characterId,
+                    }),
+                ),
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new Error("TTS hook timed out")), LLM_CALLBACK_TIMEOUT_MS);
                 }),
-            );
+            ]);
         } catch (err) {
             console.error("[TTS postprocessor] threw, continuing with next hook:", err);
             continue;
+        } finally {
+            clearTimeout(timer);
         }
 
         if (!result) continue;
@@ -177,7 +186,7 @@ async function playAudio(audio: ArrayBuffer, mimeType: string, ctx: TTSPlaybackC
 /**
  * Speaks through webspeech, elevenlab, VOICEVOX, openai, novelai, huggingface, vits,
  * gptsovits, or fishspeech, selected by `character.ttsMode`; null uses the selected
- * non-group character. Preprocessors have no timeout, so a hanging hook stalls speech.
+ * non-group character. Hooks use the shared callback timeout and ignore late results.
  *
  * VOICEVOX and Hugging Face pass the run's signal to their translators in
  * `src/ts/translator/translator.ts`, suppressing translator alerts after cancellation.
@@ -216,11 +225,15 @@ export async function sayTTS(character: ClientCharacter, text: string) {
             }
         }
 
-        const beforeResult = await runHookPipeline<BeforeTTSContext, BeforeTTSResult>(getTTSPreprocessors(), {
-            text,
-            ttsMode: character.ttsMode ?? "",
-            characterId: character.chaId,
-        });
+        const beforeResult = await runHookPipeline<BeforeTTSContext, BeforeTTSResult>(
+            getTTSPreprocessors(),
+            {
+                text,
+                ttsMode: character.ttsMode ?? "",
+                characterId: character.chaId,
+            },
+            LLM_CALLBACK_TIMEOUT_MS,
+        );
         if (beforeResult.skip || generation !== stopGeneration) {
             return;
         }

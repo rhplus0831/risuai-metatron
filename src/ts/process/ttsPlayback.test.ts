@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClientCharacter } from "../storage/characterStore.svelte";
+import { LLM_CALLBACK_TIMEOUT_MS } from "../../../shared/llm/request.ts";
 
 const deps = vi.hoisted(() => ({
     fetch: vi.fn(),
@@ -36,13 +37,33 @@ vi.mock("src/lang", () => ({ language: { errors: { httpError: "HTTP error: " } }
 import { sayTTS, stopTTS } from "./tts";
 import { runVITS } from "./transformers";
 import { runTranslator } from "../translator/translator";
+import {
+    registerTTSPreprocessor,
+    unregisterTTSPreprocessor,
+    registerTTSPostprocessor,
+    unregisterTTSPostprocessor,
+    type BeforeTTSContext,
+    type BeforeTTSResult,
+    type AfterTTSContext,
+    type AfterTTSResult,
+    type TTSHookFn,
+} from "./ttsHooks";
+
+const originalGlobals = new Map(
+    ["fetch", "AudioContext", "speechSynthesis", "SpeechSynthesisUtterance"].map((key) => [
+        key,
+        Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+);
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
-    const promise = new Promise<T>((done) => {
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
         resolve = done;
+        reject = fail;
     });
-    return { promise, resolve };
+    return { promise, resolve, reject };
 }
 class Source {
     buffer: unknown = null;
@@ -119,11 +140,136 @@ beforeEach(() => {
 });
 afterEach(() => {
     stopTTS();
-    vi.unstubAllGlobals();
+    for (const [key, descriptor] of originalGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+    }
     vi.restoreAllMocks();
 });
 
 describe("sayTTS and stopTTS", () => {
+    it.each([false, true])(
+        "times out a real preprocessor, continues with its original text, and honors the next hook's skip=%s",
+        async (skip) => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            vi.spyOn(console, "error").mockImplementation(() => {});
+            const started = deferred<void>();
+            const late = deferred<BeforeTTSResult>();
+            const slow: TTSHookFn<BeforeTTSContext, BeforeTTSResult> = () => {
+                started.resolve();
+                return late.promise;
+            };
+            const seen: BeforeTTSContext[] = [];
+            const next = vi.fn<TTSHookFn<BeforeTTSContext, BeforeTTSResult>>((ctx) => {
+                seen.push({ ...ctx });
+                return { text: `${ctx.text} next`, skip };
+            });
+            registerTTSPreprocessor(slow);
+            registerTTSPreprocessor(next);
+            const work = sayTTS(character("elevenlab"), "Hello");
+            try {
+                await started.promise;
+                await vi.advanceTimersByTimeAsync(LLM_CALLBACK_TIMEOUT_MS - 1);
+                expect(next).not.toHaveBeenCalled();
+                expect(deps.fetch).not.toHaveBeenCalled();
+                await vi.advanceTimersByTimeAsync(1);
+                expect(seen).toEqual([{ text: "Hello", ttsMode: "elevenlab", characterId: "speaker" }]);
+                await work;
+                if (skip) {
+                    expect(deps.fetch).not.toHaveBeenCalled();
+                } else {
+                    expect(JSON.parse(deps.fetch.mock.lastCall![1].body).text).toBe("Hello next");
+                }
+                expect(sources).toHaveLength(skip ? 0 : 1);
+                expect(vi.getTimerCount()).toBe(0);
+                if (skip) late.reject(new Error("late plugin rejection"));
+                else late.resolve({ text: "late replacement", skip: true });
+                await vi.advanceTimersByTimeAsync(0);
+                expect(next).toHaveBeenCalledOnce();
+                expect(sources).toHaveLength(skip ? 0 : 1);
+                expect(deps.alert).not.toHaveBeenCalled();
+            } finally {
+                late.resolve({});
+                await work;
+                unregisterTTSPreprocessor(slow);
+                unregisterTTSPreprocessor(next);
+                vi.clearAllTimers();
+                vi.useRealTimers();
+            }
+        },
+    );
+
+    it.each([false, true])(
+        "times out a real audio postprocessor and supplies fresh original bytes to the next hook with skip=%s",
+        async (skip) => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            vi.spyOn(console, "error").mockImplementation(() => {});
+            const started = deferred<void>();
+            const late = deferred<AfterTTSResult>();
+            let discarded!: ArrayBuffer;
+            const slow: TTSHookFn<AfterTTSContext, AfterTTSResult> = (ctx) => {
+                discarded = ctx.audio;
+                structuredClone(ctx.audio, { transfer: [ctx.audio] });
+                started.resolve();
+                return late.promise;
+            };
+            const seen: AfterTTSContext[] = [];
+            const seenBytes: number[][] = [];
+            const next: TTSHookFn<AfterTTSContext, AfterTTSResult> = (ctx) => {
+                seen.push(ctx);
+                seenBytes.push([...new Uint8Array(ctx.audio)]);
+                structuredClone(ctx.audio, { transfer: [ctx.audio] });
+                return { skip };
+            };
+            const tail = vi.fn<TTSHookFn<AfterTTSContext, AfterTTSResult>>((ctx) => {
+                seenBytes.push([...new Uint8Array(ctx.audio)]);
+            });
+            registerTTSPostprocessor(slow);
+            registerTTSPostprocessor(next);
+            registerTTSPostprocessor(tail);
+            const work = sayTTS(character("elevenlab"), "Hello");
+            try {
+                await started.promise;
+                await vi.advanceTimersByTimeAsync(LLM_CALLBACK_TIMEOUT_MS - 1);
+                expect(seen).toHaveLength(0);
+                expect(decode).not.toHaveBeenCalled();
+                await vi.advanceTimersByTimeAsync(1);
+                expect(seen).toHaveLength(1);
+                await work;
+                expect(discarded.byteLength).toBe(0);
+                expect(seen[0]).toMatchObject({ mimeType: "audio/wav", ttsMode: "elevenlab", characterId: "speaker" });
+                expect(seen[0].audio).not.toBe(discarded);
+                expect(seenBytes).toEqual(
+                    skip
+                        ? [[1, 2, 3]]
+                        : [
+                              [1, 2, 3],
+                              [1, 2, 3],
+                          ],
+                );
+                expect(tail).toHaveBeenCalledTimes(skip ? 0 : 1);
+                expect(decode).toHaveBeenCalledTimes(skip ? 0 : 1);
+                if (!skip) expect([...new Uint8Array(decode.mock.lastCall![0])]).toEqual([1, 2, 3]);
+                expect(sources).toHaveLength(skip ? 0 : 1);
+                expect(vi.getTimerCount()).toBe(0);
+                if (skip) late.reject(new Error("late audio rejection"));
+                else late.resolve({ audio: new Uint8Array([9]).buffer, mimeType: "audio/mpeg", skip: true });
+                await vi.advanceTimersByTimeAsync(0);
+                expect(seen).toHaveLength(1);
+                expect(sources).toHaveLength(skip ? 0 : 1);
+                expect(deps.alert).not.toHaveBeenCalled();
+            } finally {
+                late.resolve({});
+                await work;
+                unregisterTTSPostprocessor(slow);
+                unregisterTTSPostprocessor(next);
+                unregisterTTSPostprocessor(tail);
+                vi.clearAllTimers();
+                vi.useRealTimers();
+            }
+        },
+    );
+
     it("encodes the entire translated VOICEVOX audio_query text and one speaker without a doubled slash", async () => {
         await sayTTS(character("VOICEVOX"), "English source");
         expect(deps.translateVox).toHaveBeenCalledWith("English source", expect.any(AbortSignal));
