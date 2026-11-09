@@ -34,7 +34,8 @@ import { createFakeLockManager, type FakeLockManager } from "./fakeLockManager";
 // ownership protocol (a reload, a duplicated id, live and dead owners, sequential recoverers, a
 // collision made a draft), the schema repair, the deadlines on an open, a startup read, a recover
 // wait, and a close, and the unknown rows that are kept through everything. No test waits on a real
-// timer: deadlines run on faked `setTimeout` and the database is driven through it.
+// timer: deadlines use fake timeout functions; fake-indexeddb completes on real `setImmediate`,
+// and journal timestamps use the injected clock.
 
 const PENDING = Symbol("pending");
 const T0 = 1_700_000_000_000;
@@ -149,7 +150,7 @@ async function rawPut(factory: IDBFactory, key: string, value: unknown): Promise
     db.close();
 }
 
-/** Resolves `promise` by advancing the faked `setTimeout` (which also drives `fake-indexeddb`), or `PENDING` after `ms`. */
+/** Advances fake deadlines while allowing database continuations, or returns `PENDING` after `ms` of fake time. */
 async function drive<T>(promise: Promise<T>, ms: number): Promise<T | typeof PENDING> {
     let settled: { value?: T; error?: unknown; failed: boolean } | null = null;
     promise.then(
@@ -241,6 +242,9 @@ function hangable(real: IDBFactory): { factory: IDBFactory; hang: { on: boolean 
 }
 
 beforeEach(() => {
+    // Hold open, seed, transaction, recovery, and close deadlines until explicitly advanced.
+    // fake-indexeddb needs real setImmediate; timestamps already use the harness clock.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -500,7 +504,6 @@ describe("start and ownership", () => {
     });
 
     it("an open that never answers makes start false as `timeout` at the bound, releasing the owner lock; a blocked one as `blocked`; a connection arriving later is closed", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         for (const blocked of [false, true]) {
             const h = harness();
             const close = vi.fn();
@@ -539,7 +542,6 @@ describe("start and ownership", () => {
     });
 
     it("a startup read that never finishes (a stalled database) makes start false as `timeout` at the bound and releases the owner lock, instead of hanging boot", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const h = harness();
         const { factory, hang } = hangable(h.factory);
         const first = page(h, { indexedDB: factory, openTimeoutMs: 50 });
@@ -643,7 +645,6 @@ describe("start and ownership", () => {
     });
 
     it("close gives up on a stalled write at the bound, reporting `timeout` (the write fails as `timeout` too), and still releases the owner lock", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const h = harness();
         const { factory, hang } = hangable(h.factory);
         const tab = page(h, { indexedDB: factory, openTimeoutMs: 50 });
@@ -666,7 +667,6 @@ describe("start and ownership", () => {
 
 describe("writes, removals, and versions", () => {
     it("combines writes and captured-version removals in one transaction, preserving newer layers and creation time", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const h = harness();
         const { journal } = await started(h);
         const v1 = journal.nextVersion();
@@ -716,7 +716,6 @@ describe("writes, removals, and versions", () => {
     });
 
     it("commits a conflict draft and layer removal atomically, retrying the same draft id without losing newer work", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const h = harness();
         const { journal } = await started(h);
         const v1 = journal.nextVersion();
@@ -1524,7 +1523,6 @@ describe("adopting orphans", () => {
     });
 
     it("a recover lock another holder keeps makes adoption skip at the bound as `journalFailed timeout`, taking nothing, and the request is withdrawn", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const h = harness();
         const dead = page(h);
         expect(await drive(dead.journal.start(), 50)).toBe(true);
@@ -1550,9 +1548,6 @@ describe("adopting orphans", () => {
 
 // Recovery owns prior-page chat/order rows, including after orphan adoption; record rows stay writable.
 describe("chat and order rows reserved for recovery", () => {
-    beforeEach(() => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    });
     it.each(["reload", "orphan adoption"] as const)(
         "preserves previous chat and order layers through new-page writes and removals after %s",
         async (arrival) => {
@@ -1663,7 +1658,6 @@ describe("chat and order rows reserved for recovery", () => {
 
 describe("partial recovery hand-over", () => {
     it("drafts only pending chat work, releases the stored resend and order versions, and permits later writes", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const h = harness();
         const old = await started(h);
         const chatAddress = { epoch: EPOCH, scope: "chat" as const, target: chatTarget("c1", "chat") };

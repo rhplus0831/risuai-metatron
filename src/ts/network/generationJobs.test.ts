@@ -125,8 +125,9 @@ class FakeSocket {
     }
 }
 
-const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-/** A few microtask turns, for a check under fake timers (`flush` would wait on a faked timer). */
+// Drain ready continuations without spending connect, request, or liveness time.
+const flush = () => vi.advanceTimersByTimeAsync(0);
+/** Microtask-only observations while timeout and interval clocks are held. */
 const microtasks = async () => {
     for (let turn = 0; turn < 10; turn += 1) {
         await Promise.resolve();
@@ -153,6 +154,7 @@ const startFollow: Transport["followGenerationJob"] = (jobId, onEvent, options) 
 };
 
 beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.resetModules();
     stubs.auth.length = 0;
     FakeSocket.instances = [];
@@ -184,7 +186,6 @@ afterEach(() => {
 
 describe("handoff transport", () => {
     it("posts a manual handoff for the named job with this tab, the chosen target and the loaded epoch", async () => {
-        vi.useFakeTimers();
         stubs.fetch.mockResolvedValue(Response.json({ offered: true }));
         expect(await transport.requestGenerationHandoff("job/one", "chosen-worker")).toBe("offered");
         expect(stubs.fetch).toHaveBeenCalledTimes(1);
@@ -199,7 +200,6 @@ describe("handoff transport", () => {
     });
 
     it("posts a takeover with this client, treats 409 and 404 as unavailable, and preserves handedOff on reads", async () => {
-        vi.useFakeTimers();
         const jobId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
         stubs.fetch.mockResolvedValueOnce(json(200, { ticket: "one-use / ticket" }));
         expect(await transport.takeoverGenerationJob(jobId)).toBe("one-use / ticket");
@@ -234,7 +234,6 @@ describe("handoff transport", () => {
     });
 
     it("attaches with the ticket and uses the latest role for callbacks while ignoring unknown job events", async () => {
-        vi.useFakeTimers();
         const ref = { chaId: "c", chatId: "k" };
         const follow = startFollow("worker", (event) => transport.applyGenerationEvent("worker", ref, event, follow), {
             ticket: "ticket / + ?",
@@ -396,7 +395,6 @@ describe("the requests", () => {
     ])(
         "keeps uncertainty=$uncertain after an unanswered create followed by $status $refusal.error",
         async ({ status, refusal, uncertain }) => {
-            vi.useFakeTimers();
             const auth = await import("../storage/serverAuth");
             vi.spyOn(auth, "authFetch").mockImplementation((path, init, options) => {
                 options?.beforeDispatch?.();
@@ -444,7 +442,6 @@ describe("the requests", () => {
         ["stop", "fetch"],
         ["stop", "body"],
     ] as const)("bounds the chat %s exchange including stalled %s to ten seconds", async (operation, phase) => {
-        vi.useFakeTimers();
         const auth = await import("../storage/serverAuth");
         const authentication = deferred();
         const fetched = deferred<Response>();
@@ -484,7 +481,6 @@ describe("the requests", () => {
     });
 
     it("never saves, stages or holds a replay owned by another tab", async () => {
-        vi.useFakeTimers();
         const { jobStages, chatStageOf } = await import("../process/jobStages");
         const running = {
             jobId: "foreign-job",
@@ -516,7 +512,6 @@ describe("the requests", () => {
     });
 
     it("sends a request cancellation when stopped during create backoff and sends nothing when stopped before dispatch", async () => {
-        vi.useFakeTimers();
         const auth = await import("../storage/serverAuth");
         vi.spyOn(auth, "authFetch").mockImplementation((path, init, options) => {
             options?.beforeDispatch?.();
@@ -617,7 +612,6 @@ describe("the requests", () => {
         });
         // A request without an answer is sent again after 1, 2, and 4 s with the same body and request id,
         // then fails as one whose outcome is not known.
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         const before = stubs.fetch.mock.calls.length;
         for (let attempt = 0; attempt < 4; attempt += 1) {
             stubs.fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
@@ -667,7 +661,6 @@ describe("the requests", () => {
 
     it("reads a status (null when the server does not know the job) and aborts (a 404 is fine)", async () => {
         // The Stop is bounded (`boundedAttempt`): a controlled clock, so its deadline never races the test.
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         stubs.fetch.mockResolvedValueOnce(json(200, { jobId: "j1", state: "running" }));
         await expect(transport.readGenerationJob("j1")).resolves.toMatchObject({ jobId: "j1", state: "running" });
         expect(stubs.fetch.mock.calls[0][0]).toBe(`/api/generations/j1?clientId=${transport.generationClientId()}`);
@@ -685,7 +678,6 @@ describe("the requests", () => {
     });
 
     it("bounds the owner's Stop to the control deadline: a hanging DELETE is aborted and the stop fails", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         let signal: AbortSignal | null | undefined;
         stubs.fetch.mockImplementationOnce((_path, init) => {
             signal = init?.signal;
@@ -706,7 +698,6 @@ describe("the requests", () => {
     });
 
     it("bounds a status read to its deadline (the request and its body): past it the request is aborted and the read fails as one without an answer; an answer in time leaves no timer", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         let signal: AbortSignal | null | undefined;
         stubs.fetch.mockImplementationOnce((_path, init) => {
             signal = init?.signal;
@@ -776,7 +767,6 @@ describe("the requests", () => {
 
 describe("following a job", () => {
     it("advertises patch hydration beside owner liveness and echoes each ping timestamp even across an epoch filter", async () => {
-        vi.useFakeTimers();
         const seen = vi.fn();
         const follow = startFollow("j1", seen);
         stubs.auth[0].resolve("jwt");
@@ -799,7 +789,6 @@ describe("following a job", () => {
     });
 
     it("ignores unknown job frames without changing the followed job and continues applying later frames", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
         const { jobStages } = await import("../process/jobStages");
         const ref = { chaId: "c", chatId: "k" };
         transport.rememberGenerationJob(ref, "j1");
@@ -840,7 +829,6 @@ describe("following a job", () => {
     it("drops another epoch's stage before dispatch and keeps the followed job's stage", async () => {
         const { jobStages } = await import("../process/jobStages");
         const ref = { chaId: "c", chatId: "k" };
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         const dispatch = vi.fn((event: Parameters<Transport["applyGenerationEvent"]>[2]) =>
             transport.applyGenerationEvent("j1", ref, event),
         );
@@ -1030,7 +1018,6 @@ describe("the event dispatcher and the resume", () => {
     const ref = { chaId: "c", chatId: "k" };
 
     const retakeAndStreamCheckpoints = async (loss: "pending takeover" | "follow") => {
-        vi.useFakeTimers();
         const chat = await vi.importActual<typeof import("../storage/chatStore.svelte")>("../storage/chatStore.svelte");
         const mockedChat = await import("../storage/chatStore.svelte");
         // This round trip needs the real stream buffer and hydration, including their shared locks.
@@ -1234,7 +1221,6 @@ describe("the event dispatcher and the resume", () => {
     });
 
     it("drops only the released job's presentation stage, including a followed job's", async () => {
-        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         const { jobStages, chatStageOf } = await import("../process/jobStages");
         transport.rememberGenerationJob(ref, "resumed");
         const follow: ReturnType<Transport["followGenerationJob"]> = transport.followGenerationJob("resumed", (event) =>
@@ -1550,7 +1536,6 @@ describe("the event dispatcher and the resume", () => {
         };
 
         beforeEach(() => {
-            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
             stubs.isChatStale.mockReturnValue(true);
             stubs.applyPatchHydration.mockReturnValue("busy");
         });
@@ -1751,7 +1736,11 @@ describe("the event dispatcher and the resume", () => {
         stubs.handleChannelEvent.mockImplementation((_jobId: string, event: { type: string }) =>
             order.push(event.type),
         );
-        stubs.endJobChannel.mockImplementation(() => order.push("end"));
+        const ended = deferred();
+        stubs.endJobChannel.mockImplementation(() => {
+            order.push("end");
+            ended.resolve();
+        });
         const resource = {
             type: "resource" as const,
             epoch: EPOCH,
@@ -1787,7 +1776,8 @@ describe("the event dispatcher and the resume", () => {
         // The hydration itself is applied at once; the dispatcher's work follows on its chain.
         expect(stubs.applyHydration).toHaveBeenCalledTimes(1);
         expect(order).toEqual([]);
-        await vi.waitFor(() => expect(order).toContain("end"));
+        await ended.promise;
+        expect(order).toContain("end");
         // The hydration is kept as the job's own copy (its id first), for that job's callback barriers.
         expect(order).toEqual(["hydration:j1:c", "notice", "callback", "cancel", "end"]);
         expect(stubs.rememberHydration).toHaveBeenCalledWith("j1", {
@@ -1813,10 +1803,8 @@ describe("the event dispatcher and the resume", () => {
 describe("the follow's liveness", () => {
     const ref = { chaId: "c", chatId: "k" };
     const links = () => stubs.record.mock.calls.map(([input]) => input);
-    const tick = () => vi.advanceTimersByTimeAsync(0);
-    /** Whether a promise settled, without a timer (`settled` waits on a faked one). */
-    const state = async <T>(promise: Promise<T>) =>
-        Promise.race([promise.then(() => "settled" as const), microtasks().then(() => "pending" as const)]);
+    const tick = flush;
+    const state = settled;
     /** What a released job would show: its end told to the chat module and the channel. */
     const released = () => stubs.endServerJob.mock.calls.length + stubs.endJobChannel.mock.calls.length;
     let visibility: MockInstance<() => DocumentVisibilityState>;
@@ -1826,7 +1814,6 @@ describe("the follow's liveness", () => {
     };
 
     beforeEach(() => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
         visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     });
 

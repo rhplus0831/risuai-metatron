@@ -76,6 +76,7 @@ function harness() {
     const personaId = (store.get(kinds.get("personas")!, "main")!.data as { id: string }[])[0].id;
     /** The regex runs the test holds (released by the test), and how many began. */
     const held: Held[] = [];
+    const heldWaiters = new Set<() => void>();
     const counts = { regex: 0, lua: 0 };
     let hold = true;
     const scriptWorkers = {
@@ -85,6 +86,7 @@ function harness() {
                 const release = (suffix = "!") => resolve({ data: task.data + suffix });
                 if (hold) {
                     held.push({ task, release });
+                    for (const notify of heldWaiters) notify();
                 } else {
                     release();
                 }
@@ -127,8 +129,16 @@ function harness() {
         },
         /** Waits until `count` regex runs are held. */
         async heldCount(count: number) {
-            for (let i = 0; i < 500 && held.length < count; i++) {
-                await new Promise((resolve) => setTimeout(resolve, 2));
+            if (held.length < count) {
+                await new Promise<void>((resolve) => {
+                    const notify = () => {
+                        if (held.length >= count) {
+                            heldWaiters.delete(notify);
+                            resolve();
+                        }
+                    };
+                    heldWaiters.add(notify);
+                });
             }
             expect(held.length).toBe(count);
         },
@@ -142,6 +152,11 @@ function harness() {
 type Harness = ReturnType<typeof harness>;
 let current: Harness | null = null;
 const open = () => (current = harness());
+beforeEach(() => {
+    // Fixture work and continuation gaps cannot spend render or CBS time. Keep setImmediate
+    // real for the trigger runtime and worker I/O; deadline cases advance only their own clock.
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+});
 afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -208,7 +223,8 @@ describe("the transform service's lifetime", () => {
         const closing = service.close();
         let closed = false;
         void closing.then(() => (closed = true));
-        await new Promise((resolve) => setTimeout(resolve, 5));
+        // Give close's continuations a full turn to settle if it incorrectly ignores held workers.
+        await new Promise<void>((resolve) => setImmediate(resolve));
         // The held runs are still running: close waits for them.
         expect(closed).toBe(false);
         for (const run of h.held.splice(0)) {
@@ -307,7 +323,6 @@ describe("the transform service's lifetime", () => {
 
 describe("the transform service's deadline and snapshots", () => {
     it("accepts cancellation without second-call work or a result, requiring every pending id exactly once", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
         const h = open();
         h.setHold(false);
         const service = createTransformService(h.deps);
@@ -357,7 +372,6 @@ describe("the transform service's deadline and snapshots", () => {
     });
 
     it("consumes an all-cancelled snapshot while all four run slots remain occupied", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
         const h = open();
         const service = createTransformService(h.deps);
         const signal = new AbortController().signal;
@@ -397,7 +411,6 @@ describe("the transform service's deadline and snapshots", () => {
     });
 
     it("a snapshot expires at the first call's deadline and cannot be claimed after it", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
         const h = open();
         h.setHold(false);
         const service = createTransformService(h.deps);
@@ -418,7 +431,6 @@ describe("the transform service's deadline and snapshots", () => {
     });
 
     it("a second call waiting for a slot past the deadline is an expired snapshot", async () => {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
         const h = open();
         h.setHold(false);
         const service = createTransformService(h.deps);
@@ -428,10 +440,7 @@ describe("the transform service's deadline and snapshots", () => {
         const busy = Array.from({ length: 4 }, (_, i) =>
             settle(service.transform(h.request(`busy${i}`), new AbortController().signal)),
         );
-        for (let i = 0; i < 50 && h.held.length < 4; i++) {
-            await Promise.resolve();
-            await vi.advanceTimersByTimeAsync(0);
-        }
+        await h.heldCount(4);
         expect(h.held).toHaveLength(4);
         const second = settle(
             service.resume(
@@ -564,10 +573,6 @@ describe("the transform service's deadline and snapshots", () => {
 });
 
 describe("the transform snapshot's memory budget", () => {
-    beforeEach(() => {
-        // Neither fixture size nor a continuation gap races the render deadline or the CBS clock.
-        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
-    });
     const signal = () => new AbortController().signal;
     const patchCharacter = (h: Harness, fields: Record<string, unknown>) => {
         const kind = h.kinds.get("characters")!;
@@ -869,7 +874,6 @@ describe("the transform cache probe", () => {
     };
 
     it("answers an evicted knownKey in full even when recomputing the same key", async () => {
-        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
         const h = open();
         h.setHold(false);
         const service = createTransformService(h.deps);
@@ -897,10 +901,6 @@ describe("the transform cache probe", () => {
     });
 
     describe("display result identities", () => {
-        beforeEach(() => {
-            vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
-        });
-
         const setup = () => {
             const h = open();
             const characters = h.kinds.get("characters")!;
@@ -1121,7 +1121,6 @@ describe("the transform cache probe", () => {
     });
 
     it("keys a group's member list and member display identities, leaving other characters out", async () => {
-        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
         const h = open();
         h.setHold(false);
         const characters = h.kinds.get("characters")!;
@@ -1270,9 +1269,6 @@ describe("the transform load", () => {
 });
 
 describe("shared display scopes", () => {
-    beforeEach(() => {
-        vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
-    });
     const signal = () => new AbortController().signal;
     const MiB = 1024 * 1024;
     const createChat = (h: Harness, chatId: string, data = "stored") => {

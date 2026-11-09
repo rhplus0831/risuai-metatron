@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
+import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // The script transform (`POST /api/transform`, `POST /api/transform/continue`;
 // `server/src/routes/transform.ts`, `server/src/prompt/transform.ts`) end to end in process, with the
@@ -24,7 +25,7 @@ import { allowListenerOrigin, createSigner, createTestServer, json } from "./tes
 // answered. The lifetime rules with held workers are `transformService.test.ts`.
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
-const SLOW = 60_000;
+const HANG_GUARD = 60_000;
 const EMBED_KEY = "sk-embed-sentinel-13a";
 
 /** The embedding server: every text `[1, 0, 0]` (one asset, so it is always the best match). */
@@ -203,7 +204,13 @@ beforeAll(async () => {
     cpSync(path.join(REPO_ROOT, "version.json"), path.join(rootDir, "version.json"));
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
-    server = createTestServer({ rootDir });
+    server = createTestServer({
+        rootDir,
+        scriptWorkerOptions: UNHURRIED_SCRIPT_WORKERS,
+        cbsTimeLimits: UNHURRIED_CBS,
+        generationEffectClock: () => 0,
+    });
+    await server.context.scriptWorkers.warm();
     signer = await createSigner();
     await server.app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
     epoch = (await api("/api/resources/ui")).body.epoch;
@@ -212,7 +219,14 @@ beforeAll(async () => {
     personaId = (await single("personas")).data[0].id;
     await patchSection("memoryTranslateMedia", { hypaModel: "custom" });
     await patchSection("secrets", { hypaCustomSettings: { url: embedderUrl, key: EMBED_KEY, model: "emb" } });
-}, SLOW);
+}, HANG_GUARD);
+
+beforeEach(() => {
+    // Hold render lifetimes, snapshot expiry, and CBS time across real worker and HTTP I/O.
+    // Worker clocks use the options above; setImmediate stays real for the trigger runtime.
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+});
+afterEach(() => vi.useRealTimers());
 
 afterAll(async () => {
     await server?.close();
@@ -318,7 +332,7 @@ describe("the transform's stages", () => {
             });
             expect((await readChat("tx", "k")).revision).toBe(before.revision);
         },
-        SLOW,
+        HANG_GUARD,
     );
 
     it(
@@ -361,7 +375,7 @@ describe("the transform's stages", () => {
             expect(alone.body.results[0].key).toBe(first.body.results[1].key);
             expect((await readChat("ia", "k")).data.scriptstate ?? {}).toEqual({});
         },
-        SLOW,
+        HANG_GUARD,
     );
 
     it(
@@ -387,7 +401,7 @@ describe("the transform's stages", () => {
             expect(res.body.results[0]).toMatchObject({ ok: true, text: "x image-local" });
             expect((await readChat("img", "k")).data.scriptstate).toEqual({ $v: "stored" });
         },
-        SLOW,
+        HANG_GUARD,
     );
 
     it(
@@ -439,7 +453,7 @@ describe("the transform's stages", () => {
             const plain = await render("grp", "gk", [target("a", "gm", "member")]);
             expect(plain.body.results[0]).toMatchObject({ ok: true, text: "MEMBER [gm]", cached: false });
         },
-        SLOW,
+        HANG_GUARD,
     );
 
     it(
@@ -479,7 +493,7 @@ describe("the transform's stages", () => {
             await patchSection("ui", { dynamicAssetsEditDisplay: false });
             await patchSection("memoryTranslateMedia", { dynamicAssets: false });
         },
-        SLOW,
+        HANG_GUARD,
     );
 });
 
@@ -588,7 +602,7 @@ describe("the transform cache's key", () => {
             await expectNew("source character", "z 1");
             await expectNew("language", "z 1", { client: client(800, "ko") });
         },
-        SLOW,
+        HANG_GUARD,
     );
 
     it(
@@ -604,7 +618,7 @@ describe("the transform cache's key", () => {
             expect(two).toMatchObject({ ok: true, text: "y", cached: false });
             expect(one.key).not.toBe(two.key);
         },
-        SLOW,
+        HANG_GUARD,
     );
 });
 
@@ -952,7 +966,7 @@ describe("the two-call protocol", () => {
             ],
             chats: [chatCreate("tp", "k")],
         });
-    }, SLOW);
+    }, HANG_GUARD);
 
     it(
         "the first call stops before the plugin handlers; the second runs on the snapshot's variables, not the store's",
@@ -986,7 +1000,7 @@ describe("the two-call protocol", () => {
             expect((await readChat("tp", "k")).data.scriptstate).toEqual({ $v: "stored-later" });
             await patchChat("tp", "k", { scriptstate: {} });
         },
-        SLOW,
+        HANG_GUARD,
     );
 
     it(
@@ -1032,7 +1046,7 @@ describe("the two-call protocol", () => {
             expect(used.status).toBe(409);
             expect(used.body).toEqual({ error: "SnapshotExpired" });
         },
-        SLOW,
+        HANG_GUARD,
     );
 
     it(
@@ -1048,7 +1062,7 @@ describe("the two-call protocol", () => {
             ]);
             expect(both.map((res) => res.status).sort()).toEqual([200, 409]);
         },
-        SLOW,
+        HANG_GUARD,
     );
 
     it(
@@ -1105,7 +1119,7 @@ describe("the two-call protocol", () => {
             expect(ovl.body.pending).toHaveLength(4);
             expect(ovl.body.results.filter((r: { ok: boolean }) => !r.ok)).toHaveLength(6);
         },
-        SLOW,
+        HANG_GUARD,
     );
 
     it(
@@ -1125,7 +1139,7 @@ describe("the two-call protocol", () => {
             expect((await resume(first.body.snapshotId, [{ id: "a", text: "X" }])).status).toBe(409);
             expect((await render("tp", "k", t)).body.results[0]).toMatchObject({ ok: true, cached: false });
         },
-        SLOW,
+        HANG_GUARD,
     );
 });
 
@@ -1306,7 +1320,7 @@ describe("the transform's admission", () => {
                 expect(res.status, JSON.stringify(bad).slice(0, 100)).toBe(400);
             }
         },
-        SLOW,
+        HANG_GUARD,
     );
 
     it(
@@ -1349,7 +1363,7 @@ describe("the transform's admission", () => {
             expect(ok.status, JSON.stringify(ok.body)).toBe(200);
             expect(ok.body.results).toMatchObject([{ id: "a", ok: true, text: "Bound User" }]);
         },
-        SLOW,
+        HANG_GUARD,
     );
 
     it(
@@ -1402,7 +1416,7 @@ describe("the transform's admission", () => {
                 expect(sized.status, path).toBe(413);
             }
         },
-        SLOW,
+        HANG_GUARD,
     );
 
     it(
@@ -1416,6 +1430,6 @@ describe("the transform's admission", () => {
             expect(aborted.body).toEqual({ error: "The request was aborted" });
             expect((await render("tp", "k", t)).body.results[0]).toMatchObject({ ok: true, cached: false });
         },
-        SLOW,
+        HANG_GUARD,
     );
 });

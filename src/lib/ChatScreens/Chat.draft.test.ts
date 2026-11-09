@@ -247,7 +247,8 @@ describe("Chat render completion", () => {
 describe("original message draft", () => {
     it("updates a real row's name and image without resetting or reparsing its body", async () => {
         const ui = render();
-        await vi.waitFor(() => expect(ui.text()).toBe("Original"));
+        await ui.instance.whenRendered();
+        expect(ui.text()).toBe("Original");
         const body = ui.target.querySelector(".chattext");
         vi.mocked(ParseMarkdown).mockClear();
         vi.mocked(risuChatParserForDisplay).mockClear();
@@ -266,7 +267,8 @@ describe("original message draft", () => {
         "keeps typing out of display and storage, then saves the draft (theme %j)",
         async (theme) => {
             const ui = render(theme);
-            await vi.waitFor(() => expect(ui.text()).toBe("Original"));
+            await ui.instance.whenRendered();
+            expect(ui.text()).toBe("Original");
             ui.toggle();
             expect(ui.instance.isEditing()).toBe(true);
             expect(ui.textarea().value).toBe("Original");
@@ -284,7 +286,8 @@ describe("original message draft", () => {
             expect(setMessageText).toHaveBeenCalledExactlyOnceWith(ref, "a", "Saved draft");
             expect(ui.stored()).toBe("Saved draft");
             expect(ui.instance.isEditing()).toBe(false);
-            await vi.waitFor(() => expect(ui.text()).toBe("Saved draft"));
+            await ui.instance.whenRendered();
+            expect(ui.text()).toBe("Saved draft");
             ui.toggle();
             expect(ui.textarea().value).toBe("Saved draft");
         },
@@ -292,7 +295,8 @@ describe("original message draft", () => {
 
     it("long-press cancel preserves the draft for reopening without storing or displaying it", async () => {
         const ui = render();
-        await vi.waitFor(() => expect(ui.text()).toBe("Original"));
+        await ui.instance.whenRendered();
+        expect(ui.text()).toBe("Original");
         ui.toggle();
         ui.type("Unsent draft");
         ui.textarea().dispatchEvent(new Event("test-longpress"));
@@ -301,7 +305,8 @@ describe("original message draft", () => {
         expect(ui.textarea()).toBeNull();
         expect(setMessageText).not.toHaveBeenCalled();
         expect(ui.stored()).toBe("Original");
-        await vi.waitFor(() => expect(ui.text()).toBe("Original"));
+        await ui.instance.whenRendered();
+        expect(ui.text()).toBe("Original");
         ui.toggle();
         expect(ui.textarea().value).toBe("Unsent draft");
         expect(setMessageText).not.toHaveBeenCalled();
@@ -315,9 +320,12 @@ describe("original message draft", () => {
 
 // Opening a stored message's editor also opens the shared popup editor on the draft; closing the
 // popup saves. Typing inline meanwhile keeps the inline edit and drops the popup, and the setting
-// turns the auto popup off. Timers are faked once the row has rendered, so the opener's poll runs
-// under the test's control.
+// turns the auto popup off. Timeout functions are faked before mounting; render completion is
+// signalled by the component, and the popup loop advances only under the test's control.
 describe("Chat message editor auto popup", () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
     const initialPopup = { ...popUpEditorStore };
     async function closePopupWith(text: string) {
         popUpEditorStore.value = text;
@@ -334,8 +342,8 @@ describe("Chat message editor auto popup", () => {
 
     it("opens the popup on the draft when editing starts and saves the popup's text on close", async () => {
         const ui = render();
-        await vi.waitFor(() => expect(ui.text()).toBe("Original"));
-        vi.useFakeTimers();
+        await ui.instance.whenRendered();
+        expect(ui.text()).toBe("Original");
         ui.toggle();
         expect(ui.instance.isEditing()).toBe(true);
         expect(popUpEditorStore).toMatchObject({ open: true, value: "Original", language: "markdown" });
@@ -350,8 +358,8 @@ describe("Chat message editor auto popup", () => {
 
     it("keeps the inline edit and drops the popup when the draft is typed into while the popup is open", async () => {
         const ui = render();
-        await vi.waitFor(() => expect(ui.text()).toBe("Original"));
-        vi.useFakeTimers();
+        await ui.instance.whenRendered();
+        expect(ui.text()).toBe("Original");
         ui.toggle();
         expect(popUpEditorStore.open).toBe(true);
         popUpEditorStore.value = "Typed in the popup";
@@ -373,9 +381,9 @@ describe("Chat message editor auto popup", () => {
 
     it("opens no popup while the setting turns the auto popup off, and the inline editor still works", async () => {
         const ui = render();
-        await vi.waitFor(() => expect(ui.text()).toBe("Original"));
+        await ui.instance.whenRendered();
+        expect(ui.text()).toBe("Original");
         settings.ui.disableAutoPopupMessageEditor = true;
-        vi.useFakeTimers();
         ui.toggle();
         expect(popUpEditorStore.open).toBe(false);
         expect(ui.textarea().value).toBe("Original");
@@ -385,8 +393,8 @@ describe("Chat message editor auto popup", () => {
 
     it("closes its popup when the row unmounts before the popup is closed", async () => {
         const ui = render();
-        await vi.waitFor(() => expect(ui.text()).toBe("Original"));
-        vi.useFakeTimers();
+        await ui.instance.whenRendered();
+        expect(ui.text()).toBe("Original");
         ui.toggle();
         expect(popUpEditorStore.open).toBe(true);
         await unmount(mounted.pop()!);
@@ -396,8 +404,8 @@ describe("Chat message editor auto popup", () => {
 
     it("edits a multi-line message in a fixed-height inline area and a short one in a growing area", async () => {
         const long = render("", { message: "First line\nSecond line" });
-        await vi.waitFor(() => expect(long.text()).toBe("First line\nSecond line"));
-        vi.useFakeTimers();
+        await long.instance.whenRendered();
+        expect(long.text()).toBe("First line\nSecond line");
         long.toggle();
         expect(long.textarea().style.height).toBe("16rem");
         closePopupEditorSession(popUpEditorStore.sessionId);

@@ -184,6 +184,7 @@ async function expectCacheOf(full: ResourceReadKindsResult) {
 describe("the boot through the cache against the real route", () => {
     it("equals the full read on the first boot, on a boot that claims everything, and after edits, a deletion and a reorder; the cache holds the server's texts", async () => {
         const s = await server();
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         await putRecord(s, "modules", "main", [module("m1", 3), module("m2", 2), module("m1", 3)]);
         await s.create("characters", "c1", character("c1"));
         await s.create("characters", "c2", character("c2", { oaiTTSConfig: { apiKey: "secret" } }));
@@ -484,6 +485,7 @@ describe("the boot through the cache against the real route", () => {
 
     it("a modified cached text that still parses falls back to the plain read and clears the cache (a character under another id)", async () => {
         const s = await server();
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         await s.create("characters", "c1", character("c1"));
         const store = indexedDbBootCacheStore(APP);
         await (await loadBootSnapshot(depsFor(s, store))).commit();

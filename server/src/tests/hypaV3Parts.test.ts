@@ -53,6 +53,8 @@ import {
     USER_NAME,
 } from "./fixtures/memory/scenarios.ts";
 
+import { UNHURRIED_HYPAV3_SEPARATOR } from "./unhurriedLimits.ts";
+
 // The HypaV3 parts (`prepareHypaV3`, `planHypaV3Summaries`, `executeHypaV3Plan`, `selectHypaV3`)
 // called directly over the fixture world of `memoryAlgorithms.test.ts`, which holds `hypaMemoryV3`
 // (their composition) to the browser-captured fixture. Here: the plan's summary windows are exactly
@@ -131,6 +133,7 @@ function hostOf(scenario: Scenario, world: World, options: HostOptions = {}): Me
         summarizer: (text) => world.summarizer(text),
         embeddings,
         regex: async (op) => runRegexOp(op),
+        separatorLimits: UNHURRIED_HYPAV3_SEPARATOR,
         parseChatML: () => null,
         userName: () => USER_NAME,
         progress: (payload) => world.progress(payload),
