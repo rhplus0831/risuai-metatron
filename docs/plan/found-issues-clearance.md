@@ -189,8 +189,8 @@ Every slice is independent of the others' code unless listed here.
   limit).
 - **Guides.** A1, A2, A4, D2 and H1 edit `server-generation.md`; A1, A3 and H1 edit `memory.md`; A2, E1 and H1
   edit `chat-pipeline.md`; A4, C1 to C6 and H1 edit `llm-requests.md` (each a hazard removal or a header sentence;
-  C4 adds the signature flow); D1 and H1 edit `translation.md`; E2 to E4, F2 and H1 edit `ui-theming.md`; D2, F4,
-  F9 and H1 edit `cbs-rendering.md`; F1, F9 and H1 edit `assets.md`; A5, F1 and F5 edit `global-api.md`; B1 and
+  C4 adds the signature flow); D1 and H1 edit `translation.md`; E2 to E4, F2 and H1 edit `ui-theming.md`; C4, D2,
+  F4, F9 and H1 edit `cbs-rendering.md`; F1, F9 and H1 edit `assets.md`; A5, F1 and F5 edit `global-api.md`; B1 and
   F10 edit `self-host-server.md`; B4, B6 and F7 edit `persistence.md`; B6, F7, F8 and H1 edit `plugin-sandbox.md`;
   B2, B3 and B5 edit `backup-sync-hub.md`; C4, F4, F6 and H1 edit `settings-i18n.md`; G1 and G2 edit
   `build-test-platforms.md`; G2, G3 and G4 edit `test-harness.md`: H1 runs last and rebases onto what landed; the
@@ -408,9 +408,13 @@ Every slice is independent of the others' code unless listed here.
   _Removes_: OpenRouter free-model discovery ignores the bound key; An empty OpenRouter free list throws a
   TypeError.
 
-- **C4. Google thought signatures** (_hard_, `llm-requests.md` with `settings-i18n.md`; Q7).
+- **C4. Google thought signatures** (_hard_, `llm-requests.md` with `settings-i18n.md` and `cbs-rendering.md`; Q7).
   `server/src/llm/request.ts` (~508–515): set `targ.saveSignatures` from the request-local `db.saveSignatures`
-  (never from a client field; the allowlist in `server/src/routes/llm.ts` ~54–61 is unchanged).
+  (never from a client field; the allowlist in `server/src/routes/llm.ts` ~54–61 is unchanged), and only for the
+  `model` mode (main chat replies and Lua `LLMMain`): translation, memory and the other auxiliary modes never save,
+  because their hosts' `saveSignature` throws (`server/src/translation/runner.ts` ~245,
+  `server/src/prompt/memory/memoryTaskHost.ts` ~192) and the awaited buffered save would fail the job (owner
+  decision 2026-11-09, after C4 found this).
   `server/src/llm/google.ts`: the buffered save (~684–695) and the streaming saves (~989–1001) store the provider's
   `thoughtSignature` token in `signatures[].content`; replay (~113–120) parses the inlay's raw JSON text, which is
   what both stores hold (`src/ts/process/files/inlays.ts` ~477 writes `JSON.stringify(signature)`,
@@ -418,20 +422,27 @@ Every slice is independent of the others' code unless listed here.
   it on as `multimodals[].base64`), so the `Buffer.from(…, "base64")` step is the mismatch and goes; a stored value
   that does not parse skips the part instead of failing the request; a signature-only buffered part (~696) keeps
   its marker on a text part of its own or is skipped when none exists; the `formated[0]` read (~77) is guarded for
-  an empty prompt. The live streaming tool follow-up (~1077–1131) keeps its raw tokens as today. The setting gets
-  its control: a `Check` bound to `settings.providers.saveSignatures` in `src/lib/Setting/Pages/ModelSettings.svelte`
-  (~63–70, beside `streamGeminiThoughts`, shown for a model with the `geminiThinking` flag) with a
-  `language.modelProfiles` key in `src/lang/en.ts` (~1216) and `ko.ts` (~1150). Add the signature flow to the
-  guide's `Flows`.
+  an empty prompt. The streaming collection (~979–1001) also saves a signature on a part with empty text, which
+  today falls outside both the `part.text` and the `part.functionCall` branch. The buffered marker is appended after
+  JSON extraction (~576), so `extractJson` never sees it. The live streaming tool follow-up (~1077–1131) keeps its
+  raw tokens as today, and its text parts (~1115) drop signature markers. Chat rendering hides the marker:
+  `getInlayMedia` (`src/ts/process/files/inlays.ts` ~533) tells a signature inlay apart from a missing one, and
+  `parseInlayAssets` (`src/ts/parser/parser.svelte.ts` ~956) removes a signature inlay's marker instead of leaving
+  it as text; `cbs-rendering.md` says so. The setting gets its control: a `Check` bound to
+  `settings.providers.saveSignatures` in `src/lib/Setting/Pages/ModelSettings.svelte` (~63–70, beside
+  `streamGeminiThoughts`, shown for a model with the `geminiThinking` flag) with a `language.modelProfiles` key in
+  `src/lang/en.ts` (~1216) and `ko.ts` (~1150). Add the signature flow to the guide's `Flows`.
   _Done_: with the setting on, a Gemini thinking reply stores the token and the next request's body carries it as
   `thoughtSignature`; with it off nothing is stored and nothing is replayed; a signature-only part throws nothing
-  and marks nothing unrelated; the control appears for a Gemini thinking model. Whether the provider accepts the
-  replayed token is on the Owner checklist.
+  and marks nothing unrelated; a translation or memory job on a signed reply succeeds and stores nothing; a chat
+  message carrying a signature marker renders without it; the control appears for a Gemini thinking model. Whether
+  the provider accepts the replayed token is on the Owner checklist.
   _Test_: `server/src/tests/llmProviderAdapters.test.ts` (the typed path saves; the stored content is the token;
   the signature-only part; the replayed body after a save-then-load through assembly),
   `server/src/tests/llmStreamParsing.test.ts` (the streaming saves store the token; the follow-up is unchanged),
-  `server/src/tests/llmRequests.test.ts` (the setting reaches the adapter), a `ModelSettings` test beside the
-  component (the control and its binding).
+  `server/src/tests/llmRequests.test.ts` (the setting reaches the adapter, for the `model` mode only), a parser or
+  inlay test (a signature marker renders as nothing, a missing inlay's marker stays), a `ModelSettings` test beside
+  the component (the control and its binding).
   _Removes_: Google thought signatures are never saved on the typed path; Saved Google signatures replay the wrong
   content; A signature-only Google part marks the wrong text.
 
