@@ -175,6 +175,64 @@ describe("plain list and map collections", () => {
         );
     });
 
+    it("characterOrder keeps the first id across characters and folders with detached optional fields", () => {
+        const folder = { id: "folder", name: "First", color: "", data: ["nested"], extra: { pinned: true } };
+        const input = [
+            "character",
+            folder,
+            "character",
+            { id: "folder", name: "Later", color: "red", data: [] },
+            { id: "character", name: "Collision", color: "", data: [] },
+            "folder",
+            "last",
+        ];
+        const expected = ["character", folder, "last"];
+        const out = normalizeCharacterOrder(input);
+        expect(out).toEqual(expected);
+        expectIdempotent(normalizeCharacterOrder, input);
+        const copied = out[1] as typeof folder;
+        copied.data.push("changed");
+        copied.extra.pinned = false;
+        expect(folder).toEqual({ id: "folder", name: "First", color: "", data: ["nested"], extra: { pinned: true } });
+        expect(normalizeCharacterOrder(input)).toEqual(expected);
+    });
+
+    it("characterOrder drops incomplete and malformed folders without reserving their ids", () => {
+        const valid = { id: "folder", name: "Valid", color: "", data: ["character"] };
+        const invalid: object[] = [];
+        for (const field of ["id", "name", "color", "data"] as const) {
+            const missing: Record<string, unknown> = { ...valid };
+            delete missing[field];
+            invalid.push(missing, { ...valid, [field]: 7 });
+        }
+        invalid.push({ ...valid, data: ["character", null] });
+        expect(normalizeCharacterOrder([...invalid, valid, "last"])).toEqual([valid, "last"]);
+        expectIdempotent(normalizeCharacterOrder, [...invalid, valid]);
+    });
+
+    it("customModels keeps the first definition per id, detaches extras, and strips retired credentials", () => {
+        const first = {
+            id: "model",
+            internalId: "first",
+            key: "secret",
+            credentialId: "retired",
+            extra: { labels: ["keep"] },
+        };
+        const input = [first, { id: "model", internalId: "later" }, { id: "other", internalId: "second" }];
+        const expected = [
+            { id: "model", internalId: "first", extra: { labels: ["keep"] } },
+            { id: "other", internalId: "second" },
+        ];
+        const out = normalizeCustomModels(input);
+        expect(out).toEqual(expected);
+        expectIdempotent(normalizeCustomModels, input);
+        (out[0] as unknown as typeof first).extra.labels.push("changed");
+        expect(first.extra.labels).toEqual(["keep"]);
+        expect(normalizeCustomModels(input)).toEqual(expected);
+        // Even a duplicate must satisfy the required definition shape before deduplication.
+        expect(() => normalizeCustomModels([first, { id: "model", internalId: 1 }])).toThrow(ResourceValidationError);
+    });
+
     it("credentials: metadata only (the key is dropped), a client email and project only on a Vertex key, unique record ids, a known type", () => {
         expect(normalizeCredentials(undefined)).toEqual([]);
         expect(

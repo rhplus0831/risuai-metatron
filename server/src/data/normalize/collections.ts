@@ -46,7 +46,7 @@ export function normalizeHotkeys(input: unknown): Database["hotkeys"] {
     return hotkeys;
 }
 
-/** `characterOrder`: character ids and folder objects. */
+/** Keeps the first character or folder of each id. Folders require string id/name/color and string-array data. */
 export function normalizeCharacterOrder(input: unknown): Database["characterOrder"] {
     if (input === undefined) {
         return [];
@@ -54,7 +54,26 @@ export function normalizeCharacterOrder(input: unknown): Database["characterOrde
     if (!Array.isArray(input) || !input.every((entry) => typeof entry === "string" || isPlainObject(entry))) {
         throw new ResourceValidationError("characterOrder must be an array of ids and folders");
     }
-    return plainClone(input) as Database["characterOrder"];
+    const seen = new Set<string>();
+    const entries = input.filter((entry) => {
+        if (
+            typeof entry !== "string" &&
+            (typeof entry.id !== "string" ||
+                typeof entry.name !== "string" ||
+                typeof entry.color !== "string" ||
+                !Array.isArray(entry.data) ||
+                !entry.data.every((id: unknown) => typeof id === "string"))
+        ) {
+            return false;
+        }
+        const id = typeof entry === "string" ? entry : (entry.id as string);
+        if (seen.has(id)) {
+            return false;
+        }
+        seen.add(id);
+        return true;
+    });
+    return plainClone(entries) as Database["characterOrder"];
 }
 
 const authRefreshFields = ["url", "tokenUrl", "refreshToken", "clientId", "clientSecret"];
@@ -79,7 +98,7 @@ export function normalizeGlobalChatVariables(input: unknown): Database["globalCh
         : (plainClone(requireObject(input, "globalChatVariables")) as Record<string, string>);
 }
 
-/** `customModels`: each entry needs its string `id` and `internalId`. */
+/** Requires string model `id` and `internalId` fields and keeps the first occurrence of each id. */
 export function normalizeCustomModels(input: unknown): Database["customModels"] {
     if (input === undefined) {
         return [];
@@ -90,7 +109,15 @@ export function normalizeCustomModels(input: unknown): Database["customModels"] 
     }
     // Definitions hold neither keys nor bindings: profiles choose named credentials. Drop the
     // retired fields from an older client or record instead of keeping them readable.
-    return plainClone(entries).map(
+    const seen = new Set<string>();
+    const unique = entries.filter((entry) => {
+        if (seen.has(entry.id as string)) {
+            return false;
+        }
+        seen.add(entry.id as string);
+        return true;
+    });
+    return plainClone(unique).map(
         ({ key: _key, credentialId: _credentialId, ...entry }) => entry,
     ) as unknown as Database["customModels"];
 }

@@ -26,7 +26,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [scripts-triggers](#scripts-triggers) (6)
 - [self-host-server](#self-host-server) (4)
 - [server-generation](#server-generation) (1)
-- [server-resources](#server-resources) (1)
 - [settings-i18n](#settings-i18n) (3)
 - [translation](#translation) (1)
 
@@ -345,14 +344,6 @@ Guide: [Server generation: jobs, channels, transforms, LLM and token routes](../
 
 - Server CBS evaluation runs on the main thread under cooperative limits, with no hard deadline or heap bound. Other
   prompt work (Jinja rendering, tokenizer calls after model load, non-worker lore matching) also runs there.
-
-## server-resources
-
-Guide: [Server resources](../structure/server-resources.md#known-hazards).
-
-- `normalizeCharacterOrder` and `normalizeCustomModels` do not deduplicate entries. The former accepts folder objects
-  without validating their fields; the latter requires string `id` and `internalId` and strips retired credential
-  fields.
 
 ## settings-i18n
 

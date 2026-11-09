@@ -146,6 +146,45 @@ describe("a fresh store", () => {
 });
 
 describe("the pass at startup", () => {
+    it("repairs stored duplicate collection ids and malformed folders on open, then stays stable", () => {
+        const file = path.join(tempDir(), "resources.sqlite");
+        const initial = observe(open(file, defaults, CLEAN_A));
+        stores.pop()!.close();
+        const folder = { id: "folder", name: "First", color: "", data: ["nested"], extra: true };
+        raw(
+            file,
+            "UPDATE resources SET data = ? WHERE kind = 'characterOrder'",
+            JSON.stringify([
+                "character",
+                folder,
+                "character",
+                "folder",
+                { ...folder, name: "Later" },
+                { id: "bad", name: "Bad", color: "", data: [1] },
+            ]),
+        );
+        raw(
+            file,
+            "UPDATE resources SET data = ? WHERE kind = 'customModels'",
+            JSON.stringify([
+                { id: "model", internalId: "first", key: "secret", credentialId: "retired", extra: true },
+                { id: "model", internalId: "later" },
+            ]),
+        );
+        const store = open(file, defaults, CLEAN_B);
+        const repaired = observe(store);
+        expect(repaired.epoch).toBe(initial.epoch);
+        expect(repaired.kinds.characterOrder[0].data).toEqual(["character", folder]);
+        expect(repaired.kinds.customModels[0].data).toEqual([{ id: "model", internalId: "first", extra: true }]);
+        for (const kind of ["characterOrder", "customModels"]) {
+            expect(parseToken(repaired.kinds[kind][0].revision).revision).toBe(2);
+        }
+        stores.pop()!.close();
+        const reopened = open(file, defaults, CLEAN_B);
+        expect(reopened.writeCount()).toBe(0);
+        expect(observe(reopened)).toEqual(repaired);
+    });
+
     it("rewrites a record stored before a default existed once, advancing its revision and keeping its seq, then nothing", () => {
         const file = path.join(tempDir(), "resources.sqlite");
         const before = observe(open(file));
