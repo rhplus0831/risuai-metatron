@@ -11,7 +11,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (1)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
-- [LLM requests and providers](#llm-requests-and-providers) (4)
+- [LLM requests and providers](#llm-requests-and-providers) (1)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
@@ -92,30 +92,6 @@ Excluded by the Implementation Audit Fixes plan (2026-11-05) as an unverified le
 **Suggested handling:** pause an export before it opens such an asset, replace the asset through the normal write path, and inspect the archive; then decide what consistency custom keys promise.
 
 ## LLM requests and providers
-
-### The OpenAI tool stream wrapper keeps only choice 0
-
-`wrapToolStream` in `server/src/llm/openAI/requests.ts` (~1175, snapshots ~1359) rebuilds every snapshot with key `"0"` only, although `requestOpenAI` sends `body.n` for multi-generation (~636) and `getTranStream` accumulates per-choice keys (~1105). Every streamed response goes through the wrapper (~698), so streamed multi-generation loses the nonzero choices even without tools. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** multi-generation with streaming on yields one candidate.
-
-**Suggested handling:** carry every choice key through the wrapper.
-
-### OpenAI in-band stream errors are ignored
-
-`getTranStream` in `server/src/llm/openAI/requests.ts` (~1101) reads only `event.choices`, so a JSON event carrying an upstream `error` and no `choices` contributes nothing and does not fail the stream; a provider failure can end as an empty or partial success. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** a mid-stream provider error looks like a short reply.
-
-**Suggested handling:** surface an `error` payload as a stream failure.
-
-### A missing Content-Type header throws in OpenAI streaming
-
-`requestOpenAI` (~681) and `wrapToolStream` (~1323) in `server/src/llm/openAI/requests.ts` call `.includes` on `headers.get("Content-Type")!`, so a 200 answer without the header throws instead of taking the unsupported-response path that returns the body as a failure. The module header now states this behavior. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** a misbehaving proxy produces a TypeError instead of its response text.
-
-**Suggested handling:** default the header to `""`.
 
 ### setObjectValue follows `__proto__` segments
 
