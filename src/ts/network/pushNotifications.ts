@@ -349,6 +349,7 @@ async function flushPendingUnsubscribe(optedOut: boolean) {
  * inside the push lock. A successful PUT stamps a complete identity; failed PUT, disable,
  * unsubscribe, or successful removal of its endpoint clears it. Storage failure leaves no reusable
  * in-memory evidence.
+ * A new subscription is undone before registration if another tab opted out while it was being created.
  */
 async function ensureSubscribed(force: boolean, known: KeyRead | null = null): Promise<void> {
     const { key, failure } = known ?? (await loadServerKey());
@@ -376,10 +377,22 @@ async function ensureSubscribed(force: boolean, known: KeyRead | null = null): P
         }
         subscription = null;
     }
-    subscription ??= await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: decodeKey(key),
-    });
+    if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: decodeKey(key),
+        });
+        if (readStored(OPTED_OUT_KEY) === "1") {
+            const removed = await unsubscribed(subscription);
+            writeStored(PENDING_UNSUBSCRIBE_KEY, removed ? null : "1");
+            update({
+                subscribed: false,
+                optedOut: true,
+                error: removed ? null : language.pushNotifications.unsubscribeFailed,
+            });
+            return;
+        }
+    }
     const serialized = subscription.toJSON();
     const endpoint = serialized.endpoint;
     const p256dh = serialized.keys?.p256dh;

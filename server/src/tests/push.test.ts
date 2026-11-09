@@ -1284,6 +1284,39 @@ describe("the push routes", () => {
         expect(() => readFileSync(path.join(s.savePath, "server", "push_subscriptions.json"))).toThrow();
     });
 
+    it("keeps auth, body-cap, and rate-limit rejections no-store on every push route", async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        try {
+            // Three auth failures and two body-cap failures fill the same fixed limiter window.
+            const s = await authed({ pushTransport: fakeTransport().transport, routeLimits: { requestsPerMinute: 5 } });
+            const routes = [
+                ["GET", KEY],
+                ["PUT", SUB],
+                ["DELETE", SUB],
+            ] as const;
+            for (const [method, route] of routes) {
+                const res = await s.app.request(route, { method, headers: { "risu-auth": "not-a-jwt" } });
+                expect(res.status, `${method} ${route}`).toBe(400);
+                expect.soft(res.headers.get("cache-control"), `${method} ${route} auth`).toBe("no-store");
+            }
+            const oversized = JSON.stringify({ pad: "x".repeat(20 * 1024) });
+            for (const method of ["PUT", "DELETE"]) {
+                const res = await s.request(method, SUB, oversized, {
+                    "content-length": String(Buffer.byteLength(oversized)),
+                });
+                expect(res.status, method).toBe(413);
+                expect.soft(res.headers.get("cache-control"), `${method} ${SUB} body cap`).toBe("no-store");
+            }
+            for (const [method, route] of routes) {
+                const res = await s.request(method, route);
+                expect(res.status, `${method} ${route}`).toBe(429);
+                expect.soft(res.headers.get("cache-control"), `${method} ${route} rate limit`).toBe("no-store");
+            }
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("refuses an invalid subscription, a non-object body, a non-string endpoint, and malformed JSON with 400", async () => {
         const s = await authed({ pushTransport: fakeTransport().transport });
         for (const body of [

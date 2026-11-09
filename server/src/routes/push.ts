@@ -10,7 +10,7 @@ import { limitedBody } from "./limitedBody.ts";
 /**
  * Browser Web Push key lookup and subscription writes backed by server/src/push/pushService.ts.
  * All routes run server/src/app.ts's authenticated limiter, then JWT authentication. PUT/DELETE
- * subscription bodies are capped at 16 KiB after auth and parsed as JSON; handler answers set
+ * subscription bodies are capped at 16 KiB after auth and parsed as JSON; every answer is
  * no-store. No resource epoch is required. The app tracks subscription writes before their first
  * await and refuses them during shutdown, so admitted durable writes settle before context disposal.
  */
@@ -38,6 +38,13 @@ export function registerPushRoutes(
 ) {
     const { push, auth, limiter } = arg;
     const limitBody = limitedBody(MAX_PUSH_BODY_BYTES);
+    const noStore: MiddlewareHandler<AppEnv> = async (c, next) => {
+        try {
+            await next();
+        } finally {
+            c.header("Cache-Control", "no-store");
+        }
+    };
     const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -46,13 +53,11 @@ export function registerPushRoutes(
         await next();
     };
 
-    app.get(PUSH_KEY_PATH, limiter, authenticated, (c) => {
-        c.header("Cache-Control", "no-store");
+    app.get(PUSH_KEY_PATH, noStore, limiter, authenticated, (c) => {
         return c.json({ publicKey: push.publicKey() });
     });
 
-    app.put(PUSH_SUBSCRIPTION_PATH, limiter, authenticated, limitBody, async (c) => {
-        c.header("Cache-Control", "no-store");
+    app.put(PUSH_SUBSCRIPTION_PATH, noStore, limiter, authenticated, limitBody, async (c) => {
         const read = await readJsonBody(c);
         if (!read.ok) {
             return read.response;
@@ -73,8 +78,7 @@ export function registerPushRoutes(
         }
     });
 
-    app.delete(PUSH_SUBSCRIPTION_PATH, limiter, authenticated, limitBody, async (c) => {
-        c.header("Cache-Control", "no-store");
+    app.delete(PUSH_SUBSCRIPTION_PATH, noStore, limiter, authenticated, limitBody, async (c) => {
         const read = await readJsonBody(c);
         if (!read.ok) {
             return read.response;

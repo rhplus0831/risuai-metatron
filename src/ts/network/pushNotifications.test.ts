@@ -340,6 +340,37 @@ describe("subscription serialization", () => {
         expect(registration.pushManager.subscribe).toHaveBeenCalledTimes(2);
         expect(state(module)).toMatchObject({ subscribed: true, optedOut: false, error: null });
     });
+
+    it("undoes a new subscription when another tab disables push during enable without Web Locks", async () => {
+        // Boot both tabs before granting permission, so neither has an existing subscription.
+        const enabling = await boot();
+        vi.resetModules();
+        const disabling = await boot();
+        FakeNotification.permission = "granted";
+
+        const subscribeStarted = deferred();
+        const finishSubscribe = deferred();
+        registration.pushManager.subscribe.mockImplementationOnce(async (options) => {
+            subscribeStarted.resolve();
+            await finishSubscribe.promise;
+            current = fakeSubscription("https://fcm.googleapis.com/fcm/send/new", options.applicationServerKey);
+            current.unsubscribe.mockImplementation(async () => {
+                current = null;
+                return true;
+            });
+            return current;
+        });
+
+        const enable = enabling.enablePushOnThisBrowser();
+        await subscribeStarted.promise;
+        await disabling.disablePushOnThisBrowser();
+        finishSubscribe.resolve();
+        await expect(enable).resolves.toBe(false);
+
+        expect(current).toBeNull();
+        expect(calls("PUT")).toEqual([]);
+        expect(state(enabling)).toMatchObject({ subscribed: false, optedOut: true });
+    });
 });
 
 describe("registration refresh", () => {

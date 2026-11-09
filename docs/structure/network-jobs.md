@@ -118,6 +118,8 @@ The transport below retains this tab's in-memory log.
   from either alerts `pushNotifications.failed`.
 - A failed disable (`error`, which the settings' off button alerts) retries at the next sync:
   `disablePushOnThisBrowser`, `flushPendingUnsubscribe`, `flushPendingRemoval` comments.
+- Without Web Locks the push queue is per tab, so another tab can opt this browser out while `ensureSubscribed` waits on
+  `subscribe`: it reads the opt-out flag again after `subscribe` and undoes a subscription it just made, unregistered.
 
 ## State
 

@@ -138,7 +138,7 @@ import type { AppEnv } from "./types.ts";
  * state-write, push state-write, and lifecycle handlers are tracked through their responses before
  * the store closes. Backups/imports manage their own operation admission. Shutdown refuses those
  * families plus history, diagnostics, and token routes with 503, Retry-After: 5, and no-store; all
- * responses then close their connections. History, diagnostics, memory-task, structured-memory,
+ * responses then close their connections. History, diagnostics, push, memory-task, structured-memory,
  * checkpoint, token, and lifecycle responses are no-store even on limiter/body-limit failures.
  *
  * Four independent client-IP limiter buckets use server/src/http/clientIp.ts and

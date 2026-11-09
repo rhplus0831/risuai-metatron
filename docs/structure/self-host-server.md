@@ -107,6 +107,8 @@ Route lookup order:
 statuses. The refresh interval is `PUSH_REGISTRATION_REFRESH_MS` (`shared/notifications.ts`).
 
 - `GET /api/push/key`; `PUT` and `DELETE /api/push/subscription`.
+- Every answer is `no-store`, the limiter's 429, the JWT failure's 400 and the body cap's 413 included: the routes'
+  first middleware sets it.
 
 ### Request history and diagnostics routes
 
