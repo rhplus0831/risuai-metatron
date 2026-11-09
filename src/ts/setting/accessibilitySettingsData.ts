@@ -10,7 +10,6 @@
 
 import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
-import { language } from "src/lang";
 
 export const accessibilitySettingsItems: SettingItem[] = [
     // Header
@@ -50,13 +49,14 @@ export const accessibilitySettingsItems: SettingItem[] = [
         bindKey: "newMessageButtonStyle",
         condition: (ctx) => ctx.settings.ui.autoScrollToNewMessage && !ctx.settings.ui.alwaysScrollToNewMessage,
         options: {
+            // The wrapper resolves label keys when read, so language changes reach these options.
             selectOptions: [
-                { value: "bottom-center", label: language.newMessageButtonBottomCenter },
-                { value: "bottom-right", label: language.newMessageButtonBottomRight },
-                { value: "bottom-left", label: language.newMessageButtonBottomLeft },
-                { value: "floating-circle", label: language.newMessageButtonFloatingCircle },
-                { value: "right-center", label: language.newMessageButtonRightCenter },
-                { value: "top-bar", label: language.newMessageButtonTopBar },
+                { value: "bottom-center", labelKey: "newMessageButtonBottomCenter" },
+                { value: "bottom-right", labelKey: "newMessageButtonBottomRight" },
+                { value: "bottom-left", labelKey: "newMessageButtonBottomLeft" },
+                { value: "floating-circle", labelKey: "newMessageButtonFloatingCircle" },
+                { value: "right-center", labelKey: "newMessageButtonRightCenter" },
+                { value: "top-bar", labelKey: "newMessageButtonTopBar" },
             ],
         },
     },

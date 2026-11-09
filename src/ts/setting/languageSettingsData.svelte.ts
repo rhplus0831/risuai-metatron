@@ -15,7 +15,7 @@ import { downloadFile } from "../globalApi.svelte";
 /** Whether a local language change has completed; controls the close-settings warning. */
 export const langState = $state({ changed: false });
 
-/** UI language picker and its warning; `translang` is the translation-file export action. */
+/** Bundled UI languages (including Spanish) and the warning; `translang` exports a translation file. */
 export const languageSettingsItems: SettingItem[] = [
     {
         id: "lang.header",
@@ -35,6 +35,7 @@ export const languageSettingsItems: SettingItem[] = [
             selectOptions: [
                 { value: "de", label: "Deutsch" },
                 { value: "en", label: "English" },
+                { value: "es", label: "Español" },
                 { value: "ko", label: "한국어" },
                 { value: "cn", label: "中文" },
                 { value: "zh-Hant", label: "中文(繁體)" },

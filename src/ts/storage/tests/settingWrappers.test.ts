@@ -27,7 +27,7 @@ vi.mock("../../process/modules", () => ({
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 
-import { language } from "src/lang";
+import { changeLanguage, language } from "src/lang";
 import type { SettingContext, SettingItem } from "../../setting/types";
 import type { Database } from "../database.svelte";
 import { changeToModelPreset, changeToPreset } from "../presets.svelte";
@@ -52,6 +52,8 @@ import { interactionSettingsItems } from "../../setting/interactionSettingsData"
 import { chatFormatSettingsItems } from "../../setting/chatFormatSettingsData";
 import { modelSpecificParameterItems } from "../../setting/botSettingsParamsData";
 import { LLMFlags } from "../../model/types";
+import LanguageSettings from "src/lib/Setting/Pages/LanguageSettings.svelte";
+import { langState } from "../../setting/languageSettingsData.svelte";
 
 type Mounted = ReturnType<typeof mount>;
 
@@ -162,6 +164,7 @@ function boot() {
 }
 
 beforeEach(() => {
+    changeLanguage("en");
     sessionStorage.clear();
     localStorage.clear();
     selectPreset("");
@@ -176,6 +179,8 @@ afterEach(async () => {
     const instances = mounted.splice(0);
     await Promise.all(instances.map((instance) => unmount(instance)));
     document.body.replaceChildren();
+    changeLanguage("en");
+    langState.changed = false;
 });
 
 describe("SettingNumber", () => {
@@ -323,6 +328,58 @@ describe("SettingTextarea", () => {
 });
 
 describe("SettingSelect", () => {
+    it("offers Spanish in the real language page and applies its bundled locale when selected", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            settings.ui.language = "en";
+            const { query } = render(LanguageSettings, {});
+            const select = query<HTMLSelectElement>("select");
+            expect([...select.options].find((option) => option.value === "es")?.textContent.trim()).toBe("Español");
+            chooseOption(select, "es");
+            await vi.advanceTimersByTimeAsync(10);
+            expect(settings.ui.language).toBe("es");
+            expect(select.value).toBe("es");
+            expect(language.settings).toBe("Configuración");
+        } finally {
+            vi.clearAllTimers();
+            vi.useRealTimers();
+        }
+    });
+
+    it("retains a saved Spanish language when the real language page mounts", () => {
+        settings.ui.language = "es";
+        changeLanguage("es");
+        const { query } = render(LanguageSettings, {});
+        expect(query<HTMLSelectElement>("select").value).toBe("es");
+        expect(settings.ui.language).toBe("es");
+        expect(language.settings).toBe("Configuración");
+        expect(langState.changed).toBe(false);
+    });
+
+    it("resolves all six message-button style labels in the language selected after the data import", () => {
+        const style = accessibilitySettingsItems.find((entry) => entry.id === "acc.newMessageButtonStyle")!;
+        settings.ui.newMessageButtonStyle = "bottom-center";
+        const english = render(SettingSelect, { item: style, ctx: ctx() });
+        expect(english.query<HTMLSelectElement>("select").options[0].textContent.trim()).toBe(
+            "Bottom Center (Default)",
+        );
+        changeLanguage("ko");
+        const reopened = render(SettingSelect, { item: style, ctx: ctx() });
+        expect(
+            [...reopened.query<HTMLSelectElement>("select").options].map((option) => [
+                option.value,
+                option.textContent.trim(),
+            ]),
+        ).toEqual([
+            ["bottom-center", "하단 중앙 (기본값)"],
+            ["bottom-right", "하단 우측"],
+            ["bottom-left", "하단 좌측"],
+            ["floating-circle", "원형 플로팅 버튼 (우측 하단)"],
+            ["right-center", "우측 중앙"],
+            ["top-bar", "상단 바"],
+        ]);
+    });
+
     const options = {
         selectOptions: [
             { value: "chatml", label: "ChatML" },

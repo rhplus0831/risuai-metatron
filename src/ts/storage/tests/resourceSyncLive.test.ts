@@ -55,7 +55,7 @@ vi.mock("../../alert", async () =>
 );
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
-    changeLanguage: vi.fn(),
+    changeLanguage: vi.fn<(typeof import("src/lang"))["changeLanguage"]>(),
 }));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -76,6 +76,7 @@ type Selection = typeof import("../selection.svelte");
 type Secrets = typeof import("../llmSecrets.svelte");
 
 const KINDS = Object.values(RESOURCE_KIND);
+const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
 const m = (id: string, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
 const chat = (id: string, messages: any[] = []) =>
     ({ id, name: id, note: "", localLore: [], message: messages }) as any;
@@ -238,7 +239,8 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    if (originalLocation) Object.defineProperty(globalThis, "location", originalLocation);
+    else Reflect.deleteProperty(globalThis, "location");
     server.current?.close();
 });
 
@@ -254,6 +256,64 @@ async function settle(fake: StoreBackedServer) {
     await vi.advanceTimersByTimeAsync(5000);
     expect({ reads: reads(fake), batches: fake.batchCount(), all: fake.requests.length }).toEqual(before);
 }
+
+describe("remote UI language replacements", () => {
+    async function languageBoot() {
+        const h = await boot({ prepare: (fake) => editUi(fake, { language: "en" }) });
+        const locale = await vi.importActual<typeof import("src/lang")>("src/lang");
+        const change = vi.mocked((await import("src/lang")).changeLanguage);
+        change.mockImplementation(locale.changeLanguage);
+        locale.changeLanguage("en");
+        (await import("../../bootstrap")).watchRemoteRecords();
+        return { ...h, locale, change };
+    }
+
+    it("applies a live UI language, ignores other records, and reapplies the same remote language after a local switch", async () => {
+        const h = await languageBoot();
+        try {
+            editUi(h.fake, { language: "ko" });
+            await settle(h.fake);
+            expect(h.settings.ui.language).toBe("ko");
+            expect(h.locale.language.settings).toBe("설정");
+
+            h.settings.ui.language = "es";
+            h.locale.changeLanguage("es");
+            await h.sync.flushResources();
+            expect(h.locale.language.settings).toBe("Configuración");
+            h.change.mockClear();
+            h.fake.set("providers", "main", {
+                ...h.fake.record("providers", "main")!.data,
+                presetChain: "remote chain",
+            });
+            await settle(h.fake);
+            expect(h.change).not.toHaveBeenCalled();
+            expect(h.locale.language.settings).toBe("Configuración");
+
+            editUi(h.fake, { language: "ko" });
+            await settle(h.fake);
+            expect(h.settings.ui.language).toBe("ko");
+            expect(h.locale.language.settings).toBe("설정");
+        } finally {
+            h.locale.changeLanguage("en");
+            h.change.mockReset();
+        }
+    });
+
+    it("applies the server language when a same-field UI conflict replaces a local language edit", async () => {
+        const h = await languageBoot();
+        try {
+            h.settings.ui.language = "es";
+            h.locale.changeLanguage("es");
+            editUi(h.fake, { language: "ko" });
+            expect((await h.sync.flushResources()).discarded).toContain("ui/main");
+            expect(h.settings.ui.language).toBe("ko");
+            expect(h.locale.language.settings).toBe("설정");
+        } finally {
+            h.locale.changeLanguage("en");
+            h.change.mockReset();
+        }
+    });
+});
 const noNotice = () => {
     expect(alerts.normal).not.toHaveBeenCalled();
     expect(alerts.error).not.toHaveBeenCalled();

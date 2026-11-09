@@ -324,7 +324,7 @@ function refreshPermissionsWithRetry(revision: string | null, attempt = 0) {
 /**
  * Records another tab wrote may reference inlays this tab has not seen: a remote reload drops the
  * inlay caches. A remote `characterOrder` may lack a character this tab created: it is appended
- * (`queueRemoteCharOrderRepair`). A remote `ui` record re-applies the display settings to the page.
+ * (`queueRemoteCharOrderRepair`). A remote `ui` record re-applies the language and display settings to the page.
  * Exported for tests.
  */
 export function watchRemoteRecords() {
@@ -334,6 +334,7 @@ export function watchRemoteRecords() {
             queueRemoteCharOrderRepair((chaId) => heldRecordRevision(RESOURCE_KIND.characters, chaId));
         }
         if (kind === SECTION_KIND.ui) {
+            changeLanguage(settings.ui.language);
             applyDisplaySettings();
         }
     });

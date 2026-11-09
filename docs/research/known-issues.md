@@ -22,7 +22,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [scripts-triggers](#scripts-triggers) (4)
 - [self-host-server](#self-host-server) (4)
 - [server-generation](#server-generation) (1)
-- [settings-i18n](#settings-i18n) (3)
 
 ## assets
 
@@ -274,15 +273,3 @@ Guide: [Server generation: jobs, channels, transforms, LLM and token routes](../
 
 - Server CBS evaluation runs on the main thread under cooperative limits, with no hard deadline or heap bound. Other
   prompt work (Jinja rendering, tokenizer calls after model load, non-worker lore matching) also runs there.
-
-## settings-i18n
-
-Guide: [Settings UI, Bot Presets, Prompt Template Editor, i18n](../structure/settings-i18n.md#known-hazards).
-
-- `src/lang/index.ts` supports Spanish through `changeLanguage`, but `src/ts/setting/languageSettingsData.svelte.ts`
-  does not offer `es` in the UI-language selector.
-- The new-message button style labels in `src/ts/setting/accessibilitySettingsData.ts` are copied from `language` at
-  module load, so they stay in the original language after a switch.
-- A remote or conflict replacement of the `ui` record does not apply a new `settings.ui.language`: `src/ts/bootstrap.ts`
-  `watchRemoteRecords` reapplies the color scheme, text theme/CSS, animation, and sizes, but does not call
-  `changeLanguage`.
