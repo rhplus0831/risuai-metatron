@@ -8,6 +8,10 @@ import {
 } from "./chatLoadPages";
 
 describe("normalizeChatLoadPages", () => {
+    it("uses the fallback for a Symbol", () => {
+        expect(normalizeChatLoadPages(Symbol(), 3)).toBe(3);
+    });
+
     it("keeps positive finite counts as integers", () => {
         expect(normalizeChatLoadPages(42, DEFAULT_CHAT_LOAD_INITIAL_PAGES)).toBe(42);
         expect(normalizeChatLoadPages(7.9, DEFAULT_CHAT_LOAD_INITIAL_PAGES)).toBe(7);

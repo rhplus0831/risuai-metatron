@@ -140,6 +140,31 @@ const promptRecordFields: readonly PresetField[] = [
 const modelRecordFields: readonly PresetField[] = ["name", ...MODEL_PRESET_FIELDS];
 
 describe("normalizePreset", () => {
+    it("fills an empty ooba with its defaults and remains a fixed point", () => {
+        const preset = normalizePreset({ ooba: {} });
+
+        expect(preset.ooba).toEqual(defaultOoba);
+        expect(normalizePreset(preset)).toEqual(preset);
+    });
+
+    it("fills missing ooba defaults while keeping supplied values and remains a fixed point", () => {
+        const preset = normalizePreset({
+            ooba: {
+                temperature: 0,
+                do_sample: false,
+                formating: { header: "Custom header", userPrefix: "", useName: true },
+            },
+        });
+
+        expect(preset.ooba).toEqual({
+            ...defaultOoba,
+            temperature: 0,
+            do_sample: false,
+            formating: { ...defaultOoba.formating, header: "Custom header", userPrefix: "", useName: true },
+        });
+        expect(normalizePreset(preset)).toEqual(preset);
+    });
+
     it("fills an empty input with the prompt fields' defaults plus a v4 id, and never a model or unset field", () => {
         const preset = normalizePreset({}) as unknown as Record<string, unknown>;
         expect(preset.id).toMatch(UUID_V4);

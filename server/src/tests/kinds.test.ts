@@ -170,6 +170,10 @@ describe("default normalizers", () => {
         }
     });
 
+    it("refuses a Map as a plugin storage record", () => {
+        expect(() => kind("pluginStorage").normalize(new Map(), { id: "main" })).toThrow(ResourceValidationError);
+    });
+
     it("require the character id to match and refuse a character record holding chats", () => {
         rejects("characters", "c1", {}, "character.chaId must equal the resource id");
         rejects("characters", "c1", { chaId: "c2" }, "character.chaId must equal the resource id");

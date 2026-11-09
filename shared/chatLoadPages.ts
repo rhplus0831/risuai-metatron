@@ -16,10 +16,14 @@ export const DEFAULT_CHAT_LOAD_ADDITIONAL_PAGES = 15;
 
 /**
  * Coerces `value` with `Number` and floors finite values at least 1, without an upper cap. Otherwise
- * floors a finite fallback at least 1, or uses 1. Numeric coercion errors propagate.
+ * floors a finite fallback at least 1, or uses 1. A Symbol yields the fallback; other numeric
+ * coercion errors propagate.
  */
 export function normalizeChatLoadPages(value: unknown, fallback: number): number {
     const fallbackValue = Number.isFinite(fallback) && fallback >= 1 ? Math.floor(fallback) : 1;
+    if (typeof value === "symbol") {
+        return fallbackValue;
+    }
     const numberValue = typeof value === "number" ? value : Number(value);
 
     if (!Number.isFinite(numberValue) || numberValue < 1) {

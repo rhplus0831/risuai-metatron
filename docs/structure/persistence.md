@@ -55,7 +55,8 @@ Client entry modules re-export `shared/` modules: `src/ts/storage/database.svelt
 ### Mutation modules
 
 The external contracts (plugins, MCP, imports) write these records only through the modules below and the chat module; a
-refusal changes nothing (`shared/mutationValidation.ts`).
+refusal changes nothing (`shared/mutationValidation.ts`). An object value must be plain (`isPlainObject` in
+`shared/valueKinds.ts`: prototype `Object.prototype` or `null`), so a `Map`, a `Date`, or a class instance is refused.
 
 - `src/ts/storage/characterStore.svelte.ts`: characters (`characterList`, `characterSnapshot`, `selectedCharacter`,
   `addCharacter`, `adoptCharacter`, `updateCharacter`, `CHARACTER_FIXED_FIELDS`, `replaceCharacterAt`,

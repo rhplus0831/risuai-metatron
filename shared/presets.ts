@@ -545,7 +545,9 @@ function normalizeAuxSlots(value: unknown): ModelPreset["auxSlots"] {
  * `null` is kept only where it is a value (`PRESET_NULLABLE_FIELDS`: `setPreset` passed it through
  * as it was, such as `min_p`); any other `null` gets the default, as `setPreset` gave the root copy
  * (a number field cleared in the UI comes back as its default after a reload). Fields outside
- * `fields` are dropped. Nested values are not checked beyond those migrations.
+ * `fields` are dropped. The `ooba` settings and its `formating` container also receive missing
+ * defaults, with a non-object formatting container replaced. Other nested values are not checked
+ * beyond those migrations.
  */
 function normalizeFields(source: Record<string, unknown>, fields: readonly PresetField[], id: string) {
     const record: Record<string, unknown> = { id };
@@ -579,6 +581,19 @@ function normalizeFields(source: Record<string, unknown>, fields: readonly Prese
         nai.cfg_scale ??= 1;
         nai.mirostat_tau ??= 0;
         nai.mirostat_lr ??= 1;
+    }
+    if (owns("ooba") && isPlainObject(record.ooba)) {
+        const ooba = record.ooba;
+        for (const [key, value] of Object.entries(defaultOoba)) {
+            ooba[key] ??= plainClone(value);
+        }
+        const formating: Record<string, unknown> = isPlainObject(ooba.formating)
+            ? ooba.formating
+            : plainClone(defaultOoba.formating);
+        ooba.formating = formating;
+        for (const [key, value] of Object.entries(defaultOoba.formating)) {
+            formating[key] ??= plainClone(value);
+        }
     }
     if (owns("promptSettings") && isPlainObject(record.promptSettings)) {
         record.promptSettings.maxThoughtTagDepth ??= -1;
