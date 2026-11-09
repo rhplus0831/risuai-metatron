@@ -15,7 +15,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
-- [Client and plugins](#client-and-plugins) (11)
+- [Client and plugins](#client-and-plugins) (8)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
 
 ## Chat store, sync, and change feeds
@@ -278,21 +278,6 @@ Unconfirmed in the browser. `setPlugins` in `src/ts/storage/collectionStore.svel
 
 If another client swaps two same-name plugins with the same key and text while the popup is open, those checks can still match the row now at that index. To verify, apply the draft and inspect which plugin's stored argument changed. Traced on 2026-11-07 while moving the earlier UI guide note to [plugin settings](../structure/plugin-sandbox.md#issues).
 
-### Nested numeric settings can be stored as null
-
-Three writers can leave a nested number field `NaN` or `null`, which the record normalizers do not repair (they check top-level kinds only): `src/lib/Setting/Pages/PluginSettings.svelte` (~291) stores `parseInt` of a radio option's suffix, `NaN` for a non-numeric suffix in plugin metadata; `ImageGenerationSettings.svelte` (~466) stores `Number(params.information_extracted)` from a vibe file without checking it; and `CharConfig.svelte`'s VOICEVOX scale inputs (~1194–1203) bind a `NumberInput` that writes `null` when emptied, which `tts.ts` (~290) sends as is. JSON turns `NaN` into `null`, so all three reload as `null`. Current upstream has the same writers and stores these records as JSON too. Found 2026-11-07.
-
-**Why it matters:** a malformed plugin or vibe file, or an emptied VOICEVOX field, leaves a `null` that the readers pass on (stableDiff.ts falls back with `|| 1`; VOICEVOX gets `null` scales).
-**Suggested handling:** validate with `Number.isFinite` at the two parse sites and fall back to the field default for an emptied VOICEVOX input.
-
-### StorageController.owners has no reader
-
-`src/lib/Setting/Pages/Storage/storageController.svelte.ts` (~57) `owners = $derived(...)` sorts every owner on each report, but since the Storage Settings Page run (slice B, 2026-11-07) `StorageOwners.svelte` sorts and caps owners through `Storage/storageUsage.ts` `getTopOwners`. Slice B could not edit the controller (slice C owned it), so the derived stayed. Owner: settings-i18n.
-
-**Why it matters:** a dead sort on every report refresh, and it misleads readers about where the owner list is computed.
-
-**Suggested handling:** remove it after `rg "controller\.owners"` confirms no reader.
-
 ### Asset-scale client leftovers
 
 The client half of "Asset-scale transport and job leftovers" under Server jobs and prompt assembly. The `getFileSrc` URL pinning is in "Stop B leftovers" and the inlay `mediaObjectUrls` in "Fallback media object URLs outlive the blob cache", so they are not repeated; the plan archive holds the options for the pinning (an avatar hold-release, or a parser placeholder with `fileSrcCache` removed). Kept in memory until 2026-11-08; identifiers re-checked that day, not re-measured.
@@ -329,13 +314,6 @@ Left on purpose by slice P2 of the RisuNest Small Wins plan (ed9d207c5, 2026-10-
 
 **Why it matters:** a reload can run a job against a half-unloaded hook list. (The failed-start and unsignalled-fetch bullets were fixed by Found Issues Clearance slice F8.)
 **Suggested handling:** pick these up when a change touches plugin reload timing (S1 safe boot uses P2's reload guard) or a bug report does. Related: "A multi-tab plugin removal can bring its deleted data back".
-
-### The plugin remove button's comment predates the owned-write refusal
-
-`src/lib/Setting/Pages/PluginSettings.svelte` remove button (~206): the comment "onUnload can still write; delete only after the local sandbox is gone" predates Found Issues Decisions B1 (2026-11-09), which makes `setOwnedPluginStorageItem` throw for an owner not in `settings.plugins`. The plugin is spliced out of the list before `loadPlugins()`, so its `onUnload` owned writes are now refused; only legacy and custom (`setDatabase`) writes can still land. B1 could not edit the file (B2 owned it in that run). Found by the B1 slice session.
-
-**Why it matters:** a reader may think the order still protects owned keys, or reorder the handler wrongly.
-**Suggested handling:** reword the comment when the handler is next touched; the delete-after-unload order still matters for custom keys.
 
 ## Build, drivers, and e2e
 
