@@ -243,8 +243,11 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
 - `ParseMarkdown` output must go through `trimMarkdown` before `{@html}`. `mode:'notrim'` is an intermediate result, not
   a final one.
 - An aborted render still meets `ChatBody`'s run guards and the `isCurrent` fences.
-- Keep the DOMPurify hooks intact: class prefixing, the href policy, the YouTube iframe allowlist, and blob `src`
-  retention.
+- Keep the DOMPurify hooks intact: class prefixing, the href policy (an `http(s)` link opens in a new tab with
+  `rel="noopener noreferrer"`, any other value is emptied, and a supplied `rel` is replaced), the YouTube iframe
+  allowlist, and blob `src` retention.
+- `applyMarkdownToNode` builds its span in the text node's own document, so Markdown inside a parsed (inert) document
+  never becomes markup of the live page before it is sanitized.
 - `trimMarkdown`'s config (`trimPurifyConfig`) keeps the chat's script attributes `risu-btn`, `risu-trigger`, `risu-id`,
   and `risu-form` (a Lua form, `scripts-triggers.md`); DOMPurify's defaults keep the form controls and strip `on*`
   handlers and `javascript:` values. A form's submit never navigates (`Chat.svelte` default-prevents every submit in a

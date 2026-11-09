@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { ParseMarkdown, trimMarkdown } from "../parser.svelte";
+import { applyMarkdownToNode, ParseMarkdown, trimMarkdown } from "../parser.svelte";
 
 //#region module mocks
 
@@ -38,6 +38,62 @@ const expectScopedStyles = (body: HTMLElement, count: number) => {
         }
     }
 };
+
+describe("applyMarkdownToNode", () => {
+    it("renders Markdown in a parsed document without creating elements in the live document", () => {
+        const body = parse("<p>**bold**</p>");
+        // Insertion would adopt a live-document span, so guard its creation instead.
+        const createElement = vi.spyOn(document, "createElement").mockImplementation(() => {
+            throw new Error("Markdown must not create elements in the live document");
+        });
+        try {
+            applyMarkdownToNode(body);
+        } finally {
+            createElement.mockRestore();
+        }
+
+        const span = body.querySelector("p > span");
+        expect(span).not.toBeNull();
+        expect(span?.querySelector("strong")?.outerHTML).toBe("<strong>bold</strong>");
+    });
+});
+
+describe("sanitized links", () => {
+    it("opens HTTP and HTTPS Markdown links in a new tab with noopener noreferrer", async () => {
+        const body = parse(
+            await ParseMarkdown("[HTTP](http://example.com/plain) [HTTPS](https://example.com/secure)", null),
+        );
+
+        expect(
+            [...body.querySelectorAll("a")].map((link) => [
+                link.getAttribute("href"),
+                link.getAttribute("target"),
+                link.getAttribute("rel"),
+            ]),
+        ).toEqual([
+            ["http://example.com/plain", "_blank", "noopener noreferrer"],
+            ["https://example.com/secure", "_blank", "noopener noreferrer"],
+        ]);
+    });
+
+    it("replaces a card-supplied rel before or after href with noopener noreferrer", () => {
+        const body = parse(
+            trimMarkdown(`<a rel="opener" href="https://example.com/before">before</a>
+                <a href="https://example.com/after" rel="opener">after</a>`),
+        );
+
+        expect(
+            [...body.querySelectorAll("a")].map((link) => [
+                link.getAttribute("href"),
+                link.getAttribute("target"),
+                link.getAttribute("rel"),
+            ]),
+        ).toEqual([
+            ["https://example.com/before", "_blank", "noopener noreferrer"],
+            ["https://example.com/after", "_blank", "noopener noreferrer"],
+        ]);
+    });
+});
 
 describe("trimMarkdown style handling", () => {
     it("keeps risu-form and its inputs while stripping submit handlers and javascript actions", () => {

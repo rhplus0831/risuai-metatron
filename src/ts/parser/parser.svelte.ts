@@ -165,9 +165,14 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
         case "href": {
             if (data.attrValue.startsWith("http://") || data.attrValue.startsWith("https://")) {
                 node.setAttribute("target", "_blank");
+                node.setAttribute("rel", "noopener noreferrer");
                 break;
             }
             data.attrValue = "";
+            break;
+        }
+        case "rel": {
+            data.attrValue = "noopener noreferrer";
             break;
         }
     }
@@ -1644,7 +1649,7 @@ export function applyMarkdownToNode(node: Node) {
         if (text) {
             let markdown = renderMarkdown(md, text);
             if (markdown !== text) {
-                const span = document.createElement("span");
+                const span = (node.ownerDocument ?? document).createElement("span");
                 span.innerHTML = markdown;
 
                 // inherit inline style from the parent node
