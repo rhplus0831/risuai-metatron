@@ -297,9 +297,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   next boot: no deletion acknowledgement or `forgetCharacter` comes for it. The leak is bounded to that session's
   resend-bearing chats, whose payloads can be whole chat snapshots. Decision: Found Issues Decisions (owner,
   2026-11-08).
-- Two refresh costs, one read each: the own-save echo of an unloaded chat's list field asks for a summary-list read, and
-  a noticed loaded idle chat is read whole before the trim may evict it. Decision: Found Issues Decisions (owner,
-  2026-11-08).
+- The own-save echo of an unloaded chat's list field asks for a summary-list read. Decision: Found Issues Decisions
+  (owner, 2026-11-08).
 
 ### Gotchas
 

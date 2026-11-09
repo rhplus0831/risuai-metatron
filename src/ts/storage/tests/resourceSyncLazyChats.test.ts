@@ -70,6 +70,7 @@ const refK = { chaId: "c", chatId: "k" };
 const EXTRA = 8;
 /** `c`'s chat ids in server order: `k`, `j`, then `n0`..`n7`. */
 const C_IDS = ["k", "j", ...Array.from({ length: EXTRA }, (_, i) => `n${i}`)];
+const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location")!;
 
 /**
  * Boots the adapter and the chat module from summaries, the way `loadData` does, against a
@@ -204,7 +205,7 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    Object.defineProperty(globalThis, "location", originalLocation);
     server.current?.close();
 });
 
@@ -279,6 +280,48 @@ describe("the boot from summaries", () => {
 });
 
 describe("live updates of chats that are not loaded", () => {
+    it("trims excess noticed chats before choosing reads and refreshes evicted chats through summaries", async () => {
+        const b = await boot();
+        b.live.paused = true;
+        const release = b.chat.pinChats("c");
+        await b.chat.loadChats("c");
+        expect(b.loadedIds("c")).toEqual(C_IDS);
+        b.fake.requests.length = 0;
+        for (const id of C_IDS) b.remoteMeta("c", id, { name: `${id} remote` });
+        b.sync.noteRemoteChanges({
+            resources: [],
+            chats: C_IDS.map((id) => ({ characterId: "c", id, revision: b.fake.chat("c", id)!.revision })),
+            chatOrders: [],
+        });
+        release();
+        // A normal trim still protects every notice; only the refresh pass may drop these copies.
+        b.chat.trimLoadedChats();
+        expect(b.loadedIds("c")).toEqual(C_IDS);
+        await settle(b.fake);
+
+        expect(b.loadedIds("c")).toEqual(C_IDS.slice(2));
+        expect(b.reads().flatMap((read) => read.summaries)).toContain("c");
+        expect(
+            b
+                .reads()
+                .flatMap((read) => read.chats)
+                .sort(),
+        ).toEqual(
+            C_IDS.slice(2)
+                .map((id) => `c/${id}`)
+                .sort(),
+        );
+        expect(b.reads().flatMap((read) => read.collections)).toEqual([]);
+        for (const id of C_IDS) {
+            const ref = { chaId: "c", chatId: id };
+            expect(b.chat.chatEntry(ref)?.name).toBe(`${id} remote`);
+            expect(b.chat.heldChatRevision(ref)).toBe(b.fake.chat("c", id)!.revision);
+            expect(b.chat.isChatBehind(ref)).toBe(false);
+        }
+        expect(b.fake.batchCount()).toBe(0);
+        noNotice();
+    });
+
     it("keeps a row delta's chat unloaded while advancing its known summary without reads", async () => {
         const b = await boot();
         const data = "x".repeat(100 * 1024);

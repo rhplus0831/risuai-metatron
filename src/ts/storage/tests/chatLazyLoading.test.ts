@@ -1009,6 +1009,40 @@ describe("eviction", () => {
         expect(texts(await chat.ensureChatLoaded(kRef(8)))).toEqual(["K8 text"]);
     });
 
+    it("trimming noticed chats preserves selection, pins, local work, stale chats, generation and unsaved chats", async () => {
+        const { chat, server, selection, loadedIds, take, remoteMeta } = await boot();
+        selection.selectCharacter("c");
+        await settleMicrotasks();
+        await chat.loadChats("c");
+        await chat.loadChats("d");
+        const releaseChat = chat.pinChat(kRef(1));
+        const releaseCharacter = chat.pinChats("d");
+        chat.setChatMeta(kRef(2), { note: "in flight" });
+        take();
+        chat.setChatMeta(kRef(3), { note: "unsent" });
+        chat.markChatStale(kRef(4));
+        chat.applyServerGeneration(kRef(5), { jobId: "J", messageId: "k5-0", generationId: "g", text: "...", seq: 0 });
+        const created = chat.createChat("c", { id: "new", name: "New", note: "", localLore: [], message: [] });
+        remoteMeta("c", "k6", { name: "K6 remote" });
+        chat.noteRemoteChat(kRef(6), server.chat("c", "k6")!.revision);
+        try {
+            chat.trimLoadedChats();
+            expect(chat.findChat(kRef(6))).toBeDefined();
+            chat.trimLoadedChats(true);
+            expect(chat.findChat(kRef(6))).toBeUndefined();
+            expect(chat.chatEntry(kRef(6))?.name).toBe("K6");
+            expect(chat.isChatBehind(kRef(6))).toBe(true);
+            for (const id of ["k0", "k1", "k2", "k3", "k4", "k5", created.id]) {
+                expect(chat.findChat(ref("c", id)), id).toBeDefined();
+            }
+            expect(loadedIds("d")).toEqual(["m", "constructor"]);
+            expect(server.batchCount()).toBe(0);
+        } finally {
+            releaseChat();
+            releaseCharacter();
+        }
+    });
+
     it("never evicts the selected chat, a pinned chat, a chat of a pinned character, one with unsent or in-flight work, a noticed or stale one, a generating one, or one not saved yet; the end of each protection lets a trim take it", async () => {
         const { server, chat, selection, loadedIds, runTrim, commit, take, apply, ack, refreshIdle, remoteMeta } =
             await boot();

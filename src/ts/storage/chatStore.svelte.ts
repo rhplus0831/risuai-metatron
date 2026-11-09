@@ -7910,7 +7910,7 @@ export function isChatPinned(chaId: string): boolean {
 }
 
 /** Whether a loaded chat may be evicted (`trimLoadedChats`). */
-function isEvictable(ref: ChatRef, current: ChatRef | null): boolean {
+function isEvictable(ref: ChatRef, current: ChatRef | null, trimNoticed: boolean): boolean {
     const key = keyOf(ref.chaId, ref.chatId);
     return (
         chatRevisions.has(key) &&
@@ -7920,7 +7920,7 @@ function isEvictable(ref: ChatRef, current: ChatRef | null): boolean {
         !isBusy(key) &&
         !isChatGenerating(ref) &&
         !staleChats.has(key) &&
-        !noticedChats.has(key) &&
+        (trimNoticed || !noticedChats.has(key)) &&
         streamingChats[key] === undefined
     );
 }
@@ -7929,9 +7929,11 @@ function isEvictable(ref: ChatRef, current: ChatRef | null): boolean {
  * Evicts the least recently used idle loaded chats beyond `MAX_LOADED_CHATS`: each is kept as its
  * summary, with its revision and version. Never the selected chat, a pinned one (or one of a pinned
  * character), one with local work or a protection, a generating one, one waiting for a refresh, or
- * one not saved yet. Nothing is written.
+ * one not saved yet. The background refresh pass may trim noticed chats first (`trimNoticed`),
+ * preserving their notices for summary refresh instead of reading their whole contents. Stale
+ * chats remain protected. Nothing is written.
  */
-export function trimLoadedChats() {
+export function trimLoadedChats(trimNoticed = false) {
     if (loadedKeys.size <= MAX_LOADED_CHATS) {
         return;
     }
@@ -7946,7 +7948,7 @@ export function trimLoadedChats() {
                 loadedKeys.delete(key);
                 continue;
             }
-            if (isEvictable(ref, current) && findCharacter(chaId)) {
+            if (isEvictable(ref, current, trimNoticed) && findCharacter(chaId)) {
                 candidates.push({ chaId, id, use: lastUse.get(key) ?? 0 });
             }
         }

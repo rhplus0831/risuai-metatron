@@ -60,6 +60,8 @@ Identifiers the flows below name are not repeated here.
   revisions advance by applied op count.
 - A list that meets this client's order work uses `canApplyRemoteCollection` and `applyRemoteCollection`; only the
   acknowledgement rebase (`keepPendingOrder`) applies a list over a queued reorder.
+- The background refresh pass trims excess idle loaded chats before choosing reads. A noticed chat evicted then keeps
+  its notice and refreshes through summaries; selected, pinned, busy, generating and stale chats stay protected.
 
 ### Feed locks
 

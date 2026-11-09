@@ -14,7 +14,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [chat-store](#chat-store) (1)
 - [diagnostics](#diagnostics) (1)
 - [draft-recovery](#draft-recovery) (7)
-- [live-updates](#live-updates) (3)
+- [live-updates](#live-updates) (2)
 - [llm-requests](#llm-requests) (4)
 - [mcp](#mcp) (1)
 - [media-aux](#media-aux) (2)
@@ -178,8 +178,6 @@ Guide: [Live Updates: Feed Connection, Record and Chat Updates, Feed Locks, Rest
 - The same window decides when an observer refuses a permanent character delete or different-id replace
   (`isCharacterGenerating`). A fix would announce the job's chat reservation in the feed and read lock lists, locking
   the chat's tail.
-- A noticed idle chat read whole (`readIdleChats`) before the pass's trim may be evicted once its notice settles,
-  wasting the read.
 
 ## llm-requests
 

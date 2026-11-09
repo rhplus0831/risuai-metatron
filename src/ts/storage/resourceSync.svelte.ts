@@ -153,6 +153,7 @@ import {
     idleChatRows,
     finishIdleChatRows,
     idleSummaryRefreshes,
+    trimLoadedChats,
     scheduleTrim,
     settleSummaryRefresh,
     summaryRefreshNotices,
@@ -1656,6 +1657,8 @@ function runRefresh(): Promise<void> {
         clearTimeout(refreshTimer);
     }
     refreshTimer = null;
+    // Evict excess noticed chats before choosing whole reads; their notices refresh as summaries.
+    trimLoadedChats(true);
     refreshInFlight = (async () => {
         const failuresBefore = refreshFailures;
         const results = await Promise.allSettled(
