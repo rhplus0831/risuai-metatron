@@ -12,7 +12,7 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 
 ## Contents
 
-- [Plugin sandbox](#plugin-sandbox): 3
+- [Plugin sandbox](#plugin-sandbox): 4
 
 ## Plugin sandbox
 
@@ -55,3 +55,16 @@ as an edge case for that slice (the prompt shows once per page load or three day
 
 **Suggested handling:** verify with a test first; for `setChatToIndex`, peek (not take) the baseline before consent;
 the character setters need a reservation policy.
+
+### The full-screen alert e2e test failed once with a closed page
+
+`e2e/pluginSandbox.spec.ts:229` ("plugin permission alerts paint above the full-screen plugin container", added by
+Upstream Intake 2 slice 11) failed once in four runs on `dev` at the end of that run: `frame.evaluate: Target page,
+context or browser has been closed` at its first line (`requestMainDomInFullscreen`). The other three runs, each with
+`--force`, passed all four tests of the spec. During the failing run the session was editing Markdown files in the
+checkout; no other test or dev stack was running.
+
+**Why it matters:** a new e2e test with an intermittent failure; the stability measurement of 2026-11-08 had none.
+
+**Suggested handling:** repeat the spec (`--force`, several runs) to measure the rate; if it recurs, check the trace
+for a page reload or an iframe re-attach when the container moves to the body.
