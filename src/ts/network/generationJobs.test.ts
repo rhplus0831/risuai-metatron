@@ -144,6 +144,12 @@ function deferred<T = void>() {
 
 let transport: Transport;
 let client: Client;
+const originalFollowGlobals = new Map(
+    ["WebSocket", "location", "sessionStorage", "window"].map((name) => [
+        name,
+        Object.getOwnPropertyDescriptor(globalThis, name),
+    ]),
+);
 
 /** The follows a test started: each owns a connect timer and a resume subscription, so the test's end closes them. */
 const startedFollows: ReturnType<Transport["followGenerationJob"]>[] = [];
@@ -175,7 +181,10 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    for (const [name, descriptor] of originalFollowGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+    }
     stubs.isChatStale.mockReset().mockReturnValue(false);
     stubs.chatHydrationHold.mockReset().mockReturnValue("none");
     stubs.flushResources.mockReset().mockResolvedValue({ discarded: [], refused: [] });
@@ -1951,7 +1960,52 @@ describe("the follow's liveness", () => {
         ]);
     });
 
-    it("leaves a follow whose terminal arrived alone: neither the page's return nor the silence after it gives the socket up before its close, and `closed` carries the terminal", async () => {
+    for (const terminal of [
+        { type: "done", epoch: EPOCH, revision: null },
+        { type: "error", epoch: EPOCH, reason: "failed", message: "provider failed", stage: "generate", status: 500 },
+    ] as const) {
+        it(`applies ${terminal.type} before settlement and releases follow timers while socket close is held`, async () => {
+            const order: string[] = [];
+            const applied = vi.fn<Parameters<Transport["followGenerationJob"]>[1]>((event) => {
+                transport.applyGenerationEvent("j1", { chaId: "c", chatId: "k" }, event);
+                order.push("applied");
+            });
+            const follow = startFollow("j1", applied);
+            const settled = follow.closed.then((result) => {
+                order.push("settled");
+                return result;
+            });
+            stubs.auth[0].resolve("jwt");
+            await tick();
+            const socket = FakeSocket.instances[0];
+            socket.open();
+            socket.close = () => {
+                socket.closeCalls += 1;
+                socket.readyState = FakeSocket.CLOSING;
+            };
+            socket.message(terminal);
+            await microtasks();
+            expect(order).toEqual(["applied", "settled"]);
+            await expect(settled).resolves.toEqual({ terminal, received: true });
+            expect(stubs.endServerJob).toHaveBeenCalledExactlyOnceWith("j1");
+            expect(vi.getTimerCount()).toBe(0);
+            // A subscriber attached after the terminal still recovers it without a socket close.
+            await expect(follow.closed.then((result) => result.terminal)).resolves.toEqual(terminal);
+            const next = startFollow("j1", () => {});
+            stubs.auth[1].resolve("jwt");
+            await tick();
+            const replacement = FakeSocket.instances[1];
+            replacement.open();
+            socket.onclose!({ code: 1000 });
+            expect(applied).toHaveBeenCalledTimes(1);
+            expect(stubs.endServerJob).toHaveBeenCalledTimes(1);
+            expect(await state(next.closed)).toBe("pending");
+            next.close();
+            await next.closed;
+        });
+    }
+
+    it("settles a follow when its terminal arrives even if the close handshake never ends, and ignores later page and silence recovery", async () => {
         const follow = startFollow("j1", () => {});
         stubs.auth[0].resolve("jwt");
         await tick();
@@ -1966,7 +2020,7 @@ describe("the follow's liveness", () => {
         expect(socket.closeCalls).toBe(1);
         window.dispatchEvent(new Event("online"));
         await vi.advanceTimersByTimeAsync(60_000);
-        expect(await state(follow.closed)).toBe("pending");
+        await expect(follow.closed).resolves.toEqual({ terminal: done, received: true });
         expect(socket.closeCalls).toBe(1);
         expect(links()).toEqual([{ kind: "jobLink", phase: "attach", jobId: "j1" }]);
         socket.onclose!({ code: 1000 });

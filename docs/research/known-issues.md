@@ -7,7 +7,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [assets](#assets) (1)
 - [backup-sync-hub](#backup-sync-hub) (1)
 - [cbs-rendering](#cbs-rendering) (11)
-- [chat-pipeline](#chat-pipeline) (9)
+- [chat-pipeline](#chat-pipeline) (8)
 - [chat-store](#chat-store) (1)
 - [diagnostics](#diagnostics) (1)
 - [draft-recovery](#draft-recovery) (5)
@@ -75,7 +75,6 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
 
 - A reroll's restore cannot see another tab's job that holds no lock yet and was not met at this tab's create: the
   restored replies land while that job runs, like any other edit.
-- Stop stays visible between a followed job's `done` and its socket close, when an abort does nothing.
 - A boot resume that discovers its chat but cannot load it shows Stop during the load retries, until the follow ends as
   lost.
 - `disable_ui_prompt` lore decorators fill `disabledUIPrompts`, which nothing consumes.

@@ -144,9 +144,10 @@ In `DefaultChatScreen.svelte`: `send`/`sendContinue` → `sendMain` → `sendCha
 ### Job client and reply
 
 `sendChat` refuses a deleted target and takes its local send entry before its first await. `serverCommands.ts`
-`runServerJob` flushes pending writes, creates the job, follows it, and maps its outcome. The server generation flow is
-in [server generation](server-generation.md#prompt-job-execution); tab job transport and recovery are in
-[network jobs](network-jobs.md#job-recovery).
+`runServerJob` flushes pending writes, creates the job, follows it, and maps its outcome. A received terminal settles
+the follow without waiting for the socket close handshake, so that handshake cannot keep Stop visible. The server
+generation flow is in [server generation](server-generation.md#prompt-job-execution); tab job transport and recovery are
+in [network jobs](network-jobs.md#job-recovery).
 
 ### Create refusal and request identity
 

@@ -68,6 +68,9 @@ let pageDraftJournal: typeof import("src/ts/storage/draftJournal").pageDraftJour
 let createHttpJob: typeof import("src/ts/network/generationJobs").createGenerationJob;
 let screen: ReturnType<typeof mount> | undefined;
 const originalLocks = Object.getOwnPropertyDescriptor(navigator, "locks");
+const originalComposerGlobals = new Map(
+    ["indexedDB", "IDBKeyRange", "WebSocket"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]),
+);
 
 async function drive<T>(promise: Promise<T>): Promise<T> {
     let done = false;
@@ -96,7 +99,10 @@ afterEach(async () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
-    vi.unstubAllGlobals();
+    for (const [name, descriptor] of originalComposerGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+    }
     if (originalLocks) Object.defineProperty(navigator, "locks", originalLocks);
     else Reflect.deleteProperty(navigator, "locks");
 });
@@ -407,6 +413,60 @@ it("locks both composers of an incomplete chat, keeps their text, and still open
     expect(input().readOnly).toBe(false);
     expect(translation().readOnly).toBe(false);
 });
+
+for (const type of ["done", "error"] as const) {
+    it(`removes the mounted Stop after ${type} while the WebSocket close handshake stays open`, async () => {
+        const { target, type: enter, click } = await mountComposer();
+        const sockets: HeldSocket[] = [];
+        class HeldSocket {
+            static OPEN = 1;
+            readyState = 0;
+            onopen: (() => void) | null = null;
+            onmessage: ((event: { data: string }) => void) | null = null;
+            onclose: ((event: { code: number }) => void) | null = null;
+            close = vi.fn<() => void>(() => {
+                this.readyState = 2;
+            });
+            send = vi.fn<(data: string) => void>();
+            constructor() {
+                sockets.push(this);
+            }
+        }
+        vi.stubGlobal("WebSocket", HeldSocket);
+        io.createJob.mockResolvedValue({ outcome: "created", jobId: "held-close" });
+        enter("send through the real follow");
+        click(target.querySelector(".button-icon-send"));
+        await until(() => sockets.length === 1);
+        const socket = sockets[0];
+        socket.readyState = 1;
+        socket.onopen!();
+        flushSync();
+        expect(target.querySelector('[aria-labelledby="cancel"]')).not.toBeNull();
+        const terminal =
+            type === "done"
+                ? { type, epoch: io.server!.epoch, revision: null }
+                : {
+                      type,
+                      epoch: io.server!.epoch,
+                      reason: "failed",
+                      stage: "generate",
+                      status: 500,
+                      message: "provider failed",
+                  };
+        socket.onmessage!({ data: JSON.stringify(terminal) });
+        await until(() => target.querySelector('[aria-labelledby="cancel"]') === null);
+        expect(target.querySelector(".button-icon-send")).not.toBeNull();
+        expect(socket.close).toHaveBeenCalled();
+        const { followedJobs } = await import("src/ts/process/serverCommands");
+        const { get } = await import("svelte/store");
+        expect(get(followedJobs).size).toBe(0);
+        socket.onclose!({ code: 1000 });
+        await tick();
+        flushSync();
+        expect(target.querySelector('[aria-labelledby="cancel"]')).toBeNull();
+        expect(target.querySelector(".button-icon-send")).not.toBeNull();
+    });
+}
 
 it("offers Stop beside Send for an unfollowed lock, busy refusal, or replay, and confirms the looked-up job", async () => {
     const { target, click } = await mountComposer();

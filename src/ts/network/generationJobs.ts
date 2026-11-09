@@ -932,7 +932,8 @@ function attachStamp(): number {
  * (`src/ts/network/socketLiveness.ts`); a terminal that arrived stands. The caller attaches again.
  * A newer follow cancels the older socket (even while connecting), events, and sends immediately;
  * its higher `attach` stamp also orders this client's attaches across reloads on the server. `send` carries the
- * channel's answers; `closed` retains any terminal, and distinguishes a resumed page from a lost link.
+ * channel's answers; `closed` settles after a terminal is applied, without waiting for the socket's
+ * close handshake, and distinguishes a resumed page from a lost link.
  */
 export function followGenerationJob(
     jobId: string,
@@ -1046,6 +1047,7 @@ export function followGenerationJob(
             onEvent(event);
             if (terminal) {
                 socket.close();
+                finish();
             }
         };
         socket.onerror = () => {};
