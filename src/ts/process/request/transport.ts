@@ -468,12 +468,13 @@ async function readEvents(body: ReadableStream<Uint8Array>, options: ReadOptions
             }
             let value: unknown;
             if (event.name === "mcpTool") {
-                // The request's chat chooses the module MCP servers, not the selection now.
+                // The request's chat chooses the module MCP servers. Its controller also stops MCP network work.
                 value = await callTool(
                     event.payload.name,
                     event.payload.args,
                     options.toolChatRef ?? options.parseChatRef,
                     options.pluginContext,
+                    options.controller.signal,
                 );
             } else {
                 const target = event.payload.chatRef ?? options.parseChatRef;

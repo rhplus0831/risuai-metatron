@@ -815,7 +815,8 @@ function errorText(error: unknown): string {
  *
  * `mcpList`/`mcpTool` use the current `plugin:` registry or `readyTabClient` in
  * `src/ts/process/mcp/mcp.ts` for `internal:fs`/`internal:googlesearch` (which may prompt for a
- * directory or credentials). A client's throw is a `hook` failure.
+ * directory or credentials). The callback signal reaches client listings and calls, including
+ * their cancellable network requests. A client's throw is a `hook` failure.
  */
 async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Promise<unknown> {
     // The job's targets, and this callback as the parent of any aux request the hook makes.
@@ -899,7 +900,7 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                 const registry = await import("../process/mcp/mcp");
                 // No picker or prompt is started for a callback the server already cancelled.
                 stillWanted();
-                client = await registry.readyTabClient(identifier);
+                client = await registry.readyTabClient(identifier, entry.abort.signal);
             } else {
                 client = registeredCustomPluginMCPs.get(identifier);
             }
@@ -908,7 +909,7 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             }
             stillWanted();
             if (event.name === "mcpList") {
-                const tools = await (isTabClient ? client.getToolList() : client.getToolList(context));
+                const tools = await client.getToolList(isTabClient ? undefined : context, entry.abort.signal);
                 stillWanted();
                 return tools.map((tool) => ({
                     name: tool.name,
@@ -916,9 +917,12 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                     inputSchema: tool.inputSchema,
                 }));
             }
-            const content = await (isTabClient
-                ? client.callTool(String(payload.tool), payload.args)
-                : client.callTool(String(payload.tool), payload.args, context));
+            const content = await client.callTool(
+                String(payload.tool),
+                payload.args,
+                isTabClient ? undefined : context,
+                entry.abort.signal,
+            );
             stillWanted();
             return content;
         }

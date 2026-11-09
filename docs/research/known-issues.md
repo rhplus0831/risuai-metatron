@@ -19,7 +19,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [mcp](#mcp) (1)
 - [media-aux](#media-aux) (2)
 - [memory](#memory) (10)
-- [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (3)
 - [plugin-sandbox](#plugin-sandbox) (6)
 - [resource-sync](#resource-sync) (3)
@@ -237,13 +236,6 @@ Guide: [Long-Term Memory and Embeddings](../structure/memory.md#known-hazards).
   task.
 - The custom embedding URL is fetched directly by the server with no local-target restriction.
 - The Transformers `EmbeddingModel` union names only MiniLM and nomic, while `localModels` lists more models.
-
-## network-jobs
-
-Guide: [Network and Jobs: Fetch Routing, Aux Fetch, Generation Job Client, Job Channel, Web Push](../structure/network-jobs.md#known-hazards).
-
-- A tab MCP tool call from the job channel (`getToolList`, `callTool`) has no abort signal: once it starts, ending the
-  request does not stop it.
 
 ## persistence
 

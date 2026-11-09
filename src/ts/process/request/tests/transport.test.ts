@@ -18,7 +18,7 @@ const stubs = vi.hoisted(() => ({
     flush: vi.fn<() => Promise<unknown>>(),
     alertError: vi.fn(),
     appendFetchLog: vi.fn(),
-    callTool: vi.fn<(name: string, args: unknown) => Promise<unknown>>(),
+    callTool: vi.fn<typeof import("../../mcp/mcp").callTool>(),
     decodeToolCall: vi.fn<(inner: string) => Promise<unknown>>(),
     encodeToolCall: vi.fn<(record: unknown) => Promise<string>>(),
     saveInlayedSignature: vi.fn<(id: string, signature: unknown) => Promise<string>>(),
@@ -1019,6 +1019,46 @@ describe("the events", () => {
 });
 
 describe("the callbacks", () => {
+    it("passes the exact request controller to an MCP call and aborts its pending fetch when the consumer cancels", async () => {
+        const controlled = controlledResponse();
+        let requestSignal: AbortSignal | undefined;
+        let toolSignal: AbortSignal | undefined;
+        let aborted = false;
+        let started = false;
+        stubs.fetch.mockImplementationOnce(async (_path, init) => {
+            requestSignal = init?.signal as AbortSignal;
+            return controlled.response;
+        });
+        stubs.callTool.mockImplementationOnce(async (_name, _args, _target, _context, signal) => {
+            toolSignal = signal;
+            started = true;
+            return new Promise((_, reject) =>
+                signal!.addEventListener(
+                    "abort",
+                    () => {
+                        aborted = true;
+                        reject(signal!.reason);
+                    },
+                    { once: true },
+                ),
+            );
+        });
+        const pending = requestServer({ ...baseArg(), useStreaming: true } as never, "model", null, modelInfo);
+        controlled.event(accepted);
+        controlled.event({ type: "streaming" });
+        const response = (await pending) as { result: ReadableStream<StreamResponseChunk> };
+        const reader = response.result.getReader();
+        controlled.event({ type: "callback", id: "cancel-tool", name: "mcpTool", payload: { name: "read", args: {} } });
+        for (let i = 0; i < 300 && !started; i++) await Promise.resolve();
+        expect(started).toBe(true);
+        expect(toolSignal).toBe(requestSignal);
+        expect(toolSignal).toBeInstanceOf(AbortSignal);
+        await reader.cancel("consumer ended");
+        for (let i = 0; i < 100; i++) await Promise.resolve();
+        expect(aborted).toBe(true);
+        expect(answers()).toEqual([]);
+    });
+
     it("parses a `cbs` callback with the captured chat and scope (or the payload's chat), and answers each callback once by id", async () => {
         // The scope is the request chat's binding, not the selection (`preset-2` is selected meanwhile).
         selectPreset("preset-2");
@@ -1066,6 +1106,7 @@ describe("the callbacks", () => {
             { sides: 6 },
             { chaId: "char-9", chatId: "chat-9" },
             expect.objectContaining({ chatRef: { chaId: "char-9", chatId: "chat-9" }, ...scope }),
+            expect.any(AbortSignal),
         );
         const sent = answers();
         expect(sent.every((entry) => entry.path === "/api/llm/request/req-1/answer")).toBe(true);

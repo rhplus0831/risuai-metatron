@@ -42,7 +42,13 @@ const deps = vi.hoisted(() => ({
     selection: null as { characterId: string | null } | null,
     /** The chats the mocked chat module holds, by character (the selected one at `chatPage`). */
     chats: {} as Record<string, { chatPage?: number; chats: { id: string; message?: { chatId: string }[] }[] }>,
-    mcps: new Map<string, { callTool: (tool: string, args: unknown) => Promise<unknown> }>(),
+    mcps: new Map<
+        string,
+        {
+            callTool: (tool: string, args: unknown, context?: unknown, signal?: AbortSignal) => Promise<unknown>;
+            getToolList?: (context?: unknown, signal?: AbortSignal) => Promise<unknown>;
+        }
+    >(),
     sayTTS: vi.fn(),
     showCompletion: vi.fn(async (_payload: unknown) => {}),
     followTranslations: vi.fn<(ref: unknown, ids: unknown, follow: { report: (message: string) => void }) => void>(),
@@ -142,7 +148,10 @@ vi.mock("../process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: deps.mc
 vi.mock("../plugins/plugins.svelte", async () =>
     (await import("../tests/bootMocks")).createBootMock("plugins", { pluginsStarted: () => deps.pluginsStarted() }),
 );
-vi.mock("../util", () => ({ sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)) }));
+vi.mock("../util", () => ({
+    sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    checkPersonaBinded: () => null,
+}));
 
 vi.mock("../storage/database.svelte", () => ({}));
 vi.mock("../process/tts", () => ({ sayTTS: deps.sayTTS }));
@@ -1057,6 +1066,73 @@ describe("callbacks", () => {
         await pump();
         expect(tx.answers[7]).toMatchObject({ outcome: "answered", value: [{ type: "text", text: 'sum:{"n":2}' }] });
         expect(deps.contexts).toEqual([]);
+    });
+
+    it("passes a callback signal and captured plugin context to listings and aborts a pending call before draining its lane", async () => {
+        const listed = vi.fn<typeof import("../process/mcp/internalmcp").MCPClientLike.prototype.getToolList>(
+            async () => [{ name: "sum", description: "Sum", inputSchema: { type: "object" } }],
+        );
+        const pending = deferred<import("../process/mcp/mcplib").RPCToolCallContent[]>();
+        let signal: AbortSignal | undefined;
+        const called = vi.fn<typeof import("../process/mcp/internalmcp").MCPClientLike.prototype.callTool>(
+            async (_tool, _args, _context, caller) => {
+                signal = caller;
+                return pending.promise;
+            },
+        );
+        deps.mcps.set("plugin:cancel", { getToolList: listed, callTool: called });
+        send(callback("listing", "mcpList", { identifier: "plugin:cancel" }));
+        await pump();
+        expect(listed).toHaveBeenCalledWith(hookContext("listing"), expect.any(AbortSignal));
+        expect(listed.mock.calls[0][1]?.aborted).toBe(false);
+        expect(tx.answers[0]).toMatchObject({
+            id: "listing",
+            outcome: "answered",
+            value: [{ name: "sum", description: "Sum", inputSchema: { type: "object" } }],
+        });
+        send(callback("tool", "mcpTool", { identifier: "plugin:cancel", tool: "sum", args: { n: 2 } }));
+        await pump();
+        expect(called).toHaveBeenCalledWith("sum", { n: 2 }, hookContext("tool"), expect.any(AbortSignal));
+        expect(signal?.aborted).toBe(false);
+        send(cancel("tool"));
+        await pump();
+        expect(signal?.aborted).toBe(true);
+        expect(drainReports()).toEqual([]);
+        pending.resolve([{ type: "text", text: "late" }]);
+        await pump();
+        expect(tx.answers.map((answer) => answer.id)).toEqual(["listing"]);
+        expect(drainReports()).toEqual([["J", "tool"]]);
+        send(callback("after", "mcpList", { identifier: "plugin:cancel" }));
+        await pump();
+        expect(tx.answers[1]).toMatchObject({ id: "after", outcome: "answered" });
+    });
+
+    it("passes the same callback signal to tab-client readiness, listing, and calls and aborts it when the job ends", async () => {
+        const registry = await import("../process/mcp/mcp");
+        const { MCPClientLike } = await import("../process/mcp/internalmcp");
+        const client = new MCPClientLike("internal:fs");
+        const ready = vi.spyOn(registry, "readyTabClient").mockResolvedValue(client);
+        const listed = vi
+            .spyOn(client, "getToolList")
+            .mockResolvedValue([{ name: "read", description: "Read", inputSchema: { type: "object" } }]);
+        const pending = deferred<import("../process/mcp/mcplib").RPCToolCallContent[]>();
+        const called = vi.spyOn(client, "callTool").mockReturnValue(pending.promise);
+        send(callback("tab-list", "mcpList", { identifier: "internal:fs" }));
+        await pump();
+        const listSignal = ready.mock.calls[0][1];
+        expect(listSignal).toBeInstanceOf(AbortSignal);
+        expect(listed).toHaveBeenCalledWith(undefined, listSignal);
+        send(callback("tab-call", "mcpTool", { identifier: "internal:fs", tool: "read", args: {} }));
+        await pump();
+        const callSignal = ready.mock.calls[1][1];
+        expect(callSignal).toBeInstanceOf(AbortSignal);
+        expect(called).toHaveBeenCalledWith("read", {}, undefined, callSignal);
+        channel.endJobChannel("J");
+        expect(callSignal?.aborted).toBe(true);
+        pending.resolve([{ type: "text", text: "late" }]);
+        await pump();
+        expect(tx.answers.map((answer) => answer.id)).toEqual(["tab-list"]);
+        expect(drainReports()).toEqual([["J", "tab-call"]]);
     });
 
     it("starts nothing after a cancel: not a tool behind a pending pre-flush, not the next hook of a set; the result is kept but not sent", async () => {
