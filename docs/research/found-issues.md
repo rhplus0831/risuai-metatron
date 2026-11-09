@@ -16,7 +16,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
 - [Client and plugins](#client-and-plugins) (8)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (4)
 
 ## Chat store, sync, and change feeds
 
@@ -324,20 +324,6 @@ Left on purpose by slice P2 of the RisuNest Small Wins plan (ed9d207c5, 2026-10-
 **Why it matters:** a first run on a fresh tree can report a protocol failure that is the dev server's reload.
 **Suggested handling:** if it recurs, have the driver wait for Vite's optimization to settle before the case (`openApp` already answers the prompt again after a reload), or run the dev stack once before the cases.
 
-### check:docs does not measure blockquoted items
-
-`util/docsBudget.mjs` `parseGuide`: `LIST_MARKER` (:54) does not see a list item behind `> `, so `> - <601 characters>` becomes a paragraph, and the length rule skips paragraphs. Found by the Guide Budgets slice 7 challenger.
-
-**Why it matters:** low: no guide uses a blockquoted list today, but one could hold an over-long item with a passing check. The leaf and file budgets still bound it.
-**Suggested handling:** strip a leading `> ` before the marker test if blockquotes appear in the guides.
-
-### check:docs collapses spaces inside a row's code spans
-
-`util/docsBudget.mjs:168` runs `line.replace(/\s+/g, " ")` over a whole table row to drop column padding, which also collapses spaces inside code spans, though Doc Maintenance counts code spans toward the item budget. A row with 601 spaces in a code span measures 9 characters and survives Prettier. Found by the Guide Budgets slice 7 challenger.
-
-**Why it matters:** low: it needs an unrealistic code span.
-**Suggested handling:** collapse padding outside code spans only (`replaceCodeSpans` is in the same file) if a row ever hits it.
-
 ### checkServerSend once hit an alert after its mid-stream reload
 
 On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the first `node util/playwright/checkServerSend.mjs` passed 11 checks, then `openCharacterChat` after the "reload in the middle of a slow stream" step (~340) timed out because a `[data-alert-dialog]` overlay covered the sidebar. The run overlapped a `docker build`; four reruns passed 19/19, two of them logging no alert after the reload, and the base `9bf28c429` passed 19/19. The alert text was not captured. Candidates: the automatic safe-boot notice (the driver does not clear safe-boot attempts) or an error alert from the owner's resync after the reload.
@@ -345,13 +331,6 @@ On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the firs
 **Why it matters:** if it recurs it may be a real owner-reload problem, not harness noise.
 
 **Suggested handling:** if it shows again, print the dialog text before `openCharacterChat` to tell the two apart; consider clearing safe-boot attempts in the driver.
-
-### docs:contracts crashes on EPIPE under head
-
-`pnpm --silent docs:contracts <file> | head -3` prints the first lines, then Node's `Error: write EPIPE` / "Unhandled 'error' event" stack from `util/docsContracts.mjs`'s command-line block, which writes to `process.stdout` with no `error` handler. Other `util/docs*.mjs` tools may share it. Seen 2026-11-05.
-
-**Why it matters:** agents pipe these tools into `head`; the stack looks like a tool failure and costs a second call.
-**Suggested handling:** ignore `EPIPE` on `process.stdout` in the command-line blocks.
 
 ### pnpm check does not type-check e2e specs
 
@@ -365,9 +344,3 @@ On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the firs
 Both multi-client specs import `./multiClient` and `./fixtures`. In `util/agentE2e.mjs`, `staticImports` records those literal paths, while Git reports `e2e/multiClient.ts` and `e2e/fixtures.ts`. Reproduced on 2026-11-07 by passing each changed path separately to `selectSpecs` with `loadSpecs(".")` and `repositoryFiles(".")`. Each result had an empty `selected` list and put the helper in `unnamed`.
 
 A helper-only change can therefore miss its browser tests during automatic selection. Name the affected specs explicitly until the selector resolves extensionless imports to their on-disk paths. All current specs import `./fixtures`, while only the two multi-client specs import `./multiClient`. The [test harness guide](../structure/test-harness.md#browser-specs) gives both commands.
-
-### An ignored path can hide a broken sibling in a guide
-
-In `util/docsBudget.mjs`, `pathProblem` returns success for the whole span as soon as a missing brace alternative matches a Git ignore rule. Reproduced on 2026-11-07 with `measureDocs` and `checkDocs` in a temporary Git repository containing an empty `src/` and a `*.local` ignore rule. The span `src/{draft.local,missing.ts}` produced no finding. Reversing the alternatives reported the missing `src/missing.ts`.
-
-A guide can pass the path check while pointing an agent at a missing source file. Check the remaining alternatives after accepting an ignored path.
