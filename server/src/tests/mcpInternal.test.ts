@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type { CallbackName, CallbackResult, GenerationQuestion } from "../../../shared/jobs.ts";
 import { NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import type { RPCToolCallContent } from "../../../shared/llm/request.ts";
@@ -16,6 +16,7 @@ import { loadJobScope } from "../jobs/jobScope.ts";
 import type { JobRequestSpec } from "../llm/requests.ts";
 import { createLuaBindings, LuaJobFatalError } from "../lua/bindings.ts";
 import { createJobToolState, MAX_JOB_TOOL_CALLS } from "../mcp/jobTools.ts";
+import * as jobTools from "../mcp/jobTools.ts";
 import { createMcpRegistry } from "../mcp/registry.ts";
 import { createEmbeddings, type EmbeddingEnv, type EmbeddingsService } from "../prompt/embeddings.ts";
 import type { TransformersService } from "../prompt/transformers.ts";
@@ -367,6 +368,39 @@ function setup(options: { attached?: boolean; embeddings?: EmbeddingsService; le
         put,
     };
 }
+
+it("reuses a prepared tool set, including an empty set, and lists only when none was supplied", async () => {
+    const create = jobTools.createJobTools;
+    const lists: MockInstance<jobTools.JobTools["list"]>[] = [];
+    vi.spyOn(jobTools, "createJobTools").mockImplementation((deps) => {
+        const tools = create(deps);
+        lists.push(vi.spyOn(tools, "list"));
+        return tools;
+    });
+    const s = setup();
+    const prepared = await s.bindings.listTools(s.ctx);
+    expect(prepared!.descriptors.map((tool) => tool.name).sort()).toEqual(["readMemory", "runLLM", "writeMemory"]);
+    const request = (meta?: { toolSet?: jobTools.JobToolSet | null }) =>
+        s.bindings.services.request(
+            { formated: [{ role: "user", content: "go" }], bias: {} } as never,
+            "model",
+            s.ctx,
+            "mcp",
+            meta,
+        );
+
+    await request({ toolSet: prepared });
+    expect(s.log.requests.at(-1)!.tools.descriptors).toEqual(prepared!.descriptors);
+    await request({ toolSet: { descriptors: [], routes: new Map() } });
+    expect(s.log.requests.at(-1)!.tools.descriptors).toEqual([]);
+    await request({ toolSet: null });
+    expect(s.log.requests.at(-1)!.tools.descriptors).toEqual([]);
+    expect(lists[0]).toHaveBeenCalledTimes(1);
+
+    await request();
+    expect(s.log.requests.at(-1)!.tools.descriptors).toEqual(prepared!.descriptors);
+    expect(lists[0]).toHaveBeenCalledTimes(2);
+});
 
 describe("internal:risuai on the server: reads", () => {
     it("is call-only when no module names it, reads the job's character for an empty id, the first stored match of a name, and the store's order", async () => {

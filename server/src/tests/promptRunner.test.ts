@@ -4,12 +4,28 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+    afterAll,
+    afterEach,
+    beforeAll,
+    beforeEach,
+    describe,
+    expect,
+    it,
+    onTestFinished,
+    vi,
+    type MockInstance,
+} from "vitest";
 import { type GenerationEvent, type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import type { ChangeFeed, ChangeFeedEvent } from "../data/changeFeed.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
 import { completionNotificationTag } from "../../../shared/notifications.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import { parseContextReport } from "../../../shared/contextReport.ts";
+import { AIACCESS_TOOLS } from "../../../shared/mcp/aiaccess.ts";
+import { DICE_TOOLS } from "../mcp/dice.ts";
+import * as jobTools from "../mcp/jobTools.ts";
+import { createTokenizers } from "../prompt/tokenizers/index.ts";
 import * as resourceStores from "../data/resourceStore.ts";
 import type { ChatGroup, ChatOp } from "../../../shared/chats.ts";
 import type { triggerscript } from "../../../shared/triggers.ts";
@@ -1366,6 +1382,127 @@ describe("a send", () => {
         },
         SLOW,
     );
+
+    it("budgets the two offered tools, sends their listed schemas once, and leaves plain preview tool-free", async () => {
+        const preset = (await single("presets")).data.find((item: any) => item.id === presetId);
+        const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+        const moduleRecord = await single("modules");
+        const modules = moduleRecord.data ?? [];
+        const providers = (await single("providers")).data;
+        const tokenizers = createTokenizers({ rootDir: REPO_ROOT });
+        const expectedTools = [...DICE_TOOLS, ...AIACCESS_TOOLS].map((tool) => ({
+            type: "function",
+            function: { name: tool.name, description: tool.description, parameters: structuredClone(tool.inputSchema) },
+        }));
+        // The adapter's schema form writes enum before description. JSON key order affects
+        // the estimate even though either order describes the same function.
+        const aiParameters = expectedTools[1].function.parameters as {
+            properties: { model: { type: string; enum: string[]; description: string } };
+        };
+        aiParameters.properties.model = {
+            type: "string",
+            enum: ["normal", "lite"],
+            description: aiParameters.properties.model.description,
+        };
+        // The reverse proxy's "tik" setting uses the o200k fallback, as the real request does.
+        const schemaTokens = await tokenizers.count("o200k_base", JSON.stringify(expectedTools));
+        const recent = "question";
+        const old = "old ".repeat(80).trim();
+        const recentTokens = (await tokenizers.count("o200k_base", recent)) + 3;
+        const maxResponse = 100;
+        const maxContext = schemaTokens + recentTokens + maxResponse;
+        const create = jobTools.createJobTools;
+        const lists: MockInstance<jobTools.JobTools["list"]>[] = [];
+        const created = vi.spyOn(jobTools, "createJobTools").mockImplementation((deps) => {
+            const tools = create(deps);
+            lists.push(vi.spyOn(tools, "list"));
+            return tools;
+        });
+        try {
+            const current = await single("modules");
+            expect(
+                (
+                    await batch({
+                        ops: [
+                            {
+                                kind: "modules",
+                                id: "main",
+                                baseRevision: current.revision ?? null,
+                                data: [
+                                    ...modules,
+                                    { id: "schema-dice", name: "Dice", mcp: { url: "internal:dice" } },
+                                    { id: "schema-ai", name: "AI", mcp: { url: "internal:aiaccess" } },
+                                ],
+                            },
+                        ],
+                    })
+                ).status,
+            ).toBe(200);
+            await patchPreset("modelProfiles", profileId, { maxContext });
+            await patchPreset("presets", presetId, {
+                maxResponse,
+                regex: [],
+                promptTemplate: [{ type: "chat", rangeStart: 0, rangeEnd: "end" }],
+                promptSettings: { ...preset.promptSettings, trimStartNewChat: true, sendName: false },
+            });
+            await patchProviders({ useStreaming: false });
+            const chaId = await seedCharacter({
+                name: "Tools",
+                extra: { firstMessage: "Hi!", desc: "" },
+                chat: { modules: ["schema-dice", "schema-ai"] },
+                messages: [
+                    { role: "user", data: old, chatId: "old" },
+                    { role: "user", data: recent, chatId: "recent" },
+                ],
+            });
+            const before = bodies.length;
+            const preview = await job("preview", chaId);
+            expect(preview.terminal?.type, JSON.stringify(preview.terminal)).toBe("done");
+            expect((preview.terminal as any).result.messages.map((entry: any) => entry.content)).toEqual([
+                "Hi!",
+                old,
+                recent,
+            ]);
+            expect(lists.reduce((sum, list) => sum + list.mock.calls.length, 0)).toBe(0);
+            expect(bodies).toHaveLength(before);
+
+            const sent = await job("send", chaId);
+            expect(sent.terminal?.type, JSON.stringify(sent.terminal)).toBe("done");
+            expect(bodies.slice(before)).toHaveLength(1);
+            expect(bodies.at(-1).tools).toEqual(expectedTools);
+            expect(bodies.at(-1).messages).toEqual([{ role: "user", content: recent }]);
+            expect(lists.reduce((sum, list) => sum + list.mock.calls.length, 0)).toBe(1);
+            const listed = await lists.flatMap((list) => list.mock.results)[0].value;
+            expect(listed.descriptors).toEqual([...DICE_TOOLS, ...AIACCESS_TOOLS]);
+            const info = (await readChat(chaId)).data.message.at(-1).generationInfo;
+            expect(parseContextReport(info.context)).toMatchObject({
+                input: recentTokens,
+                toolSchemas: schemaTokens,
+                maxResponse,
+                maxContext,
+            });
+            expect(info.inputTokens).toBe(recentTokens);
+            expect(info.context.input + info.context.toolSchemas + maxResponse).toBe(maxContext);
+        } finally {
+            created.mockRestore();
+            for (const list of lists) list.mockRestore();
+            await tokenizers.dispose();
+            await patchPreset("modelProfiles", profileId, profile);
+            await patchPreset("presets", presetId, { ...preset, promptTemplate: preset.promptTemplate });
+            await patchProviders({ useStreaming: providers.useStreaming });
+            const current = await single("modules");
+            await batch({
+                ops: [
+                    {
+                        kind: "modules",
+                        id: "main",
+                        baseRevision: current.revision,
+                        ...(moduleRecord.revision ? { data: modules } : { delete: true }),
+                    },
+                ],
+            });
+        }
+    });
 
     it("sends unchanged prompt messages without request-trigger errors when the character and modules have no triggers", async () => {
         const chaId = await seedCharacter({

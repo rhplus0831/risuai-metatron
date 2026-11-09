@@ -120,6 +120,10 @@ refusal the memory step recovered from or outlived replaces no later error.
   ([Command sequences](#command-sequences)). `runPromptJob`'s comment is the send's order.
 - `assemblePrompt` runs per speaker; its `AssemblyHost` supplies the job's services. Assembly's prompt and lore behavior
   is owned by [chat pipeline](chat-pipeline.md); memory algorithms are owned by [memory](memory.md).
+- Right before assembly's final token recheck, `AssemblyHost.toolSchemaTokens` lists the job's MCP tools once
+  (`listTools`) and counts them in the resolved adapter's form ([LLM requests](llm-requests.md#server-request-layer));
+  the recheck keeps that charge free, and the send's request offers that set without listing again. A plain `preview`
+  job lists nothing; every other request lists its own.
 - After final chat writes, `runPromptSend` hands off translations and due memory input, detached, before returning.
 
 ### Reroll in place

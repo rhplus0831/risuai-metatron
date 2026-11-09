@@ -1955,6 +1955,7 @@ export const languageEnglish = {
         coverageGap: "Some history left out is not covered by the memory.",
         coverageUnknown: "Whether the memory covers the history left out is unknown.",
         fixedShare: (percent: number) => `Fixed share: ${percent}% of the prompt budget`,
+        toolSchemas: "Tool schemas (estimated)",
         fixedShareHelp: "Everything but the chat history and memory.",
         fixedShareOver: (warn: number) => `Above the ${warn}% warning: little room is left for the history.`,
         basis: (unit: string, warn: number) => `Counting ${unit}; warning above ${warn}%.`,

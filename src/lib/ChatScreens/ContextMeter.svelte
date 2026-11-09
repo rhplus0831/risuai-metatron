@@ -128,6 +128,7 @@
         whole > 0 ? Math.min(100, Math.max(0, (part / whole) * 100)) : part > 0 ? 100 : 0;
 
     const promptBudget = $derived(report ? report.maxContext - report.maxResponse : 0);
+    const occupied = $derived(report ? report.input + (report.toolSchemas ?? 0) : 0);
     const fixed = $derived(report ? fixedShare(report) * 100 : 0);
     const fixedOver = $derived(report !== null && fixed > warn);
     const memoryName = $derived(report?.memory ? language.contextUsage.memoryKinds[report.memory.kind] : "");
@@ -439,7 +440,7 @@
         const r = source.report;
         const kept = turnCount(r, unit).kept;
         const keptText = unit === "user" ? language.contextUsage.turns(kept) : language.contextUsage.messages(kept);
-        const percent = percentOf(r.input, promptBudget);
+        const percent = percentOf(occupied, promptBudget);
         let result: Chip;
         if (r.memory?.kind === "structuredMemory") {
             const tokens = language.contextUsage.tokens(fmt(r.memory.tokens));
@@ -515,7 +516,7 @@
         if (!report) {
             return [];
         }
-        return report.sections
+        return [...report.sections, { kind: "toolSchemas" as const, tokens: report.toolSchemas ?? 0 }]
             .filter((section) => section.tokens > 0)
             .sort((a, b) => b.tokens - a.tokens)
             .map((section) => ({
@@ -909,11 +910,11 @@
                 <div class="flex flex-col gap-1" data-context-meter-headline>
                     {#if promptBudget > 0}
                         <span>
-                            <span class="text-lg font-semibold tabular-nums">{fmt(report.input)}</span>
+                            <span class="text-lg font-semibold tabular-nums">{fmt(occupied)}</span>
                             <span class="text-textcolor2 tabular-nums">
                                 {language.contextUsage.inputOfBudget(
                                     fmt(promptBudget),
-                                    percentOf(report.input, promptBudget),
+                                    percentOf(occupied, promptBudget),
                                 )}
                             </span>
                         </span>
@@ -921,7 +922,7 @@
                             >{language.contextUsage.budgetFrom(fmt(report.maxContext), fmt(report.maxResponse))}</span
                         >
                     {:else}
-                        <span>{language.contextUsage.input(fmt(report.input), fmt(report.maxContext))}</span>
+                        <span>{language.contextUsage.input(fmt(occupied), fmt(report.maxContext))}</span>
                         <span class="text-xs text-textcolor2">{language.contextUsage.noBudget}</span>
                     {/if}
                 </div>
@@ -982,7 +983,11 @@
                     {#each rows as row (row.kind)}
                         <li class="flex items-center gap-2" data-section={row.kind}>
                             <span class="h-2.5 w-2.5 shrink-0 rounded-full {row.color}" aria-hidden="true"></span>
-                            <span class="grow">{language.contextUsage.sections[row.kind]}</span>
+                            <span class="grow"
+                                >{row.kind === "toolSchemas"
+                                    ? language.contextUsage.toolSchemas
+                                    : language.contextUsage.sections[row.kind]}</span
+                            >
                             <span class="tabular-nums">{language.contextUsage.tokens(fmt(row.tokens))}</span>
                             {#if promptBudget > 0}
                                 <span class="w-10 text-right tabular-nums text-textcolor2"

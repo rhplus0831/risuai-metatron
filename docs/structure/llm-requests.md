@@ -108,6 +108,9 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   `server/src/llm/google.ts`, and `server/src/llm/anthropic.ts` (comments on each parser), under the snapshot contract
   in `Flows`.
 - `server/src/llm/settings.ts` `loadRequestDb`, `RequestTargetGoneError`, `tokenScopeFor`: the request database.
+- `server/src/llm/toolSchemas.ts` `serializeToolSchemas`: a job send's MCP descriptors in its resolved adapter's tools
+  form (none for a format that sends no tools), counted for assembly's recheck. It mirrors each adapter's tools
+  assignment, so a change to that form changes both.
 - `server/src/llm/requests.ts` `createLlmRequests`: admission, `runInJob`, and the `strongBan` cache. Request history
   and observer details are in [diagnostics](diagnostics.md) and [server](self-host-server.md).
 
@@ -122,8 +125,9 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 - `shared/prompt/chatTokens.ts` `ChatTokenCounter`, `ChatTokenHost`, and `shared/prompt/imageTokens.ts` `imageTokens`: a
   prompt's token arithmetic, the same on both runtimes.
 - The context report (`shared/contextReport.ts`, written by `assemblePrompt`) makes no counts of its own: it records the
-  counts assembly already makes. Its `tokenScope` is the job scope's `tokenizerIdentityKey` (`tokenScopeFor`,
-  `pluginTokenizer: "none"`), so a tab comparing it uses that scope too.
+  counts assembly already makes; `toolSchemas` is the send's schema estimate, outside `input`. Its `tokenScope` is the
+  job scope's `tokenizerIdentityKey` (`tokenScopeFor`, `pluginTokenizer: "none"`), so a tab comparing it uses that scope
+  too.
 
 ### Tab token counting
 
@@ -295,8 +299,8 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 - Focused:
   `pnpm --silent test:agent shared/llm src/ts/model src/ts/process/request src/ts/tokenizer.test.ts src/ts/process/prompt.tokenize.test.ts src/lib/UI/NanoGPTDashboard.test.ts`
   for the tab and shared code;
-  `pnpm --silent test:agent server/src/tests/{llm*,token*,sseLines,imageTokens,auxOps,providerModels}.test.ts` for the
-  server.
+  `pnpm --silent test:agent server/src/tests/{llm*,token*,toolSchemas,sseLines,imageTokens,auxOps,providerModels}.test.ts`
+  for the server.
 - `slow`:
   `pnpm --silent test:agent --tags-filter=slow server/src/tests/{llmCharsetRetries,tokenParity,tokenPlainNode}.test.ts`
   ([test-harness](test-harness.md) `Slow-test table`).
@@ -352,6 +356,9 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 - Claude tool calls are not streamed or batched: `requestClaude` sends a request that offers tools buffered and
   directly, with `stream: false` on it and every tool follow-up, even with `useStreaming` or `claudeBatching` on. The
   SSE and batch result parsers read text and thinking only. Upstream has the same gap. Decision: owner, 2026-11-08.
+- MCP tool schemas are charged only in assembly's final recheck, as an estimate: memory budgets and the no-memory trim
+  plan without them, so the recheck can drop removable entries they kept. Decision: Found Issues Clearance Q2,
+  2026-11-09.
 - Auxiliary requests still tokenize bias strings with the main model, not their own profile's tokenizer. Decision:
   `shared/llm/request.ts` `tokenizer`.
 - A legacy plugin `custom` tokenizer counts with `cl100k_base` on screen and in server requests; its `tokenizerFunc` is

@@ -174,13 +174,16 @@ export type LuaBindingServices = {
     /** `options.signal` withdraws the question: an ordinary failure, not the job's. */
     ask(question: GenerationQuestion, ctx: HostContext, options?: { signal?: AbortSignal }): Promise<unknown>;
     notice(notice: Parameters<JobChannel["notice"]>[0]): void;
-    /** A request of the job, recorded as `source` made it (and for `messageId`, where the caller knows it). */
+    /**
+     * A request of the job, recorded as `source` made it (and for `messageId`, where known).
+     * An absent `toolSet` lists tools; a prepared set, including null for no registry, is reused.
+     */
     request(
         arg: RequestArgs,
         mode: ModelModeExtended,
         ctx: HostContext,
         source: RequestSource,
-        meta?: { messageId?: string },
+        meta?: { messageId?: string; toolSet?: JobToolSet | null },
     ): Promise<requestDataResponse>;
     collectStreamText(stream: ReadableStream<StreamResponseChunk>): Promise<string>;
     /**
@@ -220,6 +223,8 @@ export type LuaBindings = {
     fatal(): LuaJobFatalError | null;
     evaluator: CbsEvaluator;
     services: LuaBindingServices;
+    /** Prepares the prompt's tools, or null when the job has no MCP registry. */
+    listTools(ctx: HostContext): Promise<JobToolSet | null>;
     /** Runs `fn` with the chat functions on `working` (a trigger's copy); the previous slot is restored after. */
     withWorking<T>(working: LuaWorkingCopy, fn: () => Promise<T>): Promise<T>;
     /** Calls `listener` after every Lua setter that wrote the run's character; returns the unsubscribe. */
@@ -908,7 +913,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         mode: ModelModeExtended,
         ctx: HostContext,
         source: RequestSource,
-        meta?: { messageId?: string },
+        meta?: { messageId?: string; toolSet?: JobToolSet | null },
     ): Promise<requestDataResponse> =>
         runRequest(arg, mode, ctx, source, meta).catch((error: unknown) => {
             throw markFailure(error, { stage: "request" });
@@ -919,7 +924,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         mode: ModelModeExtended,
         ctx: HostContext,
         source: RequestSource,
-        meta?: { messageId?: string },
+        meta?: { messageId?: string; toolSet?: JobToolSet | null },
     ): Promise<requestDataResponse> => {
         const signal = AbortSignal.any([job.signal, ctx.signal]);
         const replacer = async <N extends "replacerbeforeRequest" | "replacerafterRequest">(
@@ -940,9 +945,10 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             return value;
         };
         const db = scope.request.db;
-        // The client's `getTools()`: once per request, before the retry loop, whatever the mode.
-        let toolSet: JobToolSet | null = null;
-        if (jobTools) {
+        // Reuse assembly's prepared set, including null for no registry. Other callers list once
+        // before the retry loop, whatever the mode, as the client's `getTools()` does.
+        let toolSet: JobToolSet | null = meta?.toolSet ?? null;
+        if (meta?.toolSet === undefined && jobTools) {
             try {
                 toolSet = await jobTools.list(ctx);
             } catch (error) {
@@ -1863,6 +1869,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         fatal: () => fatalError,
         evaluator,
         services,
+        listTools: (ctx) => (jobTools ? jobTools.list(ctx) : Promise.resolve(null)),
         async withWorking(next, fn) {
             const previous = working;
             working = next;

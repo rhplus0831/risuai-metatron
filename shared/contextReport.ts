@@ -112,6 +112,8 @@ export type ContextReport = {
     maxResponse: number;
     /** Final counted input (= generationInfo.inputTokens). */
     input: number;
+    /** Estimated tokens of the offered tool schemas, separate from the counted messages. */
+    toolSchemas?: number;
     /**
      * One row per kind, in first-counted order; kinds that counted nothing are left out. Kinds are counted
      * where assembly already counts (`addSection` in `server/src/prompt/assemble.ts`), except three its
@@ -152,7 +154,7 @@ export type ContextReport = {
      * present only when no memory step ran (`contextTrim` in `server/src/prompt/assemble.ts`).
      */
     trim?: {
-        /** maxContext − currentTokens after the trim loop, plus the token counts of leading blank entries. */
+        /** maxContext − currentTokens after the trim loop, plus leading blank counts, minus tool schemas. */
         headroom: number;
         /**
          * The non-blank entries the next send's trim loop would drop first, in order, at most 8:
@@ -314,6 +316,9 @@ export function parseContextReport(value: unknown): ContextReport | null {
         return null;
     }
     if (!counts(value, ["maxContext", "maxResponse", "input"]) || !isNumber(value.adjustment)) {
+        return null;
+    }
+    if (value.toolSchemas !== undefined && !isCount(value.toolSchemas)) {
         return null;
     }
     if (typeof value.attributionExact !== "boolean" || typeof value.tokenScope !== "string") {
@@ -566,14 +571,14 @@ export function turnCount(report: ContextReport, unit: ContextMeterTurnUnit): { 
 
 /**
  * The share of the prompt budget (`maxContext − maxResponse`) the fixed sections take: every
- * section but history and memory, `adjustment` left out. In [0, 1]; 1 without a budget.
+ * section but history and memory, plus tool schemas, `adjustment` left out. In [0, 1]; 1 without a budget.
  */
 export function fixedShare(report: ContextReport): number {
     const budget = report.maxContext - report.maxResponse;
     if (budget <= 0) {
         return 1;
     }
-    let fixed = 0;
+    let fixed = report.toolSchemas ?? 0;
     for (const section of report.sections) {
         if (section.kind !== "history" && section.kind !== "memory") {
             fixed += section.tokens;

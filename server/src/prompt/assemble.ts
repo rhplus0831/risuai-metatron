@@ -197,6 +197,8 @@ export type AssemblyHost = {
     /** `runImageEmbedding(dataUrl)[0].generated_text`: the caption of an image a model cannot take. */
     captionImage(dataUrl: string): Promise<string>;
     tokenizer: ChatTokenCounter;
+    /** Lists and estimates this request's tool schemas once, just before the final token recheck. */
+    toolSchemaTokens?: () => Promise<number>;
     /** `tokenizerIdentityKey` of the scope `tokenizer` counts with (the context report's `tokenScope`). */
     tokenScope: string;
     getModelInfo(id: string): LLMModel;
@@ -2506,6 +2508,8 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     // The model never reads the item tags: note the entries that hold each, then count and send without them.
     const memoryTagHolders = memoryRun?.manifest ? takeItemTags(memoryRun.manifest.items, formated) : null;
 
+    const toolSchemaTokens = host.toolSchemaTokens ? await host.toolSchemaTokens() : 0;
+    host.fence();
     // Recount the final prompt and record removals for Structured Memory's gap report.
     let inputTokens = 0;
     /** Each entry's count in the recheck, before any removal. */
@@ -2516,9 +2520,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         inputTokens += tokens;
         recheckTokens.set(chat, tokens);
     }
-    // The prompt keeps the response budget free, as every count before formatting does except
-    // HypaV2's legacy one, for which this recheck frees it (its last two chats are protected).
-    const promptBudget = maxContextTokens - db.maxResponse;
+    // Keep the response reservation and offered schemas free. This also frees HypaV2's legacy
+    // response reservation, which earlier counts omit (its last two chats are protected).
+    const promptBudget = maxContextTokens - db.maxResponse - toolSchemaTokens;
     if (inputTokens > promptBudget) {
         // Overlapping ranges can share an entry: clearing it removes every occurrence from the prompt.
         const keptTokens = () =>
@@ -2530,7 +2534,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 return {
                     type: "error",
                     error:
-                        TOO_MUCH_TOKEN + "\n\nAt token rechecking. Required Tokens: " + (inputTokens + db.maxResponse),
+                        TOO_MUCH_TOKEN +
+                        "\n\nAt token rechecking. Required Tokens: " +
+                        (inputTokens + toolSchemaTokens + db.maxResponse),
                 };
             }
             if (formated[pointer].removable && keptEntry(formated[pointer])) {
@@ -2550,8 +2556,8 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
 
     // estimate tokens
     let outputTokens = db.maxResponse;
-    if (inputTokens + outputTokens > maxContextTokens) {
-        outputTokens = maxContextTokens - inputTokens;
+    if (inputTokens + toolSchemaTokens + outputTokens > maxContextTokens) {
+        outputTokens = maxContextTokens - inputTokens - toolSchemaTokens;
     }
     const generationInfo: MessageGenerationInfo = {
         model: getGenerationModelString(db),
@@ -2563,6 +2569,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
             db,
             input,
             inputTokens,
+            toolSchemaTokens,
             maxContextTokens,
             formated,
             provenanceOf,
@@ -2877,6 +2884,7 @@ function buildContextReport(arg: {
     db: Database;
     input: AssembleInput;
     inputTokens: number;
+    toolSchemaTokens: number;
     maxContextTokens: number;
     /** The final prompt. */
     formated: readonly OpenAIChat[];
@@ -2962,6 +2970,7 @@ function buildContextReport(arg: {
         maxContext: arg.maxContextTokens,
         maxResponse: arg.db.maxResponse,
         input: arg.inputTokens,
+        ...(arg.toolSchemaTokens > 0 ? { toolSchemas: arg.toolSchemaTokens } : {}),
         sections,
         adjustment: arg.inputTokens - sectionSum,
         attributionExact,
@@ -3155,7 +3164,7 @@ function contextTrim(
     if (continued?.empty) {
         return null;
     }
-    let headroom = ledger.headroom;
+    let headroom = ledger.headroom - arg.toolSchemaTokens;
     const queue: ContextTrimEntry[] = [];
     for (const chat of ledger.next) {
         const source = arg.sourceOf.get(chat);
@@ -3187,6 +3196,9 @@ function contextTrim(
                 user: source.user,
             });
         }
+    }
+    if (headroom < 0) {
+        return null;
     }
     return {
         headroom,

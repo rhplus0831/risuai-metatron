@@ -90,7 +90,9 @@ import { messages } from "../llm/messages.ts";
 import { resolveJobRequestModel } from "../llm/request.ts";
 import { JobRequestError } from "../llm/requests.ts";
 import { mainModelOf, mainModelTakesImages, tokenScopeFor } from "../llm/settings.ts";
+import { serializeToolSchemas } from "../llm/toolSchemas.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
+import type { JobToolSet } from "../mcp/jobTools.ts";
 import { readStorageFile } from "../routes/storage.ts";
 import {
     type AssembledPrompt,
@@ -1618,7 +1620,23 @@ async function runSpeaker(arg: {
             },
         };
         state.stage = "assembly";
-        const assembled: AssembledPrompt = await assemblePrompt(
+        let toolSet: JobToolSet | null | undefined;
+        let toolListFailure: Error | undefined;
+        const toolSchemaTokens = async () => {
+            try {
+                toolSet = await bindings.listTools(nativeCtx);
+            } catch (error) {
+                // Fatal/abort outcomes keep the job's fence; an ordinary list failure uses the
+                // same request-stage failure path as listing inside services.request, without retry.
+                setup.check();
+                toolListFailure = new Error(`MCP: ${error instanceof Error ? error.message : String(error)}`);
+                throw toolListFailure;
+            }
+            setup.check();
+            const text = serializeToolSchemas(resolveJobRequestModel(requestDb, "model"), toolSet?.descriptors ?? []);
+            return text === null ? 0 : deps.tokens.count(text, tokenScopeFor(requestDb), nativeCtx.signal);
+        };
+        const assembled: AssembledPrompt | null = await assemblePrompt(
             {
                 db,
                 owner,
@@ -1716,6 +1734,7 @@ async function runSpeaker(arg: {
                         }
                     }),
                 tokenizer: jobChatTokenCounter(deps, scope, arg.chatAdditonalTokens),
+                ...(job.kind !== "preview" ? { toolSchemaTokens } : {}),
                 tokenScope: tokenizerIdentityKey(tokenScopeFor(requestDb)),
                 getModelInfo: (model) =>
                     resolveModelInfo(model, {
@@ -1734,8 +1753,16 @@ async function runSpeaker(arg: {
                 generationId,
                 stageTimings,
             },
-        );
+        ).catch((error: unknown) => {
+            if (toolListFailure !== undefined && error === toolListFailure) {
+                return null;
+            }
+            throw error;
+        });
         setup.check();
+        if (assembled === null) {
+            return throwError(toolListFailure!.message, { stage: "request" });
+        }
         if (assembled.type === "stopped") {
             return { type: "stop" };
         }
@@ -1802,7 +1829,7 @@ async function runSpeaker(arg: {
             nativeCtx,
             "send",
             // The reply's message: a continue's own, else the one the reply is appended as.
-            { messageId: generation?.messageId ?? generationId },
+            { messageId: generation?.messageId ?? generationId, ...(toolSet !== undefined ? { toolSet } : {}) },
         );
         setup.check();
         if (req.model) {

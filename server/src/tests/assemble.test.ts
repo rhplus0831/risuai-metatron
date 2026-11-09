@@ -1771,6 +1771,33 @@ describe("the context report", () => {
         });
     });
 
+    it("reserves tool schemas beside messages and the response, reducing or omitting trim headroom", async () => {
+        const old = "o".repeat(100);
+        const recent = "r".repeat(20);
+        // Text length plus three per message: greeting 6, old 103, recent 23.
+        // The earlier trim ledger also reserves 50 tokens of assembly overhead.
+        for (const charge of [undefined, 0, 20, 120, 165]) {
+            const { host, run } = contextAssembly({
+                maxContext: 300,
+                messages: [
+                    { chatId: "old", data: old },
+                    { chatId: "recent", data: recent },
+                ],
+            });
+            if (charge !== undefined) host.toolSchemaTokens = async () => charge;
+            const { texts, report, generationInfo } = await run();
+            const trimmed = charge === 165;
+            expect(texts, `charge ${charge}`).toEqual(trimmed ? [recent] : ["Hi!", old, recent]);
+            expect(report.input).toBe(trimmed ? 23 : 132);
+            expect(generationInfo.outputTokens).toBe(10);
+            expect(report.input + (charge ?? 0) + report.maxResponse).toBeLessThanOrEqual(300);
+            if (charge) expect(report.toolSchemas).toBe(charge);
+            else expect(report).not.toHaveProperty("toolSchemas");
+            if ((charge ?? 0) > 108) expect(report).not.toHaveProperty("trim");
+            else expect(report.trim?.headroom).toBe(300 - 10 - 50 - 132 - (charge ?? 0));
+        }
+    });
+
     it("attributes a template prompt with full history by section and records the trim ledger", async () => {
         const { run, chat, counts } = contextAssembly({
             template: [plain("main", "MAIN"), plain("globalNote", "NOTE!"), plain("normal", "P"), CHAT_CARD],

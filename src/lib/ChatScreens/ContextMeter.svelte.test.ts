@@ -422,6 +422,23 @@ describe("the chip", () => {
 });
 
 describe("the popover", () => {
+    it("shows estimated tool schemas separately and includes them in the headline only when present", async () => {
+        install([reply("m1", { context: report({ toolSchemas: 120 }) })]);
+        render();
+        const opened = await openPanel();
+        const headline = () => opened.querySelector("span.text-lg.font-semibold")!;
+        expect(headline().textContent).toBe("720");
+        expect(headline().nextElementSibling!.textContent?.trim()).toBe(language.contextUsage.inputOfBudget("800", 90));
+        expect(sectionRows()).toContainEqual(["toolSchemas", "Tool schemas (estimated) 120 tokens 15%"]);
+
+        patchMessage(ref, "m1", { generationInfo: { context: report() } });
+        flushSync();
+        expect(headline().textContent).toBe("600");
+        expect(headline().nextElementSibling!.textContent?.trim()).toBe(language.contextUsage.inputOfBudget("800", 75));
+        expect(sectionRows().map(([kind]) => kind)).toEqual(["history", "main", "description"]);
+        expect(opened.textContent).not.toContain("Tool schemas (estimated)");
+    });
+
     it("uses the prompt budget in the headline and falls back when the reply consumes it", async () => {
         const s = language.contextUsage;
         install([reply("m1", { context: report() })]);
