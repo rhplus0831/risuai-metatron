@@ -303,10 +303,12 @@
     }
 </script>
 
+<!-- Every alert branch paints at layer 1100, above a plugin's full-screen container (z-index 1000).
+     Delegated branches use positioned z-1100 wrappers because display: contents forms no stacking context. -->
 {#if $alertStore.type !== "none" && $alertStore.type !== "toast" && $alertStore.type !== "cardexport" && $alertStore.type !== "branches" && $alertStore.type !== "selectModule" && $alertStore.type !== "pukmakkurit" && $alertStore.type !== "requestlogs" && $alertStore.type !== "upstreamImportReport"}
     <div
         data-alert-dialog
-        class="absolute w-full h-full z-50 bg-black/50 flex justify-center items-center"
+        class="absolute w-full h-full z-1100 bg-black/50 flex justify-center items-center"
         class:vis={$alertStore.type === "wait2"}
     >
         <div
@@ -950,7 +952,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div
         data-alert-dialog
-        class="fixed top-0 left-0 h-full w-full bg-black/50 flex flex-col z-50 items-center justify-center"
+        class="fixed top-0 left-0 h-full w-full bg-black/50 flex flex-col z-1100 items-center justify-center"
         role="button"
         tabindex="0"
         onclick={cancelCardExport}
@@ -1024,7 +1026,7 @@
     <!-- Keyed: each toast runs its own animation, and its end clears the status only while it is still that toast. -->
     {#each [$alertStore] as toast (toast)}
         <div
-            class="toast-anime absolute right-0 bottom-0 bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl max-h-11/12 overflow-y-auto z-50 text-textcolor"
+            class="toast-anime absolute right-0 bottom-0 bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl max-h-11/12 overflow-y-auto z-1100 text-textcolor"
             onanimationend={() => {
                 alertStore.clearStatus(toast);
             }}
@@ -1033,7 +1035,7 @@
         </div>
     {/each}
 {:else if $alertStore.type === "selectModule"}
-    <div data-alert-dialog class="contents">
+    <div data-alert-dialog class="fixed inset-0 z-1100">
         <ModuleChatMenu
             alertMode
             close={(d) => {
@@ -1045,7 +1047,7 @@
     <!-- Log Generator by dootaang, GPL3 -->
     <!-- Svelte, Typescript version by Kwaroran -->
 
-    <div data-alert-dialog class="absolute w-full h-full z-50 bg-black/50 flex justify-center items-center">
+    <div data-alert-dialog class="absolute w-full h-full z-1100 bg-black/50 flex justify-center items-center">
         <div class="bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl max-h-full overflow-y-auto">
             <h2 class="text-green-700 mt-0 mb-2 w-40 max-w-full">{language.preview}</h2>
         </div>
@@ -1053,7 +1055,7 @@
 {:else if $alertStore.type === "branches"}
     <div
         data-alert-dialog
-        class="absolute w-full h-full z-50 bg-black/80 flex justify-center items-center overflow-x-auto overflow-y-auto"
+        class="absolute w-full h-full z-1100 bg-black/80 flex justify-center items-center overflow-x-auto overflow-y-auto"
     >
         {#if branchHover !== null}
             <div
@@ -1130,11 +1132,11 @@
         {/each}
     </div>
 {:else if $alertStore.type === "requestlogs"}
-    <div data-alert-dialog class="contents">
+    <div data-alert-dialog class="fixed inset-0 z-1100">
         <RequestLogsPopup />
     </div>
 {:else if $alertStore.type === "upstreamImportReport"}
-    <div data-alert-dialog class="contents">
+    <div data-alert-dialog class="fixed inset-0 z-1100">
         <UpstreamImportReport />
     </div>
 {/if}

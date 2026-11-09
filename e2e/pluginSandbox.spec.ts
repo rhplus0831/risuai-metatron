@@ -21,6 +21,11 @@ globalThis.__sandboxProbe = {
     },
     readStorage(key) { return risuai.pluginStorage.getItem(key); },
     readDatabase() { return risuai.getDatabase(['characters']); },
+    async requestMainDomInFullscreen() {
+        await risuai.showContainer('fullscreen');
+        this.rootDocumentRequest = risuai.getRootDocument();
+    },
+    hideContainer() { return risuai.hideContainer(); },
 };
 `;
 
@@ -219,6 +224,43 @@ test("the plugin iframe has exactly the allowed sandbox tokens and an opaque ori
         .soft(new Set(tokens), "sandbox token set")
         .toEqual(new Set(["allow-scripts", "allow-modals", "allow-downloads"]));
     expect.soft(await sandbox.frame.evaluate(() => self.origin), "origin read inside the plugin guest").toBe("null");
+});
+
+test("plugin permission alerts paint above the full-screen plugin container", async ({ page, sandbox: { frame } }) => {
+    await frame.evaluate(() => (globalThis as any).__sandboxProbe.requestMainDomInFullscreen());
+    const dialog = page.locator("[data-alert-dialog]");
+    try {
+        await expect(dialog).toBeVisible();
+        await expect(dialog).toContainText(pluginName);
+        const iframe = await frame.frameElement();
+        expect(await iframe.isVisible()).toBe(true);
+        expect(
+            await iframe.evaluate((element: HTMLIFrameElement) => {
+                const rect = element.getBoundingClientRect();
+                const style = getComputedStyle(element);
+                return {
+                    inBody: element.parentElement === document.body,
+                    position: style.position,
+                    coversViewport:
+                        rect.x === 0 && rect.y === 0 && rect.width === innerWidth && rect.height === innerHeight,
+                };
+            }),
+        ).toEqual({ inBody: true, position: "fixed", coversViewport: true });
+        const hit = await page.locator("[data-alert-dialog] > div").evaluate((panel) => {
+            const rect = panel.getBoundingClientRect();
+            const element = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+            return { inAlert: Boolean(element?.closest("[data-alert-dialog]")), tag: element?.tagName };
+        });
+        expect(hit.inAlert, `dialog center hit ${hit.tag}`).toBe(true);
+
+        await dialog.getByRole("button", { name: "NO", exact: true }).click();
+        await expect(dialog).toBeHidden();
+        expect(await frame.evaluate(() => (globalThis as any).__sandboxProbe.rootDocumentRequest)).toBeNull();
+    } finally {
+        await frame.evaluate(() => (globalThis as any).__sandboxProbe.hideContainer());
+        if (await dialog.isVisible()) await dialog.getByRole("button", { name: "NO", exact: true }).click();
+        await frame.evaluate(() => (globalThis as any).__sandboxProbe.rootDocumentRequest);
+    }
 });
 
 test("other windows cannot write plugin storage or get an RPC answer, while the real bridge round trips", async ({

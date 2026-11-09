@@ -10,19 +10,21 @@
      * src/ts/alert.ts, plus a recovery-draft reminder from src/ts/storage/recoveryDrafts.svelte.ts.
      * Dismiss clears the conflict store; the draft reminder's own dismissal lasts for this component
      * lifetime and leaves drafts intact. Review opens RecoveryDrafts and hides its reminder while open.
-     * The z-60 status panel sits above the z-50 alert overlay without making the page inert or
-     * trapping focus. Its controls stop keydown, keyup and keypress propagation so they cannot answer
-     * an underlying alert through src/ts/hotkey.ts; earlier capture listeners still see those keys.
+     * The status panel sits above the alert layer and therefore above a plugin's full-screen container
+     * without making the page inert or trapping focus. Its controls stop keydown, keyup and keypress
+     * propagation so they cannot answer an underlying alert through src/ts/hotkey.ts; earlier capture
+     * listeners still see those keys.
      */
 
     let draftsDismissed = $state(false);
     const showDrafts = $derived(!draftsDismissed && !recoveryDrafts.isOpen && recoveryDrafts.entries.length > 0);
 </script>
 
-<!-- Conflict and draft notices stay above the alert overlay and dismiss independently. Not modal. -->
+<!-- Conflict and draft notices stay above the alert layer and therefore above a plugin's full-screen container.
+     They dismiss independently without becoming modal. -->
 {#if $reloadNotice !== null || showDrafts}
     <div
-        class="fixed top-2 left-1/2 -translate-x-1/2 z-[60] w-max max-w-[calc(100%-1rem)] bg-darkbg border border-darkborderc p-4 break-any rounded-md flex flex-col shadow-lg"
+        class="fixed top-2 left-1/2 -translate-x-1/2 z-1110 w-max max-w-[calc(100%-1rem)] bg-darkbg border border-darkborderc p-4 break-any rounded-md flex flex-col shadow-lg"
         role="status"
         aria-live="polite"
     >

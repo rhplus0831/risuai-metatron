@@ -52,8 +52,10 @@
   `alertToast` (`onInstall`), `alertClear`, `waitAlert`, `doingAlert`, and `alertStore`, a `set` wrapper over the real
   store.
 - `src/lib/Others/AlertComp.svelte` renders and answers the queued alert; its component contract covers keyboard
-  handling and `src/ts/sourcemap.ts` `translateStackTrace`'s stale-trace rule. Checkbox answers and the HypaV2 editor
-  are documented on `src/ts/alert.ts` `alertConfirmWithCheckbox` and `showHypaV2Alert`.
+  handling and `src/ts/sourcemap.ts` `translateStackTrace`'s stale-trace rule. Every branch paints at `z-1100`, above a
+  plugin's full-screen container (`showContainer`, `z-index: 1000`); `ReloadNotice.svelte` sits above that layer.
+  Checkbox answers and the HypaV2 editor are documented on `src/ts/alert.ts` `alertConfirmWithCheckbox` and
+  `showHypaV2Alert`.
 - The error alert closes before opening request history. The viewer also closes around its delete confirmation and share
   errors; see `src/lib/Others/RequestLogs/RequestLogsPopup.svelte` and
   `src/lib/Others/RequestLogs/ServerRequestHistory.svelte` for that UI handoff.
@@ -120,6 +122,8 @@ before the queue advances. See `alertQueue.ts`, `hotkey.ts`, and `AlertComp.svel
 - Add an alert:
   1. Extend `alertData` and add a helper in `alert.ts`.
   2. Add a render and resolve branch in `AlertComp.svelte`; an outer branch must also be excluded from its first guard.
+     Its overlay uses `z-1100`; a branch that renders another component wraps it in a positioned `z-1100` box
+     (`display: contents` forms no stacking context).
   3. For a new Enter answer, extend the branch in `src/ts/hotkey.ts`. Escape needs no edit.
 - Change save behavior: [`storage/resourceSync.svelte.ts`](resource-sync.md#save-cycle) and the records
   (`storage/records.svelte.ts`). See `persistence.md`.
@@ -130,7 +134,8 @@ before the queue advances. See `alertQueue.ts`, `hotkey.ts`, and `AlertComp.svel
   `pnpm --silent test:agent src/ts/alert{Queue,Terminal,CardExport}.test.ts src/ts/{sourcemap,util,globalApiDisclosure}.test.ts src/ts/util/koreanSearch.test.ts`.
 - Typed shared doubles: `src/ts/tests/alertMock.ts` and `src/ts/tests/globalApiMock.ts`.
 - Browser specs:
-  `pnpm --silent test:agent --e2e e2e/terminalNotice.spec.ts e2e/welcomeAndChatSettings.spec.ts e2e/personaBinding.spec.ts`
+  `pnpm --silent test:agent --e2e e2e/terminalNotice.spec.ts e2e/welcomeAndChatSettings.spec.ts e2e/personaBinding.spec.ts`;
+  `e2e/pluginSandbox.spec.ts` checks the alert layer above a plugin's full-screen container
   ([test-harness](test-harness.md)). `slow`: none.
 - Not tested: the full alert protocol, and most `util.ts` helpers.
 
